@@ -107,6 +107,11 @@ type Facts struct {
 	Features []string `json:"features,omitempty"`
 	// Images is what the host boots new sandboxes on, and its image settings; present with FeatureImagePatching.
 	Images *HostImages `json:"images,omitempty"`
+	// Firecracker is the version of Firecracker the microVM tier runs (`v1.17.0`), and GuestKernel the guest kernel's
+	// (its version and a SHA-256 prefix of the file, `6.1.102+0123456789ab`). A template snapshot restores only onto
+	// the same two, so they are part of its cache key. Empty on a host without the microVM tier.
+	Firecracker string `json:"firecracker,omitempty"`
+	GuestKernel string `json:"guestKernel,omitempty"`
 }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
@@ -159,6 +164,11 @@ type ImageChannel struct {
 	URL string `json:"url"`
 }
 
+// FeatureTemplateBuild: the host can build templates (template.build) now: it runs the microVM tier, and Docker is
+// installed on it and its daemon answers. Without it, template.build answers ErrUnsupported; restoring or booting a
+// template already built doesn't need it.
+const FeatureTemplateBuild = "template-build"
+
 // Size is a sandbox shape.
 type Size struct {
 	Name      string `json:"name"`
@@ -200,6 +210,10 @@ type Capacity struct {
 	// Warm is always empty: hosts keep no warm pools. It is sent for control planes from before they were removed,
 	// which refuse a capacity without it.
 	Warm map[string]int `json:"warm"`
+	// Builds are the template builds (their snapshot IDs) the host has admitted and not yet ended, whose machines'
+	// memory and disk FreeMemoryMiB and FreeDiskGiB already leave out: a control plane holding room for one of them
+	// stops holding it once a report names it, so it is counted once.
+	Builds []string `json:"builds,omitempty"`
 }
 
 type Heartbeat struct {
@@ -420,12 +434,74 @@ type CreateParams struct {
 	// their own VM.
 	Owner string `json:"owner,omitempty"`
 	// VCPUs, MemoryMiB and DiskGiB are, for a microVM, a shape off the host's named sizes (all three set, Size
-	// empty), which cold-boots: no warm pool or template is kept for it. For an isolate, MemoryMiB is the memory asked
+	// empty), which cold-boots: no size template is kept for it (one made from a Template restores that template's
+	// snapshot when it was built as this shape). For an isolate, MemoryMiB is the memory asked
 	// for, recorded and passed to the runtime but not enforced per isolate (workerd has no per-isolate memory limit;
 	// the account VM's memory is the bound).
 	VCPUs     int `json:"vcpus,omitempty"`
 	MemoryMiB int `json:"memoryMiB,omitempty"`
 	DiskGiB   int `json:"diskGiB,omitempty"`
+	// Template makes the sandbox from a template (microVMs only): from its template snapshot, or by booting its image
+	// fresh and running its setup in the new sandbox.
+	Template *TemplateBoot `json:"template,omitempty"`
+}
+
+// TemplateBoot is how a sandbox made from a template boots.
+type TemplateBoot struct {
+	// RootfsKey names the image's root filesystem (images/templates/<key>.ext4); empty, it is worked out from the base
+	// image and its digest, as a template.build does.
+	RootfsKey string `json:"rootfsKey,omitempty"`
+	// BaseImage and BaseDigest are the template's Kantel base: an image name such as kantel/sandbox (no registry, tag
+	// or digest) and the digest the host pulls it by from its templateRegistry. With no digest (the default base, while
+	// its channel has none published), the template is the host's own sandbox image.
+	BaseImage  string `json:"baseImage"`
+	BaseDigest string `json:"baseDigest,omitempty"`
+	// Setup is run as root in a sandbox that boots fresh (no Snapshot), once it has its identity.
+	Setup string `json:"setup,omitempty"`
+	// Snapshot is a template snapshot on this host (a template.build's Ref) to restore; empty: boot fresh. It is
+	// restored only when it was built with the create's vCPUs and memory (its Size's, or its custom shape's); else the
+	// template boots fresh.
+	Snapshot string `json:"snapshot,omitempty"`
+}
+
+// TemplateBuildParams is template.build: take the image's root filesystem (the host's own image, or the base pulled by
+// its digest and made into one, or that from the cache), boot it once as the machine asked (the named size with those
+// vCPUs, memory and disk, else that custom shape), run Setup as root, and snapshot it as
+// template-snapshots/<SnapshotID>. The host refuses it (ErrCapacity) while its budget hasn't the machine's memory and
+// disk left beside its sandboxes and other builds, and counts it as used, naming it in Capacity.Builds, until its
+// machine has gone; a machine beyond its custom shapes' limits is ErrInvalid. A base with a digest
+// is ErrUnsupported on a host with no templateRegistry, and a bad base image name or digest ErrInvalid.
+type TemplateBuildParams struct {
+	SnapshotID string `json:"snapshotId"`
+	// BaseImage and BaseDigest are the template's Kantel base, as TemplateBoot's.
+	BaseImage  string            `json:"baseImage"`
+	BaseDigest string            `json:"baseDigest,omitempty"`
+	Setup      string            `json:"setup,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	VCPUs      int               `json:"vcpus"`
+	MemoryMiB  int               `json:"memoryMiB"`
+	// DiskGiB is the snapshot's disk: that of the named size with these vCPUs and memory, else the custom shape's
+	// (the control plane's diskFor), so a create of the same shape gets the same disk.
+	DiskGiB int    `json:"diskGiB"`
+	KeyHash string `json:"keyHash"`
+	// Egress is the build's way out while its setup runs (the template's grants); nil is the host's default.
+	Egress *Egress `json:"egress,omitempty"`
+	// Owner is the account the template is of, which the egress proxy names the build's requests after.
+	Owner string `json:"owner,omitempty"`
+}
+
+// TemplateBuildResult is template.build's answer. Ref names the snapshot on this host (its ID).
+type TemplateBuildResult struct {
+	Ref string `json:"ref"`
+	// ImageDigest is the pulled base's image ID, as Docker answers it; empty for the host's own image.
+	ImageDigest string             `json:"imageDigest,omitempty"`
+	SizeBytes   int64              `json:"sizeBytes"`
+	Timings     map[string]float64 `json:"timings,omitempty"`
+}
+
+// TemplateDeleteParams is template.delete: the template snapshot's directory goes; nothing else does.
+type TemplateDeleteParams struct {
+	SnapshotID string `json:"snapshotId"`
 }
 
 type SandboxRef struct {
@@ -671,4 +747,8 @@ const (
 	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
 	// own code (FeatureFilesExtract); the result is {}.
 	MethodFileExtract = "sandbox.files.extract"
+	// MethodTemplateBuild (TemplateBuildParams) answers a TemplateBuildResult.
+	MethodTemplateBuild = "template.build"
+	// MethodTemplateDelete (TemplateDeleteParams) deletes a template snapshot; the result is {"ok": true}.
+	MethodTemplateDelete = "template.delete"
 )

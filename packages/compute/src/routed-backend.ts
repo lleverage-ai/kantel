@@ -12,6 +12,9 @@
  * type, the labels), and the backend that answers gets the ones among them that are its own. A sandbox neither holds
  * (its create failed, say) isn't sent to `fallback` to be answered as if it were there: it is refused (`NOT_HELD`), and
  * the service makes it again with `create`, which places it as any new sandbox.
+ *
+ * Templates are each backend's own too: their runtimes are both backends' hosts', a build goes to the backend whose host
+ * it names, and a template snapshot is answered by the backend its reference is of (`holdsSnapshot`).
  */
 import { KantelError } from "@kantel/contracts";
 import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
@@ -75,10 +78,11 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		return { ...input, eligibleHosts };
 	}
 
-	/** Where a new sandbox goes: the backend its snapshot is on, else `primary` for any of its hosts. */
+	/** Where a new sandbox goes: the backend its snapshot (or its template's) is on, else `primary` for any of its hosts. */
 	async function placeNew(spec: SandboxSpec): Promise<{ backend: SandboxBackend; spec: SandboxSpec }> {
-		if (spec.fromSnapshot !== undefined) {
-			const backend = forRef(spec.fromSnapshot);
+		const snapshot = spec.fromSnapshot ?? spec.template?.snapshot;
+		if (snapshot !== undefined) {
+			const backend = forRef(snapshot);
 			return { backend, spec: await affine(backend, spec) };
 		}
 		const own = new Set((await primary.capabilities()).hosts.map((host) => host.id));
@@ -87,7 +91,43 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		return { backend: fallback, spec: { ...spec, eligibleHosts: spec.eligibleHosts.filter((id) => !own.has(id)) } };
 	}
 
+	/** The backend a host is on: `primary` when it is one of its hosts, else `fallback`. */
+	const forHost = async (hostId: string): Promise<SandboxBackend> =>
+		(await primary.capabilities()).hosts.some((host) => host.id === hostId) ? primary : fallback;
+
+	const hasTemplates = (backend: SandboxBackend) =>
+		backend.templateRuntimes !== undefined &&
+		backend.buildTemplate !== undefined &&
+		backend.deleteTemplateSnapshot !== undefined;
+
+	/** Template calls, when either backend has templates: absent, the routed backend has none either. */
+	const templates: Pick<SandboxBackend, "templateRuntimes" | "buildTemplate" | "deleteTemplateSnapshot"> =
+		hasTemplates(primary) || hasTemplates(fallback)
+			? {
+					async templateRuntimes() {
+						const [first, second] = await Promise.all([
+							hasTemplates(primary) ? primary.templateRuntimes?.() : [],
+							hasTemplates(fallback) ? fallback.templateRuntimes?.() : [],
+						]);
+						return [...(first ?? []), ...(second ?? [])];
+					},
+					async buildTemplate(spec) {
+						const backend = await forHost(spec.hostId);
+						if (!hasTemplates(backend) || backend.buildTemplate === undefined) {
+							throw new KantelError("not_supported", `The host ${spec.hostId} can't build templates`);
+						}
+						return backend.buildTemplate(spec);
+					},
+					async deleteTemplateSnapshot(bytes) {
+						// Bytes its build never answered for are on the host it was built on.
+						const backend = bytes.ref === undefined ? await forHost(bytes.hostId) : forRef(bytes.ref);
+						await backend.deleteTemplateSnapshot?.(bytes);
+					},
+				}
+			: {};
+
 	return {
+		...templates,
 		async capabilities(): Promise<BackendCapabilities> {
 			const [first, second] = await Promise.all([primary.capabilities(), fallback.capabilities()]);
 			const sizes = new Map<string, BackendSize>();

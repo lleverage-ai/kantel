@@ -54,6 +54,7 @@ import {
 	shapeCreatable,
 	sizeText,
 	stopsInText,
+	type Template,
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
@@ -61,6 +62,8 @@ import { computePage, messageOf, Sparkline } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
 import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
+import { buildPollMs, TEMPLATE_POLL_MS } from "./template-view.ts";
+import { resourcesText, templatePickHint } from "./templates-page.tsx";
 
 /** A view of one sandbox's page that a row links to. */
 export type SandboxRowView = "overview" | "desktop" | "browser";
@@ -82,6 +85,10 @@ export interface SandboxesPageProps {
 	readonly navigate?: (path: string) => void;
 	/** The account's environments, which New sandbox offers to start from. */
 	readonly environments?: (accountId: string) => Promise<readonly Environment[]>;
+	/** The account's templates (experimental), which New sandbox offers to make the machine from. */
+	readonly templates?: (accountId: string) => Promise<readonly Template[]>;
+	/** The template New sandbox starts with picked: a template page's New sandbox. */
+	readonly template?: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 	/** How often the list is read again while a sandbox is starting or stopping, in milliseconds. Default 1000. */
@@ -173,6 +180,8 @@ export function SandboxesPage({
 	sandboxHref,
 	navigate,
 	environments,
+	templates,
+	template,
 	now: fixedNow,
 	pollMs = 1000,
 	creating = false,
@@ -401,6 +410,9 @@ export function SandboxesPage({
 				{...(source.shapes === undefined ? {} : { shapes: () => readShapes(source, account.id) })}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
 				{...(environments === undefined ? {} : { environments: () => environments(account.id) })}
+				{...(templates === undefined ? {} : { templates: () => templates(account.id) })}
+				{...(template === undefined ? {} : { template })}
+				now={now}
 				onClose={() => setNewOpen(false)}
 				onCreate={(input) => void create(input)}
 			/>
@@ -1182,6 +1194,135 @@ export function ShapeFields({
 /** Where New sandbox's shapes are: read (or the source can't say, so the defaults stand), being read, or not read. */
 type ShapesRead = "ready" | "reading" | "failed";
 
+/** New sandbox's read of the account's templates: loading, read, or failed with nothing read yet. */
+export type TemplatesRead =
+	| { readonly status: "loading" }
+	| { readonly status: "failed" }
+	| { readonly status: "ready"; readonly value: readonly Template[] };
+
+/**
+ * The template asked for in New sandbox (picked, or named by the page that opened it): the list's record of it, still
+ * `pending` while the list is read, or a `problem` once it can't be had. Create waits on the first and shows the
+ * second, so a sandbox asked for from a template is never quietly made without it.
+ */
+export function requestedTemplate(
+	templateId: string,
+	read: TemplatesRead,
+	type: NewSandboxType,
+): { readonly template?: Template; readonly pending: boolean; readonly problem?: string } {
+	if (templateId === "") return { pending: false };
+	// An isolate takes no template, but only one the user chose drops it: one picked for them keeps it, refused.
+	if (type.kind === "isolate")
+		return type.chosen
+			? { pending: false }
+			: {
+					pending: false,
+					problem:
+						"A template makes a microVM, and none of this organisation's hosts run them. Pick None or choose Isolate to make a clean isolate.",
+				};
+	if (read.status === "loading") return { pending: true };
+	if (read.status === "failed")
+		return { pending: false, problem: "Kantel couldn't read the templates. Close this and try again, or pick None." };
+	const template = read.value.find((entry) => entry.id === templateId);
+	return template === undefined
+		? { pending: false, problem: "That template isn't in this account. Pick another, or None." }
+		: { template, pending: false };
+}
+
+/** The type New sandbox makes, and whether the user chose it rather than having it picked for them. */
+export interface NewSandboxType {
+	readonly kind: SandboxKind;
+	readonly chosen: boolean;
+}
+
+/**
+ * The type New sandbox makes: the one chosen, else a microVM. Where no host runs microVMs an isolate is all that can
+ * be made, so it's an isolate, chosen only if the user chose it.
+ */
+export function newSandboxType(chosen: SandboxKind | undefined, microvms: boolean): NewSandboxType {
+	if (!microvms) return { kind: "isolate", chosen: chosen === "isolate" };
+	return { kind: chosen ?? "microvm", chosen: chosen !== undefined };
+}
+
+/** What New sandbox's form asks for. */
+export interface NewSandboxForm {
+	readonly accountId: string;
+	readonly name: string;
+	readonly kind: SandboxKind;
+	readonly shape: SandboxShape;
+	/** Whether the sliders were moved from the template's own vCPUs and memory. */
+	readonly shapeChosen: boolean;
+	readonly from: string;
+	readonly environment: string;
+	/** The template a microVM is made from, resolved by `requestedTemplate`. */
+	readonly template?: Template;
+	readonly autoStop: string;
+}
+
+/**
+ * The create New sandbox sends. A microVM from a template whose sliders weren't moved names no shape, so the
+ * template's own vCPUs and memory apply; moved, the shape overrides them, and the sandbox boots fresh (a template's
+ * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one.
+ */
+export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
+	const template = form.kind === "microvm" ? form.template : undefined;
+	return {
+		accountId: form.accountId,
+		...(form.name === "" ? {} : { name: form.name }),
+		kind: form.kind,
+		...(template !== undefined && !form.shapeChosen ? {} : { shape: form.shape }),
+		...(form.from === "" || template !== undefined ? {} : { fromSnapshot: form.from }),
+		...(form.environment === "" ? {} : { environmentId: form.environment }),
+		...(template === undefined ? {} : { templateId: template.id }),
+		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
+	};
+}
+
+/**
+ * Reads the account's templates each time New sandbox opens, and again while one builds so the picker's hint keeps up.
+ * A failed read keeps the last list, and is shown only when there's none.
+ */
+function useTemplatesRead(
+	open: boolean,
+	templates: (() => Promise<readonly Template[]>) | undefined,
+	pollMs: number,
+): TemplatesRead {
+	const [read, setRead] = useState<TemplatesRead>(
+		templates === undefined ? { status: "ready", value: [] } : { status: "loading" },
+	);
+	const [generation, setGeneration] = useState(0);
+	// The page passes a new function each render: the read follows the latest without reading again for it.
+	const latest = useRef(templates);
+	latest.current = templates;
+	const offered = templates !== undefined;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is a read again.
+	useEffect(() => {
+		const list = latest.current;
+		if (!open || list === undefined) return;
+		let live = true;
+		list().then(
+			(value) => {
+				if (live) setRead({ status: "ready", value });
+			},
+			() => {
+				// A fresh object keeps the polling going after a failed read of a list already shown.
+				if (live) setRead((current) => (current.status === "ready" ? { ...current } : { status: "failed" }));
+			},
+		);
+		return () => {
+			live = false;
+		};
+	}, [open, offered, generation]);
+	const wait = open && read.status === "ready" ? buildPollMs(read.value, pollMs) : undefined;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: each read schedules the next while a template builds.
+	useEffect(() => {
+		if (wait === undefined) return;
+		const timer = setTimeout(() => setGeneration((value) => value + 1), wait);
+		return () => clearTimeout(timer);
+	}, [wait, read]);
+	return read;
+}
+
 export function NewSandboxDialog({
 	open,
 	account,
@@ -1189,6 +1330,9 @@ export function NewSandboxDialog({
 	shapes: loadShapes,
 	savedSnapshots,
 	environments,
+	templates,
+	template: initialTemplate,
+	now,
 	onClose,
 	onCreate,
 }: {
@@ -1198,11 +1342,14 @@ export function NewSandboxDialog({
 	shapes?: () => Promise<SandboxShapes>;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
 	environments?: () => Promise<readonly Environment[]>;
+	templates?: () => Promise<readonly Template[]>;
+	template?: string;
+	now: number;
 	onClose: () => void;
 	onCreate: (input: CreateSandboxInput) => void;
 }) {
 	const [name, setName] = useState("");
-	const [kind, setKind] = useState<SandboxKind>("microvm");
+	const [chosenKind, setChosenKind] = useState<SandboxKind>();
 	const [shapes, setShapes] = useState<SandboxShapes>(DEFAULT_SANDBOX_SHAPES);
 	const [vcpus, setVcpus] = useState(DEFAULT_SANDBOX_SHAPES.microvm.vcpus.default);
 	const [memoryMb, setMemoryMb] = useState(DEFAULT_SANDBOX_SHAPES.microvm.memoryMb.default);
@@ -1215,6 +1362,10 @@ export function NewSandboxDialog({
 	// A source that says what its hosts offer: nothing may be chosen or created until it has, so a create never goes
 	// with the sample's figures. One that can't say keeps the defaults.
 	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
+	const [templateId, setTemplateId] = useState(initialTemplate ?? "");
+	const tplRead = useTemplatesRead(open, templates, TEMPLATE_POLL_MS);
+	// Whether the sliders were moved from a picked template's own vCPUs and memory.
+	const [shapeChosen, setShapeChosen] = useState(false);
 	const asked = useRef(false);
 	const readShapesNow = useCallback(() => {
 		if (loadShapes === undefined) return;
@@ -1236,8 +1387,6 @@ export function NewSandboxDialog({
 					setMemoryMb(start.memoryMb);
 				}
 				setIsolateMb(onGrid(read.isolate.memoryMb, read.isolate.memoryMb.default));
-				// No host runs microVMs: an isolate is all that can be made.
-				if (!microvmsAvailable(read)) setKind("isolate");
 				setShapesRead("ready");
 			},
 			() => setShapesRead("failed"),
@@ -1251,25 +1400,48 @@ export function NewSandboxDialog({
 		readShapesNow();
 	}, [open, savedSnapshots, environments, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
-	const fromOptions = saved.filter((entry) => entry.kind === kind);
-	const shape: SandboxShape = kind === "isolate" ? { vcpus: 0, memoryMb: isolateMb } : { vcpus, memoryMb };
-	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
 	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
-	const ready = valid && shapesRead === "ready" && shapeCreatable(shapes, kind, shape);
+	const type = newSandboxType(chosenKind, !noMicrovms);
+	const kind = type.kind;
+	const fromOptions = saved.filter((entry) => entry.kind === kind);
+	const tpls = tplRead.status === "ready" ? tplRead.value : [];
+	const requested = requestedTemplate(templateId, tplRead, type);
+	const picked = requested.template;
+	// A template's sandbox gets the template's own vCPUs and memory until a slider moves.
+	const ownShape = picked !== undefined && !shapeChosen;
+	const shape: SandboxShape =
+		kind === "isolate"
+			? { vcpus: 0, memoryMb: isolateMb }
+			: ownShape
+				? { vcpus: picked.spec.vcpus, memoryMb: picked.spec.memoryMb }
+				: { vcpus, memoryMb };
+	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
+	const ready =
+		valid &&
+		shapesRead === "ready" &&
+		(ownShape || shapeCreatable(shapes, kind, shape)) &&
+		!requested.pending &&
+		requested.problem === undefined;
 	const submit = () => {
 		if (!ready) return;
-		onCreate({
-			accountId: account.id,
-			...(name === "" ? {} : { name }),
-			kind,
-			shape,
-			...(from === "" ? {} : { fromSnapshot: from }),
-			...(environment === "" ? {} : { environmentId: environment }),
-			...(autoStop === "never" ? {} : { autoStopMinutes: Number(autoStop) }),
-		});
+		onCreate(
+			newSandboxInput({
+				accountId: account.id,
+				name,
+				kind,
+				shape,
+				shapeChosen,
+				from,
+				environment,
+				...(picked === undefined ? {} : { template: picked }),
+				autoStop,
+			}),
+		);
 		setName("");
 		setFrom("");
 		setEnvironment("");
+		setTemplateId("");
+		setShapeChosen(false);
 	};
 	return (
 		<Dialog
@@ -1280,7 +1452,7 @@ export function NewSandboxDialog({
 			actions={
 				<>
 					<Button onClick={onClose}>Cancel</Button>
-					<Button type="submit" variant="primary" disabled={!ready}>
+					<Button type="submit" variant="primary" busy={requested.pending} disabled={!ready}>
 						Create
 					</Button>
 				</>
@@ -1304,7 +1476,7 @@ export function NewSandboxDialog({
 							{ value: "isolate", label: "Isolate" },
 						]}
 						value={kind}
-						onChange={setKind}
+						onChange={setChosenKind}
 					/>
 					<span className="text-xs text-muted">
 						{noMicrovms
@@ -1314,6 +1486,36 @@ export function NewSandboxDialog({
 								: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
 					</span>
 				</div>
+				{/* A requested template stays in view when an isolate was picked for the user, refused until they choose. */}
+				{(kind === "microvm" ? tpls.length > 0 || templateId !== "" : templateId !== "" && !type.chosen) ? (
+					<SelectField
+						label="Template"
+						value={templateId}
+						onChange={(event) => {
+							setTemplateId(event.currentTarget.value);
+							setShapeChosen(false);
+						}}
+						hint={
+							picked !== undefined
+								? templatePickHint(picked, now)
+								: requested.pending
+									? "Reading the templates."
+									: "Experimental."
+						}
+						{...(requested.problem === undefined ? {} : { error: requested.problem })}
+						options={[
+							{ value: "", label: "None: Kantel's base image" },
+							// The one asked for, until the list has it: it stays picked rather than becoming None.
+							...(templateId === "" || tpls.some((entry) => entry.id === templateId)
+								? []
+								: [{ value: templateId, label: templateId }]),
+							...tpls.map((entry) => ({
+								value: entry.id,
+								label: `${entry.name} (v${entry.version}, ${resourcesText(entry.spec)})`,
+							})),
+						]}
+					/>
+				) : null}
 				{shapesRead === "reading" ? (
 					<p className="text-xs text-muted" role="status">
 						Reading what the hosts offer…
@@ -1336,11 +1538,22 @@ export function NewSandboxDialog({
 						hosting={hosting}
 						shape={shape}
 						onVcpus={(next) => {
+							// From what the sliders show: a picked template's own shape until one moves.
+							setShapeChosen(true);
 							setVcpus(next);
-							setMemoryMb((current) => fitMemory(shapes, next, current));
+							setMemoryMb(fitMemory(shapes, next, shape.memoryMb));
 						}}
-						onMemory={(next) => (kind === "isolate" ? setIsolateMb(next) : setMemoryMb(next))}
+						onMemory={(next) => {
+							if (kind === "isolate") {
+								setIsolateMb(next);
+								return;
+							}
+							setShapeChosen(true);
+							setVcpus(shape.vcpus);
+							setMemoryMb(next);
+						}}
 						onPreset={(next) => {
+							setShapeChosen(true);
 							setVcpus(next.vcpus);
 							setMemoryMb(next.memoryMb);
 						}}
@@ -1360,7 +1573,7 @@ export function NewSandboxDialog({
 					onChange={(event) => setAutoStop(event.currentTarget.value)}
 					options={AUTO_STOP_CHOICES}
 				/>
-				{savedSnapshots === undefined ? null : (
+				{savedSnapshots === undefined || picked !== undefined ? null : (
 					<SelectField
 						label="Start from"
 						value={from}

@@ -325,6 +325,13 @@ export interface Sandbox {
 	readonly mounts?: readonly SandboxMount[];
 	/** What a microVM's image has, as its guest agent found it; absent until one has said (an older host or image). */
 	readonly image?: SandboxImage;
+	/** The template it was made from, and whether it started from the template's snapshot or booted fresh. */
+	readonly template?: {
+		readonly id: string;
+		readonly name: string;
+		readonly version: number;
+		readonly start: "snapshot" | "boot";
+	};
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -400,7 +407,7 @@ export interface BaseImage {
 }
 
 /** A template, a base image with a setup on top, and how far its base is behind. */
-export interface TemplateBase {
+export interface BaseImageTemplate {
 	readonly id: string;
 	readonly name: string;
 	/** The base image it's built on. */
@@ -417,7 +424,7 @@ export interface TemplateBase {
 /** The deployment's base images and templates, as its image index says. */
 export interface BaseImagesOverview {
 	readonly images: readonly BaseImage[];
-	readonly templates: readonly TemplateBase[];
+	readonly templates: readonly BaseImageTemplate[];
 	/** Where the image index is. */
 	readonly indexUrl: string;
 	/** When the index was made. */
@@ -562,6 +569,8 @@ export interface CreateSandboxInput {
 	readonly autoStopMinutes?: number;
 	/** The environment it starts with. */
 	readonly environmentId?: string;
+	/** The template it is made from (experimental): its newest built snapshot, or a fresh boot of its image. */
+	readonly templateId?: string;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -1193,6 +1202,171 @@ export interface EnvironmentsSource {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Templates (experimental)
+
+/** What a template's machines boot: Kantel's base image, customised by the setup script. */
+export type TemplateImage = { readonly kind: "kantel-base" };
+
+/**
+ * The Kantel base image it boots, as the deployment publishes it: a channel it follows (rebuilt when it publishes), or
+ * an exact digest, one of that image's channels published, it is pinned to.
+ */
+export type TemplateBase =
+	| { readonly image: string; readonly channel: string; readonly digest?: undefined }
+	| { readonly image: string; readonly digest: string; readonly channel?: undefined };
+
+/** One digest a base channel published. */
+export interface TemplateBaseRelease {
+	readonly digest: string;
+	readonly publishedAt: number;
+}
+
+/** A base image's channel, as the deployment's super-admin published it, and the digests it has published. */
+export interface TemplateBaseChannel {
+	/** Such as `kantel/sandbox`. */
+	readonly image: string;
+	/** Such as `stable`. */
+	readonly channel: string;
+	/** The digest it publishes now. */
+	readonly digest: string;
+	readonly publishedAt: number;
+	/** Every digest it has published, newest first. */
+	readonly history: readonly TemplateBaseRelease[];
+}
+
+/** A template version's definition. Never changed once made: a new one is the next version. */
+export interface TemplateSpec {
+	readonly image: TemplateImage;
+	readonly base: TemplateBase;
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	/** Plain variables, not secrets. */
+	readonly env: Readonly<Record<string, string>>;
+	/** A shell script run once as root when the snapshot is built, or at a fresh boot. */
+	readonly setup?: string;
+	/** Egress grants for its sandboxes and its build. */
+	readonly grants: readonly EgressGrant[];
+}
+
+/**
+ * A built template's state. `stale`: built for a key no longer wanted (an older version, base, kernel or Firecracker),
+ * still used until its replacement is ready. `discarded`: thrown away.
+ */
+export type TemplateSnapshotState = "queued" | "building" | "ready" | "stale" | "failed" | "discarded";
+
+/** One entry in a template's snapshot cache: its image booted once, its setup run, then snapshotted. */
+export interface TemplateSnapshot {
+	readonly id: string;
+	readonly version: number;
+	readonly state: TemplateSnapshotState;
+	/** What it is for: a change to any part builds another. */
+	readonly key: {
+		readonly templateVersion: string;
+		readonly baseDigest: string;
+		readonly kernel: string;
+		readonly firecracker: string;
+		readonly vcpus: number;
+	};
+	readonly keyHash: string;
+	/** The host that built it and holds it. */
+	readonly hostId?: string;
+	readonly builtFrom: {
+		readonly baseImage: string;
+		readonly channel?: string;
+		readonly baseDigest: string;
+		readonly pinned: boolean;
+		readonly imageDigest?: string;
+	};
+	readonly startedAt: number;
+	readonly readyAt?: number;
+	readonly error?: string;
+	readonly sizeBytes?: number;
+}
+
+/** A template's build: its newest usable snapshot, and the build under way. */
+export interface TemplateBuild {
+	/**
+	 * `none`: nothing built yet, sandboxes boot fresh. `stale`: what is built is for an older key, used until rebuilt if
+	 * it's of the template's current version (`startingSnapshot`).
+	 */
+	readonly state: "none" | "building" | "ready" | "stale" | "failed";
+	/** The newest ready (or stale) snapshot, of any version: new sandboxes start from it only per `startingSnapshot`. */
+	readonly ready?: TemplateSnapshot;
+	readonly building?: TemplateSnapshot;
+	readonly error?: string;
+	/** How far a pinned base is behind its channel. */
+	readonly behind?: { readonly releases: number; readonly since: number; readonly latestDigest: string };
+}
+
+/** A microVM profile: image, base, resources, variables, setup and egress, versioned. */
+export interface Template {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly version: number;
+	readonly spec: TemplateSpec;
+	readonly build: TemplateBuild;
+	readonly sandboxCount: number;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+}
+
+/**
+ * Whether a template's new sandboxes, at its own vCPUs and memory, may start from a cache entry: a ready one, or a stale
+ * one still used until its replacement is ready, of the template's current version. Kantel restores no other, so one
+ * of an older version stays in the cache but starts nothing.
+ */
+export function startsNewSandboxes(template: Pick<Template, "version">, entry: TemplateSnapshot): boolean {
+	return (entry.state === "ready" || entry.state === "stale") && entry.version === template.version;
+}
+
+/**
+ * The snapshot a template's new sandboxes start from: its build's ready (or stale) one when `startsNewSandboxes`, else
+ * none, and they boot the image fresh and run its setup.
+ */
+export function startingSnapshot(template: Pick<Template, "version" | "build">): TemplateSnapshot | undefined {
+	const ready = template.build.ready;
+	return ready !== undefined && startsNewSandboxes(template, ready) ? ready : undefined;
+}
+
+export interface TemplateVersion {
+	readonly version: number;
+	readonly spec: TemplateSpec;
+	readonly createdAt: number;
+	/** Who made it: a person's name, or an API key's. */
+	readonly by?: string;
+}
+
+/** A change to a template: only what's given changes. An empty description clears it. */
+export interface TemplateChange {
+	readonly name?: string;
+	readonly description?: string;
+	readonly spec?: TemplateSpec;
+}
+
+export interface TemplatesSource {
+	list(accountId: string): Promise<readonly Template[]>;
+	get(id: string): Promise<Template>;
+	create(input: { accountId: string; name: string; description?: string; spec: TemplateSpec }): Promise<Template>;
+	/** A `spec` that differs from the current one makes the next version, which builds in the background. */
+	update(id: string, change: TemplateChange): Promise<Template>;
+	/** Deletes it, its versions and its built snapshots. Sandboxes made from it keep running. */
+	remove(id: string): Promise<void>;
+	/** Newest first. */
+	versions(id: string): Promise<readonly TemplateVersion[]>;
+	/** Its snapshot cache, newest first. */
+	snapshots(id: string): Promise<readonly TemplateSnapshot[]>;
+	/** The base images' channels templates may follow or pin a digest from. */
+	bases(): Promise<readonly TemplateBaseChannel[]>;
+	/**
+	 * Builds its snapshot again. A ready one of its current version goes on serving, stale, until the rebuild's is ready,
+	 * and after a rebuild that failed; with none, sandboxes boot fresh until it's ready.
+	 */
+	rebuild(id: string): Promise<Template>;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // A sandbox's egress
 
 /** One request or connection a sandbox made through its host's egress proxy. Never a credential's value. */
@@ -1507,6 +1681,8 @@ export interface ComputeSource {
 	readonly keys: ApiKeysSource;
 	readonly proxy: ProxySource;
 	readonly environments: EnvironmentsSource;
+	/** Templates: only where the deployment has turned them on (experimental, `KANTEL_TEMPLATES`). */
+	readonly templates?: TemplatesSource;
 	readonly egress: EgressSource;
 	readonly webhooks: WebhooksSource;
 	readonly telemetry: TelemetrySource;

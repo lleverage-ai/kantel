@@ -3,9 +3,10 @@
  * sandbox's host over its WebSocket. The compute API keeps every record; this keeps only placements (the registry's).
  *
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
- * it goes on that host. Desktops, browsers and SSH are reached through tunnel URLs with tickets (`tunnel.ts`): the
- * desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced there when the ticket says so, Chromium's
- * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
+ * it goes on that host. A template snapshot's `ref` is the same, and a sandbox made from it goes on its host too, or
+ * boots the template fresh elsewhere when that host is full. Desktops, browsers and SSH are reached through tunnel URLs
+ * with tickets (`tunnel.ts`): the desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced
+ * there when the ticket says so, Chromium's DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
  *
  * Mounts go to a host with every create, start, resume, fork and recover, but only those its features say it can do
@@ -21,12 +22,15 @@ import type {
 	BackendMount,
 	BackendSize,
 	BootOptions,
+	BuiltTemplate,
 	ExecResult,
 	FileStream,
 	Placement,
 	SandboxBackend,
 	SandboxSpec,
+	SandboxTemplateBoot,
 	TakenSnapshot,
+	TemplateRuntime,
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
@@ -44,9 +48,16 @@ import {
 	HostMethods,
 	type HostMount,
 	type HostSandbox,
+	type HostTemplateBoot,
 	type SandboxTier,
 } from "./protocol.ts";
-import { type HostsService, kantelErrorFromHost, mountHandoff, type SandboxPlacement } from "./service.ts";
+import {
+	type CreateSandboxInput,
+	type HostsService,
+	kantelErrorFromHost,
+	mountHandoff,
+	type SandboxPlacement,
+} from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { DESKTOP_PORT } from "./desktop.ts";
@@ -165,6 +176,29 @@ function parseRef(ref: string): { hostId: string; snapshotId: string } {
 		throw new KantelError("not_found", "No such snapshot");
 	}
 	return { hostId, snapshotId: id };
+}
+
+/** A template's base image as a host takes it: its name, and its digest unless there is none (the host's own image). */
+function hostTemplateBase(baseImage: string, baseDigest: string): Pick<HostTemplateBoot, "baseImage" | "baseDigest"> {
+	return {
+		baseImage,
+		...(baseDigest === "" ? {} : { baseDigest }),
+	};
+}
+
+/**
+ * A sandbox's template boot as the registry takes it, restoring `snapshotId` (on that host) when there is one, as the
+ * create's size or shape.
+ */
+function hostTemplateBoot(
+	template: SandboxTemplateBoot,
+	snapshotId: string | undefined,
+): NonNullable<CreateSandboxInput["template"]> {
+	return {
+		...hostTemplateBase(template.baseImage, template.baseDigest),
+		...(template.setup === undefined ? {} : { setup: template.setup }),
+		...(snapshotId === undefined ? {} : { snapshot: snapshotId }),
+	};
 }
 
 const fromBase64 = (data: string) => Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
@@ -408,24 +442,52 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return `${wsBase}${HOSTS_TUNNEL_PATH}/${await ticketFor(sandboxId, port, ttlMinutes, grantee)}`;
 	}
 
+	/**
+	 * Places and makes one sandbox. A snapshot, the sandbox's or its template's, is on one host's disk: the sandbox goes
+	 * there. A template snapshot only speeds a create up, so when its host has no room (`exhausted`) the template boots
+	 * fresh on another eligible host instead (`bootedFresh`); a sandbox's own snapshot has nowhere else to go.
+	 */
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
-		if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
+		const templateFrom = spec.template?.snapshot === undefined ? undefined : parseRef(spec.template.snapshot);
+		const pinned = from ?? templateFrom;
+		if (pinned !== undefined) mayUse(pinned.hostId, spec.eligibleHosts);
 		const mounts = mountsOf(spec.mounts);
 		// The service sends the mounts the host it chooses can do, and answers each one's status.
-		const { sandbox, hostId, ...known } = await hosts.sandboxes.create({
-			sandboxId: spec.sandboxId,
-			tier: spec.type,
-			...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
-			// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a custom shape.
-			...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
-			owner: spec.accountId,
-			env: spec.env,
-			hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
-			...(from === undefined ? {} : { from: from.snapshotId }),
-			...egressOf(spec.egress),
-			...(mounts === undefined ? {} : { mounts }),
-		});
+		const create = (hostIds: readonly string[], templateSnapshot: string | undefined) =>
+			hosts.sandboxes.create({
+				sandboxId: spec.sandboxId,
+				tier: spec.type,
+				...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+				// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
+				// custom shape; a template's snapshot is restored only where it was built as that shape.
+				...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
+				owner: spec.accountId,
+				env: spec.env,
+				hostIds,
+				...(from === undefined ? {} : { from: from.snapshotId }),
+				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
+				...egressOf(spec.egress),
+				...(mounts === undefined ? {} : { mounts }),
+			});
+		if (templateFrom !== undefined) {
+			const elsewhere = spec.eligibleHosts.filter((hostId) => hostId !== templateFrom.hostId);
+			try {
+				const { sandbox, hostId, ...known } = await create([templateFrom.hostId], templateFrom.snapshotId);
+				const placement = await placed(spec.sandboxId, sandbox, hostId, known);
+				// Its host couldn't restore the snapshot (gone, broken, made for another machine) and booted the template
+				// fresh, running its setup.
+				return sandbox.source === "boot" ? { ...placement, bootedFresh: true } : placement;
+			} catch (error) {
+				if (!isKantelError(error, "exhausted") || elsewhere.length === 0) throw error;
+			}
+			const { sandbox, hostId, ...known } = await create(elsewhere, undefined);
+			return { ...(await placed(spec.sandboxId, sandbox, hostId, known)), bootedFresh: true };
+		}
+		const { sandbox, hostId, ...known } = await create(
+			pinned === undefined ? spec.eligibleHosts : [pinned.hostId],
+			undefined,
+		);
 		return placed(spec.sandboxId, sandbox, hostId, known);
 	}
 
@@ -798,6 +860,38 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async deleteSnapshot(ref) {
 			const { hostId, snapshotId: id } = parseRef(ref);
 			await hosts.hub.call(hostId, "snapshot.delete", { snapshotId: id });
+		},
+		async templateRuntimes(): Promise<TemplateRuntime[]> {
+			return (await hosts.templates.runtimes()).map((runtime) => ({
+				hostId: runtime.hostId,
+				kernel: runtime.guestKernel ?? "unknown",
+				firecracker: runtime.firecracker ?? "unknown",
+			}));
+		},
+		async buildTemplate(spec): Promise<BuiltTemplate> {
+			const built = await hosts.templates.build(spec.hostId, {
+				snapshotId: spec.snapshotId,
+				...hostTemplateBase(spec.baseImage, spec.baseDigest),
+				...(spec.setup === undefined ? {} : { setup: spec.setup }),
+				env: { ...spec.env },
+				vcpus: spec.shape.vcpus,
+				memoryMiB: spec.shape.memoryMb,
+				keyHash: spec.keyHash,
+				owner: spec.accountId,
+				...egressOf(spec.egress),
+			});
+			return {
+				ref: `${spec.hostId}/${built.ref}`,
+				hostId: spec.hostId,
+				...(built.imageDigest === undefined ? {} : { imageDigest: built.imageDigest }),
+				sizeBytes: built.sizeBytes,
+			};
+		},
+		async deleteTemplateSnapshot(bytes) {
+			// A host names a template snapshot's bytes by its ID, which its ref is too.
+			const { hostId, snapshotId: id } =
+				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : parseRef(bytes.ref);
+			await hosts.templates.delete(hostId, id);
 		},
 		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee }) {
 			const { tier } = await tierOf(sandboxId);

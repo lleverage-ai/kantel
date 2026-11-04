@@ -67,6 +67,8 @@ export interface ComputeApiOptions {
 	readonly hostJoinCommand?: string;
 	/** Account hosts' routes (`/v1/hosts`, experimental): accounts add hosts of their own. Default off. */
 	readonly accountHosts?: boolean;
+	/** Templates' routes (`/v1/templates`, experimental): versioned microVM profiles and their snapshots. Default off. */
+	readonly templates?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
@@ -149,6 +151,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.mode === undefined ? {} : { mode: options.mode }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
 		...(options.accountHosts === undefined ? {} : { accountHosts: options.accountHosts }),
+		...(options.templates === undefined ? {} : { templates: options.templates }),
 		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),

@@ -92,7 +92,7 @@ export interface ApiKeyList {
 /** A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`. */
 export type ApiKeyPreset = "read-only" | "agent" | "ci" | "admin";
 
-/** What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only. */
+/** What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments, templates and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments, templates and sandboxes' grants. `hosts:admin`: the deployment's hosts and template bases, for a super-admin's key only. */
 export type ApiKeyScope =
 	| "sandboxes:read"
 	| "sandboxes:write"
@@ -511,6 +511,8 @@ export interface CreateSandboxBody {
 	};
 	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. */
 	readonly environment?: string;
+	/** Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. */
+	readonly template?: string;
 	/** Place it only on a host with each label, such as `{ site: "home" }`. */
 	readonly hostLabels?: {
 		readonly [key: string]: string;
@@ -519,6 +521,16 @@ export interface CreateSandboxBody {
 	readonly mounts?: readonly Mount[];
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
+}
+
+export interface CreateTemplateBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** Unique in the account: lower-case letters, digits and dashes, at most 63. */
+	readonly name: string;
+	readonly description?: string;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec: TemplateSpec;
 }
 
 export interface CreateWebhookBody {
@@ -1138,6 +1150,13 @@ export interface ListSnapshotsQuery {
 	readonly cursor?: string;
 }
 
+export interface ListTemplatesQuery {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** Only those with a snapshot built from this base digest, or pinned to it. */
+	readonly baseDigest?: string;
+}
+
 export interface Member {
 	readonly userId: string;
 	readonly name: string;
@@ -1243,6 +1262,15 @@ export interface PublicUrl {
 	readonly deploymentUrl: string;
 	/** `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. */
 	readonly loopback: boolean;
+}
+
+export interface PublishTemplateBaseBody {
+	/** The base image, such as `kantel/sandbox`. */
+	readonly image: string;
+	/** A channel, such as `stable`. */
+	readonly channel: string;
+	/** The digest the channel publishes from now. */
+	readonly digest: string;
 }
 
 export interface PutEgressGrantsBody {
@@ -1360,6 +1388,8 @@ export interface Sandbox {
 	readonly source?: SandboxSource;
 	/** The environment it was made from. */
 	readonly environmentId?: string;
+	/** The template a sandbox was made from. */
+	readonly template?: SandboxTemplate;
 	/** Its own egress grants, on top of its environment's. */
 	readonly grants: readonly EgressGrant[];
 	/** Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
@@ -1533,6 +1563,19 @@ export type SandboxState =
 	| "deleting"
 	| "deleted";
 
+/** The template a sandbox was made from. */
+export interface SandboxTemplate {
+	/** The template's ID, `tpl_…`. */
+	readonly id: string;
+	readonly name: string;
+	/** The template's version it was made from. */
+	readonly version: number;
+	/** The template snapshot it started from, `tsn_…`; absent for a fresh boot. */
+	readonly snapshotId?: string;
+	/** `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself. */
+	readonly start: "snapshot" | "boot";
+}
+
 /** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 export type SandboxType = "isolate" | "microvm";
 
@@ -1653,6 +1696,9 @@ export interface Snapshot {
 	readonly trigger?: "periodic" | "stop" | "manual" | "save";
 	/** Whether it holds the sandbox's memory as well as its disk (a pause). */
 	readonly memory: boolean;
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	readonly size?: SandboxSizeName;
+	readonly resources?: SandboxResources;
 	readonly sizeBytes?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -1757,6 +1803,203 @@ export interface TelemetryTestResult {
 	readonly error?: string;
 }
 
+/** A microVM profile: image, base, resources, variables, setup and egress, versioned. */
+export interface Template {
+	/** The template's ID, such as `tpl_4kq9x2mt`. */
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	/** Its current version; a new spec makes the next. */
+	readonly version: number;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec: TemplateSpec;
+	readonly build: TemplateBuildStatus;
+	/** How many sandboxes were made from it and still exist. */
+	readonly sandboxCount: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+	readonly createdBy: CreatedBy;
+}
+
+/** The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image. */
+export type TemplateBase = TemplateBaseChannelRef | TemplateBasePinned;
+
+/** A base image's channel and the digests it has published. */
+export interface TemplateBaseChannel {
+	readonly image: string;
+	readonly channel: string;
+	/** The digest it publishes now. */
+	readonly digest: string;
+	/** Epoch milliseconds, UTC. */
+	readonly publishedAt: number;
+	/** Every digest it has published, newest first. */
+	readonly history: readonly TemplateBaseRelease[];
+}
+
+/** Follow a channel: rebuilt when it publishes a new digest. */
+export interface TemplateBaseChannelRef {
+	/** The base image, such as `kantel/sandbox`. */
+	readonly image: string;
+	/** A channel, such as `stable`. */
+	readonly channel: string;
+}
+
+export interface TemplateBaseList {
+	readonly items: readonly TemplateBaseChannel[];
+}
+
+/** Pin an exact digest, one its channels published: never rebuilt for a new release. */
+export interface TemplateBasePinned {
+	/** The base image, such as `kantel/sandbox`. */
+	readonly image: string;
+	/** The digest pinned. */
+	readonly digest: string;
+}
+
+export interface TemplateBaseRelease {
+	readonly digest: string;
+	/** Epoch milliseconds, UTC. */
+	readonly publishedAt: number;
+}
+
+/** How far a pinned base is behind its channel. */
+export interface TemplateBehind {
+	/** How many digests the base's channel has published since the pinned one. */
+	readonly releases: number;
+	/** Epoch milliseconds, UTC. */
+	readonly since: number;
+	readonly latestDigest: string;
+}
+
+export interface TemplateBuildStatus {
+	/** `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. */
+	readonly state: "none" | "building" | "ready" | "stale" | "failed";
+	/** A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots. */
+	readonly ready?: TemplateSnapshot;
+	/** A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots. */
+	readonly building?: TemplateSnapshot;
+	readonly error?: string;
+	/** How far a pinned base is behind its channel. */
+	readonly behind?: TemplateBehind;
+}
+
+/** What a template snapshot was built from. */
+export interface TemplateBuiltFrom {
+	readonly baseImage: string;
+	/** The channel it followed; absent when pinned. */
+	readonly channel?: string;
+	/** Empty while the channel has no published digest. */
+	readonly baseDigest: string;
+	readonly pinned: boolean;
+	/** The digest of the image its host booted, as the host reported it. */
+	readonly imageDigest?: string;
+	readonly kernel: string;
+	readonly firecracker: string;
+}
+
+/** What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory. */
+export interface TemplateCacheKey {
+	/** `<templateId>@<version>`. */
+	readonly templateVersion: string;
+	readonly baseDigest: string;
+	readonly kernel: string;
+	readonly firecracker: string;
+	readonly vcpus: number;
+	/** With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. */
+	readonly memoryMb: number;
+}
+
+/** What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`. */
+export type TemplateImage = TemplateKantelBaseImage;
+
+/** The template's `base` itself, as its deployment publishes it; the setup script adds the rest. */
+export interface TemplateKantelBaseImage {
+	readonly kind: "kantel-base";
+}
+
+export interface TemplateList {
+	readonly items: readonly Template[];
+}
+
+/** Egress grants for its sandboxes and for its build's boot. */
+export interface TemplateNetwork {
+	readonly grants: readonly EgressGrantInput[];
+}
+
+/** Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB. */
+export interface TemplateResources {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+}
+
+/** A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots. */
+export interface TemplateSnapshot {
+	/** The template snapshot's ID, `tsn_…`. */
+	readonly id: string;
+	readonly templateId: string;
+	readonly version: number;
+	/** What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory. */
+	readonly key: TemplateCacheKey;
+	/** The SHA-256 hex of the key's canonical JSON. */
+	readonly keyHash: string;
+	/** `stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away. */
+	readonly state: TemplateSnapshotState;
+	/** The host it was built on, which holds it. */
+	readonly hostId?: string;
+	/** What a template snapshot was built from. */
+	readonly builtFrom: TemplateBuiltFrom;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly readyAt?: number;
+	/** Why the build failed. */
+	readonly error?: string;
+	readonly sizeBytes?: number;
+}
+
+export interface TemplateSnapshotList {
+	/** Newest first. */
+	readonly items: readonly TemplateSnapshot[];
+}
+
+/** `stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away. */
+export type TemplateSnapshotState = "queued" | "building" | "ready" | "stale" | "failed" | "discarded";
+
+/** A template version's definition, never changed once made. Answered with every default filled in. */
+export interface TemplateSpec {
+	/** What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`. */
+	readonly image?: TemplateImage;
+	/** The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image. */
+	readonly base?: TemplateBase;
+	/** Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB. */
+	readonly resources?: TemplateResources;
+	/** Plain variables, not secrets: under the environment's and the create's own. */
+	readonly env?: {
+		readonly [key: string]: string;
+	};
+	/** A shell script run once, as root, when the snapshot is built (or at a fresh boot). */
+	readonly setup?: string;
+	/** Egress grants for its sandboxes and for its build's boot. */
+	readonly network?: TemplateNetwork;
+}
+
+export interface TemplateVersion {
+	readonly version: number;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec: TemplateSpec;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	readonly createdBy: CreatedBy;
+}
+
+export interface TemplateVersionList {
+	/** Newest first. */
+	readonly items: readonly TemplateVersion[];
+}
+
 export interface UpdateAccountBody {
 	readonly name?: string;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
@@ -1794,6 +2037,15 @@ export interface UpdateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+}
+
+/** A `spec` that differs from the current one makes a new version. */
+export interface UpdateTemplateBody {
+	readonly name?: string;
+	/** Empty clears it. */
+	readonly description?: string;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec?: TemplateSpec;
 }
 
 export interface UpdateWebhookBody {
@@ -2344,6 +2596,26 @@ export interface KantelClient {
 	getSandboxEgress(sandboxId: string, query?: SandboxEgressQuery, options?: CallOptions): Promise<SandboxEgress>;
 	/** Set a sandbox's egress grants. Replaces its own grants, on top of its environment's. A running sandbox picks them up at once. A key needs `account:admin`. `PUT /sandboxes/{sandboxId}/grants` */
 	putSandboxGrants(sandboxId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<SandboxEgress>;
+	/** List templates. The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates` */
+	listTemplates(query?: ListTemplatesQuery, options?: CallOptions): Promise<TemplateList>;
+	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates` */
+	createTemplate(body: CreateTemplateBody, options?: CallOptions): Promise<Template>;
+	/** Get a template. With its build, and how far behind a pinned base is. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}` */
+	getTemplate(templateId: string, options?: CallOptions): Promise<Template>;
+	/** Change a template. Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `PATCH /templates/{templateId}` */
+	updateTemplate(templateId: string, body?: UpdateTemplateBody, options?: CallOptions): Promise<Template>;
+	/** Delete a template. Deletes it, its versions and its built snapshots. Sandboxes made from it keep running. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `DELETE /templates/{templateId}` */
+	deleteTemplate(templateId: string, options?: CallOptions): Promise<void>;
+	/** List a template's versions. Newest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}/versions` */
+	listTemplateVersions(templateId: string, options?: CallOptions): Promise<TemplateVersionList>;
+	/** List a template's snapshots. Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}/snapshots` */
+	listTemplateSnapshots(templateId: string, options?: CallOptions): Promise<TemplateSnapshotList>;
+	/** Rebuild a template. Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates/{templateId}/rebuild` */
+	rebuildTemplate(templateId: string, options?: CallOptions): Promise<Template>;
+	/** List base images' channels. Every base channel templates may follow, with the digests it has published. Any signed-in caller. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /template-bases` */
+	listTemplateBases(options?: CallOptions): Promise<TemplateBaseList>;
+	/** Publish a base image's digest. Makes `digest` the channel's current one, made if it is new. Every template following the channel rebuilds in the background; pinned ones don't, and say how far behind they are. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /template-bases` */
+	publishTemplateBase(body: PublishTemplateBaseBody, options?: CallOptions): Promise<TemplateBaseChannel>;
 	/** List events. The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`. `GET /events` */
 	listEvents(query?: ListEventsQuery, options?: CallOptions): Promise<EventPage>;
 	/** List webhooks. A key needs `account:admin`. `GET /webhooks` */
@@ -2698,6 +2970,23 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/egress`, query }, callOptions),
 		putSandboxGrants: (sandboxId, body, callOptions) =>
 			send(options, { method: "PUT", path: `/sandboxes/${encodeURIComponent(sandboxId)}/grants`, body }, callOptions),
+		listTemplates: (query, callOptions) => send(options, { method: "GET", path: "/templates", query }, callOptions),
+		createTemplate: (body, callOptions) => send(options, { method: "POST", path: "/templates", body }, callOptions),
+		getTemplate: (templateId, callOptions) =>
+			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}` }, callOptions),
+		updateTemplate: (templateId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/templates/${encodeURIComponent(templateId)}`, body }, callOptions),
+		deleteTemplate: (templateId, callOptions) =>
+			send(options, { method: "DELETE", path: `/templates/${encodeURIComponent(templateId)}` }, callOptions),
+		listTemplateVersions: (templateId, callOptions) =>
+			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}/versions` }, callOptions),
+		listTemplateSnapshots: (templateId, callOptions) =>
+			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}/snapshots` }, callOptions),
+		rebuildTemplate: (templateId, callOptions) =>
+			send(options, { method: "POST", path: `/templates/${encodeURIComponent(templateId)}/rebuild` }, callOptions),
+		listTemplateBases: (callOptions) => send(options, { method: "GET", path: "/template-bases" }, callOptions),
+		publishTemplateBase: (body, callOptions) =>
+			send(options, { method: "POST", path: "/template-bases", body }, callOptions),
 		listEvents: (query, callOptions) => send(options, { method: "GET", path: "/events", query }, callOptions),
 		listWebhooks: (query, callOptions) => send(options, { method: "GET", path: "/webhooks", query }, callOptions),
 		createWebhook: (body, callOptions) => send(options, { method: "POST", path: "/webhooks", body }, callOptions),

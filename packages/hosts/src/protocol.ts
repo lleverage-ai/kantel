@@ -75,6 +75,13 @@ export interface HostFacts {
 	 * merely accept, is gated on one: a host that predates it would ignore the field and report success.
 	 */
 	readonly features?: readonly string[];
+	/**
+	 * The microVM tier's Firecracker (`v1.17.0`) and guest kernel (its version and a SHA-256 prefix of the file,
+	 * `6.1.102+0123456789ab`): a template snapshot restores only onto the same two. Absent on a host without the tier, or
+	 * one from before templates.
+	 */
+	readonly firecracker?: string;
+	readonly guestKernel?: string;
 	/** What the host boots new sandboxes on, and its image settings; present with `image-patching`. */
 	readonly images?: HostImages;
 }
@@ -144,6 +151,13 @@ export const HOST_FEATURES = {
 	 * running a command in it, which it still does for a host without it.
 	 */
 	usage: "usage",
+	/**
+	 * Templates: `template.build` and `template.delete`, and `sandbox.create`'s `template` (a template snapshot restored,
+	 * or the template's base image booted fresh with its setup run). Reported only by a host that can make a template's
+	 * root filesystem from an image (Docker there, which pulls and exports it). A host without it is never sent a template: one that predates them would drop `template` and boot the
+	 * default image as if it had made the sandbox from it.
+	 */
+	templates: "template-build",
 } as const;
 
 /**
@@ -240,6 +254,11 @@ export interface HostCapacity {
 	readonly running: number;
 	readonly stopped: number;
 	readonly load1: number;
+	/**
+	 * The template builds (their snapshot IDs) the host has admitted and not yet ended, whose machines' memory and disk
+	 * `freeMemoryMiB` and `freeDiskGiB` already leave out. Absent from a host from before it named them.
+	 */
+	readonly builds?: readonly string[];
 }
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";
@@ -584,12 +603,69 @@ export const HostMethods = {
 	 * sandbox is on that host and mounts that bucket source.
 	 */
 	bucketFetch: "bucket.fetch",
+	/** Builds a template snapshot: `HostTemplateBuild`, answered with `HostTemplateBuilt`. */
+	templateBuild: "template.build",
+	/** Deletes a template snapshot's directory, `{ snapshotId }`, and nothing else. Result `{ ok: true }`. */
+	templateDelete: "template.delete",
 } as const;
 
 /** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */
 export const HOST_EVENT_MOUNTS = "sandbox.mounts";
 
 export type HostMethod = (typeof HostMethods)[keyof typeof HostMethods];
+
+/**
+ * A template's image: a Kantel base image, which the host pulls by digest from its operator's registry
+ * (`templateRegistry`), never building one.
+ */
+interface HostTemplateBase {
+	/** The base image's name, such as `kantel/sandbox`: a repository path, with no registry, tag or digest. */
+	readonly baseImage: string;
+	/** Absent while the default base's channel has no published digest: the host's own sandbox image. */
+	readonly baseDigest?: string;
+}
+
+/** How a sandbox made from a template boots, on `sandbox.create` (microVMs only). */
+export interface HostTemplateBoot extends HostTemplateBase {
+	/** The image's root filesystem on the host (`images/templates/<key>.ext4`); absent, the host works it out. */
+	readonly rootfsKey?: string;
+	/** Run as root in a sandbox booted fresh (no `snapshot`), once it has its identity. */
+	readonly setup?: string;
+	/**
+	 * A template snapshot on that host (`template.build`'s `ref`) to restore, only when it was built with the create's
+	 * vCPUs and memory (its `size`'s, or its custom shape's); absent, or built as another machine, the image boots fresh.
+	 */
+	readonly snapshot?: string;
+}
+
+/**
+ * `template.build`: the base image booted once, its setup run as root, snapshotted as `snapshotId`. The host admits it
+ * against its memory budget and free disk, refusing it (`capacity`) while its sandboxes and other builds leave too
+ * little, and counts it in its reports' free memory and disk, naming it (`HostCapacity.builds`), until its machine has
+ * gone.
+ */
+export interface HostTemplateBuild extends HostTemplateBase {
+	readonly snapshotId: string;
+	readonly setup?: string;
+	readonly env?: { readonly [name: string]: string };
+	readonly vcpus: number;
+	readonly memoryMiB: number;
+	/** The disk a create of the vCPUs and memory gets on the host: its named size's, or its custom shape's (`diskFor`). */
+	readonly diskGiB: number;
+	readonly keyHash: string;
+	/** The build's way out while its setup runs: the template's grants. */
+	readonly egress?: HostEgress;
+	/** The account the template is of. */
+	readonly owner?: string;
+}
+
+/** `template.build`'s answer: `ref` names the snapshot on its host. */
+export interface HostTemplateBuilt {
+	readonly ref: string;
+	readonly imageDigest?: string;
+	readonly sizeBytes: number;
+	readonly timings?: { readonly [step: string]: number };
+}
 
 /** A binary frame: the stream ID, then the payload. */
 export function encodeStreamFrame(stream: number, payload: Uint8Array): Uint8Array {

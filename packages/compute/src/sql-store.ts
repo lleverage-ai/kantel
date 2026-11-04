@@ -17,7 +17,15 @@
  * It is `persistent`: the service seals nothing without the deployment's own secrets key.
  */
 import { type SqlDriver, type SqlValue, sqlNumber } from "@kantel/sql";
-import { type Collection, type ComputeStore, matches, UniqueViolation } from "./store.ts";
+import {
+	type Collection,
+	type ComputeStore,
+	matches,
+	type StoredTemplate,
+	type StoredTemplateVersion,
+	type TemplateWrites,
+	UniqueViolation,
+} from "./store.ts";
 
 /** Whether `error` is a unique-constraint violation: Postgres's SQLSTATE 23505, or SQLite's (and D1's) message. */
 function isUniqueViolation(error: unknown): boolean {
@@ -83,6 +91,10 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'environments'"
 			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'environments'",
+		// No two templates of an account share a name (`templateNameKey`), in the database as environments' names.
+		dialect === "postgres"
+			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_template_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'templates'"
+			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_template_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'templates'",
 	];
 }
 
@@ -96,6 +108,12 @@ export async function migrateComputeStore(driver: SqlDriver): Promise<void> {
 }
 
 const parse = <T>(row: { readonly [column: string]: unknown }): T => JSON.parse(String(row.data)) as T;
+
+/** Whether `error` is a unique-constraint violation, answered as `UniqueViolation`; else it is thrown as it is. */
+function uniqueOf(kind: string, error: unknown): never {
+	if (isUniqueViolation(error)) throw new UniqueViolation(kind);
+	throw error;
+}
 
 /**
  * One kind of record in `compute_api_records`. Postgres numbers `seq` from a sequence; SQLite takes one more than the
@@ -130,8 +148,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		try {
 			return await driver.query(sql, params);
 		} catch (error) {
-			if (isUniqueViolation(error)) throw new UniqueViolation(kind);
-			throw error;
+			uniqueOf(kind, error);
 		}
 	};
 	return {
@@ -208,6 +225,89 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 	};
 }
 
+/** The kinds `sqlTemplateWrites` writes, as `createSqlComputeStore` names their collections. */
+const TEMPLATES = "templates";
+const TEMPLATE_VERSIONS = "templateVersions";
+
+/**
+ * `TemplateWrites` in SQL: each a batch (one transaction) of the template's write and its version's insert, which
+ * inserts only when the template's row then holds exactly the template written, so a template write that didn't happen
+ * (another writer's came first) records no version either. Whether the batch wrote is read back from the version, which
+ * is never changed, rather than the template, which another writer may already have changed again: by the version's
+ * `writeId`, each attempt's own, never by what the version says, which another writer's may say too (the same spec
+ * with another name or description, say).
+ */
+function sqlTemplateWrites(driver: SqlDriver): TemplateWrites {
+	const postgres = driver.dialect === "postgres";
+	const seq = postgres
+		? "nextval('compute_api_records_seq')"
+		: "(SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?)";
+	const seqParams = (kind: string): SqlValue[] => (postgres ? [] : [kind]);
+	const insertTemplate = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		VALUES (?, ?, ${seq}, 1, ?) ON CONFLICT (kind, id) DO NOTHING`;
+	const insertVersion = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		SELECT ?, ?, ${seq}, 1, ?
+		WHERE EXISTS (SELECT 1 FROM compute_api_records WHERE kind = ? AND id = ? AND data = ?)
+		ON CONFLICT (kind, id) DO NOTHING`;
+	const versionStatement = (version: StoredTemplateVersion, templateData: string, writeId: string) => ({
+		sql: insertVersion,
+		params: [
+			TEMPLATE_VERSIONS,
+			version.id,
+			...seqParams(TEMPLATE_VERSIONS),
+			JSON.stringify({ ...version, writeId } satisfies StoredTemplateVersion),
+			TEMPLATES,
+			version.templateId,
+			templateData,
+		],
+	});
+	const batch = async (statements: Parameters<SqlDriver["batch"]>[0]) => {
+		try {
+			await driver.batch(statements);
+		} catch (error) {
+			uniqueOf(TEMPLATES, error);
+		}
+	};
+	/** Whether the version `id` is recorded by the write `writeId`. */
+	const recordedBy = async (id: string, writeId: string): Promise<boolean> => {
+		const [row] = await driver.query(SELECT_DATA, [TEMPLATE_VERSIONS, id]);
+		return row !== undefined && parse<StoredTemplateVersion>(row).writeId === writeId;
+	};
+	return {
+		async insert(template, version) {
+			const data = JSON.stringify(template);
+			const writeId = crypto.randomUUID();
+			await batch([
+				{ sql: insertTemplate, params: [TEMPLATES, template.id, ...seqParams(TEMPLATES), data] },
+				versionStatement(version, data, writeId),
+			]);
+			return recordedBy(version.id, writeId);
+		},
+		async update(id, change) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const [row] = await driver.query(SELECT_VERSIONED, [TEMPLATES, id]);
+				if (row === undefined) return undefined;
+				const next = change(parse<StoredTemplate>(row));
+				if (next === undefined) return undefined;
+				const data = JSON.stringify(next.template);
+				const params = [data, TEMPLATES, id, sqlNumber(row.version), String(row.data)];
+				if (next.version === undefined) {
+					try {
+						if ((await driver.query(UPDATE_VERSIONED, params)).length > 0) return JSON.parse(data) as StoredTemplate;
+					} catch (error) {
+						uniqueOf(TEMPLATES, error);
+					}
+					continue;
+				}
+				const writeId = crypto.randomUUID();
+				await batch([{ sql: UPDATE_VERSIONED, params }, versionStatement(next.version, data, writeId)]);
+				if (await recordedBy(next.version.id, writeId)) return JSON.parse(data) as StoredTemplate;
+			}
+			throw new Error(`The template ${id} kept changing while it was updated; gave up after ${UPDATE_ATTEMPTS} tries`);
+		},
+	};
+}
+
 /** A `ComputeStore` in SQL. Run `migrateComputeStore` first. */
 export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 	return {
@@ -236,5 +336,10 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		bucketSources: sqlCollection(driver, "bucketSources"),
 		fileUrls: sqlCollection(driver, "fileUrls"),
 		settings: sqlCollection(driver, "settings"),
+		templates: sqlCollection(driver, TEMPLATES),
+		templateVersions: sqlCollection(driver, TEMPLATE_VERSIONS),
+		templateWrites: sqlTemplateWrites(driver),
+		templateSnapshots: sqlCollection(driver, "templateSnapshots"),
+		templateBases: sqlCollection(driver, "templateBases"),
 	};
 }

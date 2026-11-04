@@ -1,7 +1,7 @@
 /**
  * The compute plane's wire shapes: accounts and organisations, sandboxes and their commands, files, ports and access,
- * snapshots, scoped API keys, the egress proxy's settings, environments and sandboxes' egress, webhooks, OpenTelemetry
- * export, events, and the super-admin's hosts. The schemas are the contract: the types below are read from them (`Static`), and the SDK's types
+ * snapshots, scoped API keys, the egress proxy's settings, environments and sandboxes' egress, templates, webhooks,
+ * OpenTelemetry export, events, and the super-admin's hosts. The schemas are the contract: the types below are read from them (`Static`), and the SDK's types
  * are generated from them, so there is one definition of each shape.
  *
  * No shape carries a host's address, a machine's provider ID or a credential, except a secret the caller is shown once
@@ -53,9 +53,9 @@ export const ApiKeyScope = Type.Union(
 			"What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: " +
 			"create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run " +
 			"commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, " +
-			"`snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments " +
-			"and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and " +
-			"sandboxes' grants. `hosts:admin`: the deployment's hosts, for " +
+			"`snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments, " +
+			"templates and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments, " +
+			"templates and sandboxes' grants. `hosts:admin`: the deployment's hosts and template bases, for " +
 			"a super-admin's key only.",
 	},
 );
@@ -686,6 +686,23 @@ export const SandboxMount = Type.Object(
 	{ title: "SandboxMount", description: "A mount of a sandbox's, and whether its files are in place." },
 );
 
+export const SandboxTemplate = Type.Object(
+	{
+		id: Type.String({ description: "The template's ID, `tpl_…`." }),
+		name: Type.String(),
+		version: Type.Integer({ description: "The template's version it was made from." }),
+		snapshotId: Type.Optional(
+			Type.String({ description: "The template snapshot it started from, `tsn_…`; absent for a fresh boot." }),
+		),
+		start: Type.Union([Type.Literal("snapshot"), Type.Literal("boot")], {
+			description:
+				"`snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's " +
+				"image and ran its setup itself.",
+		}),
+	},
+	{ title: "SandboxTemplate", description: "The template a sandbox was made from." },
+);
+
 export const Sandbox = Type.Object(
 	{
 		id: id("The sandbox's ID, such as `sbx_4kq9x2mt`."),
@@ -723,6 +740,7 @@ export const Sandbox = Type.Object(
 			),
 		),
 		environmentId: Type.Optional(Type.String({ description: "The environment it was made from." })),
+		template: Type.Optional(SandboxTemplate),
 		grants: Type.Array(EgressGrant, { description: "Its own egress grants, on top of its environment's." }),
 		mounts: Type.Optional(
 			Type.Array(SandboxMount, {
@@ -796,6 +814,17 @@ export const CreateSandboxBody = Type.Object(
 					"Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder " +
 					"for each protected one, its secret files and repositories, and its grants. `env` may not name one of its " +
 					"protected variables.",
+			}),
+		),
+		template: Type.Optional(
+			Type.String({
+				description:
+					"Make a microVM from this template, a template's ID or name in the account (experimental, " +
+					"`KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running " +
+					"its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with " +
+					"`size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with " +
+					"them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it " +
+					"fresh whatever its snapshot, running the setup with the sandbox's variables.",
 			}),
 		),
 		hostLabels: Type.Optional(
@@ -1366,6 +1395,10 @@ export const Snapshot = Type.Object(
 			}),
 		),
 		memory: Type.Boolean({ description: "Whether it holds the sandbox's memory as well as its disk (a pause)." }),
+		// The machine of the microVM it was taken of (a template's may differ from its size's): a sandbox made or forked
+		// from it gets it, unless it asks for another size.
+		size: Type.Optional(SandboxSizeName),
+		resources: Type.Optional(SandboxResources),
 		sizeBytes: Type.Optional(Type.Integer()),
 		createdAt: Timestamp,
 		expiresAt: Type.Optional(Timestamp),
@@ -1883,6 +1916,311 @@ export const SandboxEgressQuery = Type.Object(
 	},
 	{ title: "SandboxEgressQuery" },
 );
+
+// Templates (experimental): how a platform defines a microVM, versioned, and the snapshots built from each version.
+
+/** An image's digest: `sha256:` and 64 lower-case hex digits. */
+export const IMAGE_DIGEST_PATTERN = "^sha256:[0-9a-f]{64}$";
+/** A base image's channel, such as `stable`. */
+export const TEMPLATE_CHANNEL_PATTERN = "^[a-z0-9][a-z0-9._-]{0,62}$";
+
+/**
+ * A Kantel base image's name: a repository path such as `kantel/sandbox`, with no registry, tag or digest. Hosts pull it
+ * from their operator's registry (`templateRegistry`), by digest; an account never names where an image comes from.
+ */
+export const TEMPLATE_BASE_IMAGE_PATTERN = "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$";
+
+const imageName = (description: string) =>
+	Type.String({ minLength: 1, maxLength: 255, pattern: TEMPLATE_BASE_IMAGE_PATTERN, description });
+const imageDigest = (description: string) => Type.String({ pattern: IMAGE_DIGEST_PATTERN, description });
+const channelName = Type.String({ pattern: TEMPLATE_CHANNEL_PATTERN, description: "A channel, such as `stable`." });
+
+export const TemplateImage = Type.Union(
+	[
+		Type.Object(
+			{ kind: Type.Literal("kantel-base") },
+			{
+				title: "TemplateKantelBaseImage",
+				description: "The template's `base` itself, as its deployment publishes it; the setup script adds the rest.",
+			},
+		),
+	],
+	{
+		title: "TemplateImage",
+		description:
+			"What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup " +
+			"script, which runs in the VM behind the template's egress grants. Default: `kantel-base`.",
+	},
+);
+
+export const TemplateBase = Type.Union(
+	[
+		Type.Object(
+			{ image: imageName("The base image, such as `kantel/sandbox`."), channel: channelName },
+			{ title: "TemplateBaseChannelRef", description: "Follow a channel: rebuilt when it publishes a new digest." },
+		),
+		Type.Object(
+			{ image: imageName("The base image, such as `kantel/sandbox`."), digest: imageDigest("The digest pinned.") },
+			{
+				title: "TemplateBasePinned",
+				description: "Pin an exact digest, one its channels published: never rebuilt for a new release.",
+			},
+		),
+	],
+	{
+		title: "TemplateBase",
+		description:
+			"The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one " +
+			"published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own " +
+			"sandbox image.",
+	},
+);
+
+export const TemplateResources = Type.Object(
+	{
+		vcpus: Type.Integer({ minimum: 1, maximum: 64 }),
+		memoryMb: Type.Integer({ minimum: 128, maximum: 262_144 }),
+	},
+	{
+		title: "TemplateResources",
+		description:
+			"Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer " +
+			"a size with at least them. Default 2 vCPUs and 4096 MB.",
+	},
+);
+
+export const TemplateNetwork = Type.Object(
+	{ grants: Type.Array(EgressGrantInput, { maxItems: 200 }) },
+	{ title: "TemplateNetwork", description: "Egress grants for its sandboxes and for its build's boot." },
+);
+
+export const TemplateSpec = Type.Object(
+	{
+		image: Type.Optional(TemplateImage),
+		base: Type.Optional(TemplateBase),
+		resources: Type.Optional(TemplateResources),
+		env: Type.Optional(
+			Type.Record(Type.String(), Type.String(), {
+				description: "Plain variables, not secrets: under the environment's and the create's own.",
+			}),
+		),
+		setup: Type.Optional(
+			Type.String({
+				maxLength: 65_536,
+				description: "A shell script run once, as root, when the snapshot is built (or at a fresh boot).",
+			}),
+		),
+		network: Type.Optional(TemplateNetwork),
+	},
+	{
+		title: "TemplateSpec",
+		description: "A template version's definition, never changed once made. Answered with every default filled in.",
+	},
+);
+
+export const TemplateBuiltFrom = Type.Object(
+	{
+		baseImage: Type.String(),
+		channel: Type.Optional(Type.String({ description: "The channel it followed; absent when pinned." })),
+		baseDigest: Type.String({ description: "Empty while the channel has no published digest." }),
+		pinned: Type.Boolean(),
+		imageDigest: Type.Optional(
+			Type.String({ description: "The digest of the image its host booted, as the host reported it." }),
+		),
+		kernel: Type.String(),
+		firecracker: Type.String(),
+	},
+	{ title: "TemplateBuiltFrom", description: "What a template snapshot was built from." },
+);
+
+export const TemplateCacheKey = Type.Object(
+	{
+		templateVersion: Type.String({ description: "`<templateId>@<version>`." }),
+		baseDigest: Type.String(),
+		kernel: Type.String(),
+		firecracker: Type.String(),
+		vcpus: Type.Integer(),
+		memoryMb: Type.Integer({
+			description:
+				"With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too.",
+		}),
+	},
+	{
+		title: "TemplateCacheKey",
+		description:
+			"What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets " +
+			"the same vCPUs and memory.",
+	},
+);
+
+export const TemplateSnapshotState = Type.Union(
+	[
+		Type.Literal("queued"),
+		Type.Literal("building"),
+		Type.Literal("ready"),
+		Type.Literal("stale"),
+		Type.Literal("failed"),
+		Type.Literal("discarded"),
+	],
+	{
+		title: "TemplateSnapshotState",
+		description:
+			"`stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's " +
+			"current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: " +
+			"thrown away.",
+	},
+);
+
+export const TemplateSnapshot = Type.Object(
+	{
+		id: id("The template snapshot's ID, `tsn_…`."),
+		templateId: Type.String(),
+		version: Type.Integer(),
+		key: TemplateCacheKey,
+		keyHash: Type.String({ description: "The SHA-256 hex of the key's canonical JSON." }),
+		state: TemplateSnapshotState,
+		hostId: Type.Optional(Type.String({ description: "The host it was built on, which holds it." })),
+		builtFrom: TemplateBuiltFrom,
+		startedAt: Timestamp,
+		readyAt: Type.Optional(Timestamp),
+		error: Type.Optional(Type.String({ description: "Why the build failed." })),
+		sizeBytes: Type.Optional(Type.Integer()),
+	},
+	{
+		title: "TemplateSnapshot",
+		description:
+			"A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and " +
+			"rebuilds at will, never one of the account's snapshots.",
+	},
+);
+
+export const TemplateBehind = Type.Object(
+	{
+		releases: Type.Integer({ description: "How many digests the base's channel has published since the pinned one." }),
+		since: Timestamp,
+		latestDigest: Type.String(),
+	},
+	{ title: "TemplateBehind", description: "How far a pinned base is behind its channel." },
+);
+
+export const TemplateBuildStatus = Type.Object(
+	{
+		state: Type.Union(
+			[
+				Type.Literal("none"),
+				Type.Literal("building"),
+				Type.Literal("ready"),
+				Type.Literal("stale"),
+				Type.Literal("failed"),
+			],
+			{
+				description:
+					"`none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until " +
+					"its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version " +
+					"starts no sandbox: they boot fresh until the current version's is ready.",
+			},
+		),
+		ready: Type.Optional(TemplateSnapshot),
+		building: Type.Optional(TemplateSnapshot),
+		error: Type.Optional(Type.String()),
+		behind: Type.Optional(TemplateBehind),
+	},
+	{ title: "TemplateBuildStatus" },
+);
+
+export const Template = Type.Object(
+	{
+		id: id("The template's ID, such as `tpl_4kq9x2mt`."),
+		accountId: Type.String(),
+		name: Type.String(),
+		description: Type.Optional(Type.String()),
+		version: Type.Integer({ description: "Its current version; a new spec makes the next." }),
+		spec: TemplateSpec,
+		build: TemplateBuildStatus,
+		sandboxCount: Type.Integer({ description: "How many sandboxes were made from it and still exist." }),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+		createdBy: CreatedBy,
+	},
+	{
+		title: "Template",
+		description: "A microVM profile: image, base, resources, variables, setup and egress, versioned.",
+	},
+);
+
+export const TemplateVersion = Type.Object(
+	{ version: Type.Integer(), spec: TemplateSpec, createdAt: Timestamp, createdBy: CreatedBy },
+	{ title: "TemplateVersion" },
+);
+
+export const TemplateList = Type.Object({ items: Type.Array(Template) }, { title: "TemplateList" });
+export const TemplateVersionList = Type.Object(
+	{ items: Type.Array(TemplateVersion, { description: "Newest first." }) },
+	{ title: "TemplateVersionList" },
+);
+export const TemplateSnapshotList = Type.Object(
+	{ items: Type.Array(TemplateSnapshot, { description: "Newest first." }) },
+	{ title: "TemplateSnapshotList" },
+);
+
+export const TemplateBaseChannel = Type.Object(
+	{
+		image: Type.String(),
+		channel: Type.String(),
+		digest: Type.String({ description: "The digest it publishes now." }),
+		publishedAt: Timestamp,
+		history: Type.Array(
+			Type.Object({ digest: Type.String(), publishedAt: Timestamp }, { title: "TemplateBaseRelease" }),
+			{ description: "Every digest it has published, newest first." },
+		),
+	},
+	{ title: "TemplateBaseChannel", description: "A base image's channel and the digests it has published." },
+);
+
+export const TemplateBaseList = Type.Object({ items: Type.Array(TemplateBaseChannel) }, { title: "TemplateBaseList" });
+
+export const CreateTemplateBody = Type.Object(
+	{
+		account: accountQuery,
+		name: Type.String({
+			pattern: ENVIRONMENT_NAME_PATTERN,
+			description: "Unique in the account: lower-case letters, digits and dashes, at most 63.",
+		}),
+		description: Type.Optional(Type.String({ maxLength: 500 })),
+		spec: TemplateSpec,
+	},
+	{ title: "CreateTemplateBody" },
+);
+
+export const UpdateTemplateBody = Type.Object(
+	{
+		name: Type.Optional(Type.String({ pattern: ENVIRONMENT_NAME_PATTERN })),
+		description: Type.Optional(Type.String({ maxLength: 500, description: "Empty clears it." })),
+		spec: Type.Optional(TemplateSpec),
+	},
+	{ title: "UpdateTemplateBody", description: "A `spec` that differs from the current one makes a new version." },
+);
+
+export const PublishTemplateBaseBody = Type.Object(
+	{
+		image: imageName("The base image, such as `kantel/sandbox`."),
+		channel: channelName,
+		digest: imageDigest("The digest the channel publishes from now."),
+	},
+	{ title: "PublishTemplateBaseBody" },
+);
+
+export const ListTemplatesQuery = Type.Object(
+	{
+		account: accountQuery,
+		baseDigest: Type.Optional(
+			Type.String({ description: "Only those with a snapshot built from this base digest, or pinned to it." }),
+		),
+	},
+	{ title: "ListTemplatesQuery" },
+);
+
+export const TemplatePath = Type.Object({ templateId: id("The template's ID.") }, { title: "TemplatePath" });
 
 // Events and webhooks.
 
@@ -2565,6 +2903,24 @@ export type Environment = Static<typeof Environment>;
 export type EgressEntry = Static<typeof EgressEntry>;
 export type SandboxProtectedVariable = Static<typeof SandboxProtectedVariable>;
 export type SandboxEgress = Static<typeof SandboxEgress>;
+export type SandboxTemplate = Static<typeof SandboxTemplate>;
+export type TemplateImage = Static<typeof TemplateImage>;
+export type TemplateBase = Static<typeof TemplateBase>;
+export type TemplateResources = Static<typeof TemplateResources>;
+export type TemplateNetwork = Static<typeof TemplateNetwork>;
+export type TemplateSpec = Static<typeof TemplateSpec>;
+export type TemplateBuiltFrom = Static<typeof TemplateBuiltFrom>;
+export type TemplateCacheKey = Static<typeof TemplateCacheKey>;
+export type TemplateSnapshotState = Static<typeof TemplateSnapshotState>;
+export type TemplateSnapshot = Static<typeof TemplateSnapshot>;
+export type TemplateBehind = Static<typeof TemplateBehind>;
+export type TemplateBuildStatus = Static<typeof TemplateBuildStatus>;
+export type Template = Static<typeof Template>;
+export type TemplateVersion = Static<typeof TemplateVersion>;
+export type TemplateBaseChannel = Static<typeof TemplateBaseChannel>;
+export type CreateTemplateBody = Static<typeof CreateTemplateBody>;
+export type UpdateTemplateBody = Static<typeof UpdateTemplateBody>;
+export type PublishTemplateBaseBody = Static<typeof PublishTemplateBaseBody>;
 export type EventType = Static<typeof EventType>;
 export type Event = Static<typeof Event>;
 export type Webhook = Static<typeof Webhook>;

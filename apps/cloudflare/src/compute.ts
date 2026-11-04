@@ -375,6 +375,8 @@ export interface StackComputeOptions {
 	readonly relayLimits?: RelayLimits;
 	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker. Absent, off. */
 	readonly accountHosts?: { readonly publicUrl: string };
+	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
+	readonly templates?: boolean;
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
 	readonly hostSweepMs?: number;
 	/** Image patching (KANTEL_IMAGE_PATCHING=experimental): where the base image index is read. Absent, off. */
@@ -541,6 +543,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.templates === true ? { templates: true } : {}),
 	});
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));

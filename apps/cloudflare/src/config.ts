@@ -46,6 +46,11 @@ export interface GatewayVars {
 	readonly KANTEL_GITHUB_CLIENT_SECRET?: string;
 	readonly KANTEL_GOOGLE_CLIENT_ID?: string;
 	readonly KANTEL_GOOGLE_CLIENT_SECRET?: string;
+	/**
+	 * Templates (experimental): `experimental` turns on versioned microVM profiles whose snapshots are built in the
+	 * background (`/v1/templates`). Unset, empty or `off`: off, and their routes answer `not_supported`.
+	 */
+	readonly KANTEL_TEMPLATES?: string;
 }
 
 /**
@@ -101,6 +106,8 @@ export interface GatewayConfig {
 	readonly accountHosts?: { readonly publicUrl: string };
 	/** Image patching, when on: where the base image index is read. */
 	readonly imagePatching?: { readonly indexUrl: string };
+	/** Templates, from KANTEL_TEMPLATES=experimental. Absent, off. */
+	readonly templates?: boolean;
 	/**
 	 * Email-code sign-in and open sign-up on the public origin. Absent unless KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM
 	 * are both set; it then also needs the `SIGN_IN_MAIL` binding to send anything.
@@ -152,6 +159,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	}
 	const accountHosts = accountHostsConfig(vars);
 	const imagePatching = imagePatchingConfig(vars);
+	const templates = templatesSwitch(vars);
 	// Set either way, the switch says the public origin may be for hosts alone: turning them off keeps it valid.
 	const emailSignIn = emailSignInConfig(vars, trimmed(vars.KANTEL_ACCOUNT_HOSTS) !== "");
 	const oauthVars = [
@@ -172,7 +180,16 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		...(adminName === "" ? {} : { adminName }),
 		...(accountHosts === undefined ? {} : { accountHosts }),
 		...(imagePatching === undefined ? {} : { imagePatching }),
+		...(templates ? { templates } : {}),
 	};
+}
+
+/** KANTEL_TEMPLATES: off unless it says `experimental`; a typo is refused rather than leaving templates silently off. */
+function templatesSwitch(vars: GatewayVars): boolean {
+	const value = trimmed(vars.KANTEL_TEMPLATES).toLowerCase();
+	if (value === "" || value === "off") return false;
+	if (value !== "experimental") throw new KantelError("invalid", "KANTEL_TEMPLATES must be `experimental` or `off`");
+	return true;
 }
 
 /**

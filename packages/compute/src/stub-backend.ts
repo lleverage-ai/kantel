@@ -2,7 +2,9 @@
  * A `SandboxBackend` in memory, for tests and local runs before hosts exist. One stub host (`host_stub`, named `stub`)
  * runs every sandbox; each sandbox is a just-bash shell over its own in-memory filesystem with `/home/user` (the
  * working directory) and `/tmp`, so commands really run. A snapshot is a deep copy of the file tree (path to bytes),
- * restored on start, resume, fork and create-from. microVM-only features answer stub URLs under
+ * restored on start, resume, fork and create-from. A template snapshot is a file tree too, kept apart from snapshots:
+ * a build runs the template's setup in a fresh shell and keeps what it leaves, and a fresh boot from a template runs the
+ * setup in the new sandbox. microVM-only features answer stub URLs under
  * `https://stub.kantel.invalid/` for a microVM, and `not_supported` for an isolate. Nothing here is a security
  * boundary: it is a stand-in for lane 2's host scheduler.
  */
@@ -16,6 +18,7 @@ import {
 	type BackendShape,
 	type BackendSize,
 	type BootOptions,
+	type BuiltTemplate,
 	CUSTOM_SHAPES_FEATURE,
 	type ExecRequest,
 	type ExecResult,
@@ -24,6 +27,8 @@ import {
 	type SandboxSpec,
 	type SshGrant,
 	type TakenSnapshot,
+	type TemplateBuildSpec,
+	type TemplateRuntime,
 	type UsageSample,
 } from "./backend.ts";
 import { type BackendUsageReport, RAW_WINDOW_MS, USAGE_INTERVAL_MS } from "./usage-series.ts";
@@ -31,6 +36,12 @@ import { baseName, HOME, randomId, randomSecret, sliceRange } from "./util.ts";
 
 /** The stub's one host. */
 export const STUB_HOST_ID = "host_stub";
+
+/** The stub host's runtime, which its template snapshots are keyed by. */
+export const STUB_RUNTIME = { kernel: "stub", firecracker: "stub" } as const;
+
+/** The prefix of the stub's template snapshots' refs: `tpl-snap:<snapshotId>`. */
+export const STUB_TEMPLATE_REF_PREFIX = "tpl-snap:";
 
 /** Where the stub's microVM-only URLs point. */
 export const STUB_ORIGIN = "https://stub.kantel.invalid";
@@ -243,6 +254,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const upSince = now();
 	const machines = new Map<string, Machine>();
 	const snapshots = new Map<string, Tree>();
+	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
+	const templateSnapshots = new Map<string, Tree>();
 
 	const host: BackendHost = {
 		id: STUB_HOST_ID,
@@ -325,9 +338,23 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const viewUrl = (sandboxId: string, what: string) =>
 		`${STUB_ORIGIN}/${what}/${sandboxId}?token=${randomSecret("", 24)}`;
 
+	/** Runs a template's setup as root in a shell; rejects with its output's end when it fails. */
+	const runSetup = async (bash: Bash, setup: string, env: { readonly [name: string]: string }) => {
+		const result = await bash.exec(setup, { cwd: "/", env: { ...env, HOME: "/root", USER: "root" } });
+		if (result.exitCode !== 0) {
+			throw new KantelError(
+				"invalid",
+				`The template's setup exited with ${result.exitCode}: ${result.stderr.slice(-500).trim()}`,
+			);
+		}
+	};
+
 	const create = async (spec: SandboxSpec): Promise<Placement> => {
 		placeable(spec.eligibleHosts, spec.type);
 		if (machines.has(spec.sandboxId)) throw new KantelError("conflict", `${spec.sandboxId} already has a machine`);
+		if (spec.template !== undefined && spec.type !== "microvm") {
+			throw new KantelError("not_supported", "A template makes microVMs; this is an isolate");
+		}
 		const machine: Machine = {
 			id: spec.sandboxId,
 			type: spec.type,
@@ -340,9 +367,19 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			runningSince: now(),
 			ports: new Map(),
 		};
-		boot(machine, await fromSnapshot(spec.fromSnapshot));
+		const template = spec.template;
+		// A template snapshot the stub no longer holds (lost with the process, as the records outlast it) boots fresh, and
+		// says so (`bootedFresh`).
+		const prepared = template?.snapshot === undefined ? undefined : templateSnapshots.get(template.snapshot);
+		if (prepared !== undefined) boot(machine, await restore(prepared));
+		else boot(machine, await fromSnapshot(spec.fromSnapshot));
+		// A fresh boot from a template: its setup runs in the new machine, as a build would have run it.
+		if (template !== undefined && prepared === undefined && template.setup !== undefined) {
+			await runSetup((machine as LiveMachine).bash, template.setup, machine.env);
+		}
 		machines.set(spec.sandboxId, machine);
-		return placement(machine);
+		const placed = placement(machine);
+		return template?.snapshot !== undefined && prepared === undefined ? { ...placed, bootedFresh: true } : placed;
 	};
 
 	const reboot = async (sandboxId: string, options: BootOptions, keepMemory: boolean): Promise<Placement> => {
@@ -555,6 +592,33 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 
 		async deleteSnapshot(ref) {
 			snapshots.delete(ref);
+		},
+
+		async templateRuntimes(): Promise<TemplateRuntime[]> {
+			return types.includes("microvm") ? [{ hostId: STUB_HOST_ID, ...STUB_RUNTIME }] : [];
+		},
+
+		async buildTemplate(spec: TemplateBuildSpec): Promise<BuiltTemplate> {
+			if (!types.includes("microvm")) throw new KantelError("unavailable", "No host runs microvm sandboxes");
+			if (spec.hostId !== STUB_HOST_ID) throw new KantelError("unavailable", `The stub has no host ${spec.hostId}`);
+			const fs = await restore(undefined);
+			if (spec.setup !== undefined) {
+				await runSetup(new Bash({ fs, cwd: "/", env: { ...spec.env } }), spec.setup, spec.env);
+			}
+			const tree = await capture(fs);
+			const ref = `${STUB_TEMPLATE_REF_PREFIX}${spec.snapshotId}`;
+			templateSnapshots.set(ref, tree);
+			// It boots no image: the base's digest stands for the one a host pulls (none for its own sandbox image).
+			return {
+				ref,
+				hostId: STUB_HOST_ID,
+				...(spec.baseDigest === "" ? {} : { imageDigest: spec.baseDigest }),
+				sizeBytes: treeSize(tree),
+			};
+		},
+
+		async deleteTemplateSnapshot(bytes) {
+			templateSnapshots.delete(bytes.ref ?? `${STUB_TEMPLATE_REF_PREFIX}${bytes.snapshotId}`);
 		},
 
 		async exposePort(sandboxId, port, { subdomain }) {

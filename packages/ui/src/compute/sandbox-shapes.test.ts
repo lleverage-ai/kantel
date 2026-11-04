@@ -203,6 +203,7 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 					open: true,
 					account: { id: "acct", kind: "personal", name: "Ada", role: "owner", members: 1 },
 					hosting: "self-hosted",
+					now: 0,
 					...(shapes === undefined ? {} : { shapes }),
 					onClose: () => {},
 					onCreate: () => {},

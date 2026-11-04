@@ -148,6 +148,13 @@ const TAGS: {
 		about:
 			"What new sandboxes inherit: variables (plain and protected), secret files, repositories and egress grants; and a sandbox's egress log.",
 	},
+	templates: {
+		title: "Templates",
+		order: 8.7,
+		about:
+			"Versioned microVM profiles (an image, vCPUs and memory, variables, a setup script and egress) that Kantel builds once and snapshots, so their sandboxes restore instead of booting; and the base channels they follow.",
+		note: "Experimental: a deployment serves these only with `KANTEL_TEMPLATES=experimental`.",
+	},
 	events: { title: "Events", order: 9, about: "The account's events, as webhooks deliver them." },
 	webhooks: {
 		title: "Webhooks",

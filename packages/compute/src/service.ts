@@ -16,6 +16,10 @@
  * grants. A protected variable's value is sealed (`secrets.ts`) and never answered: the sandbox gets a placeholder of
  * its own, and only the sandbox's host is given the value (`protectedTable`, over its link), for its egress proxy to
  * swap in on requests to the variable's bindings.
+ *
+ * A template (experimental, `templates.ts`) is a versioned microVM profile whose snapshots are built in the background
+ * and kept as a cache apart from the account's snapshots; a create naming one starts from its newest ready snapshot, or
+ * boots fresh.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
 import {
@@ -43,22 +47,23 @@ import {
 	requireScope,
 	roleIn,
 } from "./auth.ts";
-import {
-	type BackendCapabilities,
-	type BackendEgress,
-	type BackendEgressGrant,
-	type BackendFileEntry,
-	type BackendHost,
-	type BackendMountStatus,
-	type BackendSize,
-	type BootOptions,
-	CUSTOM_SHAPES_FEATURE,
-	type Placement,
-	type SandboxBackend,
+import type {
+	BackendCapabilities,
+	BackendEgress,
+	BackendEgressGrant,
+	BackendFileEntry,
+	BackendHost,
+	BackendMountStatus,
+	BackendSize,
+	BootOptions,
+	Placement,
+	SandboxBackend,
+	SandboxTemplateBoot,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
+import { makesCustom, makesShape, recordedMachine, recordsMachine, sandboxMachine } from "./machine.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
 import {
 	backendMounts,
@@ -92,6 +97,7 @@ import type {
 } from "./store.ts";
 import { UniqueViolation } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
+import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES } from "./templates.ts";
 import {
 	type BackendUsageReport,
 	createUsageSeries,
@@ -197,6 +203,12 @@ export interface ComputeServiceOptions {
 	 * `KANTEL_MOUNTS=experimental`.
 	 */
 	readonly mounts?: MountsOptions;
+	/**
+	 * Templates (experimental, `templates.ts`): versioned microVM profiles and their snapshot cache (`/v1/templates`).
+	 * Off, those routes and a create naming a template answer `not_supported`, as they do with a backend that has no
+	 * templates. Default off; the gateways turn it on with `KANTEL_TEMPLATES=experimental`.
+	 */
+	readonly templates?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
 	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
@@ -343,8 +355,17 @@ export interface ComputeService {
 	readonly handlers: RouteHandlers<SignedInComputeRoutes, Principal>;
 	/** A handler for each route that takes no credential (`publicComputeRoutes`), given no caller. */
 	readonly publicHandlers: RouteHandlers<PublicComputeRoutes, undefined>;
-	/** Stops every running sandbox whose `stopsAt` has passed. */
+	/**
+	 * Stops every running sandbox whose `stopsAt` has passed, and with templates on reconciles every template's snapshot
+	 * cache (which notices hosts' runtimes changing).
+	 */
 	sweep(): Promise<void>;
+	/**
+	 * Makes `digest` a template base channel's current one (the image patching pipeline's call, as the super-admin's
+	 * `POST /v1/template-bases` is), and rebuilds the templates following it in the background. `not_supported` while
+	 * templates are off.
+	 */
+	publishTemplateBase(input: computeSchema.PublishTemplateBaseBody): Promise<computeSchema.TemplateBaseChannel>;
 	/**
 	 * Whether `grantee` (`encodeGrantee`) may still open `sandboxId`'s access: the key unrevoked and unexpired, or the
 	 * person's sign-in live, and either still able to see the sandbox with the `access` scope. A relay asks while access
@@ -601,9 +622,6 @@ const LEGACY_SIZES: { readonly [size: string]: { readonly vcpus: number; readonl
 	xlarge: { vcpus: 16, memoryMb: 32768 },
 };
 
-/** Whether a host makes microVMs of any shape, not only its named sizes. */
-const makesCustom = (host: BackendHost) => host.features?.includes(CUSTOM_SHAPES_FEATURE) === true;
-
 /** `value` down to a multiple of `step`. */
 const floorTo = (value: number, step: number) => Math.floor(value / step) * step;
 
@@ -689,19 +707,6 @@ export function checkShape(
 		);
 	}
 	return { vcpus, memoryMb };
-}
-
-/** Whether `host` can make a microVM of `shape`: one of its named sizes, or any shape it has room for where it makes them. */
-function makesShape(
-	host: BackendHost,
-	deploymentSizes: readonly BackendSize[],
-	shape: { readonly vcpus: number; readonly memoryMb: number },
-): boolean {
-	if (!host.tiers.includes("microvm")) return false;
-	const named = (host.sizes ?? deploymentSizes).some(
-		(size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb,
-	);
-	return named || (makesCustom(host) && shape.vcpus <= host.capacity.vcpus && shape.memoryMb <= host.capacity.memoryMb);
 }
 
 /**
@@ -1316,6 +1321,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		background.add(tracked);
 	};
 
+	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
+	const templates = createTemplateService({
+		store,
+		backend,
+		now,
+		enabled: options.templates === true,
+		keepGoing,
+		buildHosts: async (accountId, userId) => {
+			const shared = options.sharedHosts === undefined || (await options.sharedHosts(userId));
+			try {
+				return requireHosts(await ensureHosts(), accountId, "microvm", {}, false, shared);
+			} catch {
+				return [];
+			}
+		},
+		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants })).egress,
+		normaliseGrants,
+		checkVariableName,
+		checkResources: (resources) => checkShape("microvm", resources),
+		actorOf: (principal) => actorOf(principal),
+	});
+
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
 	function track<T>(ids: readonly string[], work: () => Promise<T>): Promise<T> {
 		const previous = Promise.all(ids.map((id) => pending.get(id) ?? Promise.resolve()));
@@ -1528,6 +1555,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			latestSnapshotId: sandbox.latestSnapshotId,
 			source: sandbox.source,
 			environmentId: sandbox.environmentId,
+			template: sandbox.template === undefined ? undefined : { ...sandbox.template },
 			grants: (sandbox.grants ?? []).map(copyGrant),
 			createdBy: sandbox.createdBy,
 			createdAt: sandbox.createdAt,
@@ -1558,6 +1586,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		state: snapshot.state,
 		trigger: snapshot.trigger,
 		memory: snapshot.memory,
+		...recordedMachine(snapshot),
 		sizeBytes: snapshot.sizeBytes,
 		createdAt: snapshot.createdAt,
 		expiresAt: snapshot.expiresAt,
@@ -2461,17 +2490,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
-	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image, at its own
-	 * size and shape), placed as a create is, since no backend has it to start. `sandbox` is the record as the boot moved
-	 * it (a restart's new size and shape included), and `boot` its sizing.
+	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image, or its
+	 * template's base and setup as its create resolved them, booted fresh, at its own size and shape), placed as a create
+	 * is, since no backend has it to start. `sandbox` is the record as the boot moved it (a restart's new size and shape
+	 * included), and `boot` its sizing.
 	 */
-	function bootAgain(
+	async function bootAgain(
 		sandbox: StoredSandbox,
 		boot: BootOptions,
 		booted: (boot: BootOptions) => Promise<Placement>,
 	): Promise<Placement> {
 		if (!neverPlaced(sandbox)) return booted(boot);
-		return backend.create({
+		const template = sandbox.source === undefined ? sandbox.templateBoot : undefined;
+		const placement = await backend.create({
 			...boot,
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
@@ -2479,8 +2510,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			subdomain: sandbox.subdomain,
 			...(boot.shape === undefined ? {} : { shape: boot.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
+			...(template === undefined ? {} : { template: { ...template } }),
 		});
+		// Made again from its template's base, its setup run: no longer the snapshot its create was to start from.
+		return template === undefined || sandbox.template?.start !== "snapshot"
+			? placement
+			: { ...placement, bootedFresh: true };
 	}
+
+	/** A template's boot as a sandbox keeps it for a retry of its create (`templateBoot`): its base and setup, no snapshot. */
+	const freshBoot = ({ snapshot: _cached, ...fresh }: SandboxTemplateBoot): Omit<SandboxTemplateBoot, "snapshot"> =>
+		fresh;
 
 	/** A boot's sizing from the record as it moved: its named size and, where it has one, its shape. */
 	const sizingOf = (sandbox: StoredSandbox): Pick<BootOptions, "size" | "shape"> => ({
@@ -2503,6 +2543,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (environment === undefined) return undefined;
 		if (environment.repos.length > 0) requireScope(principal, "exec", role);
 		return environment;
+	}
+
+	/**
+	 * Refuses a start or recovery that makes a sandbox again from its template (`bootAgain`), running the template's
+	 * setup with its env, to a caller that may not run commands, as its create does.
+	 */
+	function requireSetupScope(principal: Principal, role: MemberRole, sandbox: StoredSandbox): void {
+		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.templateBoot?.setup === undefined) return;
+		requireScope(principal, "exec", role);
 	}
 
 	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
@@ -2554,6 +2603,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// The revision its backend has: what the boot sent, or what reconciling sent since.
 		let applied = sent?.egressRevision;
+		// Made from a template snapshot whose host had no room, it booted the template fresh elsewhere: so its record says.
+		const bootedFresh = (template: computeSchema.SandboxTemplate): computeSchema.SandboxTemplate => {
+			const { snapshotId: _none, ...rest } = template;
+			return { ...rest, start: "boot" };
+		};
 		const toRunning = (sandbox: StoredSandbox) =>
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
@@ -2562,6 +2616,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
 				...(sandbox.type === "microvm" && placement.resources !== undefined
 					? { shape: { vcpus: placement.resources.vcpus, memoryMb: placement.resources.memoryMb } }
+					: {}),
+				...(placement.bootedFresh === true && sandbox.template !== undefined
+					? { template: bootedFresh(sandbox.template) }
 					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
@@ -2660,6 +2717,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					state: "ready",
 					trigger: "stop",
 					memory: keepMemory,
+					...recordedMachine(sandbox),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
@@ -3539,6 +3597,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (sandboxes.length > 0 || saved.length > 0) {
 				throw new KantelError("conflict", "Delete the organisation's sandboxes and saved snapshots first");
 			}
+			// Its templates first, with their versions and cache: nothing is built for it once it has gone.
+			await templates.retireAccount(account.id);
 			for (const member of await store.members.list({ accountId: account.id })) await store.members.delete(member.id);
 			for (const invite of await store.invites.list({ accountId: account.id })) await store.invites.delete(invite.id);
 			for (const key of await store.apiKeys.list({ accountId: account.id })) {
@@ -3714,7 +3774,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			requireScope(principal, "sandboxes:write", role);
 			return once(principal, "createSandbox", idempotencyKey, async () => {
 				const from = body.from === undefined ? undefined : await snapshotFrom(principal, account.id, body.from);
-				const type = body.type ?? from?.sandboxType ?? "isolate";
+				const template =
+					body.template === undefined ? undefined : await templates.templateIn(account.id, body.template);
+				if (template !== undefined) {
+					if (from !== undefined)
+						throw new KantelError("invalid", "Make a sandbox from a template or a snapshot, not both");
+					if (body.image !== undefined)
+						throw new KantelError("invalid", "A template names its own image; leave image out");
+					if (body.type === "isolate") throw new KantelError("invalid", "A template makes microVMs, not isolates");
+					// Its setup runs as root with the env this call chooses (a shell reads functions from it) whenever it boots
+					// fresh, which a host may do whatever snapshot it is given: only a caller that may run commands may have it run.
+					if (template.spec.setup !== undefined) requireScope(principal, "exec", role);
+				}
+				const type = body.type ?? from?.sandboxType ?? (template === undefined ? "isolate" : "microvm");
 				if (body.mounts !== undefined && body.mounts.length > 0 && mounts === undefined) {
 					throw new KantelError("not_supported", MOUNTS_OFF);
 				}
@@ -3734,19 +3806,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				// The sandbox's own placeholder for each protected variable, minted now and never changed (a rotation changes
-				// the value it stands for). Its env: the environment's plain variables, then the placeholders, then its own.
+				// the value it stands for). Its env: its template's variables, the environment's plain variables, then the
+				// placeholders, then its own.
 				const placeholders: { [name: string]: string } = {};
 				for (const name of protectedNames) placeholders[name] = newPlaceholder();
-				const env: { [name: string]: string } = {};
+				const env: { [name: string]: string } = { ...template?.spec.env };
 				for (const variable of environment?.variables ?? []) {
 					if (!variable.protected && variable.value !== undefined) env[variable.name] = variable.value;
 				}
 				Object.assign(env, placeholders, body.env);
 				const egressRevision = now();
+				// Its own grants: its template's, if it has one.
+				const grants = template === undefined ? [] : normaliseGrants(template.spec.network?.grants ?? []);
 				const subject: EgressSubject = {
 					...(environment === undefined ? {} : { environmentId: environment.id }),
 					placeholders,
-					grants: [],
+					grants,
 					egressRevision,
 				};
 				// The backend's hosts and the host records, read at once: one round trip, not one each. The backend's hosts
@@ -3777,23 +3852,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 				);
-				// Its shape is checked against the hosts it may go to, as placement will choose among them.
-				const eligible = new Set(hosts);
-				const shape = shapeFor(
-					type,
-					body.resources,
-					capabilities.hosts.filter((host) => eligible.has(host.id)),
-					capabilities.sizes,
-					from === undefined,
-				);
-				// The preset it matches, named, so a host restores that size's template snapshot rather than booting it.
-				const preset =
-					type === "microvm" && shape !== undefined
-						? capabilities.hosts
-								.filter((host) => eligible.has(host.id))
-								.flatMap((host) => host.sizes ?? capabilities.sizes)
-								.find((size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb)?.name
-						: undefined;
+				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
+				// its template's resources (unless it names a size), which a template snapshot was built as.
+				const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
+				const asked =
+					body.resources ?? (template !== undefined && body.size === undefined ? template.spec.resources : undefined);
+				const shape = shapeFor(type, asked, eligible, capabilities.sizes, from === undefined);
+				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
+				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
+				// that size's template snapshot rather than booting it.
+				const machine =
+					type !== "microvm"
+						? undefined
+						: sandboxMachine(
+								template !== undefined
+									? { template: template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES }
+									: from === undefined
+										? undefined
+										: { copies: from },
+								{ ...(body.size === undefined ? {} : { size: body.size }), ...(shape === undefined ? {} : { shape }) },
+								eligible.flatMap((host) => host.sizes ?? capabilities.sizes),
+							);
+				if (type === "microvm" && machine === undefined) {
+					throw new KantelError("not_supported", `No host this sandbox may use offers the size ${body.size}`);
+				}
+				// From the template's newest ready snapshot built as that machine, on its host, or a fresh boot.
+				const start =
+					template === undefined || machine?.shape === undefined
+						? undefined
+						: await templates.startFor(template, { shape: machine.shape, eligibleHosts: hosts });
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -3801,13 +3888,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					name,
 					subdomain: subdomainFor(name),
 					type,
-					size: type === "microvm" ? (shape === undefined ? (body.size ?? "default") : preset) : undefined,
-					...(shape === undefined ? {} : { shape }),
+					size: machine?.size,
+					...(machine?.shape === undefined ? {} : { shape: machine.shape }),
 					// An isolate's memory is what it asked for (its host has no say); a microVM's is what its host gives it.
 					...(type === "isolate" && shape !== undefined
-						? { resources: { vcpus: 0, memoryMb: shape.memoryMb, diskGb: 0 } }
+						? { shape, resources: { vcpus: 0, memoryMb: shape.memoryMb, diskGb: 0 } }
 						: {}),
-					image: type === "microvm" ? (body.image ?? capabilities.defaultImage) : undefined,
+					image: type === "microvm" ? (start?.image ?? body.image ?? capabilities.defaultImage) : undefined,
 					state: "starting",
 					visibility: account.kind === "personal" ? "private" : (body.visibility ?? account.defaultVisibility),
 					capabilities: type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
@@ -3819,7 +3906,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ownerUserId: principal.userId,
 					env,
 					...(environment === undefined ? {} : { environmentId: environment.id }),
-					grants: [],
+					...(start === undefined ? {} : { template: start.record, templateBoot: freshBoot(start.boot) }),
+					grants,
 					placeholders,
 					egressRevision,
 					hostLabels,
@@ -3858,8 +3946,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 								image: sandbox.image,
 								env: sandbox.env,
-								eligibleHosts: hosts,
+								eligibleHosts: start?.eligibleHosts ?? hosts,
 								fromSnapshot: from?.ref,
+								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
 							}),
@@ -3974,6 +4063,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await mayShare(principal),
 				);
 				const forks: StoredSandbox[] = [];
+				// Their machine, as every create decides it (`sandboxMachine`): from a snapshot, that of the sandbox it was taken
+				// of (the source's now, for one from before snapshots kept it) unless `size` names another. Forked live, the
+				// source's own, whatever `size` says: a host copies the running machine as it is.
+				const machine =
+					current.type !== "microvm"
+						? undefined
+						: snapshot === undefined
+							? sandboxMachine({ copies: current }, {}, [])
+							: sandboxMachine(
+									{
+										copies: recordsMachine(snapshot) ? snapshot : current,
+									},
+									body.size === undefined ? {} : { size: body.size },
+									[],
+								);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
 				for (let index = 0; index < count; index++) {
@@ -3997,9 +4101,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						name,
 						subdomain: subdomainFor(name),
 						type: current.type,
-						size: current.type === "microvm" ? (body.size ?? current.size) : undefined,
-						// A fork is its source's shape, unless it names a size.
-						...(current.shape === undefined || body.size !== undefined ? {} : { shape: current.shape }),
+						size: machine?.size,
+						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
+						// An isolate asks for its source's memory.
+						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
 						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
 						image: current.image,
 						state: "starting",
@@ -4092,6 +4197,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const hosts = await hostsToBoot(principal, current);
 			const fromSnapshot = await latestRef(current);
+			requireSetupScope(principal, role, current);
 			const environment = await provisionedAgain(principal, role, current);
 			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 			// say, still being retried) never equals it, and loses.
@@ -4670,6 +4776,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				state: "ready",
 				trigger: "manual",
 				memory: false,
+				...recordedMachine(current),
 				sizeBytes: taken.sizeBytes,
 				createdAt: at,
 				expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
@@ -4698,12 +4805,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			let sizeBytes: number | undefined;
 			// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
 			let base: string | undefined;
+			// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
+			let machine = recordedMachine(current);
 			if (body.snapshotId !== undefined) {
 				const source = await store.snapshots.get(body.snapshotId);
 				if (source === undefined || source.sandboxId !== current.id) throw notFound("snapshot of this sandbox");
 				ref = readyRef(source);
 				sizeBytes = source.sizeBytes;
 				base = source.base;
+				if (recordsMachine(source)) machine = recordedMachine(source);
 			} else if (current.state === "running") {
 				const taken = await backend.takeSnapshot(current.id);
 				ref = taken.ref;
@@ -4716,6 +4826,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				ref = readyRef(latest);
 				sizeBytes = latest.sizeBytes;
 				base = latest.base;
+				if (recordsMachine(latest)) machine = recordedMachine(latest);
 			}
 			const snapshot: StoredSnapshot = {
 				id: randomId("snap"),
@@ -4728,6 +4839,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				state: "ready",
 				trigger: "save",
 				memory: false,
+				...machine,
 				sizeBytes,
 				createdAt: now(),
 				ref,
@@ -5419,6 +5531,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 		},
 
+		// Templates (experimental): `templates.ts`.
+
+		...templates.handlers,
+
 		// An account's own hosts.
 
 		createAccountJoinToken: async (principal, { body }, request) => {
@@ -5502,6 +5618,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await requireCapacity(current.accountId, 1);
 		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
+		requireSetupScope(principal, role, current);
 		const environment = await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
@@ -5638,7 +5755,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const began = await beginStop(sandbox, false, reason, undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}
+			// Each template's cache, against the hosts' runtimes as they are now, in the background (one pass at a time).
+			keepGoing(templates.reconcileAll());
 		},
+
+		publishTemplateBase: (input) => templates.publishTemplateBase(input),
 
 		async sampleUsage() {
 			await catchUpUsage();

@@ -87,6 +87,8 @@ export interface SandboxSpec {
 	readonly fromSnapshot?: string;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
+	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
+	readonly template?: SandboxTemplateBoot;
 	/**
 	 * Read-only mounts (experimental, `KANTEL_MOUNTS`): microVMs only. A backend answers each one's status in
 	 * `Placement.mounts`; one it doesn't answer is marked `failed` by the service, so a backend that predates mounts
@@ -111,6 +113,83 @@ export interface BackendMountStatus {
 	readonly path: string;
 	readonly status: computeSchema.MountStatus;
 	readonly error?: string;
+}
+
+/**
+ * How a sandbox made from a template boots, as its spec's `shape` either way: a snapshot is picked only when it was
+ * built with those vCPUs and memory, so a restore and a fresh boot get the same machine.
+ */
+export interface SandboxTemplateBoot {
+	/** The base image's name, such as `kantel/sandbox`, which a host pulls from its operator's registry by digest. */
+	readonly baseImage: string;
+	/** Empty while the default base's channel has no published digest: each host's own sandbox image. */
+	readonly baseDigest: string;
+	readonly setup?: string;
+	/**
+	 * A template snapshot's `ref` (`BuiltTemplate.ref`) to start from, on the host that built it, which must be one of
+	 * the spec's eligible hosts. Absent: a fresh boot, which boots the template's base image and runs its setup in the
+	 * new machine. A backend that no longer holds the snapshot boots fresh too, and one whose host has no room for the
+	 * machine boots it fresh on another eligible host, either way saying so (`Placement.bootedFresh`): the snapshot only
+	 * speeds a create up.
+	 */
+	readonly snapshot?: string;
+}
+
+/** A machine's vCPUs, memory and disk, as its host gave them. */
+export interface MachineResources {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	readonly diskGb: number;
+}
+
+/** A host's runtime, which a template snapshot is only good for: the guest kernel and Firecracker it runs. */
+export interface TemplateRuntime {
+	readonly hostId: string;
+	readonly kernel: string;
+	readonly firecracker: string;
+}
+
+/** A template snapshot to build: the template's base image booted once, its setup run, then snapshotted. */
+export interface TemplateBuildSpec {
+	/** The template snapshot's ID, `tsn_…`, which names its bytes on the host. */
+	readonly snapshotId: string;
+	readonly accountId: string;
+	readonly templateId: string;
+	readonly version: number;
+	/** As `SandboxTemplateBoot.baseImage`. */
+	readonly baseImage: string;
+	/** As `SandboxTemplateBoot.baseDigest`. */
+	readonly baseDigest: string;
+	/**
+	 * The template's vCPUs and memory to build it as, which its sandboxes ask for too: its host gives the disk it would
+	 * give a create of that shape, so a restore of it is the machine a fresh boot would be.
+	 */
+	readonly shape: BackendShape;
+	readonly env: { readonly [name: string]: string };
+	readonly setup?: string;
+	/** The template's grants (and the account's proxy settings), for the build's boot. */
+	readonly egress?: BackendEgress;
+	readonly keyHash: string;
+	/** The host to build on: the one whose runtime the key names. */
+	readonly hostId: string;
+}
+
+/**
+ * A template snapshot's bytes to delete: by `ref` once its build answered, else by its ID on the host it was built on,
+ * which may have made them although its build's answer never came (it timed out, say).
+ */
+export interface TemplateSnapshotBytes {
+	readonly snapshotId: string;
+	readonly hostId: string;
+	readonly ref?: string;
+}
+
+/** A template snapshot built: its opaque reference, the host holding it, and its size. */
+export interface BuiltTemplate {
+	readonly ref: string;
+	readonly hostId: string;
+	readonly imageDigest?: string;
+	readonly sizeBytes: number;
 }
 
 /**
@@ -153,7 +232,7 @@ export interface BackendEgressGrant {
 /** Where a machine was placed, and what it can do. */
 export interface Placement {
 	readonly hostId: string;
-	readonly resources?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	readonly resources?: MachineResources;
 	readonly capabilities: computeSchema.SandboxCapabilities;
 	/**
 	 * The base image version its root file system is: a host images version (`host-images-20261104.812`) for a sandbox
@@ -172,6 +251,11 @@ export interface Placement {
 	 * `ComputeService.reportMounts`.
 	 */
 	readonly mounts?: readonly BackendMountStatus[];
+	/**
+	 * A create from a template snapshot that booted the template fresh instead, running its setup: its host no longer
+	 * held the snapshot (or couldn't restore it), or had no room and another host booted it.
+	 */
+	readonly bootedFresh?: boolean;
 }
 
 /** How to boot a machine for a sandbox that has none. */
@@ -421,6 +505,21 @@ export interface SandboxBackend {
 	 * what it holds of them, and fetches them again on the sandbox's next request. Absent, nothing holds them.
 	 */
 	updateSecrets?(sandboxId: string, version: number): Promise<void>;
+	/**
+	 * The runtime of each host that can build and boot template snapshots, one entry a host. Absent (with `buildTemplate`
+	 * and `deleteTemplateSnapshot`), the backend has no templates, and their routes answer `not_supported`.
+	 */
+	templateRuntimes?(): Promise<TemplateRuntime[]>;
+	/**
+	 * Builds a template snapshot on `spec.hostId`; rejects with why when the build or its setup fails, and `exhausted`
+	 * when the host has no room for the build now (it is tried again later).
+	 */
+	buildTemplate?(spec: TemplateBuildSpec): Promise<BuiltTemplate>;
+	/**
+	 * Deletes a template snapshot's bytes from its host, resolving once they are gone, or were never there. Never a user
+	 * snapshot's (`deleteSnapshot`).
+	 */
+	deleteTemplateSnapshot?(bytes: TemplateSnapshotBytes): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */

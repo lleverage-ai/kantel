@@ -328,6 +328,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 							),
 					},
 				}),
+		...(options.config.templates === true ? { templates: true } : {}),
 		now: () => clock.now(),
 	});
 	phase("compute");
