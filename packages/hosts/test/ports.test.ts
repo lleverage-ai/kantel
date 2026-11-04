@@ -538,6 +538,47 @@ describe("HTTP over a port's stream", () => {
 		}
 	});
 
+	it("refuses too big a head even whole in one push, and keeps no interim head while waiting for the real one", async () => {
+		const big = `HTTP/1.1 200 OK\r\nX-Big: ${"x".repeat(70 * 1024)}\r\n\r\nhello`;
+		await expect(send(big)).rejects.toMatchObject({ status: 502 });
+		const whole = proxyHttp(
+			async (sink) => ({ stream: 1, write: () => sink.data(encoder.encode(big)), close: () => undefined }),
+			new Request("https://p.test/"),
+			{ host: "p.test" },
+		);
+		await expect(whole).rejects.toMatchObject({ status: 502 });
+
+		v8.setFlagsFromString("--expose-gc");
+		const gc = vm.runInNewContext("gc") as () => void;
+		let pushed: WeakRef<ArrayBuffer> | undefined;
+		let sink: PortSink | undefined;
+		const pending = proxyHttp(
+			async (given) => {
+				sink = given;
+				return {
+					stream: 1,
+					write: () => {
+						// A thousand interim heads, then the start of the real one.
+						const bytes = encoder.encode(`${"HTTP/1.1 100 Continue\r\n\r\n".repeat(1000)}HTTP/1.1 200 OK\r\n`);
+						pushed = new WeakRef(bytes.buffer);
+						given.data(bytes);
+					},
+					close: () => undefined,
+				};
+			},
+			new Request("https://p.test/"),
+			{ host: "p.test" },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		gc();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		gc();
+		expect(pushed?.deref()).toBeUndefined();
+		// What it kept is the head's start: the rest of it still makes the answer.
+		sink?.data(encoder.encode("Content-Length: 2\r\n\r\nok"));
+		expect(await (await pending).text()).toBe("ok");
+	});
+
 	it("reads a body to the end of the stream when it has no length", async () => {
 		const answer = await send("HTTP/1.0 200 OK\r\n\r\nall of it");
 		expect(await answer.text()).toBe("all of it");

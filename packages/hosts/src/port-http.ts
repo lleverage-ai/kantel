@@ -371,9 +371,14 @@ export function proxyHttp(
 				buffer = concat(buffer, bytes);
 				for (;;) {
 					const end = indexOfCrlfCrlf(buffer);
+					// Too big however it arrives: cut off, or whole with its blank line in one push.
+					if (end > MAX_HEAD_BYTES || (end < 0 && buffer.length > MAX_HEAD_BYTES)) {
+						buffer = new Uint8Array(0);
+						return fail(new PortHttpError(502, "The sandbox's server sent too big a head"));
+					}
 					if (end < 0) {
-						if (buffer.length > MAX_HEAD_BYTES)
-							fail(new PortHttpError(502, "The sandbox's server sent too big a head"));
+						// Waiting for the rest of a head: only it is kept (a copy), not the push or interim heads before it.
+						buffer = buffer.slice();
 						return;
 					}
 					let parsed: Head;
