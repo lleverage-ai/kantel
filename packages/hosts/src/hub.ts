@@ -127,6 +127,11 @@ interface Connection {
 	readonly socket: HostSocket;
 	welcomed: boolean;
 	closed: boolean;
+	/**
+	 * The newest settings sent while its hello was still being answered: that answer may have read the host before they
+	 * were written, so they follow its welcome.
+	 */
+	later?: HostWelcome;
 	readonly pending: Map<string, Pending>;
 	readonly streams: Map<number, PortSink>;
 }
@@ -288,6 +293,9 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			if (connection.closed) return;
 			connection.welcomed = true;
 			send(connection, { type: "welcome", welcome });
+			const later = connection.later;
+			connection.later = undefined;
+			if (later !== undefined) send(connection, { type: "welcome", welcome: later });
 		} catch (error) {
 			shut(connection, HOST_CLOSE_PROTOCOL, error instanceof Error ? error.message : "The hello was refused");
 		}
@@ -481,7 +489,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		},
 		rewelcome(hostId, welcome) {
 			const connection = held.get(hostId);
-			if (connection?.welcomed) send(connection, { type: "welcome", welcome });
+			if (connection === undefined || connection.closed) return;
+			// Mid-hello it waits for the welcome, not dropped: the hello's own may be older.
+			if (connection.welcomed) send(connection, { type: "welcome", welcome });
+			else connection.later = welcome;
 		},
 		disconnect(hostId, code, reason) {
 			const connection = held.get(hostId);

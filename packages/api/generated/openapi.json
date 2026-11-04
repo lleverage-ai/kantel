@@ -9016,6 +9016,19 @@
 				},
 				"title": "CreateWebhookBody"
 			},
+			"CustomDiskStep": {
+				"type": "object",
+				"required": ["memoryMb", "diskGb"],
+				"properties": {
+					"memoryMb": {
+						"type": "integer"
+					},
+					"diskGb": {
+						"type": "integer"
+					}
+				},
+				"title": "CustomDiskStep"
+			},
 			"DeploymentMode": {
 				"anyOf": [
 					{
@@ -10396,11 +10409,19 @@
 						"type": "array",
 						"items": {
 							"$ref": "#/components/schemas/ShapePreset"
-						}
+						},
+						"description": "Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry, warm only where a host keeps that very shape warm."
 					},
 					"custom": {
 						"type": "boolean",
 						"description": "Whether a host takes shapes off the presets; when false, only the presets."
+					},
+					"customDisk": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/CustomDiskStep"
+						},
+						"description": "The disk a shape off the presets gets: the first step, by memory, with at least its memory, else the last. Only where every host that makes such shapes gives the same; absent where it depends on the host."
 					}
 				},
 				"title": "MicrovmShapes",

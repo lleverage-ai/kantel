@@ -701,19 +701,26 @@ func (m *Manager) fill(sizeName string) {
 				time.Sleep(10 * time.Second)
 				continue
 			}
-			// The target may have dropped while it warmed: one no longer wanted is ended, not kept.
-			m.mu.Lock()
-			wanted := len(m.pool[sizeName]) < m.poolWant[sizeName] && !m.closed.Load()
-			if wanted {
-				m.pool[sizeName] = append(m.pool[sizeName], w)
-			}
-			m.mu.Unlock()
-			if !wanted {
-				m.discard(w)
+			if !m.admit(sizeName, w) {
 				return
 			}
 		}
 	}()
+}
+
+// admit puts a warm VM a fill made into its pool if the pool still wants one, checked now, under the lock: the
+// target may have dropped while it warmed, and then it is ended, not kept. It answers whether it was kept.
+func (m *Manager) admit(sizeName string, w *warm) bool {
+	m.mu.Lock()
+	wanted := len(m.pool[sizeName]) < m.poolWant[sizeName] && !m.closed.Load()
+	if wanted {
+		m.pool[sizeName] = append(m.pool[sizeName], w)
+	}
+	m.mu.Unlock()
+	if !wanted {
+		m.discard(w)
+	}
+	return wanted
 }
 
 // trimPools keeps at most want[size] idle VMs of each size (none of a size not wanted), oldest first, and answers

@@ -335,6 +335,10 @@ export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
 						presets: microvm.presets.map((preset) => ({ ...preset })),
 						// Older hosts only: then just the presets may be chosen.
 						custom: microvm.custom,
+						// A custom shape's disk, where every host would give the same; else none is promised.
+						...(microvm.customDisk === undefined
+							? {}
+							: { customDisk: microvm.customDisk.map((step) => ({ ...step })) }),
 					},
 		...(shapes.rates === undefined
 			? {}

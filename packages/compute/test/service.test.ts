@@ -306,7 +306,42 @@ describe("sandboxes", () => {
 		const warm = microvmShapes([{ ...host, features: ["custom-shapes"], pools: { "microvm/default": 1 } }], sizes);
 		expect(warm).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
 		expect(warm?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20, warm: true }]);
+		expect(warm?.customDisk).toEqual([{ memoryMb: 2048, diskGb: 20 }]);
+		expect(named?.customDisk).toBeUndefined();
 		expect(microvmShapes([], sizes)).toBeUndefined();
+	});
+
+	it("keeps hosts' different shapes under one name apart, warm only where that very shape is kept warm", () => {
+		const host = {
+			id: "a",
+			name: "a",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+			features: ["custom-shapes"],
+		} as const;
+		const warmFour = {
+			...host,
+			sizes: [{ name: "default" as const, vcpus: 4, memoryMb: 2048, diskGb: 20 }],
+			pools: { "microvm/default": 2 },
+		};
+		const coldTwo = { ...host, id: "b", sizes: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 40 }] };
+		const shapes = microvmShapes([warmFour, coldTwo], []);
+		expect(shapes?.presets).toEqual([
+			{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 40, warm: false },
+			{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20, warm: true },
+		]);
+		// Their custom shapes' disks differ, so none is promised.
+		expect(shapes?.customDisk).toBeUndefined();
+		// The same shape on both: one entry, warm if either keeps it.
+		const same = microvmShapes([warmFour, { ...warmFour, id: "c", pools: {} }], []);
+		expect(same?.presets).toEqual([{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20, warm: true }]);
+		expect(same?.customDisk).toEqual([{ memoryMb: 2048, diskGb: 20 }]);
 	});
 
 	it("checks a shape against the hosts this create may use only, however full they are", () => {
@@ -613,6 +648,26 @@ describe("organisations", () => {
 			expect(await failure(call)).toMatchObject({ code: "conflict", message: NEVER_MADE });
 		}
 		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
+
+		// One of a shape of its own is made again as that shape; a size named on its start replaces it.
+		failing = true;
+		const shaped = await tom.createSandbox({
+			type: "microvm",
+			from: snapshotId,
+			resources: { vcpus: 3, memoryMb: 6144 },
+			wait: true,
+		});
+		const sized = await tom.createSandbox({
+			type: "microvm",
+			from: snapshotId,
+			resources: { vcpus: 3, memoryMb: 6144 },
+			wait: true,
+		});
+		failing = false;
+		const again = await tom.startSandbox(shaped.id, { wait: true });
+		expect(again.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+		const large = await tom.startSandbox(sized.id, { size: "large", wait: true });
+		expect(large).toMatchObject({ size: "large", resources: { vcpus: 4, memoryMb: 8192 } });
 	});
 
 	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {

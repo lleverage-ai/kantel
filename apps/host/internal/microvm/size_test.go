@@ -143,3 +143,35 @@ func TestSetPoolsEndsSurplusWarmVMs(t *testing.T) {
 		t.Fatal("the last warm VM's files are still there")
 	}
 }
+
+// A fill that finishes after the target dropped is ended, not kept; one still wanted is kept.
+func TestAFillLandingAfterADropIsEnded(t *testing.T) {
+	root := t.TempDir()
+	idle := func(name string) *warm {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return &warm{dir: dir, size: "default"}
+	}
+	m := &Manager{
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		pool:     map[string][]*warm{"default": {idle("a")}},
+		poolWant: map[string]int{"default": 1},
+		filling:  map[string]bool{},
+	}
+	late := idle("late")
+	if m.admit("default", late) {
+		t.Fatal("a warm VM past the target was kept")
+	}
+	if _, err := os.Stat(late.dir); !os.IsNotExist(err) {
+		t.Fatal("the late warm VM's files are still there")
+	}
+	m.mu.Lock()
+	m.poolWant["default"] = 2
+	m.mu.Unlock()
+	wanted := idle("wanted")
+	if !m.admit("default", wanted) || m.Warm()["default"] != 2 {
+		t.Fatalf("a wanted warm VM wasn't kept: %v", m.Warm())
+	}
+}

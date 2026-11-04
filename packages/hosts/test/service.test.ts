@@ -250,6 +250,62 @@ describe("hosts service", () => {
 		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: {} });
 	});
 
+	it("ends a host's hello on the pools set while it was answered: a target, none, or the deployment's", async () => {
+		const deployment = { "microvm/default": 1 };
+		for (const [set, want] of [
+			[{ "microvm/default": 3 }, { "microvm/default": 3 }],
+			[{}, {}],
+			[null, deployment],
+		] as const) {
+			// The hello's last read of the host (after it reconciles) is taken, then held: an update lands between that read
+			// and its welcome.
+			const inner = createMemoryHostStore();
+			let gate: Promise<void> | undefined;
+			let armed = 0;
+			const store = {
+				...inner,
+				async placementsOn(hostId: string) {
+					if (gate !== undefined && armed === 0) armed = 1;
+					return inner.placementsOn(hostId);
+				},
+				async getHost(hostId: string) {
+					const read = await inner.getHost(hostId);
+					if (armed === 1) {
+						armed = 2;
+						await gate;
+					}
+					return read;
+				},
+			};
+			const service = createHostsService({
+				store,
+				publicUrl: "https://kantel.example.com/",
+				pools: deployment,
+				log: () => {},
+			});
+			services.push(service);
+			const token = await service.createJoinToken({ name: "a" });
+			const { hostId } = await service.register({ token: token.token, facts: facts() });
+			// Its last setting before this hello: something else, so the hello's first read is older than what is set.
+			await service.update(hostId, { pools: { "microvm/default": 2 } });
+
+			let open = () => {};
+			gate = new Promise((resolve) => {
+				open = resolve;
+			});
+			const host = new FakeHost(service, hostId);
+			host.connect();
+			await tick();
+			expect(host.welcomed()).toBe(false);
+			await service.update(hostId, { pools: set });
+			open();
+			await tick();
+			const welcomes = host.sent.filter((message) => message.type === "welcome");
+			expect(welcomes.length).toBeGreaterThan(0);
+			expect(welcomes.at(-1)?.welcome?.pools).toEqual(want);
+		}
+	});
+
 	it("takes over from an older connection and revokes a host for good", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");

@@ -373,9 +373,19 @@ const makesCustom = (host: BackendHost) => host.features?.includes(CUSTOM_SHAPES
 /** `value` down to a multiple of `step`. */
 const floorTo = (value: number, step: number) => Math.floor(value / step) * step;
 
+/** A host's named sizes as the disk rule reads them, ordered as `@kantel/hosts`' `diskFor` orders them. */
+const diskSteps = (sizes: readonly BackendSize[]) =>
+	[...sizes]
+		.sort((a, b) => a.memoryMb - b.memoryMb || a.diskGb - b.diskGb)
+		.map((size) => ({ memoryMb: size.memoryMb, diskGb: size.diskGb }));
+
 /**
  * What a microVM may be on `hosts` (those the account may use that run microVMs): their presets, and, where a host
  * makes custom shapes, any vCPUs and memory it has. Undefined with no such host.
+ *
+ * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs, and only a host
+ * keeping that very shape warm makes it warm. A custom shape's disk is said only where every host that makes them
+ * would give the same.
  */
 export function microvmShapes(
 	hosts: readonly BackendHost[],
@@ -383,13 +393,16 @@ export function microvmShapes(
 ): computeSchema.SandboxShapes["microvm"] {
 	if (hosts.length === 0) return undefined;
 	const presets = new Map<string, computeSchema.ShapePreset>();
+	const customDisks = new Set<string>();
 	let maxVcpus = 1;
 	let maxMemory = MICROVM_MEMORY_STEP_MB;
 	for (const host of hosts) {
-		for (const size of host.sizes ?? deploymentSizes) {
+		const sizes = host.sizes ?? deploymentSizes;
+		for (const size of sizes) {
 			const warm = (host.pools?.[`microvm/${size.name}`] ?? 0) > 0;
-			const known = presets.get(size.name);
-			presets.set(size.name, {
+			const key = `${size.name}/${size.vcpus}/${size.memoryMb}/${size.diskGb}`;
+			const known = presets.get(key);
+			presets.set(key, {
 				name: size.name,
 				vcpus: size.vcpus,
 				memoryMb: size.memoryMb,
@@ -402,10 +415,16 @@ export function microvmShapes(
 		if (makesCustom(host)) {
 			maxVcpus = Math.max(maxVcpus, Math.min(MAX_VCPUS, host.capacity.vcpus));
 			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
+			customDisks.add(JSON.stringify(diskSteps(sizes)));
 		}
 	}
-	const list = [...presets.values()].sort((a, b) => a.vcpus - b.vcpus || a.memoryMb - b.memoryMb);
-	const preferred = presets.get("default") ?? list[0];
+	const list = [...presets.values()].sort(
+		(a, b) => a.vcpus - b.vcpus || a.memoryMb - b.memoryMb || a.diskGb - b.diskGb || a.name.localeCompare(b.name),
+	);
+	const preferred = list.find((preset) => preset.name === "default") ?? list[0];
+	const [customDisk] = customDisks;
+	const disk: { memoryMb: number; diskGb: number }[] | undefined =
+		customDisks.size === 1 && customDisk !== undefined ? JSON.parse(customDisk) : undefined;
 	const minMemory = Math.min(MEMORY_MB_PER_VCPU.min, ...list.map((preset) => preset.memoryMb));
 	return {
 		vcpus: { min: 1, max: maxVcpus, step: 1, default: preferred?.vcpus ?? Math.min(2, maxVcpus) },
@@ -418,6 +437,7 @@ export function microvmShapes(
 		memoryMbPerVcpu: { ...MEMORY_MB_PER_VCPU },
 		presets: list,
 		custom: hosts.some(makesCustom),
+		...(disk === undefined || disk.length === 0 ? {} : { customDisk: disk }),
 	};
 }
 
@@ -1973,6 +1993,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
 	 * (`latestRef`), made as its create would make it, from its source's snapshot, since no backend has it to start.
+	 * `sandbox` is the record as the boot moved it (a restart's new size and shape included), and `boot` its sizing.
 	 */
 	function bootAgain(
 		sandbox: StoredSandbox,
@@ -1986,10 +2007,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			accountId: sandbox.accountId,
 			type: sandbox.type,
 			subdomain: sandbox.subdomain,
-			...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
+			...(boot.shape === undefined ? {} : { shape: boot.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
 		});
 	}
+
+	/** A boot's sizing from the record as it moved: its named size and, where it has one, its shape. */
+	const sizingOf = (sandbox: StoredSandbox): Pick<BootOptions, "size" | "shape"> => ({
+		...(sandbox.size === undefined ? {} : { size: sandbox.size }),
+		...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
+	});
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
 	async function releaseRef(ref: string | undefined): Promise<void> {
@@ -3302,8 +3329,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						current.id,
 						() =>
 							bootAgain(
-								current,
-								{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
+								starting,
+								{ fromSnapshot, env: current.env, eligibleHosts: hosts, ...sizingOf(starting), ...egress },
 								(options) => backend.recover(current.id, options),
 							),
 						undefined,
@@ -4488,6 +4515,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
+				// A size it names replaces the shape it had; without one it keeps its shape.
+				shape: body.size === undefined ? latest.shape : undefined,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
@@ -4502,7 +4531,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const starting = began.moved;
 		const bootOptions = {
 			fromSnapshot,
-			size: starting.size,
+			...sizingOf(starting),
 			env: current.env,
 			eligibleHosts: hosts,
 			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
@@ -4512,7 +4541,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			boot(
 				current.id,
 				() =>
-					bootAgain(current, bootOptions, (options) =>
+					bootAgain(starting, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					),
 				undefined,

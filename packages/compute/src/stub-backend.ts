@@ -279,6 +279,11 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		const machine = machineOf(sandboxId);
 		placeable(options.eligibleHosts, machine.type);
 		if (machine.state === "running") return placement(machine);
+		// The boot's shape where it gives one; another named size without one replaces the shape it had.
+		if (machine.type === "microvm") {
+			if (options.shape !== undefined) machine.shape = options.shape;
+			else if (options.size !== undefined && options.size !== machine.size) machine.shape = undefined;
+		}
 		machine.size = options.size ?? machine.size;
 		machine.env = { ...options.env };
 		if (keepMemory && machine.state === "paused" && machine.fs !== undefined) boot(machine, machine.fs);

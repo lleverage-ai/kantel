@@ -12,8 +12,10 @@ import {
 	memoryText,
 	presetOf,
 	type SandboxShapes,
+	shapeAllowed,
 	shapeCentsPerHour,
 	sizeText,
+	vcpuRangeFor,
 } from "./compute-model.ts";
 import { NewSandboxDialog, ShapeFields } from "./sandboxes-page.tsx";
 
@@ -99,15 +101,73 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 			}),
 		);
 
-	it("gives a shape the disk the hosts would: a preset's own, else the smallest preset's with its memory", () => {
+	it("gives a shape the disk the hosts would: a preset's own, else the first step with its memory", () => {
+		// A preset, then below, between and above the steps.
 		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).toBe(60);
 		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 1, memoryMb: 512 })).toBe(40);
 		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 5, memoryMb: 10_240 })).toBe(120);
 		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 16, memoryMb: 65_536 })).toBe(240);
-		const none = { ...DEFAULT_SANDBOX_SHAPES, microvm: { ...DEFAULT_SANDBOX_SHAPES.microvm, presets: [] } };
-		expect(diskFor(none, { vcpus: 2, memoryMb: 2048 })).toBeUndefined();
+		// Hosts that would give different disks: none is promised off the presets.
+		const { customDisk: _, ...varied } = DEFAULT_SANDBOX_SHAPES.microvm;
+		const mixed: SandboxShapes = { ...DEFAULT_SANDBOX_SHAPES, microvm: varied };
+		expect(diskFor(mixed, { vcpus: 2, memoryMb: 2048 })).toBeUndefined();
+		expect(diskFor(mixed, { vcpus: 4, memoryMb: 8192 })).toBe(60);
+		// Nor for a preset two hosts give different disks.
+		const twice: SandboxShapes = {
+			...mixed,
+			microvm: {
+				...varied,
+				presets: [...varied.presets, { name: "m", vcpus: 4, memoryMb: 8192, diskGb: 80, warm: false }],
+			},
+		};
+		expect(diskFor(twice, { vcpus: 4, memoryMb: 8192 })).toBeUndefined();
 		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 1, memoryMb: 512 })).toContain("40 GB disk");
-		expect(fields(none, { vcpus: 2, memoryMb: 2048 })).not.toContain("GB disk");
+		expect(fields(mixed, { vcpus: 2, memoryMb: 2048 })).not.toContain("GB disk");
+	});
+
+	it("keeps vCPUs to what the memory's top can hold, and memory under it", () => {
+		// 32 vCPUs need 16 GB at 512 MB each; hosts with 8 GB stop at 16.
+		const small: SandboxShapes = {
+			...DEFAULT_SANDBOX_SHAPES,
+			microvm: {
+				...DEFAULT_SANDBOX_SHAPES.microvm,
+				vcpus: { min: 1, max: 32, step: 1, default: 32 },
+				memoryMb: { min: 512, max: 8192, step: 512, default: 2048 },
+			},
+		};
+		const cpus = vcpuRangeFor(small);
+		expect(cpus.max).toBe(16);
+		expect(cpus.default).toBe(16);
+		expect(memoryRangeFor(small, 32).max).toBe(8192);
+		expect(memoryRangeFor(small, 32).min).toBeGreaterThan(memoryRangeFor(small, 32).max);
+		expect(fitMemory(small, 16, 4096)).toBe(8192);
+		expect(shapeAllowed(small, { vcpus: 16, memoryMb: 8192 })).toBe(true);
+		expect(shapeAllowed(small, { vcpus: 32, memoryMb: 16_384 })).toBe(false);
+		expect(shapeAllowed(small, { vcpus: 2, memoryMb: 16_384 })).toBe(false);
+		const html = fields(small, { vcpus: 16, memoryMb: 8192 });
+		expect(html).toContain('min="1" max="16"');
+		expect(html).not.toContain('max="32"');
+	});
+
+	it("keeps presets that share a name apart, each with its own shape", () => {
+		const shared: SandboxShapes = {
+			...DEFAULT_SANDBOX_SHAPES,
+			microvm: {
+				...DEFAULT_SANDBOX_SHAPES.microvm,
+				custom: false,
+				presets: [
+					{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 20, warm: false },
+					{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20, warm: true },
+				],
+			},
+		};
+		const html = fields(shared, { vcpus: 4, memoryMb: 2048 });
+		expect(html.match(/<option/g)).toHaveLength(2);
+		expect(html).toContain('value="2/4096"');
+		expect(html).toContain('value="4/2048"');
+		expect(coldStart(shared, { vcpus: 4, memoryMb: 2048 })).toBe(false);
+		expect(coldStart(shared, { vcpus: 2, memoryMb: 4096 })).toBe(true);
+		expect(shapeAllowed(shared, { vcpus: 3, memoryMb: 4096 })).toBe(false);
 	});
 
 	it("offers only the presets, from a list, where no host makes other shapes", () => {

@@ -821,18 +821,25 @@ func (m *Manager) fillSpare() {
 			time.Sleep(10 * time.Second)
 			continue
 		}
-		// The target may have dropped while it started: one no longer wanted is ended, not kept.
-		m.mu.Lock()
-		wanted := len(m.spare) < m.spareWant && !m.closed.Load()
-		if wanted {
-			m.spare = append(m.spare, r)
-		}
-		m.mu.Unlock()
-		if !wanted {
-			r.close()
+		if !m.admitSpare(r) {
 			return
 		}
 	}
+}
+
+// admitSpare keeps a runtime a fill started as a spare if one is still wanted, checked now, under the lock: the
+// target may have dropped while it started, and then it is ended, not kept. It answers whether it was kept.
+func (m *Manager) admitSpare(r *runtime) bool {
+	m.mu.Lock()
+	wanted := len(m.spare) < m.spareWant && !m.closed.Load()
+	if wanted {
+		m.spare = append(m.spare, r)
+	}
+	m.mu.Unlock()
+	if !wanted {
+		r.close()
+	}
+	return wanted
 }
 
 // Warm is how many spare runtimes are ready.

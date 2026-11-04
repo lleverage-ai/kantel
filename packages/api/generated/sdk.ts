@@ -323,6 +323,11 @@ export interface CreateWebhookBody {
 	readonly events: readonly EventType[];
 }
 
+export interface CustomDiskStep {
+	readonly memoryMb: number;
+	readonly diskGb: number;
+}
+
 /** `selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans. */
 export type DeploymentMode = "selfhosted" | "hosted";
 
@@ -843,9 +848,12 @@ export interface MicrovmShapes {
 		readonly min: number;
 		readonly max: number;
 	};
+	/** Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry, warm only where a host keeps that very shape warm. */
 	readonly presets: readonly ShapePreset[];
 	/** Whether a host takes shapes off the presets; when false, only the presets. */
 	readonly custom: boolean;
+	/** The disk a shape off the presets gets: the first step, by memory, with at least its memory, else the last. Only where every host that makes such shapes gives the same; absent where it depends on the host. */
+	readonly customDisk?: readonly CustomDiskStep[];
 }
 
 export interface PollDeviceLoginBody {

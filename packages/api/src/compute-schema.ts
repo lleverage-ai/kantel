@@ -311,10 +311,21 @@ export const SandboxShapes = Type.Object(
 						{ min: Type.Integer(), max: Type.Integer() },
 						{ description: "Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB." },
 					),
-					presets: Type.Array(ShapePreset),
+					presets: Type.Array(ShapePreset, {
+						description:
+							"Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry, warm " +
+							"only where a host keeps that very shape warm.",
+					}),
 					custom: Type.Boolean({
 						description: "Whether a host takes shapes off the presets; when false, only the presets.",
 					}),
+					customDisk: Type.Optional(
+						Type.Array(Type.Object({ memoryMb: Type.Integer(), diskGb: Type.Integer() }, { title: "CustomDiskStep" }), {
+							description:
+								"The disk a shape off the presets gets: the first step, by memory, with at least its memory, else the " +
+								"last. Only where every host that makes such shapes gives the same; absent where it depends on the host.",
+						}),
+					),
 				},
 				{ title: "MicrovmShapes", description: "Absent when no host the account may use runs microVMs." },
 			),

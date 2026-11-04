@@ -138,6 +138,11 @@ export interface BootOptions {
 	/** The disk to boot from: the sandbox's newest snapshot. Absent, an empty disk. */
 	readonly fromSnapshot?: string;
 	readonly size?: computeSchema.SandboxSizeName;
+	/**
+	 * A microVM's vCPUs and memory as it now is: kept on a restart, absent once a restart names another size (then it is
+	 * that size). A backend that can change a stopped machine's shape boots it as this.
+	 */
+	readonly shape?: BackendShape;
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
 	readonly egress?: BackendEgress;

@@ -56,3 +56,27 @@ func TestSetPoolsEndsSurplusSpares(t *testing.T) {
 		t.Fatalf("an account's runtime was ended: %v", err)
 	}
 }
+
+// A spare that finishes starting after the target dropped is ended, not kept; one still wanted is kept.
+func TestASpareLandingAfterADropIsEnded(t *testing.T) {
+	root := t.TempDir()
+	spare := func(name string) *runtime {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return &runtime{dir: dir}
+	}
+	m := &Manager{spareWant: 0}
+	late := spare("late")
+	if m.admitSpare(late) {
+		t.Fatal("a spare past the target was kept")
+	}
+	if _, err := os.Stat(late.dir); !os.IsNotExist(err) {
+		t.Fatal("the late spare's files are still there")
+	}
+	m.spareWant = 1
+	if !m.admitSpare(spare("wanted")) || m.Warm()["default"] != 1 {
+		t.Fatalf("a wanted spare wasn't kept: %v", m.Warm())
+	}
+}

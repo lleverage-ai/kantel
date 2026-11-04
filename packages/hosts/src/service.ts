@@ -379,7 +379,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
 	});
 
-	const hello = async (hostId: string, message: HostHello): Promise<HostWelcome> => {
+	const hello = async (hostId: string, message: HostHello): Promise<void> => {
 		const host = await store.getHost(hostId);
 		if (host === undefined || host.revoked) throw new Error("This host is revoked");
 		const facts = parseHostFacts(message.facts);
@@ -413,17 +413,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
 		log(`[hosts] host ${hostId} connected (${facts.value.version}, ${sandboxes.length} sandboxes)`);
-		// Its welcome is the host as written, with any pools an operator set meanwhile.
-		return welcomeFor(reported);
+	};
+
+	/**
+	 * A welcome is the host as written once it is claimed, with any pools an operator set while it reconciled; one set
+	 * after this read reaches the hub's `rewelcome` (routed here, now it is claimed), which holds it for after this one.
+	 */
+	const welcomeNow = async (hostId: string): Promise<HostWelcome> => {
+		const latest = await store.getHost(hostId);
+		if (latest === undefined || latest.revoked) throw new Error("This host is revoked");
+		return welcomeFor(latest);
 	};
 
 	const cluster = options.cluster;
 	const local = createHostHub({
 		async onHello(hostId, message) {
-			const welcome = await hello(hostId, message);
+			await hello(hostId, message);
 			// Recorded before the welcome, so no replica routes elsewhere once the host takes calls here.
 			await cluster?.claim(hostId);
-			return welcome;
+			return welcomeNow(hostId);
 		},
 		onHeartbeat(hostId, reported) {
 			const parsed = parseHostCapacity(reported);

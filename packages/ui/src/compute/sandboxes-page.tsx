@@ -48,9 +48,11 @@ import {
 	type SavedSnapshot,
 	sandboxActions,
 	sandboxMoving,
+	shapeAllowed,
 	shapeCentsPerHour,
 	sizeText,
 	stopsInText,
+	vcpuRangeFor,
 } from "./compute-model.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
@@ -1046,7 +1048,8 @@ export function ShapeFields({
 			</div>
 		);
 	}
-	const { vcpus: cpuRange, presets } = shapes.microvm;
+	const { presets } = shapes.microvm;
+	const cpuRange = vcpuRangeFor(shapes);
 	const memory = memoryRangeFor(shapes, shape.vcpus);
 	const disk = diskFor(shapes, shape);
 	const cold = coldStart(shapes, shape);
@@ -1062,19 +1065,22 @@ export function ShapeFields({
 		</p>
 	);
 	if (!customShapes(shapes)) {
-		const chosen = presetOf(shapes, shape) ?? presets[0];
+		// An option is a whole shape: hosts may give one name different shapes, and each submits its own.
+		const shapeKey = (entry: SandboxShape) => `${entry.vcpus}/${entry.memoryMb}`;
+		const options = [...new Map(presets.map((entry) => [shapeKey(entry), entry])).values()];
+		const chosen = presetOf(shapes, shape) ?? options[0];
 		return (
 			<div className="flex flex-col gap-4">
 				<SelectField
 					label="Size"
 					hint="These hosts make only their named sizes; update kantel-host for any vCPUs and memory."
-					value={chosen?.name ?? ""}
+					value={chosen === undefined ? "" : shapeKey(chosen)}
 					onChange={(event) => {
-						const next = presets.find((entry) => entry.name === event.currentTarget.value);
+						const next = options.find((entry) => shapeKey(entry) === event.currentTarget.value);
 						if (next !== undefined) onPreset({ vcpus: next.vcpus, memoryMb: next.memoryMb });
 					}}
-					options={presets.map((entry) => ({
-						value: entry.name,
+					options={options.map((entry) => ({
+						value: shapeKey(entry),
 						label: `${entry.vcpus} vCPU, ${memoryText(entry.memoryMb)}`,
 					}))}
 				/>
@@ -1153,11 +1159,9 @@ export function NewSandboxDialog({
 			(read) => {
 				// Set once, before any slider can move: the controls show only once this lands.
 				const presets = read.microvm.presets;
+				const cpus = vcpuRangeFor(read).default;
 				const start = customShapes(read)
-					? {
-							vcpus: read.microvm.vcpus.default,
-							memoryMb: fitMemory(read, read.microvm.vcpus.default, read.microvm.memoryMb.default),
-						}
+					? { vcpus: cpus, memoryMb: fitMemory(read, cpus, read.microvm.memoryMb.default) }
 					: (presets.find(
 							(preset) =>
 								preset.vcpus === read.microvm.vcpus.default && preset.memoryMb === read.microvm.memoryMb.default,
@@ -1183,8 +1187,10 @@ export function NewSandboxDialog({
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const fromOptions = saved.filter((entry) => entry.kind === kind);
 	const shape: SandboxShape = kind === "isolate" ? { vcpus: 0, memoryMb: isolateMb } : { vcpus, memoryMb };
+	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
+	const ready = valid && shapesRead === "ready" && (kind === "isolate" || shapeAllowed(shapes, shape));
 	const submit = () => {
-		if (!valid || shapesRead !== "ready") return;
+		if (!ready) return;
 		onCreate({
 			accountId: account.id,
 			...(name === "" ? {} : { name }),
@@ -1207,7 +1213,7 @@ export function NewSandboxDialog({
 			actions={
 				<>
 					<Button onClick={onClose}>Cancel</Button>
-					<Button type="submit" variant="primary" disabled={!valid || shapesRead !== "ready"}>
+					<Button type="submit" variant="primary" disabled={!ready}>
 						Create
 					</Button>
 				</>

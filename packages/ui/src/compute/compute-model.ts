@@ -147,6 +147,11 @@ export interface SandboxShapes {
 		 * may be chosen. Absent: true.
 		 */
 		readonly custom?: boolean;
+		/**
+		 * The disk a shape off the presets gets: the first step, by memory, with at least its memory, else the last. Absent
+		 * where it depends on the host it lands on: then none is promised.
+		 */
+		readonly customDisk?: readonly { readonly memoryMb: number; readonly diskGb: number }[];
 	};
 	/** Hosted only: US cents an hour while it runs, per vCPU and per GB of memory. */
 	readonly rates?: {
@@ -172,23 +177,60 @@ export const DEFAULT_SANDBOX_SHAPES: SandboxShapes = {
 			{ name: "large", vcpus: 8, memoryMb: 16384, diskGb: 120, warm: false },
 			{ name: "xlarge", vcpus: 16, memoryMb: 32768, diskGb: 240, warm: false },
 		],
+		customDisk: [
+			{ memoryMb: 4096, diskGb: 40 },
+			{ memoryMb: 8192, diskGb: 60 },
+			{ memoryMb: 16384, diskGb: 120 },
+			{ memoryMb: 32768, diskGb: 240 },
+		],
 	},
 	rates: { microvmCentsPerVcpuHour: 0.75, microvmCentsPerGbHour: 0.125, isolateCentsPerGbHour: 2 },
 };
 
-/** The memory a microVM of `vcpus` may have: the range, narrowed to what that many vCPUs may hold. */
+/**
+ * The vCPUs a microVM may have: the range, cut to the most whose least memory still fits under the memory's top (32
+ * vCPUs at 512 MB each need 16 GB, so hosts with 8 GB stop at 16).
+ */
+export function vcpuRangeFor(shapes: SandboxShapes): ShapeRange {
+	const { vcpus, memoryMb, memoryMbPerVcpu } = shapes.microvm;
+	const fits = (count: number) =>
+		Math.max(memoryMb.min, Math.ceil((count * memoryMbPerVcpu.min) / memoryMb.step) * memoryMb.step) <= memoryMb.max;
+	let max = vcpus.max;
+	while (max > vcpus.min && !fits(max)) max -= vcpus.step;
+	return { ...vcpus, max, default: Math.min(max, Math.max(vcpus.min, vcpus.default)) };
+}
+
+/**
+ * The memory a microVM of `vcpus` may have: the range, narrowed to what that many vCPUs may hold, never past the
+ * memory's top. Empty (`min` above `max`) where that many vCPUs can't be had at all.
+ */
 export function memoryRangeFor(shapes: SandboxShapes, vcpus: number): ShapeRange {
 	const { memoryMb, memoryMbPerVcpu } = shapes.microvm;
 	const step = memoryMb.step;
 	const min = Math.max(memoryMb.min, Math.ceil((vcpus * memoryMbPerVcpu.min) / step) * step);
-	const max = Math.max(min, Math.min(memoryMb.max, Math.floor((vcpus * memoryMbPerVcpu.max) / step) * step));
+	const max = Math.min(memoryMb.max, Math.floor((vcpus * memoryMbPerVcpu.max) / step) * step);
 	return { min, max, step, default: Math.min(max, Math.max(min, memoryMb.default)) };
+}
+
+/** Whether New sandbox may ask for a microVM of `shape`: a preset, or (where hosts make them) one in the ranges. */
+export function shapeAllowed(shapes: SandboxShapes, shape: SandboxShape): boolean {
+	if (presetOf(shapes, shape) !== undefined) return true;
+	if (!customShapes(shapes)) return false;
+	const cpus = vcpuRangeFor(shapes);
+	const memory = memoryRangeFor(shapes, shape.vcpus);
+	return (
+		shape.vcpus >= cpus.min &&
+		shape.vcpus <= cpus.max &&
+		memory.min <= memory.max &&
+		shape.memoryMb >= memory.min &&
+		shape.memoryMb <= memory.max
+	);
 }
 
 /** `memoryMb` moved into what `vcpus` may hold, as the memory slider does when the vCPU slider moves. */
 export function fitMemory(shapes: SandboxShapes, vcpus: number, memoryMb: number): number {
 	const range = memoryRangeFor(shapes, vcpus);
-	return Math.min(range.max, Math.max(range.min, memoryMb));
+	return Math.max(range.min, Math.min(range.max, memoryMb));
 }
 
 /** The preset a microVM shape is, if it is one. */
@@ -206,15 +248,20 @@ export function coldStart(shapes: SandboxShapes, shape: SandboxShape): boolean {
 }
 
 /**
- * The disk a microVM of `shape` gets, in GB, by the hosts' rule: a preset's own; off them, the smallest preset's with
- * at least its memory, else the largest's. Undefined with no presets to go by.
+ * The disk a microVM of `shape` gets, in GB, by the hosts' rule: a preset's own (where every host with that shape
+ * gives the same); off them, `customDisk`'s first step with at least its memory, else its last. Undefined where it
+ * depends on the host, so nothing is promised.
  */
 export function diskFor(shapes: SandboxShapes, shape: SandboxShape): number | undefined {
-	const presets = shapes.microvm.presets;
-	const own = presetOf(shapes, shape);
-	if (own !== undefined) return own.diskGb;
-	const byMemory = [...presets].sort((a, b) => a.memoryMb - b.memoryMb || a.diskGb - b.diskGb);
-	return (byMemory.find((preset) => preset.memoryMb >= shape.memoryMb) ?? byMemory.at(-1))?.diskGb;
+	const own = new Set(
+		shapes.microvm.presets
+			.filter((preset) => preset.vcpus === shape.vcpus && preset.memoryMb === shape.memoryMb)
+			.map((preset) => preset.diskGb),
+	);
+	if (own.size > 0) return own.size === 1 ? [...own][0] : undefined;
+	const steps = shapes.microvm.customDisk;
+	if (steps === undefined) return undefined;
+	return (steps.find((step) => step.memoryMb >= shape.memoryMb) ?? steps.at(-1))?.diskGb;
 }
 
 /** Whether New sandbox offers any vCPUs and memory, or only the presets (no host makes custom shapes). */
