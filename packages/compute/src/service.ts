@@ -4125,18 +4125,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
 			// reconnection, stops it.
 			let connected: Set<string> | undefined;
-			// A stop it was due for, taken on by a gateway that went before carrying it out: running again as it was, and
-			// due, for the pass below to stop. One this gateway is carrying out is left to it.
-			for (const sandbox of await store.sandboxes.list({ state: "stopping" })) {
-				const claimed = sandbox.stopClaimedAt;
-				if (sandbox.stopFor === undefined || claimed === undefined || pending.has(sandbox.id)) continue;
-				if (claimed + STOP_LEASE_MS > at) continue;
-				await transition(
-					sandbox.id,
-					"stopping",
-					(current) => ({ ...current, state: "running", stopClaimedAt: undefined, reason: undefined }),
-					(current) => current.stopClaimedAt === claimed,
-				).catch(() => undefined);
+			// A stop it was due for (`stopFor`) that a gateway went before carrying out: decided by a boot that went before
+			// taking it on (`starting`, since `stopsAt`), or taken on and never sent (`stopping`, since `stopClaimedAt`).
+			// Running again, where its machine may be, and due now, for the pass below to stop. One this gateway is still
+			// working on is left to it, as is one within its lease (its gateway may be at it).
+			for (const state of ["starting", "stopping"] as const) {
+				for (const sandbox of await store.sandboxes.list({ state })) {
+					const since = state === "stopping" ? sandbox.stopClaimedAt : sandbox.stopsAt;
+					if (sandbox.stopFor === undefined || since === undefined || pending.has(sandbox.id)) continue;
+					if (since + STOP_LEASE_MS > at) continue;
+					const marker = (current: StoredSandbox) =>
+						current.stopFor === sandbox.stopFor &&
+						(state === "stopping" ? current.stopClaimedAt : current.stopsAt) === since;
+					await transition(
+						sandbox.id,
+						state,
+						(current) => ({
+							...current,
+							state: "running",
+							stopsAt: at,
+							stopClaimedAt: undefined,
+							reason: undefined,
+						}),
+						marker,
+					).catch(() => undefined);
+				}
 			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				// An egress update that didn't get through (its host away, a call that failed) is sent again, as it is now,
@@ -4150,12 +4163,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					connected ??= await connectedHosts();
 					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushEgress([sandbox]);
 				}
-				if (sandbox.stopsAt === undefined || sandbox.stopsAt > at || pending.has(sandbox.id)) continue;
+				// Due: past its time, or owed a stop (`stopFor`), whatever its time says.
+				const due = (current: StoredSandbox) =>
+					current.stopFor !== undefined || (current.stopsAt !== undefined && current.stopsAt <= at);
+				if (!due(sandbox) || pending.has(sandbox.id)) continue;
 				connected ??= await connectedHosts();
 				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;
 				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
 				// rest skip it.
-				const due = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
 				const reason = sandbox.stopFor ?? "auto-stop";
 				const began = await beginStop(sandbox, false, reason, undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
