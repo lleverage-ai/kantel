@@ -1,7 +1,7 @@
 ---
-// kantel.dev's home: what Kantel is and why you'd want it in one screen, then the fastest way to a first sandbox on
-// the hosted service (sign in, add a host with one command, create a sandbox from the CLI). Self-hosting lives in the
-// docs, with one quiet link here. Claims follow the usage docs (docs/site); the pictures are mocks of the console in
+// kantel.dev's home: what Kantel is and why you'd want it in one screen, with the console and the CLI's install, then
+// the fastest way to a first sandbox on the hosted service (sign in, add a host with one command, create a sandbox).
+// Self-hosting lives in the docs, with one quiet link here. Claims follow the usage docs (docs/site); the pictures are mocks of the console in
 // its default theme (src/components/mocks), not screenshots.
 import InstallCommand from "../components/InstallCommand.astro";
 import AddHost from "../components/mocks/AddHost.astro";
@@ -9,7 +9,7 @@ import SignIn from "../components/mocks/SignIn.astro";
 import Terminal from "../components/mocks/Terminal.astro";
 import PixelField from "../components/PixelField.astro";
 import Base from "../layouts/Base.astro";
-import { CLI_INSTALL_COMMAND, SIGN_IN_URL } from "../site.mjs";
+import { CLI_INSTALL_COMMAND, CLI_NEXT_COMMANDS, CONSOLE_URL } from "../site.mjs";
 
 const link = "underline underline-offset-4 hover:text-midnight";
 // A step: a column of its own on a phone, and on a wide screen a subgrid over the list's four rows.
@@ -19,7 +19,7 @@ const step =
 
 <Base
 	title="Kantel, by Lleverage: sandboxes for your agents, on your own machines"
-	description="Kantel gives Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already have. Sign in, add a host with one command, and create sandboxes from the CLI."
+	description="Kantel gives Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already have. Sign in at app.kantel.dev, add a host with one command, and create sandboxes from the console or the CLI."
 >
 	<!-- Hero: what Kantel is and why, and the way in, over the pixel field. Its height is CSS only (--hero-height), so
 	     nothing moves when the field starts drawing. -->
@@ -34,16 +34,21 @@ const step =
 					Give Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already
 					have. Kantel runs the control plane, and your machines connect out to it, with no ports to open.
 				</p>
-				<div class="mt-9">
+				<div class="mt-9 flex flex-wrap items-center gap-x-6 gap-y-3">
 					<a
-						href={SIGN_IN_URL}
+						href={CONSOLE_URL}
 						class="inline-flex items-center gap-3 rounded-card bg-midnight px-6 py-4 font-semibold text-paper transition-colors hover:bg-midnight-2"
 					>
 						Get started
 						<span aria-hidden="true">→</span>
 					</a>
+					<p class="text-sm text-label">Sign in with your email. Open source, Apache 2.0.</p>
 				</div>
-				<p class="mt-4 text-sm text-label">Sign in with your email. Kantel is open source under the Apache License 2.0.</p>
+
+				<h2 id="cli" class="mt-12 text-sm font-semibold text-label">Or start from your terminal</h2>
+				<div class="mt-3">
+					<InstallCommand id="install-cli" command={CLI_INSTALL_COMMAND} next={CLI_NEXT_COMMANDS} />
+				</div>
 			</div>
 		</div>
 	</section>
@@ -70,8 +75,8 @@ const step =
 					<p class="font-mono text-sm font-semibold">2</p>
 					<h3 class="mt-3 font-display text-display-s font-semibold text-balance">Add a host</h3>
 					<p class="mt-3 text-body text-midnight-2">
-						Run one command on any Linux machine with KVM. It connects out to Kantel, so it needs no open ports and
-						can sit behind NAT.
+						Run one command on a Linux machine of yours, with KVM for microVMs. It connects out to Kantel, so it needs
+						no open ports and can sit behind NAT. Your sandboxes run only on your hosts.
 					</p>
 					<AddHost class="mt-8" />
 				</li>
@@ -79,24 +84,18 @@ const step =
 					<p class="font-mono text-sm font-semibold">3</p>
 					<h3 class="mt-3 font-display text-display-s font-semibold text-balance">Create a sandbox</h3>
 					<p class="mt-3 text-body text-midnight-2">
-						From the CLI, or from your agent through the API or the MCP server. A microVM is up in about a second.
+						In the console, from the CLI, or from your agent through the API or the MCP server. A microVM is up in about
+						a second.
 					</p>
 					<Terminal class="mt-8" />
 				</li>
 			</ol>
 
-			<div class="mt-16 grid grid-cols-1 items-center gap-6 lg:grid-cols-12">
-				<div class="lg:col-span-7">
-					<InstallCommand id="install-cli" command={CLI_INSTALL_COMMAND} />
-				</div>
-				<p class="text-body text-midnight-2 lg:col-span-5">
-					Installs the <code class="font-mono text-sm">kantel</code> CLI.{" "}
-					<a class={link} href="/docs/quickstart/">The quick start</a> takes you from here to a running sandbox.
-				</p>
-			</div>
-
-			<p class="mt-16 text-sm text-label">
-				Self-hosting? Kantel runs on your own machines too:{" "}
+			<p class="mt-16 text-body text-midnight-2">
+				<a class={link} href="/docs/quickstart/">The quick start</a> takes you from here to a running sandbox.
+			</p>
+			<p class="mt-4 text-sm text-label">
+				Self-hosting? Run the control plane yourself too:{" "}
 				<a class={link} href="/docs/self-hosting/quickstart/">read the docs</a>.
 			</p>
 		</div>

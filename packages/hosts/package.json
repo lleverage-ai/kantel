@@ -26,9 +26,12 @@
 	"dependencies": {
 		"@kantel/compute": "workspace:*",
 		"@kantel/contracts": "workspace:*",
+		"@kantel/identity": "workspace:*",
 		"@kantel/sql": "workspace:*"
 	},
 	"devDependencies": {
-		"@kantel/api": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/cli": "workspace:*",
+		"@kantel/e2e": "workspace:*"
 	}
 }

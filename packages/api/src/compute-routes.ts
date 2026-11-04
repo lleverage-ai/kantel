@@ -1,7 +1,7 @@
 /**
  * The compute plane's routes: sandboxes (isolates and microVMs) behind one API, with their commands, files, ports,
- * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, webhooks, OpenTelemetry export
- * and hosts around them. A self-hosted gateway always serves them.
+ * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, environments, webhooks,
+ * OpenTelemetry export and hosts around them. A self-hosted gateway always serves them.
  *
  * Every route but a device sign-in's start and poll (`public`) takes a bearer: a scoped API key (`ksk_…`), or a person's
  * sign-in. A key acts in its own account; a person
@@ -10,6 +10,7 @@
  */
 import {
 	Account,
+	AccountJoinToken,
 	AccountList,
 	AccountPath,
 	AccountScopedQuery,
@@ -23,7 +24,9 @@ import {
 	Command,
 	CommandPage,
 	CommandPath,
+	CreateAccountJoinTokenBody,
 	CreateApiKeyBody,
+	CreateEnvironmentBody,
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
 	CreateOrganisationBody,
@@ -34,6 +37,15 @@ import {
 	DeviceLoginPath,
 	DeviceLoginRequest,
 	DeviceLoginResult,
+	E2EAccess,
+	E2EAccessBody,
+	E2EChain,
+	E2EChainAppend,
+	Environment,
+	EnvironmentFileQuery,
+	EnvironmentList,
+	EnvironmentPath,
+	EnvironmentVariablePath,
 	EventPage,
 	ExposedPort,
 	ExposedPortList,
@@ -64,6 +76,9 @@ import {
 	PollDeviceLoginBody,
 	PortPath,
 	ProxySettings,
+	PublicUrl,
+	PutEgressGrantsBody,
+	PutEnvironmentReposBody,
 	PutProxySettingsBody,
 	PutTelemetryBody,
 	ReadFileQuery,
@@ -71,10 +86,15 @@ import {
 	ResumeSandboxBody,
 	RunCommandBody,
 	Sandbox,
+	SandboxEgress,
+	SandboxEgressQuery,
 	SandboxPage,
 	SandboxPath,
 	SandboxUsage,
 	SaveSnapshotBody,
+	SetEnvironmentFileBody,
+	SetEnvironmentVariableBody,
+	SetPublicUrlBody,
 	Snapshot,
 	SnapshotFilesQuery,
 	SnapshotPage,
@@ -87,6 +107,7 @@ import {
 	TelemetryExport,
 	TelemetryTest,
 	UpdateAccountBody,
+	UpdateEnvironmentBody,
 	UpdateHostBody,
 	UpdateMemberBody,
 	UpdateSandboxBody,
@@ -723,7 +744,63 @@ export const openBrowser = defineRoute({
 	errors: [...changeErrors, "not_supported"],
 });
 
-export const accessRoutes = { listPorts, exposePort, hidePort, openSsh, openDesktop, openBrowser } as const;
+export const openE2E = defineRoute({
+	operationId: "openE2E",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/e2e",
+	tag: "access",
+	summary: "Open an end-to-end encrypted session",
+	description: describe(
+		"A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and",
+		"can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one.",
+		"It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running",
+		"guest is refused in the session.",
+		scope("access"),
+	),
+	params: SandboxPath,
+	body: E2EAccessBody,
+	answer: { status: 201, description: "Where to open it.", schema: E2EAccess },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const accessRoutes = { listPorts, exposePort, hidePort, openSsh, openDesktop, openBrowser, openE2E } as const;
+
+// The space chain: an organisation's signed members, devices, hosts and end-to-end mode. The gateway keeps it and
+// hands it out; hosts and devices verify it, so the gateway can't add a key to it.
+
+export const getE2EChain = defineRoute({
+	operationId: "getE2EChain",
+	method: "GET",
+	path: "/accounts/{accountId}/e2e/chain",
+	tag: "accounts",
+	summary: "Get an organisation's E2E chain",
+	description: describe(
+		"Its signed entries, oldest first: empty until an admin starts it with `kantel e2e init`.",
+		scope("account:read"),
+	),
+	params: AccountPath,
+	answer: { status: 200, description: "The chain.", schema: E2EChain },
+	errors: readErrors,
+});
+
+export const appendE2EChain = defineRoute({
+	operationId: "appendE2EChain",
+	method: "POST",
+	path: "/accounts/{accountId}/e2e/chain",
+	tag: "accounts",
+	summary: "Add entries to an organisation's E2E chain",
+	description: describe(
+		"Entries a member's device signed, from the chain's length. The whole chain must still verify; `conflict` when",
+		"another entry got there first. Only an admin starts a chain.",
+		scope("account:read"),
+	),
+	params: AccountPath,
+	body: E2EChainAppend,
+	answer: { status: 200, description: "The chain now.", schema: E2EChain },
+	errors: changeErrors,
+});
+
+export const e2eChainRoutes = { getE2EChain, appendE2EChain } as const;
 
 // Snapshots.
 
@@ -1012,15 +1089,232 @@ export const putProxySettings = defineRoute({
 	summary: "Set the proxy settings",
 	description: describe(
 		"Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted",
-		"and never shown again; leave `upstream.headers` out to keep the ones it has.",
+		"and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you",
+		"read them, a write made from an older read is refused with `conflict`.",
 		scope("account:admin"),
 	),
 	body: PutProxySettingsBody,
 	answer: { status: 200, description: "The settings.", schema: ProxySettings },
-	errors: ["invalid", "forbidden", "not_supported"],
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
 });
 
 export const proxyRoutes = { getProxySettings, putProxySettings } as const;
+
+// Environments: what sandboxes start with. And each sandbox's egress.
+
+const RUNNING_AT_ONCE = "Running sandboxes made from it pick the change up at once.";
+
+export const listEnvironments = defineRoute({
+	operationId: "listEnvironments",
+	method: "GET",
+	path: "/environments",
+	tag: "environments",
+	summary: "List environments",
+	description: describe("The account's environments, oldest first.", scope("account:read")),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The environments.", schema: EnvironmentList },
+	errors: ["invalid", "forbidden"],
+});
+
+export const createEnvironment = defineRoute({
+	operationId: "createEnvironment",
+	method: "POST",
+	path: "/environments",
+	tag: "environments",
+	summary: "Create an environment",
+	description: describe(
+		"An empty environment, named uniquely in the account. A sandbox starts with it when its create names it.",
+		scope("account:admin"),
+	),
+	body: CreateEnvironmentBody,
+	answer: { status: 201, description: "The environment.", schema: Environment },
+	errors: ["invalid", "forbidden", "conflict"],
+});
+
+export const getEnvironment = defineRoute({
+	operationId: "getEnvironment",
+	method: "GET",
+	path: "/environments/{environmentId}",
+	tag: "environments",
+	summary: "Get an environment",
+	description: describe("Never a protected variable's value nor a secret file's contents.", scope("account:read")),
+	params: EnvironmentPath,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: readErrors,
+});
+
+export const updateEnvironment = defineRoute({
+	operationId: "updateEnvironment",
+	method: "PATCH",
+	path: "/environments/{environmentId}",
+	tag: "environments",
+	summary: "Change an environment",
+	description: describe("Renames it or changes its description.", scope("account:admin")),
+	params: EnvironmentPath,
+	body: UpdateEnvironmentBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: changeErrors,
+});
+
+export const deleteEnvironment = defineRoute({
+	operationId: "deleteEnvironment",
+	method: "DELETE",
+	path: "/environments/{environmentId}",
+	tag: "environments",
+	summary: "Delete an environment",
+	description: describe(
+		"Sandboxes made from it keep what they started with, but their protected variables stop resolving at once.",
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: readErrors,
+});
+
+export const setEnvironmentVariable = defineRoute({
+	operationId: "setEnvironmentVariable",
+	method: "PUT",
+	path: "/environments/{environmentId}/variables/{name}",
+	tag: "environments",
+	summary: "Set an environment variable",
+	description: describe(
+		"Adds or changes a variable. A protected one needs at least one binding, and its value is kept encrypted and never",
+		"shown again; leave `value` out to change only its bindings. A new value for a protected variable is a rotation:",
+		"sandboxes keep their placeholders, and their next request carries the new value.",
+		RUNNING_AT_ONCE,
+		"Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. Protected",
+		"values need the deployment's secrets key (`not_supported` without one).",
+		scope("account:admin"),
+	),
+	params: EnvironmentVariablePath,
+	body: SetEnvironmentVariableBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported"],
+});
+
+export const deleteEnvironmentVariable = defineRoute({
+	operationId: "deleteEnvironmentVariable",
+	method: "DELETE",
+	path: "/environments/{environmentId}/variables/{name}",
+	tag: "environments",
+	summary: "Delete an environment variable",
+	description: describe(
+		"A protected variable stops resolving in the sandboxes made from the environment at once.",
+		scope("account:admin"),
+	),
+	params: EnvironmentVariablePath,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: readErrors,
+});
+
+export const setEnvironmentFile = defineRoute({
+	operationId: "setEnvironmentFile",
+	method: "PUT",
+	path: "/environments/{environmentId}/files",
+	tag: "environments",
+	summary: "Set a secret file",
+	description: describe(
+		"Adds or replaces a file new sandboxes start with, written once they are running. Its contents are kept encrypted",
+		"and never shown again; leave `content` out to change only its mode. Needs the deployment's secrets key",
+		"(`not_supported` without one).",
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	body: SetEnvironmentFileBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported"],
+});
+
+export const deleteEnvironmentFile = defineRoute({
+	operationId: "deleteEnvironmentFile",
+	method: "DELETE",
+	path: "/environments/{environmentId}/files",
+	tag: "environments",
+	summary: "Delete a secret file",
+	description: describe("Sandboxes made from the environment keep their copy.", scope("account:admin")),
+	params: EnvironmentPath,
+	query: EnvironmentFileQuery,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: readErrors,
+});
+
+export const putEnvironmentRepos = defineRoute({
+	operationId: "putEnvironmentRepos",
+	method: "PUT",
+	path: "/environments/{environmentId}/repos",
+	tag: "environments",
+	summary: "Set an environment's repositories",
+	description: describe(
+		"Replaces them. New sandboxes clone each once they are running (`git clone --depth 1`), through the egress proxy.",
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	body: PutEnvironmentReposBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: changeErrors,
+});
+
+export const putEnvironmentGrants = defineRoute({
+	operationId: "putEnvironmentGrants",
+	method: "PUT",
+	path: "/environments/{environmentId}/grants",
+	tag: "environments",
+	summary: "Set an environment's egress grants",
+	description: describe("Replaces them.", RUNNING_AT_ONCE, scope("account:admin")),
+	params: EnvironmentPath,
+	body: PutEgressGrantsBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: changeErrors,
+});
+
+export const getSandboxEgress = defineRoute({
+	operationId: "getSandboxEgress",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/egress",
+	tag: "environments",
+	summary: "Get a sandbox's egress",
+	description: describe(
+		"Its environment, its protected variables (each placeholder's first 8 characters, never a value), its grants and",
+		"the newest of its egress log: what its host's proxy let through or refused.",
+		scope("account:read"),
+	),
+	params: SandboxPath,
+	query: SandboxEgressQuery,
+	answer: { status: 200, description: "Its egress.", schema: SandboxEgress },
+	errors: readErrors,
+});
+
+export const putSandboxGrants = defineRoute({
+	operationId: "putSandboxGrants",
+	method: "PUT",
+	path: "/sandboxes/{sandboxId}/grants",
+	tag: "environments",
+	summary: "Set a sandbox's egress grants",
+	description: describe(
+		"Replaces its own grants, on top of its environment's. A running sandbox picks them up at once.",
+		scope("account:admin"),
+	),
+	params: SandboxPath,
+	body: PutEgressGrantsBody,
+	answer: { status: 200, description: "Its egress.", schema: SandboxEgress },
+	errors: changeErrors,
+});
+
+export const environmentComputeRoutes = {
+	listEnvironments,
+	createEnvironment,
+	getEnvironment,
+	updateEnvironment,
+	deleteEnvironment,
+	setEnvironmentVariable,
+	deleteEnvironmentVariable,
+	setEnvironmentFile,
+	deleteEnvironmentFile,
+	putEnvironmentRepos,
+	putEnvironmentGrants,
+	getSandboxEgress,
+	putSandboxGrants,
+} as const;
 
 // Events, webhooks and telemetry.
 
@@ -1241,12 +1535,13 @@ export const revokeHost = defineRoute({
 	summary: "Revoke a host",
 	description: describe(
 		"Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it",
-		"joins again.",
+		"joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is",
+		"off (an account's own host, with account hosts switched off).",
 		SUPER_ADMIN,
 	),
 	params: HostPath,
 	answer: { status: 200, description: "The host, revoked.", schema: Host },
-	errors: readErrors,
+	errors: [...readErrors, "unavailable"],
 });
 
 export const createHostJoinToken = defineRoute({
@@ -1265,7 +1560,139 @@ export const createHostJoinToken = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
-export const hostRoutes = { listHosts, createHostJoinToken, getHost, updateHost, revokeHost } as const;
+export const getPublicUrl = defineRoute({
+	operationId: "getPublicUrl",
+	method: "GET",
+	path: "/admin/public-url",
+	tag: "hosts",
+	summary: "Get the public URL",
+	description: describe(
+		"Where hosts reach this control plane: the address join commands give them, and whether only a host on the same",
+		"machine could use it.",
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The public URL.", schema: PublicUrl },
+	errors: ["forbidden"],
+});
+
+export const setPublicUrl = defineRoute({
+	operationId: "setPublicUrl",
+	method: "PUT",
+	path: "/admin/public-url",
+	tag: "hosts",
+	summary: "Set the public URL",
+	description: describe(
+		"Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own",
+		"`KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they",
+		"joined with.",
+		SUPER_ADMIN,
+	),
+	body: SetPublicUrlBody,
+	answer: { status: 200, description: "The public URL.", schema: PublicUrl },
+	errors: ["invalid", "forbidden"],
+});
+
+export const hostRoutes = {
+	listHosts,
+	createHostJoinToken,
+	getHost,
+	updateHost,
+	revokeHost,
+	getPublicUrl,
+	setPublicUrl,
+} as const;
+
+// An account's own hosts, added by its people rather than by the deployment's super-admin. Only that account's
+// sandboxes run on them. Experimental: a deployment serves these only with KANTEL_ACCOUNT_HOSTS=experimental, and
+// answers `not_supported` otherwise.
+
+const ACCOUNT_HOSTS =
+	"Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).";
+
+export const createAccountJoinToken = defineRoute({
+	operationId: "createAccountJoinToken",
+	method: "POST",
+	path: "/hosts/join-tokens",
+	tag: "account-hosts",
+	summary: "Make a join token for one of your own hosts",
+	description: describe(
+		"A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins",
+		"it to the account (the caller's personal account unless `account` names an organisation). The host dials out",
+		"to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's",
+		"new sandboxes go on its own hosts, and no other account's sandboxes ever do.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	body: CreateAccountJoinTokenBody,
+	answer: { status: 201, description: "The token and its command.", schema: AccountJoinToken },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const listAccountHosts = defineRoute({
+	operationId: "listAccountHosts",
+	method: "GET",
+	path: "/hosts",
+	tag: "account-hosts",
+	summary: "List an account's hosts",
+	description: describe(
+		"The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed.",
+		scope("account:read"),
+		ACCOUNT_HOSTS,
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The hosts.", schema: HostList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const getAccountHost = defineRoute({
+	operationId: "getAccountHost",
+	method: "GET",
+	path: "/hosts/{hostId}",
+	tag: "account-hosts",
+	summary: "Get one of an account's hosts",
+	description: describe(scope("account:read"), ACCOUNT_HOSTS),
+	params: HostPath,
+	answer: { status: 200, description: "The host.", schema: Host },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const updateAccountHost = defineRoute({
+	operationId: "updateAccountHost",
+	method: "PATCH",
+	path: "/hosts/{hostId}",
+	tag: "account-hosts",
+	summary: "Change one of an account's hosts",
+	description: describe("Renames it, replaces its labels, or drains it.", scope("account:admin"), ACCOUNT_HOSTS),
+	params: HostPath,
+	body: UpdateHostBody,
+	answer: { status: 200, description: "The host.", schema: Host },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const removeAccountHost = defineRoute({
+	operationId: "removeAccountHost",
+	method: "DELETE",
+	path: "/hosts/{hostId}",
+	tag: "account-hosts",
+	summary: "Remove one of an account's hosts",
+	description: describe(
+		"Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it",
+		"joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The host, revoked.", schema: Host },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const accountHostRoutes = {
+	createAccountJoinToken,
+	listAccountHosts,
+	getAccountHost,
+	updateAccountHost,
+	removeAccountHost,
+} as const;
 
 /** Every compute-plane route, in the order the document and the SDK list them. */
 export const computeRoutes = {
@@ -1274,14 +1701,17 @@ export const computeRoutes = {
 	...commandRoutes,
 	...fileRoutes,
 	...accessRoutes,
+	...e2eChainRoutes,
 	...snapshotRoutes,
 	...apiKeyRoutes,
 	...deviceLoginRoutes,
 	...proxyRoutes,
+	...environmentComputeRoutes,
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,
 	...hostRoutes,
+	...accountHostRoutes,
 } as const;
 
 export type ComputeRoutes = typeof computeRoutes;

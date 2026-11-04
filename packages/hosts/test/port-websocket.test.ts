@@ -116,3 +116,168 @@ describe("a WebSocket over a port stream", () => {
 		expect(closes[0]?.reason).toContain("403");
 	});
 });
+
+const SWITCHED = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n";
+
+/** A socket with `options`, its server's side, and what it heard. */
+function withOptions(options: Parameters<typeof openPortWebSocket>[5]) {
+	const written: Uint8Array[] = [];
+	let sink: PortSink | undefined;
+	let closedStream = false;
+	const opened: (string | undefined)[] = [];
+	const messages: string[] = [];
+	const closes: { code: number; reason: string }[] = [];
+	openPortWebSocket(
+		async (given) => {
+			sink = given;
+			return {
+				stream: 1,
+				write: (bytes) => written.push(bytes),
+				close: () => {
+					closedStream = true;
+				},
+			};
+		},
+		5173,
+		"/",
+		{
+			open: (protocol) => opened.push(protocol),
+			message: (data) => messages.push(text(data)),
+			close: (code, reason) => closes.push({ code, reason }),
+		},
+		"app-3000.ports.kantel.test",
+		options,
+	);
+	return {
+		written,
+		server: (bytes: Uint8Array) => sink?.data(bytes),
+		opened,
+		messages,
+		closes,
+		streamClosed: () => closedStream,
+	};
+}
+
+describe("what a relayed WebSocket's handshake carries", () => {
+	it("offers the client's subprotocols and the application's headers, and says which the server chose", async () => {
+		const socket = withOptions({
+			protocols: ["vite-hmr", "bad token", "vite-ping"],
+			headers: {
+				cookie: "session=abc",
+				authorization: "Bearer app\r\nX-Injected: 1",
+				Host: "evil.test",
+				"Sec-WebSocket-Key": "nope",
+			},
+		});
+		await tick();
+		const request = text(socket.written[0] ?? new Uint8Array(0));
+		expect(request).toContain("Sec-WebSocket-Protocol: vite-hmr, vite-ping\r\n");
+		expect(request).toContain("cookie: session=abc\r\n");
+		expect(request).toContain("authorization: Bearer app X-Injected: 1\r\n");
+		expect(request).not.toContain("evil.test");
+		expect(request).not.toContain("nope");
+		expect(request).toContain("Host: app-3000.ports.kantel.test\r\n");
+		socket.server(enc(`${SWITCHED}Sec-WebSocket-Protocol: vite-hmr\r\n\r\n`));
+		expect(socket.opened).toEqual(["vite-hmr"]);
+		expect(socket.closes).toEqual([]);
+	});
+
+	it("opens with no subprotocol when none was offered or chosen, and closes on one nobody offered", async () => {
+		const none = withOptions({});
+		await tick();
+		expect(text(none.written[0] ?? new Uint8Array(0))).not.toContain("Sec-WebSocket-Protocol");
+		none.server(enc(`${SWITCHED}\r\n`));
+		expect(none.opened).toEqual([undefined]);
+
+		const stray = withOptions({ protocols: ["vite-hmr"] });
+		await tick();
+		stray.server(enc(`${SWITCHED}Sec-WebSocket-Protocol: other\r\n\r\n`));
+		expect(stray.opened).toEqual([]);
+		expect(stray.closes[0]?.code).toBe(1002);
+	});
+});
+
+describe("what a relayed WebSocket holds of the server's messages", () => {
+	it("closes on a message bigger than its limit as soon as the frame says so, and passes those within it", async () => {
+		const socket = withOptions({ maxMessageBytes: 1024 });
+		await tick();
+		socket.server(enc(`${SWITCHED}\r\n`));
+		socket.server(serverFrame(0x1, enc("x".repeat(1024))));
+		expect(socket.messages).toEqual(["x".repeat(1024)]);
+		// Only the frame's head has arrived: refused on what it declares, before its payload is waited for.
+		socket.server(serverFrame(0x2, new Uint8Array(70_000)).subarray(0, 10));
+		expect(socket.closes[0]?.code).toBe(1009);
+		expect(socket.streamClosed()).toBe(true);
+	});
+
+	it("closes on fragments that together pass the limit", async () => {
+		const socket = withOptions({ maxMessageBytes: 1024 });
+		await tick();
+		socket.server(enc(`${SWITCHED}\r\n`));
+		socket.server(serverFrame(0x1, enc("x".repeat(600)), false));
+		expect(socket.closes).toEqual([]);
+		socket.server(serverFrame(0x0, enc("x".repeat(600)), false));
+		expect(socket.closes[0]?.code).toBe(1009);
+	});
+
+	it("closes on a message in too many pieces, empty ones included, and counts each piece against the budget", async () => {
+		const budget = { limit: 1_000_000, held: 0 };
+		const socket = withOptions({ maxFragments: 100, budget });
+		await tick();
+		socket.server(enc(`${SWITCHED}\r\n`));
+		socket.server(serverFrame(0x1, new Uint8Array(0), false));
+		// Empty continuations: no bytes, but each kept piece is counted.
+		for (let i = 0; i < 50; i++) socket.server(serverFrame(0x0, new Uint8Array(0), false));
+		expect(socket.closes).toEqual([]);
+		expect(budget.held).toBeGreaterThanOrEqual(51 * 64);
+		const flood = new Uint8Array(60 * 2);
+		for (let i = 0; i < 60; i++) flood.set(serverFrame(0x0, new Uint8Array(0), false), i * 2);
+		socket.server(flood);
+		expect(socket.closes[0]).toEqual({ code: 1009, reason: "The message is in too many pieces" });
+		expect(budget.held).toBe(0);
+
+		// Tiny pieces against a small shared budget: closed once their keep passes it.
+		const small = { limit: 2048, held: 0 };
+		const tiny = withOptions({ budget: small });
+		await tick();
+		tiny.server(enc(`${SWITCHED}\r\n`));
+		tiny.server(serverFrame(0x1, enc("a"), false));
+		for (let i = 0; i < 100 && tiny.closes.length === 0; i++) tiny.server(serverFrame(0x0, enc("a"), false));
+		expect(tiny.closes[0]?.code).toBe(1009);
+		expect(small.held).toBe(0);
+	});
+
+	it("shares one budget between sockets, a message split across many chunks counted as it comes", async () => {
+		const budget = { limit: 8192, held: 0 };
+		const first = withOptions({ budget });
+		const second = withOptions({ budget });
+		await tick();
+		first.server(enc(`${SWITCHED}\r\n`));
+		second.server(enc(`${SWITCHED}\r\n`));
+		expect(budget.held).toBe(0);
+		// The first holds 4 KiB of a 6000-byte message, 64 bytes at a time.
+		const big = serverFrame(0x2, new Uint8Array(6000));
+		for (let at = 0; at < 4096; at += 64) first.server(big.subarray(at, at + 64));
+		expect(first.closes).toEqual([]);
+		expect(budget.held).toBe(4096);
+		// The second can't hold another message as big on top: it is closed before passing the budget.
+		const other = serverFrame(0x2, new Uint8Array(6000));
+		for (let at = 0; at < other.length && second.closes.length === 0; at += 64) {
+			second.server(other.subarray(at, at + 64));
+			expect(budget.held).toBeLessThanOrEqual(budget.limit);
+		}
+		expect(second.closes[0]?.code).toBe(1009);
+		expect(second.streamClosed()).toBe(true);
+		expect(budget.held).toBe(4096);
+		// The first goes on: once its message is whole and passed on, what it held is given back.
+		for (let at = 4096; at < big.length; at += 64) first.server(big.subarray(at, at + 64));
+		expect(first.closes).toEqual([]);
+		expect(budget.held).toBe(0);
+		// Small messages still pass.
+		const small = withOptions({ budget });
+		await tick();
+		small.server(enc(`${SWITCHED}\r\n`));
+		small.server(serverFrame(0x1, enc("hello")));
+		expect(small.messages).toEqual(["hello"]);
+	});
+});

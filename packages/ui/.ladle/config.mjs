@@ -14,7 +14,8 @@ export default {
 		rtl: { enabled: false },
 		source: { enabled: false },
 		msw: { enabled: false },
-		theme: { enabled: false, defaultState: "dark" },
+		// Kantel's two themes: .ladle/components.tsx sets data-kt-theme from it.
+		theme: { enabled: true, defaultState: "dark" },
 		width: {
 			enabled: true,
 			options: { mobile: 420, desktop: 1280 },

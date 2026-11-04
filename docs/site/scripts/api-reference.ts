@@ -88,7 +88,6 @@ const NOT_DOCUMENTED = new Set([
 	"connections",
 	"projects",
 	"tool-servers",
-	"environments",
 	"model-providers",
 	"programs",
 ]);
@@ -143,6 +142,12 @@ const TAGS: {
 		order: 8,
 		about: "Where sandboxes' outbound traffic may go, and through what.",
 	},
+	environments: {
+		title: "Environments",
+		order: 8.5,
+		about:
+			"What new sandboxes inherit: variables (plain and protected), secret files, repositories and egress grants; and a sandbox's egress log.",
+	},
 	events: { title: "Events", order: 9, about: "The account's events, as webhooks deliver them." },
 	webhooks: {
 		title: "Webhooks",
@@ -158,6 +163,13 @@ const TAGS: {
 		title: "Hosts",
 		order: 12,
 		about: "The machines that run sandboxes: join tokens, labels, drain and revoke. Super-admins only.",
+	},
+	"account-hosts": {
+		title: "Your hosts",
+		order: 13,
+		about:
+			"An account's own hosts: add a machine to your personal account or an organisation, list, drain and remove them.",
+		note: "Experimental: a deployment serves these only with `KANTEL_ACCOUNT_HOSTS=experimental`.",
 	},
 };
 

@@ -1,12 +1,32 @@
 /**
  * Colour arithmetic for checking themes: WCAG contrast between two colours, and how far apart two colours look
- * (OKLab distance), for telling status colours apart. Plain `#rrggbb` only. Used by the theme tests and by
- * `checkTheme`, which a custom-theme editor can show beside its fields.
+ * (OKLab distance), for telling status colours apart. An opaque `#rrggbb`, or HSL in CSS Color 4's space-separated
+ * form, as the palettes write them. Used by the theme tests (theme.test.ts), which hold dark.css and light.css to WCAG AA.
  */
 
 type Rgb = readonly [number, number, number];
 
-export function parseHex(hex: string): Rgb | undefined {
+/** An opaque HSL colour, in CSS Color 4's space-separated form, as `#rrggbb`, rounded as a browser paints it. */
+export function hslToHex(value: string): string | undefined {
+	const match = /^hsl\(\s*([\d.]+)(?:deg)?\s+([\d.]+)%\s+([\d.]+)%\s*\)$/i.exec(value);
+	if (match === null) return undefined;
+	const hue = Number(match[1]);
+	const saturation = Number(match[2]) / 100;
+	const lightness = Number(match[3]) / 100;
+	const chroma = saturation * Math.min(lightness, 1 - lightness);
+	const channel = (n: number) => {
+		const k = (n + hue / 30) % 12;
+		const value = lightness - chroma * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+		return Math.round(value * 255)
+			.toString(16)
+			.padStart(2, "0");
+	};
+	return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
+
+export function parseHex(colour: string): Rgb | undefined {
+	const hex = colour.startsWith("#") ? colour : hslToHex(colour);
+	if (hex === undefined) return undefined;
 	const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
 	if (match === null) return undefined;
 	return [

@@ -312,6 +312,8 @@ describe("the compute API on kantel-host hosts", () => {
 			upstream: "http://mehen.internal:3128",
 			headers: { "X-Mehen-Key": "secret" },
 			attributionKey: "attr-key",
+			// Each sandbox's egress revision, which orders its updates.
+			revision: expect.any(Number),
 		};
 		// The running sandbox gets them at once.
 		await expect.poll(() => egressOf("sandbox.egress")).toEqual(want);
@@ -426,6 +428,16 @@ describe("the compute API on kantel-host hosts", () => {
 
 		const isolate = await root.createSandbox({ type: "isolate", wait: true });
 		expect(isolate.capabilities.ports).toBe(false);
+
+		// Recovering clears the recorded ports, and their URLs end with them.
+		const recovered = await root.createSandbox({ type: "microvm", wait: true });
+		const before = await root.exposePort(recovered.id, { port: 5173, public: true });
+		expect((await ports?.fetch(new Request(before.url)))?.status).not.toBe(404);
+		await root.recoverSandbox(recovered.id);
+		await expect.poll(async () => (await root.getSandbox(recovered.id)).state).toBe("running");
+		expect((await root.listPorts(recovered.id)).items).toEqual([]);
+		expect(await relay.exposuresOf(recovered.id)).toEqual([]);
+		expect((await ports?.fetch(new Request(before.url)))?.status).toBe(404);
 
 		await root.stopSandbox(sandbox.id, { wait: true });
 		expect((await ports?.fetch(new Request(open.url)))?.status).toBe(404);

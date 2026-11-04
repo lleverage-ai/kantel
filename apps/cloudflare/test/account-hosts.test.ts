@@ -1,0 +1,1398 @@
+// Account hosts on the Worker's gateway, in Node: with KANTEL_ACCOUNT_HOSTS=experimental an Access person adds a machine
+// to their personal account, the host registers with no sign-in and connects its WebSocket to the stack object (here,
+// straight to the hub the object hands sockets to), and the account's sandboxes run on it while an organisation with no
+// host of its own keeps the stub. Off, none of it is served and the Worker is as it was.
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { createMemoryStore, HOST_NOT_REVOCABLE } from "@kantel/compute";
+import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
+import type { Authenticator } from "@kantel/contracts";
+import { ORGANISATION_HEADER } from "@kantel/contracts/identity";
+import type { HostSocket } from "@kantel/hosts/hub";
+import { decodeStreamFrame, encodeStreamFrame, type HostMessage } from "@kantel/hosts/protocol";
+import { createMockAccess } from "@kantel/identity/testing";
+import type { SqlValue } from "@kantel/sql";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { afterEach, describe, expect, it } from "vitest";
+import { type ObjectSqlLike, objectSqlDriver } from "../src/audit-outbox.ts";
+import {
+	COMPUTE_MEMBERS_ONLY,
+	createStackCompute,
+	HOST_E2E_CHAIN_BODY_LIMIT,
+	HOST_REGISTER_BODY_LIMIT,
+	hostCredential,
+	type MessageSocket,
+	onMessages,
+	preOpenBuffer,
+	revivingStub,
+	type StackCompute,
+	sweptAsUsed,
+	TUNNEL_PENDING_LIMIT,
+	TUNNEL_PENDING_MESSAGES,
+	tunnelTicket,
+} from "../src/compute.ts";
+import { type GatewayVars, gatewayConfig } from "../src/config.ts";
+import { createGateway } from "../src/gateway.ts";
+import { memoryMailCounts } from "../src/mail.ts";
+import { createStack } from "../src/stack.ts";
+
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
+
+function objectSql(db: DatabaseSync) {
+	const sql: ObjectSqlLike = {
+		exec(query: string, ...bindings: SqlValue[]) {
+			const statement = db.prepare(query);
+			const values = bindings as SQLInputValue[];
+			let rows: unknown[] = [];
+			if (statement.columns().length > 0) rows = statement.all(...values);
+			else statement.run(...values);
+			return { toArray: () => rows };
+		},
+	};
+	return objectSqlDriver(sql, <T>(work: () => T): T => {
+		db.exec("BEGIN");
+		try {
+			const result = work();
+			db.exec("COMMIT");
+			return result;
+		} catch (error) {
+			db.exec("ROLLBACK");
+			throw error;
+		}
+	});
+}
+
+const closers: (() => Promise<void>)[] = [];
+afterEach(async () => {
+	for (const close of closers.splice(0).reverse()) await close();
+});
+
+async function start(db: DatabaseSync, vars: { KANTEL_ACCOUNT_HOSTS?: string; KANTEL_PUBLIC_URL?: string } = {}) {
+	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
+	const config = gatewayConfig({
+		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+		KANTEL_ACCESS_AUD: AUD,
+		KANTEL_ADMIN_EMAIL: ADMIN,
+		...vars,
+	});
+	const stack = await createStack({ config, accessFetch: mock.fetch, storage: { compute: objectSql(db) } });
+	closers.push(() => stack.compute.close());
+	const gateway = createGateway(stack);
+	const signedIn = { "cf-access-jwt-assertion": await mock.sign({ sub: "access-subject-1", email: ADMIN }) };
+	/** A call as the Access person, or with `headers` instead (a host has no sign-in). */
+	const call = async (method: string, path: string, body?: unknown, headers: Record<string, string> = signedIn) => {
+		const response = await gateway.fetch(
+			new Request(`${BASE}${path}`, {
+				method,
+				redirect: "manual",
+				headers: { ...headers, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+			}),
+		);
+		const text = await response.text();
+		return {
+			status: response.status,
+			headers: response.headers,
+			body: (text === "" || !text.startsWith("{") ? {} : JSON.parse(text)) as Record<string, unknown>,
+		};
+	};
+	return { stack, call };
+}
+
+/**
+ * kantel-host as the hub sees it over its WebSocket: it says hello, then runs sandboxes and an `echo`. A port's stream
+ * echoes what comes in, uppercased (an SSH server stands in), or with `http`, answers one HTTP request with a page
+ * naming the request line and the Host it was asked for, then ends the stream (a web server stands in).
+ */
+function fakeHost(options: { readonly http?: boolean } = {}) {
+	const requests = new Map<number, string>();
+	/** Streams that upgraded to a WebSocket: what the server has of their frames so far. */
+	const sockets = new Map<number, Uint8Array>();
+	/** Every WebSocket message the port's server heard, as `{request line} {opcode} {text}`. */
+	const heard: string[] = [];
+	/** Every WebSocket handshake's head, as the port's server got it. */
+	const handshakes: string[] = [];
+	const lines = new Map<number, string>();
+	const sandboxes = new Set<string>();
+	const calls: string[] = [];
+	let closed: { code: number; reason: string } | undefined;
+	let receive: (frame: string | Uint8Array) => void = () => undefined;
+	const socket: HostSocket = {
+		sendText(text) {
+			const message = JSON.parse(text) as HostMessage;
+			if (message.type !== "call") return;
+			calls.push(message.method ?? "");
+			const params = message.params as { sandboxId: string; command?: string; snapshotId?: string };
+			const answer = (result: unknown) => receive(JSON.stringify({ type: "result", id: message.id, result }));
+			if (message.method === "sandbox.create") {
+				sandboxes.add(params.sandboxId);
+				return answer({ id: params.sandboxId, tier: "microvm", size: "default", state: "running", createdAt: 1 });
+			}
+			if (message.method === "sandbox.start" && sandboxes.has(params.sandboxId)) {
+				return answer({ id: params.sandboxId, tier: "microvm", size: "default", state: "running", createdAt: 1 });
+			}
+			if (message.method === "sandbox.stop" && sandboxes.has(params.sandboxId)) {
+				return answer({ id: params.snapshotId, sizeBytes: 1 });
+			}
+			if (message.method === "sandbox.exec") {
+				// Chromium's DevTools, asked whether it's up (`openBrowser`).
+				if (params.command?.includes("127.0.0.1:9222/json/version")) {
+					const stdout = JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/b-1" });
+					return answer({ exitCode: 0, stdout, stderr: "" });
+				}
+				const echo = /^echo (.*)$/.exec(params.command ?? "");
+				return answer({ exitCode: 0, stdout: `${echo?.[1] ?? ""} from my own machine\n`, stderr: "" });
+			}
+			// A port: what comes in on its stream goes back out, uppercased (an SSH server stands in).
+			if (message.method === "port.open") return answer({});
+			receive(JSON.stringify({ type: "result", id: message.id, error: { code: "unsupported", message: "no" } }));
+		},
+		sendBinary(bytes) {
+			const frame = decodeStreamFrame(bytes);
+			if (frame === undefined) return;
+			const upgraded = sockets.get(frame.stream);
+			if (upgraded !== undefined) {
+				// A WebSocket server: each message back uppercased, as the same kind; a close answered and the stream ended.
+				let buffer = concatBytes(upgraded, frame.payload);
+				for (let message = clientFrame(buffer); message !== undefined; message = clientFrame(buffer)) {
+					buffer = buffer.slice(message.size);
+					const text = new TextDecoder().decode(message.payload);
+					heard.push(`${lines.get(frame.stream)} ${message.opcode} ${text}`);
+					if (message.opcode === 0x8) {
+						receive(JSON.stringify({ type: "stream.close", stream: frame.stream, reason: "closed" }));
+						continue;
+					}
+					if (text === "huge") {
+						// Only the head of a 17 MiB binary message: the relay must refuse it on what it says it is.
+						const head = new Uint8Array(10);
+						head[0] = 0x82;
+						head[1] = 127;
+						new DataView(head.buffer).setBigUint64(2, BigInt(17 * 1024 * 1024));
+						receive(encodeStreamFrame(frame.stream, head));
+						continue;
+					}
+					const back = new TextEncoder().encode(text.toUpperCase());
+					receive(encodeStreamFrame(frame.stream, serverFrame(message.opcode, back)));
+				}
+				sockets.set(frame.stream, buffer);
+				return;
+			}
+			const sofar = (requests.get(frame.stream) ?? "") + new TextDecoder().decode(frame.payload);
+			if (/^GET [^\r\n]* HTTP\/1\.1\r\n/.test(sofar) && /\r\nupgrade: websocket\r\n/i.test(sofar)) {
+				if (!sofar.includes("\r\n\r\n")) return void requests.set(frame.stream, sofar);
+				const head = sofar.split("\r\n\r\n")[0] ?? "";
+				const [line = "", ...headers] = head.split("\r\n");
+				const host = headers.find((header) => /^host:/i.test(header)) ?? "";
+				lines.set(frame.stream, `${line.split(" ")[1]} ${host}`);
+				sockets.set(frame.stream, new Uint8Array(0));
+				handshakes.push(head);
+				// The first subprotocol offered, if any, is the one chosen.
+				const offered = headers.find((header) => /^sec-websocket-protocol:/i.test(header));
+				const chosen = offered?.split(":")[1]?.split(",")[0]?.trim();
+				const accepted =
+					"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+					(chosen === undefined ? "" : `Sec-WebSocket-Protocol: ${chosen}\r\n`) +
+					"\r\n";
+				receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(accepted)));
+				return;
+			}
+			if (options.http === true) {
+				const sofar = (requests.get(frame.stream) ?? "") + new TextDecoder().decode(frame.payload);
+				requests.set(frame.stream, sofar);
+				if (!sofar.includes("\r\n\r\n")) return;
+				const [line = "", ...headers] = sofar.split("\r\n\r\n")[0]?.split("\r\n") ?? [];
+				const host = headers.find((header) => /^host:/i.test(header)) ?? "";
+				const cookie = headers.find((header) => /^cookie:/i.test(header)) ?? "no cookie";
+				const body = `${line}\n${host}\n${cookie}\n`;
+				const answer = `HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: ${body.length}\r\n\r\n${body}`;
+				receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(answer)));
+				receive(JSON.stringify({ type: "stream.close", stream: frame.stream, reason: "done" }));
+				return;
+			}
+			const text = new TextDecoder().decode(frame.payload).toUpperCase();
+			receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(text)));
+		},
+		close(code, reason) {
+			closed = { code, reason };
+		},
+	};
+	const hello = (hostId: string) =>
+		JSON.stringify({
+			type: "hello",
+			hello: {
+				hostId,
+				facts: {
+					version: "0.4.0",
+					protocol: 1,
+					os: "linux",
+					arch: "amd64",
+					kernel: "6.8",
+					hostname: "toms-box",
+					cpus: 8,
+					memoryMiB: 16_384,
+					diskGiB: 200,
+					kvm: true,
+					nested: false,
+					tiers: ["microvm"],
+					sizes: [{ name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 }],
+					egress: "open",
+				},
+				sandboxes: [],
+				capacity: { freeMemoryMiB: 14_000, freeDiskGiB: 180, running: 0, stopped: 0, load1: 0, warm: {} },
+			},
+		});
+	return {
+		socket,
+		sandboxes,
+		calls,
+		heard,
+		handshakes,
+		closed: () => closed,
+		/** Hands the hub's `receive` over, then says hello. */
+		attach(held: { receive(frame: string | Uint8Array): void }, hostId: string) {
+			receive = (frame) => held.receive(frame);
+			receive(hello(hostId));
+		},
+	};
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+	const out = new Uint8Array(a.length + b.length);
+	out.set(a);
+	out.set(b, a.length);
+	return out;
+}
+
+/** One masked client frame (short ones only, as these tests send) at the start of `buffer`, if it's all there. */
+function clientFrame(buffer: Uint8Array): { opcode: number; payload: Uint8Array; size: number } | undefined {
+	if (buffer.length < 6) return undefined;
+	const length = (buffer[1] ?? 0) & 0x7f;
+	if (length >= 126) throw new Error("The fake host reads short frames only");
+	if (buffer.length < 6 + length) return undefined;
+	const mask = buffer.subarray(2, 6);
+	const payload = buffer.slice(6, 6 + length).map((byte, i) => byte ^ (mask[i & 3] ?? 0));
+	return { opcode: (buffer[0] ?? 0) & 0x0f, payload, size: 6 + length };
+}
+
+/** A server's frame: unmasked, short. */
+function serverFrame(opcode: number, payload: Uint8Array): Uint8Array {
+	return concatBytes(new Uint8Array([0x80 | opcode, payload.length]), payload);
+}
+
+/** A relayed WebSocket's client, as the stack object's accepted socket: what it was sent, and how it was closed. */
+function socketClient() {
+	const got: string[] = [];
+	let closed: { code: number; reason: string } | undefined;
+	return {
+		got,
+		closed: () => closed,
+		client: {
+			send: (data: string | Uint8Array) =>
+				got.push(typeof data === "string" ? `text ${data}` : `binary ${new TextDecoder().decode(data)}`),
+			close: (code: number, reason: string) => {
+				closed ??= { code, reason };
+			},
+		},
+	};
+}
+
+describe("Account hosts on the Worker", () => {
+	it("is off by default: no host routes, no account host routes, the stub as before", async () => {
+		const { stack, call } = await start(new DatabaseSync(":memory:"));
+		expect(stack.compute.hosts).toBeUndefined();
+		expect((await call("POST", "/v1/hosts/join-tokens", {})).body).toMatchObject({
+			error: { code: "not_supported" },
+		});
+		expect((await call("POST", "/v1/hosts/register", { token: "kth_x" }, {})).status).toBe(404);
+		expect((await call("GET", "/v1/hosts/images/manifest.json", undefined, {})).status).toBe(404);
+	});
+
+	it("reads a socket's binary messages as bytes, a Blob too, in the order they came", async () => {
+		let listener: ((event: { readonly data: unknown }) => void) | undefined;
+		const socket: MessageSocket = { addEventListener: (_type, handle) => (listener = handle) };
+		const frames: (string | number[])[] = [];
+		onMessages(socket, (frame) => frames.push(typeof frame === "string" ? frame : [...frame]));
+		expect(socket.binaryType).toBe("arraybuffer");
+		listener?.({ data: new Blob([new Uint8Array([1, 2])]) });
+		listener?.({ data: "text" });
+		listener?.({ data: new Uint8Array([3]).buffer });
+		await expect.poll(() => frames.length).toBe(3);
+		expect(frames).toEqual([[1, 2], "text", [3]]);
+	});
+
+	it("goes on reading a socket after a frame's handling fails", async () => {
+		let listener: ((event: { readonly data: unknown }) => void) | undefined;
+		const socket: MessageSocket = { addEventListener: (_type, handle) => (listener = handle) };
+		const frames: string[] = [];
+		const failures: unknown[] = [];
+		onMessages(
+			socket,
+			(frame) => {
+				if (frame === "bad") throw new Error("the tunnel's client is gone");
+				frames.push(String(frame));
+			},
+			(_message, error) => failures.push(error),
+		);
+		listener?.({ data: "one" });
+		listener?.({ data: "bad" });
+		listener?.({ data: "two" });
+		await expect.poll(() => frames).toEqual(["one", "two"]);
+		expect(failures).toHaveLength(1);
+	});
+
+	it("sweeps expired tunnel tickets as new ones are issued, at most every ten minutes", async () => {
+		let at = 0;
+		const swept: number[] = [];
+		const tickets = sweptAsUsed(
+			{
+				issue: async () => "ticket",
+				verify: async () => undefined,
+				sweep: async (now) => {
+					swept.push(now);
+				},
+			},
+			() => at,
+		);
+		const grant = { sandboxId: "sbx_1", port: 22, expiresAt: 1 };
+		await tickets.issue(grant);
+		at = 60_000;
+		await tickets.issue(grant);
+		at = 10 * 60_000;
+		await tickets.issue(grant);
+		expect(swept).toEqual([0, 10 * 60_000]);
+	});
+
+	it("keeps an account's stub sandboxes usable once it adds a host, and bounds registration", async () => {
+		// Hosts dial another address than the one the person calls: the command names that one.
+		const publicUrl = "https://hosts.kantel.test";
+		const { stack, call } = await start(new DatabaseSync(":memory:"), {
+			KANTEL_ACCOUNT_HOSTS: "experimental",
+			KANTEL_PUBLIC_URL: publicUrl,
+		});
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+
+		// Before any host: a microVM on the stub, stopped.
+		const before = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		const old = before.body.id as string;
+		expect((await call("POST", `/v1/sandboxes/${old}/stop`, { wait: true })).status).toBe(200);
+
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", {});
+		const token = joinToken.body.token as string;
+		expect(joinToken.body.command).toContain(`--url ${publicUrl} --token ${token}`);
+
+		// Registration is public: a body past its limit is refused before any of it is parsed.
+		const huge = await call("POST", "/v1/hosts/register", { token, name: "x".repeat(HOST_REGISTER_BODY_LIMIT) }, {});
+		expect(huge.status).toBe(413);
+		const chunked = await stack.compute.hosts?.fetch(
+			new Request(`${BASE}/v1/hosts/register`, {
+				method: "POST",
+				body: new ReadableStream({
+					start(controller) {
+						for (let i = 0; i < 80; i++) controller.enqueue(new Uint8Array(1024));
+						controller.close();
+					},
+				}),
+				duplex: "half",
+			} as RequestInit),
+		);
+		expect(chunked?.status).toBe(413);
+		const registered = await call("POST", "/v1/hosts/register", { token }, {});
+		expect(registered.status).toBe(201);
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const host = fakeHost();
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// The host's E2E chain is served on its credential (`kantel-host e2e join`), and an append's body is bounded.
+		const account = (await call("GET", "/v1/whoami")).body.accountId as string;
+		const chainOf = (init: RequestInit, auth = credential) =>
+			hosts.fetch(
+				new Request(`${BASE}/v1/hosts/e2e/chain?space=${account}`, {
+					...init,
+					headers: { authorization: `Bearer ${auth}`, "content-type": "application/json" },
+				}),
+			);
+		const read = await chainOf({ method: "GET" });
+		expect(read?.status).toBe(200);
+		expect(await read?.json()).toEqual({ entries: [] });
+		expect((await chainOf({ method: "GET" }, "khc_wrong"))?.status).toBe(401);
+		const big = JSON.stringify({
+			space: account,
+			from: 0,
+			entries: [{ payload: "x".repeat(HOST_E2E_CHAIN_BODY_LIMIT), sig: "" }],
+		});
+		expect((await chainOf({ method: "POST", body: big }))?.status).toBe(413);
+
+		// New sandboxes go on the host; the old one starts again on the stub, where its disk is, and forks there.
+		const fresh = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		expect(host.sandboxes.has(fresh.body.id as string)).toBe(true);
+		const started = await call("POST", `/v1/sandboxes/${old}/start`, { wait: true });
+		expect(started.body).toMatchObject({ id: old, state: "running" });
+		const fork = await call("POST", `/v1/sandboxes/${old}/fork`, {});
+		expect(fork.status).toBe(201);
+		const forkId = ((fork.body.items as { id: string }[] | undefined)?.[0]?.id ?? fork.body.id) as string;
+		await expect.poll(async () => (await call("GET", `/v1/sandboxes/${forkId}`)).body.state).toBe("running");
+		expect(host.sandboxes.has(forkId)).toBe(false);
+	});
+
+	it("holds at most TUNNEL_PENDING_LIMIT bytes for a tunnel whose port isn't open yet", () => {
+		const pending = preOpenBuffer();
+		expect(pending.hold(new Uint8Array(1024))).toBe(true);
+		expect(pending.hold(new Uint8Array(2048))).toBe(true);
+		expect(pending.take().map((chunk) => chunk.byteLength)).toEqual([1024, 2048]);
+		expect(pending.take()).toEqual([]);
+		const flooded = preOpenBuffer();
+		let held = 0;
+		while (flooded.hold(new Uint8Array(64 * 1024))) held++;
+		expect(held * 64 * 1024).toBeLessThanOrEqual(TUNNEL_PENDING_LIMIT);
+		// Past the limit nothing is kept: the tunnel is closed, not written.
+		expect(flooded.take()).toEqual([]);
+		// Empty messages count too.
+		const empties = preOpenBuffer();
+		let kept = 0;
+		while (empties.hold(new Uint8Array(0))) kept++;
+		expect(kept).toBe(TUNNEL_PENDING_MESSAGES);
+		expect(empties.held()).toEqual({ messages: 0, bytes: 0 });
+		// A tunnel that ends before its port opens lets go of what it held, and holds nothing after.
+		const ended = preOpenBuffer();
+		ended.hold(new TextEncoder().encode("SSH-2.0-client\r\n"));
+		ended.clear();
+		expect(ended.held()).toEqual({ messages: 0, bytes: 0 });
+		expect(ended.hold(new Uint8Array(1))).toBe(false);
+		expect(ended.take()).toEqual([]);
+	});
+
+	it("answers a registration GET or HEAD with the host handler's 405", async () => {
+		const { stack, call } = await start(new DatabaseSync(":memory:"), {
+			KANTEL_ACCOUNT_HOSTS: "experimental",
+			KANTEL_PUBLIC_URL: BASE,
+		});
+		const get = await call("GET", "/v1/hosts/register", undefined, {});
+		expect(get.status).toBe(405);
+		const head = await stack.compute.hosts?.fetch(new Request(`${BASE}/v1/hosts/register`, { method: "HEAD" }));
+		expect(head?.status).toBe(405);
+	});
+
+	it("never revives a host's sandbox or snapshot on the stub while account hosts are off, and gives it back once on", async () => {
+		const db = new DatabaseSync(":memory:");
+		// The same person on each start (the stack's identity is in memory in these tests; deployed, it is in D1).
+		const authenticator: Authenticator = {
+			authenticate: async () => ({
+				method: "cloudflare_access",
+				actor: { kind: "human", userId: "usr_tom" },
+				organisationId: "org_1",
+			}),
+		};
+		const open = async (accountHosts: boolean) => {
+			const compute = await createStackCompute({
+				authenticator,
+				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
+				sql: objectSql(db),
+				...(accountHosts ? { accountHosts: { publicUrl: BASE } } : {}),
+			});
+			closers.push(() => compute.close());
+			const call = async (method: string, path: string, body?: unknown) => {
+				const response = await compute.fetch(
+					new Request(`${BASE}${path}`, {
+						method,
+						headers: { authorization: "Bearer person", "content-type": "application/json" },
+						...(body === undefined ? {} : { body: JSON.stringify(body) }),
+					}),
+				);
+				const text = (await response?.text()) ?? "";
+				return { status: response?.status, body: (text === "" ? {} : JSON.parse(text)) as Record<string, unknown> };
+			};
+			return { compute, call };
+		};
+		const attachHost = async (hosts: NonNullable<typeof on.compute.hosts>, credential: string, hostId: string) => {
+			const host = fakeHost();
+			const held = await hosts.connect(credential, host.socket);
+			if (held === undefined) throw new Error("The host's credential was refused");
+			host.attach(held, hostId);
+			await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+			return host;
+		};
+
+		// On: a stub sandbox (made before any host), then a host and a sandbox on it.
+		const on = await open(true);
+		const stubbed = String((await on.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body.id);
+		const token = String((await on.call("POST", "/v1/hosts/join-tokens", {})).body.token);
+		const registered = await on.compute.hosts?.fetch(
+			new Request(`${BASE}/v1/hosts/register`, { method: "POST", body: JSON.stringify({ token }) }),
+		);
+		if (registered === undefined) throw new Error("Registration wasn't served");
+		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
+		if (on.compute.hosts === undefined) throw new Error("Account hosts are on");
+		await attachHost(on.compute.hosts, credential, hostId);
+		const onHost = String((await on.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body.id);
+		expect((await on.call("GET", `/v1/sandboxes/${onHost}`)).body.hostId).toBe(hostId);
+		// And one stopped there, its disk now a snapshot on the host.
+		const parked = String((await on.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body.id);
+		expect((await on.call("POST", `/v1/sandboxes/${parked}/stop`, { wait: true })).body).toMatchObject({
+			state: "stopped",
+		});
+		const parkedSnapshot = String((await on.call("GET", `/v1/sandboxes/${parked}`)).body.latestSnapshotId);
+		await on.compute.close();
+
+		// Off: the host's sandbox is refused, never made again on the stub; the stub's own revives as before.
+		const off = await open(false);
+		const refused = await off.call("POST", `/v1/sandboxes/${onHost}/commands`, { command: "echo where" });
+		// A command's failure is its answer: nothing ran, and the stub has no machine for it.
+		expect(refused.body).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("an account's own hosts") });
+		expect((await off.call("POST", `/v1/sandboxes/${onHost}/stop`, { wait: true })).body).toMatchObject({
+			error: { code: "unavailable" },
+		});
+		expect((await off.call("DELETE", `/v1/sandboxes/${onHost}`)).body).toMatchObject({
+			error: { code: "unavailable" },
+		});
+		const kept = await off.call("GET", `/v1/sandboxes/${onHost}`);
+		expect(kept.body).toMatchObject({ id: onHost, hostId });
+		const revived = await off.call("POST", `/v1/sandboxes/${stubbed}/commands`, { command: "echo on the stub" });
+		expect(revived.body).toMatchObject({ exitCode: 0, stdout: "on the stub\n" });
+		// A new sandbox of the same type goes on the stub: the account's host, which the backend no longer has, is
+		// passed over (unreachable), not preferred.
+		const fresh = await off.call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		expect(fresh.body).toMatchObject({ state: "running", hostId: STUB_HOST_ID });
+		// Made from the host's snapshot, or forked from its sandbox, it fails; started again, it still isn't made
+		// (empty) on the stub, and it keeps the snapshot it is to be made from.
+		const fromHost = await off.call("POST", "/v1/sandboxes", { type: "microvm", from: parkedSnapshot, wait: true });
+		expect(fromHost.body).toMatchObject({ state: "error" });
+		const forked = await off.call("POST", `/v1/sandboxes/${parked}/fork`, { wait: true });
+		const fork = (forked.body.items as { id: string; state: string }[])[0];
+		expect(fork).toMatchObject({ state: "error" });
+		for (const id of [String(fromHost.body.id), String(fork?.id)]) {
+			const started = await off.call("POST", `/v1/sandboxes/${id}/start`, { wait: true });
+			expect(started.body).not.toMatchObject({ state: "running" });
+			const recovered = await off.call("POST", `/v1/sandboxes/${id}/recover`, { wait: true });
+			expect(recovered.body).not.toMatchObject({ state: "running" });
+			const after = (await off.call("GET", `/v1/sandboxes/${id}`)).body;
+			expect(after.state).toBe("error");
+			expect(after.hostId).toBeUndefined();
+		}
+		// Its credential is the hosts registry's, which is off: revoking it is refused, not answered and left valid.
+		const revoking = await off.call("DELETE", `/v1/admin/hosts/${hostId}`);
+		expect(revoking.status).toBe(503);
+		expect(revoking.body).toMatchObject({ error: { code: "unavailable", message: HOST_NOT_REVOCABLE } });
+		expect((await off.call("GET", `/v1/admin/hosts/${hostId}`)).body.state).not.toBe("revoked");
+		await off.compute.close();
+
+		// On again: the host is back, and its sandbox runs there.
+		const again = await open(true);
+		if (again.compute.hosts === undefined) throw new Error("Account hosts are on");
+		const host = await attachHost(again.compute.hosts, credential, hostId);
+		host.sandboxes.add(onHost);
+		// The refused stop left it in `error`, its host kept: it starts again there, from its own disk.
+		expect((await again.call("GET", `/v1/sandboxes/${onHost}`)).body).toMatchObject({ state: "error", hostId });
+		expect((await again.call("POST", `/v1/sandboxes/${onHost}/start`, { wait: true })).body).toMatchObject({
+			state: "running",
+			hostId,
+		});
+		expect(host.calls).toContain("sandbox.start");
+		const ran = await again.call("POST", `/v1/sandboxes/${onHost}/commands`, { command: "echo back" });
+		expect(ran.body).toMatchObject({ exitCode: 0, stdout: "back from my own machine\n" });
+		expect((await again.call("GET", `/v1/sandboxes/${onHost}`)).body.hostId).toBe(hostId);
+		// And it's preferred for new sandboxes again, still the account's.
+		const next = await again.call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		expect(next.body).toMatchObject({ state: "running", hostId });
+		expect((await again.call("GET", "/v1/hosts")).body.items).toMatchObject([{ id: hostId, state: "online" }]);
+		// The one made from its snapshot while it was off is made now, there, from that snapshot.
+		const made = await again.call("POST", `/v1/sandboxes/${fromHost.body.id}/start`, { wait: true });
+		expect(made.body).toMatchObject({ state: "running", hostId });
+	});
+
+	it("stops a host's sandbox at its auto-stop time, and sends its webhook, with no compute request to prompt it", async () => {
+		let clock = Date.now();
+		const authenticator: Authenticator = {
+			authenticate: async () => ({
+				method: "cloudflare_access",
+				actor: { kind: "human", userId: "usr_tom" },
+				organisationId: "org_1",
+			}),
+		};
+		const db = new DatabaseSync(":memory:");
+		const delivered: string[] = [];
+		const open = async () => {
+			const opened = await createStackCompute({
+				authenticator,
+				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
+				sql: objectSql(db),
+				accountHosts: { publicUrl: BASE },
+				now: () => clock,
+				hostSweepMs: 10,
+				fetch: async (_url, init) => {
+					delivered.push(String(init?.body));
+					return new Response("ok");
+				},
+			});
+			closers.push(() => opened.close());
+			return opened;
+		};
+		const first = await open();
+		const call = async (method: string, path: string, body?: unknown) => {
+			const response = await first.fetch(
+				new Request(`${BASE}${path}`, {
+					method,
+					headers: { authorization: "Bearer person", "content-type": "application/json" },
+					...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				}),
+			);
+			return JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+		};
+		if (first.hosts === undefined) throw new Error("Account hosts are on");
+		const token = String((await call("POST", "/v1/hosts/join-tokens", {})).token);
+		const registered = await first.hosts.fetch(
+			new Request(`${BASE}/v1/hosts/register`, { method: "POST", body: JSON.stringify({ token }) }),
+		);
+		if (registered === undefined) throw new Error("Registration wasn't served");
+		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
+		const attach = async (compute: StackCompute, running: readonly string[] = []) => {
+			const hosts = compute.hosts;
+			if (hosts === undefined) throw new Error("Account hosts are on");
+			const host = fakeHost();
+			for (const id of running) host.sandboxes.add(id);
+			const held = await hosts.connect(credential, host.socket);
+			if (held === undefined) throw new Error("The host's credential was refused");
+			host.attach(held, hostId);
+			await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+			return host;
+		};
+		await attach(first);
+		const timed = await call("POST", "/v1/sandboxes", { type: "microvm", autoStopMinutes: 1, wait: true });
+		const kept = await call("POST", "/v1/sandboxes", { type: "microvm", autoStopMinutes: null, wait: true });
+		expect([timed.hostId, kept.hostId]).toEqual([hostId, hostId]);
+		await call("POST", "/v1/webhooks", {
+			name: "stops",
+			url: "https://hooks.example.test/x",
+			events: ["sandbox.stopped"],
+		});
+		await first.close();
+
+		// The object starts again (as after an eviction); nothing calls the compute API, so the request-driven timers
+		// (the webhook dispatcher's among them) never start. Its stop time passes while its host is away, and sweeps run
+		// meanwhile: it is kept running, not written off. Once the host reconnects it is stopped (it is used over SSH
+		// alone, say), and its `sandbox.stopped` is sent.
+		const second = await open();
+		clock += 2 * 60_000;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const host = await attach(second, [String(timed.id), String(kept.id)]);
+		await expect.poll(() => host.calls.filter((method) => method === "sandbox.stop").length).toBe(1);
+		await expect
+			.poll(() => delivered.map((body) => JSON.parse(body) as { type: string; sandboxId?: string }), {
+				timeout: 5000,
+			})
+			.toEqual([expect.objectContaining({ type: "sandbox.stopped" })]);
+		const state = async (id: unknown) => {
+			const response = await second.fetch(
+				new Request(`${BASE}/v1/sandboxes/${id}`, { headers: { authorization: "Bearer person" } }),
+			);
+			return ((await response?.json()) as { state: string } | undefined)?.state;
+		};
+		expect(await state(timed.id)).toBe("stopped");
+		expect(await state(kept.id)).toBe("running");
+	});
+
+	it("refuses a host's snapshot on the stub rather than booting an empty disk in its place", async () => {
+		const stub = revivingStub(createStubBackend(), createMemoryStore().sandboxes);
+		const ref = "host_abc/snap_1";
+		const spec = {
+			sandboxId: "sbx_new",
+			accountId: "acc_1",
+			type: "microvm" as const,
+			subdomain: "new",
+			env: {},
+			eligibleHosts: [STUB_HOST_ID],
+		};
+		await expect(stub.create({ ...spec, fromSnapshot: ref })).rejects.toMatchObject({ code: "unavailable" });
+		await expect(stub.listSnapshotFiles(ref, "/")).rejects.toMatchObject({ code: "unavailable" });
+		await expect(stub.readSnapshotFile(ref, "/a")).rejects.toMatchObject({ code: "unavailable" });
+		await expect(stub.deleteSnapshot(ref)).rejects.toMatchObject({ code: "unavailable" });
+		// The stub's own snapshot it has lost still boots from an empty disk, as before.
+		await expect(stub.create({ ...spec, fromSnapshot: "ref_gone" })).resolves.toMatchObject({ hostId: STUB_HOST_ID });
+	});
+
+	it("needs KANTEL_PUBLIC_URL with the switch on, and refuses a switch it doesn't know", () => {
+		const access = { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD };
+		expect(gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off" }).accountHosts).toBeUndefined();
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental" })).toThrow(/KANTEL_PUBLIC_URL/);
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "yes", KANTEL_PUBLIC_URL: BASE })).toThrow(
+			/KANTEL_ACCOUNT_HOSTS/,
+		);
+		expect(
+			gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: `${BASE}/` }).accountHosts,
+		).toEqual({ publicUrl: BASE });
+	});
+
+	it("shares KANTEL_PUBLIC_URL with email sign-in: alone it is the hosts', and sign-in stays off", () => {
+		const access = { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD };
+		const alone = gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
+		expect(alone.accountHosts).toEqual({ publicUrl: BASE });
+		expect(alone.emailSignIn).toBeUndefined();
+		// Turned off, the same configuration stays valid, with neither account hosts nor sign-in.
+		const off = gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off", KANTEL_PUBLIC_URL: BASE });
+		expect(off.accountHosts).toBeUndefined();
+		expect(off.emailSignIn).toBeUndefined();
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off", KANTEL_PUBLIC_URL: `${BASE}/x` })).toThrow(
+			/origin/,
+		);
+		// With no switch at all: the public origin without its sender is refused, as before.
+		expect(() => gatewayConfig({ ...access, KANTEL_PUBLIC_URL: BASE })).toThrow(/KANTEL_SIGN_IN_FROM/);
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off", KANTEL_SIGN_IN_FROM: "a@b.c" })).toThrow(
+			/both/,
+		);
+		const both = gatewayConfig({
+			...access,
+			KANTEL_ACCOUNT_HOSTS: "experimental",
+			KANTEL_PUBLIC_URL: BASE,
+			KANTEL_SIGN_IN_FROM: "sign-in@example.com",
+		});
+		expect(both.accountHosts).toEqual({ publicUrl: BASE });
+		expect(both.emailSignIn).toMatchObject({ publicUrl: BASE, from: "sign-in@example.com" });
+	});
+
+	it("adds a host to the person's account and runs that account's sandboxes on it, others' on the stub", async () => {
+		const db = new DatabaseSync(":memory:");
+		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE };
+		const { stack, call } = await start(db, on);
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+
+		const whoami = await call("GET", "/v1/whoami");
+		const personal = whoami.body.accountId as string;
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { name: "toms-box" });
+		expect(joinToken.status).toBe(201);
+		expect(joinToken.body).toMatchObject({ accountId: personal });
+		const token = joinToken.body.token as string;
+		expect(joinToken.body.command).toContain(`--url ${BASE} --token ${token}`);
+
+		// kantel-host install fetches Kantel's images through the Worker, and registers, with no sign-in.
+		const manifest = await call("GET", "/v1/hosts/images/manifest.json", undefined, {});
+		expect(manifest.status).toBe(302);
+		expect(manifest.headers.get("location")).toMatch(/releases\/download\/host-images-[0-9.]+\/manifest\.json$/);
+		const registered = await call("POST", "/v1/hosts/register", { token }, {});
+		expect(registered.status).toBe(201);
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		expect((await call("POST", "/v1/hosts/register", { token }, {})).status).toBe(403);
+
+		// A wrong credential's socket is closed with 4003, kantel-host's "stop, don't retry".
+		const stranger = fakeHost();
+		expect(await hosts.connect("khc_wrong", stranger.socket)).toBeUndefined();
+		expect(stranger.closed()?.code).toBe(4003);
+		expect(await hosts.connect(undefined, fakeHost().socket)).toBeUndefined();
+
+		// The host's own connection, as the stack object accepts it.
+		const request = new Request(`${BASE}/v1/hosts/connect`, { headers: { authorization: `Bearer ${credential}` } });
+		const host = fakeHost();
+		const held = await hosts.connect(hostCredential(request), host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		const listed = await call("GET", "/v1/hosts");
+		expect(listed.body.items).toMatchObject([{ id: hostId, name: "toms-box", state: "online", accountId: personal }]);
+
+		// The person's sandbox goes on their machine, and its command runs there.
+		const sandbox = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		expect(sandbox.status).toBe(201);
+		const sandboxId = sandbox.body.id as string;
+		expect(host.sandboxes.has(sandboxId)).toBe(true);
+		const run = await call("POST", `/v1/sandboxes/${sandboxId}/commands`, { command: "echo hello" });
+		expect(run.body).toMatchObject({ exitCode: 0, stdout: "hello from my own machine\n" });
+
+		// SSH: the ticket's raw tunnel reaches the sandbox's port 22 over the host's connection.
+		const ssh = await call("POST", `/v1/sandboxes/${sandboxId}/ssh`, {});
+		expect(ssh.status).toBe(201);
+		const proxyUrl = new URL(ssh.body.proxyUrl as string);
+		expect(proxyUrl.origin).toBe(BASE.replace("https", "wss"));
+		const ticket = tunnelTicket(proxyUrl.pathname);
+		if (ticket === undefined) throw new Error(`Not a tunnel URL: ${proxyUrl.href}`);
+		const heard: string[] = [];
+		const tunnel = await hosts.tunnel(ticket, {
+			send: (bytes) => heard.push(new TextDecoder().decode(bytes)),
+			close: () => undefined,
+		});
+		if (tunnel === undefined) throw new Error("The tunnel was refused");
+		tunnel.write(new TextEncoder().encode("ssh-2.0-client"));
+		await expect.poll(() => heard.join("")).toBe("SSH-2.0-CLIENT");
+		tunnel.close();
+		const refused: number[] = [];
+		const forged = `${ticket.slice(0, -4)}AAAA`;
+		expect(await hosts.tunnel(forged, { send: () => undefined, close: (code) => refused.push(code) })).toBeUndefined();
+		expect(refused).toEqual([4003]);
+		expect(tunnelTicket(`${proxyUrl.pathname}/json/version`)).toBeUndefined();
+
+		// The desktop: its page is the desktop route's, on its ticket with no sign-in (the console's frame and a new tab
+		// open it alike), never the gateway's "No such route". This host's port 6080 isn't Selkies, so the route refuses
+		// what the sandbox sent for it.
+		const desktop = await call("POST", `/v1/sandboxes/${sandboxId}/desktop`, {});
+		expect(desktop.status).toBe(201);
+		const page = new URL(desktop.body.url as string);
+		expect(page.origin).toBe(BASE);
+		expect(page.pathname).toMatch(/^\/v1\/hosts\/desktop\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\/$/);
+		expect(desktop.body.embedUrl).toBe(desktop.body.url);
+		const served = await call("GET", page.pathname, undefined, {});
+		expect(served.status).toBe(502);
+		expect(served.body).toEqual({});
+		const moved = await call("GET", page.pathname.slice(0, -1), undefined, {});
+		expect([moved.status, moved.headers.get("location")]).toEqual([308, page.pathname]);
+		const expired = await call("GET", `/v1/hosts/desktop/${forged}/`, undefined, {});
+		expect([expired.status, expired.body]).toEqual([404, {}]);
+
+		// Its stream goes through to Selkies on port 6080, message by message, text and binary kept apart.
+		// The console's own credentials, sent along by a browser, never reach the sandbox's desktop or DevTools.
+		const consoleCredentials = { cookie: "__Host-kantel_session=console", authorization: "Bearer console" };
+		const upgrade = (url: string) =>
+			new Request(url.replace(/^wss:/, "https:"), { headers: { upgrade: "websocket", ...consoleCredentials } });
+		const control = await hosts.socketTarget(upgrade(`${page.href}api/websockets?player=1`));
+		if (control === undefined || "refused" in control) throw new Error("The desktop's socket was refused");
+		expect(control).toMatchObject({ sandboxId, port: 6080, path: "/api/websockets?player=1", kind: "desktop" });
+		expect(control.headers).toBeUndefined();
+		const driver = socketClient();
+		const driving = hosts.relay(control, driver.client);
+		expect(await driving.ready).toEqual({});
+		driving.send("kd,65");
+		driving.send(new TextEncoder().encode("upload"));
+		await expect.poll(() => driver.got).toEqual(["text KD,65", "binary UPLOAD"]);
+		driving.close();
+		// Watch: Selkies' viewer role, whatever the client asks for, and only what a viewer needs to watch reaches it.
+		const watch = await call("POST", `/v1/sandboxes/${sandboxId}/desktop`, { viewOnly: true });
+		expect(new URL(watch.body.url as string).hash).toBe("#shared");
+		const watchPage = new URL(watch.body.url as string);
+		watchPage.hash = "";
+		const viewing = await hosts.socketTarget(upgrade(`${watchPage.href}api/websockets?role=controller`));
+		if (viewing === undefined || "refused" in viewing) throw new Error("The watch socket was refused");
+		expect(viewing.path).toBe("/api/websockets?role=viewer");
+		const viewer = socketClient();
+		const watching = hosts.relay(viewing, viewer.client);
+		watching.send("kd,65");
+		watching.send("START_VIDEO");
+		await expect.poll(() => viewer.got).toEqual(["text START_VIDEO"]);
+		watching.close();
+		expect(host.heard).toEqual([
+			"/api/websockets?player=1 Host: 127.0.0.1:6080 1 kd,65",
+			"/api/websockets?player=1 Host: 127.0.0.1:6080 2 upload",
+			expect.stringMatching(/^\/api\/websockets\?player=1 Host: 127\.0\.0\.1:6080 8 /),
+			"/api/websockets?role=viewer Host: 127.0.0.1:6080 1 START_VIDEO",
+			expect.stringMatching(/^\/api\/websockets\?role=viewer Host: 127\.0\.0\.1:6080 8 /),
+		]);
+
+		// The browser: watched and driven on the desktop's page, and Chromium's DevTools for CDP clients through the
+		// tunnel with its path, asked for as 127.0.0.1 (Chromium refuses any other Host).
+		const browser = await call("POST", `/v1/sandboxes/${sandboxId}/browser`, {});
+		expect(browser.status).toBe(201);
+		expect(new URL(browser.body.url as string).pathname).toMatch(/^\/v1\/hosts\/desktop\//);
+		const cdpUrl = browser.body.cdpUrl as string;
+		expect(cdpUrl).toMatch(/^wss:\/\/kantel\.test\/v1\/hosts\/tunnel\/[^/]+\/devtools\/browser\/b-1$/);
+		const cdp = await hosts.socketTarget(upgrade(cdpUrl));
+		if (cdp === undefined || "refused" in cdp) throw new Error("The CDP socket was refused");
+		expect(cdp).toMatchObject({ sandboxId, port: 9222, path: "/devtools/browser/b-1", kind: "cdp" });
+		const playwright = socketClient();
+		const driven = hosts.relay(cdp, playwright.client);
+		driven.send('{"id":1,"method":"Browser.getVersion"}');
+		await expect.poll(() => playwright.got).toEqual(['text {"ID":1,"METHOD":"BROWSER.GETVERSION"}']);
+		driven.close();
+		expect(cdp.headers).toBeUndefined();
+		for (const handshake of host.handshakes) expect(handshake).not.toMatch(/^(cookie|authorization):/im);
+		expect(host.heard).toContain('/devtools/browser/b-1 Host: 127.0.0.1:9222 1 {"id":1,"method":"Browser.getVersion"}');
+
+		// A ticket opens only its own route: a desktop's isn't a tunnel, a tunnel's isn't a desktop, a forged one neither.
+		const cdpTicket = /\/v1\/hosts\/tunnel\/([^/]+)\//.exec(cdpUrl)?.[1] ?? "";
+		const desktopTicket = page.pathname.split("/")[4] ?? "";
+		for (const wrong of [
+			`${BASE}/v1/hosts/tunnel/${desktopTicket}/devtools/browser/b-1`,
+			`${BASE}/v1/hosts/desktop/${cdpTicket}/api/websockets`,
+			`${BASE}/v1/hosts/desktop/${desktopTicket}/api/other`,
+			`${BASE}/v1/hosts/tunnel/${forged}/devtools/browser/b-1`,
+		]) {
+			expect(await hosts.socketTarget(upgrade(wrong))).toMatchObject({ refused: { code: 4003 } });
+		}
+		// Anything else upgrading isn't one of these.
+		expect(await hosts.socketTarget(upgrade(`${BASE}/v1/whoami`))).toBeUndefined();
+		expect(await hosts.socketTarget(upgrade(proxyUrl.href))).toBeUndefined();
+
+		// What a client sends before the sandbox's server has answered is bounded, as a raw tunnel's is.
+		const flooder = socketClient();
+		const flooding = hosts.relay(cdp, flooder.client);
+		for (let i = 0; i <= TUNNEL_PENDING_MESSAGES; i++) flooding.send("x");
+		expect(flooder.closed()).toEqual({ code: 1009, reason: "Too much sent before the sandbox answered" });
+
+		// An organisation with no host of its own keeps the stub.
+		const org = await call("POST", "/v1/accounts", { name: "Acme" });
+		const orgId = org.body.id as string;
+		const elsewhere = await call("POST", "/v1/sandboxes", { account: orgId, type: "isolate", wait: true });
+		expect(elsewhere.status).toBe(201);
+		expect(host.sandboxes.has(elsewhere.body.id as string)).toBe(false);
+		const stubbed = await call("POST", `/v1/sandboxes/${elsewhere.body.id as string}/commands`, {
+			command: "echo on the stub",
+		});
+		expect(stubbed.body).toMatchObject({ exitCode: 0, stdout: "on the stub\n" });
+		expect((await call("GET", `/v1/hosts?account=${orgId}`)).body.items).toEqual([]);
+
+		// Removed: revoked, its connection closed.
+		const removed = await call("DELETE", `/v1/hosts/${hostId}`);
+		expect(removed.body).toMatchObject({ state: "revoked" });
+		expect(host.closed()?.code).toBe(4003);
+
+		// The registry is in the object's SQLite: after the object is evicted, the host is still the account's. (The
+		// identity directory here is in memory, so the person signs in afresh; the registry is what's checked.)
+		await stack.compute.close();
+		const again = await start(db, on);
+		const kept = await again.stack.compute.hosts?.service.get(hostId);
+		expect(kept).toMatchObject({ id: hostId, accountId: personal, state: "revoked" });
+	});
+
+	it("serves a host's sandbox's exposed port on its name under kantel.run, with its token unless public", async () => {
+		const db = new DatabaseSync(":memory:");
+		const { stack, call } = await start(db, { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const token = (await call("POST", "/v1/hosts/join-tokens", { name: "toms-box" })).body.token as string;
+		const { hostId, credential } = (await call("POST", "/v1/hosts/register", { token }, {})).body as {
+			hostId: string;
+			credential: string;
+		};
+		const host = fakeHost({ http: true });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const sandbox = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		const sandboxId = sandbox.body.id as string;
+		const name = `3000-${sandbox.body.subdomain as string}.kantel.run`;
+
+		const exposed = await call("POST", `/v1/sandboxes/${sandboxId}/ports`, { port: 3000 });
+		expect(exposed.status).toBe(201);
+		const url = new URL(exposed.body.url as string);
+		expect(url.origin).toBe(`https://${name}`);
+		const portToken = url.searchParams.get("_token");
+		expect(portToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+		// Every name under the ports domain is the port's alone: never the console, the API or the public origin.
+		const compute = stack.compute;
+		expect(compute.isPortName(name)).toBe(true);
+		expect(compute.isPortName("deep.name.kantel.run")).toBe(true);
+		for (const other of ["kantel.run", "app.kantel.dev", "kantel.test", "evilkantel.run"]) {
+			expect(compute.isPortName(other)).toBe(false);
+		}
+		const page = (path: string, headers: Record<string, string> = {}) =>
+			compute.servePort(new Request(`https://${name}${path}`, { headers, redirect: "manual" }));
+
+		// Without its token, nothing reaches the sandbox.
+		const bare = await page("/");
+		expect(bare.status).toBe(401);
+		expect(await page("/v1/me").then((answer) => answer.status)).toBe(401);
+		// The token is traded for a cookie on this one name, and taken off the address.
+		const traded = await page(`/hello?a=1&_token=${portToken}`);
+		expect(traded.status).toBe(303);
+		expect(traded.headers.get("location")).toBe("/hello?a=1");
+		const cookie = (traded.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+		expect(traded.headers.get("set-cookie")).toMatch(
+			/^__Host-kantel_port=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax$/,
+		);
+		// With it, the sandbox's own page, asked for under its public name, with Kantel's cookie kept from it.
+		const served = await page("/hello?a=1", { cookie, "cf-connecting-ip": "203.0.113.9" });
+		expect(served.status).toBe(200);
+		expect(await served.text()).toBe(`GET /hello?a=1 HTTP/1.1\nHost: ${name}\nno cookie\n`);
+
+		// A name nobody exposed never reaches a sandbox.
+		const nobody = await compute.servePort(new Request("https://4000-nobody.kantel.run/"));
+		expect(nobody.status).toBe(404);
+
+		// A WebSocket on the port's name (a dev server's hot reload) goes through, on the same token or cookie as its
+		// pages, asked for under the port's public name.
+		const upgrade = (path: string, headers: Record<string, string> = {}) =>
+			hosts.socketTarget(new Request(`https://${name}${path}`, { headers: { upgrade: "websocket", ...headers } }));
+		expect(await upgrade("/hmr")).toEqual({ refused: { code: 4401, reason: "This port needs its token" } });
+		expect(await hosts.socketTarget(new Request("https://4000-nobody.kantel.run/"))).toMatchObject({
+			refused: { code: 4404 },
+		});
+		// The cookie counts only from the port's own pages (or the same sandbox's), by Origin.
+		expect(await upgrade("/hmr", { cookie, origin: "https://evil.example" })).toMatchObject({
+			refused: { code: 4401 },
+		});
+		const hmr = await upgrade("/hmr?v=2", { cookie, origin: `https://${name}` });
+		if (hmr === undefined || "refused" in hmr) throw new Error("The port's socket was refused");
+		expect(hmr).toMatchObject({ sandboxId, port: 3000, path: "/hmr?v=2", host: name, kind: "port 3000" });
+		const withToken = await upgrade(`/hmr?_token=${portToken}`);
+		expect(withToken).toMatchObject({ path: "/hmr" });
+		const reloads = socketClient();
+		const reloading = hosts.relay(hmr, reloads.client);
+		expect(await reloading.ready).toEqual({});
+		reloading.send("ping");
+		await expect.poll(() => reloads.got).toEqual(["text PING"]);
+		expect(host.heard).toEqual([`/hmr?v=2 Host: ${name} 1 ping`]);
+		reloading.close();
+
+		// The application's own cookies and Authorization reach its server, Kantel's gate cookie (every name it has had)
+		// never; the client's subprotocol is offered, and the one the server chose is the client's to see in its 101.
+		const app = await upgrade("/hmr", {
+			cookie: `session=app-1; ${cookie}; kantel_port=old; _kantel_port=older; theme=dark`,
+			origin: `https://${name}`,
+			authorization: "Bearer app-token",
+			"sec-websocket-protocol": "vite-hmr",
+		});
+		if (app === undefined || "refused" in app) throw new Error("The port's socket was refused");
+		const vite = socketClient();
+		const hot = hosts.relay(app, vite.client, ["vite-hmr"]);
+		expect(await hot.ready).toEqual({ protocol: "vite-hmr" });
+		const handshake = host.handshakes.at(-1) ?? "";
+		expect(handshake).toContain("Sec-WebSocket-Protocol: vite-hmr\r\n");
+		expect(handshake).toContain("cookie: session=app-1; theme=dark\r\n");
+		expect(handshake).toContain("authorization: Bearer app-token\r\n");
+		expect(handshake).not.toMatch(/kantel_port/);
+		expect(handshake).not.toContain(portToken ?? "");
+		// A message from the sandbox bigger than the Worker holds is refused on its head, before its bytes arrive.
+		hot.send("huge");
+		await expect.poll(() => vite.closed()).toMatchObject({ code: 1009 });
+		// One that reaches the page server itself (account hosts off) is still refused.
+		expect((await page("/", { cookie, upgrade: "websocket" })).status).toBe(501);
+
+		// Exposed public: no token needed. Hidden: gone.
+		const open = await call("POST", `/v1/sandboxes/${sandboxId}/ports`, { port: 8080, public: true });
+		expect(new URL(open.body.url as string).search).toBe("");
+		const publicName = `8080-${sandbox.body.subdomain as string}.kantel.run`;
+		const openPage = await compute.servePort(new Request(`https://${publicName}/`));
+		expect(openPage.status).toBe(200);
+		expect(await openPage.text()).toContain(`Host: ${publicName}`);
+		expect((await call("DELETE", `/v1/sandboxes/${sandboxId}/ports/8080`)).status).toBe(204);
+		expect((await compute.servePort(new Request(`https://${publicName}/`))).status).toBe(404);
+	});
+
+	it("gives a microVM placed before ports were served here the ports capability on start, and nothing else", async () => {
+		const db = new DatabaseSync(":memory:");
+		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE };
+		const first = await start(db, on);
+		const hosts = first.stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const token = (await first.call("POST", "/v1/hosts/join-tokens", { name: "toms-box" })).body.token as string;
+		const { hostId, credential } = (await first.call("POST", "/v1/hosts/register", { token }, {})).body as {
+			hostId: string;
+			credential: string;
+		};
+		const host = fakeHost({ http: true });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const vm = (await first.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body;
+		const isolate = (await first.call("POST", "/v1/sandboxes", { type: "isolate", wait: true })).body;
+		expect(vm.capabilities).toMatchObject({ ports: true });
+		await first.stack.compute.close();
+
+		// As the previous deploy wrote it: a running microVM on an account host, without ports.
+		const record = (id: unknown) => {
+			const row = db
+				.prepare("SELECT data FROM compute_api_records WHERE kind = 'sandboxes' AND id = ?")
+				.get(String(id));
+			return JSON.parse(String((row as { data: string }).data)) as Record<string, unknown>;
+		};
+		const written = (id: unknown, data: Record<string, unknown>) =>
+			db
+				.prepare("UPDATE compute_api_records SET data = ? WHERE kind = 'sandboxes' AND id = ?")
+				.run(JSON.stringify(data), String(id));
+		const before = record(vm.id);
+		written(vm.id, { ...before, capabilities: { ...(before.capabilities as object), ports: false } });
+		// An isolate's record never gets ports, whatever its placement says (this fake host answers every tier as a VM).
+		const isolateWritten = record(isolate.id);
+		written(isolate.id, {
+			...isolateWritten,
+			capabilities: { ...(isolateWritten.capabilities as object), ports: false },
+		});
+		const isolateBefore = record(isolate.id);
+
+		// On start, before any call: the microVM's record is as it was with ports (what `exposePort` checks), state,
+		// placement and every other field kept; the isolate's is untouched. (The identity directory here is in memory, so
+		// the person's account is new after a restart: the record is what's checked.)
+		const again = await start(db, on);
+		expect(record(vm.id)).toEqual(before);
+		expect(record(isolate.id)).toEqual(isolateBefore);
+		// Starting again over records that have it changes nothing.
+		await again.stack.compute.close();
+		const settled = record(vm.id);
+		await start(db, on);
+		expect(record(vm.id)).toEqual(settled);
+	});
+
+	it("answers every name under the ports domain with a 404 while account hosts are off", async () => {
+		const { stack, call } = await start(new DatabaseSync(":memory:"));
+		const made = await call("POST", "/v1/sandboxes", { name: "web", wait: true });
+		const exposed = await call("POST", `/v1/sandboxes/${made.body.id as string}/ports`, { port: 3000 });
+		const url = new URL(exposed.body.url as string);
+		expect(url.hostname).toBe(`3000-${made.body.subdomain as string}.kantel.run`);
+		expect(stack.compute.isPortName(url.hostname)).toBe(true);
+		expect((await stack.compute.servePort(new Request(url))).status).toBe(404);
+	});
+
+	it("lets someone who signs up on the public origin add and use a host of their own, never the stub", async () => {
+		const { call, signIn, hosts } = await startPublic();
+		const ada = await signIn("ada@example.test");
+
+		// In, but not a super-admin, and with no host of her own nothing runs: the stub is the deployment's.
+		const whoami = await call("GET", "/v1/whoami", { token: ada });
+		expect(whoami.status).toBe(200);
+		expect(whoami.body).toMatchObject({ superAdmin: false });
+		const personal = whoami.body.accountId as string;
+		const early = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "isolate", wait: true } });
+		expect(early.status).toBe(503);
+		expect(early.body.error).toMatchObject({ code: "unavailable", message: /host of this account's own/ });
+		expect((await call("GET", "/v1/admin/hosts", { token: ada })).status).toBe(403);
+
+		// She adds her machine to her personal account; it registers and connects.
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { token: ada, body: { name: "adas-box" } });
+		expect(joinToken.status).toBe(201);
+		expect(joinToken.body).toMatchObject({ accountId: personal });
+		const registered = await call("POST", "/v1/hosts/register", { body: { token: joinToken.body.token } });
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const host = fakeHost();
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const listed = await call("GET", "/v1/hosts", { token: ada });
+		expect(listed.body.items).toMatchObject([{ id: hostId, state: "online", accountId: personal }]);
+
+		// Her sandbox goes on her machine, and so does one made with a key she makes.
+		const made = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "microvm", wait: true } });
+		expect(made.status).toBe(201);
+		const sandboxId = made.body.id as string;
+		expect(host.sandboxes.has(sandboxId)).toBe(true);
+		const key = await call("POST", "/v1/api-keys", {
+			token: ada,
+			body: { name: "cli", scopes: ["sandboxes:read", "sandboxes:write", "exec"] },
+		});
+		expect(key.status).toBe(201);
+		const byKey = await call("POST", "/v1/sandboxes", {
+			token: key.body.secret as string,
+			body: { type: "microvm", wait: true },
+		});
+		expect(host.sandboxes.has(byKey.body.id as string)).toBe(true);
+		// Her key, too, is kept off the stub: an isolate (which her host doesn't run) has nowhere to go.
+		const isolate = await call("POST", "/v1/sandboxes", {
+			token: key.body.secret as string,
+			body: { type: "isolate", wait: true },
+		});
+		expect(isolate.status).not.toBe(201);
+
+		// A tunnel given under a session ends with that session, and not with another of hers.
+		const later = await signIn("ada@example.test");
+		const ticketOf = async (token: string) => {
+			const ssh = await call("POST", `/v1/sandboxes/${sandboxId}/ssh`, { token, body: {} });
+			expect(ssh.status).toBe(201);
+			const ticket = tunnelTicket(new URL(ssh.body.proxyUrl as string).pathname);
+			if (ticket === undefined) throw new Error("Not a tunnel URL");
+			return ticket;
+		};
+		const first = await ticketOf(ada);
+		const second = await ticketOf(later);
+		expect((await call("POST", "/auth/session/end", { token: ada })).status).toBe(204);
+		const refused: number[] = [];
+		const ended = await hosts.tunnel(first, { send: () => undefined, close: (code) => refused.push(code) });
+		expect(ended).toBeUndefined();
+		expect(refused).toEqual([4003]);
+		const open = await hosts.tunnel(second, { send: () => undefined, close: () => undefined });
+		expect(open).toBeDefined();
+		open?.close();
+	});
+
+	it("keeps one sign-up's hosts, join tokens and sandboxes out of another's sight and reach", async () => {
+		const { call, signIn, hosts } = await startPublic();
+		const ada = await signIn("ada@example.test");
+		const bob = await signIn("bob@example.test");
+		const adas = (await call("GET", "/v1/whoami", { token: ada })).body.accountId as string;
+		const bobs = (await call("GET", "/v1/whoami", { token: bob })).body.accountId as string;
+		expect(adas).not.toBe(bobs);
+
+		// Bob can't make a join token into Ada's account, nor list her hosts.
+		const foreignToken = await call("POST", "/v1/hosts/join-tokens", { token: bob, body: { account: adas } });
+		expect(foreignToken.status).toBe(403);
+		expect((await call("GET", `/v1/hosts?account=${adas}`, { token: bob })).status).toBe(403);
+
+		// Ada adds a host; her token works once, so Bob can't join a machine with it after her.
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { token: ada, body: { name: "adas-box" } });
+		expect(joinToken.status).toBe(201);
+		const registered = await call("POST", "/v1/hosts/register", { body: { token: joinToken.body.token } });
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const again = await call("POST", "/v1/hosts/register", { body: { token: joinToken.body.token } });
+		expect(again.status).toBe(403);
+		const host = fakeHost();
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// Bob sees none of it: his list is empty, and her host is not_found to read, change or remove.
+		expect((await call("GET", "/v1/hosts", { token: bob })).body.items).toEqual([]);
+		expect((await call("GET", `/v1/hosts/${hostId}`, { token: bob })).status).toBe(404);
+		expect((await call("PATCH", `/v1/hosts/${hostId}`, { token: bob, body: { draining: true } })).status).toBe(404);
+		expect((await call("DELETE", `/v1/hosts/${hostId}`, { token: bob })).status).toBe(404);
+		expect((await call("GET", `/v1/hosts/${hostId}`, { token: ada })).body).toMatchObject({ state: "online" });
+
+		// Bob's sandbox never goes on Ada's machine: with no host of his own, nothing runs it.
+		const bobsSandbox = await call("POST", "/v1/sandboxes", { token: bob, body: { type: "microvm", wait: true } });
+		expect(bobsSandbox.status).toBe(503);
+		expect(bobsSandbox.body.error).toMatchObject({ message: /kantel hosts add/ });
+		expect(host.sandboxes.size).toBe(0);
+
+		// Ada's sandbox is on her machine, and Bob can't find or run anything in it.
+		const adasSandbox = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "microvm", wait: true } });
+		expect(adasSandbox.status).toBe(201);
+		const sandboxId = adasSandbox.body.id as string;
+		expect(host.sandboxes.has(sandboxId)).toBe(true);
+		expect((await call("GET", `/v1/sandboxes/${sandboxId}`, { token: bob })).status).toBe(404);
+		const exec = await call("POST", `/v1/sandboxes/${sandboxId}/commands`, {
+			token: bob,
+			body: { command: "echo hi", wait: true },
+		});
+		expect(exec.status).toBe(404);
+		expect(host.calls).not.toContain("sandbox.exec");
+		expect((await call("GET", "/v1/sandboxes", { token: bob })).body.items).toEqual([]);
+	});
+
+	it("keeps the stub its organisation's, a project's members too, account hosts on or off, and outsiders' keys off it", async () => {
+		const databases = { identity: new DatabaseSync(":memory:"), compute: new DatabaseSync(":memory:") };
+		const on = await startPublic({}, databases);
+		const ada = await on.signIn("ada@example.test");
+		const bob = await on.signIn("bob@example.test");
+		// Bob, who signed up too, is given a role on one of the deployment's projects only.
+		const bobId = ((await on.call("GET", "/v1/whoami", { token: bob })).body.user as { id: string }).id;
+		const website = await on.stack.identity.createProject(on.stack.admin, { name: "Website" });
+		await on.stack.identity.grantRole(on.stack.admin, {
+			principal: { kind: "user", userId: bobId },
+			role: "viewer",
+			projectId: website.id,
+		});
+		const deployment = on.stack.admin.organisationId;
+		const asBob = { token: bob, organisation: deployment };
+		const scopes = ["sandboxes:read", "sandboxes:write", "exec"];
+		const keyOf = async (options: { token: string; organisation?: string }) => {
+			const made = await on.call("POST", "/v1/api-keys", { ...options, body: { name: "cli", scopes } });
+			expect(made.status).toBe(201);
+			return made.body.secret as string;
+		};
+		const adaKey = await keyOf({ token: ada });
+		const bobKey = await keyOf(asBob);
+		const isolate = { type: "isolate", wait: true };
+
+		// Account hosts on: Bob is a member, so he and his key use the stub; Ada and hers, with no host of their own,
+		// don't.
+		const bobs = await on.call("POST", "/v1/sandboxes", { ...asBob, body: isolate });
+		expect(bobs.status).toBe(201);
+		expect((await on.call("POST", "/v1/sandboxes", { token: bobKey, body: isolate })).status).toBe(201);
+		expect((await on.call("POST", "/v1/sandboxes", { token: adaKey, body: isolate })).status).toBe(503);
+
+		// Account hosts off, over the same records: Ada's key, made while they were on, still can't; Bob and his key
+		// still can.
+		await on.stack.compute.close();
+		const off = await startPublic({ KANTEL_ACCOUNT_HOSTS: "off" }, databases);
+		const refused = await off.call("POST", "/v1/sandboxes", { token: adaKey, body: isolate });
+		expect(refused.status).toBe(503);
+		expect(refused.body.error).toMatchObject({ code: "unavailable", message: /host of this account's own/ });
+		expect((await off.call("POST", "/v1/sandboxes", { token: bobKey, body: isolate })).status).toBe(201);
+		const bobAgain = await off.signIn("bob@example.test");
+		const inOrg = { token: bobAgain, organisation: deployment };
+		expect((await off.call("POST", "/v1/sandboxes", { ...inOrg, body: isolate })).status).toBe(201);
+		// The sandbox he made with account hosts on is back after the restart, and runs his command.
+		const ran = await off.call("POST", `/v1/sandboxes/${bobs.body.id}/commands`, {
+			...inOrg,
+			body: { command: "echo hi" },
+		});
+		expect(ran.status).toBe(200);
+		expect(ran.body.stdout).toBe("hi\n");
+	});
+
+	it("keeps a public sign-up off the stub with account hosts off, as before", async () => {
+		const { call, signIn } = await startPublic({ KANTEL_ACCOUNT_HOSTS: "off" });
+		const ada = await signIn("ada@example.test");
+		const refused = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "isolate", wait: true } });
+		expect(refused.status).toBe(403);
+		expect(refused.body.error).toMatchObject({ code: "forbidden", message: COMPUTE_MEMBERS_ONLY });
+		expect((await call("POST", "/v1/hosts/join-tokens", { token: ada, body: {} })).status).toBe(403);
+	});
+});
+
+/**
+ * The Worker with email-code sign-in and open sign-up on its public origin, and account hosts on (`vars` to change
+ * that): a call there with a session or key, and someone's sign-in, as `test/sign-in.test.ts` has them.
+ */
+async function startPublic(
+	vars: GatewayVars = {},
+	databases: { identity: DatabaseSync; compute?: DatabaseSync } = { identity: new DatabaseSync(":memory:") },
+) {
+	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
+	const sent: { to: string; text?: string }[] = [];
+	const pending: Promise<unknown>[] = [];
+	const stack = await createStack({
+		config: gatewayConfig({
+			KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+			KANTEL_ACCESS_AUD: AUD,
+			KANTEL_ADMIN_EMAIL: ADMIN,
+			KANTEL_PUBLIC_URL: BASE,
+			KANTEL_SIGN_IN_FROM: "sign-in@kantel.test",
+			KANTEL_ACCOUNT_HOSTS: "experimental",
+			...vars,
+		}),
+		accessFetch: mock.fetch,
+		storage: {
+			sql: syncSqliteDriver(databases.identity),
+			...(databases.compute === undefined ? {} : { compute: objectSql(databases.compute) }),
+		},
+		mail: {
+			binding: {
+				send: async (message) => {
+					sent.push(message as { to: string; text?: string });
+					return { messageId: `m${sent.length}` };
+				},
+			},
+			counts: memoryMailCounts(),
+			defer: (work) => {
+				pending.push(work);
+			},
+		},
+	});
+	closers.push(() => stack.compute.close());
+	const gateway = createGateway(stack);
+	const call = async (
+		method: string,
+		path: string,
+		options: { body?: unknown; token?: string; organisation?: string } = {},
+	) => {
+		const headers: Record<string, string> = {};
+		if (options.body !== undefined) headers["content-type"] = "application/json";
+		if (options.token !== undefined) headers.authorization = `Bearer ${options.token}`;
+		if (options.organisation !== undefined) headers[ORGANISATION_HEADER] = options.organisation;
+		const response = await gateway.fetch(
+			new Request(`${BASE}${path}`, {
+				method,
+				headers,
+				...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+			}),
+		);
+		const text = await response.text();
+		return {
+			status: response.status,
+			body: (text === "" || !text.startsWith("{") ? {} : JSON.parse(text)) as Record<string, unknown>,
+		};
+	};
+	const signIn = async (email: string): Promise<string> => {
+		expect((await call("POST", "/auth/otp/start", { body: { email } })).status).toBe(202);
+		await Promise.all(pending.splice(0));
+		const code = /code is (\d{6})/.exec(sent.findLast((message) => message.to === email)?.text ?? "")?.[1];
+		const verified = await call("POST", "/auth/otp/verify", { body: { email, code } });
+		expect(verified.status).toBe(200);
+		return String(verified.body.token);
+	};
+	const hosts = stack.compute.hosts;
+	return {
+		stack,
+		call,
+		signIn,
+		get hosts() {
+			if (hosts === undefined) throw new Error("Account hosts are off");
+			return hosts;
+		},
+	};
+}

@@ -226,24 +226,9 @@ export const KEEP: readonly Keep[] = [
 		reason: "A read of an old environment name after its KANTEL_* one (`env.KANTEL_X ?? env.HARBOUR_X`).",
 	},
 	{
-		pattern: /\.replace\(\/[^/\n]*hb-[^/\n]*\/g,/g,
-		reason: "The theme boot script's and legacyThemeCss's mapping of CSS remembered before the rename.",
-		paths: /^packages\/ui\/src\/theme\/boot\.ts$/,
-	},
-	{
 		pattern: /"HARBOUR_"/g,
 		reason: "The vault proxy's own fallback to HARBOUR_* (it has no workspace dependencies to import it from).",
 		paths: /^apps\/vault-proxy\/src\/main\.ts$/,
-	},
-	{
-		pattern: /\b(legacyTokenName|legacyTokenValue)\b[^\n]*/g,
-		reason: "The theme parser's mapping of custom themes saved before the rename.",
-		paths: /^packages\/ui\/src\/tokens\/theme-schema\.ts$/,
-	},
-	{
-		pattern: /"--hb-canvas"|"var\(--hb-canvas\)"/g,
-		reason: "A custom theme saved before the rename, in the test of that mapping.",
-		paths: /^packages\/ui\/src\/tokens\/theme\.test\.ts$/,
 	},
 	// Browser storage keys and theme cache: moved to kantel.* by hand, with the old key read as a fallback.
 

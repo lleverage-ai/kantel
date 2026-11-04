@@ -14,6 +14,7 @@ import type {
 	BackendFileEntry,
 	BackendHost,
 	BackendSize,
+	BootOptions,
 	ExecResult,
 	Placement,
 	SandboxBackend,
@@ -23,8 +24,8 @@ import type {
 import { KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
-import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
-import type { HostsService, HostView } from "./service.ts";
+import { HOST_E2E_PORT, type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
+import type { HostsService, SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { DESKTOP_PORT } from "./desktop.ts";
@@ -89,6 +90,23 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 			? {}
 			: { upstream: egress.upstream.url, headers: { ...egress.upstream.headers } }),
 		...(egress.attribution && attributionKey !== undefined ? { attributionKey } : {}),
+		// The hosts to intercept and the version only: the host fetches the values itself (secrets.fetch), so they never
+		// ride a create's params, which the host keeps on disk.
+		...(egress.protected === undefined
+			? {}
+			: { protected: { version: egress.protected.version, intercept: [...egress.protected.intercept] } }),
+		...(egress.grants === undefined || egress.grants.length === 0
+			? {}
+			: {
+					grants: egress.grants.map((grant) => ({
+						action: grant.action,
+						host: grant.host,
+						...(grant.methods === undefined ? {} : { methods: [...grant.methods] }),
+						...(grant.paths === undefined ? {} : { paths: [...grant.paths] }),
+						rule: grant.rule,
+					})),
+				}),
+		...(egress.revision === undefined ? {} : { revision: egress.revision }),
 	};
 }
 
@@ -134,7 +152,7 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 	};
 }
 
-function capabilitiesOf(tier: SandboxTier, host: HostView | undefined, ports: boolean) {
+function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean) {
 	const vm = tier === "microvm";
 	return {
 		exec: true,
@@ -144,7 +162,7 @@ function capabilitiesOf(tier: SandboxTier, host: HostView | undefined, ports: bo
 		browser: vm,
 		ports: vm && ports,
 		docker: vm,
-		kvm: vm && host?.nestedVirtualisation === true,
+		kvm: vm && nested,
 		pause: vm,
 	};
 }
@@ -167,9 +185,25 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return { tier: placement.tier, hostId: placement.hostId };
 	}
 
-	async function placed(sandboxId: string, sandbox: HostSandbox, hostId: string): Promise<Placement> {
-		const placement = await hosts.sandboxes.placement(sandboxId);
-		const host = await hosts.get(hostId).catch(() => undefined);
+	/**
+	 * The placement the compute API records. What the registry answered with the sandbox (its placement as written, and
+	 * whether the host nests virtualisation) is taken as it is, so neither is read back; what it didn't answer is read,
+	 * both at once.
+	 */
+	async function placed(
+		sandboxId: string,
+		sandbox: HostSandbox,
+		hostId: string,
+		known: Omit<SandboxPlacement, "sandbox" | "hostId"> = {},
+	): Promise<Placement> {
+		const [placement, nested] = await Promise.all([
+			known.placement ?? hosts.sandboxes.placement(sandboxId),
+			known.nestedVirtualisation ??
+				hosts
+					.get(hostId)
+					.then((host) => host.nestedVirtualisation)
+					.catch(() => undefined),
+		]);
 		const tier = placement?.tier ?? (sandbox.tier as SandboxTier);
 		return {
 			hostId,
@@ -182,7 +216,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, host, options.ports !== undefined),
+			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined),
 		};
 	}
 
@@ -191,13 +225,30 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return out === undefined ? {} : { egress: out };
 	};
 
+	/**
+	 * A disk is where it is: a sandbox or snapshot runs again only on its own host, and only when that host is one the
+	 * service named eligible (online or draining, the account's own or shared, the type and labels).
+	 */
+	const mayUse = (hostId: string, eligible: readonly string[]) => {
+		if (!eligible.includes(hostId)) {
+			throw new KantelError("unavailable", `The host its disk is on (${hostId}) can't take it now`);
+		}
+	};
+
 	async function boot(
 		sandboxId: string,
 		method: "sandbox.start" | "sandbox.resume",
-		egress?: BackendEgress,
+		how: BootOptions,
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
-		const sandbox = await call<HostSandbox>(sandboxId, method, egressOf(egress));
+		mayUse(hostId, how.eligibleHosts);
+		const revision = how.egressRevision ?? how.egress?.revision;
+		// With a revision the host takes the boot's egress as stated, none being its default (a clear); an update read
+		// before this boot, with an older revision, is refused after it.
+		const sandbox = await call<HostSandbox>(sandboxId, method, {
+			...egressOf(how.egress),
+			...(revision === undefined ? {} : { revision }),
+		});
 		return placed(sandboxId, sandbox, hostId);
 	}
 
@@ -235,7 +286,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
-		const { sandbox, hostId } = await hosts.sandboxes.create({
+		if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
+		const { sandbox, hostId, ...known } = await hosts.sandboxes.create({
 			sandboxId: spec.sandboxId,
 			tier: spec.type,
 			...(spec.type === "microvm" && spec.size !== undefined ? { size: spec.size } : {}),
@@ -245,12 +297,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(from === undefined ? {} : { from: from.snapshotId }),
 			...egressOf(spec.egress),
 		});
-		return placed(spec.sandboxId, sandbox, hostId);
+		return placed(spec.sandboxId, sandbox, hostId, known);
 	}
 
 	return {
 		async capabilities(): Promise<BackendCapabilities> {
-			const views = (await hosts.list()).filter((host) => host.state !== "revoked");
+			// What the hosts are, not what they hold: no placements are read.
+			const views = (await hosts.list({ allocations: false })).filter((host) => host.state !== "revoked");
 			const types = new Set<SandboxTier>();
 			const sizes = new Map<string, BackendSize>();
 			const backendHosts: BackendHost[] = [];
@@ -274,20 +327,35 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					tiers: [...host.tiers],
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
+					features: [...host.features],
 					capacity: { ...host.capacity },
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
+					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
 		create: createOne,
-		start: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
-		resume: (sandboxId, { egress }) => boot(sandboxId, "sandbox.resume", egress),
-		recover: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
-		async updateEgress(sandboxId, egress) {
-			await call(sandboxId, "sandbox.egress", { egress: hostEgress(egress, options.attributionKey) ?? null });
+		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
+		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
+		// no longer lists, and can't hide, must not still reach the machine.
+		recover: async (sandboxId, how) => {
+			await options.ports?.forget(sandboxId);
+			return boot(sandboxId, "sandbox.start", how);
+		},
+		async updateEgress(sandboxId, egress, revision) {
+			await call(sandboxId, "sandbox.egress", {
+				egress: hostEgress(egress, options.attributionKey) ?? null,
+				// A null egress is ordered too: the host ignores one older than the egress it has.
+				...(revision === undefined ? {} : { revision }),
+			});
+		},
+		async updateSecrets(sandboxId, version) {
+			// The host drops its copy; its next request that needs one fetches the new values.
+			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
 		},
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
@@ -307,12 +375,16 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				return out;
 			}
 			// A live fork pauses the source for its snapshot only; forks stay on the source's host.
+			const { hostId: sourceHost } = await tierOf(source.sandboxId);
+			for (const target of targets) mayUse(sourceHost, target.eligibleHosts);
 			for (const target of targets) {
-				const { sandbox, hostId } = await hosts.sandboxes.fork(source.sandboxId, {
+				const { sandbox, hostId, ...known } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,
 					...egressOf(target.egress),
+					// Its own placeholders, not its source's: the host gives the guest this environment.
+					env: target.env,
 				});
-				out.push(await placed(target.sandboxId, sandbox, hostId));
+				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}
 			return out;
 		},
@@ -439,6 +511,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(key === undefined && privateKey.trim() !== "" ? { privateKey: `${privateKey.trim()}\n` } : {}),
 				...(fingerprint.trim() === "" ? {} : { hostKeyFingerprint: fingerprint.trim() }),
 			};
+		},
+		async openE2E(sandboxId, { ttlMinutes, grantee }) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			if (placement === undefined) throw new KantelError("not_found", "The sandbox isn't on a host");
+			// The ticket is for the host's E2E responder, not a port of the sandbox: the device authenticates the host by the
+			// key the space's chain lists for `hostId`, so what the relay passes is only ever ciphertext.
+			return { url: await tunnel(sandboxId, HOST_E2E_PORT, ttlMinutes, grantee), hostId: placement.hostId };
 		},
 		async openDesktop(sandboxId, { ttlMinutes, viewOnly, grantee }) {
 			const { tier } = await tierOf(sandboxId);

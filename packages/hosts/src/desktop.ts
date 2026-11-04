@@ -62,7 +62,19 @@ export interface DesktopSocket {
 	readonly grant: IssuedGrant;
 }
 
+/** How long a file of the client may take to come from the sandbox, head and body. */
+export const DESKTOP_FILE_TIMEOUT_MS = 30_000;
+/**
+ * The most every sandbox's files still arriving hold together (Selkies' whole client is about 2.3 MB, its biggest file
+ * about 0.5 MB): past it, a file is refused, as a wrong one is, and tried again on the next request.
+ */
+export const DESKTOP_FETCH_BUDGET = 32 * 1024 * 1024;
+
 export interface DesktopRoutesOptions {
+	/** How long a file may take to come from the sandbox (default `DESKTOP_FILE_TIMEOUT_MS`). */
+	readonly fileTimeoutMs?: number;
+	/** The most files still arriving hold together (default `DESKTOP_FETCH_BUDGET`). */
+	readonly fetchBudgetBytes?: number;
 	/** The relay's tickets, shared by every gateway replica. */
 	readonly tickets: Pick<TunnelTickets, "verify">;
 	/** Whether whoever was given the ticket may still use the sandbox (`relay-access.ts`); absent, everyone may. */
@@ -112,8 +124,15 @@ const notFound = (text = "Not found") =>
 export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoutes {
 	const now = options.now ?? Date.now;
 	const client = options.client ?? SELKIES_WEB;
-	/** Checked files, by SHA-256: the same in every sandbox on the same Selkies, so fetched once per gateway. */
-	const verified = new Map<string, Promise<Uint8Array | undefined>>();
+	const fileTimeout = options.fileTimeoutMs ?? DESKTOP_FILE_TIMEOUT_MS;
+	const budget = { limit: options.fetchBudgetBytes ?? DESKTOP_FETCH_BUDGET, held: 0 };
+	/**
+	 * Checked files, by SHA-256: the same in every sandbox on the same Selkies, so fetched once per gateway. Only bytes
+	 * that matched are kept here, so one sandbox's slow or wrong answer never stands for another's.
+	 */
+	const verified = new Map<string, Uint8Array>();
+	/** Fetches under way, by sandbox and SHA-256: requests for the same file of the same sandbox share one. */
+	const fetching = new Map<string, Promise<Uint8Array | undefined>>();
 
 	async function grantOf(ticket: string): Promise<IssuedGrant | undefined> {
 		const grant = await options.tickets.verify(ticket, now());
@@ -121,25 +140,65 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 		return options.allowed === undefined || (await options.allowed(grant)) ? grant : undefined;
 	}
 
-	/** A file of the client from the sandbox, if it is byte for byte the one Kantel knows. */
+	/**
+	 * A file of the client from the sandbox, if it is byte for byte the one Kantel knows. Its bytes go straight into one
+	 * buffer of this fetch's own as the parser reads them (`take`): nothing else of the answer is kept or queued,
+	 * however it is split. The buffer grows only as bytes come, never past the file's size, and what it has allocated is
+	 * what is charged against the budget every file still arriving shares; past either, the answer fails and its stream
+	 * is closed. Given up on once the time is up, and its charge let go of however it ends.
+	 */
 	async function fetchFile(
 		sandboxId: string,
 		file: string,
 		sha256: string,
 		size: number,
 	): Promise<Uint8Array | undefined> {
-		const answer = await proxyHttp(
-			(sink) => options.openPort(sandboxId, DESKTOP_PORT, sink),
-			new Request(`http://127.0.0.1:${DESKTOP_PORT}/${file}`),
-			{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}` },
-		);
-		if (answer.status !== 200) {
-			await answer.body?.cancel();
-			return undefined;
+		let data = new Uint8Array(0);
+		let length = 0;
+		let finished = false;
+		const take = (bytes: Uint8Array) => {
+			if (finished || length + bytes.length > size) return false;
+			if (length + bytes.length > data.length) {
+				const capacity = Math.min(size, Math.max(length + bytes.length, data.length * 2));
+				if (budget.held + capacity - data.length > budget.limit) return false;
+				budget.held += capacity - data.length;
+				const grown = new Uint8Array(capacity);
+				grown.set(data.subarray(0, length));
+				data = grown;
+			}
+			data.set(bytes, length);
+			length += bytes.length;
+			return true;
+		};
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const answer = await proxyHttp(
+				(sink) => options.openPort(sandboxId, DESKTOP_PORT, sink),
+				new Request(`http://127.0.0.1:${DESKTOP_PORT}/${file}`),
+				{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}`, headTimeoutMs: fileTimeout, take },
+			);
+			const declared = answer.headers.get("content-length");
+			if (answer.status !== 200 || answer.body === null || (declared !== null && Number(declared) !== size)) {
+				await answer.body?.cancel().catch(() => undefined);
+				return undefined;
+			}
+			// The stream carries no bytes (they are `take`'s): it only says when the body ends, or that it failed.
+			const reader = answer.body.getReader();
+			timer = setTimeout(() => void reader.cancel().catch(() => undefined), fileTimeout);
+			try {
+				while (!(await reader.read()).done) {}
+			} catch {
+				return undefined;
+			}
+			if (finished || length !== size) return undefined;
+			if (hex(await crypto.subtle.digest("SHA-256", data)) !== sha256) return undefined;
+			return data;
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			// Read, failed or given up on: its charge is let go of (a verified copy is the cache's, bounded by the client).
+			finished = true;
+			budget.held -= data.length;
 		}
-		const bytes = new Uint8Array(await answer.arrayBuffer());
-		if (bytes.length !== size || hex(await crypto.subtle.digest("SHA-256", bytes)) !== sha256) return undefined;
-		return bytes;
 	}
 
 	return {
@@ -157,15 +216,26 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 			const file = target.rest === "/" ? "index.html" : target.rest.slice(1);
 			const known = Object.hasOwn(client.files, file) ? client.files[file] : undefined;
 			if (known === undefined) return notFound();
-			let pending = verified.get(known.sha256);
-			if (pending === undefined) {
-				pending = fetchFile(grant.sandboxId, file, known.sha256, known.size).catch(() => undefined);
-				verified.set(known.sha256, pending);
+			let bytes = verified.get(known.sha256);
+			if (bytes === undefined) {
+				const key = `${grant.sandboxId}\n${known.sha256}`;
+				let pending = fetching.get(key);
+				if (pending === undefined) {
+					const started = fetchFile(grant.sandboxId, file, known.sha256, known.size)
+						.catch(() => undefined)
+						.then((fetched) => {
+							// Only this fetch's own entry is let go of; only checked bytes are kept.
+							if (fetching.get(key) === started) fetching.delete(key);
+							if (fetched !== undefined) verified.set(known.sha256, fetched);
+							return fetched;
+						});
+					pending = started;
+					fetching.set(key, started);
+				}
+				bytes = await pending;
 			}
-			const bytes = await pending;
 			if (bytes === undefined) {
 				// Not kept: the next request tries again, perhaps in a sandbox whose desktop is up by then.
-				verified.delete(known.sha256);
 				return new Response(`The sandbox's desktop isn't up, or isn't Selkies ${client.version} as Kantel ships it.`, {
 					status: 502,
 					headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },

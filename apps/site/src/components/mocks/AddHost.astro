@@ -1,7 +1,7 @@
 ---
-// The console's Hosts page, cut down: Add a host with its one-line command and one-time token, and machines showing up
-// online once they've joined.
-import { CONSOLE_URL, SITE_URL } from "../../site.mjs";
+// The console's Hosts page (Settings, Hosts), cut down: Add a host with its one-line command and one-time token, and
+// machines showing up online once they've joined. The command is the one the console shows.
+import { CONSOLE_URL, HOST_INSTALL_URL } from "../../site.mjs";
 import Icon from "./Icon.astro";
 import Mock from "./Mock.astro";
 
@@ -27,7 +27,7 @@ const hosts = [
 		</div>
 		<div class="m-well flex items-start gap-3 px-3 py-2.5">
 			<code class="min-w-0 flex-1 m-mono break-words whitespace-normal"
-				>curl -fsSL {SITE_URL}/host.sh | sudo sh -s -- --url {CONSOLE_URL} --token kth_8Hq2vX4mP0cR7tLw</code
+				>curl -fsSL {HOST_INSTALL_URL} | sudo sh -s -- --url {CONSOLE_URL} --token kth_8Hq2vX4mP0cR7tLw</code
 			>
 			<Icon name="copy" class="m-icon-sm m-faint" />
 		</div>

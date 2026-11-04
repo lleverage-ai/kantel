@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-Hosts, the compute API and its commands may still change. The sandbox images are published for x86_64. Expect the steps to get shorter.
+Hosts, the compute API and its commands may still change. Expect the steps to get shorter.
 :::
 
 This page runs the whole of Kantel on a Linux machine of your own, with nothing on kantel.dev: the control plane and one host, on the same machine, then a first microVM. To use separate machines, see [Hosts](/hosts/). To use the hosted control plane at app.kantel.dev instead, see [Quick start](/quickstart/).
@@ -29,10 +29,10 @@ The console is then at <http://127.0.0.1:58090/>. [Install Kantel](/self-hosting
 
 ## 2. Install the commands
 
-`kantel` drives sandboxes, and `kantel-admin` runs the install and its hosts. Both need Node.js 22 or later, and come from Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) with one installer, which needs no sudo and works in bash, zsh and fish:
+`kantel` drives sandboxes, and `kantel-admin` runs the install and its hosts. Both need Node.js 22 or later, and come from Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) with one installer, which needs no sudo and works in bash, zsh and fish. `--admin` adds `kantel-admin` to `kantel`:
 
 ```sh
-curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
+curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin
 kantel version
 kantel-admin version
 ```
@@ -130,7 +130,8 @@ kantel delete sbx_4kq9x2mt --yes    # or delete it for good
 ## Next
 
 - [Hosts](/hosts/): more machines, labels, where sandboxes go, updates and removing a host.
-- [Egress proxy](/sandboxes/egress-proxy/): allow and deny lists, and your own upstream proxy.
+- [Egress proxy](/sandboxes/egress-proxy/): allow and deny lists, grants, and your own upstream proxy.
+- [Environments and protected variables](/sandboxes/environments/): give sandboxes credentials they can use but never read.
 - [Command line](/tools/cli/): everything `kantel` does.
 - [Install Kantel](/self-hosting/install/#your-own-settings): sign-in email, a TLS address and the other settings.
 

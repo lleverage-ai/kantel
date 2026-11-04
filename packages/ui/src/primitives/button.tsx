@@ -15,26 +15,26 @@ const buttonBase =
 
 /** Each variant's border colour, background and text colour, and its hover (never while disabled). */
 const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
-	primary: "border-transparent bg-accent text-accent-fg hover:not-disabled:bg-accent-hover",
-	secondary: "border-border-strong bg-raised text-fg hover:not-disabled:bg-active",
+	primary: "border-transparent bg-primary text-primary-fg hover:not-disabled:bg-primary-hover",
+	secondary: "border-transparent bg-secondary text-fg hover:not-disabled:bg-secondary-hover",
 	ghost: "border-transparent bg-transparent text-muted hover:not-disabled:bg-hover hover:not-disabled:text-fg",
-	danger: "border-status-error-line bg-status-error-soft text-status-error hover:not-disabled:bg-status-error-line",
+	danger: "border-transparent bg-destructive text-on-solid hover:not-disabled:bg-destructive/85",
 };
 
-/** Each size's height, inline padding, font size and radius, for a button with words. */
+/** Each size's height, inline padding and font size, for a button with words. Every button is fully round. */
 const buttonSizes: { readonly [size in ButtonSize]: string } = {
-	xs: "h-control-xs px-2 py-0 text-xs rounded-sm",
-	sm: "h-control-sm px-2.5 py-0 text-sm rounded-control",
-	md: "h-control-md px-3 py-0 text-sm rounded-control",
-	lg: "h-control-lg px-4 py-0 text-md rounded-control",
+	xs: "h-control-xs px-2.5 py-0 text-xs rounded-full",
+	sm: "h-control-sm px-3 py-0 text-sm rounded-full",
+	md: "h-control-md px-3.5 py-0 text-sm rounded-full",
+	lg: "h-control-lg px-4.5 py-0 text-md rounded-full",
 };
 
-/** The same for an icon-only button: square, no padding, and touch-wide as well as touch-tall on a coarse pointer. */
+/** The same for an icon-only button: round, no padding, and touch-wide as well as touch-tall on a coarse pointer. */
 const iconButtonSizes: { readonly [size in ButtonSize]: string } = {
-	xs: "size-control-xs p-0 text-xs rounded-sm pointer-coarse:min-w-control-lg",
-	sm: "size-control-sm p-0 text-sm rounded-control pointer-coarse:min-w-control-lg",
-	md: "size-control-md p-0 text-sm rounded-control pointer-coarse:min-w-control-lg",
-	lg: "size-control-lg p-0 text-md rounded-control pointer-coarse:min-w-control-lg",
+	xs: "size-control-xs p-0 text-xs rounded-full pointer-coarse:min-w-control-lg",
+	sm: "size-control-sm p-0 text-sm rounded-full pointer-coarse:min-w-control-lg",
+	md: "size-control-md p-0 text-sm rounded-full pointer-coarse:min-w-control-lg",
+	lg: "size-control-lg p-0 text-md rounded-full pointer-coarse:min-w-control-lg",
 };
 
 /**

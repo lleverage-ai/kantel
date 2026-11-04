@@ -15,7 +15,19 @@ browser=$(command -v google-chrome-stable || command -v chromium || command -v c
 # instead, so a sandbox resumed without its memory would have no browser and no CDP.
 profile=/home/user/.config/kantel-chrome
 rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
+# That boot never exited either: the sandbox was stopped, or snapshotted for the template or a fork, with Chromium
+# running. Chromium takes that for a crash and puts "Restore pages?" on the desktop, with nothing worth restoring.
+# --hide-crash-restore-bubble keeps the bubble off, and so does marking the last run clean here, in case the flag goes.
+prefs="$profile/Default/Preferences"
+if [ -s "$prefs" ] && command -v jq >/dev/null; then
+	if jq -c '.profile.exit_type = "Normal" | .profile.exited_cleanly = true' "$prefs" >"$prefs.kantel"; then
+		mv -f "$prefs.kantel" "$prefs"
+	else
+		rm -f "$prefs.kantel"
+	fi
+fi
 exec "$browser" --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic \
+	--hide-crash-restore-bubble \
 	--disable-features=Translate,MediaRouter --disable-background-networking --disable-component-update \
 	--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 \
 	--user-data-dir="$profile" --start-maximized ${KANTEL_BROWSER_FLAGS:-} about:blank

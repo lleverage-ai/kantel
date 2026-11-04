@@ -19,6 +19,13 @@ export interface PortHttpOptions {
 	readonly headTimeoutMs?: number;
 	/** The largest request body passed on (default 32 MiB). */
 	readonly maxBodyBytes?: number;
+	/**
+	 * Takes the answer's body as it arrives instead of the `Response`'s stream, which then carries no bytes and only
+	 * ends (or errors) when the body does. Each piece is the caller's to copy into what it owns, and nothing of it is
+	 * kept here or queued, so what a sandbox sends is held only as the caller holds it. False, and the answer fails
+	 * (502) and its stream is closed.
+	 */
+	readonly take?: (bytes: Uint8Array) => boolean;
 }
 
 const HOP_BY_HOP = new Set([
@@ -70,7 +77,11 @@ function cookieWithout(header: string, names: readonly string[]): string {
 }
 
 /** The request's head and body as the server should see them. */
-export async function requestBytes(request: Request, options: PortHttpOptions): Promise<Uint8Array> {
+export async function requestBytes(
+	request: Request,
+	options: PortHttpOptions,
+	signal?: AbortSignal,
+): Promise<Uint8Array> {
 	const url = new URL(request.url);
 	const path = options.path ?? `${url.pathname}${url.search}`;
 	if (!path.startsWith("/") || /[\s]/.test(path)) throw new PortHttpError(400, "Not a path");
@@ -91,15 +102,27 @@ export async function requestBytes(request: Request, options: PortHttpOptions): 
 		const reader = request.body.getReader();
 		const chunks: Uint8Array[] = [];
 		let size = 0;
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			size += value.length;
-			if (size > limit) {
-				await reader.cancel();
-				throw new PortHttpError(413, "The request body is too big");
+		// Given up on (the answer timed out, say): the body is cancelled and what was read let go.
+		const stop = () => void reader.cancel(signal?.reason).catch(() => undefined);
+		if (signal?.aborted) stop();
+		signal?.addEventListener("abort", stop, { once: true });
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (signal?.aborted) {
+					chunks.length = 0;
+					throw signal.reason instanceof Error ? signal.reason : new PortHttpError(504, "The request was given up on");
+				}
+				if (done) break;
+				size += value.length;
+				if (size > limit) {
+					await reader.cancel();
+					throw new PortHttpError(413, "The request body is too big");
+				}
+				chunks.push(value);
 			}
-			chunks.push(value);
+		} finally {
+			signal?.removeEventListener("abort", stop);
 		}
 		body = new Uint8Array(size);
 		let at = 0;
@@ -161,14 +184,26 @@ export function hostOnlyCookie(value: string): string {
 		.join(";");
 }
 
-/** Undoes `Transfer-Encoding: chunked` as bytes arrive. */
+/** The most a chunked answer's trailer section (dropped) may be. */
+const MAX_TRAILER_BYTES = 16 * 1024;
+
+/**
+ * Undoes `Transfer-Encoding: chunked` as bytes arrive. Chunk data is passed on as it comes (a copy); all that is kept
+ * between pushes is what can't be passed on yet (part of a size line, a chunk's CRLF, trailers: each bounded), and that
+ * is copied out, so no push it has read is kept alive by a view of it.
+ */
 function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (error: Error) => void) {
 	let buffer: Uint8Array = new Uint8Array(0);
 	let remaining = -1; // -1: reading a size line; 0..n: bytes of the chunk left; -2: the CRLF after a chunk; -3: trailers
 	let finished = false;
+	let trailers = 0;
 	return (bytes: Uint8Array) => {
 		if (finished) return;
 		buffer = concat(buffer, bytes);
+		step();
+		buffer = finished || buffer.length === 0 ? new Uint8Array(0) : buffer.slice();
+	};
+	function step() {
 		for (;;) {
 			if (remaining === -1) {
 				const end = indexOfCrlf(buffer);
@@ -185,10 +220,23 @@ function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (e
 				buffer = buffer.subarray(2);
 				remaining = -1;
 			} else if (remaining === -3) {
-				// Trailers, which are dropped, end at an empty line.
+				// Trailers, which are dropped, end at an empty line. They are never emitted, so they are bounded here.
 				const end = indexOfCrlf(buffer);
-				if (end < 0) return;
+				if (end < 0) {
+					if (trailers + buffer.length > MAX_TRAILER_BYTES) {
+						finished = true;
+						buffer = new Uint8Array(0);
+						fail(new PortHttpError(502, "The answer's trailers are too big"));
+					}
+					return;
+				}
+				trailers += end + 2;
 				buffer = buffer.subarray(end + 2);
+				if (trailers > MAX_TRAILER_BYTES) {
+					finished = true;
+					buffer = new Uint8Array(0);
+					return fail(new PortHttpError(502, "The answer's trailers are too big"));
+				}
 				if (end === 0) {
 					finished = true;
 					return done();
@@ -202,7 +250,7 @@ function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (e
 				if (remaining === 0) remaining = -2;
 			}
 		}
-	};
+	}
 }
 
 /**
@@ -222,6 +270,8 @@ export function proxyHttp(
 		let feed: ((bytes: Uint8Array) => void) | undefined;
 		let settled = false;
 		let ended = false;
+		/** Aborted when the proxy fails: the request's body stops being read, and the request is never sent. */
+		const given = new AbortController();
 		/** Whether the body has a length or chunks, so the stream ending first means it was cut short. */
 		let framed = false;
 		const timer = setTimeout(
@@ -231,6 +281,7 @@ export function proxyHttp(
 
 		const fail = (error: Error) => {
 			clearTimeout(timer);
+			if (!given.signal.aborted) given.abort(error);
 			stream?.close();
 			if (!settled) {
 				settled = true;
@@ -290,7 +341,12 @@ export function proxyHttp(
 				},
 			});
 			const emit = (bytes: Uint8Array) => {
-				if (!ended && bytes.length > 0) controller?.enqueue(bytes);
+				if (ended || bytes.length === 0) return;
+				if (options.take === undefined) return controller?.enqueue(bytes);
+				if (!options.take(bytes)) {
+					ended = true;
+					fail(new PortHttpError(502, "The sandbox's server sent more than was expected"));
+				}
 			};
 			if (chunked) {
 				feed = dechunker(emit, close, fail);
@@ -315,9 +371,14 @@ export function proxyHttp(
 				buffer = concat(buffer, bytes);
 				for (;;) {
 					const end = indexOfCrlfCrlf(buffer);
+					// Too big however it arrives: cut off, or whole with its blank line in one push.
+					if (end > MAX_HEAD_BYTES || (end < 0 && buffer.length > MAX_HEAD_BYTES)) {
+						buffer = new Uint8Array(0);
+						return fail(new PortHttpError(502, "The sandbox's server sent too big a head"));
+					}
 					if (end < 0) {
-						if (buffer.length > MAX_HEAD_BYTES)
-							fail(new PortHttpError(502, "The sandbox's server sent too big a head"));
+						// Waiting for the rest of a head: only it is kept (a copy), not the push or interim heads before it.
+						buffer = buffer.slice();
 						return;
 					}
 					let parsed: Head;
@@ -330,7 +391,10 @@ export function proxyHttp(
 					// 100 Continue and other interim answers: the real one follows.
 					if (parsed.status >= 100 && parsed.status < 200 && parsed.status !== 101) continue;
 					head = parsed;
-					return answer(head, buffer);
+					// The head's buffer is done with: the rest is the body's, and nothing here keeps the push alive.
+					const rest = buffer;
+					buffer = new Uint8Array(0);
+					return answer(head, rest);
 				}
 			},
 			end(reason) {
@@ -342,12 +406,14 @@ export function proxyHttp(
 			},
 		};
 
-		void requestBytes(request, options).then(
-			(bytes) =>
-				open(sink).then(
+		void requestBytes(request, options, given.signal).then(
+			(bytes) => {
+				// Given up on while the body was read (timed out): nothing is sent.
+				if (given.signal.aborted) return;
+				return open(sink).then(
 					(opened) => {
 						stream = opened;
-						if (settled && ended) return opened.close();
+						if ((settled && ended) || given.signal.aborted) return opened.close();
 						opened.write(bytes);
 					},
 					(error: unknown) =>
@@ -357,7 +423,8 @@ export function proxyHttp(
 								`Couldn't reach the sandbox's port: ${error instanceof Error ? error.message : String(error)}`,
 							),
 						),
-				),
+				);
+			},
 			(error: unknown) => fail(error instanceof Error ? error : new Error(String(error))),
 		);
 	});

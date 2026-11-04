@@ -77,7 +77,7 @@ Renames it, replaces its labels, or drains it. A deployment super-admin only (a 
 
 `DELETE /v1/admin/hosts/{hostId}` (SDK method `revokeHost`)
 
-Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`).
+Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
@@ -89,4 +89,30 @@ Revokes its credential and closes its connection. Its sandboxes keep their disks
 
 - `200`: [Host](/api/reference/types/#host) (`application/json`). The host, revoked.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get the public URL
+
+`GET /v1/admin/public-url` (SDK method `getPublicUrl`)
+
+Where hosts reach this control plane: the address join commands give them, and whether only a host on the same machine could use it. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [PublicUrl](/api/reference/types/#publicurl) (`application/json`). The public URL.
+
+**Errors**: `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Set the public URL
+
+`PUT /v1/admin/public-url` (SDK method `setPublicUrl`)
+
+Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Body**: [SetPublicUrlBody](/api/reference/types/#setpublicurlbody)
+
+**Answers**
+
+- `200`: [PublicUrl](/api/reference/types/#publicurl) (`application/json`). The public URL.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).

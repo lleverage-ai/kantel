@@ -188,790 +188,6 @@
 				}
 			}
 		},
-		"/environments": {
-			"get": {
-				"operationId": "listEnvironments",
-				"summary": "List environments",
-				"description": "The environments of the projects the caller may view, by name; destroyed ones are left out. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "projectId",
-						"in": "query",
-						"required": false,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "The environments.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/EnvironmentList"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			},
-			"post": {
-				"operationId": "createEnvironment",
-				"summary": "Create an environment",
-				"description": "Creates an environment and its machine; needs operator on the project. It belongs to the caller unless `projectWide`, and idles until a session uses it. The name is unique in the project (`conflict` otherwise). Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"$ref": "#/components/schemas/CreateEnvironmentBody"
-							}
-						}
-					}
-				},
-				"responses": {
-					"201": {
-						"description": "The environment.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Environment"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"409": {
-						"description": "`conflict`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"503": {
-						"description": "`unavailable`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/environments/{environmentId}": {
-			"get": {
-				"operationId": "getEnvironment",
-				"summary": "Get an environment",
-				"description": "The environment, the sessions holding it, its grants and its recent history. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "environmentId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "The environment.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/EnvironmentDetail"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			},
-			"patch": {
-				"operationId": "updateEnvironment",
-				"summary": "Change an environment",
-				"description": "Changes its description, idle timeout or size; a new size applies at the next start. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "environmentId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"requestBody": {
-					"required": false,
-					"content": {
-						"application/json": {
-							"schema": {
-								"$ref": "#/components/schemas/UpdateEnvironmentBody"
-							}
-						}
-					}
-				},
-				"responses": {
-					"200": {
-						"description": "The environment.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Environment"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"409": {
-						"description": "`conflict`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"503": {
-						"description": "`unavailable`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			},
-			"delete": {
-				"operationId": "destroyEnvironment",
-				"summary": "Destroy an environment",
-				"description": "Removes its machine and disk, and revokes its grants; needs admin on the project. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "environmentId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "The environment, destroyed.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Environment"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"409": {
-						"description": "`conflict`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"503": {
-						"description": "`unavailable`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/environments/{environmentId}/start": {
-			"post": {
-				"operationId": "startEnvironment",
-				"summary": "Start an environment",
-				"description": "Starts a stopped environment; answers as soon as the start is under way. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "environmentId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "The environment, starting.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Environment"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"409": {
-						"description": "`conflict`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"422": {
-						"description": "`refused`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"429": {
-						"description": "`exhausted`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"503": {
-						"description": "`unavailable`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/environments/{environmentId}/stop": {
-			"post": {
-				"operationId": "stopEnvironment",
-				"summary": "Stop an environment",
-				"description": "Stops it, keeping its disk; the sessions holding it let go. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "environmentId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"responses": {
-					"200": {
-						"description": "The environment, stopping.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/Environment"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"409": {
-						"description": "`conflict`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"503": {
-						"description": "`unavailable`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/environments/{environmentId}/grants": {
-			"post": {
-				"operationId": "grantEnvironment",
-				"summary": "Grant a session an environment",
-				"description": "Lets a session in the environment's project use it as `bash`'s `env`, by its alias; needs operator on the project. A session already granted it is answered with its grant. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "environmentId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"requestBody": {
-					"required": true,
-					"content": {
-						"application/json": {
-							"schema": {
-								"$ref": "#/components/schemas/GrantEnvironmentBody"
-							}
-						}
-					}
-				},
-				"responses": {
-					"201": {
-						"description": "The grant.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/EnvironmentGrant"
-								}
-							}
-						}
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"409": {
-						"description": "`conflict`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"503": {
-						"description": "`unavailable`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/environments/{environmentId}/grants/{grantId}": {
-			"delete": {
-				"operationId": "revokeEnvironmentGrant",
-				"summary": "Revoke a session's grant",
-				"description": "Ends the session's use of the environment, and its lease. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
-				"tags": ["environments"],
-				"parameters": [
-					{
-						"name": "environmentId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					},
-					{
-						"name": "grantId",
-						"in": "path",
-						"required": true,
-						"schema": {
-							"type": "string",
-							"minLength": 1
-						}
-					}
-				],
-				"responses": {
-					"204": {
-						"description": "Revoked."
-					},
-					"400": {
-						"description": "`invalid`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"404": {
-						"description": "`not_found`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
 		"/whoami": {
 			"get": {
 				"operationId": "getCaller",
@@ -2130,7 +1346,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -2854,7 +2070,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -3178,7 +2394,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -4453,6 +3669,267 @@
 					},
 					"501": {
 						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/e2e": {
+			"post": {
+				"operationId": "openE2E",
+				"summary": "Open an end-to-end encrypted session",
+				"description": "A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one. It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running guest is refused in the session. A key needs `access`.",
+				"tags": ["access"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/E2EAccessBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "Where to open it.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/E2EAccess"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/accounts/{accountId}/e2e/chain": {
+			"get": {
+				"operationId": "getE2EChain",
+				"summary": "Get an organisation's E2E chain",
+				"description": "Its signed entries, oldest first: empty until an admin starts it with `kantel e2e init`. A key needs `account:read`.",
+				"tags": ["accounts"],
+				"parameters": [
+					{
+						"name": "accountId",
+						"in": "path",
+						"required": true,
+						"description": "The account's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The chain.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/E2EChain"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "appendE2EChain",
+				"summary": "Add entries to an organisation's E2E chain",
+				"description": "Entries a member's device signed, from the chain's length. The whole chain must still verify; `conflict` when another entry got there first. Only an admin starts a chain. A key needs `account:read`.",
+				"tags": ["accounts"],
+				"parameters": [
+					{
+						"name": "accountId",
+						"in": "path",
+						"required": true,
+						"description": "The account's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/E2EChainAppend"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The chain now.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/E2EChain"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -5903,7 +5380,7 @@
 			"put": {
 				"operationId": "putProxySettings",
 				"summary": "Set the proxy settings",
-				"description": "Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`.",
+				"description": "Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you read them, a write made from an older read is refused with `conflict`. A key needs `account:admin`.",
 				"tags": ["proxy"],
 				"requestBody": {
 					"required": true,
@@ -5956,8 +5433,1092 @@
 							}
 						}
 					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"501": {
 						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments": {
+			"get": {
+				"operationId": "listEnvironments",
+				"summary": "List environments",
+				"description": "The account's environments, oldest first. A key needs `account:read`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/EnvironmentList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createEnvironment",
+				"summary": "Create an environment",
+				"description": "An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateEnvironmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}": {
+			"get": {
+				"operationId": "getEnvironment",
+				"summary": "Get an environment",
+				"description": "Never a protected variable's value nor a secret file's contents. A key needs `account:read`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateEnvironment",
+				"summary": "Change an environment",
+				"description": "Renames it or changes its description. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateEnvironmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteEnvironment",
+				"summary": "Delete an environment",
+				"description": "Sandboxes made from it keep what they started with, but their protected variables stop resolving at once. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/variables/{name}": {
+			"put": {
+				"operationId": "setEnvironmentVariable",
+				"summary": "Set an environment variable",
+				"description": "Adds or changes a variable. A protected one needs at least one binding, and its value is kept encrypted and never shown again; leave `value` out to change only its bindings. A new value for a protected variable is a rotation: sandboxes keep their placeholders, and their next request carries the new value. Running sandboxes made from it pick the change up at once. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. Protected values need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "name",
+						"in": "path",
+						"required": true,
+						"description": "The variable's name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetEnvironmentVariableBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteEnvironmentVariable",
+				"summary": "Delete an environment variable",
+				"description": "A protected variable stops resolving in the sandboxes made from the environment at once. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "name",
+						"in": "path",
+						"required": true,
+						"description": "The variable's name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/files": {
+			"put": {
+				"operationId": "setEnvironmentFile",
+				"summary": "Set a secret file",
+				"description": "Adds or replaces a file new sandboxes start with, written once they are running. Its contents are kept encrypted and never shown again; leave `content` out to change only its mode. Needs the deployment's secrets key (`not_supported` without one). A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetEnvironmentFileBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteEnvironmentFile",
+				"summary": "Delete a secret file",
+				"description": "Sandboxes made from the environment keep their copy. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "path",
+						"in": "query",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 1024
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/repos": {
+			"put": {
+				"operationId": "putEnvironmentRepos",
+				"summary": "Set an environment's repositories",
+				"description": "Replaces them. New sandboxes clone each once they are running (`git clone --depth 1`), through the egress proxy. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PutEnvironmentReposBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/grants": {
+			"put": {
+				"operationId": "putEnvironmentGrants",
+				"summary": "Set an environment's egress grants",
+				"description": "Replaces them. Running sandboxes made from it pick the change up at once. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PutEgressGrantsBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/egress": {
+			"get": {
+				"operationId": "getSandboxEgress",
+				"summary": "Get a sandbox's egress",
+				"description": "Its environment, its protected variables (each placeholder's first 8 characters, never a value), its grants and the newest of its egress log: what its host's proxy let through or refused. A key needs `account:read`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"description": "At most this many entries; default 100.",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 1000
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its egress.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEgress"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/grants": {
+			"put": {
+				"operationId": "putSandboxGrants",
+				"summary": "Set a sandbox's egress grants",
+				"description": "Replaces its own grants, on top of its environment's. A running sandbox picks them up at once. A key needs `account:admin`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PutEgressGrantsBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Its egress.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEgress"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -5997,7 +6558,7 @@
 						"name": "type",
 						"in": "query",
 						"required": false,
-						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
+						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 						"schema": {
 							"$ref": "#/components/schemas/EventType"
 						}
@@ -7102,7 +7663,7 @@
 			"delete": {
 				"operationId": "revokeHost",
 				"summary": "Revoke a host",
-				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -7165,6 +7726,514 @@
 								}
 							}
 						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/admin/public-url": {
+			"get": {
+				"operationId": "getPublicUrl",
+				"summary": "Get the public URL",
+				"description": "Where hosts reach this control plane: the address join commands give them, and whether only a host on the same machine could use it. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The public URL.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PublicUrl"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"put": {
+				"operationId": "setPublicUrl",
+				"summary": "Set the public URL",
+				"description": "Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetPublicUrlBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The public URL.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PublicUrl"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/hosts/join-tokens": {
+			"post": {
+				"operationId": "createAccountJoinToken",
+				"summary": "Make a join token for one of your own hosts",
+				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateAccountJoinTokenBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The token and its command.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/AccountJoinToken"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/hosts": {
+			"get": {
+				"operationId": "listAccountHosts",
+				"summary": "List an account's hosts",
+				"description": "The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The hosts.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/hosts/{hostId}": {
+			"get": {
+				"operationId": "getAccountHost",
+				"summary": "Get one of an account's hosts",
+				"description": "A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateAccountHost",
+				"summary": "Change one of an account's hosts",
+				"description": "Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateHostBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The host.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeAccountHost",
+				"summary": "Remove one of an account's hosts",
+				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host, revoked.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
 					}
 				}
 			}
@@ -7206,6 +8275,33 @@
 				},
 				"title": "Account",
 				"description": "An account the caller may act in, with the caller's role in it."
+			},
+			"AccountJoinToken": {
+				"type": "object",
+				"required": ["id", "accountId", "token", "command", "expiresAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The token's ID."
+					},
+					"accountId": {
+						"type": "string",
+						"description": "The account the host joins: only its sandboxes will run there."
+					},
+					"token": {
+						"type": "string",
+						"description": "`kth_…`, shown once. It joins one host, once, before `expiresAt`."
+					},
+					"command": {
+						"type": "string",
+						"description": "The one-line command that installs the host agent on a Linux machine and joins it with the token. The host dials out to this deployment and keeps that connection open, so it needs no inbound port."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "AccountJoinToken"
 			},
 			"AccountKind": {
 				"anyOf": [
@@ -7277,70 +8373,6 @@
 				},
 				"title": "AccountUsage"
 			},
-			"Actor": {
-				"anyOf": [
-					{
-						"type": "object",
-						"required": ["kind", "userId"],
-						"properties": {
-							"kind": {
-								"type": "string",
-								"const": "human"
-							},
-							"userId": {
-								"type": "string"
-							}
-						}
-					},
-					{
-						"type": "object",
-						"required": ["kind", "serviceId"],
-						"properties": {
-							"kind": {
-								"type": "string",
-								"const": "service"
-							},
-							"serviceId": {
-								"type": "string"
-							},
-							"keyId": {
-								"type": "string"
-							}
-						}
-					},
-					{
-						"type": "object",
-						"required": ["kind", "agentId", "sessionId"],
-						"properties": {
-							"kind": {
-								"type": "string",
-								"const": "agent"
-							},
-							"agentId": {
-								"type": "string"
-							},
-							"sessionId": {
-								"type": "string"
-							}
-						}
-					},
-					{
-						"type": "object",
-						"required": ["kind", "component"],
-						"properties": {
-							"kind": {
-								"type": "string",
-								"const": "system"
-							},
-							"component": {
-								"type": "string"
-							}
-						}
-					}
-				],
-				"title": "Actor",
-				"description": "Who acted: a person, a host app's API key, an agent or Kantel itself."
-			},
 			"ApiKey": {
 				"type": "object",
 				"required": ["id", "accountId", "name", "prefix", "scopes", "createdBy", "createdAt"],
@@ -7385,7 +8417,7 @@
 					},
 					"lastUsedAt": {
 						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
+						"description": "When the key last signed a call in, to within a minute. Absent until its first use."
 					},
 					"revokedAt": {
 						"type": "integer",
@@ -7478,7 +8510,7 @@
 					}
 				],
 				"title": "ApiKeyScope",
-				"description": "What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members and keys. `account:admin`: members, keys, webhooks, telemetry and the proxy. `hosts:admin`: the deployment's hosts, for a super-admin's key only."
+				"description": "What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only."
 			},
 			"ApproveDeviceLoginBody": {
 				"type": "object",
@@ -7725,6 +8757,35 @@
 				"title": "Cost",
 				"description": "What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them."
 			},
+			"CreateAccountJoinTokenBody": {
+				"type": "object",
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"maxLength": 100,
+						"description": "The host's name. Default: the machine's hostname."
+					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						}
+					},
+					"expiresInMinutes": {
+						"type": "integer",
+						"minimum": 5,
+						"maximum": 10080,
+						"description": "Default 60."
+					}
+				},
+				"title": "CreateAccountJoinTokenBody"
+			},
 			"CreateApiKeyBody": {
 				"type": "object",
 				"required": ["name"],
@@ -7792,61 +8853,20 @@
 			},
 			"CreateEnvironmentBody": {
 				"type": "object",
-				"required": ["projectId", "name"],
+				"required": ["name"],
 				"properties": {
-					"projectId": {
+					"account": {
 						"type": "string",
-						"minLength": 1
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
 					},
 					"name": {
 						"type": "string",
-						"minLength": 1,
-						"maxLength": 63
-					},
-					"alias": {
-						"type": "string",
-						"minLength": 1,
-						"maxLength": 32
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+						"description": "Unique in the account: lower-case letters, digits and dashes, at most 63."
 					},
 					"description": {
 						"type": "string",
-						"maxLength": 200
-					},
-					"provider": {
-						"$ref": "#/components/schemas/EnvironmentProviderKind"
-					},
-					"size": {
-						"$ref": "#/components/schemas/EnvironmentSizeName"
-					},
-					"definition": {
-						"type": "object",
-						"properties": {
-							"template": {
-								"type": "string"
-							},
-							"repository": {
-								"type": "string"
-							},
-							"setup": {
-								"type": "string"
-							},
-							"composeFile": {
-								"type": "string"
-							},
-							"readiness": {
-								"type": "string"
-							}
-						}
-					},
-					"sharing": {
-						"$ref": "#/components/schemas/EnvironmentSharing"
-					},
-					"projectWide": {
-						"type": "boolean"
-					},
-					"idleTimeoutMs": {
-						"type": "integer",
-						"minimum": 60000
+						"maxLength": 500
 					}
 				},
 				"title": "CreateEnvironmentBody"
@@ -7980,7 +9000,11 @@
 								"type": "string"
 							}
 						},
-						"description": "Environment variables every command sees. Not secrets: they are shown to anyone who may exec."
+						"description": "Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused."
+					},
+					"environment": {
+						"type": "string",
+						"description": "Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables."
 					},
 					"hostLabels": {
 						"type": "object",
@@ -8061,6 +9085,40 @@
 					}
 				},
 				"title": "DesktopAccess"
+			},
+			"DestinationBinding": {
+				"type": "object",
+				"required": ["host"],
+				"properties": {
+					"host": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 253,
+						"description": "The host, on port 443: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself)."
+					},
+					"pathPrefixes": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 1024
+						},
+						"maxItems": 32,
+						"description": "Only paths under these, such as `/repos/`. Absent or empty: any path."
+					},
+					"methods": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[A-Z]{1,16}$",
+							"description": "An HTTP method in capitals, such as `GET` or `POST`."
+						},
+						"maxItems": 16,
+						"description": "Only these methods. Absent or empty: any method."
+					}
+				},
+				"title": "DestinationBinding",
+				"description": "Where a protected variable's value may go: the host's egress proxy swaps the sandbox's placeholder for the value only on a request that matches, and refuses a request that carries the placeholder anywhere else."
 			},
 			"DeviceLogin": {
 				"type": "object",
@@ -8162,6 +9220,268 @@
 				"title": "DeviceLoginState",
 				"description": "`pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected."
 			},
+			"E2EAccess": {
+				"type": "object",
+				"required": ["url", "hostId", "accountId", "expiresAt"],
+				"properties": {
+					"url": {
+						"type": "string",
+						"description": "A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's."
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host the sandbox is on: the chain's entry for it has its key."
+					},
+					"accountId": {
+						"type": "string",
+						"description": "The sandbox's organisation: the space whose chain the session is in."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "E2EAccess"
+			},
+			"E2EAccessBody": {
+				"type": "object",
+				"properties": {
+					"ttlMinutes": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 60,
+						"description": "How long a session can be started with this URL; one started in time stays open. Default 10."
+					},
+					"user": {
+						"type": "string",
+						"description": "The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys."
+					}
+				},
+				"title": "E2EAccessBody"
+			},
+			"E2EChain": {
+				"type": "object",
+				"required": ["entries"],
+				"properties": {
+					"entries": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/E2EEntry"
+						},
+						"description": "Oldest first; an entry's `seq` is its index."
+					}
+				},
+				"title": "E2EChain"
+			},
+			"E2EChainAppend": {
+				"type": "object",
+				"required": ["from", "entries"],
+				"properties": {
+					"from": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The seq of the first entry given: the chain's length as the caller last saw it."
+					},
+					"entries": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/E2EEntry"
+						},
+						"minItems": 1,
+						"maxItems": 100
+					}
+				},
+				"title": "E2EChainAppend"
+			},
+			"E2EEntry": {
+				"type": "object",
+				"required": ["payload", "sig"],
+				"properties": {
+					"payload": {
+						"type": "string",
+						"description": "Base64url of the entry's JSON, exactly the bytes that were signed."
+					},
+					"sig": {
+						"type": "string",
+						"description": "Base64url of its Ed25519 signature."
+					}
+				},
+				"title": "E2EEntry"
+			},
+			"EgressEntry": {
+				"type": "object",
+				"required": ["id", "at", "method", "host", "port", "decision", "swapped", "inspected", "bytesUp", "bytesDown"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The entry's ID."
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"method": {
+						"type": "string",
+						"description": "`CONNECT` for a tunnel the proxy didn't look inside."
+					},
+					"host": {
+						"type": "string"
+					},
+					"port": {
+						"type": "integer"
+					},
+					"path": {
+						"type": "string",
+						"description": "The path, when the proxy saw it (plain HTTP or inspected HTTPS); never the query."
+					},
+					"decision": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "allowed"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							}
+						]
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it was denied, or what failed, in words."
+					},
+					"rule": {
+						"type": "string",
+						"description": "The rule that decided it, such as `deny DELETE api.github.com /repos/*`."
+					},
+					"code": {
+						"type": "string",
+						"description": "A refusal's `X-Kantel-Proxy-Error` code, such as `placeholder-unbound`."
+					},
+					"swapped": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "The protected variables whose values the proxy put in, by name."
+					},
+					"inspected": {
+						"type": "boolean",
+						"description": "Whether the proxy looked inside the HTTPS."
+					},
+					"status": {
+						"type": "integer",
+						"description": "The answer's status, when the proxy saw one."
+					},
+					"bytesUp": {
+						"type": "integer"
+					},
+					"bytesDown": {
+						"type": "integer"
+					}
+				},
+				"title": "EgressEntry",
+				"description": "One request or connection a sandbox made through its host's egress proxy. Never a value."
+			},
+			"EgressGrant": {
+				"type": "object",
+				"required": ["id", "action", "host"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The grant's ID, such as `grt_4kq9x2mt`."
+					},
+					"action": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "allow"
+							},
+							{
+								"type": "string",
+								"const": "deny"
+							}
+						]
+					},
+					"host": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 253,
+						"description": "The host: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself)."
+					},
+					"methods": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[A-Z]{1,16}$",
+							"description": "An HTTP method in capitals, such as `GET` or `POST`."
+						},
+						"maxItems": 16,
+						"description": "Only these methods. Absent or empty: every method."
+					},
+					"paths": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 1024
+						},
+						"maxItems": 32,
+						"description": "Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path."
+					}
+				},
+				"title": "EgressGrant",
+				"description": "An egress rule on top of the account's proxy settings: let a sandbox reach a host, or refuse it. Deny wins. A grant naming methods or paths makes the proxy look inside that host's HTTPS, as a protected variable's host does."
+			},
+			"EgressGrantInput": {
+				"type": "object",
+				"required": ["action", "host"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "Keep a grant's ID; absent, a new one is made."
+					},
+					"action": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "allow"
+							},
+							{
+								"type": "string",
+								"const": "deny"
+							}
+						]
+					},
+					"host": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 253,
+						"description": "The host: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself)."
+					},
+					"methods": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[A-Z]{1,16}$",
+							"description": "An HTTP method in capitals, such as `GET` or `POST`."
+						},
+						"maxItems": 16,
+						"description": "Only these methods. Absent or empty: every method."
+					},
+					"paths": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 1024
+						},
+						"maxItems": 32,
+						"description": "Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path."
+					}
+				},
+				"title": "EgressGrantInput"
+			},
 			"EmbedBrowserBody": {
 				"type": "object",
 				"required": ["mode"],
@@ -8192,415 +9512,92 @@
 				"type": "object",
 				"required": [
 					"id",
-					"organisationId",
-					"owner",
+					"accountId",
 					"name",
-					"alias",
-					"provider",
-					"size",
-					"definition",
-					"sharing",
-					"egress",
-					"placeholders",
-					"idleTimeoutMs",
-					"state",
+					"variables",
+					"files",
+					"repos",
+					"grants",
+					"sandboxCount",
 					"createdAt",
-					"createdBy",
-					"updatedAt",
-					"leaseCount",
-					"runningMsThisMonth"
+					"updatedAt"
 				],
 				"properties": {
 					"id": {
 						"type": "string",
-						"description": "The environment's ID, `env_…`."
+						"description": "The environment's ID, such as `env_4kq9x2mt`."
 					},
-					"organisationId": {
+					"accountId": {
 						"type": "string"
 					},
-					"owner": {
-						"$ref": "#/components/schemas/EnvironmentOwner"
-					},
 					"name": {
-						"type": "string",
-						"description": "Unique in the project: `lleverage-dev`."
-					},
-					"alias": {
-						"type": "string",
-						"description": "The name sessions give `bash`'s `env`: `dev`."
+						"type": "string"
 					},
 					"description": {
 						"type": "string"
 					},
-					"provider": {
-						"$ref": "#/components/schemas/EnvironmentProviderKind"
-					},
-					"size": {
-						"$ref": "#/components/schemas/EnvironmentSize"
-					},
-					"definition": {
-						"$ref": "#/components/schemas/EnvironmentDefinition"
-					},
-					"sharing": {
-						"$ref": "#/components/schemas/EnvironmentSharing"
-					},
-					"egress": {
-						"$ref": "#/components/schemas/EnvironmentEgress"
-					},
-					"placeholders": {
-						"type": "boolean",
-						"description": "Whether connection placeholders work on it, through Kantel's proxy."
-					},
-					"idleTimeoutMs": {
-						"type": "integer"
-					},
-					"state": {
-						"$ref": "#/components/schemas/EnvironmentState"
-					},
-					"error": {
-						"type": "string"
-					},
-					"createdAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"createdBy": {
-						"$ref": "#/components/schemas/Actor"
-					},
-					"updatedAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"lastStartedAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"lastStoppedAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"idleStopAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"leaseCount": {
-						"type": "integer",
-						"description": "Sessions holding it now."
-					},
-					"resume": {
-						"$ref": "#/components/schemas/EnvironmentResumeStats"
-					},
-					"runningMsThisMonth": {
-						"type": "number"
-					}
-				},
-				"title": "Environment",
-				"description": "A long-lived machine owned by a project, by default by one person in it, that sessions attach to."
-			},
-			"EnvironmentDefinition": {
-				"type": "object",
-				"required": ["version"],
-				"properties": {
-					"version": {
-						"type": "integer",
-						"minimum": 1
-					},
-					"template": {
-						"type": "string",
-						"description": "A provider template, such as a boat saved snapshot."
-					},
-					"repository": {
-						"type": "string",
-						"description": "A repository to keep a warm clone of: `owner/name`."
-					},
-					"setup": {
-						"type": "string",
-						"description": "Run once after the machine is first created."
-					},
-					"composeFile": {
-						"type": "string"
-					},
-					"readiness": {
-						"type": "string"
-					}
-				},
-				"title": "EnvironmentDefinition",
-				"description": "What a fresh machine starts with."
-			},
-			"EnvironmentDetail": {
-				"type": "object",
-				"required": ["environment", "leases", "grants", "events"],
-				"properties": {
-					"environment": {
-						"$ref": "#/components/schemas/Environment"
-					},
-					"leases": {
+					"variables": {
 						"type": "array",
 						"items": {
-							"$ref": "#/components/schemas/EnvironmentLease"
+							"$ref": "#/components/schemas/EnvironmentVariable"
+						}
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentFile"
+						}
+					},
+					"repos": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentRepo"
 						}
 					},
 					"grants": {
 						"type": "array",
 						"items": {
-							"$ref": "#/components/schemas/EnvironmentGrant"
+							"$ref": "#/components/schemas/EgressGrant"
 						}
 					},
-					"events": {
-						"type": "array",
-						"items": {
-							"$ref": "#/components/schemas/EnvironmentEvent"
-						},
-						"description": "Newest first."
-					}
-				},
-				"title": "EnvironmentDetail",
-				"description": "An environment with the sessions holding it and its recent history."
-			},
-			"EnvironmentEgress": {
-				"anyOf": [
-					{
-						"type": "string",
-						"const": "managed"
-					},
-					{
-						"type": "string",
-						"const": "unmanaged"
-					}
-				],
-				"title": "EnvironmentEgress",
-				"description": "`unmanaged`: Kantel doesn't run the machine's network, and code on it reaches the internet directly."
-			},
-			"EnvironmentEvent": {
-				"type": "object",
-				"required": ["at", "kind"],
-				"properties": {
-					"at": {
+					"sandboxCount": {
 						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"kind": {
-						"anyOf": [
-							{
-								"type": "string",
-								"const": "created"
-							},
-							{
-								"type": "string",
-								"const": "starting"
-							},
-							{
-								"type": "string",
-								"const": "started"
-							},
-							{
-								"type": "string",
-								"const": "stopping"
-							},
-							{
-								"type": "string",
-								"const": "stopped"
-							},
-							{
-								"type": "string",
-								"const": "failed"
-							},
-							{
-								"type": "string",
-								"const": "destroyed"
-							},
-							{
-								"type": "string",
-								"const": "lease.acquired"
-							},
-							{
-								"type": "string",
-								"const": "lease.ended"
-							},
-							{
-								"type": "string",
-								"const": "granted"
-							},
-							{
-								"type": "string",
-								"const": "revoked"
-							}
-						]
-					},
-					"actor": {
-						"$ref": "#/components/schemas/Actor"
-					},
-					"sessionId": {
-						"type": "string"
-					},
-					"durationMs": {
-						"type": "number"
-					},
-					"reason": {
-						"type": "string"
-					},
-					"message": {
-						"type": "string"
-					}
-				},
-				"title": "EnvironmentEvent"
-			},
-			"EnvironmentGrant": {
-				"type": "object",
-				"required": [
-					"id",
-					"organisationId",
-					"environmentId",
-					"sessionId",
-					"alias",
-					"rights",
-					"grantedBy",
-					"createdAt",
-					"status"
-				],
-				"properties": {
-					"id": {
-						"type": "string",
-						"description": "The grant's ID, `eng_…`."
-					},
-					"organisationId": {
-						"type": "string"
-					},
-					"environmentId": {
-						"type": "string"
-					},
-					"sessionId": {
-						"type": "string"
-					},
-					"alias": {
-						"type": "string"
-					},
-					"rights": {
-						"anyOf": [
-							{
-								"type": "string",
-								"const": "worktree"
-							},
-							{
-								"type": "string",
-								"const": "machine"
-							}
-						]
-					},
-					"grantedBy": {
-						"$ref": "#/components/schemas/Actor"
+						"description": "How many sandboxes were made from it and still exist."
 					},
 					"createdAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
 					},
-					"status": {
-						"anyOf": [
-							{
-								"type": "string",
-								"const": "active"
-							},
-							{
-								"type": "string",
-								"const": "revoked"
-							},
-							{
-								"type": "string",
-								"const": "ended"
-							}
-						]
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
 					}
 				},
-				"title": "EnvironmentGrant",
-				"description": "A session's permission to use an environment, by its alias."
+				"title": "Environment",
+				"description": "What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running ones at once."
 			},
-			"EnvironmentLease": {
+			"EnvironmentFile": {
 				"type": "object",
-				"required": [
-					"id",
-					"environmentId",
-					"sessionId",
-					"grantId",
-					"worktree",
-					"composeProject",
-					"portBase",
-					"acquiredAt",
-					"renewedAt",
-					"expiresAt",
-					"commands"
-				],
+				"required": ["path", "mode", "sizeBytes", "updatedAt"],
 				"properties": {
-					"id": {
+					"path": {
 						"type": "string",
-						"description": "The lease's ID, `enl_…`."
+						"description": "Absolute, such as `/home/user/.npmrc`."
 					},
-					"environmentId": {
-						"type": "string"
-					},
-					"sessionId": {
-						"type": "string"
-					},
-					"grantId": {
-						"type": "string"
-					},
-					"worktree": {
-						"type": "string",
-						"description": "The session's own directory on the machine."
-					},
-					"composeProject": {
-						"type": "string",
-						"description": "The session's own `COMPOSE_PROJECT_NAME`."
-					},
-					"portBase": {
+					"mode": {
 						"type": "integer",
-						"description": "The first of the session's ten ports."
+						"description": "Its permissions, such as 384 (0o600)."
 					},
-					"acquiredAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"renewedAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"expiresAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"endedAt": {
-						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
-					},
-					"endReason": {
-						"anyOf": [
-							{
-								"type": "string",
-								"const": "released"
-							},
-							{
-								"type": "string",
-								"const": "expired"
-							},
-							{
-								"type": "string",
-								"const": "session_ended"
-							},
-							{
-								"type": "string",
-								"const": "revoked"
-							},
-							{
-								"type": "string",
-								"const": "stopped"
-							}
-						]
-					},
-					"commands": {
+					"sizeBytes": {
 						"type": "integer"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
 					}
 				},
-				"title": "EnvironmentLease",
-				"description": "A session's hold on a running environment."
+				"title": "EnvironmentFile",
+				"description": "A secret file every new sandbox starts with. Its contents are write-only, and kept encrypted."
 			},
 			"EnvironmentList": {
 				"type": "object",
@@ -8615,150 +9612,60 @@
 				},
 				"title": "EnvironmentList"
 			},
-			"EnvironmentOwner": {
+			"EnvironmentRepo": {
 				"type": "object",
-				"required": ["projectId"],
+				"required": ["url"],
 				"properties": {
-					"projectId": {
-						"type": "string"
-					},
-					"userId": {
+					"url": {
 						"type": "string",
-						"description": "Absent: every member's sessions in the project may attach."
+						"minLength": 1,
+						"maxLength": 2048,
+						"description": "HTTPS with no credentials in it, such as `https://github.com/lleverage-ai/kantel`."
+					},
+					"path": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 1024,
+						"description": "Where it is cloned; default `~/<name>`."
+					},
+					"ref": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"description": "A branch or tag; default the repository's default branch."
 					}
 				},
-				"title": "EnvironmentOwner"
+				"title": "EnvironmentRepo",
+				"description": "A repository every new sandbox starts with, cloned through the egress proxy once it is running."
 			},
-			"EnvironmentProviderKind": {
-				"anyOf": [
-					{
-						"type": "string",
-						"const": "boat"
-					},
-					{
-						"type": "string",
-						"const": "firecracker"
-					},
-					{
-						"type": "string",
-						"const": "byo"
-					},
-					{
-						"type": "string",
-						"const": "fake"
-					}
-				],
-				"title": "EnvironmentProviderKind",
-				"description": "Who provides the machine. Only `boat` and `fake` are built yet."
-			},
-			"EnvironmentResumeStats": {
+			"EnvironmentVariable": {
 				"type": "object",
-				"required": ["lastMs", "p50Ms", "samples"],
-				"properties": {
-					"lastMs": {
-						"type": "number",
-						"description": "The last start, from the start call to the machine up, in milliseconds."
-					},
-					"p50Ms": {
-						"type": "number",
-						"description": "The median of the recent starts."
-					},
-					"samples": {
-						"type": "integer"
-					}
-				},
-				"title": "EnvironmentResumeStats"
-			},
-			"EnvironmentSharing": {
-				"anyOf": [
-					{
-						"type": "string",
-						"const": "shared"
-					},
-					{
-						"type": "string",
-						"const": "exclusive"
-					}
-				],
-				"title": "EnvironmentSharing"
-			},
-			"EnvironmentSize": {
-				"type": "object",
-				"required": ["name", "vcpus", "memoryGb", "diskGb"],
+				"required": ["name", "protected", "bindings", "updatedAt"],
 				"properties": {
 					"name": {
-						"$ref": "#/components/schemas/EnvironmentSizeName"
+						"type": "string"
 					},
-					"vcpus": {
-						"type": "integer"
+					"protected": {
+						"type": "boolean",
+						"description": "A protected variable is a `kph_` placeholder in the sandbox, its own per sandbox, which the host's egress proxy swaps for the value on requests to its bindings: the value never enters the sandbox."
 					},
-					"memoryGb": {
-						"type": "integer"
+					"value": {
+						"type": "string",
+						"description": "A plain variable's value. Never answered for a protected one."
 					},
-					"diskGb": {
-						"type": "integer"
+					"bindings": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/DestinationBinding"
+						},
+						"description": "A protected variable's destinations, at least one. Empty for a plain one."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
 					}
 				},
-				"title": "EnvironmentSize"
-			},
-			"EnvironmentSizeName": {
-				"anyOf": [
-					{
-						"type": "string",
-						"const": "small"
-					},
-					{
-						"type": "string",
-						"const": "default"
-					},
-					{
-						"type": "string",
-						"const": "large"
-					},
-					{
-						"type": "string",
-						"const": "xlarge"
-					}
-				],
-				"title": "EnvironmentSizeName"
-			},
-			"EnvironmentState": {
-				"anyOf": [
-					{
-						"type": "string",
-						"const": "creating"
-					},
-					{
-						"type": "string",
-						"const": "stopped"
-					},
-					{
-						"type": "string",
-						"const": "starting"
-					},
-					{
-						"type": "string",
-						"const": "running"
-					},
-					{
-						"type": "string",
-						"const": "idle"
-					},
-					{
-						"type": "string",
-						"const": "stopping"
-					},
-					{
-						"type": "string",
-						"const": "error"
-					},
-					{
-						"type": "string",
-						"const": "destroyed"
-					}
-				],
-				"title": "EnvironmentState",
-				"description": "`running`: up with at least one session's lease. `idle`: up with none, stopping at `idleStopAt`. `stopped`: no machine running; the disk is kept. `error`: the last operation failed, and Start tries again."
+				"title": "EnvironmentVariable"
 			},
 			"ErrorBody": {
 				"type": "object",
@@ -8948,7 +9855,7 @@
 					}
 				],
 				"title": "EventType",
-				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
+				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
 			},
 			"ExposedPort": {
 				"type": "object",
@@ -9145,34 +10052,6 @@
 				},
 				"title": "ForkSandboxBody"
 			},
-			"GrantEnvironmentBody": {
-				"type": "object",
-				"required": ["sessionId"],
-				"properties": {
-					"sessionId": {
-						"type": "string",
-						"minLength": 1
-					},
-					"alias": {
-						"type": "string",
-						"minLength": 1,
-						"maxLength": 32
-					},
-					"rights": {
-						"anyOf": [
-							{
-								"type": "string",
-								"const": "worktree"
-							},
-							{
-								"type": "string",
-								"const": "machine"
-							}
-						]
-					}
-				},
-				"title": "GrantEnvironmentBody"
-			},
 			"Host": {
 				"type": "object",
 				"required": [
@@ -9247,6 +10126,10 @@
 								"type": "string"
 							}
 						}
+					},
+					"accountId": {
+						"type": "string",
+						"description": "The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use."
 					},
 					"joinedAt": {
 						"type": "integer",
@@ -9565,6 +10448,59 @@
 				"title": "ProxySettings",
 				"description": "Where sandboxes' outbound traffic may go, and through what, for one account. Experimental."
 			},
+			"ProxySettingsExpected": {
+				"type": "object",
+				"required": ["enabled", "defaultAction", "allow", "deny", "attribution"],
+				"properties": {
+					"enabled": {
+						"type": "boolean"
+					},
+					"defaultAction": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "allow"
+							},
+							{
+								"type": "string",
+								"const": "deny"
+							}
+						]
+					},
+					"allow": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"deny": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"upstream": {
+						"type": "object",
+						"required": ["url", "headerNames"],
+						"properties": {
+							"url": {
+								"type": "string"
+							},
+							"headerNames": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						}
+					},
+					"attribution": {
+						"type": "boolean"
+					}
+				},
+				"title": "ProxySettingsExpected",
+				"description": "The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold."
+			},
 			"ProxyUpstream": {
 				"type": "object",
 				"required": ["url", "headerNames"],
@@ -9582,6 +10518,82 @@
 					}
 				},
 				"title": "ProxyUpstream"
+			},
+			"PublicUrl": {
+				"type": "object",
+				"required": ["publicUrl", "source", "deploymentUrl", "loopback"],
+				"properties": {
+					"publicUrl": {
+						"type": "string",
+						"description": "Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`."
+					},
+					"source": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "console"
+							},
+							{
+								"type": "string",
+								"const": "deployment"
+							}
+						],
+						"description": "`console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at)."
+					},
+					"deploymentUrl": {
+						"type": "string",
+						"description": "The deployment's own, which `publicUrl` goes back to when cleared."
+					},
+					"loopback": {
+						"type": "boolean",
+						"description": "`publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join."
+					}
+				},
+				"title": "PublicUrl"
+			},
+			"PutEgressGrantsBody": {
+				"type": "object",
+				"required": ["grants"],
+				"properties": {
+					"grants": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrantInput"
+						},
+						"maxItems": 200
+					},
+					"expected": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrantInput"
+						},
+						"maxItems": 200,
+						"description": "The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds."
+					}
+				},
+				"title": "PutEgressGrantsBody"
+			},
+			"PutEnvironmentReposBody": {
+				"type": "object",
+				"required": ["repos"],
+				"properties": {
+					"repos": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentRepo"
+						},
+						"maxItems": 20
+					},
+					"expected": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentRepo"
+						},
+						"maxItems": 20,
+						"description": "The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds."
+					}
+				},
+				"title": "PutEnvironmentReposBody"
 			},
 			"PutProxySettingsBody": {
 				"type": "object",
@@ -9645,6 +10657,9 @@
 					},
 					"attribution": {
 						"type": "boolean"
+					},
+					"expected": {
+						"$ref": "#/components/schemas/ProxySettingsExpected"
 					}
 				},
 				"title": "PutProxySettingsBody"
@@ -9750,6 +10765,7 @@
 					"capabilities",
 					"labels",
 					"autoStopMinutes",
+					"grants",
 					"createdBy",
 					"createdAt",
 					"cost",
@@ -9831,6 +10847,17 @@
 					"source": {
 						"$ref": "#/components/schemas/SandboxSource"
 					},
+					"environmentId": {
+						"type": "string",
+						"description": "The environment it was made from."
+					},
+					"grants": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrant"
+						},
+						"description": "Its own egress grants, on top of its environment's."
+					},
 					"createdBy": {
 						"$ref": "#/components/schemas/CreatedBy"
 					},
@@ -9896,6 +10923,74 @@
 				"title": "SandboxCapabilities",
 				"description": "What this sandbox can do, from its type and its host."
 			},
+			"SandboxEgress": {
+				"type": "object",
+				"required": [
+					"sandboxId",
+					"sandboxName",
+					"accountId",
+					"protectedVariables",
+					"environmentGrants",
+					"grants",
+					"entries"
+				],
+				"properties": {
+					"sandboxId": {
+						"type": "string"
+					},
+					"sandboxName": {
+						"type": "string"
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"environment": {
+						"$ref": "#/components/schemas/SandboxEgressEnvironment"
+					},
+					"protectedVariables": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxProtectedVariable"
+						}
+					},
+					"environmentGrants": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrant"
+						},
+						"description": "Its environment's grants, which it has too."
+					},
+					"grants": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrant"
+						},
+						"description": "Its own grants, on top of its environment's."
+					},
+					"entries": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressEntry"
+						},
+						"description": "Newest first; Kantel keeps the newest 1000."
+					}
+				},
+				"title": "SandboxEgress",
+				"description": "A sandbox's egress: what it was made with, its own grants and its log."
+			},
+			"SandboxEgressEnvironment": {
+				"type": "object",
+				"required": ["id", "name"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					}
+				},
+				"title": "SandboxEgressEnvironment"
+			},
 			"SandboxHealth": {
 				"anyOf": [
 					{
@@ -9926,6 +11021,27 @@
 					}
 				},
 				"title": "SandboxPage"
+			},
+			"SandboxProtectedVariable": {
+				"type": "object",
+				"required": ["name", "placeholderPrefix", "bindings"],
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"placeholderPrefix": {
+						"type": "string",
+						"description": "The first 8 characters of its placeholder, such as `kph_7Qx2`."
+					},
+					"bindings": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/DestinationBinding"
+						}
+					}
+				},
+				"title": "SandboxProtectedVariable",
+				"description": "A protected variable as one sandbox has it: never its value."
 			},
 			"SandboxResources": {
 				"type": "object",
@@ -10133,6 +11249,75 @@
 					}
 				},
 				"title": "SaveSnapshotBody"
+			},
+			"SetEnvironmentFileBody": {
+				"type": "object",
+				"required": ["path"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 1024,
+						"description": "Absolute, or relative to `/home/user`."
+					},
+					"mode": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 4095,
+						"description": "Default 384 (0o600)."
+					},
+					"content": {
+						"type": "string",
+						"description": "At most 1 MiB, in `encoding`. Required for a new file; left out, the file keeps its contents."
+					},
+					"encoding": {
+						"$ref": "#/components/schemas/FileEncoding"
+					}
+				},
+				"title": "SetEnvironmentFileBody",
+				"description": "`encoding` says how `content` is written: `utf8` (the default) or `base64`."
+			},
+			"SetEnvironmentVariableBody": {
+				"type": "object",
+				"properties": {
+					"protected": {
+						"type": "boolean",
+						"description": "Default false."
+					},
+					"value": {
+						"type": "string",
+						"maxLength": 32768,
+						"description": "Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps its value (to change its bindings); a new value for a protected one is a rotation."
+					},
+					"bindings": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/DestinationBinding"
+						},
+						"maxItems": 32,
+						"description": "A protected variable's destinations, at least one. Left out, a protected one keeps its own."
+					}
+				},
+				"title": "SetEnvironmentVariableBody"
+			},
+			"SetPublicUrlBody": {
+				"type": "object",
+				"required": ["publicUrl"],
+				"properties": {
+					"publicUrl": {
+						"anyOf": [
+							{
+								"type": "string",
+								"maxLength": 2048
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own."
+					}
+				},
+				"title": "SetPublicUrlBody"
 			},
 			"Snapshot": {
 				"type": "object",
@@ -10456,16 +11641,14 @@
 			"UpdateEnvironmentBody": {
 				"type": "object",
 				"properties": {
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
 					"description": {
 						"type": "string",
-						"maxLength": 200
-					},
-					"idleTimeoutMs": {
-						"type": "integer",
-						"minimum": 60000
-					},
-					"size": {
-						"$ref": "#/components/schemas/EnvironmentSizeName"
+						"maxLength": 500,
+						"description": "Empty clears it."
 					}
 				},
 				"title": "UpdateEnvironmentBody"

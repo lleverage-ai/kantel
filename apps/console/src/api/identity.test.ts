@@ -9,7 +9,8 @@ import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtp
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createSignInFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
-import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./identity.ts";
+import { orderedSaves } from "../state/theme-sync.ts";
+import { type ConsoleBoot, createConsoleIdentity, memoryChoice, memoryTokens, storageTokens } from "./identity.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
 const ORIGIN = "https://kantel.test";
@@ -108,6 +109,143 @@ describe("the console's sign-in", () => {
 	it("doesn't offer an email code where the deployment named no way in", async () => {
 		const { consoleIdentity } = await world([]);
 		expect(await consoleIdentity.boot()).toEqual({ kind: "signed-out", methods: [] });
+	});
+
+	it("asks someone in two organisations which to act in, sends it, and forgets it on sign-out", async () => {
+		const identity = createMemoryIdentity();
+		const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: ADA });
+		const bob = await identity.createUser(bootstrap, { name: "Bob", email: "bob@kantel.test" });
+		const personal = await identity.createOrganisation(bootstrap, {
+			name: "Personal",
+			admin: { kind: "user", userId: ada.id },
+		});
+		const team = await identity.createOrganisation(bootstrap, {
+			name: "Team",
+			admin: { kind: "user", userId: bob.id },
+		});
+		const foreign = await identity.createOrganisation(bootstrap, {
+			name: "Foreign",
+			admin: { kind: "user", userId: bob.id },
+		});
+		await identity.grantRole(
+			{ actor: { kind: "human", userId: bob.id }, organisationId: team.id },
+			{ principal: { kind: "user", userId: ada.id }, role: "viewer" },
+		);
+		const stores = createMemoryOtpStores();
+		const mailer = new MemoryOtpMailer();
+		const sending: Promise<unknown>[] = [];
+		const otp = createEmailOtp({ identity, ...stores, mailer, defer: (work) => sending.push(work) });
+		const otpRoutes = createOtpHandler({ otp });
+		const identityRoutes = createIdentityHandler({
+			identity,
+			authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
+			signIn: ["email_otp"],
+		});
+		const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			return new URL(request.url).pathname.startsWith("/auth/") ? otpRoutes(request) : identityRoutes(request);
+		};
+		const tokens = memoryTokens();
+		const choice = memoryChoice();
+		const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens, choice });
+		const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+		await signIn.api.start(ADA);
+		await Promise.all(sending.splice(0));
+		await signIn.api.verify(ADA, mailer.lastCodeFor(ADA) ?? "");
+
+		const asked = expectKind(await consoleIdentity.boot(), "choose-organisation");
+		expect(asked.organisations.map((organisation) => organisation.name)).toEqual(["Personal", "Team"]);
+		asked.choose(team.id);
+		const booted = expectKind(await consoleIdentity.boot(), "signed-in");
+		expect(booted.me.organisationId).toBe(team.id);
+		expect(booted.headers()).toEqual({ authorization: `Bearer ${tokens.get()}`, "kantel-organisation": team.id });
+
+		// One that isn't theirs (or no longer is) is dropped, and they're asked again.
+		choice.set(foreign.id);
+		expectKind(await consoleIdentity.boot(), "choose-organisation");
+		expect(choice.get()).toBeUndefined();
+		choice.set(personal.id);
+		expect(expectKind(await consoleIdentity.boot(), "signed-in").me.organisationId).toBe(personal.id);
+
+		await consoleIdentity.signOut();
+		expect(choice.get()).toBeUndefined();
+	});
+
+	it("sends a sign-in's preference writes as that sign-in only: one queued past sign-out is never sent as the next person", async () => {
+		const identity = createMemoryIdentity();
+		const GRACE = "grace@kantel.test";
+		for (const [name, email] of [
+			["Ada Lovelace", ADA],
+			["Grace Hopper", GRACE],
+		] as const) {
+			const user = await identity.createUser(bootstrap, { name, email });
+			await identity.createOrganisation(bootstrap, { name, admin: { kind: "user", userId: user.id } });
+		}
+		const stores = createMemoryOtpStores();
+		const mailer = new MemoryOtpMailer();
+		const sending: Promise<unknown>[] = [];
+		const otp = createEmailOtp({ identity, ...stores, mailer, defer: (work) => sending.push(work) });
+		const otpRoutes = createOtpHandler({ otp });
+		const identityRoutes = createIdentityHandler({
+			identity,
+			authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
+			signIn: ["email_otp"],
+		});
+		// Preference writes wait until the test lets each one through, as a slow network would hold them.
+		const patches: { bearer: string | null; body: string }[] = [];
+		const held: (() => void)[] = [];
+		const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			if (new URL(request.url).pathname.startsWith("/auth/")) return otpRoutes(request);
+			if (request.method === "PATCH") {
+				patches.push({ bearer: request.headers.get("authorization"), body: await request.clone().text() });
+				await new Promise<void>((release) => held.push(release));
+			}
+			return identityRoutes(request);
+		};
+		const tokens = memoryTokens();
+		const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens });
+		const signInAs = async (email: string) => {
+			const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+			await signIn.api.start(email);
+			await Promise.all(sending.splice(0));
+			await signIn.api.verify(email, mailer.lastCodeFor(email) ?? "");
+			return { boot: expectKind(await consoleIdentity.boot(), "signed-in"), bearer: `Bearer ${tokens.get()}` };
+		};
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+		const ada = await signInAs(ADA);
+		const failed: unknown[] = [];
+		const save = orderedSaves(
+			(theme) => ada.boot.setPreferences({ theme }),
+			(error) => failed.push(error),
+		);
+		save("light"); // in flight, held
+		save("dark"); // queued behind it
+		await settle();
+		expect(patches).toEqual([{ bearer: ada.bearer, body: JSON.stringify({ theme: "light" }) }]);
+
+		// Ada signs out and Grace signs in before Ada's first write answers.
+		await ada.boot.actor.signOut?.();
+		const grace = await signInAs(GRACE);
+		held.shift()?.();
+		await settle();
+		await settle();
+		// Ada's queued choice was dropped, not sent with Grace's session.
+		expect(patches.map((patch) => patch.bearer)).toEqual([ada.bearer]);
+		expect(failed).toHaveLength(2);
+		expect(expectKind(await consoleIdentity.boot(), "signed-in").me.preferences).toEqual({});
+
+		// Grace's own writes go out as her.
+		const now = expectKind(await consoleIdentity.boot(), "signed-in");
+		const saving = now.setPreferences({ theme: "light" });
+		await settle();
+		held.shift()?.();
+		expect(await saving).toEqual({ theme: "light" });
+		expect(patches.at(-1)?.bearer).toBe(grace.bearer);
+		// And an ended boot refuses without sending.
+		await expect(grace.boot.setPreferences({ theme: "dark" })).rejects.toThrow("ended");
+		expect(patches).toHaveLength(2);
 	});
 
 	it("fails the boot, rather than asking to sign in, when Kantel can't be reached", async () => {

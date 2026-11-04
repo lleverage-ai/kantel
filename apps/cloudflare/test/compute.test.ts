@@ -45,12 +45,13 @@ function objectSql(db: DatabaseSync) {
 }
 
 /** One stack object's start over `db` (its own SQLite); a second call over the same `db` is the object after eviction. */
-async function start(db?: DatabaseSync) {
+async function start(db?: DatabaseSync, vars: { readonly KANTEL_COMPUTE_PORTS_DOMAIN?: string } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
 		KANTEL_ACCESS_AUD: AUD,
 		KANTEL_ADMIN_EMAIL: ADMIN,
+		...vars,
 	});
 	const stack = await createStack({
 		config,
@@ -122,6 +123,20 @@ describe("the compute API on the gateway", () => {
 		await close();
 	});
 
+	it("names port URLs under kantel.run, or the deployment's own ports domain", async () => {
+		for (const [vars, domain] of [
+			[{}, "kantel.run"],
+			[{ KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" }, "ports.example.com"],
+		] as const) {
+			const { call, close } = await start(undefined, vars);
+			const made = await call("POST", "/v1/sandboxes", { name: "web", wait: true });
+			const exposed = await call("POST", `/v1/sandboxes/${made.body.id}/ports`, { port: 3000 });
+			expect(exposed.status).toBe(201);
+			expect(new URL(String(exposed.body.url)).hostname).toBe(`3000-${made.body.subdomain}.${domain}`);
+			await close();
+		}
+	});
+
 	it("keeps the records in the object's SQLite, and gives a sandbox a fresh machine after the object's memory goes", async () => {
 		const db = new DatabaseSync(":memory:");
 		// The same person on each start (the stack's identity is in memory in these tests; deployed, it is in D1).
@@ -135,7 +150,7 @@ describe("the compute API on the gateway", () => {
 		const open = async () => {
 			const compute = await createStackCompute({
 				authenticator,
-				identity: { authorize: async () => undefined },
+				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
 				sql: objectSql(db),
 			});
 			const call = async (method: string, path: string, body?: unknown) => {

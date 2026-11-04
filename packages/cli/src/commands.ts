@@ -4,9 +4,11 @@
  * directory as options, so tests drive it with no globals.
  */
 import { spawn } from "node:child_process";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type ApiKey,
 	type ApiKeyPreset,
@@ -17,6 +19,7 @@ import {
 	type EventType,
 	type ExposedPort,
 	type FileList,
+	type Host,
 	type IssuedApiKey,
 	KantelApiError,
 	type KantelClient,
@@ -24,6 +27,8 @@ import {
 	type SandboxSizeName,
 	type SandboxType,
 } from "@kantel/api/sdk";
+import type { EntryBody } from "@kantel/e2e/chain";
+import { type ByteChannel, SessionClient, SessionError } from "@kantel/e2e/session";
 import {
 	AGENTS_BLOCK,
 	agentsGuide,
@@ -31,6 +36,8 @@ import {
 	codexSetup,
 	codexToml,
 	HARNESSES,
+	type McpLaunch,
+	mcpLaunch,
 	mcpServersJson,
 	SKILL_MD,
 	SKILL_PATHS,
@@ -58,7 +65,24 @@ import {
 	resolveConfig,
 	writeStoredConfig,
 } from "./config.ts";
-import { CliError, UsageError } from "./errors.ts";
+import { type LocalConsole, type LocalInfo, serveLocalConsole } from "./console.ts";
+import * as e2e from "./e2e.ts";
+import {
+	type Binding,
+	bindingsText,
+	describeEgress,
+	describeEnvironment,
+	type Environment,
+	environmentTable,
+	type GrantInput,
+	grantText,
+	mergeBindings,
+	octal,
+	parseBinding,
+	parseGrant,
+	withoutProtectedValues,
+} from "./environments.ts";
+import { CliError, HostAnswerError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
@@ -107,6 +131,15 @@ export interface RunOptions {
 	readonly sleep?: (ms: number) => Promise<void>;
 	/** The home directory, for `init --global`; default the user's. */
 	readonly home?: string;
+	/**
+	 * How to start this CLI by absolute paths (Node, its flags and the script), for the MCP setups `agents` prints when
+	 * `kantel` isn't on the PATH; default this process's.
+	 */
+	readonly self?: readonly string[];
+	/** Opens the relay's WebSocket for an E2E session (`kantel e2e`); default a WebSocket to the URL. */
+	readonly connect?: (url: string) => Promise<ByteChannel>;
+	/** `kantel console` is serving: resolves when it should stop; default on Ctrl-C (SIGINT) or SIGTERM. */
+	readonly served?: (console: LocalConsole) => Promise<void>;
 }
 
 interface Io {
@@ -120,6 +153,102 @@ interface Io {
 	readonly openUrl: (url: string) => void;
 	readonly sleep: (ms: number) => Promise<void>;
 	readonly home: string;
+	readonly self: readonly string[] | undefined;
+	readonly connect: (url: string) => Promise<ByteChannel>;
+	readonly served: (console: LocalConsole) => Promise<void>;
+}
+
+/** Until Ctrl-C or SIGTERM. */
+function untilSignalled(): Promise<void> {
+	return new Promise((done) => {
+		const stop = () => {
+			process.off("SIGINT", stop);
+			process.off("SIGTERM", stop);
+			done();
+		};
+		process.on("SIGINT", stop);
+		process.on("SIGTERM", stop);
+	});
+}
+
+/**
+ * Where the console's built files are: `--dir`, `KANTEL_CONSOLE_DIR`, `console/` beside the bundled CLI (its npm
+ * package), or the console's build in this checkout.
+ */
+async function consoleDir(ctx: Context): Promise<string> {
+	const here = dirname(fileURLToPath(import.meta.url));
+	const given = ctx.string("dir") ?? ctx.io.env.KANTEL_CONSOLE_DIR;
+	const candidates =
+		given === undefined
+			? [join(here, "console"), join(here, "..", "..", "..", "apps", "console", "dist")]
+			: [resolve(ctx.io.cwd, given)];
+	for (const candidate of candidates) {
+		if (
+			await access(join(candidate, "index.html")).then(
+				() => true,
+				() => false,
+			)
+		) {
+			return candidate;
+		}
+	}
+	throw new CliError(
+		given === undefined
+			? "This CLI has no console files: install the kantel package, or build them with pnpm --filter @kantel/console build"
+			: `There is no console in ${candidates[0]} (no index.html)`,
+	);
+}
+
+/** What `kantel console` tells its page about E2E: this device, and each space it pinned, verified now. */
+async function localInfo(ctx: Context): Promise<LocalInfo> {
+	const device = await e2e.loadDevice(ctx.io.configDir).catch(() => undefined);
+	const spaces = await Promise.all(
+		(await e2e.pinnedSpaces(ctx.io.configDir)).map(async (id) => {
+			try {
+				const chain = await e2e.verifiedChain(await ctx.client(), ctx.io.configDir, id);
+				return { id, mode: chain.state.mode };
+			} catch (error) {
+				// A chain this device can't verify is treated as E2E: the page never falls back to the gateway for it.
+				return { id, mode: "strict" as const, error: error instanceof Error ? error.message : String(error) };
+			}
+		}),
+	);
+	return {
+		local: true,
+		...(device === undefined ? {} : { device: { id: device.id, label: device.label } }),
+		spaces,
+	};
+}
+
+/** Whether an executable `name` is in one of the PATH's directories. */
+export async function onPath(name: string, env: Env): Promise<boolean> {
+	for (const directory of (env.PATH ?? "").split(delimiter)) {
+		if (directory === "" || !isAbsolute(directory)) continue;
+		try {
+			await access(join(directory, name), constants.X_OK);
+			return true;
+		} catch {
+			// Not here.
+		}
+	}
+	return false;
+}
+
+/**
+ * This process as a command, when it is the kantel CLI: the installed `kantel` (a link to kantel.mjs), the bundle, or
+ * src/main.ts from a checkout. Undefined when another program called `run`.
+ */
+function thisCli(): readonly string[] | undefined {
+	const script = process.argv[1];
+	if (script === undefined) return undefined;
+	const name = basename(script);
+	if (!name.startsWith("kantel") && name !== "main.ts") return undefined;
+	return [process.execPath, ...process.execArgv, resolve(script)];
+}
+
+/** How the MCP setups `agents` prints start `kantel mcp`: `kantel` from the PATH, or this CLI by its full path. */
+async function mcpLaunchFor(io: Io): Promise<McpLaunch> {
+	return mcpLaunch(await onPath("kantel", io.env), io.self);
 }
 
 /** What a command's `run` is given. */
@@ -155,6 +284,8 @@ interface CommandSpec {
 	/** Its words, such as `sandbox create`. */
 	readonly name: string;
 	readonly summary: string;
+	/** Its usage line, when its arguments say it badly, such as `env set <env> <NAME>[=<value>]`. */
+	readonly usage?: string;
 	/** Left out of `kantel help`'s list: an older spelling kept working, such as `sandbox create` for `new`. */
 	readonly hidden?: boolean;
 	readonly args?: readonly Arg[];
@@ -396,6 +527,26 @@ function issuedKey(issued: IssuedApiKey): string {
 }
 
 /** A command's exit code: its own, 124 when it timed out (as timeout(1) does), 137 when it was killed. */
+/** One of an account's own hosts, for `kantel host info`. */
+function describeHost(host: Host): string {
+	const labels = Object.entries(host.labels).map(([key, value]) => `${key}=${value}`);
+	return fields([
+		["id", host.id],
+		["name", host.name],
+		["state", host.state],
+		["account", host.accountId],
+		["version", host.version],
+		["machine", [host.os, host.arch].filter(hasValue).join("/") || undefined],
+		["tiers", host.tiers.join(", ")],
+		["kvm", host.kvm ? "yes" : "no"],
+		["capacity", `${host.capacity.vcpus} vCPUs, ${host.capacity.memoryMb} MB memory, ${host.capacity.diskGb} GB disk`],
+		["sandboxes", String(host.allocated.sandboxes)],
+		["labels", labels.length === 0 ? undefined : labels.join(", ")],
+		["joined", timestamp(host.joinedAt)],
+		["last seen", host.lastSeenAt === undefined ? undefined : ago(host.lastSeenAt)],
+	]);
+}
+
 function exitCodeOf(command: Command): number {
 	if (command.state === "timed_out") return 124;
 	if (command.exitCode !== undefined) return command.exitCode;
@@ -587,7 +738,9 @@ async function browserLogin(ctx: Context, url: string): Promise<IssuedApiKey | u
 		say(`  ${pending.verificationUrlComplete}`);
 	}
 	if (!waiting) {
-		if (!ctx.json) ctx.note("Then run: kantel login --wait");
+		// The same --url, or --wait would sign in to the saved or default URL, where this code isn't known.
+		const flagUrl = ctx.string("url");
+		if (!ctx.json) ctx.note(`Then run: kantel login --wait${flagUrl === undefined ? "" : ` --url ${originOf(url)}`}`);
 		return undefined;
 	}
 	if (interactive && !ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) {
@@ -597,7 +750,763 @@ async function browserLogin(ctx: Context, url: string): Promise<IssuedApiKey | u
 	return waitForLogin(client, pending, ctx.io.configDir, ctx.io.sleep, now);
 }
 
+// Environments and egress.
+
+/** An environment's ID: `<env>` itself when it is one (`env_…`), else the ID of the one with that name in the account. */
+async function environmentIdOf(ctx: Context, client: KantelClient, ref: string): Promise<string> {
+	if (ref.startsWith("env_")) return ref;
+	const config = await ctx.config();
+	const list = await client.listEnvironments(config.account === undefined ? {} : { account: config.account });
+	const found = list.items.find((environment) => environment.name === ref);
+	if (found === undefined) throw new CliError(`there is no environment called "${ref}": kantel env list shows them`);
+	return found.id;
+}
+
+async function loadEnvironment(ctx: Context, client: KantelClient, ref: string): Promise<Environment> {
+	return client.getEnvironment(await environmentIdOf(ctx, client, ref));
+}
+
+/** A value from stdin, less one final newline, for `env set --value-stdin`. It is never printed. */
+async function valueFromStdin(ctx: Context): Promise<string> {
+	const stdin = ctx.io.stdin();
+	if (stdin.isTTY === true) ctx.note("kantel: reading the value from stdin; end it with Ctrl-D");
+	const value = new TextDecoder().decode(await readAll(stdin)).replace(/\r?\n$/, "");
+	if (value === "") throw new UsageError("there was no value on stdin");
+	return value;
+}
+
+/** `--mode 0600`: a file mode in octal. */
+function modeOf(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!/^0?[0-7]{3}$/.test(value)) throw new UsageError(`--mode takes an octal mode such as 0600, not "${value}"`);
+	return Number.parseInt(value, 8);
+}
+
+/** The grant flags `env grant` and `grant` share. */
+const GRANT_FLAGS: FlagSpecs = {
+	method: {
+		type: "string",
+		multiple: true,
+		value: "<METHOD>",
+		description: "Only requests with this method, such as DELETE; repeat it",
+	},
+	path: {
+		type: "string",
+		multiple: true,
+		value: "<pattern>",
+		description: "Only these paths: * is one segment, ** the rest; repeat it",
+	},
+};
+
+const GRANT_DETAILS =
+	"Grants apply on top of the account's proxy settings: the environment's, then the sandbox's own, and deny wins.\n" +
+	"A grant with --method or --path has the egress proxy open that host's HTTPS to read each request.\n" +
+	"Quote a pattern so your shell leaves its * alone:";
+
+/** Where a new grant went: the grant in `after` whose ID wasn't in `before`. */
+function addedGrantId(before: readonly { readonly id: string }[], after: readonly { readonly id: string }[]): string {
+	const known = new Set(before.map((grant) => grant.id));
+	const added = after.find((grant) => !known.has(grant.id));
+	return added === undefined ? "" : ` (${added.id})`;
+}
+
+/** The other grants: all but `id`, or a `CliError` when there is none with that ID. */
+function withoutGrant<T extends { readonly id: string }>(grants: readonly T[], id: string, where: string): T[] {
+	const kept = grants.filter((grant) => grant.id !== id);
+	if (kept.length === grants.length) throw new CliError(`${where} has no grant ${id}`);
+	return kept;
+}
+
+/** How many times an edit of a list is read and written again when the list changed in between. */
+const EDIT_ATTEMPTS = 3;
+
+/**
+ * Runs `edit`, which reads a list, changes it and writes it with `expected` the list as read: Kantel refuses the write
+ * with `conflict` when the list changed in between, and the edit is made again on what is there now, so no one
+ * else's change is lost. Answers the last attempt's result.
+ */
+async function editAsRead<T>(edit: () => Promise<T>): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await edit();
+		} catch (error) {
+			if (attempt >= EDIT_ATTEMPTS || !(error instanceof KantelApiError) || error.code !== "conflict") throw error;
+		}
+	}
+}
+
+/** A variable as Kantel answered it, when the answer is an environment holding it. */
+function variableIn(
+	answer: unknown,
+	name: string,
+): { readonly protected: boolean; readonly bindings: readonly Binding[] } | undefined {
+	if (typeof answer !== "object" || answer === null) return undefined;
+	const variables = (answer as { readonly variables?: unknown }).variables;
+	if (!Array.isArray(variables)) return undefined;
+	const found = variables.find(
+		(variable): variable is { name: string; protected: boolean; bindings: Binding[] } =>
+			typeof variable === "object" &&
+			variable !== null &&
+			variable.name === name &&
+			typeof variable.protected === "boolean" &&
+			Array.isArray(variable.bindings),
+	);
+	return found === undefined ? undefined : { protected: found.protected, bindings: found.bindings };
+}
+
+/** A secret file as Kantel answered it, when the answer is an environment holding it at `path`. */
+function fileIn(answer: unknown, path: string): { readonly mode: number; readonly sizeBytes: number } | undefined {
+	if (typeof answer !== "object" || answer === null) return undefined;
+	const files = (answer as { readonly files?: unknown }).files;
+	if (!Array.isArray(files)) return undefined;
+	// Kantel answers the path as it keeps it, absolute under /home/user (`~/` is there too); the command has it as typed.
+	const wanted = new Set([path, posix.resolve("/home/user", path.startsWith("~/") ? path.slice(2) : path)]);
+	const found = files.find(
+		(file): file is { path: string; mode: number; sizeBytes: number } =>
+			typeof file === "object" &&
+			file !== null &&
+			wanted.has(file.path) &&
+			typeof file.mode === "number" &&
+			typeof file.sizeBytes === "number",
+	);
+	return found === undefined ? undefined : { mode: found.mode, sizeBytes: found.sizeBytes };
+}
+
 // The commands.
+
+// End-to-end encryption (e2e.ts).
+
+/** The space a command acts in: --account, the config's, or the caller's own. */
+async function e2eSpace(ctx: Context): Promise<string> {
+	const account = (await ctx.config()).account;
+	return account ?? (await (await ctx.client()).getCaller()).accountId;
+}
+
+async function e2eUser(ctx: Context): Promise<string> {
+	const user = (await (await ctx.client()).getCaller()).user;
+	if (user === undefined) throw new CliError("Sign in as a person (kantel login): an API key has no devices");
+	return user.id;
+}
+
+const e2eFailure = (error: unknown) => new CliError(error instanceof Error ? error.message : String(error));
+
+async function e2eChainOf(ctx: Context): Promise<{ chain: e2e.VerifiedChain; device: e2e.Device }> {
+	try {
+		const space = await e2eSpace(ctx);
+		const [device, chain] = await Promise.all([
+			e2e.loadDevice(ctx.io.configDir),
+			e2e.verifiedChain(await ctx.client(), ctx.io.configDir, space),
+		]);
+		return { chain, device };
+	} catch (error) {
+		if (error instanceof KantelApiError) throw error;
+		throw e2eFailure(error);
+	}
+}
+
+/**
+ * Signs `body` with this device after `checked`'s head (the chain whatever decided on it was read from) and adds it.
+ * If another entry got there first, the gateway refuses it: nothing decided on an older chain is signed onto a newer
+ * one.
+ */
+async function e2eSign(
+	ctx: Context,
+	checked: { chain: e2e.VerifiedChain; device: e2e.Device },
+	body: EntryBody,
+): Promise<e2e.VerifiedChain> {
+	return e2e.appendEntry(await ctx.client(), ctx.io.configDir, checked.device, checked.chain, body).catch((error) => {
+		if (error instanceof KantelApiError && error.code === "conflict") {
+			throw new CliError("The chain changed while this ran (another change got there first): run it again");
+		}
+		if (error instanceof KantelApiError) throw error;
+		throw e2eFailure(error);
+	});
+}
+
+const emitChain = (ctx: Context, chain: e2e.VerifiedChain, done: string) =>
+	ctx.emit({ space: chain.state.space, seq: chain.state.seq, head: chain.state.head }, () => done);
+
+/** Signs and adds one entry with this device, and says what the chain is now. */
+async function e2eAppend(ctx: Context, body: EntryBody, done: string): Promise<void> {
+	emitChain(ctx, await e2eSign(ctx, await e2eChainOf(ctx), body), done);
+}
+
+/** Every sandbox in the space now, stopped ones too: those turning E2E on retires. */
+async function spaceSandboxes(ctx: Context, space: string): Promise<string[]> {
+	const client = await ctx.client();
+	const ids: string[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await client.listSandboxes({ account: space, all: true, cursor });
+		ids.push(...page.items.map((item) => item.id));
+		cursor = page.nextCursor ?? undefined;
+	} while (cursor !== undefined);
+	return ids;
+}
+
+const RETIRE_FLAGS = {
+	yes: { type: "boolean", short: "y", description: "Yes, retire the space's existing sandboxes" },
+} as const;
+
+/**
+ * Turning E2E on retires every sandbox the space has: hosts give sessions only to sandboxes they make while E2E is on,
+ * as the gateway could have changed an older one. Without --yes this lists them and stops.
+ */
+async function confirmRetiring(ctx: Context, space: string, again: string): Promise<void> {
+	const ids = await spaceSandboxes(ctx, space);
+	if (ids.length === 0 || ctx.boolean("yes")) return;
+	const shown = ids.slice(0, 20).join(", ") + (ids.length > 20 ? ` and ${ids.length - 20} more` : "");
+	throw new UsageError(
+		`Turning E2E on retires ${space}'s ${ids.length} existing sandbox${ids.length === 1 ? "" : "es"}: ${shown}. ` +
+			"Hosts open E2E sessions only to sandboxes made while E2E is on, and the gateway can't reach these either. " +
+			"Nothing is deleted: kantel delete <id> --yes removes them when you're done. " +
+			`To go ahead, run: ${again} --yes`,
+	);
+}
+
+/** What `kantel e2e ssh-proxy` is run with: the gateway, credential and account this invocation resolved. */
+export function proxyEnv(config: ResolvedConfig): Record<string, string> {
+	return {
+		KANTEL_URL: config.url,
+		...(config.apiKey === undefined ? {} : { KANTEL_API_KEY: config.apiKey }),
+		...(config.account === undefined ? {} : { KANTEL_ACCOUNT: config.account }),
+	};
+}
+
+/** A page of a sandbox's command history, as its host keeps it (`sandbox.history`), newest first. */
+export interface E2EHistoryPage {
+	readonly items: readonly E2EHistoryEntry[];
+	readonly next?: string;
+}
+
+export interface E2EHistoryEntry {
+	readonly id: string;
+	readonly command?: string;
+	readonly argv?: readonly string[];
+	readonly cwd?: string;
+	readonly startedAt: number;
+	readonly endedAt: number;
+	readonly exitCode?: number;
+	readonly timedOut?: boolean;
+	readonly error?: string;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly truncated?: boolean;
+	readonly device: string;
+	readonly deviceLabel?: string;
+	readonly deviceClass?: string;
+	readonly member?: string;
+}
+
+/** An `rpc` session's call, with its error as the CLI's. */
+async function e2eCall<T>(ctx: Context, sandboxId: string, method: string, params: object): Promise<T> {
+	let session: e2e.OpenedE2E;
+	try {
+		session = await e2e.openE2ESession(
+			await ctx.client(),
+			ctx.io.configDir,
+			sandboxId,
+			"rpc",
+			undefined,
+			ctx.io.connect,
+		);
+	} catch (error) {
+		if (error instanceof KantelApiError) throw error;
+		throw e2eFailure(error);
+	}
+	const client = new SessionClient(session);
+	try {
+		return await client.call<T>(method, params);
+	} catch (error) {
+		// The host's own refusal keeps its code, for `kantel console` to pass on (a path it won't read isn't a failure).
+		if (error instanceof SessionError && error.answered) throw new HostAnswerError(error.code, error.message);
+		throw e2eFailure(error);
+	} finally {
+		client.close();
+	}
+}
+
+const E2E_DETAILS =
+	"Sessions go through the gateway's relay to the sandbox's host, which only that host can read: this device checks\n" +
+	"the host's key, and the host this device's, against the organisation's signed chain. The chain is trusted from\n" +
+	"its genesis, which this device made (init) or an admin gave it (join), never from the gateway.";
+
+const E2E_COMMANDS: readonly CommandSpec[] = [
+	{
+		name: "console",
+		summary: "Open the console from this CLI on 127.0.0.1, with E2E sandboxes' commands and history",
+		flags: {
+			port: { type: "string", value: "<port>", description: "Where it listens on 127.0.0.1 (default a free port)" },
+			"no-browser": { type: "boolean", description: "Only print the link (also KANTEL_NO_BROWSER)" },
+			dir: { type: "string", value: "<dir>", description: "The console's built files, if not this CLI's own" },
+		},
+		details:
+			"The console's code comes from this CLI's release, not from the gateway, so the gateway can't change what runs\n" +
+			"it. Its API calls go to the gateway with this CLI's key, which stays here. In an end-to-end encrypted\n" +
+			"organisation, commands, files and history go to the sandbox's host over sessions with this device's key.\n" +
+			"Only the browser that opens the printed link gets in. Ctrl-C stops it.",
+		async run(ctx) {
+			const config = await ctx.config();
+			if (config.apiKey === undefined) throw new CliError("Sign in first: kantel login");
+			const portFlag = ctx.string("port");
+			const port = portFlag === undefined ? 0 : Number(portFlag);
+			if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new UsageError("--port is a port number");
+			const served = await serveLocalConsole({
+				dir: await consoleDir(ctx),
+				gateway: config.url,
+				apiKey: config.apiKey,
+				fetch: ctx.io.fetch,
+				userAgent: `kantel-cli/${VERSION} (console)`,
+				port,
+				info: () => localInfo(ctx),
+				e2eCall: (sandboxId, method, params) => e2eCall(ctx, sandboxId, method, params),
+			});
+			try {
+				ctx.emit(
+					{ url: served.url },
+					() => `The console is at ${served.url}\nOnly this link lets a browser in. Ctrl-C stops it.`,
+				);
+				if (!ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) ctx.io.openUrl(served.url);
+				await ctx.io.served(served);
+			} finally {
+				await served.close();
+			}
+		},
+	},
+	{
+		name: "e2e status",
+		summary: "This device, and the organisation's chain as this device verifies it",
+		details: E2E_DETAILS,
+		async run(ctx) {
+			const device = await e2e.loadDevice(ctx.io.configDir);
+			const space = await e2eSpace(ctx);
+			const pinned = await e2e.pinnedGenesis(ctx.io.configDir, space);
+			const state =
+				pinned === undefined
+					? undefined
+					: (
+							await e2e.verifiedChain(await ctx.client(), ctx.io.configDir, space).catch((error: unknown) => {
+								throw e2eFailure(error);
+							})
+						).state;
+			const view = {
+				device: { id: device.id, label: device.label, fingerprint: await e2e.deviceFingerprint(device) },
+				space,
+				...(state === undefined
+					? {}
+					: {
+							genesis: state.genesis,
+							mode: state.mode,
+							seq: state.seq,
+							inChain: state.devices.has(device.id),
+							members: Object.fromEntries(state.members),
+							devices: [...state.devices.values()],
+							hosts: [...state.hosts.values()],
+						}),
+			};
+			ctx.emit(view, () => {
+				const lines = [`This device: ${device.id} (${device.label}), fingerprint ${view.device.fingerprint}`];
+				if (state === undefined) {
+					lines.push(`${space}: this device trusts no chain yet (kantel e2e init, or kantel e2e join)`);
+					return lines.join("\n");
+				}
+				lines.push(
+					`${space}: E2E ${state.mode}, ${state.seq + 1} entries, genesis ${state.genesis}`,
+					state.devices.has(device.id) ? "This device is in the chain." : "This device isn't in the chain yet.",
+					"",
+					table(
+						["DEVICE", "PERSON", "ROLE", "CLASS", "LABEL"],
+						[...state.devices.values()].map((d) => [d.id, d.user, state.members.get(d.user) ?? "", d.class, d.label]),
+					),
+					"",
+					state.hosts.size === 0
+						? "No hosts yet: kantel e2e host-ticket <name>."
+						: table(
+								["HOST", "NAME"],
+								[...state.hosts.values()].map((h) => [h.id, h.name]),
+							),
+				);
+				return lines.join("\n");
+			});
+		},
+	},
+	{
+		name: "e2e init",
+		summary: "Start the organisation's chain with this device as its first admin (an admin or owner)",
+		flags: {
+			mode: {
+				type: "string",
+				value: "<on|strict>",
+				description: "strict also keeps the hosted console out; default on",
+			},
+			label: {
+				type: "string",
+				value: "<label>",
+				description: "This device's name in the chain (default kantel on <host>)",
+			},
+			...RETIRE_FLAGS,
+		},
+		details:
+			`${E2E_DETAILS}\nWith E2E on, the organisation's hosts in the chain run commands, files and ports only in sessions, ` +
+			"and only in sandboxes they make while it is on: the space's existing sandboxes are retired (needs --yes).",
+		async run(ctx) {
+			const mode = choice(ctx.string("mode"), ["on", "strict"] as const, "--mode") ?? "on";
+			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
+			const space = await e2eSpace(ctx);
+			await confirmRetiring(ctx, space, `kantel e2e init${mode === "on" ? "" : ` --mode ${mode}`}`);
+			const chain = await e2e
+				.initChain(await ctx.client(), ctx.io.configDir, device, space, await e2eUser(ctx), mode)
+				.catch((error: unknown) => {
+					if (error instanceof KantelApiError) throw error;
+					throw e2eFailure(error);
+				});
+			// What the chain says, not what was asked: a resumed init finishes the one it started, whose mode was signed
+			// then (a different one isn't resumed), and entries after its genesis may have changed it since.
+			const started = chain.state.mode;
+			ctx.emit({ space, genesis: chain.state.genesis, mode: started }, () =>
+				[
+					`Started ${space}'s chain, E2E ${started}. Its genesis is ${chain.state.genesis}.`,
+					...(started === mode ? [] : [`It is E2E ${started}, not ${mode}: kantel e2e mode ${mode} changes it.`]),
+					"Give each member that genesis yourself (not through Kantel) for: kantel e2e join " +
+						`${space} ${chain.state.genesis}`,
+					"Then enrol your hosts: kantel e2e host-ticket <name>.",
+				].join("\n"),
+			);
+		},
+	},
+	{
+		name: "e2e join",
+		summary: "Trust an organisation's chain from the genesis an admin gave you",
+		args: [{ name: "space" }, { name: "genesis" }],
+		flags: {
+			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
+		},
+		async run(ctx) {
+			const [space, genesis] = [ctx.arg(0), ctx.arg(1)];
+			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
+			await e2e.pinGenesis(ctx.io.configDir, space, genesis).catch((error: unknown) => {
+				throw e2eFailure(error);
+			});
+			const card = await e2e.deviceCard(device, await e2eUser(ctx));
+			const print = await e2e.deviceFingerprint(device);
+			ctx.emit({ space, genesis, card, fingerprint: print }, () =>
+				[
+					`This device trusts ${space}'s chain from ${e2e.short(genesis)}.`,
+					"Unless it is in the chain already, send an admin this, and check the fingerprint with them:",
+					`kantel e2e add-device --member ${card}`,
+					`Fingerprint: ${print}`,
+				].join("\n"),
+			);
+		},
+	},
+	{
+		name: "e2e device",
+		summary: "This device's card, for an admin's kantel e2e add-device",
+		flags: {
+			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
+		},
+		details: "Send the card to an admin yourself; they check the fingerprint with you before they add it.",
+		async run(ctx) {
+			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
+			const card = await e2e.deviceCard(device, await e2eUser(ctx));
+			const print = await e2e.deviceFingerprint(device);
+			ctx.emit({ id: device.id, card, fingerprint: print }, () =>
+				[`kantel e2e add-device ${card}`, `Fingerprint: ${print}`].join("\n"),
+			);
+		},
+	},
+	{
+		name: "e2e add-device",
+		summary: "Add a person's device to the chain from its card (yours, or anyone's as an admin)",
+		args: [{ name: "card" }],
+		flags: { member: { type: "boolean", description: "Also add its person to the chain as a member, if they aren't" } },
+		async run(ctx) {
+			const device = await e2e.parseCard(ctx.arg(0)).catch((error: unknown) => {
+				throw new UsageError(error instanceof Error ? error.message : String(error));
+			});
+			const print = await e2e.cardFingerprint(device);
+			ctx.note(`Adding ${device.id} (${device.label}) for ${device.user}, fingerprint ${print}: check it with them.`);
+			// Whether they are a member is read from the chain the member.add is signed onto, so an admin made one in the
+			// meantime is never made a member again.
+			const checked = await e2eChainOf(ctx);
+			let { chain } = checked;
+			if (ctx.boolean("member") && !chain.state.members.has(device.user)) {
+				chain = await e2eSign(ctx, checked, { type: "member.add", body: { user: device.user, role: "member" } });
+			}
+			chain = await e2eSign(ctx, { chain, device: checked.device }, { type: "device.add", body: { device } });
+			emitChain(
+				ctx,
+				chain,
+				`Added ${device.id}. They trust the chain with: kantel e2e join ${chain.state.space} ${chain.state.genesis}`,
+			);
+		},
+	},
+	{
+		name: "e2e remove-device",
+		summary: "Take a device out of the chain: hosts refuse its sessions from then on",
+		args: [{ name: "device" }],
+		async run(ctx) {
+			await e2eAppend(ctx, { type: "device.remove", body: { id: ctx.arg(0) } }, `Removed ${ctx.arg(0)}.`);
+		},
+	},
+	{
+		name: "e2e add-member",
+		summary: "Let a member of the organisation into the chain (an admin's device)",
+		args: [{ name: "user" }],
+		flags: { admin: { type: "boolean", description: "As an admin of the chain" } },
+		async run(ctx) {
+			const role = ctx.boolean("admin") ? "admin" : "member";
+			await e2eAppend(ctx, { type: "member.add", body: { user: ctx.arg(0), role } }, `${ctx.arg(0)} is a ${role}.`);
+		},
+	},
+	{
+		name: "e2e remove-member",
+		summary: "Take a person and all their devices out of the chain (an admin's device)",
+		args: [{ name: "user" }],
+		async run(ctx) {
+			await e2eAppend(ctx, { type: "member.remove", body: { user: ctx.arg(0) } }, `Removed ${ctx.arg(0)}.`);
+		},
+	},
+	{
+		name: "e2e host-ticket",
+		summary: "A one-off ticket for a host to join the chain (an admin's device)",
+		args: [{ name: "name" }],
+		flags: { expires: { type: "string", value: "<minutes>", description: "How long it lasts, default 60" } },
+		details:
+			"Run the command it prints on the host, as root: the host signs its own entry with the ticket and adds it.\n" +
+			"The ticket is a secret until it is used, and works once.",
+		async run(ctx) {
+			const { chain, device } = await e2eChainOf(ctx);
+			const word = await e2e
+				.hostTicket(device, chain, ctx.arg(0), whole(ctx.string("expires"), "--expires") ?? 60)
+				.catch((error: unknown) => {
+					throw e2eFailure(error);
+				});
+			const command = `sudo kantel-host e2e join ${word}`;
+			ctx.emit({ ticket: word, command }, () => command);
+		},
+	},
+	{
+		name: "e2e remove-host",
+		summary: "Take a host out of the chain: devices won't open sessions to it",
+		args: [{ name: "host" }],
+		async run(ctx) {
+			await e2eAppend(ctx, { type: "host.remove", body: { id: ctx.arg(0) } }, `Removed ${ctx.arg(0)}.`);
+		},
+	},
+	{
+		name: "e2e mode",
+		summary: "Turn E2E off, on, or strict (strict also keeps the hosted console out)",
+		args: [{ name: "mode" }],
+		flags: RETIRE_FLAGS,
+		details:
+			"Turning it on (from off) retires the space's existing sandboxes (needs --yes): hosts open sessions only to " +
+			"sandboxes made while E2E is on, and turning it off and on again retires those too.",
+		async run(ctx) {
+			const mode = choice(ctx.arg(0), ["off", "on", "strict"] as const, "The mode") ?? "on";
+			// Signed onto the chain it was checked against: if it was turned off meanwhile, this is refused rather than
+			// turning it on again without the confirmation.
+			const checked = await e2eChainOf(ctx);
+			if (mode !== "off" && checked.chain.state.mode === "off") {
+				await confirmRetiring(ctx, checked.chain.state.space, `kantel e2e mode ${mode}`);
+			}
+			const done =
+				mode === "off"
+					? "E2E is off; hosts take it at their next session. Turning it on again retires every sandbox the space has then."
+					: `E2E is ${mode}; hosts take it at their next session.`;
+			emitChain(ctx, await e2eSign(ctx, checked, { type: "mode", body: { mode } }), done);
+		},
+	},
+	{
+		name: "e2e exec",
+		summary: "Run a command in a sandbox over an E2E session",
+		args: ID_ARG,
+		rest: "command…",
+		flags: { cwd: { type: "string", value: "<dir>", description: "Where it runs" } },
+		details: E2E_DETAILS,
+		async run(ctx) {
+			const command = ctx.rest ?? [];
+			if (command.length === 0) throw new UsageError("Give the command after --: kantel e2e exec <id> -- ls");
+			const cwd = ctx.string("cwd");
+			const result = await e2eCall<{ exitCode: number; stdout: string; stderr: string }>(
+				ctx,
+				ctx.arg(0),
+				"sandbox.exec",
+				{
+					command: commandLine(command),
+					...(cwd === undefined ? {} : { cwd }),
+				},
+			);
+			if (ctx.json) {
+				ctx.emit(result, () => "");
+				return result.exitCode;
+			}
+			ctx.io.stdout.write(result.stdout);
+			ctx.io.stderr.write(result.stderr);
+			return result.exitCode;
+		},
+	},
+	{
+		name: "e2e history",
+		summary: "The commands run in a sandbox over E2E sessions, from its host",
+		args: ID_ARG,
+		flags: {
+			limit: { type: "string", value: "<n>", description: "How many, newest first (default 20, at most 100)" },
+			before: { type: "string", value: "<command-id>", description: "Older than this one" },
+			output: { type: "boolean", description: "Print each command's output too" },
+		},
+		details:
+			"The gateway never sees what runs in an E2E session, so the host keeps the history: the last 200 commands of\n" +
+			"each sandbox, with the last 64 KiB of their output. It goes when the sandbox is deleted, and can't be read\n" +
+			"while the host is offline.",
+		async run(ctx) {
+			const limit = Number(ctx.string("limit") ?? "20");
+			if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+				throw new UsageError("--limit is a number from 1 to 100");
+			const before = ctx.string("before");
+			const page = await e2eCall<E2EHistoryPage>(ctx, ctx.arg(0), "sandbox.history", {
+				limit,
+				...(before === undefined ? {} : { before }),
+			});
+			ctx.emit(page, () => {
+				if (page.items.length === 0) return "No commands yet.";
+				const lines = page.items.map((entry) => {
+					const status = entry.exitCode === undefined ? (entry.error ?? "didn't finish") : `exit ${entry.exitCode}`;
+					const who = entry.deviceLabel ?? entry.device;
+					const head = `${entry.id}  ${new Date(entry.startedAt).toISOString()}  ${status}  ${who}\n  ${entry.command ?? (entry.argv ?? []).join(" ")}`;
+					if (!ctx.boolean("output")) return head;
+					const output = `${entry.stdout}${entry.stderr}`.trimEnd();
+					return output === "" ? head : `${head}\n${output.replace(/^/gm, "    ")}`;
+				});
+				if (page.next !== undefined) lines.push(`More: kantel e2e history ${ctx.arg(0)} --before ${page.next}`);
+				return lines.join("\n");
+			});
+		},
+	},
+	{
+		name: "e2e cat",
+		summary: "Print a sandbox's file, read over an E2E session",
+		args: [{ name: "id" }, { name: "path" }],
+		async run(ctx) {
+			const read = await e2eCall<{ data: string }>(ctx, ctx.arg(0), "sandbox.files.read", { path: ctx.arg(1) });
+			ctx.io.stdout.write(Buffer.from(read.data, "base64"));
+		},
+	},
+	{
+		name: "e2e put",
+		summary: "Write a local file (or - for stdin) to a sandbox over an E2E session",
+		args: [{ name: "id" }, { name: "local" }, { name: "remote" }],
+		async run(ctx) {
+			const local = ctx.arg(1);
+			let data: Buffer;
+			if (local === "-") {
+				const chunks: Buffer[] = [];
+				for await (const chunk of ctx.io.stdin()) chunks.push(Buffer.from(chunk));
+				data = Buffer.concat(chunks);
+			} else data = await readFile(resolve(ctx.io.cwd, local));
+			if (data.byteLength > MAX_FILE) throw new UsageError("Kantel writes files of up to 1 MiB");
+			await e2eCall(ctx, ctx.arg(0), "sandbox.files.write", { path: ctx.arg(2), data: data.toString("base64") });
+			ctx.note(`Wrote ${bytes(data.byteLength)} to ${ctx.arg(2)}.`);
+		},
+	},
+	{
+		name: "e2e ssh",
+		summary: "SSH into a microVM over an E2E session",
+		args: ID_ARG,
+		rest: "command…",
+		restOptional: true,
+		flags: {
+			identity: {
+				type: "string",
+				value: "<file>",
+				description: "Your SSH private key; its .pub is let in first (default ~/.ssh/id_ed25519)",
+			},
+		},
+		details:
+			"It lets your public key in over a session, then runs ssh with kantel e2e ssh-proxy as its ProxyCommand: the\n" +
+			"relay carries the SSH connection inside the Noise session, so it sees neither.",
+		async run(ctx) {
+			const sandboxId = ctx.arg(0);
+			const identityFile = resolve(ctx.io.cwd, ctx.string("identity") ?? join(ctx.io.home, ".ssh", "id_ed25519"));
+			const publicKey = (await readFile(`${identityFile}.pub`, "utf8")).trim();
+			const letIn = await e2eCall<{ exitCode: number; stderr: string }>(ctx, sandboxId, "sandbox.exec", {
+				command:
+					'mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && (grep -qxF "$K" ~/.ssh/authorized_keys || printf "%s\\n" "$K" >> ~/.ssh/authorized_keys) && chmod 600 ~/.ssh/authorized_keys',
+				env: { K: publicKey },
+				user: "user",
+			});
+			if (letIn.exitCode !== 0) throw new CliError(`The sandbox didn't let the key in: ${letIn.stderr}`);
+			const self = ctx.io.self ?? thisCli() ?? ["kantel"];
+			const proxy = [...self, "e2e", "ssh-proxy", sandboxId].map(shellQuote).join(" ").replaceAll("%", "%%");
+			const remote = ctx.rest ?? [];
+			// The proxy is another kantel, which hasn't this one's flags: it gets the gateway and credential this one
+			// resolved through its environment, not on ssh's command line.
+			const env = proxyEnv(await ctx.config());
+			return runSsh(
+				[
+					"-i",
+					identityFile,
+					"-o",
+					"IdentitiesOnly=yes",
+					"-o",
+					`ProxyCommand=${proxy}`,
+					"-o",
+					`UserKnownHostsFile=${join(ctx.io.configDir, "ssh", "known_hosts")}`,
+					"-o",
+					`HostKeyAlias=${sandboxId}`,
+					`user@${sandboxId}`,
+					...(remote.length === 0 ? [] : ["--", commandLine(remote)]),
+				],
+				ctx.io,
+				env,
+			);
+		},
+	},
+	{
+		name: "e2e ssh-proxy",
+		summary: "A sandbox's port over an E2E session, on stdin and stdout (ssh's ProxyCommand)",
+		hidden: true,
+		args: ID_ARG,
+		flags: { port: { type: "string", value: "<port>", description: "Default 22" } },
+		async run(ctx) {
+			const port = whole(ctx.string("port"), "--port") ?? 22;
+			let session: e2e.OpenedE2E;
+			try {
+				session = await e2e.openE2ESession(
+					await ctx.client(),
+					ctx.io.configDir,
+					ctx.arg(0),
+					"port",
+					port,
+					ctx.io.connect,
+				);
+			} catch (error) {
+				ctx.io.stderr.write(`kantel e2e ssh-proxy: ${error instanceof Error ? error.message : String(error)}\n`);
+				return 255;
+			}
+			return pipeSession(session, ctx.io);
+		},
+	},
+];
+
+/** A port session's bytes on stdin and stdout, until either side ends. */
+function pipeSession(session: e2e.OpenedE2E, io: Io): Promise<number> {
+	return new Promise((done) => {
+		if (session.leftover.byteLength > 0) io.stdout.write(session.leftover);
+		session.stream.onData((bytes) => io.stdout.write(bytes));
+		session.stream.onClose(() => done(0));
+		void (async () => {
+			try {
+				for await (const chunk of io.stdin()) {
+					await session.stream.write(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+				}
+			} catch {
+				// stdin closed under us.
+			}
+			session.stream.close("ssh closed its side");
+		})();
+	});
+}
 
 const SECTIONS: readonly Section[] = [
 	{
@@ -624,7 +1533,7 @@ const SECTIONS: readonly Section[] = [
 					"and exits; run kantel login --wait to wait for the approval. Running it again shows the same code.\n" +
 					"\n" +
 					"An existing key comes from --key-stdin, which keeps it out of your shell history and process list:\n" +
-					'  printf %s "$KANTEL_API_KEY" | npx kantel login --key-stdin --url https://kantel.example\n' +
+					'  printf %s "$KANTEL_API_KEY" | kantel login --key-stdin --url https://kantel.example\n' +
 					"It is saved, readable by you only, in ~/.config/kantel/config.json (or under XDG_CONFIG_HOME).",
 				async run(ctx) {
 					const stored = await readStoredConfig(ctx.io.configDir);
@@ -730,8 +1639,9 @@ const SECTIONS: readonly Section[] = [
 						type: "string",
 						short: "e",
 						multiple: true,
-						value: "<K=V>",
-						description: "An environment variable every command sees (not a secret); repeat it",
+						value: "<K=V|env>",
+						description:
+							"K=V: a variable every command sees (not a secret), repeatable; or an environment to start from",
 					},
 					host: {
 						type: "string",
@@ -741,10 +1651,22 @@ const SECTIONS: readonly Section[] = [
 					},
 					"no-wait": noWait,
 				},
+				details:
+					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
+					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
+					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.",
 				async run(ctx) {
 					const hosts = ctx.list("host").map(hostedPort);
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
+					// A variable has an =; an environment's name or ID never does.
+					const envs = ctx.list("env");
+					const environments = envs.filter((item) => !item.includes("="));
+					if (environments.length > 1) {
+						throw new UsageError("a sandbox starts from one environment: give --env <env> once");
+					}
+					const [environment] = environments;
 					const body = {
+						...(environment === undefined ? {} : { environment }),
 						name: ctx.string("name"),
 						type: choice(ctx.string("type"), SANDBOX_TYPES, "--type"),
 						size: choice(ctx.string("size"), SIZES, "--size"),
@@ -752,7 +1674,10 @@ const SECTIONS: readonly Section[] = [
 						from: ctx.string("from"),
 						autoStopMinutes: autoStopOf(ctx.string("auto-stop")),
 						labels: pairs(ctx.list("label"), "--label"),
-						env: pairs(ctx.list("env"), "--env"),
+						env: pairs(
+							envs.filter((item) => item.includes("=")),
+							"--env",
+						),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
@@ -1511,6 +2436,401 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
+		title: "Environments and egress",
+		commands: [
+			{
+				name: "env list",
+				summary: "The account's environments",
+				async run(ctx) {
+					const config = await ctx.config();
+					const list = await (await ctx.client()).listEnvironments(
+						config.account === undefined ? {} : { account: config.account },
+					);
+					ctx.emit(withoutProtectedValues(list), () =>
+						list.items.length === 0
+							? "No environments. Make one: kantel env create <name>"
+							: environmentTable(list.items),
+					);
+				},
+			},
+			{
+				name: "env create",
+				summary: "Make an environment: variables, secret files, repos and grants for new sandboxes",
+				args: [{ name: "name" }],
+				flags: { description: { type: "string", value: "<text>", description: "What it is for" } },
+				details: "A name is lower-case letters, digits and hyphens, unique in the account.",
+				async run(ctx) {
+					const config = await ctx.config();
+					const description = ctx.string("description");
+					const environment = await (await ctx.client()).createEnvironment({
+						...(config.account === undefined ? {} : { account: config.account }),
+						name: ctx.arg(0),
+						...(description === undefined ? {} : { description }),
+					});
+					ctx.emit(withoutProtectedValues(environment), () =>
+						[
+							`Created ${environment.id} (${environment.name}).`,
+							`  Add a variable:  kantel env set ${environment.name} NAME=value`,
+							`  Use it:          kantel new --env ${environment.name}`,
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "env show",
+				summary: "Show an environment: its variables (never a protected one's value), files, repos and grants",
+				args: [{ name: "env" }],
+				async run(ctx) {
+					const environment = await loadEnvironment(ctx, await ctx.client(), ctx.arg(0));
+					ctx.emit(withoutProtectedValues(environment), () => describeEnvironment(environment));
+				},
+			},
+			{
+				name: "env delete",
+				summary: "Delete an environment, with its sealed values and files",
+				args: [{ name: "env" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					await client.deleteEnvironment(environmentId);
+					ctx.emit({ deleted: environmentId }, () => `Deleted ${environmentId}.`);
+				},
+			},
+			{
+				name: "env set",
+				usage: "env set <env> <NAME>[=<value>]",
+				summary: "Set a variable: plain, or protected so sandboxes get a placeholder and never the value",
+				args: [
+					{ name: "env", optional: true },
+					{ name: "NAME=value", optional: true },
+				],
+				flags: {
+					env: { type: "string", value: "<env>", description: "The environment, instead of the first argument" },
+					protected: {
+						type: "boolean",
+						description: "Keep the value out of sandboxes: each gets a kph_… placeholder instead",
+					},
+					bind: {
+						type: "string",
+						multiple: true,
+						value: "<host>[/path][:METHOD,…]",
+						description: "Where a protected value may be sent; repeat it",
+					},
+					"value-stdin": {
+						type: "boolean",
+						description: "Read the value from stdin, which keeps it out of your shell history",
+					},
+					"keep-value": {
+						type: "boolean",
+						description: "Change a protected variable's --bind without entering its value again",
+					},
+					plain: { type: "boolean", description: "Make a protected variable plain: sandboxes then get its value" },
+				},
+				details:
+					"A protected variable's value never enters a sandbox. Each sandbox gets a kph_… placeholder in its place,\n" +
+					"which the host's egress proxy swaps for the value only in requests to a --bind destination:\n" +
+					"<host>[/path-prefix][:METHOD,…], such as api.github.com or api.openai.com/v1/:POST,GET.\n" +
+					"\n" +
+					"--value-stdin reads the value from stdin, which keeps it out of your shell history and the process list:\n" +
+					'  printf %s "$GH_TOKEN" | kantel env set work GH_TOKEN --value-stdin --protected --bind api.github.com\n' +
+					"\n" +
+					"Setting a protected variable again with a new value rotates it: running sandboxes keep their placeholder\n" +
+					"and send the new value from their next request. It stays protected unless you give --plain.\n" +
+					"--keep-value with --bind changes where it may go without entering it again.",
+				async run(ctx) {
+					const flagEnv = ctx.string("env");
+					const expected = flagEnv === undefined ? 2 : 1;
+					if (ctx.positionals.length !== expected) {
+						throw new UsageError(
+							flagEnv === undefined
+								? "give the environment and the variable: kantel env set <env> NAME=value"
+								: "give the variable once: kantel env set --env <env> NAME=value",
+						);
+					}
+					const ref = flagEnv ?? ctx.arg(0);
+					const assignment = ctx.arg(expected - 1);
+					const eq = assignment.indexOf("=");
+					const name = eq === -1 ? assignment : assignment.slice(0, eq);
+					const inline = eq === -1 ? undefined : assignment.slice(eq + 1);
+					// Never put the assignment in a message: it may hold the value.
+					if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+						throw new UsageError("a variable's name is letters, digits and _, such as GH_TOKEN, before any =");
+					}
+					const fromStdin = ctx.boolean("value-stdin");
+					const keep = ctx.boolean("keep-value");
+					const plain = ctx.boolean("plain");
+					const asked = ctx.boolean("protected");
+					const ways = [inline !== undefined, fromStdin, keep].filter((given) => given).length;
+					if (ways === 0) {
+						throw new UsageError(
+							`give ${name} a value: ${name}=<value>, --value-stdin, or --keep-value to re-bind a protected one`,
+						);
+					}
+					if (ways > 1) throw new UsageError("give the value one way: NAME=value, --value-stdin or --keep-value");
+					if (plain && (asked || keep)) {
+						throw new UsageError("--plain makes the variable plain: leave out --protected and --keep-value");
+					}
+					const bindings = mergeBindings(ctx.list("bind").map(parseBinding));
+					if (plain && bindings.length > 0)
+						throw new UsageError("--bind is for a protected variable, not a --plain one");
+					if (keep && bindings.length === 0) {
+						throw new UsageError("--keep-value changes where the value may go: give the new --bind");
+					}
+					const value = fromStdin ? await valueFromStdin(ctx) : inline;
+					const client = await ctx.client();
+					const environment = await loadEnvironment(ctx, client, ref);
+					const existing = environment.variables.find((variable) => variable.name === name);
+					const wasProtected = existing?.protected === true;
+					if (keep && !wasProtected) {
+						throw new CliError(`${name} isn't protected in ${environment.name}, so there is no value to keep`);
+					}
+					// Its bindings are sent only when --bind gives them, so a rotation never undoes a change to them made since
+					// the read above. Its mode is sent when a flag gives it, and for a rotation of one read as protected: that
+					// value is meant to be sealed, so if the variable was removed or made plain meanwhile, Kantel refuses the
+					// write (a protected variable needs a binding) rather than keeping the new value in the clear. Read as plain
+					// or new, a value alone leaves the mode as Kantel has it: one protected meanwhile stays so.
+					const mode = plain ? false : asked || keep || bindings.length > 0 || wasProtected ? true : undefined;
+					if (mode === true && bindings.length === 0 && !wasProtected) {
+						throw new UsageError("a protected variable needs --bind <host>: where its value may be sent");
+					}
+					const answer: unknown = await client.setEnvironmentVariable(environment.id, name, {
+						...(mode === undefined ? {} : { protected: mode }),
+						...(value === undefined ? {} : { value }),
+						...(bindings.length === 0 ? {} : { bindings }),
+					});
+					// What it is now, as Kantel answers; failing that, what was sent on what was read.
+					const written = variableIn(answer, name);
+					const isProtected = written?.protected ?? mode ?? wasProtected;
+					const sent =
+						written?.bindings ?? (bindings.length > 0 ? bindings : wasProtected ? (existing?.bindings ?? []) : []);
+					const shown = answer ?? { environmentId: environment.id, name, protected: isProtected };
+					const live = wasProtected && isProtected;
+					const verb = live && value !== undefined ? "Rotated" : "Set";
+					const where = isProtected ? `: protected, sent only to ${bindingsText(sent)}` : "";
+					ctx.emit(withoutProtectedValues(shown), () =>
+						[
+							`${verb} ${name} in ${environment.name}${where}.`,
+							live
+								? "Running sandboxes use it from their next request, with the same placeholder."
+								: "Sandboxes made from now on get it.",
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "env unset",
+				summary: "Remove a variable from an environment",
+				args: [{ name: "env" }, { name: "NAME" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					const name = ctx.arg(1);
+					await client.deleteEnvironmentVariable(environmentId, name);
+					ctx.emit({ deleted: name, environmentId }, () => `Removed ${name} from ${ctx.arg(0)}.`);
+				},
+			},
+			{
+				name: "env file",
+				summary: "Add or replace a secret file, written into each new sandbox once it runs",
+				args: [{ name: "env" }, { name: "path" }],
+				flags: {
+					mode: { type: "string", value: "<octal>", description: "Its mode in the sandbox (default 0600)" },
+					from: { type: "string", value: "<file>", description: "Read it from this local file; default stdin" },
+				},
+				details:
+					"<path> is where it goes in the sandbox. Its content is sealed at rest and never shown again: kantel env\n" +
+					"show lists its path, mode and size. A secret file is in the sandbox, so anything there can read it.\n" +
+					"  kantel env file work /home/user/.npmrc --from ~/.npmrc\n" +
+					"kantel env file rm <env> <path> removes one.",
+				async run(ctx) {
+					const path = ctx.arg(1);
+					const mode = modeOf(ctx.string("mode"));
+					const from = ctx.string("from");
+					let content: Uint8Array;
+					if (from === undefined) {
+						const stdin = ctx.io.stdin();
+						if (stdin.isTTY === true) throw new UsageError("give the content with --from <file>, or pipe it in");
+						content = await readAll(stdin);
+					} else content = await readFile(resolve(ctx.io.cwd, from));
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					const answer: unknown = await client.setEnvironmentFile(environmentId, {
+						path,
+						...(mode === undefined ? {} : { mode }),
+						content: Buffer.from(content).toString("base64"),
+						encoding: "base64",
+					});
+					const size = content.length;
+					// The mode it has now, as Kantel answers: new contents without --mode keep the file's.
+					const saved = fileIn(answer, path);
+					const shownMode = saved?.mode ?? mode ?? 0o600;
+					ctx.emit(withoutProtectedValues(answer ?? { environmentId, path, sizeBytes: size }), () =>
+						[
+							`Saved ${path} (${bytes(saved?.sizeBytes ?? size)}, mode ${octal(shownMode)}) in ${ctx.arg(0)}.`,
+							"Sandboxes made from now on get it.",
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "env file rm",
+				summary: "Remove a secret file from an environment",
+				args: [{ name: "env" }, { name: "path" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					const path = ctx.arg(1);
+					await client.deleteEnvironmentFile(environmentId, { path });
+					ctx.emit({ deleted: path, environmentId }, () => `Removed ${path} from ${ctx.arg(0)}.`);
+				},
+			},
+			{
+				name: "env repo add",
+				summary: "Clone a git repository into each new sandbox once it runs",
+				args: [{ name: "env" }, { name: "url" }],
+				flags: {
+					path: { type: "string", value: "<dir>", description: "Where in the sandbox to clone it" },
+					ref: { type: "string", value: "<ref>", description: "The branch or tag (default the repository's default)" },
+				},
+				details:
+					"The URL is https://. It is cloned through the egress proxy, after the secret files are written, and a\n" +
+					"failed clone is an event on the sandbox, not an error. Adding a URL again replaces its --path and --ref.",
+				async run(ctx) {
+					const url = ctx.arg(1);
+					if (!url.startsWith("https://")) throw new UsageError("a repository's URL starts with https://");
+					const path = ctx.string("path");
+					const ref = ctx.string("ref");
+					const client = await ctx.client();
+					const repo = {
+						url,
+						...(path === undefined ? {} : { path }),
+						...(ref === undefined ? {} : { ref }),
+					};
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const repos = [...environment.repos.filter((item) => item.url !== url), repo];
+						const expected = environment.repos;
+						return { environment, updated: await client.putEnvironmentRepos(environment.id, { repos, expected }) };
+					});
+					ctx.emit(withoutProtectedValues(updated), () => `Added ${url} to ${environment.name}.`);
+				},
+			},
+			{
+				name: "env repo rm",
+				summary: "Stop cloning a repository into new sandboxes",
+				args: [{ name: "env" }, { name: "url" }],
+				async run(ctx) {
+					const url = ctx.arg(1);
+					const client = await ctx.client();
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const repos = environment.repos.filter((item) => item.url !== url);
+						if (repos.length === environment.repos.length) {
+							throw new CliError(`${url} isn't one of ${environment.name}'s repositories`);
+						}
+						const expected = environment.repos;
+						return { environment, updated: await client.putEnvironmentRepos(environment.id, { repos, expected }) };
+					});
+					ctx.emit(withoutProtectedValues(updated), () => `Removed ${url} from ${environment.name}.`);
+				},
+			},
+			{
+				name: "env grant",
+				summary: "Allow or refuse requests to a host, by method and path, for every sandbox made from it",
+				args: [{ name: "env" }, { name: "allow|deny" }, { name: "host" }],
+				flags: GRANT_FLAGS,
+				details: `${GRANT_DETAILS}\n  kantel env grant work deny api.github.com --method DELETE --path '/repos/**'`,
+				async run(ctx) {
+					const grant = parseGrant(ctx.arg(1), ctx.arg(2), ctx.list("method"), ctx.list("path"));
+					const client = await ctx.client();
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const grants: GrantInput[] = [...environment.grants, grant];
+						const expected = environment.grants;
+						return { environment, updated: await client.putEnvironmentGrants(environment.id, { grants, expected }) };
+					});
+					const id = addedGrantId(environment.grants, updated.grants);
+					ctx.emit(withoutProtectedValues(updated), () => `Added "${grantText(grant)}"${id} to ${environment.name}.`);
+				},
+			},
+			{
+				name: "env grant rm",
+				summary: "Remove one of an environment's grants",
+				args: [{ name: "env" }, { name: "grant-id" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const grants = withoutGrant(environment.grants, ctx.arg(1), environment.name);
+						const expected = environment.grants;
+						return { environment, updated: await client.putEnvironmentGrants(environment.id, { grants, expected }) };
+					});
+					ctx.emit(withoutProtectedValues(updated), () => `Removed ${ctx.arg(1)} from ${environment.name}.`);
+				},
+			},
+			{
+				name: "egress",
+				summary: "A sandbox's outbound requests: allowed or refused, and which protected variables were swapped in",
+				args: [{ name: "sandbox" }],
+				flags: {
+					denied: { type: "boolean", description: "Only the refused requests" },
+					limit: { type: "string", value: "<n>", description: "At most this many, newest first (Kantel keeps 1000)" },
+				},
+				details:
+					"CODE/RULE is the X-Kantel-Proxy-Error code the sandbox saw, and the grant or setting that decided.\n" +
+					"Paths are kept without their query. An HTTPS tunnel the proxy doesn't open shows as one CONNECT.",
+				async run(ctx) {
+					const limit = whole(ctx.string("limit"), "--limit");
+					const client = await ctx.client();
+					const egress = await client.getSandboxEgress(ctx.arg(0), limit === undefined ? undefined : { limit });
+					const denied = ctx.boolean("denied");
+					const entries = denied ? egress.entries.filter((entry) => entry.decision === "denied") : egress.entries;
+					ctx.emit(withoutProtectedValues(denied ? { ...egress, entries } : egress), () =>
+						describeEgress(egress, entries, denied),
+					);
+				},
+			},
+			{
+				name: "grant",
+				summary: "Allow or refuse one sandbox's requests to a host, by method and path",
+				args: [{ name: "sandbox" }, { name: "allow|deny" }, { name: "host" }],
+				flags: GRANT_FLAGS,
+				details: [
+					GRANT_DETAILS,
+					"  kantel grant sbx_123 deny api.github.com --method DELETE --path '/repos/**'",
+					"A running sandbox picks it up within seconds. kantel egress <sandbox> shows its grants.",
+				].join("\n"),
+				async run(ctx) {
+					const grant = parseGrant(ctx.arg(1), ctx.arg(2), ctx.list("method"), ctx.list("path"));
+					const client = await ctx.client();
+					const { sandbox, updated } = await editAsRead(async () => {
+						const sandbox = await client.getSandbox(ctx.arg(0));
+						const grants: GrantInput[] = [...sandbox.grants, grant];
+						const expected = sandbox.grants;
+						return { sandbox, updated: await client.putSandboxGrants(sandbox.id, { grants, expected }) };
+					});
+					const id = addedGrantId(sandbox.grants, updated.grants);
+					ctx.emit(updated, () => `Added "${grantText(grant)}"${id} to ${sandbox.id}.`);
+				},
+			},
+			{
+				name: "grant rm",
+				summary: "Remove one of a sandbox's own grants",
+				args: [{ name: "sandbox" }, { name: "grant-id" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const { sandbox, updated } = await editAsRead(async () => {
+						const sandbox = await client.getSandbox(ctx.arg(0));
+						const grants = withoutGrant(sandbox.grants, ctx.arg(1), sandbox.id);
+						const expected = sandbox.grants;
+						return { sandbox, updated: await client.putSandboxGrants(sandbox.id, { grants, expected }) };
+					});
+					ctx.emit(updated, () => `Removed ${ctx.arg(1)} from ${sandbox.id}.`);
+				},
+			},
+		],
+	},
+	{
 		title: "API keys and organisations",
 		commands: [
 			{
@@ -1768,6 +3088,105 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
+		title: "Your own hosts (experimental)",
+		commands: [
+			{
+				name: "hosts add",
+				summary: "Add a Linux machine of your own: only your account's sandboxes will run on it",
+				args: [{ name: "name", optional: true }],
+				flags: {
+					label: { type: "string", multiple: true, value: "<K=V>", description: "A label for the host; repeat it" },
+					expires: {
+						type: "string",
+						value: "<minutes>",
+						description: "How long the token lasts, 5 to 10080; default 60",
+					},
+				},
+				details:
+					"It prints a one-line command to run on the machine, as root. kantel-host installs, dials out to\n" +
+					"Kantel and keeps that connection open: the machine needs no inbound port and may sit behind NAT.\n" +
+					"The host joins the account you act in (your personal account, or --account <org>); from then on that\n" +
+					"account's new sandboxes go on its own hosts, and no other account's ever do. The deployment must\n" +
+					"have account hosts turned on (KANTEL_ACCOUNT_HOSTS=experimental).",
+				async run(ctx) {
+					const config = await ctx.config();
+					const joinToken = await (await ctx.client()).createAccountJoinToken({
+						account: config.account,
+						name: ctx.optional(0),
+						labels: pairs(ctx.list("label"), "--label"),
+						expiresInMinutes: whole(ctx.string("expires"), "--expires", 5),
+					});
+					ctx.emit(joinToken, () =>
+						[
+							`Run this on the machine, as root, before ${timestamp(joinToken.expiresAt)}:`,
+							"",
+							`  ${joinToken.command}`,
+							"",
+							`It joins account ${joinToken.accountId}; the token works once. Then: kantel hosts list`,
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "hosts list",
+				summary: "The hosts added to your account",
+				async run(ctx) {
+					const config = await ctx.config();
+					const hosts = await (await ctx.client()).listAccountHosts({ account: config.account });
+					const rows = hosts.items.map((host) => [
+						host.id,
+						host.name,
+						host.state,
+						host.tiers.join(","),
+						String(host.allocated.sandboxes),
+						host.lastSeenAt === undefined ? "" : ago(host.lastSeenAt),
+					]);
+					ctx.emit(hosts, () =>
+						rows.length === 0
+							? "No hosts of your own. Add one with: kantel hosts add"
+							: table(["ID", "NAME", "STATE", "TIERS", "SANDBOXES", "LAST SEEN"], rows),
+					);
+				},
+			},
+			{
+				name: "hosts info",
+				summary: "One of your hosts",
+				args: ID_ARG,
+				async run(ctx) {
+					const host = await (await ctx.client()).getAccountHost(ctx.arg(0));
+					ctx.emit(host, () => describeHost(host));
+				},
+			},
+			{
+				name: "hosts drain",
+				summary: "Stop placing new sandboxes on one of your hosts (--off to take them again)",
+				args: ID_ARG,
+				flags: { off: { type: "boolean", description: "Take new sandboxes again" } },
+				async run(ctx) {
+					const draining = !ctx.boolean("off");
+					const host = await (await ctx.client()).updateAccountHost(ctx.arg(0), { draining });
+					ctx.emit(host, () => `${host.id} (${host.name}) is ${host.state}.`);
+				},
+			},
+			{
+				name: "hosts rm",
+				summary: "Remove one of your hosts: revoke its credential and close its connection",
+				args: ID_ARG,
+				details:
+					"Its sandboxes keep their disks on the machine but can't be reached. To take kantel-host off the\n" +
+					"machine too, run on it: sudo kantel-host uninstall",
+				async run(ctx) {
+					const host = await (await ctx.client()).removeAccountHost(ctx.arg(0));
+					ctx.emit(host, () => `Removed ${host.id} (${host.name}); it is ${host.state}.`);
+				},
+			},
+		],
+	},
+	{
+		title: "End-to-end encryption (experimental)",
+		commands: E2E_COMMANDS,
+	},
+	{
 		title: "Coding agents",
 		commands: [
 			{
@@ -1819,13 +3238,22 @@ const SECTIONS: readonly Section[] = [
 					if (claude) await put(join(base, SKILL_PATHS.claude), SKILL_MD);
 					if (others) await put(join(base, SKILL_PATHS.agents), SKILL_MD);
 					const signedIn = (await ctx.config()).apiKey !== undefined;
-					ctx.emit({ written }, () =>
+					// What it writes tells agents to run `kantel` by name, so say so when that would fail.
+					const found = await onPath("kantel", ctx.io.env);
+					ctx.emit({ written, kantelOnPath: found }, () =>
 						[
 							...written.map((path) => `Wrote ${path}`),
 							"",
 							signedIn
 								? "Your agents use the same sign-in as you (or set KANTEL_API_KEY to a key of their own)."
 								: "Sign in with kantel login, or give the agents a key: kantel key create agent --preset agent.",
+							...(found
+								? []
+								: [
+										"",
+										"kantel isn't on your PATH, and your agents run it by name: put the directory it's in on your PATH",
+										"(install-cli.sh links it in ~/.local/bin).",
+									]),
 						].join("\n"),
 					);
 				},
@@ -1862,15 +3290,17 @@ const SECTIONS: readonly Section[] = [
 					}
 					const harness = choice(ctx.optional(0) ?? "all", [...HARNESSES, "all" as const], "the agent") ?? "all";
 					const url = originOf((await ctx.config()).url);
+					const launch = await mcpLaunchFor(ctx.io);
 					const snippets = {
 						url,
-						claude: claudeSetup(url),
-						codex: codexSetup(url),
-						codexToml: codexToml(url),
-						mcpServers: JSON.parse(mcpServersJson(url)) as unknown,
+						mcp: launch,
+						claude: claudeSetup(url, launch),
+						codex: codexSetup(url, launch),
+						codexToml: codexToml(url, launch),
+						mcpServers: JSON.parse(mcpServersJson(url, launch)) as unknown,
 						agentsMd: AGENTS_BLOCK,
 					};
-					ctx.emit(snippets, () => agentsGuide(url, harness));
+					ctx.emit(snippets, () => agentsGuide(url, harness, launch));
 				},
 			},
 		],
@@ -1905,10 +3335,13 @@ const GROUPS: { readonly [name: string]: string } = {
 	files: "Read, write and list a sandbox's files",
 	port: "Give a sandbox's ports HTTPS URLs",
 	snapshot: "Take, save, browse and delete snapshots",
+	env: "Environments: the variables, protected secrets, files, repos and grants new sandboxes start with",
 	key: "Make, rotate and revoke scoped API keys",
 	org: "Your organisations",
 	webhook: "Send the account's events to a URL",
 	telemetry: "Send the account's metrics and events to OpenTelemetry",
+	hosts: "Run your sandboxes on machines of your own (experimental)",
+	e2e: "End-to-end encryption between your devices and your hosts, which the gateway relays but can't read",
 };
 const GROUP_ALIASES: { readonly [alias: string]: string } = { sb: "sandbox" };
 /** Other names for commands: short ones, and the `sandbox …` spellings of the first CLI, which keep working. */
@@ -1933,8 +3366,8 @@ const ALIASES: { readonly [alias: string]: string } = {
 };
 /** Commands that moved to the operators' CLI, kantel-admin (a file on each of Kantel's GitHub Releases). */
 const MOVED: { readonly [name: string]: string } = {
-	"host list": "kantel-admin host list",
-	"host join-token": "kantel-admin host add",
+	"host list": "kantel-admin host list (your own hosts: kantel hosts list)",
+	"host join-token": "kantel-admin host add (a host of your own: kantel hosts add)",
 };
 const SUBCOMMAND_ALIASES: { readonly [alias: string]: string } = {
 	ls: "list",
@@ -1951,7 +3384,7 @@ const argUsage = (arg: Arg): string => {
 };
 
 function synopsis(command: CommandSpec): string {
-	const parts = [command.name, ...(command.args ?? []).map(argUsage)];
+	const parts = [command.usage ?? [command.name, ...(command.args ?? []).map(argUsage)].join(" ")];
 	if (command.rest !== undefined) {
 		parts.push(command.restOptional === true ? `[-- <${command.rest}>]` : `-- <${command.rest}>`);
 	}
@@ -2041,10 +3474,13 @@ type Resolution =
 	| { readonly kind: "moved"; readonly name: string; readonly to: string }
 	| { readonly kind: "unknown"; readonly word?: string };
 
-/** The command `argv` names in its first one or two words (flags may come before them), and the rest of `argv`. */
+/**
+ * The command `argv` names in its first one, two or three words (flags may come before them), and the rest of `argv`.
+ * The longest name wins: `env file rm` over `env file`, and `grant rm` over `grant`.
+ */
 function resolveCommand(argv: readonly string[]): Resolution {
 	const words: number[] = [];
-	for (let index = 0; index < argv.length && words.length < 2; index++) {
+	for (let index = 0; index < argv.length && words.length < 3; index++) {
 		const token = argv[index] ?? "";
 		if (token === "--") break;
 		if (token.startsWith("-") && token !== "-") {
@@ -2055,7 +3491,7 @@ function resolveCommand(argv: readonly string[]): Resolution {
 		}
 		words.push(index);
 	}
-	const [firstIndex, secondIndex] = words;
+	const [firstIndex, secondIndex, thirdIndex] = words;
 	if (firstIndex === undefined) return { kind: "unknown" };
 	const typed = argv[firstIndex] ?? "";
 	const first = GROUP_ALIASES[typed] ?? typed;
@@ -2063,13 +3499,29 @@ function resolveCommand(argv: readonly string[]): Resolution {
 	const second = secondIndex === undefined ? undefined : (argv[secondIndex] ?? "");
 	const pair = second === undefined ? undefined : `${first} ${second}`;
 	if (pair !== undefined && MOVED[pair] !== undefined) return { kind: "moved", name: pair, to: MOVED[pair] };
-	const single = BY_NAME.get(ALIASES[first] ?? first);
-	if (single !== undefined) return { kind: "command", command: single, argv: without(firstIndex) };
+	const named = (name: string): CommandSpec | undefined => BY_NAME.get(ALIASES[name] ?? name);
+	/** `prefix word`, or `prefix` and the word's other spelling (`rm` for `delete`). */
+	const sub = (prefix: string, word: string): CommandSpec | undefined => {
+		const alias = SUBCOMMAND_ALIASES[word];
+		return named(`${prefix} ${word}`) ?? (alias === undefined ? undefined : named(`${prefix} ${alias}`));
+	};
+	if (pair !== undefined && secondIndex !== undefined && thirdIndex !== undefined) {
+		const triple = sub(pair, argv[thirdIndex] ?? "");
+		if (triple !== undefined)
+			return { kind: "command", command: triple, argv: without(firstIndex, secondIndex, thirdIndex) };
+	}
+	const single = named(first);
+	if (single !== undefined) {
+		// A command of its own may have subcommands too: `grant rm` beside `grant`.
+		const double = second === undefined || secondIndex === undefined ? undefined : sub(first, second);
+		if (double !== undefined && secondIndex !== undefined) {
+			return { kind: "command", command: double, argv: without(firstIndex, secondIndex) };
+		}
+		return { kind: "command", command: single, argv: without(firstIndex) };
+	}
 	if (GROUPS[first] === undefined) return { kind: "unknown", word: typed };
 	if (second === undefined || secondIndex === undefined) return { kind: "group", group: first };
-	const alias = SUBCOMMAND_ALIASES[second];
-	const named = (name: string): CommandSpec | undefined => BY_NAME.get(ALIASES[name] ?? name);
-	const command = named(`${first} ${second}`) ?? named(`${first} ${alias ?? second}`);
+	const command = sub(first, second);
 	if (command === undefined) return { kind: "group", group: first, unknown: second };
 	return { kind: "command", command, argv: without(firstIndex, secondIndex) };
 }
@@ -2154,7 +3606,7 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 function report(error: unknown, io: Io): number {
 	if (error instanceof KantelApiError) {
 		io.stderr.write(`kantel: ${error.code}: ${error.message}\n`);
-		if (error.code === "unauthenticated") io.stderr.write("Sign in with: npx kantel login (or set KANTEL_API_KEY)\n");
+		if (error.code === "unauthenticated") io.stderr.write("Sign in with: kantel login (or set KANTEL_API_KEY)\n");
 		return 1;
 	}
 	if (error instanceof CliError) {
@@ -2223,6 +3675,9 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 		openUrl: options.openUrl ?? openInBrowser,
 		sleep: options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
 		home: options.home ?? homedir(),
+		self: options.self ?? thisCli(),
+		connect: options.connect ?? e2e.webSocketChannel,
+		served: options.served ?? untilSignalled,
 	};
 	try {
 		return await dispatch(argv, io);

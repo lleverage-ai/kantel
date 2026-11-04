@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
+import { DeviceSetupError } from "./compute-model.ts";
 import { API_SERVER, type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 import { computePage } from "./parts.tsx";
-import { SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
 import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
 
 export default { title: "Compute/Snapshots page" } satisfies StoryDefault;
@@ -42,47 +43,81 @@ export const Files: Story = () => (
 	/>
 );
 
-/** A file open beside the folder, in syntax colours. */
-export const FileOpen: Story = () => {
-	const [source] = useState(() => createComputeFixtures());
-	const [path, setPath] = useState("home/user/app");
+/** An isolate's saved snapshot from a link that doesn't say its kind: asked, then its /workspace, its only files. */
+export const IsolateFiles: Story = () => (
+	<Scenario
+		initialView={{ name: "files", snapshotId: "ssn_py_tools", label: "python-tools", back: { name: "saved" } }}
+	/>
+);
+
+/** A microVM's snapshot with no folder in the address: it opens at /home/user, with Root above it. */
+export const MicrovmFilesStart: Story = () => (
+	<Scenario
+		initialView={{
+			name: "files",
+			snapshotId: "ssn_dev_stack_warm",
+			label: "dev-stack-warm",
+			kind: "microvm",
+			back: { name: "saved" },
+		}}
+	/>
+);
+
+/** A snapshot's files at `initial`, moving as the console's address would. */
+function Browser({ initial, options }: { initial: FilesAt; options?: ComputeFixtureOptions }) {
+	const [source] = useState(() => createComputeFixtures(options));
+	const [at, setAt] = useState(initial);
 	return (
 		<div className={computePage}>
 			<SnapshotFiles
 				source={source.snapshots}
 				snapshotId="ssn_dev_stack_warm"
 				label="dev-stack-warm"
-				path={path}
+				at={at}
 				now={FIXTURE_NOW}
 				backLabel="Back to saved snapshots"
 				onBack={() => {}}
-				onOpenFolder={setPath}
-				initialFile="home/user/app/package.json"
+				onNavigate={setAt}
 			/>
+		</div>
+	);
+}
+
+/** A file open beside the folder, in syntax colours. */
+export const FileOpen: Story = () => <Browser initial={{ path: "home/user/app", file: "package.json" }} />;
+
+/** A file Kantel can't show here: an image, with its size and Download. */
+export const FileBinary: Story = () => <Browser initial={{ path: "home/user/app", file: "screenshot.png" }} />;
+
+/** A large file: its first 256 KB, and Load more. */
+export const FileLarge: Story = () => <Browser initial={{ path: "var/log", file: "syslog" }} />;
+
+/** A file while it's read. */
+export const FileLoading: Story = () => (
+	<Browser initial={{ path: "home/user", file: "notes.md" }} options={{ hang: true }} />
+);
+
+/** An end-to-end sandbox's files where this browser isn't a device yet: one line, and nothing read. */
+export const EndToEndSetup: Story = () => {
+	const [source] = useState(() => {
+		const setup = () =>
+			Promise.reject(
+				new DeviceSetupError(
+					"End-to-end encrypted: set this browser up as a device (the strip at the top) to see its files.",
+				),
+			);
+		return { list: setup, read: setup };
+	});
+	const [at, setAt] = useState<FilesAt>({ path: "home/user" });
+	return (
+		<div className={computePage}>
+			<SnapshotFiles source={source} snapshotId="sbx_e2e" at={at} now={FIXTURE_NOW} onNavigate={setAt} />
 		</div>
 	);
 };
 
-/** A file Kantel can't show here: an image, with a Download link. */
-export const FileBinary: Story = () => {
-	const [source] = useState(() => createComputeFixtures());
-	const [path, setPath] = useState("home/user/app");
-	return (
-		<div className={computePage}>
-			<SnapshotFiles
-				source={source.snapshots}
-				snapshotId="ssn_dev_stack_warm"
-				label="dev-stack-warm"
-				path={path}
-				now={FIXTURE_NOW}
-				backLabel="Back to saved snapshots"
-				onBack={() => {}}
-				onOpenFolder={setPath}
-				initialFile="home/user/app/screenshot.png"
-			/>
-		</div>
-	);
-};
+/** An empty folder, in one line. */
+export const FolderEmpty: Story = () => <Browser initial={{ path: "home/user/app/node_modules" }} />;
 
 /** No saved snapshots yet. */
 export const Empty: Story = () => <Scenario options={{ empty: true }} />;
@@ -100,6 +135,10 @@ export const Failed: Story = () => <Scenario options={{ fail: true }} />;
 export const Mobile: Story = () => <Scenario />;
 Mobile.meta = { width: 420 };
 
-/** A file open on a phone: it shows below the folder. */
+/** A folder on a phone: one line a row, the size and time folded away. */
+export const MobileFolder: Story = () => <Browser initial={{ path: "home/user/app" }} />;
+MobileFolder.meta = { width: 390 };
+
+/** A file open on a phone: it takes the folder's place, with Back to it. */
 export const MobileFile: Story = () => <FileOpen />;
-MobileFile.meta = { width: 420 };
+MobileFile.meta = { width: 390 };

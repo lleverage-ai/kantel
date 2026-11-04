@@ -9,6 +9,8 @@
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
 		"./authenticator": "./src/authenticator.ts",
+		"./cookies": "./src/cookies.ts",
+		"./csrf": "./src/csrf.ts",
 		"./jwt": "./src/jwt.ts",
 		"./sql": "./src/sql.ts",
 		"./otp": "./src/otp.ts",

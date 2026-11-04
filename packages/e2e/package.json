@@ -1,0 +1,19 @@
+{
+	"name": "@kantel/e2e",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "End-to-end encryption between people's devices and their hosts: device and host keys, the signed space chain, and Noise IK sessions through the relay",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./bytes": "./src/bytes.ts",
+		"./keys": "./src/keys.ts",
+		"./chain": "./src/chain.ts",
+		"./noise": "./src/noise.ts",
+		"./session": "./src/session.ts",
+		"./device": "./src/device.ts",
+		"./responder": "./src/responder.ts",
+		"./testing": "./src/testing.ts"
+	}
+}

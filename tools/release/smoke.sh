@@ -8,7 +8,9 @@
 #     (with a stand-in binary), and refuses to join without root;
 #   - install-cli.sh, pointed at out/github with a HOME of its own, installs kantel and kantel-admin that print
 #     <version>, again over the first, and into --dir; it refuses a file whose SHA-256 doesn't match and a Node.js
-#     older than 22.
+#     older than 22;
+#   - the console's files are in the npm package and kantel-console.tar.gz (packed the same way each time), and
+#     install-cli.sh's `kantel console` serves them through its link, and refuses a request without it.
 # Runs on Linux x86_64 or arm64, such as the release workflow's runner, as a user other than root.
 set -euo pipefail
 
@@ -33,9 +35,16 @@ expect() {
 }
 
 (cd "$github" && sha256sum --check --strict SHA256SUMS) || fail "SHA256SUMS doesn't match the files"
-for file in kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js install.sh install-cli.sh; do
+for file in kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js kantel-console.tar.gz install.sh \
+	install-cli.sh; do
 	grep -q "  $file\$" "$github/SHA256SUMS" || fail "SHA256SUMS has no line for $file"
 done
+
+# The console's files: in the tarball, with no runner's owner or times in it.
+tar -tzvf "$github/kantel-console.tar.gz" >"$work/console-list"
+grep -q " console/index.html\$" "$work/console-list" || fail "kantel-console.tar.gz has no console/index.html"
+awk '$2 != "0/0" { bad = 1 } END { exit bad }' "$work/console-list" || fail "kantel-console.tar.gz has files with an owner"
+echo "ok      kantel-console.tar.gz has the console, owned by no one"
 
 case "$(uname -m)" in
 	x86_64) arch=amd64 ;;
@@ -47,6 +56,36 @@ expect "kantel.js" node "$github/kantel.js" --version
 expect "kantel-admin.js" node "$github/kantel-admin.js" version
 tar -xzf "$out"/npm/kantel-*.tgz -C "$work"
 expect "kantel (npm)" node "$work/package/kantel.js" --version
+[[ -f "$work/package/console/index.html" ]] || fail "the npm package has no console/index.html"
+echo "ok      the npm package has the console"
+
+# console_serves KANTEL: KANTEL's `kantel console` serves the console's page through the link it prints, and nothing
+# without it. It needs no gateway until the page asks one for something.
+console_serves() {
+	local log="$work/console.log" url pid
+	KANTEL_URL=https://kantel.invalid KANTEL_API_KEY=kt_smoke KANTEL_NO_BROWSER=1 \
+		XDG_CONFIG_HOME="$work/console-config" "$@" console >"$log" 2>&1 &
+	pid=$!
+	for _ in $(seq 1 50); do
+		url=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/[^ ]*' "$log" | head -1 || true)
+		[[ -n "$url" ]] && break
+		sleep 0.1
+	done
+	if [[ -z "$url" ]]; then
+		kill "$pid" 2>/dev/null || true
+		fail "kantel console printed no link: $(cat "$log")"
+	fi
+	local origin
+	origin=$(grep -oE '^http://127\.0\.0\.1:[0-9]+' <<<"$url")
+	local without with
+	without=$(curl -s -o /dev/null -w '%{http_code}' "$origin/")
+	with=$(curl -s -c "$work/console-jar" -b "$work/console-jar" -L -o "$work/console-page" -w '%{http_code}' "$url")
+	kill "$pid" 2>/dev/null || true
+	wait "$pid" 2>/dev/null || true
+	[[ "$without" == 403 ]] || fail "kantel console answered $without, not 403, without its link"
+	[[ "$with" == 200 ]] || fail "kantel console answered $with through its link"
+	grep -q '<div id="root"' "$work/console-page" || fail "kantel console's page isn't the console's"
+}
 
 # install.sh: the happy path, with curl reading the files from disk.
 export KANTEL_RELEASE_URL="file://$github"
@@ -92,16 +131,28 @@ if [[ "$(id -u)" != 0 ]]; then
 fi
 
 # install-cli.sh: for a user of its own, whose HOME has a package.json without "type" (the commands must still run as
-# ES modules), with curl reading the files from disk. It installs, and installs again over the first (an update).
+# ES modules), with curl reading the files from disk. It installs kantel alone, then kantel-admin with --admin, then
+# again with no flag (an update), which keeps kantel-admin up to date.
 cli_home="$work/cli-home"
 mkdir -p "$cli_home"
 echo '{}' >"$cli_home/package.json"
-for run in install update; do
-	HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh ($run) failed: $(cat "$work/err")"
-done
+HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh failed: $(cat "$work/err")"
+expect "install-cli.sh, then kantel" "$cli_home/.local/bin/kantel" --version
+[[ ! -e "$cli_home/.local/bin/kantel-admin" ]] || fail "install-cli.sh installed kantel-admin without --admin"
+HOME="$cli_home" sh "$github/install-cli.sh" --admin 2>"$work/err" ||
+	fail "install-cli.sh --admin failed: $(cat "$work/err")"
+touch -d 2000-01-01 "$cli_home/.local/share/kantel/kantel-admin.mjs"
+touch -d 2001-01-01 "$work/before-update"
+HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh (update) failed: $(cat "$work/err")"
+[[ "$cli_home/.local/share/kantel/kantel-admin.mjs" -nt "$work/before-update" ]] ||
+	fail "install-cli.sh (update) didn't update the kantel-admin it installed before"
 grep -q "isn't on your PATH" "$work/err" || fail "install-cli.sh didn't say ~/.local/bin isn't on the PATH"
 expect "install-cli.sh, then kantel" "$cli_home/.local/bin/kantel" --version
 expect "install-cli.sh, then kantel-admin" "$cli_home/.local/bin/kantel-admin" --version
+[[ -f "$cli_home/.local/share/kantel/console/index.html" ]] || fail "install-cli.sh didn't install the console"
+[[ ! -e "$cli_home/.local/share/kantel/console.old" ]] || fail "install-cli.sh left the console it replaced"
+console_serves "$cli_home/.local/bin/kantel"
+echo "ok      install-cli.sh, then kantel console serves the console through its link alone"
 
 HOME="$cli_home" sh "$github/install-cli.sh" --no-admin --dir "$work/cli-bin" 2>"$work/err" ||
 	fail "install-cli.sh --dir failed: $(cat "$work/err")"

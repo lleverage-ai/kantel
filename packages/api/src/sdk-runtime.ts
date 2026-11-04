@@ -52,7 +52,8 @@ export interface CallOptions {
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
-	 * call's answer and does nothing again. Use a new key, such as a UUID, for each new call.
+	 * call's answer and does nothing again; while the first call is still working, a retry may be `conflict`. Use a new key,
+	 * such as a UUID, for each new call.
 	 */
 	readonly idempotencyKey?: string;
 	readonly headers?: { readonly [name: string]: string };

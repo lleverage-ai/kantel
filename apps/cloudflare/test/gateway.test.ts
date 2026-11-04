@@ -7,7 +7,7 @@ import { isKantelError } from "@kantel/contracts";
 import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 import { createMockAccess } from "@kantel/identity/testing";
 import { describe, expect, it } from "vitest";
-import { gatewayConfig } from "../src/config.ts";
+import { gatewayConfig, HOSTED_PORTS_DOMAIN } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
 import { routeRequest, STACK_NAME } from "../src/route.ts";
 import { createStack } from "../src/stack.ts";
@@ -50,6 +50,32 @@ describe("gateway config", () => {
 		for (const vars of [{ KANTEL_ACCESS_TEAM_DOMAIN: "t.cloudflareaccess.com" }, { KANTEL_ACCESS_AUD: "a" }]) {
 			expect(() => gatewayConfig(vars)).toThrow(/both/);
 		}
+	});
+
+	it("takes a ports domain of the deployment's own, or leaves the hosted one to stand", () => {
+		expect(HOSTED_PORTS_DOMAIN).toBe("kantel.run");
+		expect(gatewayConfig({}).portsDomain).toBeUndefined();
+		expect(gatewayConfig({ KANTEL_COMPUTE_PORTS_DOMAIN: " *.Ports.Example.com. " })).toEqual({
+			portsDomain: "ports.example.com",
+		});
+		for (const bad of ["https://ports.example.com", "ports", "a..b"]) {
+			expect(() => gatewayConfig({ KANTEL_COMPUTE_PORTS_DOMAIN: bad })).toThrow(/KANTEL_COMPUTE_PORTS_DOMAIN/);
+		}
+		// Every name under the ports domain is a port's: the public origin can't be one of them.
+		const hosts = { KANTEL_ACCOUNT_HOSTS: "experimental" };
+		for (const publicUrl of ["https://app.kantel.run", "https://kantel.run"]) {
+			expect(() => gatewayConfig({ ...hosts, KANTEL_PUBLIC_URL: publicUrl })).toThrow(/ports domain/);
+		}
+		expect(() =>
+			gatewayConfig({
+				...hosts,
+				KANTEL_PUBLIC_URL: "https://app.example.com",
+				KANTEL_COMPUTE_PORTS_DOMAIN: "example.com",
+			}),
+		).toThrow(/ports domain/);
+		expect(gatewayConfig({ ...hosts, KANTEL_PUBLIC_URL: "https://app.kantel.dev" }).accountHosts).toEqual({
+			publicUrl: "https://app.kantel.dev",
+		});
 	});
 
 	it("refuses an admin email that is not one", () => {

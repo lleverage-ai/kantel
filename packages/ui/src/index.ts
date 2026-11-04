@@ -12,7 +12,8 @@ import "./tokens/tailwind.css";
 // The audit view.
 // The brand: Kantel's mark, wordmark and lockups, in the theme's ink.
 export { KantelLockup, KantelMark, KantelWordmark } from "./brand/kantel.tsx";
-// The compute console (experimental, the compute plane): sandboxes, snapshots, keys, the egress proxy, webhooks,
+// The compute console (experimental, the compute plane): sandboxes, snapshots, environments and their protected
+// variables, the account's egress (its log, rules and proxy settings) and each sandbox's, keys, webhooks,
 // OpenTelemetry, organisations, billing on hosted Kantel and a super-admin's hosts, through one `ComputeSource`. Its
 // sample data is `@kantel/ui/compute/fixtures` until the public API lands.
 export {
@@ -28,18 +29,45 @@ export type {
 	AccountsSource,
 	ApiKeysSource,
 	BillingSource,
+	BrowserDeviceSource,
+	BrowserStanding,
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
+	DestinationBinding,
 	DeviceLogin,
 	DeviceLoginsSource,
+	E2EMode,
+	E2ESource,
+	EgressEntry,
+	EgressGrant,
+	EgressSource,
+	Environment,
+	EnvironmentsSource,
+	EnvironmentVariable,
+	FilePart,
+	FileRange,
 	HostingMode,
 	HostsSource,
 	ProxySource,
+	PublicUrlSource,
+	SandboxEgress,
 	SandboxesSource,
+	SandboxSshKey,
 	SnapshotsSource,
+	SshTarget,
 	TelemetrySource,
 	WebhooksSource,
+} from "./compute/compute-model.ts";
+export {
+	CLI_INSTALL_COMMAND,
+	cliLoginCommand,
+	cliSshCommand,
+	DeviceSetupError,
+	FilesRefusedError,
+	FileTooLargeError,
+	sameProxySettings,
+	sshWithoutCliCommand,
 } from "./compute/compute-model.ts";
 // Identity: who is signed in, and Kantel's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
@@ -98,6 +126,7 @@ export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
 export * from "./primitives/lucide.tsx";
 export { Menu, type MenuChoice, type MenuEntry, type MenuProps } from "./primitives/menu.tsx";
 export { CommandBlock, OneTimeSecret, type OneTimeSecretProps } from "./primitives/one-time-secret.tsx";
+export { type PageTab, PageTabs, type PageTabsProps } from "./primitives/page-tabs.tsx";
 export {
 	Sidebar,
 	SidebarBrand,
@@ -113,6 +142,7 @@ export {
 	useSidebarCollapsed,
 } from "./primitives/sidebar.tsx";
 export { Kbd, Skeleton, Spinner } from "./primitives/spinner.tsx";
+export { SplitButton, type SplitButtonProps } from "./primitives/split-button.tsx";
 export {
 	isChunkLoadError,
 	type ReloadForNewBuildOptions,
@@ -131,10 +161,12 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { Switch, type SwitchProps } from "./primitives/switch.tsx";
+export { TabBar, type TabBarItem, type TabBarProps } from "./primitives/tab-bar.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
-export { THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
+export { DEFAULT_THEME_PREFERENCE, THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
 export {
 	createThemeController,
+	readThemeCache,
 	SYSTEM_THEME,
 	type ThemeCache,
 	type ThemeController,
@@ -142,32 +174,6 @@ export {
 	type ThemeState,
 	themeController,
 } from "./theme/controller.ts";
-export { createThemeRegistry, type ThemeRegistry } from "./theme/registry.ts";
-export {
-	ThemePicker,
-	type ThemePickerProps,
-	themeShortcut,
-	useThemeShortcut,
-	useThemeState,
-} from "./theme/theme-picker.tsx";
+export { ThemeSwitch, type ThemeSwitchProps, useThemeMenuEntry, useThemeState } from "./theme/theme-switch.tsx";
 export { contrast, distance } from "./tokens/colour.ts";
-export {
-	isSafeValue,
-	PALETTE_TOKENS,
-	parseTheme,
-	type ResolvedTheme,
-	resolveTheme,
-	THEME_ID,
-	THEME_TOKENS,
-	type ThemeDefinition,
-	type ThemeKind,
-	type ThemeProblem,
-	type ThemeSource,
-	type TokenGroup,
-	type TokenSpec,
-	themeCss,
-	themeSelector,
-	tokenSpec,
-} from "./tokens/theme-schema.ts";
-export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";

@@ -1,0 +1,143 @@
+/* A compute table as stacked cards in a phone's column; the table itself is Tailwind utilities (parts.tsx).
+
+   CSS, not utilities, for three reasons utilities are worse at: it is a container query, and the closed theme has no
+   container sizes (a `@max-[40rem]/kt-table:` variant is a raw size, which the token lint refuses); it restyles the
+   table's own elements (thead, tr, td) from the frame, state on another element; and each value's label is a
+   ::before with `attr(data-label)`, which TableFrame (parts.tsx) sets from the column's heading. Unlayered, these rules
+   beat the cells' own utilities, which is what lets them change the layout under that width. */
+
+/* The frame and the bar over it measure the column they're in. */
+.kt-table-cards {
+	container: kt-table / inline-size;
+}
+
+/* What only the cards need, such as Select all in place of the header's checkbox. */
+.kt-table-cards-only {
+	display: none;
+}
+
+@container kt-table (max-width: 40rem) {
+	.kt-table-cards-only {
+		display: flex;
+	}
+
+	/* No frame round the table: each row is its own card. Nothing scrolls sideways. */
+	.kt-table-cards > .kt-compute-table {
+		overflow: visible;
+		border: 0;
+		border-radius: 0;
+		background: none;
+	}
+
+	.kt-table-cards > .kt-compute-table > table {
+		display: block;
+	}
+
+	/* The header is read, not shown: each card says what its values are. */
+	.kt-table-cards > .kt-compute-table > table > thead {
+		position: absolute;
+		width: var(--kt-hairline);
+		height: var(--kt-hairline);
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+	}
+
+	/* Its controls aren't reached either: the cards have their own (Select all is in the bar over them). */
+	.kt-table-cards > .kt-compute-table > table > thead :is(input, button, a, select) {
+		visibility: hidden;
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody {
+		display: flex;
+		flex-direction: column;
+		gap: var(--kt-gap-within);
+	}
+
+	/* A card: the checkbox, the name and the menu on its first row; every other value on a row of its own under them. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		row-gap: var(--kt-step-1_5);
+		padding: var(--kt-step-3) var(--kt-step-4);
+		border: var(--kt-hairline) solid var(--kt-border);
+		border-radius: var(--kt-radius);
+		background: var(--kt-raised);
+		box-shadow: var(--kt-shadow-raised);
+	}
+
+	/* A row picked out in the table (the file being previewed, an open webhook) stays picked out as a card. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr[data-row="selected"] {
+		background: var(--kt-selected);
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr[data-row="open"] {
+		background: var(--kt-hover);
+	}
+
+	/* A value: its heading on the left, the value on the right, wrapping rather than running off the card. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td {
+		grid-column: 1 / -1;
+		display: block;
+		/* The table's own widths (a checkbox or menu column's w-0, a long cell's max-w-0) don't apply to a card. */
+		width: auto;
+		min-width: 0;
+		max-width: none;
+		padding: 0;
+		border: 0;
+		white-space: normal;
+		text-align: right;
+		overflow-wrap: anywhere;
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label]::before {
+		content: attr(data-label);
+		float: left;
+		margin-right: var(--kt-step-4);
+		color: var(--kt-text-muted);
+		font-size: var(--kt-text-xs);
+		line-height: inherit;
+		text-align: left;
+	}
+
+	/* A value laid out as a row of its own (a status with its code, a sparkline with its figure) keeps to the right. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > .flex {
+		justify-content: flex-end;
+	}
+
+	/* A value over a bar (a host's capacity) keeps both to the right. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > .flex-col {
+		align-items: flex-end;
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="select"] {
+		grid-column: 1;
+		grid-row: 1;
+		margin-right: var(--kt-step-3);
+		text-align: left;
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="primary"] {
+		grid-column: 2;
+		grid-row: 1;
+		text-align: left;
+		font-weight: var(--kt-weight-medium);
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="actions"] {
+		grid-column: 3;
+		grid-row: 1;
+		margin-left: var(--kt-step-2);
+	}
+
+	/* A row that is one cell across the table (a note, an expanded detail) reads as text. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="whole"] {
+		text-align: left;
+	}
+
+	/* Nothing to show: left out, not a lone dash. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-empty] {
+		display: none;
+	}
+}

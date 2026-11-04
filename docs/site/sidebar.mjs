@@ -5,7 +5,7 @@
 export const sidebar = [
 	{
 		label: "Get started",
-		items: [{ label: "What Kantel is", link: "/" }, "quickstart", "hosts", "concepts", "coding-agents"],
+		items: [{ label: "What Kantel is", link: "/" }, "quickstart", "own-hosts", "hosts", "concepts", "coding-agents"],
 	},
 	{
 		label: "Sandboxes",
@@ -17,6 +17,7 @@ export const sidebar = [
 			"sandboxes/desktop-and-browser",
 			"sandboxes/ssh",
 			"sandboxes/egress-proxy",
+			"sandboxes/environments",
 		],
 	},
 	{
@@ -25,7 +26,7 @@ export const sidebar = [
 	},
 	{
 		label: "Accounts and keys",
-		items: ["accounts/organisations", "accounts/api-keys"],
+		items: ["accounts/organisations", "accounts/api-keys", "e2e"],
 	},
 	{
 		label: "Events and monitoring",

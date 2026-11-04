@@ -2,7 +2,7 @@
 // The marketing page's shell: head, the header with the endorsed lockup, and the footer.
 import "../styles/site.css";
 import lockupEndorsed from "../assets/brand/kantel-lockup-endorsed-on-light.svg?raw";
-import { GITHUB_URL, LLEVERAGE_URL, SIGN_IN_URL, SITE_URL } from "../site.mjs";
+import { CONSOLE_URL, GITHUB_URL, LLEVERAGE_URL, SITE_URL } from "../site.mjs";
 
 interface Props {
 	title: string;
@@ -44,7 +44,7 @@ const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
 					<li>
 						<a
 							class="inline-block rounded-input border border-midnight px-3 py-1.5 transition-colors hover:bg-midnight hover:text-paper"
-							href={SIGN_IN_URL}>Sign in</a
+							href={CONSOLE_URL}>Console</a
 						>
 					</li>
 				</ul>
@@ -67,7 +67,7 @@ const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
 				</div>
 				<ul class="space-y-2">
 					<li><a class="hover:text-midnight" href="/docs/quickstart/">Quick start</a></li>
-					<li><a class="hover:text-midnight" href="/docs/hosts/">Add a host</a></li>
+					<li><a class="hover:text-midnight" href="/docs/own-hosts/">Add a host</a></li>
 					<li><a class="hover:text-midnight" href="/docs/self-hosting/install/">Self-host Kantel</a></li>
 					<li><a class="hover:text-midnight" href="/docs/api/reference/">API reference</a></li>
 				</ul>

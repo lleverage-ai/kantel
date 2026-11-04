@@ -8,7 +8,8 @@
  * - Token prefixes: API keys are `ktk_…` (were `hbr_…`), sign-in sessions `kts_…` (were `hbs_…`) and tunnel tokens
  *   `ktt_…` (were `hbt_…`). Only new ones get the new prefix: an issued token keeps its bytes, and its hash, for life.
  *
- * - Theme IDs: the built-in themes `harbour` and `harbour-light` (before the rename) are `kantel` and `kantel-light`.
+ * Theme IDs from before the rename (`harbour`, `harbour-light`) are read as dark and light by `themePreference`
+ * (theme-preference.ts), with every other retired theme.
  *
  * Environment variables have their own fallback, in `env.ts`.
  */
@@ -47,20 +48,6 @@ export const TOKEN_PREFIXES = {
 } as const;
 
 export type TokenKind = keyof typeof TOKEN_PREFIXES;
-
-/**
- * The built-in themes' IDs before the rename, and today's. A person's saved theme (`UserPreferences.theme`), a browser's
- * remembered one and a custom theme's `extends` may still name the old ones; each is read as today's.
- */
-export const LEGACY_THEME_IDS: { readonly [legacy: string]: string } = {
-	harbour: "kantel", // before the rename
-	"harbour-light": "kantel-light", // before the rename
-};
-
-/** A theme ID (or `system`) as it is today: an ID from before the rename becomes today's, any other is kept. */
-export function currentThemeId(id: string): string {
-	return Object.hasOwn(LEGACY_THEME_IDS, id) ? (LEGACY_THEME_IDS[id] as string) : id;
-}
 
 /** Whether a token has its kind's prefix, today's or the one before the rename. */
 export function hasTokenPrefix(token: string, kind: TokenKind): boolean {

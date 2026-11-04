@@ -25,8 +25,27 @@ works here as it does there (`src/compute.ts`):
   (`@kantel/compute/sql`, the same store the self-hosted gateway keeps in Postgres), in `KantelStack`'s own SQLite,
   table `compute_api_records`. One object answers every request, so there is one writer.
 - Sandboxes run on the stub backend (`@kantel/compute/stub`, a just-bash shell over in-memory files), as a self-hosted
-  gateway with no hosts does: Kantel's hosts don't join this deployment yet. When the object is evicted or a deploy
-  replaces it, the records stay and each sandbox gets a fresh, empty machine on its next call.
+  gateway with no hosts does. When the object is evicted or a deploy replaces it, the records stay and each sandbox
+  gets a fresh, empty machine on its next call.
+- Port URLs are named under `kantel.run`, Kantel's hosted ports domain (`HOSTED_PORTS_DOMAIN` in `src/config.ts`), or
+  the deployment's own with the `KANTEL_COMPUTE_PORTS_DOMAIN` variable: `https://{port}-{subdomain}.kantel.run`. It is
+  a separate registrable domain from the console's (`app.kantel.dev`), so a port's page is never the same site as the
+  console. It isn't on the Public Suffix List, so port names are one site to each other and cookies aren't private
+  between sandboxes. Account hosts' microVMs' ports are served there over HTTP (see "Exposed ports" below); the stub
+  only names its URLs.
+- Account hosts (experimental, `KANTEL_ACCOUNT_HOSTS=experimental` with `KANTEL_PUBLIC_URL`; off by default, and the
+  deploy sets it from the repository variable of the same name): people add machines of their own (`POST /v1/hosts/join-tokens`). A host registers at
+  `POST /v1/hosts/register` and keeps a WebSocket to `GET /v1/hosts/connect` open on `KantelStack`, which holds the
+  hub (`@kantel/hosts`), and its registry is in the object's SQLite. An account with an online host of its own gets
+  its sandboxes there (`createRoutedBackend`); everyone else keeps the stub. SSH to them is served
+  (`/v1/hosts/tunnel/{ticket}`), and so are their exposed ports' pages; desktops, browsers and WebSockets to exposed
+  ports aren't yet. Hosts dial `KANTEL_PUBLIC_URL`: the
+  public origin, with no Access in front, needs nothing more (with account hosts on, it may be set without
+  `KANTEL_SIGN_IN_FROM`, leaving email sign-in off, and so may `KANTEL_ACCOUNT_HOSTS=off`). Someone who signs up there
+  may add and use hosts of their own, but never the stub, which stays the deployment organisation's. Hosts can't sign
+  in to Access, so an origin behind it needs a bypass for `/v1/hosts/register`, `/v1/hosts/connect`,
+  `/v1/hosts/images/*` and `/v1/hosts/tunnel/*`, each of which checks its own token, credential or ticket. See
+  `docs/site/src/content/docs/own-hosts.md`.
 - The person Access signs in is a compute person under their Kantel user ID; an admin of the deployment's organisation
   is the compute super-admin. The console sends no credential behind Access, so the gateway gives the compute API
   Access's token as the bearer it asks for. The compute API's own `ksk_` keys work as on self-hosted; an identity
@@ -73,8 +92,61 @@ Every API call authenticates with `createAuthenticator` from `@kantel/identity`:
 
 The team domain and AUD come as a pair; one without the other is refused (503) rather than served with sign-in off.
 
-Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
-`preview_urls` are off, because those URLs would bypass Access.
+### The public origin
+
+With `KANTEL_PUBLIC_URL` and `KANTEL_SIGN_IN_FROM` set (repository variables, written into the Worker's vars by the
+deploy), the Worker also answers on a public origin with no Access in front, such as `https://app.kantel.dev`:
+
+- People sign in there with an email code (`POST /auth/otp/start`, `/auth/otp/verify`, `/auth/session/end`), which the
+  console asks for when `GET /v1/me`'s 401 names `email_otp`. The session (`kts_…`, 12 hours) is a bearer.
+- Sign-up is open (`src/sign-up.ts`): someone new gets a user of their own and a personal space, an organisation named
+  Personal that they administer, with a Default project. Someone with a pending invite joins the inviting organisation
+  instead, as self-hosted. Administering a personal space doesn't make anyone the compute plane's super-admin: only an
+  admin of the deployment's own organisation (the bootstrap's) is.
+- Codes and invites go out from `KANTEL_SIGN_IN_FROM` through the `SIGN_IN_MAIL` binding (Cloudflare Email Sending, a
+  `send_email` binding limited to that sender). At most `KANTEL_SIGN_IN_DAILY_CAP` (default 100) a UTC day, counted in
+  the stack object's storage; past it a start is 503 until the next day. Each client address may make 30 sign-in
+  requests per 15 minutes, and each email gets at most 5 codes an hour.
+- The sign-in routes are 404 on any other hostname, and a 401 anywhere else still names Access.
+
+The sender's domain must be onboarded for Email Sending first. The origin itself is a Workers custom domain attached
+once outside the deploy (the deploy's token edits routes on `myslop.app` only), for example:
+
+```sh
+curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'content-type: application/json' \
+  -d '{"hostname":"app.kantel.dev","service":"harbour","environment":"production","zone_id":"<kantel.dev zone>"}'
+```
+
+A deploy that names no custom domain leaves it in place. No Access application covers it, and none should.
+
+### Exposed ports
+
+With `KANTEL_COMPUTE_PORTS_DOMAIN` set (the repository variable; `kantel.run` for Kantel's own), the deploy routes
+`*.{domain}/*` to the Worker, and `src/route.ts` sends every request on a name under it to the stack object, whatever
+its path: the sandbox's page answers there, never the console or the API (`servePort` in `src/compute.ts`, over
+`@kantel/hosts/ports`, the self-hosted gateway's router). The Worker runs first for every path (`run_worker_first:
+true`), so a sandbox's `/` or `/assets/…` is never the console's file; the console's files are served through the
+`ASSETS` binding. A port's name is one label under the domain, so the zone's Universal SSL wildcard covers it. Ports
+need the token in their URL unless exposed public, as on a self-hosted install. WebSockets to them (a dev server's
+hot reload) answer 501 for now.
+
+The names also need proxied wildcard DNS records, added once outside the deploy (Workers routes only match traffic
+that reaches Cloudflare's proxy): an `A` and an `AAAA`, so IPv4-only clients resolve them too. For example:
+
+```sh
+for record in '"type":"A","content":"192.0.2.1"' '"type":"AAAA","content":"100::"'; do
+  curl -X POST "https://api.cloudflare.com/client/v4/zones/<kantel.run zone>/dns_records" \
+    -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'content-type: application/json' \
+    -d "{$record,\"name\":\"*.kantel.run\",\"proxied\":true,\"comment\":\"Kantel exposed ports\"}"
+done
+```
+
+No Access application covers the ports domain, and none should: each port checks its own token.
+
+The Worker runs first for every path and serves the console's files through the `ASSETS` binding, so on the Access
+hostname only Access guards them, as before. `workers_dev` and `preview_urls` are off, because those URLs would bypass
+Access.
 
 ## Local
 

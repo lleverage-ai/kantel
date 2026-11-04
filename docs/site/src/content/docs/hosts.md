@@ -84,14 +84,14 @@ cd kantel
 
 Add `GOARCH=arm64` to build it for an aarch64 host on an x86_64 machine, copy `apps/host/dist/kantel-host` to the host, and run `sudo ./kantel-host install --url … --token …` there in place of the join command.
 
-A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches them from there by default, so there's nothing to build. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
+A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 and arm64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches the ones for the host's architecture from there by default, so there's nothing to build. The arm64 images are boot-checked in emulation before they're published, not yet on arm64 hardware. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
 
 The installer gets the images from one of two places:
 
 - `--images` on `kantel-host install`: a directory on the host, or an http(s) URL that serves the directory.
 - The control plane, at `GET /v1/hosts/images/…`, which redirects to Kantel's published release unless `KANTEL_COMPUTE_IMAGES` says otherwise. That setting is a directory the gateway can read, an http(s) URL it redirects to, or `off`. On the Docker Compose stack, use a URL: the gateway runs in a container, so it can't see a directory on the machine.
 
-To use your own images, such as a custom image or an arm64 host, build them on a machine with Docker and Go, and point `--images` or `KANTEL_COMPUTE_IMAGES` at the directory:
+To use your own images, such as a custom image, build them on a machine with Docker and Go, and point `--images` or `KANTEL_COMPUTE_IMAGES` at the directory:
 
 ```sh
 apps/host/guest/kernel/build.sh ~/kantel-images x86_64      # or aarch64
@@ -105,13 +105,13 @@ apps/host/dist/kantel-host manifest ~/kantel-images
 
 ### On app.kantel.dev
 
-On the console's **Hosts** page, select **Add a host**. It makes a one-time token for the space you're in, your personal space or an organisation you're an admin of, and shows the command to run on the machine:
+In the console, open **Settings**, then **Hosts**, and select **Add a host** (or run `kantel hosts add <name>`). It makes a one-time token for the space you're in, your personal space or an organisation you're an admin of, and shows the command to run on the machine:
 
 ```sh
-curl -fsSL https://kantel.dev/host.sh | sudo sh -s -- --url https://app.kantel.dev --token kth_…
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://app.kantel.dev --token kth_…
 ```
 
-`https://kantel.dev/host.sh` is the host installer on Kantel's latest GitHub Release, below. The host belongs to that space: only its members' sandboxes run on it. Add any of the [installer's flags](#what-the-installer-does) after the token.
+That is the host installer on Kantel's latest GitHub Release, below. The host belongs to that space: only its members' sandboxes run on it. Add any of the [installer's flags](#what-the-installer-does) after the token. See [Your own hosts](/own-hosts/).
 
 ### On a self-hosted control plane
 
@@ -122,6 +122,8 @@ kantel-admin compute enable --public-url https://kantel.example.com --apply
 ```
 
 That sets `KANTEL_PUBLIC_URL`. The same URL goes into every join command and every desktop, browser and SSH link, so your users' browsers need to reach it as well as your hosts. Behind a TLS proxy it is `https://`, and the relay links are then `wss://`. To give hosts a different address from the console's, set `KANTEL_COMPUTE_PUBLIC_URL` instead.
+
+A super-admin can also set the address hosts join at in the console, under **Admin**, **Install**, or in **Add host** when its command shows the loopback address, or with [`PUT /v1/admin/public-url`](/api/reference/hosts/). It goes ahead of the deployment's own for the join commands made from then on, with no restart, and clearing it goes back to the deployment's. It changes only join commands: desktop, browser and SSH links still use `KANTEL_PUBLIC_URL`.
 
 Then make a join token, with [`kantel-admin`](/self-hosting/admin-cli/), on the console's **Hosts** page (shown to a deployment's admins) or with [`POST /v1/admin/hosts/join-tokens`](/api/reference/hosts/):
 

@@ -23,7 +23,7 @@ export interface SignedInAsProps {
 	/** Shown when the person can end their own session (an email code); Access ends it at the edge instead. */
 	readonly onSignOut?: () => void;
 	readonly signingOut?: boolean;
-	/** Small controls for the person's own settings, before Sign out: the theme picker's button. */
+	/** Small controls for the person's own settings, before Sign out. */
 	readonly actions?: ReactNode;
 }
 

@@ -30,7 +30,7 @@ opaque JSON document.
 | `telemetry`, `proxies` | OTLP export and egress proxy settings per account | as configured |
 | `hosts`, `joinTokens` | the API's view of hosts (name, labels, drain, revoke) and join tokens | SHA-256 only |
 | `events` | the event log | none |
-| `idempotency` | the first answer to an idempotent call, by caller, operation and key | none |
+| `idempotency` | an idempotent call's claim on its key while it works, then its first answer, by caller, operation and key | none |
 | `deviceLogins` | device sign-in (RFC 8628 style) | a key secret, until collected (at most 15 minutes) |
 
 `HostStore` keeps hosts (credential as SHA-256), join tokens (as SHA-256) and placements: which host each sandbox is
@@ -44,17 +44,38 @@ These hold for every collection (`Collection<T>` in `store.ts`), and the memory 
 
 - **Copies in and out.** `get` and `list` answer copies. A caller changes a record only by writing it back.
 - **`put` is an upsert.** It replaces the whole record and is last-writer-wins. It doesn't compare versions.
+- **`insert` is insert-if-absent.** It writes the record only when no record has its ID and answers whether it did. Of
+  several writers inserting one ID at once, on any gateway, exactly one gets `true`. A deleted record's ID can be
+  inserted again. The SQL store does it in one statement (`INSERT … ON CONFLICT DO NOTHING RETURNING id`).
 - **`update(id, change)` is a compare-and-set.** It reads the record, calls `change`, and writes the result only if
   nothing else wrote the record in between. If something did, it reads again and calls `change` again, so `change` must
   be pure and may run more than once. `change` answering `undefined` writes nothing. A missing record is never
   written (`update` answers `undefined`). The SQL store retries 50 times and then throws. A backend may retry fewer or
   more times, but it must never write over a version it didn't read.
+- **`update(id, change, expected)`** takes the caller's copy of the record when it has one, such as the record it has
+  just written. A backend **may** call `change` on that copy first and write only if the stored record is still
+  exactly that copy, which saves the read. The SQL store does it in one statement (`UPDATE … WHERE data = ?`, the JSON
+  it would have read). If the record is no longer the copy, or `change` answers `undefined` for it, the backend reads
+  it as usual and calls `change` again. So the answer is the same as without `expected`. A backend may ignore
+  `expected` (the memory store does).
 - **`delete`** answers whether there was a record.
 - **`list(where)`** answers the records whose top-level fields are `===` to each defined field of `where` (`matches`
   in `store.ts`), **oldest first by first insertion**. A replace (`put` over an existing ID) keeps the record's place.
   A backend may narrow the query in its own query language, but it must answer exactly what `matches` would.
 - **Reads after writes.** A write that has resolved is visible to every later read on every gateway. No backend may
-  answer reads from a replica that lags or from a cache.
+  answer reads from a replica that lags or from a cache. The service caches no record either: every call reads the
+  key, membership and account it acts on.
+- **Fields that are kept loosely.** Two fields are written at most once a minute rather than on every call, so a
+  busy key or host doesn't cost a write each time:
+  - an API key's `lastUsedAt` is recorded only when the recorded one is 60 s old or more
+    (`API_KEY_LAST_USED_PRECISION_MS`), and off the call's path: the call doesn't wait for it, and a write that fails
+    is dropped. The `update` checks the age again against the stored record, so of many calls that saw it stale, on
+    any gateway, one writes, and an older use never overwrites a newer one, a revoke or a rotation. It is a hint for
+    people, and nothing decides access by it.
+  - the API's host record's `lastSeenAt` is written when anything else about the host changed, or once it is 60 s
+    stale (`HOST_SEEN_PRECISION_MS`). The host list and host reads answer it fresh from the host registry, and
+    placement reads `lastSeenAt` from the registry's own record (§5), which the owning replica writes on every
+    heartbeat.
 
 The SQL store keeps one row per record in `compute_api_records(kind, id, seq, version, data)`. `seq` gives the order
 and `version` the compare-and-set. `seq` comes from a sequence on Postgres, and from `MAX(seq)+1` per kind on SQLite,
@@ -74,19 +95,43 @@ that won the transition may call the backend for it. The background step that fi
 must also be conditional on the passing state still being the one it set. Otherwise a `delete` that landed meanwhile
 would be overwritten.
 
-**Open on main.** The service checks the state and then writes with `put`. Calls are put in order only by a queue
-inside each process (`pending` in `service.ts`). On one gateway that is enough. On two, both can pass the check. Two
-cases where this goes wrong:
+**How (#597).** Every lifecycle write in `service.ts` goes through `transition()`, an `update` (§2) that
+writes only while the sandbox is still in the state the call read it in:
 
-- **Two stops at once.** Two `stop` calls on different gateways can both call `backend.stop`. The loser's error then
-  goes through `fail()` and marks a sandbox `error` that the winner stopped cleanly. Seen on two replicas on one
-  Postgres: 1 of 10 simultaneous double stops ended `error` ("is stopped, not running") after `sandbox.stopped`.
-  The other 9 answered one `200` and one `409 conflict`.
-- **The auto-stop sweep.** Every gateway runs `sweep()`, and it skips a sandbox only if its *own* queue holds it. So
-  two gateways can both auto-stop the same expired sandbox.
+- **Into a passing state.** `stop` (and pause), `start`, `resume` and `recover` move from the state they read. A
+  call that loses answers `409 conflict` ("The sandbox is stopping") and calls nothing on the backend. A `start` or
+  `resume` that finds the sandbox already `starting` or `running` answers it as it is. `delete` moves from any state
+  but `deleted`, and answers a deleted sandbox as it is. A delete already under way (on another gateway, or one that
+  died) is done again: destroying is idempotent, and only one of them writes `deleted`.
+- **Out of it.** `boot()` writes `running` only from `starting`, the stop's background step writes `stopped` or
+  `paused` only from `stopping`, and the delete's writes `deleted` only from `deleting`. A step that finds the sandbox
+  moved on writes nothing and emits no event.
+- **`fail()`** writes `error` only from the passing state its own work set (`starting`, `stopping` or `deleting`), so
+  a stale step never writes `error` over a state another call left.
+- **The auto-stop sweep** still runs on every gateway. Its move to `stopping` is conditional on the sandbox being
+  `running` *and* still past its `stopsAt`, so exactly one gateway stops an expired sandbox, and one that another
+  gateway extended meanwhile isn't stopped.
+- **Writes of other fields** (`updateSandbox`, port exposures, usage samples, `latestSnapshotId`) are `update`s too,
+  so they never put back a state they read before a transition.
 
-The fix is to make these writes `update` calls with a state precondition. The `Collection` interface already allows
-that, so it needs no new store method.
+The queue inside each process (`pending`) still orders one gateway's own work on a sandbox. It no longer has to
+protect anything across gateways.
+
+**Round trips (TASK-4754).** A `wait: true` create, called with an API key, makes 16 statements in 10 rounds
+(statements sent together share a round), where it made 28, each its own round. Reads that don't depend on each other
+go together: the membership and the account; the host registry, the API's host records and the proxy settings; an
+event and its webhook lookup. Writes another record depends on don't: the sandbox is stored before its
+`sandbox.created` event (who may see an event is decided by its sandbox, so an event must never be visible before it),
+and an event before its webhook deliveries (`enqueue(event, written)` queues nothing if the event's write fails). The backend's hosts are read once per create, not
+twice, and without their placements. Nothing written is read back: the host registry answers the placement it wrote,
+`boot()` moves the sandbox to `running` from the record as written (`update` with `expected`, §2), and the call
+answers the record `boot()` wrote. `packages/hosts/test/create-statements.test.ts` fails if the create needs more.
+Revocation is unchanged (§7), as nothing is cached.
+
+Seen on two replicas before the fix: 1 of 10 simultaneous double stops ended `error` ("is stopped, not running")
+after `sandbox.stopped`. `packages/compute/test/replica-lifecycle.test.ts` runs two compute APIs over one database
+and one backend: a stop, a resume and a sweep that read the sandbox before the other replica moved it, ten double
+stops at once (one `backend.stop` each, none `error`), and two sweeps of one expired sandbox (one stop).
 
 ## 4. Idempotency
 
@@ -94,13 +139,27 @@ that, so it needs no new store method.
 create **at most one** sandbox (or fork set, or command), whichever gateway each attempt lands on, and must answer the
 first answer to every retry.
 
-**Open on main.** `once()` in `service.ts` reads `idempotency`, does the work, then `put`s the answer. Within a
-process, `inflight` folds concurrent retries into one. Across gateways, a retry that lands elsewhere before the first
-call finishes finds no answer and creates a second sandbox. To close it, the store needs **insert-if-absent**: claim the
-key before doing the work, and have other gateways either wait for the claimed answer or answer `conflict` while it is
-pending. Without that, a client retry after a timeout on another gateway can duplicate a sandbox. Seen on two
-replicas: one key sent to both at once made two sandboxes, and later retries got the first one's answer. A retry
-sent after the first answer got the same sandbox, as it should.
+**How (#596).** `once()` in `service.ts` **claims the key before it does the work**, with `insert`
+(§2): a record `{id, createdAt, claim, claimExpiresAt}` with no `body`. Then:
+
+- The call that wins the insert does the work and `put`s the answer as `body`. That is the same two round trips as
+  before (the claim replaces the read that looked for an answer).
+- A call that loses reads the record. With a `body`, it answers that body. While the claim is pending, it answers
+  **`409 conflict`** ("still in progress; retry it once that call has answered"), and does nothing. On the gateway
+  that holds the claim, a concurrent call with the same key instead waits for the answer (`inflight`, in memory), as
+  before.
+- **A claim lapses 60 s** (`IDEMPOTENCY_CLAIM_MS`) after it was taken or last renewed. The holder renews it every
+  20 s while the work runs, so a long `wait: true` create or command keeps it. A gateway that dies mid-call stops
+  renewing, and once the claim has lapsed the next call with the key takes it over with `update` (conditional on the
+  claim still being lapsed and unanswered) and does the work. So a crashed claim holds a key for at most 60 s.
+- A call that **fails** (throws) deletes its claim, so a retry does the work again, as before.
+
+The one way two calls can still both do the work is a holder that stalls for over 60 s without renewing (for example a
+frozen process) while another call takes over. Whichever answers last is stored.
+
+Seen on two replicas before the fix: one key sent to both at once made two sandboxes. The two-replica test in
+`packages/compute/test/sql-store.test.ts` holds the first create in the backend and checks that the other replica
+answers `conflict`, then the same sandbox, with one backend create.
 
 `stop`, `resume`, `start` and `delete` take no key. They are idempotent by state: stopping a stopped sandbox, resuming
 a running one or deleting a deleted one answers the sandbox as it is. Section 3's conditional transitions keep that true
@@ -120,10 +179,15 @@ across gateways.
   rather than in a lost or duplicated sandbox. A shared reservation isn't required for correctness, and this contract
   leaves it open.
 
-  **Open on main:** `reserved` is cleared by the host's hello and heartbeats, which reach only the replica holding
-  its socket. A replica that places on a host held elsewhere never clears what it reserved, so after enough placements
-  it sees the host as full until it restarts. Reservations must expire on their own, for example by ignoring those
-  older than the host's `lastSeenAt` in the shared registry.
+  **Reservations expire with the host's next report (#599).** Each reservation is stamped with when it was
+  made. The replica holding the host's socket clears its own on each hello and heartbeat, as before. Every replica
+  also counts a reservation only while it is newer than the host's `lastSeenAt` in the shared registry, which the
+  owning replica writes on each hello and heartbeat. So a replica that places on a host held elsewhere stops counting
+  its placements once the host reports again (every 15 s by default), and never sees the host as full for longer.
+  Before this, such a replica refused creates as `full` until it restarted. The stamp and `lastSeenAt` come from
+  different replicas' clocks, so clock skew between replicas moves the expiry by that much. A backend that keeps
+  reservations shared (or in one Durable Object per host) may expire them however it likes, as long as one host's
+  report ends them.
 - **Join tokens** are spent once by one conditional update (`spendJoinToken`). Two hosts racing with the same token
   can't both join.
 - **Webhook deliveries** are leased. A dispatcher claims a due delivery by moving `nextAttemptAt` past its request
@@ -191,7 +255,8 @@ A Worker can meet this differently (§9.7).
 A Worker backend is equivalent if:
 
 1. **It passes the conformance suites** that the memory and SQL stores pass: `packages/compute/test/sql-store.test.ts`
-   (order, `update` with 20 concurrent writers ending at 20, copies, NUL and lone surrogates), and in
+   (order, `update` with 20 concurrent writers ending at 20, `update` from a stale copy, copies, NUL and lone
+   surrogates), and in
    `packages/hosts/test` the `HostStore` (`store.test.ts`), tickets (`tunnel.test.ts`), exposures (`ports.test.ts`)
    and revocation (`relay-access.test.ts`) tests. `createSqlComputeStore` already runs on D1 (Miniflare) in that suite, so
    **D1 can use the SQL store as it is**.
@@ -207,17 +272,20 @@ A Worker backend is equivalent if:
 7. **Host connections** (§8): a Durable Object per host holding the host's (hibernatable) WebSocket gives each host one
    owner, and every Worker request can reach it by the host's ID. That meets §8 without anything forwarding between
    gateways.
-8. Sections 3 and 4 are service behaviour, not store behaviour. They hold on any backend once the service writes
-   lifecycle moves with `update` and claims idempotency keys before doing the work.
+8. **`insert` is atomic** (§2): of concurrent inserts of one ID, exactly one wins. In a Durable Object, check and
+   write in one request with nothing awaited between. The conformance suite inserts one ID 20 times at once.
+9. Sections 3 and 4 are service behaviour, not store behaviour. They hold on any backend whose `update` and `insert`
+   meet §2.
 
 ## 10. Open questions
 
-- Conditional lifecycle transitions, and auto-stop on one gateway only (§3).
-- Insert-if-absent for idempotency keys (§4).
+- A sandbox left in `starting` or `stopping` by a gateway that died mid-operation stays there: nothing leases a
+  transition, so another gateway's `stop` or `start` on it is `conflict`. It can still be deleted. This was so before
+  the conditional transitions too.
 - Gateway-local state that isn't shared and isn't covered here:
   - the abort switches of detached commands (a `kill` that lands on another gateway marks the command killed but
     doesn't abort it)
-  - the per-process placement reservations (§5)
+  - the per-process placement reservations (§5), which now expire with the host's next report
   - the usage samples the telemetry exporter batches
 - Event delivery order across gateways: `events` are ordered by insertion. Two gateways emitting for one sandbox at once
   may interleave, and nothing orders them by sandbox.

@@ -1,9 +1,12 @@
-import { ComputeConsole, type ComputeSource, type HostingMode } from "@kantel/ui";
+import { KantelApiError } from "@kantel/api/sdk";
+import type { ThemePreference } from "@kantel/contracts";
+import { Button, ComputeConsole, type ComputeSource, type HostingMode, Notice } from "@kantel/ui";
 import { createComputeFixtures } from "@kantel/ui/compute/fixtures";
 import { useEffect, useState } from "react";
-import { navigate, searchWithout, usePathname } from "../app/router.ts";
+import { navigate, searchWithout, useHash, usePathname, useSearch } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
+import { localBridge } from "./local.ts";
 
 // The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
 // Sandboxes).
@@ -43,14 +46,15 @@ function hostingMode(): HostingMode {
 
 /**
  * Goes to a page of the compute console. The app's `navigate` keeps the query, which carries `?hosting`; `?new` (open
- * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first.
+ * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first. A file
+ * browser's place (`?path`, `?file`, `?snapshot`) isn't kept either, though Back still finds it where it was.
  */
 function go(path: string): void {
 	const search = new URLSearchParams(location.search);
 	if (!path.includes("?") && (search.has("new") || search.has("add"))) {
 		history.replaceState(null, "", `${location.pathname}${searchWithout(location.search, ["new", "add"])}`);
 	}
-	navigate(path);
+	navigate(path, { drop: ["path", "file", "snapshot"] });
 }
 
 /**
@@ -86,9 +90,15 @@ function namedFor(
 	return Object.defineProperties({ ...source, accounts }, { domain: { get: () => source.domain, enumerable: true } });
 }
 
-type Sourced = { readonly source: ComputeSource; readonly sample: boolean };
+type Sourced =
+	| { readonly source: ComputeSource; readonly sample: boolean }
+	/** The gateway serves compute, but not to this person (403): say so, never the sample data in its place. */
+	| { readonly refused: string };
 
-/** The compute API when this gateway serves it and the tab wants it, else the sample data. */
+/**
+ * The compute API when this gateway serves it and the tab wants it, else the sample data. A refusal is not "not
+ * served": someone signed in who may not use compute here sees why, rather than a demo that looks like theirs.
+ */
 async function sourceFor(
 	hosting: HostingMode,
 	signedInAs: { readonly name?: string; readonly email?: string } | undefined,
@@ -97,12 +107,18 @@ async function sourceFor(
 	const wantsSample = hosting === "hosted" || new URLSearchParams(location.search).get("data") === "sample";
 	if (api !== undefined && !wantsSample) {
 		try {
-			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
+			// Served by `kantel console`: its bridge reads E2E sandboxes' history from their hosts (local.ts).
+			const local = await localBridge();
+			const options = { ...api, hosting, ...(local === undefined ? {} : { local }) };
+			return { source: namedFor(await apiCompute(options), signedInAs), sample: false };
 		} catch (error) {
+			if (error instanceof KantelApiError && error.status === 403) return { refused: error.message };
 			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);
 		}
 	}
-	return { source: namedFor(createComputeFixtures({ hosting, now: Date.now() }), signedInAs), sample: true };
+	// `?data=empty`: the sample data with no sandboxes, snapshots, keys, webhooks or hosts, for the empty states.
+	const empty = new URLSearchParams(location.search).get("data") === "empty";
+	return { source: namedFor(createComputeFixtures({ hosting, now: Date.now(), empty }), signedInAs), sample: true };
 }
 
 export function ComputeApp({
@@ -110,6 +126,7 @@ export function ComputeApp({
 	onSignOut,
 	headers,
 	onUnauthenticated,
+	onThemeChoose,
 }: {
 	/** Who `GET /v1/me` says is signed in; the sample data's person without it. */
 	signedInAs?: { readonly name?: string; readonly email?: string };
@@ -118,8 +135,13 @@ export function ComputeApp({
 	headers?: () => Record<string, string>;
 	/** A 401 from the compute API: the sign-in has ended. */
 	onUnauthenticated?: () => void;
+	/** The person chose a theme in the sidebar: keep it for them. Without it (a recording) it is kept in this browser. */
+	onThemeChoose?: (preference: ThemePreference) => void;
 }) {
 	const pathname = usePathname();
+	// Egress's tab is in the query: Back from Rules to Log moves only that.
+	const search = useSearch();
+	const hash = useHash();
 	const narrow = useMedia(NARROW_QUERY);
 	// One source for the tab's life: what a person does on one page (a new sandbox, a revoked key) shows on the next.
 	const [sourced, setSourced] = useState<Sourced>();
@@ -139,17 +161,42 @@ export function ComputeApp({
 	}, []);
 	// The app's ground while the console asks the gateway, which takes one call: no spinner, and not the session shell.
 	if (sourced === undefined) return <div className="kt-app h-dvh" aria-busy="true" />;
+	if ("refused" in sourced) {
+		return (
+			<div className="kt-app flex h-dvh items-center justify-center p-6">
+				<div className="flex w-full max-w-md flex-col gap-3">
+					<Notice
+						level="info"
+						{...(onSignOut === undefined
+							? {}
+							: {
+									action: (
+										<Button size="sm" onClick={onSignOut}>
+											Sign out
+										</Button>
+									),
+								})}
+					>
+						{signedInAs?.email === undefined ? "You're signed in. " : `You're signed in as ${signedInAs.email}. `}
+						{sourced.refused}.
+					</Notice>
+				</div>
+			</div>
+		);
+	}
 	return (
 		<ComputeConsole
 			source={sourced.source}
 			pathname={pathname}
-			search={location.search}
+			search={search}
+			hash={hash}
 			navigate={go}
 			base={COMPUTE_BASE}
 			narrow={narrow}
 			sample={sourced.sample}
 			{...(signedInAs === undefined ? {} : { signedInAs })}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
+			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 		/>
 	);
 }

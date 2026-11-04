@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -112,6 +113,9 @@ type sandbox struct {
 	machine *fc.Machine
 	guest   *guest.Client
 	link    *network.Link
+	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
+	// start, writes it before it answers.
+	unsaved bool
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -225,15 +229,14 @@ func (m *Manager) writeMeta(s *sandbox) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(s.dir, "meta.json.tmp")
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(s.dir, "meta.json"))
+	// Durably: what it holds (its egress, and that egress's revision) is what the host has acknowledged.
+	err = fsutil.WriteFileDurably(filepath.Join(s.dir, "meta.json"), raw, 0o600)
+	s.unsaved = err != nil
+	return err
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
-	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt}
+	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner}
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}
@@ -364,12 +367,19 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 	// with no rules. With no route out there is no DNS to give either; the proxy resolves names.
 	mode := egressMode(s.meta.Egress)
 	if mode != network.EgressNone && m.cfg.ProxyPort > 0 {
-		proxy := fmt.Sprintf("http://sandbox@%s:%d", s.link.HostIP, m.cfg.ProxyPort)
+		// The user is the sandbox's label for its requests ("sandbox" is none). Its password is empty, and given: with
+		// none, git asks for one, and with no terminal (an exec, a clone at start) fails rather than connecting.
+		proxy := fmt.Sprintf("http://sandbox:@%s:%d", s.link.HostIP, m.cfg.ProxyPort)
 		id.ProxyEnv = map[string]string{
 			"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy,
 			"NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",
 			// Node's fetch takes the proxy from the environment only when asked (Node 24 and later).
 			"NODE_USE_ENV_PROXY": "1",
+			// Node (and Bun) and Python's requests trust bundles of their own, not the system's: pointed at the system's,
+			// they trust the egress proxy's CA too (installed there, and replaced there when the intercepted hosts
+			// change), so a protected variable's bound host works from them as from curl or git.
+			"NODE_EXTRA_CA_CERTS": systemCABundle,
+			"REQUESTS_CA_BUNDLE":  systemCABundle,
 		}
 	}
 	if s.meta.Egress != nil {
@@ -377,6 +387,9 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 	}
 	return id
 }
+
+// systemCABundle is the guest's system trust store, as update-ca-certificates writes it.
+const systemCABundle = "/etc/ssl/certs/ca-certificates.crt"
 
 func hostname(id string) string {
 	name := strings.ToLower(id)
@@ -939,6 +952,13 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State == proto.StateRunning {
+		// Running already (a retry, say). What it holds is on disk before it says so: an earlier boot that couldn't
+		// write it failed, and a restart mustn't bring back the egress before it.
+		if s.unsaved {
+			if err := m.writeMeta(s); err != nil {
+				return proto.SandboxInfo{}, err
+			}
+		}
 		return m.info(s), nil
 	}
 	if s.meta.State != proto.StateStopped {
@@ -950,6 +970,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	}
 	if p.Egress != nil {
 		s.meta.Egress = p.Egress
+		s.unsaved = true
 	}
 	t := timings{}
 	start := time.Now()
@@ -1040,7 +1061,12 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		src.mu.Unlock()
 		return proto.SandboxInfo{}, conflict("sandbox %s is %s", src.meta.ID, src.meta.State)
 	}
-	params := proto.CreateParams{SandboxID: p.NewID, Size: src.meta.Size, From: snapID, Env: src.meta.Env, SSHAuthorizedKeys: src.meta.SSHKeys, Egress: p.Egress, Owner: src.meta.Owner}
+	env := src.meta.Env
+	if p.Env != nil {
+		// The fork's own: its protected placeholders aren't its source's.
+		env = p.Env
+	}
+	params := proto.CreateParams{SandboxID: p.NewID, Size: src.meta.Size, From: snapID, Env: env, SSHAuthorizedKeys: src.meta.SSHKeys, Egress: p.Egress, Owner: src.meta.Owner}
 	if params.Egress == nil {
 		params.Egress = src.meta.Egress
 	}
@@ -1062,6 +1088,11 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 
 // liveSnapshot snapshots a running sandbox (memory and disk) and lets it carry on. Called with s.mu held.
 func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings) error {
+	// Before anything is written: the ID is joined under snapshots/, so one such as ../sandboxes/<id>/vm would put this
+	// sandbox's disk into another's.
+	if !validID(snap.ID) {
+		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+	}
 	start := time.Now()
 	sdir := m.snapshotDir(snap.ID)
 	if err := os.MkdirAll(sdir, 0o700); err != nil {
@@ -1466,6 +1497,22 @@ var _ = strconv.Itoa
 
 // SetEgress replaces a sandbox's egress: a running one's rules, upstream and headers change at once, and so does a
 // move to or from "none" (the only mode the network itself knows about).
+// EgressOf answers a sandbox's egress as it keeps it in meta.json (CA certificate included), which a fork with none
+// of its own inherits.
+func (m *Manager) EgressOf(id string) (*proto.Egress, error) {
+	s, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.Egress == nil {
+		return nil, nil
+	}
+	e := *s.meta.Egress
+	return &e, nil
+}
+
 func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s, err := m.get(id)
 	if err != nil {

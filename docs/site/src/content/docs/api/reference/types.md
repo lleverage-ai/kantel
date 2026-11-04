@@ -22,6 +22,16 @@ An account the caller may act in, with the caller's role in it.
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### AccountJoinToken
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The token's ID. |
+| `accountId` | string | yes | The account the host joins: only its sandboxes will run there. |
+| `token` | string | yes | `kth_…`, shown once. It joins one host, once, before `expiresAt`. |
+| `command` | string | yes | The one-line command that installs the host agent on a Linux machine and joins it with the token. The host dials out to this deployment and keeps that connection open, so it needs no inbound port. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### AccountKind
 
 `personal`: one person's own account, made at their first sign-in; what they create is theirs alone unless they move it. `organisation`: an account people create or join, where sandboxes and snapshots are shared.
@@ -70,7 +80,7 @@ A scoped API key. Its secret is never stored or shown after it is made.
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
-| `lastUsedAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastUsedAt` | integer | no | When the key last signed a call in, to within a minute. Absent until its first use. |
 | `revokedAt` | integer | no | Epoch milliseconds, UTC. |
 
 ### ApiKeyList
@@ -87,7 +97,7 @@ One of: `"read-only"` or `"agent"` or `"ci"` or `"admin"`.
 
 ### ApiKeyScope
 
-What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members and keys. `account:admin`: members, keys, webhooks, telemetry and the proxy. `hosts:admin`: the deployment's hosts, for a super-admin's key only.
+What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only.
 
 One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"exec"` or `"files"` or `"access"` or `"snapshots:read"` or `"snapshots:write"` or `"account:read"` or `"account:admin"` or `"hosts:admin"`.
 
@@ -179,6 +189,15 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | `total` | number | yes | What it has cost so far, in `currency`. |
 | `ratePerHour` | number | yes | What an hour of running costs at its size, in `currency`. |
 
+### CreateAccountJoinTokenBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | no | The host's name. Default: the machine's hostname. (at most 100 characters) |
+| `labels` | Record&lt;string, string&gt; | no |  |
+| `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
+
 ### CreateApiKeyBody
 
 Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks.
@@ -199,6 +218,14 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `kind` | `"user"` or `"api_key"` | yes |  |
 | `id` | string | yes | The user's or the API key's ID. |
 | `name` | string | no |  |
+
+### CreateEnvironmentBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes | Unique in the account: lower-case letters, digits and dashes, at most 63. |
+| `description` | string | no |  (at most 500 characters) |
 
 ### CreateHostJoinTokenBody
 
@@ -238,7 +265,8 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `autoStopMinutes` | integer or null | no | Default 60. `null`: never stop by itself. |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no |  |
-| `env` | Record&lt;string, string&gt; | no | Environment variables every command sees. Not secrets: they are shown to anyone who may exec. |
+| `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
+| `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
 
@@ -265,6 +293,16 @@ One of: `"selfhosted"` or `"hosted"`.
 | `embedUrl` | string | yes | The same, for an iframe. |
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### DestinationBinding
+
+Where a protected variable's value may go: the host's egress proxy swaps the sandbox's placeholder for the value only on a request that matches, and refuses a request that carries the placeholder anywhere else.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `host` | string | yes | The host, on port 443: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself). (at most 253 characters) |
+| `pathPrefixes` | string[] | no | Only paths under these, such as `/repos/`. Absent or empty: any path. (at most 32 items) |
+| `methods` | string[] | no | Only these methods. Absent or empty: any method. (at most 16 items) |
 
 ### DeviceLogin
 
@@ -305,6 +343,141 @@ With `approved`, the new key and its secret, shown this once.
 `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected.
 
 One of: `"pending"` or `"approved"` or `"denied"` or `"expired"`.
+
+### E2EAccess
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's. |
+| `hostId` | string | yes | The host the sandbox is on: the chain's entry for it has its key. |
+| `accountId` | string | yes | The sandbox's organisation: the space whose chain the session is in. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### E2EAccessBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ttlMinutes` | integer | no | How long a session can be started with this URL; one started in time stays open. Default 10. (minimum 1, maximum 60) |
+| `user` | string | no | The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys. |
+
+### E2EChain
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `entries` | [E2EEntry](/api/reference/types/#e2eentry)[] | yes | Oldest first; an entry's `seq` is its index. |
+
+### E2EChainAppend
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `from` | integer | yes | The seq of the first entry given: the chain's length as the caller last saw it. (minimum 0) |
+| `entries` | [E2EEntry](/api/reference/types/#e2eentry)[] | yes |  (at most 100 items) |
+
+### E2EEntry
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `payload` | string | yes | Base64url of the entry's JSON, exactly the bytes that were signed. |
+| `sig` | string | yes | Base64url of its Ed25519 signature. |
+
+### EgressEntry
+
+One request or connection a sandbox made through its host's egress proxy. Never a value.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The entry's ID. |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `method` | string | yes | `CONNECT` for a tunnel the proxy didn't look inside. |
+| `host` | string | yes |  |
+| `port` | integer | yes |  |
+| `path` | string | no | The path, when the proxy saw it (plain HTTP or inspected HTTPS); never the query. |
+| `decision` | `"allowed"` or `"denied"` | yes |  |
+| `reason` | string | no | Why it was denied, or what failed, in words. |
+| `rule` | string | no | The rule that decided it, such as `deny DELETE api.github.com /repos/*`. |
+| `code` | string | no | A refusal's `X-Kantel-Proxy-Error` code, such as `placeholder-unbound`. |
+| `swapped` | string[] | yes | The protected variables whose values the proxy put in, by name. |
+| `inspected` | boolean | yes | Whether the proxy looked inside the HTTPS. |
+| `status` | integer | no | The answer's status, when the proxy saw one. |
+| `bytesUp` | integer | yes |  |
+| `bytesDown` | integer | yes |  |
+
+### EgressGrant
+
+An egress rule on top of the account's proxy settings: let a sandbox reach a host, or refuse it. Deny wins. A grant naming methods or paths makes the proxy look inside that host's HTTPS, as a protected variable's host does.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The grant's ID, such as `grt_4kq9x2mt`. |
+| `action` | `"allow"` or `"deny"` | yes |  |
+| `host` | string | yes | The host: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself). (at most 253 characters) |
+| `methods` | string[] | no | Only these methods. Absent or empty: every method. (at most 16 items) |
+| `paths` | string[] | no | Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path. (at most 32 items) |
+
+### EgressGrantInput
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | no | Keep a grant's ID; absent, a new one is made. |
+| `action` | `"allow"` or `"deny"` | yes |  |
+| `host` | string | yes | The host: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself). (at most 253 characters) |
+| `methods` | string[] | no | Only these methods. Absent or empty: every method. (at most 16 items) |
+| `paths` | string[] | no | Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path. (at most 32 items) |
+
+### Environment
+
+What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running ones at once.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The environment's ID, such as `env_4kq9x2mt`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `description` | string | no |  |
+| `variables` | [EnvironmentVariable](/api/reference/types/#environmentvariable)[] | yes |  |
+| `files` | [EnvironmentFile](/api/reference/types/#environmentfile)[] | yes |  |
+| `repos` | [EnvironmentRepo](/api/reference/types/#environmentrepo)[] | yes |  |
+| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes |  |
+| `sandboxCount` | integer | yes | How many sandboxes were made from it and still exist. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### EnvironmentFile
+
+A secret file every new sandbox starts with. Its contents are write-only, and kept encrypted.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Absolute, such as `/home/user/.npmrc`. |
+| `mode` | integer | yes | Its permissions, such as 384 (0o600). |
+| `sizeBytes` | integer | yes |  |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### EnvironmentList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Environment](/api/reference/types/#environment)[] | yes |  |
+
+### EnvironmentRepo
+
+A repository every new sandbox starts with, cloned through the egress proxy once it is running.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | HTTPS with no credentials in it, such as `https://github.com/lleverage-ai/kantel`. (at most 2048 characters) |
+| `path` | string | no | Where it is cloned; default `~/<name>`. (at most 1024 characters) |
+| `ref` | string | no | A branch or tag; default the repository's default branch. (at most 255 characters) |
+
+### EnvironmentVariable
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `protected` | boolean | yes | A protected variable is a `kph_` placeholder in the sandbox, its own per sandbox, which the host's egress proxy swaps for the value on requests to its bindings: the value never enters the sandbox. |
+| `value` | string | no | A plain variable's value. Never answered for a protected one. |
+| `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | yes | A protected variable's destinations, at least one. Empty for a plain one. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### ErrorBody
 
@@ -351,7 +524,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
 One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
@@ -448,6 +621,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |
+| `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 
@@ -565,12 +739,48 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `attribution` | boolean | yes | Tell the upstream which sandbox and account each request came from, in signed `Kantel-Sandbox` and `Kantel-Account` headers. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### ProxySettingsExpected
+
+The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | yes |  |
+| `defaultAction` | `"allow"` or `"deny"` | yes |  |
+| `allow` | string[] | yes |  |
+| `deny` | string[] | yes |  |
+| `upstream` | object | no |  |
+| `attribution` | boolean | yes |  |
+
 ### ProxyUpstream
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `url` | string | yes | Another proxy every allowed request goes on to, such as a Mehen. |
 | `headerNames` | string[] | yes | The names of the headers Kantel sends it; their values are never shown. |
+
+### PublicUrl
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicUrl` | string | yes | Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`. |
+| `source` | `"console"` or `"deployment"` | yes | `console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at). |
+| `deploymentUrl` | string | yes | The deployment's own, which `publicUrl` goes back to when cleared. |
+| `loopback` | boolean | yes | `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. |
+
+### PutEgressGrantsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `grants` | [EgressGrantInput](/api/reference/types/#egressgrantinput)[] | yes |  (at most 200 items) |
+| `expected` | [EgressGrantInput](/api/reference/types/#egressgrantinput)[] | no | The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. (at most 200 items) |
+
+### PutEnvironmentReposBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `repos` | [EnvironmentRepo](/api/reference/types/#environmentrepo)[] | yes |  (at most 20 items) |
+| `expected` | [EnvironmentRepo](/api/reference/types/#environmentrepo)[] | no | The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. (at most 20 items) |
 
 ### PutProxySettingsBody
 
@@ -583,6 +793,7 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `deny` | string[] | no |  |
 | `upstream` | object or null | no |  |
 | `attribution` | boolean | no |  |
+| `expected` | [ProxySettingsExpected](/api/reference/types/#proxysettingsexpected) | no |  |
 
 ### PutTelemetryBody
 
@@ -633,6 +844,8 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `stopsAt` | integer | no | When it will stop by itself, while running; the console's stops-in. |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
+| `environmentId` | string | no | The environment it was made from. |
+| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environment's. |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `startedAt` | integer | no | Epoch milliseconds, UTC. |
@@ -657,6 +870,28 @@ What this sandbox can do, from its type and its host.
 | `kvm` | boolean | yes | `/dev/kvm` inside, for nested virtualisation. |
 | `pause` | boolean | yes | Whether it can be paused with its memory kept. |
 
+### SandboxEgress
+
+A sandbox's egress: what it was made with, its own grants and its log.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes |  |
+| `sandboxName` | string | yes |  |
+| `accountId` | string | yes |  |
+| `environment` | [SandboxEgressEnvironment](/api/reference/types/#sandboxegressenvironment) | no |  |
+| `protectedVariables` | [SandboxProtectedVariable](/api/reference/types/#sandboxprotectedvariable)[] | yes |  |
+| `environmentGrants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its environment's grants, which it has too. |
+| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own grants, on top of its environment's. |
+| `entries` | [EgressEntry](/api/reference/types/#egressentry)[] | yes | Newest first; Kantel keeps the newest 1000. |
+
+### SandboxEgressEnvironment
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+
 ### SandboxHealth
 
 `degraded`: the machine is up but its host can't fully reach it; it keeps running.
@@ -669,6 +904,16 @@ One of: `"ok"` or `"degraded"`.
 | --- | --- | --- | --- |
 | `items` | [Sandbox](/api/reference/types/#sandbox)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### SandboxProtectedVariable
+
+A protected variable as one sandbox has it: never its value.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `placeholderPrefix` | string | yes | The first 8 characters of its placeholder, such as `kph_7Qx2`. |
+| `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | yes |  |
 
 ### SandboxResources
 
@@ -739,6 +984,31 @@ One of: `"private"` or `"organisation"`.
 | `snapshotId` | string | no | Save this snapshot of the sandbox's history. Default: its state now. |
 | `description` | string | no |  (at most 500 characters) |
 | `replace` | boolean | no | Replace a saved snapshot of the same name. |
+
+### SetEnvironmentFileBody
+
+`encoding` says how `content` is written: `utf8` (the default) or `base64`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Absolute, or relative to `/home/user`. (at most 1024 characters) |
+| `mode` | integer | no | Default 384 (0o600). (minimum 0, maximum 4095) |
+| `content` | string | no | At most 1 MiB, in `encoding`. Required for a new file; left out, the file keeps its contents. |
+| `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | no |  |
+
+### SetEnvironmentVariableBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `protected` | boolean | no | Default false. |
+| `value` | string | no | Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps its value (to change its bindings); a new value for a protected one is a rotation. (at most 32768 characters) |
+| `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | no | A protected variable's destinations, at least one. Left out, a protected one keeps its own. (at most 32 items) |
+
+### SetPublicUrlBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicUrl` | string or null | yes | An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. |
 
 ### Snapshot
 
@@ -859,6 +1129,13 @@ What the collector answered to an empty export sent on save.
 | --- | --- | --- | --- |
 | `name` | string | no |  (at most 100 characters) |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
+
+### UpdateEnvironmentBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  |
+| `description` | string | no | Empty clears it. (at most 500 characters) |
 
 ### UpdateHostBody
 

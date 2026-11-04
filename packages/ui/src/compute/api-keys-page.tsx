@@ -27,7 +27,7 @@ import {
 	expiresText,
 	SCOPE_PRESETS,
 } from "./compute-model.ts";
-import { cellMono, cellSub, computePage, messageOf, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, cellSub, computePage, messageOf, None, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface ComputeApiKeysPageProps {
 	readonly source: ApiKeysSource;
@@ -129,10 +129,11 @@ export function ComputeApiKeysPage({
 					copyLabel="Copy key"
 					commands={[
 						{ label: "Use it in this shell", text: `export KANTEL_API_KEY=${created.secret}` },
-						// `kantel login` reads a key piped in, which keeps it out of the shell's history (packages/cli).
+						// `kantel login` reads a key piped in, which keeps it out of the shell's history (packages/cli). It's the
+						// installed `kantel` (kantel.dev/cli.sh, from the GitHub Release): the CLI isn't on npm, so not `npx kantel`.
 						{
 							label: "Or sign the CLI in with it",
-							text: `printf '%s' '${created.secret}' | npx kantel login --url ${consoleOrigin()}`,
+							text: `printf '%s' '${created.secret}' | kantel login --key-stdin --url ${consoleOrigin()}`,
 						},
 					]}
 					warning="Kantel shows this key only once and keeps just a hash of it. If it's lost, make a new key and revoke this one."
@@ -208,7 +209,7 @@ function KeysSkeleton() {
 
 function KeyTable({ keys, now, onRevoke }: { keys: readonly ApiKey[]; now: number; onRevoke: (key: ApiKey) => void }) {
 	return (
-		<div className={tableFrame}>
+		<TableFrame>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -244,7 +245,7 @@ function KeyTable({ keys, now, onRevoke }: { keys: readonly ApiKey[]; now: numbe
 					))}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 
@@ -284,7 +285,7 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 			</td>
 			<td className={td}>
 				{revoked ? (
-					<span className="text-faint">–</span>
+					<None className="text-faint" />
 				) : apiKey.expiresAt === undefined ? (
 					<span className="text-muted">Never</span>
 				) : (

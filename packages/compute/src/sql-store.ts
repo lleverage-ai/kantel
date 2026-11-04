@@ -1,7 +1,8 @@
 /**
  * The compute plane's records in SQL (Postgres self-hosted, SQLite on D1 or `node:sqlite`), so a gateway keeps them
  * across restarts and several gateways over one database share them. It behaves as the memory store does
- * (`store.ts`): records copied in and out, `list` oldest first by first insertion, and `update` atomic.
+ * (`store.ts`): records copied in and out, `list` oldest first by first insertion, and `update` and `insert`
+ * atomic.
  *
  * Every collection is rows of one table, `compute_api_records`: its kind (the collection's name), its ID, `seq` (when
  * it was first put, which a replace keeps), `version` (bumped on every write) and the record as JSON. The `SqlDriver`
@@ -9,10 +10,24 @@
  * changes it, and writes it only if the version is still the one it read, else reads again and retries.
  *
  * It keeps exactly what the memory store keeps: secrets as their SHA-256 hex, except a webhook's signing secret and a
- * device sign-in's key secret until it is collected. Nothing here logs a record.
+ * device sign-in's key secret until it is collected, and environments' protected values and secret files sealed with
+ * the deployment's key. Nothing here logs a record. A new collection is a new kind in the same table, so it needs no
+ * migration.
+ *
+ * It is `persistent`: the service seals nothing without the deployment's own secrets key.
  */
 import { type SqlDriver, type SqlValue, sqlNumber } from "@kantel/sql";
-import { type Collection, type ComputeStore, matches } from "./store.ts";
+import { type Collection, type ComputeStore, matches, UniqueViolation } from "./store.ts";
+
+/** Whether `error` is a unique-constraint violation: Postgres's SQLSTATE 23505, or SQLite's (and D1's) message. */
+function isUniqueViolation(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	return (
+		code === "23505" ||
+		(typeof message === "string" && /UNIQUE constraint failed|duplicate key value violates unique/i.test(message))
+	);
+}
 
 /** Writes an `update` retries after losing to another writer, before it gives up. */
 const UPDATE_ATTEMPTS = 50;
@@ -26,6 +41,9 @@ const SELECT_VERSIONED = "SELECT data, version FROM compute_api_records WHERE ki
 /** Writes only over the version that was read, and answers a row only when it did. */
 const UPDATE_VERSIONED =
 	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND version = ? RETURNING id";
+/** Writes only over the record exactly as the caller expected it, and answers a row only when it did. */
+const UPDATE_IF_SAME =
+	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND data = ? RETURNING id";
 const DELETE_ONE = "DELETE FROM compute_api_records WHERE kind = ? AND id = ? RETURNING id";
 
 /** The store's table, sequence and index. Every statement is `IF NOT EXISTS`, so migrating again is harmless. */
@@ -42,6 +60,21 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 			PRIMARY KEY (kind, id)
 		)`,
 		"CREATE INDEX IF NOT EXISTS compute_api_records_order ON compute_api_records (kind, seq)",
+		// One sandbox's egress log, as `list({ sandboxId })` reads it (each batch a host reports trims it), without the
+		// rest of the deployment's. On the expression `list` filters by; Postgres's only over egress rows, so no other
+		// kind's JSON is cast to `jsonb` on its writes.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_egress ON compute_api_records (((data::jsonb ->> 'sandboxId')), seq) WHERE kind = 'egress'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_sandbox ON compute_api_records (kind, json_extract(data, '$.sandboxId'), seq)",
+		// One space's E2E chain, as `list({ space })` reads it on every chain read and append, without other spaces'.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_e2e_chain ON compute_api_records (((data::jsonb ->> 'space')), seq) WHERE kind = 'e2eChain'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_space ON compute_api_records (kind, json_extract(data, '$.space'), seq)",
+		// No two environments of an account share a name (`environmentNameKey`): the write that would make two fails, in
+		// the database, whichever gateway makes it and however long after it read.
+		dialect === "postgres"
+			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'environments'"
+			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'environments'",
 	];
 }
 
@@ -69,12 +102,30 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		: `INSERT INTO compute_api_records (kind, id, seq, version, data)
 			VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?), 1, ?)
 			ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`;
+	// The same insert, but a row already there is left alone and no row comes back: one statement, so of two writers at
+	// once exactly one gets its row back.
+	const insertNew = postgres
+		? `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			VALUES (?, ?, nextval('compute_api_records_seq'), 1, ?)
+			ON CONFLICT (kind, id) DO NOTHING RETURNING id`
+		: `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?), 1, ?)
+			ON CONFLICT (kind, id) DO NOTHING RETURNING id`;
 	const field = (name: string) => {
 		if (!FIELD_NAME.test(name)) throw new Error(`A compute record has no field ${JSON.stringify(name)} to list by`);
 		return postgres ? `(data::jsonb ->> '${name}')` : `json_extract(data, '$.${name}')`;
 	};
 	const select = (clauses: readonly string[], params: readonly SqlValue[]) =>
 		driver.query(`SELECT data FROM compute_api_records WHERE ${clauses.join(" AND ")} ORDER BY seq`, params);
+	/** A write, its refusal by a unique index (an environment's name) answered as `UniqueViolation`. */
+	const write = async (sql: string, params: readonly SqlValue[]) => {
+		try {
+			return await driver.query(sql, params);
+		} catch (error) {
+			if (isUniqueViolation(error)) throw new UniqueViolation(kind);
+			throw error;
+		}
+	};
 	return {
 		async get(id) {
 			const [row] = await driver.query(SELECT_DATA, [kind, id]);
@@ -82,16 +133,31 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		},
 		async put(record) {
 			const data = JSON.stringify(record);
-			await driver.query(insert, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
+			await write(insert, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
 		},
-		async update(id, change) {
+		async insert(record) {
+			const data = JSON.stringify(record);
+			const rows = await write(insertNew, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
+			return rows.length > 0;
+		},
+		async update(id, change, expected) {
+			// The caller's copy first: one statement, written only if the stored JSON is still exactly that copy's (every
+			// write stores `JSON.stringify` of the record, so an unchanged record compares equal).
+			if (expected !== undefined && expected.id === id) {
+				const next = change(JSON.parse(JSON.stringify(expected)) as T);
+				if (next !== undefined) {
+					const data = JSON.stringify(next);
+					const written = await write(UPDATE_IF_SAME, [data, kind, id, JSON.stringify(expected)]);
+					if (written.length > 0) return JSON.parse(data) as T;
+				}
+			}
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
 				const [row] = await driver.query(SELECT_VERSIONED, [kind, id]);
 				if (row === undefined) return undefined;
 				const next = change(parse<T>(row));
 				if (next === undefined) return undefined;
 				const data = JSON.stringify(next);
-				const written = await driver.query(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version)]);
+				const written = await write(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version)]);
 				// Answered as a later `get` would read it.
 				if (written.length > 0) return JSON.parse(data) as T;
 			}
@@ -128,6 +194,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 /** A `ComputeStore` in SQL. Run `migrateComputeStore` first. */
 export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 	return {
+		persistent: true,
 		users: sqlCollection(driver, "users"),
 		accounts: sqlCollection(driver, "accounts"),
 		members: sqlCollection(driver, "members"),
@@ -145,5 +212,9 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		events: sqlCollection(driver, "events"),
 		idempotency: sqlCollection(driver, "idempotency"),
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
+		environments: sqlCollection(driver, "environments"),
+		egress: sqlCollection(driver, "egress"),
+		e2eChain: sqlCollection(driver, "e2eChain"),
+		settings: sqlCollection(driver, "settings"),
 	};
 }

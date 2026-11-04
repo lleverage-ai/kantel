@@ -1,7 +1,7 @@
 /* Tailwind v4 for @kantel/ui: the utilities a component uses in its className, resolved to Kantel's tokens.
 
-   Map, don't move. tokens.css still defines every --kt-* token and the themes (src/tokens/themes/) still set them on
-   [data-kt-theme]. The @theme block below only names them for Tailwind, `inline`, so a utility compiles to the token
+   Map, don't move. tokens.css and the two themes' palettes (dark.css, light.css, which light sets on
+   [data-kt-theme="light"]) define every --kt-* token. The @theme block below only names them for Tailwind, `inline`, so a utility compiles to the token
    itself (`bg-canvas` is `background-color: var(--kt-canvas)`) and follows a theme switch at runtime with nothing
    rebuilt. A new token goes in tokens.css first, then here if a utility should reach it.
 
@@ -83,6 +83,9 @@
 	--color-user-message: var(--kt-user-message);
 	--color-code-surface: var(--kt-code); /* not `code`: `text-code` is the code font size */
 	--color-scrim: var(--kt-scrim);
+	--color-backdrop: var(--kt-backdrop);
+	--color-secondary: var(--kt-secondary);
+	--color-secondary-hover: var(--kt-secondary-hover);
 
 	--color-border: var(--kt-border);
 	--color-border-strong: var(--kt-border-strong);
@@ -99,6 +102,14 @@
 	--color-accent-text: var(--kt-accent-text);
 	--color-accent-soft: var(--kt-accent-soft);
 	--color-focus: var(--kt-focus);
+	--color-primary: var(--kt-primary);
+	--color-primary-hover: var(--kt-primary-hover);
+	--color-primary-fg: var(--kt-primary-fg);
+
+	--color-destructive: var(--kt-destructive);
+	--color-warning: var(--kt-warning);
+	--color-success: var(--kt-success);
+	--color-success-hover: var(--kt-success-hover);
 
 	--color-status-working: var(--kt-status-working);
 	--color-status-waiting: var(--kt-status-waiting);
@@ -126,7 +137,7 @@
 	--color-drop-fill: var(--kt-drop-fill);
 	--color-drop-line: var(--kt-drop-line);
 
-	/* Type: `font-sans`, `font-display`, `font-mono` (each the theme's: theme-schema.ts); `text-2xs` to `text-lg`,
+	/* Type: `font-sans`, `font-display`, `font-mono` (tokens.css); `text-2xs` to `text-lg`,
 	   `text-code`, `text-title` and the document sizes; `font-regular`, `font-medium`, `font-strong`; `leading-tight`,
 	   `leading-normal`, `leading-prose`. A size sets only the font-size: line height is its own utility, as in the CSS
 	   it replaces. */
@@ -158,16 +169,19 @@
 	--leading-normal: var(--kt-leading);
 	--leading-prose: var(--kt-leading-prose);
 
-	/* Radius: `rounded-panel` (10px), `rounded-control` (8px), `rounded-sm`, `rounded-xs`, `rounded-bubble`,
-	   `rounded-full`. */
+	/* Radius: `rounded-panel` (14px), `rounded-control` (10px), `rounded-sm`, `rounded-xs`, `rounded-bubble`,
+	   `rounded-dialog`, `rounded-full`. */
 	--radius-panel: var(--kt-radius);
+	--radius-dialog: var(--kt-radius-dialog);
 	--radius-control: var(--kt-radius-control);
 	--radius-sm: var(--kt-radius-sm);
 	--radius-xs: var(--kt-radius-xs);
 	--radius-bubble: var(--kt-radius-bubble);
 	--radius-full: var(--kt-radius-full);
 
-	/* Elevation: `shadow-float`, `shadow-composer`; `drop-shadow-logo`, the hairline around a service's logo. */
+	/* Elevation: `shadow-raised`, `shadow-float`, `shadow-composer`; `drop-shadow-logo`, the hairline around a service's
+	   logo. */
+	--shadow-raised: var(--kt-shadow-raised);
 	--shadow-float: var(--kt-shadow-float);
 	--shadow-composer: var(--kt-shadow-composer);
 	--drop-shadow-logo: var(--kt-logo-edge);
@@ -186,10 +200,10 @@
 	--container-content: var(--kt-content-width);
 	--container-card: var(--kt-card-width);
 	--container-sidebar: var(--kt-sidebar-width);
+	--container-page: var(--kt-page-width);
 	--container-rail: var(--kt-rail-width);
 	--container-popover: var(--kt-popover-width);
 	--container-menu: var(--kt-menu-width);
-	--container-palette: var(--kt-palette-width);
 	--container-share: var(--kt-share-width);
 	--container-doc: var(--kt-doc-width);
 

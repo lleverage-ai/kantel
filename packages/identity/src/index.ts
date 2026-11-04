@@ -23,6 +23,7 @@ import {
 	roleSatisfies,
 	THEME_PREFERENCE_PATTERN,
 	TOKEN_PREFIXES,
+	themePreference,
 	type UserId,
 	type UserPreferences,
 } from "@kantel/contracts";
@@ -161,7 +162,7 @@ const THINKING_LEVELS: readonly ModelThinking[] = ["off", "minimal", "low", "med
 /** Each setting Kantel keeps, and the value it takes: `undefined` when the value is fine, else why it isn't. */
 const PREFERENCE_CHECKS: { readonly [K in keyof Required<UserPreferences>]: (value: unknown) => string | undefined } = {
 	theme: (value) =>
-		typeof value === "string" && THEME_PREFERENCE_PATTERN.test(value) ? undefined : "A theme is a theme's ID or system",
+		typeof value === "string" && THEME_PREFERENCE_PATTERN.test(value) ? undefined : "A theme is light, dark or system",
 	lastModel: (value) =>
 		typeof value === "string" && value.trim() !== "" && value.length <= MAX_LAST_MODEL_LENGTH
 			? undefined
@@ -174,12 +175,23 @@ const PREFERENCE_CHECKS: { readonly [K in keyof Required<UserPreferences>]: (val
 
 const isPreference = (field: string): field is keyof UserPreferences => Object.hasOwn(PREFERENCE_CHECKS, field);
 
-/** The settings a stored value holds: each field Kantel keeps with a value it takes. Anything else reads as unset. */
+/**
+ * A setting's value as Kantel keeps it. A theme is light, dark or system: one saved before the console had only those
+ * (`nord`, `catppuccin-latte`, a custom theme's ID), read or written, is the nearer of light and dark by its canvas, or
+ * system (`themePreference`), so a stored row is migrated as it is read and an older console's choice as it is saved.
+ */
+const keptValue = (field: keyof UserPreferences, value: unknown): unknown =>
+	field === "theme" && typeof value === "string" ? themePreference(value) : value;
+
+/**
+ * The settings a stored value holds: each field Kantel keeps with a value it takes, a theme migrated to light, dark or
+ * system. Anything else reads as unset.
+ */
 export function keptPreferences(stored: unknown): UserPreferences {
 	if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return {};
 	const kept: Record<string, unknown> = {};
 	for (const [field, value] of Object.entries(stored)) {
-		if (isPreference(field) && PREFERENCE_CHECKS[field](value) === undefined) kept[field] = value;
+		if (isPreference(field) && PREFERENCE_CHECKS[field](value) === undefined) kept[field] = keptValue(field, value);
 	}
 	return kept as UserPreferences;
 }
@@ -202,7 +214,7 @@ export function changedPreferences(current: UserPreferences, change: unknown): U
 		}
 		const problem = PREFERENCE_CHECKS[field](value);
 		if (problem !== undefined) throw new KantelError("invalid", problem);
-		(next as Record<string, unknown>)[field] = value;
+		(next as Record<string, unknown>)[field] = keptValue(field, value);
 	}
 	return next;
 }

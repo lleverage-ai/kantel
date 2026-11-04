@@ -224,6 +224,31 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
+		it("reads a theme saved before light and dark as the nearer of the two, and keeps it so once changed", async () => {
+			await withDatabase(kind, async (driver) => {
+				const identity = createSqlIdentity({ driver, clock: new ManualClock() });
+				const { founder, admin } = await tenant(identity);
+				// A row kept by a console that had a dozen themes.
+				await driver.query(
+					"INSERT INTO identity_user_preferences (user_id, preferences, updated_at) VALUES (?, ?, ?)",
+					[founder.id, JSON.stringify({ theme: "catppuccin-latte", lastModel: "default" }), 0],
+				);
+				expect(await identity.userPreferences(admin)).toEqual({ theme: "light", lastModel: "default" });
+				// Saving another setting writes the migrated theme back; reading again gives the same.
+				expect(await identity.setUserPreferences(admin, { lastThinking: "low" })).toEqual({
+					theme: "light",
+					lastModel: "default",
+					lastThinking: "low",
+				});
+				const [row] = await driver.query<{ preferences: string }>(
+					"SELECT preferences FROM identity_user_preferences WHERE user_id = ?",
+					[founder.id],
+				);
+				expect(JSON.parse(row?.preferences ?? "{}").theme).toBe("light");
+				expect((await identity.userPreferences(admin)).theme).toBe("light");
+			});
+		});
+
 		it("pages listProjects in creation order, each project once", async () => {
 			await withDatabase(kind, async (driver) => {
 				const identity = createSqlIdentity({ driver, clock: new ManualClock() });

@@ -4,7 +4,7 @@
  * `moveLegacyKeys` copies each `harbour.*` value this browser still has to its `kantel.*` key, unless that key is
  * already set, so nobody is signed out or loses a setting. The old keys stay, so a rollback finds them too.
  *
- * Not the theme (`harbour.theme`): its CSS uses the old token names, and `@kantel/ui`'s theme controller maps it.
+ * Not the theme (`harbour.theme`): `@kantel/ui`'s theme controller reads it and migrates it to light, dark or system.
  */
 
 type KeyStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem">;

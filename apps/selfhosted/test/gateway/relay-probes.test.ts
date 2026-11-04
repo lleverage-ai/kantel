@@ -7,7 +7,7 @@ import { createKantelClient } from "@kantel/api/sdk";
 import type { PersonIdentity } from "@kantel/compute";
 import { createReplicaKey, createSqlClusterStore, signPeerRequest } from "@kantel/hosts/cluster";
 import { DESKTOP_PORT, DESKTOP_SOCKET, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
-import { PORT_COOKIE } from "@kantel/hosts/ports";
+import { portCookieName } from "@kantel/hosts/ports";
 import { RELAY_CLOSE_REVOKED } from "@kantel/hosts/relay-access";
 import type { SqlDriver } from "@kantel/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -29,6 +29,8 @@ import {
 } from "./cluster-harness.ts";
 
 const REVOKED = `close ${RELAY_CLOSE_REVOKED}`;
+/** The gate cookie over plain http, as these gateways are reached: no `__Host-` prefix. */
+const PORT_COOKIE = portCookieName("http");
 const PORTS_HOST = (port: number, label: string) => `${port}-${label}.kantel-ports.test`;
 const tokenOf = (url: string) => new URL(url).searchParams.get("_token") ?? "";
 
@@ -249,9 +251,11 @@ describe("negative probes: two replicas", { timeout: 60_000 }, () => {
 		expect((await peerPost(w.a, "call", body, forB)).status).toBe(404);
 		expect(w.host.calls.length).toBe(before);
 	});
-	it("M7 an unsigned port stream between replicas is a 404", async () => {
+	it("M7 an unsigned port stream between replicas is a 404 (close 4404)", async () => {
 		const url = wsUrl(w.a, `${CLUSTER_PATH}/port?host=${w.hostId}&sandbox=${sandboxId}&port=22`);
-		expect(await attempt(url, cleanups)).toBe("http 404");
+		const before = w.host.calls.length;
+		expect(await attempt(url, cleanups)).toBe("close 4404");
+		expect(w.host.calls.length).toBe(before);
 	});
 	it("M8 a replica serves only hosts connected to itself: a call never bounces on", async () => {
 		const signing = await intruder(w.driver);
@@ -338,7 +342,7 @@ describe("negative probes: revoking access across replicas", { timeout: 60_000 }
 		});
 		it("V6 refuses a new connection with a URL it was given", async () => {
 			expect(await attempt(desktopUrl(w.b, s.desktopTicket), cleanups)).toBe(REVOKED);
-			expect(await attempt(wsUrl(w.b, "/hmr"), cleanups, s.portHeaders)).toBe("http 403");
+			expect(await attempt(wsUrl(w.b, "/hmr"), cleanups, s.portHeaders)).toBe("close 4403");
 		});
 	});
 

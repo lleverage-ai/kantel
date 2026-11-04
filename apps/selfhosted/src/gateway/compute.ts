@@ -43,6 +43,10 @@
  *                                signs the Kantel-Sandbox and Kantel-Account headers hosts send an account's proxy
  *                                upstream when its settings ask for attribution (share it with the upstream); unset,
  *                                they go unsigned
+ *   KANTEL_ACCOUNT_HOSTS         `experimental` turns on account hosts with `hosts`: an account's people add machines
+ *                                of their own (`POST /v1/hosts/join-tokens`, `kantel hosts add`), which dial out to
+ *                                this gateway like any host and run only that account's sandboxes. Default off: the
+ *                                `/v1/hosts` routes for them answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -50,7 +54,8 @@
  *
  * A host's WebSocket is checked before it is used: no credential or a wrong or revoked one is accepted and closed at
  * once with 4003, which kantel-host reads as "stop, don't retry". (Bun's node:http drops a plain 401 written to an
- * upgrade's socket, so the host would see an empty reply and retry for ever.)
+ * upgrade's socket, so the host would see an empty reply and retry for ever.) No upgrade is refused with an HTTP
+ * status for the same reason: the other refusals close with 4000 plus the status (`upgrade-refusal.ts`).
  *
  * A person signed in to the console (or with an OIDC or Access token) is a compute person under their user ID, and a
  * super-admin when they are an admin of the deployment's organisation.
@@ -75,7 +80,15 @@ import { type Authenticator, callContextFor, type IdentityDirectory, KantelError
 import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
 import type { HostCluster } from "@kantel/hosts/cluster";
 import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
-import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
+import {
+	createHostsApi,
+	DEFAULT_HOST_IMAGES,
+	HOSTS_CONNECT_PATH,
+	HOSTS_E2E_CHAIN_PATH,
+	HOSTS_IMAGES_PATH,
+	HOSTS_REGISTER_PATH,
+} from "@kantel/hosts/http";
+import { closeQuietly } from "@kantel/hosts/hub";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
 import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED, HOST_MAX_MESSAGE_BYTES } from "@kantel/hosts/protocol";
@@ -93,6 +106,7 @@ import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import { type WebSocket, WebSocketServer } from "ws";
 import { CLUSTER_PATH, type GatewayCluster } from "./cluster.ts";
 import type { UpgradeHandler } from "./node-http.ts";
+import { refuseUpgrade } from "./upgrade-refusal.ts";
 
 /** How often webhook deliveries that are due are sent. */
 const WEBHOOK_INTERVAL_MS = 1000;
@@ -100,6 +114,8 @@ const WEBHOOK_INTERVAL_MS = 1000;
 const TELEMETRY_INTERVAL_MS = 60_000;
 /** How often expired tunnel tickets' rows are removed. */
 const TICKET_SWEEP_MS = 10 * 60_000;
+/** How often the compute sweep runs without requests: auto-stops, and egress a host missed while it was away. */
+const COMPUTE_SWEEP_MS = 5_000;
 
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
@@ -112,6 +128,8 @@ export interface ComputeHostsConfig {
 	readonly attributionKey?: string;
 	/** Exposed ports' wildcard name's parent, such as `kantel-ports.example`. */
 	readonly portsDomain?: string;
+	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): accounts add hosts of their own. */
+	readonly accountHosts?: boolean;
 }
 
 /** The compute plane's settings: `hosts` is set when sandboxes run on joined hosts, not the stub. */
@@ -153,6 +171,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	const rawImages = env.KANTEL_COMPUTE_IMAGES?.trim() || DEFAULT_HOST_IMAGES;
 	const images = rawImages.toLowerCase() === "off" ? "" : rawImages;
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
+	const accountHosts = accountHostsSwitch(env.KANTEL_ACCOUNT_HOSTS);
 	const attributionKey = env.KANTEL_EGRESS_ATTRIBUTION_KEY?.trim() ?? "";
 	const portsDomain =
 		env.KANTEL_COMPUTE_PORTS_DOMAIN?.trim()
@@ -170,6 +189,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	return {
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
+			...(accountHosts ? { accountHosts } : {}),
 			...(portsDomain === "" ? {} : { portsDomain }),
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
@@ -178,6 +198,17 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version, updateUrl }),
 		},
 	};
+}
+
+/**
+ * KANTEL_ACCOUNT_HOSTS: `experimental` turns account hosts on; unset, empty or `off` leaves them off. Anything else is
+ * a mistake worth stopping for, so a typo can't leave them off unnoticed.
+ */
+export function accountHostsSwitch(raw: string | undefined): boolean {
+	const value = raw?.trim().toLowerCase() ?? "";
+	if (value === "" || value === "off") return false;
+	if (value === "experimental") return true;
+	throw new Error("KANTEL_ACCOUNT_HOSTS is `experimental` or `off`");
 }
 
 /** The registry of hosts (`@kantel/hosts`) the `hosts` backend places sandboxes on. */
@@ -200,14 +231,10 @@ export function gatewayHosts(
 }
 
 /** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches. */
-export const HOST_IMAGES_PATH = "/v1/hosts/images";
+export const HOST_IMAGES_PATH = HOSTS_IMAGES_PATH;
 
-/**
- * Kantel's published host images (kernel, sandbox and isolate images, manifest.json): a GitHub Release on
- * lleverage-ai/kantel, made by apps/host/guest/release.sh. Pinned to one release, so a new image reaches hosts only
- * when this changes (or KANTEL_COMPUTE_IMAGES points elsewhere).
- */
-export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261103";
+/** Kantel's published host images (`@kantel/hosts/http`); the hosted gateway serves the same ones. */
+export { DEFAULT_HOST_IMAGES };
 
 /** Where a host fetches the kantel-host that KANTEL_HOST_VERSION names: that version's GitHub Release. */
 export const DEFAULT_HOST_UPDATE_URL =
@@ -363,6 +390,11 @@ export async function gatewayCompute(options: {
 	readonly store?: ComputeStore;
 	/** Whether a Kantel session (its token's hash) is live: access given under one ends when it does. */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/**
+	 * KANTEL_SECRETS_KEY: 32 bytes, base64, sealing environments' protected values and secret files. Without it, a
+	 * Postgres store refuses them (a memory store seals with a key of its own, lost with the process).
+	 */
+	readonly secretsKey?: string;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -388,7 +420,18 @@ export async function gatewayCompute(options: {
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
+		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
+		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+	});
+	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did, over their link.
+	hosts?.service.useCompute({
+		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
+		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		e2eChain: {
+			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
+			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
+		},
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
@@ -402,9 +445,14 @@ export async function gatewayCompute(options: {
 		TICKET_SWEEP_MS,
 	);
 	sweepTickets.unref();
+	// The compute sweep runs on a timer too, not only as requests come: a host back after a drop gets the egress
+	// updates it missed (and sandboxes due to stop are stopped) though nobody calls the API meanwhile.
+	const sweepCompute = setInterval(() => void api.service.sweep().catch(() => undefined), COMPUTE_SWEEP_MS);
+	sweepCompute.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
-		// Registration only: the API serves the operator's routes, so the registry's own admin routes refuse everyone.
+		// Registration and a host's E2E chain (on its credential) only: the API serves the operator's routes, so the
+		// registry's own admin routes refuse everyone.
 		const register = createHostsApi({
 			hosts: hosts.service,
 			authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
@@ -418,7 +466,7 @@ export async function gatewayCompute(options: {
 		});
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
-			if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
+			if (path === HOSTS_REGISTER_PATH || path === HOSTS_E2E_CHAIN_PATH) return register.fetch(request);
 			if (path.startsWith(`${CLUSTER_PATH}/`)) {
 				return (await hosts.cluster?.peerRoutes(request)) ?? new Response("Not found", { status: 404 });
 			}
@@ -438,6 +486,7 @@ export async function gatewayCompute(options: {
 		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {
 			clearInterval(sweepTickets);
+			clearInterval(sweepCompute);
 			hosts?.access.stop();
 			await api.close();
 		},
@@ -489,18 +538,20 @@ export function withHostUpgrades(
 		const refuse = (code: number, reason: string) =>
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => accepted.close(code, reason));
 		if (hosts.ports !== undefined) {
-			// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its pages.
+			// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its pages,
+			// and its cookie only from the port's own pages or the same sandbox's (by Origin).
 			const ports = hosts.ports;
 			void (async () => {
-				const port = await ports.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie);
+				const port = await ports.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie, {
+					origin: incoming.headers.origin,
+				});
 				if (port === undefined) return gatewayUpgrade();
-				if (!port.ok) {
-					socket.end(`HTTP/1.1 ${port.status} ${port.reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-					return;
-				}
+				if (!port.ok) return refuseUpgrade(incoming, socket, head, port.status, port.reason, sockets);
 				const held = { sandboxId: port.sandboxId, kind: `port ${port.port}`, grantee: port.grantee };
 				return passThrough(port.sandboxId, port.port, port.path, port.host, held);
-			})().catch(() => socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"));
+			})().catch(() =>
+				refuseUpgrade(incoming, socket, head, 502, "The gateway could not check the port's token", sockets),
+			);
 			return;
 		}
 		return gatewayUpgrade();
@@ -571,8 +622,7 @@ export function withHostUpgrades(
 			if (hosts?.cluster?.peerUpgrade(incoming, socket, head, sockets)) return;
 			if (path !== HOSTS_CONNECT_PATH) {
 				if (next !== undefined) return next(incoming, socket, head);
-				socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-				return;
+				return refuseUpgrade(incoming, socket, head, 404, "Nothing upgrades at this path", sockets);
 			}
 			const credential = /^Bearer\s+(\S+)$/i.exec(incoming.headers.authorization ?? "")?.[1];
 			if (incoming.method !== "GET" || credential === undefined)
@@ -586,9 +636,16 @@ export function withHostUpgrades(
 							sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
 							close: (code, reason) => accepted.close(code, reason),
 						});
+						// The hub's receive closes a connection whose frame it can't handle; this catch is the last line, so
+						// nothing a host sends (anyone's, with account hosts) escapes into the gateway process.
 						accepted.on("message", (data, binary) => {
-							if (binary) held.receive(bytesOf(data));
-							else held.receive(data.toString());
+							try {
+								if (binary) held.receive(bytesOf(data));
+								else held.receive(data.toString());
+							} catch (error) {
+								console.error(`[hosts] host ${host.id}: a message couldn't be handled`, error);
+								accepted.terminate();
+							}
 						});
 						accepted.on("close", (code, reason) => held.closed(code, reason.toString()));
 						accepted.on("error", () => accepted.terminate());
@@ -623,7 +680,8 @@ export function withHostUpgrades(
 				compute.sandboxes
 					.openPort(sandboxId, port, {
 						data: (bytes) => accepted.send(bytes, { binary: true }),
-						end: (reason) => accepted.close(1000, reason.slice(0, 120)),
+						// What the host says it ended or refused with is the host's: cut to fit and never thrown (`closeQuietly`).
+						end: (reason) => closeQuietly(accepted, 1000, reason),
 					})
 					.then(
 						(opened) => {
@@ -631,9 +689,9 @@ export function withHostUpgrades(
 							if (done) return opened.close();
 							for (const chunk of pending.splice(0)) opened.write(chunk);
 						},
-						(error: unknown) =>
-							accepted.close(1011, (error instanceof Error ? error.message : String(error)).slice(0, 120)),
-					);
+						(error: unknown) => closeQuietly(accepted, 1011, error instanceof Error ? error.message : String(error)),
+					)
+					.catch(() => closeQuietly(accepted, 1011, "The tunnel failed"));
 			});
 		}
 
@@ -668,9 +726,10 @@ export function withHostUpgrades(
 					{
 						message: (data, binary) => accepted.send(data, { binary }),
 						close: (code, reason) =>
-							accepted.close(
+							closeQuietly(
+								accepted,
 								code >= 1000 && code < 5000 && code !== 1005 && code !== 1006 ? code : 1011,
-								reason.slice(0, 120),
+								reason,
 							),
 					},
 					...(host === undefined ? [] : [host]),

@@ -94,6 +94,16 @@ old images for them.
 `kernel/kantel.config` is a Firecracker guest config with what Docker needs (overlayfs, cgroups v2, namespaces,
 netfilter and nftables, bridge, veth, VXLAN, IPVS) and KVM, so a sandbox runs its own VMs: on a host whose KVM has
 nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm` is there in every sandbox.
+`kernel/kantel-<arch>.config` adds what only one architecture has (x86_64's Intel and AMD KVM).
+
+## arm64
+
+The same Dockerfile, kernel config and scripts build arm64 (aarch64) images: Firecracker's aarch64 guest config, and
+the arm64 builds of Ubuntu, Docker, Chromium, Node, Go and Selkies. `kernel/build.sh` cross-compiles the kernel, so
+an x86_64 machine builds both; the images build under QEMU user emulation there, which Docker needs registered once
+(`docker run --privileged --rm tonistiigi/binfmt --install arm64`). `boot-check-arm64.sh <out>` boots the result in
+QEMU's aarch64 emulation and checks systemd, Docker, the desktop, CDP and Selkies, since Firecracker itself needs arm64
+hardware. An arm64 sandbox has no `/dev/kvm`: Firecracker doesn't offer nested virtualisation on arm64.
 
 ## Publishing
 
@@ -102,14 +112,23 @@ nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm
 downloads. `<images>` is the control plane's `GET /v1/hosts/images/...`, served from `KANTEL_COMPUTE_IMAGES`: a
 directory, or an http(s) URL it redirects to (`off` serves none). It defaults to Kantel's published images, a public
 GitHub Release on lleverage-ai/kantel pinned by tag (`DEFAULT_HOST_IMAGES` in
-`apps/selfhosted/src/gateway/compute.ts`), so a host installed from any control plane gets them with no setting.
+`packages/hosts/src/http.ts`), so a host installed from any control plane, hosted or self-hosted, gets them with no
+setting.
 
-`release.sh` builds and publishes one:
+`release.sh` builds and publishes one, for amd64 and arm64 (`ARCHES` picks others):
 
 ```sh
-apps/host/guest/release.sh out host-images-20261103            # build: kernel, sandbox and isolate images, manifest
-apps/host/guest/release.sh out host-images-20261103 --publish  # and make the GitHub Release (needs push access)
+apps/host/guest/release.sh out host-images-20261103            # build: kernels, sandbox and isolate images, manifest
+apps/host/guest/boot-check-arm64.sh out                        # boot the arm64 images in QEMU
+apps/host/guest/release.sh out host-images-20261103 --publish  # make the GitHub Release (needs push access)
 ```
+
+`--publish` publishes the build already in `out` when it's of the same tag and architectures from a clean `apps/host`
+at the same tree as the commit it publishes at (`out/BUILD` records that), so a build checked on a branch is
+published from main once merged, without building again. It refuses arm64 until `boot-check-arm64.sh` has passed on
+that build (a new build clears the check's log). One manifest lists every architecture's files, and
+`kantel-host install` takes its own (`vmlinux-arm64` and `sandbox-arm64.ext4` on an arm64 host). `SHA256SUMS` lists
+every asset.
 
 Every release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro
 package: Selkies' pixelflux wheel links libx264 and x265 (GPL-2.0-or-later) and libde265 (LGPL-3.0-or-later).

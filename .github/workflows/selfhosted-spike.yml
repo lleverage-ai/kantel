@@ -141,11 +141,12 @@ jobs:
 
       # The gateway's in-process tests on Bun, the runtime its image runs it on (ci.yml runs them on Node). Postgres
       # tests skip here: "Bindings against the stack" runs them on the stack's. After the stack's checks, so those
-      # report whatever this finds.
+      # report whatever this finds. Bun ignores a describe's `{ timeout }` (the replica suites ask for 30 and 60 s), so
+      # the longest is given here; its default of 5 s cuts the replica tests short on a busy runner.
       - name: Gateway tests on Bun
         if: success() || failure()
         working-directory: apps/selfhosted
-        run: bun test ./test/gateway/
+        run: bun test --timeout 60000 ./test/gateway/
 
       # Only once this run's daemon is up: before that, compose would read the host's default `kantel` stack.
       - name: Logs on failure

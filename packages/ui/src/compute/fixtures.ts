@@ -12,16 +12,25 @@ import type {
 	ComputeSource,
 	ComputeViewer,
 	CreateSandboxInput,
+	DestinationBinding,
 	DeviceLogin,
+	EgressEntry,
+	EgressGrant,
+	Environment,
+	FilePart,
+	FileRange,
 	Host,
 	HostingMode,
 	OrganisationInvite,
 	OrganisationMember,
 	Plan,
-	ProxyRequest,
 	ProxySettings,
+	PublicUrl,
 	Sandbox,
 	SandboxCommand,
+	SandboxEgress,
+	SandboxKind,
+	SandboxPort,
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
@@ -29,7 +38,14 @@ import type {
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
-import { sizeSpec } from "./compute-model.ts";
+import {
+	cliLoginCommand,
+	cliSshCommand,
+	FilesRefusedError,
+	sameProxySettings,
+	sizeSpec,
+	sshWithoutCliCommand,
+} from "./compute-model.ts";
 
 /** The code the fixtures' waiting command line showed. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
@@ -118,6 +134,7 @@ export const API_SERVER = sandbox({
 	hostId: "hst_hetzner_1",
 	shared: true,
 	createdBy: "Alex Kemp",
+	environment: { id: "env_backend", name: "backend-dev" },
 });
 
 export const DEV_STACK = sandbox({
@@ -134,6 +151,7 @@ export const DEV_STACK = sandbox({
 	usage: usageSeries(9, 0.6),
 	hostId: "hst_hetzner_1",
 	shared: true,
+	environment: { id: "env_backend", name: "backend-dev" },
 });
 
 export const SCRATCH = sandbox({
@@ -197,6 +215,7 @@ export const EVAL_RUNNER = sandbox({
 	hostId: "hst_home",
 	error: "The machine stopped answering. Its disk is safe: recover it, or resume it on another host.",
 	forkedFrom: DEV_STACK.id,
+	environment: { id: "env_evals", name: "evals" },
 });
 
 export const NEW_ONE = sandbox({
@@ -360,6 +379,21 @@ const TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
 	],
 	"home/user/app": [
 		{ name: "src", path: "home/user/app/src", kind: "folder" },
+		{ name: "node_modules", path: "home/user/app/node_modules", kind: "folder", modifiedAt: FIXTURE_NOW - 2 * DAY },
+		{
+			name: "README.md",
+			path: "home/user/app/README.md",
+			kind: "file",
+			sizeBytes: 1_902,
+			modifiedAt: FIXTURE_NOW - 3 * DAY,
+		},
+		{
+			name: "tsconfig.json",
+			path: "home/user/app/tsconfig.json",
+			kind: "file",
+			sizeBytes: 318,
+			modifiedAt: FIXTURE_NOW - 2 * DAY,
+		},
 		{
 			name: "docker-compose.yml",
 			path: "home/user/app/docker-compose.yml",
@@ -397,7 +431,64 @@ const TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
 	],
 };
 
+/**
+ * An isolate's files: its workspace and nothing else. The host refuses any other path ("/ is outside /workspace, an
+ * isolate's only files"), as the fixtures do.
+ */
+const WORKSPACE_TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
+	workspace: [
+		{ name: "src", path: "workspace/src", kind: "folder" },
+		{
+			name: ".gitignore",
+			path: "workspace/.gitignore",
+			kind: "file",
+			sizeBytes: 24,
+			modifiedAt: FIXTURE_NOW - 5 * MINUTE,
+		},
+		{
+			name: "README.md",
+			path: "workspace/README.md",
+			kind: "file",
+			sizeBytes: 214,
+			modifiedAt: FIXTURE_NOW - 4 * MINUTE,
+		},
+		{
+			name: "package.json",
+			path: "workspace/package.json",
+			kind: "file",
+			sizeBytes: 168,
+			modifiedAt: FIXTURE_NOW - 4 * MINUTE,
+		},
+	],
+	"workspace/src": [
+		{
+			name: "index.ts",
+			path: "workspace/src/index.ts",
+			kind: "file",
+			sizeBytes: 96,
+			modifiedAt: FIXTURE_NOW - 2 * MINUTE,
+		},
+	],
+};
+
+/** A folder of a sample sandbox or snapshot of this kind: an isolate's refuses anything outside /workspace. */
+export function sampleFolder(kind: SandboxKind | undefined, path: string): readonly SnapshotEntry[] {
+	const key = path.replace(/^\/+|\/+$/g, "");
+	if (kind !== "isolate") return TREE[key] ?? [];
+	if (key !== "workspace" && !key.startsWith("workspace/")) {
+		throw new FilesRefusedError(`/${key} is outside /workspace, an isolate's only files`);
+	}
+	const entries = WORKSPACE_TREE[key];
+	if (entries === undefined) throw new FilesRefusedError(`There's no folder /${key}.`);
+	return entries;
+}
+
 const FILES: Readonly<Record<string, string>> = {
+	"workspace/.gitignore": "node_modules\ndist\n.env\n",
+	"workspace/README.md":
+		"# scratch\n\nA quick place to try things. Everything here is in /workspace, the only files an isolate has.\n",
+	"workspace/package.json": '{\n  "name": "scratch",\n  "private": true,\n  "type": "module"\n}\n',
+	"workspace/src/index.ts": 'console.log("hello from an isolate");\n',
 	"etc/hostname": "api-server\n",
 	"etc/os-release": 'PRETTY_NAME="Ubuntu 24.04.3 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\n',
 	"home/user/.bashrc": "# ~/.bashrc\nexport PATH=$HOME/.local/bin:$PATH\nalias ll='ls -la'\n",
@@ -409,7 +500,51 @@ const FILES: Readonly<Record<string, string>> = {
 		'{\n  "name": "app",\n  "private": true,\n  "type": "module",\n  "scripts": {\n    "dev": "node --watch src/server.ts"\n  }\n}\n',
 	"home/user/app/src/server.ts":
 		'import { createServer } from "node:http";\n\ncreateServer((_, res) => res.end("ok")).listen(3000);\n',
+	"home/user/app/README.md":
+		"# app\n\nA small API for the dev stack.\n\n## Run it\n\n```sh\npnpm install\npnpm dev\n```\n\nIt listens on 3000.\n",
+	"home/user/app/tsconfig.json":
+		'{\n  "compilerOptions": {\n    "target": "es2023",\n    "module": "nodenext",\n    "strict": true\n  }\n}\n',
 };
+
+const sampleText = new TextEncoder();
+let syslog: Uint8Array | undefined;
+
+/**
+ * A sample file's bytes: its text; for the screenshot, a PNG's signature and then zeros, to its size; for the syslog,
+ * lines written out to its size, so the preview reads a part of it.
+ */
+function sampleBytes(path: string): Uint8Array {
+	const key = path.replace(/^\/+/, "");
+	const text = FILES[key];
+	if (text !== undefined) return sampleText.encode(text);
+	if (key === "home/user/app/screenshot.png") {
+		const png = new Uint8Array(248_113);
+		png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		return png;
+	}
+	if (key === "var/log/syslog") {
+		if (syslog === undefined) {
+			const lines: string[] = [];
+			let size = 0;
+			for (let at = 0; size < 2_481_662; at += 1) {
+				const second = String(at % 60).padStart(2, "0");
+				const line = `Nov  4 09:${String(Math.floor(at / 60) % 60).padStart(2, "0")}:${second} api-server node[812]: GET /health 200 ${at % 7}ms\n`;
+				lines.push(line);
+				size += line.length;
+			}
+			syslog = sampleText.encode(lines.join("")).subarray(0, 2_481_662);
+		}
+		return syslog;
+	}
+	throw new Error(`There's no ${path} here.`);
+}
+
+/** The part of a sample file a range asks for, and its size. */
+export function samplePart(path: string, range: FileRange): FilePart {
+	const bytes = sampleBytes(path);
+	const start = Math.min(range.offset, bytes.byteLength);
+	return { bytes: bytes.subarray(start, Math.min(start + range.length, bytes.byteLength)), size: bytes.byteLength };
+}
 
 export const KEYS: readonly ApiKey[] = [
 	{
@@ -473,54 +608,252 @@ export const PROXY: ProxySettings = {
 	allow: ["api.github.com", "*.githubusercontent.com", "registry.npmjs.org", "pypi.org", "*.pythonhosted.org"],
 	deny: ["169.254.169.254"],
 	upstream: { url: "https://mehen.internal.example.com:8443", authSet: true },
-	tlsInspection: true,
-	headers: [
-		{ id: "hdr_gh", host: "api.github.com", header: "Authorization", set: true },
-		{ id: "hdr_npm", host: "registry.npmjs.org", header: "Authorization", set: true },
-	],
 	logRequests: true,
 };
 
-const proxyRequest = (
+const GITHUB: DestinationBinding = { host: "api.github.com", pathPrefixes: [], methods: [] };
+
+/** The organisation's environments: one for backend work, one for evals. */
+export const ENVIRONMENTS: readonly Environment[] = [
+	{
+		id: "env_backend",
+		accountId: LLEVERAGE.id,
+		name: "backend-dev",
+		description: "The API and its workers, with GitHub, npm and OpenAI.",
+		variables: [
+			{ name: "NODE_ENV", protected: false, value: "development", bindings: [], updatedAt: FIXTURE_NOW - 6 * DAY },
+			{
+				name: "DATABASE_URL",
+				protected: false,
+				value: "postgres://app:app@localhost:5432/app",
+				bindings: [],
+				updatedAt: FIXTURE_NOW - 6 * DAY,
+			},
+			{
+				name: "GH_TOKEN",
+				protected: true,
+				bindings: [GITHUB, { host: "github.com", pathPrefixes: ["/lleverage-ai/"], methods: [] }],
+				updatedAt: FIXTURE_NOW - 2 * HOUR,
+			},
+			{
+				name: "NPM_TOKEN",
+				protected: true,
+				bindings: [{ host: "registry.npmjs.org", pathPrefixes: [], methods: ["GET", "PUT"] }],
+				updatedAt: FIXTURE_NOW - 3 * DAY,
+			},
+			{
+				name: "OPENAI_API_KEY",
+				protected: true,
+				bindings: [{ host: "api.openai.com", pathPrefixes: ["/v1/"], methods: ["POST", "GET"] }],
+				updatedAt: FIXTURE_NOW - 5 * DAY,
+			},
+		],
+		files: [
+			{ path: "/home/user/.npmrc", mode: 0o600, sizeBytes: 112, updatedAt: FIXTURE_NOW - 3 * DAY },
+			{ path: "/home/user/.config/app/dev.env", mode: 0o600, sizeBytes: 486, updatedAt: FIXTURE_NOW - 6 * DAY },
+		],
+		repos: [
+			{ url: "https://github.com/lleverage-ai/kantel", ref: "main" },
+			{ url: "https://github.com/lleverage-ai/agent-sdk", path: "/home/user/src/agent-sdk" },
+		],
+		grants: [
+			{ id: "grt_gh", action: "allow", host: "api.github.com", methods: [], paths: [] },
+			{ id: "grt_gh_delete", action: "deny", host: "api.github.com", methods: ["DELETE"], paths: ["/repos/*"] },
+			{ id: "grt_npm", action: "allow", host: "registry.npmjs.org", methods: [], paths: [] },
+			{ id: "grt_tracker", action: "deny", host: "*.example-tracker.io", methods: [], paths: [] },
+		],
+		sandboxCount: 2,
+		createdAt: FIXTURE_NOW - 6 * DAY,
+		updatedAt: FIXTURE_NOW - 2 * HOUR,
+	},
+	{
+		id: "env_evals",
+		accountId: LLEVERAGE.id,
+		name: "evals",
+		description: "The nightly eval runners.",
+		variables: [
+			{ name: "EVAL_SUITE", protected: false, value: "nightly", bindings: [], updatedAt: FIXTURE_NOW - 2 * DAY },
+			{
+				name: "ANTHROPIC_API_KEY",
+				protected: true,
+				bindings: [{ host: "api.anthropic.com", pathPrefixes: ["/v1/messages"], methods: ["POST"] }],
+				updatedAt: FIXTURE_NOW - 2 * DAY,
+			},
+		],
+		files: [],
+		repos: [{ url: "https://github.com/lleverage-ai/evals" }],
+		grants: [{ id: "grt_anthropic", action: "allow", host: "api.anthropic.com", methods: [], paths: [] }],
+		sandboxCount: 1,
+		createdAt: FIXTURE_NOW - 2 * DAY,
+		updatedAt: FIXTURE_NOW - 2 * DAY,
+	},
+];
+
+const egressEntry = (
 	id: string,
 	ago: number,
-	box: Sandbox,
-	method: string,
-	host: string,
-	path: string,
-	status: number,
-	decision: ProxyRequest["decision"],
-	bytes: number,
-): ProxyRequest => ({
+	fields: Omit<EgressEntry, "id" | "at" | "port" | "swapped" | "inspected" | "bytesUp" | "bytesDown"> &
+		Partial<Pick<EgressEntry, "port" | "swapped" | "inspected" | "bytesUp" | "bytesDown">>,
+): EgressEntry => ({
 	id,
 	at: FIXTURE_NOW - ago,
-	sandboxId: box.id,
-	sandboxName: box.name,
-	method,
-	host,
-	path,
-	status,
-	decision,
-	bytes,
+	port: 443,
+	swapped: [],
+	inspected: false,
+	bytesUp: 0,
+	bytesDown: 0,
+	...fields,
 });
 
-export const PROXY_REQUESTS: readonly ProxyRequest[] = [
-	proxyRequest("req_1", 4_000, API_SERVER, "GET", "registry.npmjs.org", "/react", 200, "allowed", 18_220),
-	proxyRequest(
-		"req_2",
-		9_000,
-		DEV_STACK,
-		"POST",
-		"api.github.com",
-		"/repos/lleverage-ai/kantel/pulls",
-		201,
-		"allowed",
-		4_210,
-	),
-	proxyRequest("req_3", 31_000, SCRATCH, "GET", "example-tracker.io", "/collect", 403, "denied", 0),
-	proxyRequest("req_4", 75_000, DEV_STACK, "GET", "pypi.org", "/simple/httpx/", 200, "allowed", 9_871),
-	proxyRequest("req_5", 2 * MINUTE, API_SERVER, "GET", "169.254.169.254", "/latest/meta-data/", 403, "denied", 0),
+/** dev-stack's recent egress: swaps, a tunnel, a placeholder sent to the wrong host and two refusals. */
+export const EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_9", 3_000, {
+		method: "GET",
+		host: "api.github.com",
+		path: "/user",
+		decision: "allowed",
+		swapped: ["GH_TOKEN"],
+		inspected: true,
+		status: 200,
+		bytesUp: 412,
+		bytesDown: 1_380,
+	}),
+	egressEntry("egr_8", 8_000, {
+		method: "POST",
+		host: "webhook.site",
+		path: "/3f9a1c",
+		decision: "denied",
+		reason: "GH_TOKEN's placeholder was sent to webhook.site, which it isn't bound to. Kantel didn't swap it.",
+		code: "placeholder-unbound",
+		inspected: true,
+		status: 403,
+		bytesUp: 220,
+	}),
+	egressEntry("egr_7", 14_000, {
+		method: "DELETE",
+		host: "api.github.com",
+		path: "/repos/lleverage-ai/kantel/branches/old",
+		decision: "denied",
+		code: "denied",
+		reason: "Denied by the environment's grant.",
+		rule: "deny DELETE api.github.com /repos/*",
+		inspected: true,
+		status: 403,
+		bytesUp: 380,
+	}),
+	egressEntry("egr_6", 40_000, {
+		method: "POST",
+		host: "api.openai.com",
+		path: "/v1/responses",
+		decision: "allowed",
+		swapped: ["OPENAI_API_KEY"],
+		inspected: true,
+		status: 200,
+		bytesUp: 2_904,
+		bytesDown: 18_220,
+	}),
+	egressEntry("egr_5", 55_000, {
+		method: "CONNECT",
+		host: "pypi.org",
+		decision: "allowed",
+		bytesUp: 1_840,
+		bytesDown: 92_610,
+	}),
+	egressEntry("egr_4", 70_000, {
+		method: "CONNECT",
+		host: "collect.example-tracker.io",
+		decision: "denied",
+		code: "denied",
+		reason: "Denied by the environment's grant.",
+		rule: "deny *.example-tracker.io",
+	}),
+	egressEntry("egr_3", 2 * MINUTE, {
+		method: "GET",
+		host: "registry.npmjs.org",
+		path: "/@lleverage-ai%2fagent-sdk",
+		decision: "allowed",
+		swapped: ["NPM_TOKEN"],
+		inspected: true,
+		status: 200,
+		bytesUp: 380,
+		bytesDown: 24_100,
+	}),
+	egressEntry("egr_2", 3 * MINUTE, {
+		method: "GET",
+		host: "api.github.com",
+		path: "/repos/lleverage-ai/kantel/pulls",
+		decision: "allowed",
+		inspected: true,
+		status: 200,
+		bytesUp: 300,
+		bytesDown: 41_280,
+	}),
+	egressEntry("egr_1", 4 * MINUTE, {
+		method: "GET",
+		host: "169.254.169.254",
+		port: 80,
+		path: "/latest/meta-data/",
+		decision: "denied",
+		reason: "169.254.169.254 isn't on the public internet.",
+		status: 403,
+	}),
 ];
+
+/** scratch's: an isolate with no environment, so only the account's rules decide. */
+export const SCRATCH_EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_s3", 20_000, {
+		method: "CONNECT",
+		host: "registry.npmjs.org",
+		decision: "allowed",
+		bytesUp: 2_210,
+		bytesDown: 418_400,
+	}),
+	egressEntry("egr_s2", 31_000, {
+		method: "CONNECT",
+		host: "example-tracker.io",
+		decision: "denied",
+		// As the host records it: every refusal by the rules is `denied`, its reason saying which.
+		code: "denied",
+		reason: "example-tracker.io isn't on the proxy settings' allow list.",
+	}),
+	egressEntry("egr_s1", 5 * MINUTE, {
+		method: "CONNECT",
+		host: "pypi.org",
+		decision: "allowed",
+		bytesUp: 1_120,
+		bytesDown: 61_900,
+	}),
+];
+
+/** eval-runner-12's, before its machine stopped answering: its Anthropic key swapped in. */
+export const EVAL_EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_e1", 12 * MINUTE, {
+		method: "POST",
+		host: "api.anthropic.com",
+		path: "/v1/messages",
+		decision: "allowed",
+		swapped: ["ANTHROPIC_API_KEY"],
+		inspected: true,
+		status: 200,
+		bytesUp: 8_400,
+		bytesDown: 3_120,
+	}),
+];
+
+/** Each sandbox's log; the others haven't sent anything. */
+const EGRESS_LOGS: Readonly<Record<string, readonly EgressEntry[]>> = {
+	[DEV_STACK.id]: EGRESS_LOG,
+	[SCRATCH.id]: SCRATCH_EGRESS_LOG,
+	[EVAL_RUNNER.id]: EVAL_EGRESS_LOG,
+};
+
+/** Placeholders as each of the environment's sandboxes has them: sample text, not real ones. */
+const placeholderOf = (sandboxId: string, name: string): string => {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+	let seed = 0;
+	for (const char of `${sandboxId}/${name}`) seed = (seed * 31 + char.charCodeAt(0)) % 1_000_003;
+	return `kph_${Array.from({ length: 4 }, (_, at) => alphabet[(seed * (at + 7)) % alphabet.length]).join("")}`;
+};
 
 const delivery = (
 	id: string,
@@ -736,6 +1069,16 @@ export const COMMANDS: readonly SandboxCommand[] = [
 		by: "GitHub Actions",
 	},
 	{
+		id: "cmd_4b",
+		command: "pnpm build",
+		startedAt: FIXTURE_NOW - 9 * MINUTE,
+		durationMs: 18_300,
+		exitCode: 1,
+		by: "Claude Code on Tom's laptop",
+		output:
+			"> tsc -p tsconfig.build.json\nsrc/routes/sandboxes.ts(212,7): error TS2322: Type 'string | undefined' is not assignable to type 'string'.\nFound 1 error in src/routes/sandboxes.ts:212\n ELIFECYCLE  Command failed with exit code 1.",
+	},
+	{
 		id: "cmd_4",
 		command: "docker compose up -d db",
 		startedAt: FIXTURE_NOW - 18 * MINUTE,
@@ -769,6 +1112,17 @@ export const COMMANDS: readonly SandboxCommand[] = [
 	},
 ];
 
+/** The ports the sample sandboxes have given a URL. */
+export const PORTS: Readonly<Record<string, readonly SandboxPort[]>> = {
+	[API_SERVER.id]: [
+		{ port: 3000, url: `https://3000-${API_SERVER.hostname}`, public: false, createdAt: FIXTURE_NOW - 2 * HOUR },
+		{ port: 8080, url: `https://8080-${API_SERVER.hostname}`, public: true, createdAt: FIXTURE_NOW - 40 * MINUTE },
+	],
+	[DEV_STACK.id]: [
+		{ port: 5173, url: `https://5173-${DEV_STACK.hostname}`, public: false, createdAt: FIXTURE_NOW - DAY },
+	],
+};
+
 export interface ComputeFixtureOptions {
 	readonly hosting?: HostingMode;
 	/** The time the source is at; default `FIXTURE_NOW`. Pass `Date.now()` for a live console. */
@@ -783,6 +1137,13 @@ export interface ComputeFixtureOptions {
 	readonly settleMs?: number;
 	/** The viewer is not a super-admin. */
 	readonly notSuperAdmin?: boolean;
+	/** A new install's first run: no hosts, so no sandboxes either, with the rest as usual. */
+	readonly noHosts?: boolean;
+	/**
+	 * Where hosts reach the control plane, as the deployment set it. Default a default install's loopback address
+	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
+	 */
+	readonly publicUrl?: string;
 }
 
 let counter = 0;
@@ -822,7 +1183,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	};
 
 	const sandboxes = new Map<string, Sandbox>(
-		(empty ? [] : SANDBOXES).map((box) => {
+		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
 			const copy = moved(box, ["createdAt", "stopsAt"]);
 			const snapshot =
 				box.snapshot === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
@@ -835,6 +1196,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const history = new Map<string, SandboxSnapshot[]>(
 		[...sandboxes.values()].map((box) => [box.id, [...historyFor(box)]]),
 	);
+	/** The kind of sandbox a snapshot is of: a saved one's own, or its sandbox's. */
+	const snapshotKind = (snapshotId: string): SandboxKind | undefined => {
+		const named = saved.get(snapshotId);
+		if (named !== undefined) return named.kind;
+		for (const box of sandboxes.values()) {
+			if (box.snapshot?.id === snapshotId || history.get(box.id)?.some((snap) => snap.id === snapshotId)) {
+				return box.kind;
+			}
+		}
+		return undefined;
+	};
 	const keys = new Map<string, ApiKey>(
 		(empty ? [] : KEYS).map((key) => [key.id, moved(key, ["createdAt", "lastUsedAt", "expiresAt", "revokedAt"])]),
 	);
@@ -851,9 +1223,37 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		Object.entries(DELIVERIES).map(([id, list]) => [id, list.map((entry) => moved(entry, ["at"]))]),
 	);
 	const hosts = new Map<string, Host>(
-		(empty ? [] : HOSTS).map((host) => [host.id, moved(host, ["lastSeenAt", "joinedAt"])]),
+		(empty || options.noHosts === true ? [] : HOSTS).map((host) => [host.id, moved(host, ["lastSeenAt", "joinedAt"])]),
 	);
+	const deploymentUrl =
+		options.publicUrl ?? (hosting === "hosted" ? "https://kantel.example.com" : "http://127.0.0.1:58090");
+	let publicUrlSet: string | undefined;
+	const publicUrl = (): PublicUrl => {
+		const url = publicUrlSet ?? deploymentUrl;
+		return {
+			publicUrl: url,
+			setHere: publicUrlSet !== undefined,
+			deploymentUrl,
+			loopback: /^https?:\/\/(127\.|localhost|\[::1\]|0\.0\.0\.0)/.test(url),
+		};
+	};
 	const proxies = new Map<string, ProxySettings>();
+	const environments = new Map<string, Environment>(
+		(empty ? [] : ENVIRONMENTS).map((env) => [
+			env.id,
+			{
+				...moved(env, ["createdAt", "updatedAt"]),
+				variables: env.variables.map((variable) => moved(variable, ["updatedAt"])),
+				files: env.files.map((file) => moved(file, ["updatedAt"])),
+			},
+		]),
+	);
+	const ports = new Map<string, readonly SandboxPort[]>(
+		empty ? [] : Object.entries(PORTS).map(([id, list]) => [id, list.map((entry) => moved(entry, ["createdAt"]))]),
+	);
+	const sandboxGrants = new Map<string, readonly EgressGrant[]>(
+		empty ? [] : [[DEV_STACK.id, [{ id: "grt_dev_pypi", action: "allow", host: "pypi.org", methods: [], paths: [] }]]],
+	);
 	const telemetry = new Map<string, TelemetrySettings>();
 	const accounts: ComputeAccount[] = [PERSONAL, LLEVERAGE, EVALS];
 	const members = new Map<string, OrganisationMember[]>([
@@ -895,6 +1295,16 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		await new Promise((resolve) => setTimeout(resolve, 60));
 		return make();
 	};
+	/** Refuses a grant write made from an older read, as Kantel's API does with `conflict`. */
+	const requireGrants = (expected: readonly EgressGrant[] | undefined, now: readonly EgressGrant[], what: string) => {
+		const key = (grants: readonly EgressGrant[]) =>
+			JSON.stringify(grants.map((grant) => [grant.id, grant.action, grant.host, grant.methods, grant.paths]));
+		if (expected !== undefined && key(expected) !== key(now)) {
+			throw Object.assign(new Error(`${what} changed since you read them; read them again and redo the change`), {
+				code: "conflict",
+			});
+		}
+	};
 	const find = <T>(map: Map<string, T>, id: string, what: string): T => {
 		const found = map.get(id);
 		if (found === undefined) throw new Error(`No ${what} ${id}.`);
@@ -903,6 +1313,31 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const put = (box: Sandbox): Sandbox => {
 		sandboxes.set(box.id, box);
 		return box;
+	};
+	const putEnvironment = (env: Environment): Environment => {
+		const next = { ...env, updatedAt: now() };
+		environments.set(env.id, next);
+		return next;
+	};
+	const egressOf = (sandboxId: string): SandboxEgress => {
+		const box = find(sandboxes, sandboxId, "sandbox");
+		const env = box.environment === undefined ? undefined : environments.get(box.environment.id);
+		return {
+			sandboxId: box.id,
+			sandboxName: box.name,
+			accountId: box.accountId,
+			...(box.environment === undefined ? {} : { environment: box.environment }),
+			protectedVariables: (env?.variables ?? [])
+				.filter((variable) => variable.protected)
+				.map((variable) => ({
+					name: variable.name,
+					placeholderPrefix: placeholderOf(box.id, variable.name),
+					bindings: variable.bindings,
+				})),
+			environmentGrants: env?.grants ?? [],
+			grants: sandboxGrants.get(box.id) ?? [],
+			entries: (EGRESS_LOGS[box.id] ?? []).map((entry) => moved(entry, ["at"])),
+		};
 	};
 	/** Moves a sandbox to `to` after `settleMs`, as a host would report. */
 	const settle = (id: string, to: (box: Sandbox) => Sandbox) => {
@@ -1018,6 +1453,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
 						hostId: input.kind === "isolate" ? "hst_home" : "hst_hetzner_1",
 						shared: input.accountId !== PERSONAL.id,
+						...(input.environmentId === undefined
+							? {}
+							: {
+									environment: {
+										id: input.environmentId,
+										name: find(environments, input.environmentId, "environment").name,
+									},
+								}),
 					};
 					put(box);
 					history.set(id, []);
@@ -1083,17 +1526,82 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const box = find(sandboxes, id, "sandbox");
 					const token = fakeSecret("").slice(0, 16);
 					return {
-						ssh: `ssh ${box.id}@ssh.kantel.example.com`,
+						ssh: cliSshCommand(box.id),
+						cliLogin: cliLoginCommand("https://kantel.example.com"),
+						sshWithoutCli: true,
 						desktopUrl: `https://${box.hostname}/desktop?token=${token}`,
 						desktopViewUrl: `https://${box.hostname}/desktop?token=${token}#shared`,
 						browserUrl: `https://${box.hostname}/browser?token=${token}`,
 					};
 				}),
+			sshKey: (id, publicKey) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const target = {
+						sandboxId: box.id,
+						user: "user",
+						host: "kantel.example.com",
+						port: 443,
+						proxyUrl: `wss://kantel.example.com/v1/hosts/tunnel/${fakeSecret("").slice(0, 24)}`,
+					};
+					const shown = {
+						hostKeyFingerprint: "SHA256:q8Yf3uZb1nO0xT4rWk7mJcVd2sLhP9aE6gRiKy5tBvU",
+						expiresAt: now() + 10 * MINUTE,
+					};
+					if (publicKey !== undefined) return { command: sshWithoutCliCommand(target), ...shown };
+					const keyFile = { name: `kantel-${box.id}`, path: `~/Downloads/kantel-${box.id}` };
+					return {
+						command: sshWithoutCliCommand(target, keyFile.path),
+						privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n${fakeSecret("sample")}\n-----END OPENSSH PRIVATE KEY-----\n`,
+						keyFile,
+						...shown,
+					};
+				}),
 			history: (id) =>
 				gate(() => {
-					find(sandboxes, id, "sandbox");
-					return COMMANDS.map((command) => moved(command, ["startedAt"]));
+					const box = find(sandboxes, id, "sandbox");
+					// Commands ran only in a sandbox that has been up: one starting for the first time has none yet.
+					return box.state === "starting" && box.snapshot === undefined
+						? []
+						: COMMANDS.map((command) => moved(command, ["startedAt"]));
 				}),
+			get: (id) => gate(() => find(sandboxes, id, "sandbox")),
+			setAutoStop: (id, minutes) =>
+				gate(() => {
+					const { stopsAt: _, ...box } = find(sandboxes, id, "sandbox");
+					return put(minutes === undefined ? box : { ...box, stopsAt: now() + minutes * MINUTE });
+				}),
+			usageNow: (id) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const spec = box.resources ?? sizeSpec(box.size);
+					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
+				}),
+			ports: (id) => gate(() => [...(ports.get(id) ?? [])].sort((a, b) => a.port - b.port)),
+			exposePort: (id, port, isPublic) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const url = `https://${port}-${box.hostname}`;
+					const entry: SandboxPort = { port, url, public: isPublic, createdAt: now() };
+					ports.set(id, [...(ports.get(id) ?? []).filter((each) => each.port !== port), entry]);
+					// A private port's answer carries its token, once.
+					return isPublic ? entry : { ...entry, url: `${url}?token=${fakeSecret("").slice(0, 16)}` };
+				}),
+			hidePort: (id, port) =>
+				gate(() => {
+					ports.set(
+						id,
+						(ports.get(id) ?? []).filter((each) => each.port !== port),
+					);
+				}),
+			files: {
+				list: (id, path) =>
+					gate(() => ({
+						entries: sampleFolder(sandboxes.get(id)?.kind, path).map((entry) => moved(entry, ["modifiedAt"])),
+						more: false,
+					})),
+				read: (_id, path, range) => gate(() => samplePart(path, range)),
+			},
 		},
 		snapshots: {
 			saved: (accountId) =>
@@ -1137,9 +1645,10 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						);
 					}
 				}),
-			list: (_snapshotId, path) =>
-				gate(() => (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"]))),
-			read: (_snapshotId, path) => gate(() => FILES[path.replace(/^\/+/, "")]),
+			list: (snapshotId, path) =>
+				gate(() => sampleFolder(snapshotKind(snapshotId), path).map((entry) => moved(entry, ["modifiedAt"]))),
+			kindOf: (snapshotId) => gate(() => snapshotKind(snapshotId) ?? "microvm"),
+			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,
 		},
@@ -1184,27 +1693,29 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									policy: "open",
 									allow: [],
 									deny: [],
-									tlsInspection: false,
-									headers: [],
 									logRequests: false,
 								}),
 				),
 			update: (accountId, change) =>
 				gate(async () => {
 					const current = proxies.get(accountId) ?? (await source.proxy.get(accountId));
-					const { upstream, headers, ...rest } = change;
-					const next: ProxySettings = {
-						...current,
-						...rest,
-						...(headers === undefined
-							? {}
-							: {
-									headers: headers.map(({ value, ...header }) => ({
-										...header,
-										set: header.set || value !== undefined,
-									})),
-								}),
-					};
+					const { upstream, expected, ...rest } = change;
+					// As with Kantel's API, a change made from an older read is refused.
+					if (expected !== undefined && !sameProxySettings(expected, current)) {
+						throw Object.assign(
+							new Error("The proxy settings changed since you read them; read them again and redo the change"),
+							{ code: "conflict" },
+						);
+					}
+					const merged: ProxySettings = { ...current, ...rest };
+					// As with Kantel's API, nothing allowed is closed: closing empties the allow list, and Allowed hosts with
+					// none allowed reads back as closed.
+					const next: ProxySettings =
+						merged.policy === "closed"
+							? { ...merged, allow: [] }
+							: merged.policy === "allowlist" && merged.allow.length === 0
+								? { ...merged, policy: "closed" }
+								: merged;
 					const withUpstream: ProxySettings =
 						upstream === undefined
 							? next
@@ -1214,14 +1725,140 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 										...next,
 										upstream: {
 											url: upstream.url,
-											authSet: upstream.auth !== undefined || current.upstream?.authSet === true,
+											// No `auth` keeps the credentials; an empty one removes them.
+											authSet: upstream.auth === undefined ? current.upstream?.authSet === true : upstream.auth !== "",
 										},
 									};
 					proxies.set(accountId, withUpstream);
 					return withUpstream;
 				}),
-			recent: (accountId) =>
-				gate(() => (accountId === LLEVERAGE.id && !empty ? PROXY_REQUESTS.map((entry) => moved(entry, ["at"])) : [])),
+		},
+		environments: {
+			list: (accountId) =>
+				gate(() =>
+					[...environments.values()]
+						.filter((env) => env.accountId === accountId)
+						.sort((a, b) => a.name.localeCompare(b.name)),
+				),
+			get: (id) => gate(() => find(environments, id, "environment")),
+			create: (input) =>
+				gate(() => {
+					const name = input.name.trim();
+					if ([...environments.values()].some((env) => env.accountId === input.accountId && env.name === name)) {
+						throw new Error(`There's already an environment called ${name}.`);
+					}
+					const env: Environment = {
+						id: nextId("env"),
+						accountId: input.accountId,
+						name,
+						...(input.description === undefined || input.description === "" ? {} : { description: input.description }),
+						variables: [],
+						files: [],
+						repos: [],
+						grants: [],
+						sandboxCount: 0,
+						createdAt: now(),
+						updatedAt: now(),
+					};
+					environments.set(env.id, env);
+					return env;
+				}),
+			update: (id, change) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const { description: _, ...rest } = env;
+					const description = change.description ?? env.description;
+					return putEnvironment({
+						...rest,
+						name: change.name?.trim() || env.name,
+						...(description === undefined || description === "" ? {} : { description }),
+					});
+				}),
+			remove: (id) =>
+				gate(() => {
+					find(environments, id, "environment");
+					environments.delete(id);
+				}),
+			setVariable: (id, input) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const existing = env.variables.find((variable) => variable.name === input.name);
+					if (input.protected && input.bindings.length === 0) {
+						throw new Error("A protected variable needs at least one host it's bound to.");
+					}
+					if (input.value === undefined && (existing === undefined || existing.protected !== input.protected)) {
+						throw new Error(`Give ${input.name} a value.`);
+					}
+					const value = input.value ?? existing?.value;
+					const variable = {
+						name: input.name,
+						protected: input.protected,
+						...(input.protected || value === undefined ? {} : { value }),
+						bindings: input.protected ? input.bindings : [],
+						updatedAt: now(),
+					};
+					return putEnvironment({
+						...env,
+						variables:
+							existing === undefined
+								? [...env.variables, variable]
+								: env.variables.map((each) => (each.name === input.name ? variable : each)),
+					});
+				}),
+			removeVariable: (id, name) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					return putEnvironment({ ...env, variables: env.variables.filter((variable) => variable.name !== name) });
+				}),
+			setFile: (id, input) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const existing = env.files.find((file) => file.path === input.path);
+					if (input.content === undefined && existing === undefined)
+						throw new Error(`Give ${input.path} its contents.`);
+					const file = {
+						path: input.path,
+						mode: input.mode,
+						sizeBytes: input.content === undefined ? (existing?.sizeBytes ?? 0) : new Blob([input.content]).size,
+						updatedAt: now(),
+					};
+					return putEnvironment({
+						...env,
+						files:
+							existing === undefined
+								? [...env.files, file]
+								: env.files.map((each) => (each.path === input.path ? file : each)),
+					});
+				}),
+			removeFile: (id, path) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					return putEnvironment({ ...env, files: env.files.filter((file) => file.path !== path) });
+				}),
+			setRepos: (id, repos) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const urls = repos.map((repo) => repo.url);
+					const twice = urls.find((url, at) => urls.indexOf(url) !== at);
+					if (twice !== undefined) throw new Error(`${twice} is in the list twice.`);
+					return putEnvironment({ ...env, repos });
+				}),
+			setGrants: (id, grants, expected) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					requireGrants(expected, env.grants, "The environment's grants");
+					return putEnvironment({ ...env, grants });
+				}),
+		},
+		egress: {
+			get: (sandboxId) => gate(() => egressOf(sandboxId)),
+			setGrants: (sandboxId, grants, expected) =>
+				gate(() => {
+					find(sandboxes, sandboxId, "sandbox");
+					requireGrants(expected, sandboxGrants.get(sandboxId) ?? [], "The sandbox's grants");
+					sandboxGrants.set(sandboxId, grants);
+					return egressOf(sandboxId);
+				}),
 		},
 		webhooks: {
 			list: (accountId) => gate(() => [...webhooks.values()].filter((hook) => hook.accountId === accountId)),
@@ -1320,9 +1957,20 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								return {
 									token,
 									expiresAt: now() + HOUR,
-									command: `curl -fsSL https://kantel.example.com/install-host.sh | sh -s -- --join ${token}`,
+									command: `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url ${publicUrl().publicUrl} --token ${token}`,
 								};
 							}),
+						publicUrl: {
+							get: () => gate(publicUrl),
+							set: (url) =>
+								gate(() => {
+									if (url !== null && !/^https?:\/\/[^/\s]+\/?$/.test(url.trim())) {
+										throw new Error("The public URL is an origin, with no path, such as https://kantel.example.com");
+									}
+									publicUrlSet = url === null ? undefined : url.trim().replace(/\/$/, "");
+									return publicUrl();
+								}),
+						},
 						drain: (id) =>
 							gate(() => {
 								const host = { ...find(hosts, id, "host"), state: "draining" as const };

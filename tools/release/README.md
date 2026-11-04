@@ -5,18 +5,20 @@ A Kantel release is one version of everything, on the GitHub Release `v<version>
 | What | From | How people get it |
 | --- | --- | --- |
 | `kantel.js`, the user CLI and MCP server (Node.js 22+) | `packages/cli` | `install-cli.sh` installs it as `kantel` |
-| `kantel-admin.js`, the operator CLI (Node.js 22+) | `packages/admin` | `install-cli.sh` installs it as `kantel-admin`, or `curl -fsSLo kantel-admin …/releases/latest/download/kantel-admin.js` |
-| `install-cli.sh`, the CLIs' installer | `packages/cli/install-cli.sh` | `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh \| sh` |
+| `kantel-console.tar.gz`, the console's files, which `kantel console` serves on 127.0.0.1 | `apps/console` | `install-cli.sh` puts them in `~/.local/share/kantel/console`; the npm package has them in `console/` |
+| `kantel-admin.js`, the operator CLI (Node.js 22+) | `packages/admin` | `install-cli.sh --admin` installs it as `kantel-admin`, or `curl -fsSLo kantel-admin …/releases/latest/download/kantel-admin.js` |
+| `install-cli.sh`, the CLIs' installer | `packages/cli/install-cli.sh` | `curl -fsSL https://kantel.dev/cli.sh \| sh` (kantel.dev serves the repository's copy, unstamped, which installs the latest release), or this release's own stamped copy |
 | `kantel-host-linux-amd64`, `kantel-host-linux-arm64`, the host agent | `apps/host` | `install.sh` downloads it |
 | `install.sh`, the host installer | `apps/host/install.sh` | the join command: `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh \| sudo sh -s -- --url … --token kth_…` |
 | `SHA256SUMS` | | both installers check what they download against it |
 
 Both one-liners work pasted into bash, zsh and fish: the scripts run under `sh`.
 
-`install-cli.sh` needs no sudo: it puts the files in `~/.local/share/kantel` (`KANTEL_HOME`) as `kantel.mjs` and
-`kantel-admin.mjs`, so Node runs them as ES modules whatever is around them, and links `~/.local/bin/kantel` and
-`~/.local/bin/kantel-admin` to them. `sh -s -- --dir DIR` links them elsewhere, `--no-admin` skips `kantel-admin`,
-and `--version V` installs a release other than the script's own. Run it again to update.
+`install-cli.sh` needs no sudo: it puts the files in `~/.local/share/kantel` (`KANTEL_HOME`) as `kantel.mjs`,
+`kantel-admin.mjs` (with `--admin`) and `console/`, so Node runs them as ES modules whatever is around them, and links
+`~/.local/bin/kantel` (and `~/.local/bin/kantel-admin`) to them. An update keeps a `kantel-admin` it installed before
+unless given `--no-admin`. `sh -s -- --dir DIR` links them elsewhere, and `--version V` installs a release other than
+the script's own. Run it again to update.
 
 `kantel` is also built as the npm package `kantel`, and the workflow can publish it, but that is on hold until Kantel
 is ready for it: it runs only with `-f publish_npm=true`.
@@ -43,8 +45,8 @@ gh workflow run release.yml --repo lleverage-ai/kantel --ref main -f version=0.1
 ```
 
 It builds everything (`pack.sh`) and checks it (`smoke.sh`: every command prints the version, `SHA256SUMS` matches,
-`install.sh` installs a good binary and refuses a bad one, and `install-cli.sh` installs both CLIs for a user, updates
-them, and refuses a bad file or an old Node.js). Then it attests the release's files and makes the GitHub Release
+`install.sh` installs a good binary and refuses a bad one, and `install-cli.sh` installs `kantel` for a user, adds `kantel-admin` with `--admin`,
+updates both, and refuses a bad file or an old Node.js). Then it attests the release's files and makes the GitHub Release
 `v<version>` at the run's commit (`github-release.sh`). With `-f publish_npm=true` as well, it then publishes `kantel`
 to npm (`publish.sh`).
 
@@ -78,7 +80,7 @@ npm audit signatures   # in a project that installed kantel: checks its provenan
 ## Locally
 
 ```sh
-pnpm install --filter "@kantel/admin..."
+pnpm install --filter "@kantel/admin..." --filter "@kantel/console..."
 tools/release/pack.sh 0.1.0 /tmp/release
 tools/release/smoke.sh 0.1.0 /tmp/release
 tools/release/github-release.sh --dry-run 0.1.0 /tmp/release
