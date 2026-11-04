@@ -36,7 +36,7 @@ import type {
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
-import { sizeSpec } from "./compute-model.ts";
+import { sameProxySettings, sizeSpec } from "./compute-model.ts";
 
 /** The code the fixtures' waiting command line showed. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
@@ -1577,7 +1577,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			update: (accountId, change) =>
 				gate(async () => {
 					const current = proxies.get(accountId) ?? (await source.proxy.get(accountId));
-					const { upstream, ...rest } = change;
+					const { upstream, expected, ...rest } = change;
+					// As with Kantel's API, a change made from an older read is refused.
+					if (expected !== undefined && !sameProxySettings(expected, current)) {
+						throw Object.assign(
+							new Error("The proxy settings changed since you read them; read them again and redo the change"),
+							{ code: "conflict" },
+						);
+					}
 					const merged: ProxySettings = { ...current, ...rest };
 					// As with Kantel's API, nothing allowed is closed: closing empties the allow list, and Allowed hosts with
 					// none allowed reads back as closed.

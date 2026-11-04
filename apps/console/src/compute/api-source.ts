@@ -74,7 +74,7 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
-import { DeviceSetupError, FileTooLargeError } from "@kantel/ui";
+import { DeviceSetupError, FileTooLargeError, sameProxySettings } from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
@@ -92,6 +92,7 @@ type UiSavedSnapshot = Awaited<ReturnType<SnapshotsSource["saved"]>>[number];
 type UiSnapshotEntry = Awaited<ReturnType<SnapshotsSource["list"]>>[number];
 type UiApiKey = Awaited<ReturnType<ApiKeysSource["list"]>>[number];
 type UiProxySettings = Awaited<ReturnType<ProxySource["get"]>>;
+type UiProxyChange = Parameters<ProxySource["update"]>[1];
 type UiEgressPolicy = UiProxySettings["policy"];
 type UiWebhook = Awaited<ReturnType<WebhooksSource["list"]>>[number];
 type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
@@ -859,37 +860,63 @@ function proxyAuthorisation(auth: string): string {
 	return `Basic ${btoa(String.fromCharCode(...bytes))}`;
 }
 
+/** How many times a change is made on a fresh read when Kantel says the settings changed since it read them. */
+const PROXY_ATTEMPTS = 3;
+
+/**
+ * A PUT replaces the settings, so what a change leaves out is sent as it is now: as read just before, and sent with
+ * that read as the API's `expected`, so a change someone made in between is never undone. Kantel refuses such a write
+ * with `conflict`, and a change with no `expected` of its own is made again on a fresh read. One made from the caller's
+ * own read (`change.expected`) is refused when the settings no longer are that read, for the caller to redo.
+ */
 function proxySource({ api }: Context): ProxySource {
 	return {
 		get: async (accountId) => proxyOf(await api.getProxySettings({ account: accountId })),
 		update: async (accountId, change) => {
 			if (change.logRequests === false) throw notYet("Kantel's API always keeps each sandbox's newest requests.");
-			// A PUT replaces the settings, so what the change leaves out is sent as it is now.
-			const current = await api.getProxySettings({ account: accountId });
-			const policy = change.policy ?? policyOf(current);
-			let upstream: PutProxySettingsBody["upstream"];
-			if (change.upstream === null) upstream = null;
-			else if (change.upstream !== undefined) {
-				const { url, auth } = change.upstream;
-				// No `auth` keeps the upstream's credentials; an empty one removes them.
-				upstream =
-					auth === undefined
-						? { url }
-						: { url, headers: auth === "" ? {} : { "Proxy-Authorization": proxyAuthorisation(auth) } };
-			} else if (current.upstream !== undefined) upstream = { url: current.upstream.url };
-			const body: PutProxySettingsBody = {
-				account: accountId,
-				enabled: change.enabled ?? current.enabled,
-				defaultAction: policy === "open" ? "allow" : "deny",
-				// Closed is deny with nothing allowed.
-				allow: policy === "closed" ? [] : (change.allow ?? current.allow),
-				deny: change.deny ?? current.deny,
-				...(upstream === undefined ? {} : { upstream }),
-				// The UI has no attribution switch: it stays as it is.
-				attribution: current.attribution,
-			};
-			return proxyOf(await api.putProxySettings(body));
+			for (let attempt = 1; ; attempt++) {
+				const current = await api.getProxySettings({ account: accountId });
+				if (change.expected !== undefined && !sameProxySettings(change.expected, proxyOf(current))) {
+					throw new KantelApiError(
+						409,
+						"conflict",
+						"The proxy settings changed since you read them; read them again and redo the change",
+					);
+				}
+				try {
+					return proxyOf(await api.putProxySettings(proxyBody(accountId, change, current)));
+				} catch (error) {
+					if (change.expected !== undefined || attempt >= PROXY_ATTEMPTS || !isCode(error, "conflict")) throw error;
+				}
+			}
 		},
+	};
+}
+
+/** The PUT that makes `change` of `current`, the settings as read, with them as its `expected`. */
+function proxyBody(accountId: string, change: UiProxyChange, current: ProxySettings): PutProxySettingsBody {
+	const policy = change.policy ?? policyOf(current);
+	let upstream: PutProxySettingsBody["upstream"];
+	if (change.upstream === null) upstream = null;
+	else if (change.upstream !== undefined) {
+		const { url, auth } = change.upstream;
+		// No `auth` keeps the upstream's credentials; an empty one removes them.
+		upstream =
+			auth === undefined
+				? { url }
+				: { url, headers: auth === "" ? {} : { "Proxy-Authorization": proxyAuthorisation(auth) } };
+	} else if (current.upstream !== undefined) upstream = { url: current.upstream.url };
+	return {
+		account: accountId,
+		enabled: change.enabled ?? current.enabled,
+		defaultAction: policy === "open" ? "allow" : "deny",
+		// Closed is deny with nothing allowed.
+		allow: policy === "closed" ? [] : (change.allow ?? current.allow),
+		deny: change.deny ?? current.deny,
+		...(upstream === undefined ? {} : { upstream }),
+		// The UI has no attribution switch: it stays as it is.
+		attribution: current.attribution,
+		expected: current,
 	};
 }
 

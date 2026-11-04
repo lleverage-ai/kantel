@@ -2,7 +2,7 @@
 // away, and only then is the account's egress read again, so a read that fails can't undo a change Kantel accepted.
 // Grants are written with the API's `expected`, the grants as read: if someone changed them since (another page, the
 // CLI), Kantel refuses with `conflict` and the change is made again on a fresh read, as the CLI does. The account's
-// lists have no `expected`, so an add or remove there is made on the settings read just before it is written.
+// lists are changed the same way, with the proxy settings as read as the change's `expected`.
 
 import type {
 	EgressGrant,
@@ -51,7 +51,7 @@ export interface EgressEditorOptions {
 
 export const BUSY_TEXT = "Another change is still being saved. Try again when it finishes.";
 
-/** How many times a grant change is made on a fresh read when Kantel says the grants changed since: the CLI's too. */
+/** How many times a change is made on a fresh read when Kantel says what it changes changed since: the CLI's too. */
 const ATTEMPTS = 3;
 
 const isConflict = (error: unknown): boolean =>
@@ -169,15 +169,25 @@ export class EgressEditor {
 		);
 	}
 
-	/** Changes the account's lists with `edit` of the settings read just now; `undefined` writes nothing. */
+	/**
+	 * Changes the account's lists with `edit` of the settings read just now, sent with them as `expected`; `undefined`
+	 * writes nothing. On `conflict` someone changed them since: `edit` is made again on a fresh read.
+	 */
 	#editProxy(what: string, edit: (proxy: ProxySettings) => ProxySettingsChange | undefined): Promise<ChangeResult> {
 		const { source, accountId } = this.#options;
 		return this.#run(
 			what,
 			async () => {
-				const proxy = await source.proxy.get(accountId);
-				const change = edit(proxy);
-				return change === undefined ? proxy : source.proxy.update(accountId, change);
+				for (let attempt = 1; ; attempt++) {
+					const proxy = await source.proxy.get(accountId);
+					const change = edit(proxy);
+					if (change === undefined) return proxy;
+					try {
+						return await source.proxy.update(accountId, { ...change, expected: proxy });
+					} catch (error) {
+						if (attempt >= ATTEMPTS || !isConflict(error)) throw error;
+					}
+				}
 			},
 			(base, proxy) => ({ ...base, proxy }),
 		);

@@ -1087,12 +1087,13 @@ export const putProxySettings = defineRoute({
 	summary: "Set the proxy settings",
 	description: describe(
 		"Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted",
-		"and never shown again; leave `upstream.headers` out to keep the ones it has.",
+		"and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you",
+		"read them, a write made from an older read is refused with `conflict`.",
 		scope("account:admin"),
 	),
 	body: PutProxySettingsBody,
 	answer: { status: 200, description: "The settings.", schema: ProxySettings },
-	errors: ["invalid", "forbidden", "not_supported"],
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
 });
 
 export const proxyRoutes = { getProxySettings, putProxySettings } as const;

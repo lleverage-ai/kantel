@@ -56,7 +56,11 @@ export type {
 	TelemetrySource,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
-export { DeviceSetupError, FileTooLargeError } from "./compute/compute-model.ts";
+export {
+	DeviceSetupError,
+	FileTooLargeError,
+	sameProxySettings,
+} from "./compute/compute-model.ts";
 // Identity: who is signed in, and Kantel's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
 export {
