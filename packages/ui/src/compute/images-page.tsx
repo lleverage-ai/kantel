@@ -281,7 +281,7 @@ function ImagesTable({
 											/>
 											<span className="flex min-w-0 flex-col">
 												<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{image.name}</span>
-												<span className={`${cellSub} max-w-(--kt-card-width) truncate font-mono`}>
+												<span className={`${cellSub} max-w-72 truncate font-mono`} title={image.repository}>
 													{image.repository}
 												</span>
 											</span>
