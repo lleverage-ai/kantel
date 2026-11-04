@@ -1,4 +1,5 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { BootOptions, SandboxBackend } from "../src/backend.ts";
@@ -24,12 +25,17 @@ afterEach(async () => {
  * The stub, reporting bases as a host with image patching does: a new sandbox is on `HOST_BEHIND`, and a start with
  * `rebase` moves it onto `HOST_LATEST`. What each start was asked is kept in `starts`.
  */
-function versionedStub() {
+function versionedStub(ready?: () => void) {
 	const stub = createStubBackend();
 	const bases = new Map<string, string>();
 	const starts: BootOptions[] = [];
+	const prepared: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string }[] = [];
 	const backend: SandboxBackend = {
 		...stub,
+		async prepareRebase(_sandboxId, how) {
+			prepared.push(how);
+			ready?.();
+		},
 		async create(spec) {
 			const placement = await stub.create(spec);
 			bases.set(spec.sandboxId, HOST_BEHIND);
@@ -48,11 +54,11 @@ function versionedStub() {
 			return base === undefined ? taken : { ...taken, base };
 		},
 	};
-	return { backend, starts };
+	return { backend, starts, prepared };
 }
 
-function setup(baseImages?: BaseImages) {
-	const { backend, starts } = versionedStub();
+function setup(baseImages?: BaseImages, ready?: () => void) {
+	const { backend, starts, prepared } = versionedStub(ready);
 	const api = createComputeApi({
 		backend,
 		authenticatePerson: async (request) => {
@@ -70,7 +76,7 @@ function setup(baseImages?: BaseImages) {
 			fetch: (input, init) =>
 				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 		});
-	return { api, starts, tom: client("tom-token"), root: client("root-token") };
+	return { api, starts, prepared, tom: client("tom-token"), root: client("root-token") };
 }
 
 const indexed: BaseImages = { indexUrl: "https://example.test/index.json", index: async () => INDEX };
@@ -116,7 +122,7 @@ describe("image patching on", () => {
 	});
 
 	it("restarts a running sandbox on the latest base, from a snapshot of its disk", async () => {
-		const { api, tom, starts } = setup(indexed);
+		const { api, tom, starts, prepared } = setup(indexed);
 		const sandbox = await tom.createSandbox({ wait: true });
 		await tom.runCommand(sandbox.id, { command: "echo kept > keep.txt" });
 
@@ -128,6 +134,9 @@ describe("image patching on", () => {
 		expect(restarted.state).toBe("running");
 		expect(restarted.base).toMatchObject({ image: "host", version: HOST_LATEST, outdated: false });
 		expect(starts.map((how) => how.rebase)).toEqual([true]);
+		// Checked first, and told where to land: the version `stable` names.
+		expect(prepared.map((how) => how.rebaseTo)).toEqual([HOST_LATEST]);
+		expect(starts[0]?.rebaseTo).toBe(HOST_LATEST);
 		// Its disk was saved without its memory, as a stop saves it, and the snapshot is on the base it was taken from.
 		const history = (await tom.listSnapshots({ sandboxId: sandbox.id })).items;
 		expect(history).toHaveLength(1);
@@ -148,6 +157,20 @@ describe("image patching on", () => {
 		await api.service.idle();
 		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
 		expect(starts.map((how) => how.rebase)).toEqual([true]);
+	});
+
+	it("leaves a running sandbox running when its host can't take the latest base yet", async () => {
+		const { api, tom, starts } = setup(indexed, () => {
+			throw new KantelError("unavailable", "not yet");
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect((await failure(tom.restartSandboxOnLatest(sandbox.id))).code).toBe("unavailable");
+		await api.service.idle();
+		const after = await tom.getSandbox(sandbox.id);
+		expect(after.state).toBe("running");
+		expect(after.base?.version).toBe(HOST_BEHIND);
+		expect(starts).toEqual([]);
+		expect((await tom.listSnapshots({ sandboxId: sandbox.id })).items).toEqual([]);
 	});
 
 	it("refuses a sandbox being deleted", async () => {

@@ -4,7 +4,7 @@ import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostsApi } from "../src/http.ts";
 import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, type HostSandbox } from "../src/protocol.ts";
-import { createHostsService, type HostsService } from "../src/service.ts";
+import { createHostsService, type HostsService, IMAGES_REFRESH_MS } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
@@ -189,6 +189,63 @@ describe("hosts service", () => {
 		});
 		expect((await service.get(a.hostId)).state).toBe("draining");
 		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(b.hostId);
+	});
+
+	it("tells a host that stays connected which images to take, again on a heartbeat every so often", async () => {
+		let now = 1_000_000;
+		const { service, join } = await setup({ now: () => now });
+		let version = "host-images-20261103.1";
+		let reads = 0;
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			images: async () => {
+				reads += 1;
+				return { channel: "stable", version, url: `https://example.com/${version}` };
+			},
+		});
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		const welcomes = () => host.sent.filter((message) => message.type === "welcome").map((message) => message.welcome);
+		expect(welcomes().at(-1)).toMatchObject({ images: { version: "host-images-20261103.1" } });
+		const heartbeat = () =>
+			host.send({
+				type: "heartbeat",
+				heartbeat: {
+					capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} },
+				},
+			});
+		// A release published since: not said on every heartbeat, only once the refresh interval has passed.
+		version = "host-images-20261104.2";
+		now += 60_000;
+		heartbeat();
+		await tick();
+		expect(welcomes()).toHaveLength(1);
+		expect(reads).toBe(1);
+		now += IMAGES_REFRESH_MS;
+		heartbeat();
+		await tick();
+		expect(welcomes()).toHaveLength(2);
+		expect(welcomes().at(-1)).toMatchObject({ images: { version: "host-images-20261104.2" } });
+	});
+
+	it("reads no image index on a heartbeat with image patching off", async () => {
+		let now = 1_000_000;
+		const { service, join } = await setup({ now: () => now });
+		service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		now += IMAGES_REFRESH_MS * 2;
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
+		});
+		await tick();
+		expect(host.sent.filter((message) => message.type === "welcome")).toHaveLength(1);
 	});
 
 	it("takes over from an older connection and revokes a host for good", async () => {

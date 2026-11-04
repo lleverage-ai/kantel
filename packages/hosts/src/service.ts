@@ -270,6 +270,8 @@ const DEFAULT_JOIN_COMMAND =
 const LABEL_KEY = /^[a-z0-9][a-z0-9._/-]{0,62}$/i;
 /** States that hold the sandbox's vCPUs and memory on its host; a stopped one holds only its disk. */
 const LIVE = new Set(["starting", "running", "stopping"]);
+/** How often a connected host is told again which images Kantel wants it on (image patching): 15 minutes. */
+export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
 
 function labelsOf(value: unknown): { [key: string]: string } {
 	if (value === undefined) return {};
@@ -354,6 +356,33 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		);
 	};
 
+	/**
+	 * When each host connected here was last told the images Kantel wants it on (image patching). A host that stays
+	 * connected is told again on a heartbeat once `IMAGES_REFRESH_MS` have passed: a release published since its hello
+	 * reaches it, and one it failed to take is tried again, without waiting for it to reconnect.
+	 */
+	const imagesToldAt = new Map<string, number>();
+	const refreshImages = (hostId: string) => {
+		if (compute?.images === undefined) return;
+		const now = clock.now();
+		const told = imagesToldAt.get(hostId);
+		if (told === undefined) {
+			imagesToldAt.set(hostId, now);
+			return;
+		}
+		if (now - told < IMAGES_REFRESH_MS) return;
+		imagesToldAt.set(hostId, now);
+		report(
+			(async () => {
+				const host = await store.getHost(hostId);
+				if (host === undefined || host.revoked) return;
+				const welcome = await welcomeFor(host);
+				// No images (the index can't be read): nothing new to say, and the host keeps what it has.
+				if (welcome.images !== undefined) hub.rewelcome(hostId, welcome);
+			})(),
+		);
+	};
+
 	const hello = async (hostId: string, message: HostHello): Promise<HostWelcome> => {
 		const host = await store.getHost(hostId);
 		if (host === undefined || host.revoked) throw new Error("This host is revoked");
@@ -388,6 +417,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const local = createHostHub({
 		async onHello(hostId, message) {
 			const welcome = await hello(hostId, message);
+			imagesToldAt.set(hostId, clock.now());
 			// Recorded before the welcome, so no replica routes elsewhere once the host takes calls here.
 			await cluster?.claim(hostId);
 			return welcome;
@@ -400,6 +430,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 			const capacity = parsed.value;
 			reserved.delete(hostId);
+			refreshImages(hostId);
 			report(
 				(async () => {
 					const host = await store.getHost(hostId);
@@ -431,6 +462,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
+			imagesToldAt.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {

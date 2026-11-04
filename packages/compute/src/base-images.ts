@@ -231,7 +231,9 @@ export interface PublishedBuild {
 
 /**
  * The index with a build recorded: its version first in its image's list (replacing one of the same digest, so a
- * re-run keeps one entry), the list cut to `BASE_IMAGE_HISTORY`, and its channels moved to its digest.
+ * re-run keeps one entry), the list cut to `BASE_IMAGE_HISTORY`, and its channels moved to its digest. The cut never
+ * drops a version a channel names: a build held back from `stable` leaves `stable` on an older version, which stays
+ * listed (with its scan) however many builds come after it, and the oldest versions no channel names go instead.
  */
 export function recordBuild(index: BaseImageIndex, build: PublishedBuild, at: string): BaseImageIndex {
 	const existing = index.images.find((image) => image.name === build.name);
@@ -242,13 +244,20 @@ export function recordBuild(index: BaseImageIndex, build: PublishedBuild, at: st
 		name: build.name,
 		repository: build.repository,
 		channels,
-		versions: versions.slice(0, BASE_IMAGE_HISTORY),
+		versions: keepHistory(versions, new Set(Object.values(channels))),
 	};
 	const images =
 		existing === undefined
 			? [...index.images, entry].sort((a, b) => a.name.localeCompare(b.name))
 			: index.images.map((image) => (image.name === build.name ? entry : image));
 	return { version: BASE_IMAGE_INDEX_VERSION, generatedAt: at, images };
+}
+
+/** At most `BASE_IMAGE_HISTORY` of `versions` (newest first), keeping every one a channel names. */
+function keepHistory(versions: readonly BaseImageVersion[], named: ReadonlySet<string>): BaseImageVersion[] {
+	const unnamed = Math.max(0, BASE_IMAGE_HISTORY - versions.filter((v) => named.has(v.digest)).length);
+	let kept = 0;
+	return versions.filter((v) => named.has(v.digest) || kept++ < unnamed);
 }
 
 /** The index with a fresh scan recorded on one version (a rescan of what a channel names, with a newer database). */

@@ -208,6 +208,35 @@ describe("recordBuild", () => {
 		expect(versions[0]?.version).toBe(String(BASE_IMAGE_HISTORY + 4));
 		expect(versions.at(-1)?.version).toBe("5");
 	});
+
+	it(`keeps the version stable names however many builds are held back after it`, () => {
+		let index = recordBuild(emptyIndex(NOW), build("sandbox", version("0", "a", scanOf(1, 0))), NOW);
+		for (let i = 1; i <= BASE_IMAGE_HISTORY + 5; i++) {
+			const v = { ...version(String(i), "b", scanOf(3, 0)), digest: `sha256:${i.toString(16).padStart(64, "0")}` };
+			index = recordBuild(index, publishedBuild(index, { ...v, name: "sandbox", repository: "r" }), NOW);
+		}
+		const image = index.images[0];
+		const versions = image?.versions ?? [];
+		expect(versions).toHaveLength(BASE_IMAGE_HISTORY);
+		expect(image?.channels.stable).toBe(digest("a"));
+		expect(versions.at(-1)?.version).toBe("0");
+		expect(versions[0]?.version).toBe(String(BASE_IMAGE_HISTORY + 5));
+		// The rescan still finds it, and the next worse build is still held back against its scan.
+		expect(stableImages(index).map((each) => each.digest)).toEqual([digest("a")]);
+		expect(takesStable(index, "sandbox", scanOf(3, 0))).toBe(false);
+		expect(takesStable(index, "sandbox", scanOf(1, 0))).toBe(true);
+	});
+
+	it("lets the version stable named go once stable moves on", () => {
+		let index = emptyIndex(NOW);
+		for (let i = 0; i < BASE_IMAGE_HISTORY + 1; i++) {
+			const v = { ...version(String(i), "a"), digest: `sha256:${i.toString(16).padStart(64, "0")}` };
+			index = recordBuild(index, build("sandbox", v), NOW);
+		}
+		const versions = index.images[0]?.versions ?? [];
+		expect(versions).toHaveLength(BASE_IMAGE_HISTORY);
+		expect(versions.some((v) => v.version === "0")).toBe(false);
+	});
 });
 
 describe("recordScan", () => {

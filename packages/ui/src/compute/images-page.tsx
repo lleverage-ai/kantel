@@ -349,7 +349,7 @@ function ImageDetail({ image, now }: { image: BaseImage; now: number }) {
 				{scan === undefined ? (
 					<p className="m-0 text-sm text-muted">Kantel hasn't scanned this version yet.</p>
 				) : scan.findings.length === 0 ? (
-					<p className="m-0 text-sm text-muted">The latest scan found nothing.</p>
+					<p className="m-0 text-sm text-muted">The latest scan found no high or critical vulnerabilities.</p>
 				) : (
 					<Findings findings={scan.findings} />
 				)}

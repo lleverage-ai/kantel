@@ -140,6 +140,11 @@ export interface BootOptions {
 	 * stub) ignores it, and so does a host without the `image-patching` feature.
 	 */
 	readonly rebase?: boolean;
+	/**
+	 * With `rebase`: the base version the rebase is to land on (the index's `stable`), which the machine refuses to boot
+	 * onto any other. Absent, the host's current one.
+	 */
+	readonly rebaseTo?: string;
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */
@@ -221,6 +226,16 @@ export interface SandboxBackend {
 	create(spec: SandboxSpec): Promise<Placement>;
 	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
+	/**
+	 * Image patching: whether a `start` with `rebase` (and `rebaseTo`) can land now, checked before a running sandbox is
+	 * stopped for it. Rejects when it can't: the machine its disk is on isn't among `eligibleHosts`, doesn't patch
+	 * images (`not_supported`), or isn't on `rebaseTo` yet (`unavailable`). Absent where a backend has no versioned
+	 * images (a rebase there is a plain start).
+	 */
+	prepareRebase?(
+		sandboxId: string,
+		options: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string },
+	): Promise<void>;
 	/**
 	 * Saves the disk as a snapshot and lets the machine go, or with `keepMemory` pauses it, keeping its memory too
 	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken.

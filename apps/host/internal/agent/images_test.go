@@ -216,3 +216,19 @@ func TestARebaseOntoImagesTheHostHasNotTakenIsRefused(t *testing.T) {
 		t.Fatalf("the start left the sandbox %s", info.State)
 	}
 }
+
+func TestHostImagesAnswersTheImagesAsTheyAreNow(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	if err := call(t, h, proto.MethodHostImages, struct{}{}); err == nil || !strings.Contains(err.Error(), "image patching is off") {
+		t.Fatalf("host.images with image patching off: %v", err)
+	}
+	h.cfg.ImagePatching = true
+	h.patching.facts.Store(&proto.HostImages{Version: "host-images-20261104"})
+	raw, err := h.Call(context.Background(), proto.MethodHostImages, json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := raw.(*proto.HostImages); !ok || got.Version != "host-images-20261104" {
+		t.Fatalf("host.images answered %#v", raw)
+	}
+}

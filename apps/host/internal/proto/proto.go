@@ -536,6 +536,9 @@ const (
 	MethodPortOpen     = "port.open"
 	MethodHostUpdate   = "host.update"
 	MethodHostPools    = "host.pools"
+	// MethodHostImages (Kantel → host, no params; FeatureImagePatching) answers the host's HostImages as they are now,
+	// which a hello's facts can be behind: a restart on latest asks it before stopping the sandbox.
+	MethodHostImages = "host.images"
 	// MethodEgress replaces a sandbox's egress (ResumeParams: sandboxId, egress; null egress is the host's default).
 	MethodEgress = "sandbox.egress"
 	// MethodSecrets (Kantel → host, SecretsParams) says a sandbox's protected variables changed; the result is {}.

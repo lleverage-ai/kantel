@@ -21,11 +21,11 @@ import type {
 	SandboxSpec,
 	TakenSnapshot,
 } from "@kantel/compute";
-import { KantelError } from "@kantel/contracts";
+import { isKantelError, KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
 import { HOST_E2E_PORT, type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
-import type { HostsService, SandboxPlacement } from "./service.ts";
+import { type HostsService, kantelErrorFromHost, type SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { DESKTOP_PORT } from "./desktop.ts";
@@ -258,8 +258,11 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const sandbox = await call<HostSandbox>(sandboxId, method, {
 			...egressOf(how.egress),
 			...(revision === undefined ? {} : { revision }),
-			// Only a cold boot rebases; a host without image patching ignores the field.
-			...(method === "sandbox.start" && how.rebase === true ? { rebase: true } : {}),
+			// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
+			// to land anywhere else.
+			...(method === "sandbox.start" && how.rebase === true
+				? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
+				: {}),
 		});
 		return placed(sandboxId, sandbox, hostId);
 	}
@@ -351,6 +354,29 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		create: createOne,
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		async prepareRebase(sandboxId, { eligibleHosts, rebaseTo }) {
+			const { hostId } = await tierOf(sandboxId);
+			mayUse(hostId, eligibleHosts);
+			// Asked now rather than read from the hello's facts, which an update since has left behind.
+			const images = await hosts.hub
+				.call<{ version?: string }>(hostId, HostMethods.hostImages, {})
+				.catch((error: unknown) => {
+					const mapped = kantelErrorFromHost(error);
+					throw isKantelError(mapped, "not_supported")
+						? new KantelError(
+								"not_supported",
+								`The host its disk is on (${hostId}) doesn't patch its images: turn on imagePatching in its config, or update kantel-host`,
+							)
+						: mapped;
+				});
+			const have = images.version ?? "";
+			if (rebaseTo !== undefined && have !== rebaseTo) {
+				throw new KantelError(
+					"unavailable",
+					`The host its disk is on (${hostId}) has images ${have === "" ? "that aren't versioned" : have}, not ${rebaseTo}, yet: try again once it has taken the update`,
+				);
+			}
+		},
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
 		// no longer lists, and can't hide, must not still reach the machine.

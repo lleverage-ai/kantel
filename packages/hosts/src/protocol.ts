@@ -354,6 +354,8 @@ export const HostMethods = {
 	portOpen: "port.open",
 	hostUpdate: "host.update",
 	hostPools: "host.pools",
+	/** Kantel to host (image patching): no params, answered with the host's `HostImages` as they are now. */
+	hostImages: "host.images",
 	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
 	secrets: "sandbox.secrets",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */

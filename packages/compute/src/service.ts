@@ -46,7 +46,7 @@ import type {
 	SandboxBackend,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
-import { type BaseImages, baseImageOf, baseStatus } from "./base-status.ts";
+import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
@@ -3235,6 +3235,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				true,
 				await mayShare(principal),
 			);
+			// Where it is to land: the host images version the index's `stable` names, for a microVM (a container's image is
+			// the backend's to pick). Checked with the machine its disk is on before anything stops, so a restart that can't
+			// get there (a host that isn't eligible, doesn't patch images, or hasn't taken that version yet) leaves the
+			// sandbox as it is.
+			await refreshBase();
+			const status = current.base === undefined ? undefined : baseView(current.base);
+			const rebaseTo =
+				status?.image === HOST_BASE_IMAGE && status.latest !== undefined ? status.latest.version : undefined;
+			await backend.prepareRebase?.(current.id, {
+				eligibleHosts: hosts,
+				...(rebaseTo === undefined ? {} : { rebaseTo }),
+			});
 			if (current.state === "running") {
 				// Its disk is saved first, as a stop saves it (without its memory, which a new base can't take): the boot below
 				// starts from that snapshot. Waited for, as the boot needs it.
@@ -3272,6 +3284,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									size: stopped.size,
 									...egress,
 									rebase: true,
+									...(rebaseTo === undefined ? {} : { rebaseTo }),
 								},
 								(options) => backend.start(stopped.id, options),
 							),
