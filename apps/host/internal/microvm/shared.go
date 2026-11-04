@@ -48,6 +48,8 @@ const (
 	sharedMaxMemoryPerVCPU = 8192
 	// sharedRetry is how long a vCPU count whose template failed waits before another try.
 	sharedRetry = 10 * time.Minute
+	// sharedDefer is how long a vCPU count whose template had no room on the host waits before another try.
+	sharedDefer = time.Minute
 )
 
 // errNoVirtioMem is a guest kernel without virtio-mem: no shared template can grow, so the tier keeps a template per
@@ -184,6 +186,15 @@ func (m *Manager) sharedFor(size proto.Size) (sh shape, fits, ready bool) {
 	return sh, true, false
 }
 
+// PrepareTemplates starts making the shared templates the tier starts with, in the background, once (later calls do
+// nothing): New does it when the tier has no Budget, else the host, once its budget can say what is free.
+func (m *Manager) PrepareTemplates() {
+	if m.shared == nil {
+		return
+	}
+	m.prepareOnce.Do(func() { go m.prepareShared() })
+}
+
 // prepareShared makes the shared templates the tier starts with, one after another.
 func (m *Manager) prepareShared() {
 	for _, n := range m.shared.first {
@@ -198,7 +209,7 @@ func (m *Manager) prepareShared() {
 func (m *Manager) prepareShape(vcpus int) {
 	sh := m.shared.shape(vcpus)
 	m.mu.Lock()
-	if m.preparing[vcpus] || time.Since(m.sharedFailed[vcpus]) < sharedRetry {
+	if m.preparing[vcpus] || time.Since(m.sharedFailed[vcpus]) < sharedRetry || time.Now().Before(m.sharedDeferred[vcpus]) {
 		m.mu.Unlock()
 		return
 	}
@@ -219,7 +230,21 @@ func (m *Manager) prepareShape(vcpus int) {
 		m.dropSizeTemplates()
 		return
 	}
-	_, _, err := m.template(ctx, sh)
+	// Its machine's room, held until it has exited.
+	release, err := m.holdOwnBuild(sh)
+	if err != nil {
+		// The host is full: its creates cold-boot meanwhile, and it is tried again a little later.
+		m.log.Info("no room to make a shared template now; trying again later", "vcpus", vcpus, "error", err)
+		m.mu.Lock()
+		if m.sharedDeferred == nil {
+			m.sharedDeferred = map[int]time.Time{}
+		}
+		m.sharedDeferred[vcpus] = time.Now().Add(sharedDefer)
+		m.mu.Unlock()
+		return
+	}
+	_, _, err = m.template(ctx, sh)
+	release()
 	if err == nil {
 		m.dropSizeTemplates()
 		return

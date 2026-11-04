@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -195,5 +196,70 @@ func TestGrowDisk(t *testing.T) {
 	}
 	if drive.rescans != 3 {
 		t.Fatalf("%d rescans, want one a call (a restored VM's device has its snapshot's capacity)", drive.rescans)
+	}
+}
+
+// The tier's own template builds (a shared template's, a rebuild on new images) hold the memory and disk their machine
+// boots with against the host's budget until they end, as a control plane's builds do, without being named to it.
+func TestOwnBuildsHoldTheBudget(t *testing.T) {
+	m, _ := testManager(t)
+	m.sandboxes = map[string]*sandbox{"sbx_run": {meta: meta{ID: "sbx_run", Size: "default", State: proto.StateRunning}}}
+	m.cfg.Budget = func() (int64, int64) { return 8192, 80 }
+	refused := func(err error) {
+		t.Helper()
+		var pe *proto.Error
+		if !errors.As(err, &pe) || pe.Code != proto.ErrCapacity {
+			t.Fatalf("got %v, want %s", err, proto.ErrCapacity)
+		}
+	}
+	release, err := m.holdOwnBuild(shape{Size: proto.Size{Name: "shared-4vcpu", VCPUs: 4, MemoryMiB: 2048, DiskGiB: 20}, HotplugMiB: 30720})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Its boot memory and disk, not its hotplug range; counted, not named.
+	if ids, memory, disk := m.TemplateBuilds(); len(ids) != 0 || memory != 2048 || disk != 20 {
+		t.Fatalf("builds %v %d MiB %d GiB", ids, memory, disk)
+	}
+	// 4096 MiB and 60 GiB are left beside the running sandbox and the build: not a large create, nor a control plane's
+	// build whose disk is more; another of the tier's builds of 4096 MiB is, and then nothing else.
+	refused(m.register(&sandbox{meta: meta{ID: "sbx_big", Size: "large", State: proto.StateStarting}}, DefaultSizes[2]))
+	_, err = m.holdBuild("tsn_a", proto.Size{VCPUs: 2, MemoryMiB: 1024, DiskGiB: 61})
+	refused(err)
+	another, err := m.holdOwnBuild(shape{Size: proto.Size{Name: "shared-2vcpu", VCPUs: 2, MemoryMiB: 4096, DiskGiB: 20}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused(m.register(&sandbox{meta: meta{ID: "sbx_new", Size: "small", State: proto.StateStarting}}, DefaultSizes[0]))
+	_, err = m.holdOwnBuild(shape{Size: proto.Size{Name: "shared-1vcpu", VCPUs: 1, MemoryMiB: 512, DiskGiB: 10}})
+	refused(err)
+	// Ended (failed, cancelled or done alike: their builders release them once the machine has gone): free again.
+	release()
+	another()
+	if ids, memory, disk := m.TemplateBuilds(); len(ids) != 0 || memory != 0 || disk != 0 {
+		t.Fatalf("builds after release %v %d %d", ids, memory, disk)
+	}
+	if err := m.register(&sandbox{meta: meta{ID: "sbx_new", Size: "default", State: proto.StateStarting}}, DefaultSizes[1]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A shared template with no room on the host isn't built (and isn't recorded as failed): its count waits a little,
+// cold-booting meanwhile, and tries again.
+func TestSharedTemplateWaitsForRoom(t *testing.T) {
+	m, _ := testManager(t)
+	m.cfg.SharedTemplate = true
+	m.shared = sharedShape(m.cfg, 0, 8)
+	m.preparing, m.sharedFailed = map[int]bool{}, map[int]time.Time{}
+	m.cfg.Budget = func() (int64, int64) { return 512, 80 }
+	m.prepareShape(4)
+	m.builders.Wait()
+	if !m.sharedFailed[4].IsZero() {
+		t.Fatal("a build was tried with no room for it")
+	}
+	if !m.sharedDeferred[4].After(time.Now()) || m.preparing[4] {
+		t.Fatalf("deferred until %v, preparing %v", m.sharedDeferred[4], m.preparing[4])
+	}
+	if _, memory, disk := m.TemplateBuilds(); memory != 0 || disk != 0 {
+		t.Fatalf("held %d MiB %d GiB", memory, disk)
 	}
 }

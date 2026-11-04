@@ -238,6 +238,8 @@ type Manager struct {
 	sharedOff    atomic.Bool
 	preparing    map[int]bool
 	sharedFailed map[int]time.Time
+	// sharedDeferred: until when a count whose template had no room on the host waits (holdOwnBuild).
+	sharedDeferred map[int]time.Time
 	// sizeTemplatesDropped: the named sizes' templates (from shared templates off, or a host from before them) are
 	// removed once, when a shared template is first ready.
 	sizeTemplatesDropped sync.Once
@@ -279,6 +281,13 @@ type Manager struct {
 	// resuming are the stopped sandboxes admitted to start again (Resume) and not yet running, by ID, with the memory
 	// and disk each holds meanwhile (holdResume): guarded by mu, as builds are.
 	resuming map[string]proto.Size
+	// ownBuilds are the tier's own background template builds (a shared template's, or a template's rebuild on new
+	// images) admitted and not yet ended, with their machines (holdOwnBuild): held as builds are, but no control plane
+	// asked for them, so TemplateBuilds counts them without naming them. Guarded by mu; ownBuildSeq names them.
+	ownBuilds   map[int]proto.Size
+	ownBuildSeq int
+	// prepareOnce starts the shared templates' preparation once (PrepareTemplates).
+	prepareOnce sync.Once
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -517,9 +526,10 @@ func New(cfg Config) (*Manager, error) {
 	for _, size := range cfg.Sizes {
 		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
-	if m.shared != nil {
-		// Made now, on disk, so the first create restores one rather than booting: they cost disk, not memory.
-		go m.prepareShared()
+	if m.shared != nil && cfg.Budget == nil {
+		// Made now, on disk, so the first create restores one rather than booting: they cost disk, not memory. With a
+		// budget, once it can say what is free (PrepareTemplates).
+		m.PrepareTemplates()
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
@@ -1260,6 +1270,10 @@ func (m *Manager) heldLocked() (memoryMiB, diskGiB int64) {
 		memoryMiB += int64(build.MemoryMiB)
 		diskGiB += int64(build.DiskGiB)
 	}
+	for _, build := range m.ownBuilds {
+		memoryMiB += int64(build.MemoryMiB)
+		diskGiB += int64(build.DiskGiB)
+	}
 	return memoryMiB, diskGiB
 }
 
@@ -1297,8 +1311,35 @@ func (m *Manager) TemplateBuilds() (ids []string, memoryMiB, diskGiB int64) {
 		memoryMiB += int64(size.MemoryMiB)
 		diskGiB += int64(size.DiskGiB)
 	}
+	for _, size := range m.ownBuilds {
+		memoryMiB += int64(size.MemoryMiB)
+		diskGiB += int64(size.DiskGiB)
+	}
 	slices.Sort(ids)
 	return ids, memoryMiB, diskGiB
+}
+
+// holdOwnBuild admits one of the tier's own background template builds, of shape sh, and holds the memory and disk its
+// machine boots with until release, which its builder calls once the machine has exited (buildTemplate waits for it):
+// a create, a resume or another build can't take that room meanwhile. A shared template's hotplug range takes no
+// memory until a sandbox restored from it is given some.
+func (m *Manager) holdOwnBuild(sh shape) (release func(), err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.admit(sh.Size, "template build"); err != nil {
+		return nil, err
+	}
+	if m.ownBuilds == nil {
+		m.ownBuilds = map[int]proto.Size{}
+	}
+	m.ownBuildSeq++
+	id := m.ownBuildSeq
+	m.ownBuilds[id] = sh.Size
+	return func() {
+		m.mu.Lock()
+		delete(m.ownBuilds, id)
+		m.mu.Unlock()
+	}, nil
 }
 
 func (m *Manager) unregister(id string) {

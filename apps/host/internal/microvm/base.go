@@ -588,7 +588,17 @@ func (m *Manager) rebuildTemplate(sh shape) {
 		if run == nil {
 			run = m.swapTemplate
 		}
-		if err := run(ctx, sh); err != nil {
+		// Its machine's room, held until it has exited. With none free creates keep the old template, and the next create
+		// after a while tries again.
+		release, err := m.holdOwnBuild(sh)
+		if err != nil {
+			m.log.Info("no room to rebuild the template now; creates use the old template", "size", size.Name, "error", err)
+			time.AfterFunc(time.Minute, done)
+			return
+		}
+		err = run(ctx, sh)
+		release()
+		if err != nil {
 			m.log.Error("background template rebuild failed; creates use the old template", "size", size.Name, "error", err)
 			// Not again at once: every create would start one.
 			time.AfterFunc(time.Minute, done)

@@ -220,6 +220,10 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		h.startImagePatching(kvm)
 	}
 	h.facts = h.withRuntime(h.makeFacts())
+	if mv, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
+		// Its shared templates, now the budget their builds are admitted against knows the host's memory.
+		mv.PrepareTemplates()
+	}
 	go h.egressLog.run()
 	return h, nil
 }
