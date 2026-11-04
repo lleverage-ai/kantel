@@ -97,3 +97,79 @@ func TestAChainFileThatDoesntVerifyShutsPlaintextOut(t *testing.T) {
 		t.Fatalf("a new process: mode %s, spaces %v", fresh.Mode(st.Space), fresh.Spaces())
 	}
 }
+
+// Entries put past the next seq are refused, here and in the store, rather than taken (or panicking the daemon).
+func TestAnExtensionThatSkipsASeqIsRefused(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	k := len(v.Entries) - 1
+	state, err := VerifyChain(v.Entries[:k], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExtendChain(state, v.Entries[k:], k+3); err == nil {
+		t.Fatal("an entry was taken at a seq it doesn't have")
+	}
+	if next, err := ExtendChain(state, v.Entries[k:], k); err != nil || next.Seq != k {
+		t.Fatalf("the next entry: %v", err)
+	}
+	if next, err := ExtendChain(state, v.Entries, 0); err != nil || next.Seq != k {
+		t.Fatalf("the whole chain: %v", err)
+	}
+	store, _ := OpenStore(t.TempDir())
+	if err := store.save(state.Space, EntryHash(v.Entries[0]), v.Entries[:k]); err != nil {
+		t.Fatal(err)
+	}
+	chain := store.Space(state.Space)
+	for _, from := range []int{k + 3, -2} {
+		if _, err := chain.Extend(from, v.Entries[k:]); err == nil {
+			t.Fatalf("the store took entries from %d", from)
+		}
+	}
+	if got := chain.Entries(0); len(got) != k {
+		t.Fatalf("the store has %d entries", len(got))
+	}
+	if st, err := chain.Extend(k, v.Entries[k:]); err != nil || st.Seq != k || len(chain.Entries(0)) != k+1 {
+		t.Fatalf("the next entry: %v", err)
+	}
+}
+
+// The daemon and `kantel-host e2e join` are two processes with a Store each: a write waits for the other's to end.
+func TestTwoStoresOnOneDirectoryTakeTurns(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	dir := t.TempDir()
+	cli, _ := OpenStore(dir)
+	join, _ := DecodeJoinTicket(v.Word)
+	entry, st, err := cli.Join(join, v.Entries, "host_two", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon, _ := OpenStore(dir)
+	held, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_ = cli.locked(func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	done := make(chan error, 1)
+	go func() {
+		_, err := daemon.Space(st.Space).Extend(0, append(append([]Entry{}, v.Entries...), entry))
+		done <- err
+	}()
+	select {
+	case <-done:
+		t.Fatal("the daemon wrote while the CLI held the lock")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := daemon.Space(st.Space).Entries(0); len(got) != len(v.Entries)+1 {
+		t.Fatalf("%d entries", len(got))
+	}
+}

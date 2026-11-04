@@ -178,3 +178,127 @@ func TestSessionAnsweredByTheWrongKeyFails(t *testing.T) {
 		t.Fatal("the impostor answered")
 	}
 }
+
+// openSession runs Serve on chain and opens a session as the vector's device, for op ("rpc" or "port").
+func openSession(t *testing.T, chain *memChain, o ServeOptions, op string) (*secure, chan error) {
+	t.Helper()
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	host, relay := net.Pipe()
+	o.Static, o.HostID, o.Chain = x25519(t, unb64(t, v.HostStatic)), v.HostID, chain
+	served := make(chan error, 1)
+	go func() { served <- Serve(context.Background(), host, o) }()
+	_ = relay.SetDeadline(time.Now().Add(10 * time.Second))
+	in := &Initiator{Prologue: Prologue(v.Space, v.HostID), Static: x25519(t, unb64(t, v.DeviceStatic)), RemoteStatic: x25519(t, unb64(t, v.HostStatic)).PublicKey().Bytes()}
+	hello := `{"v":1,"sandbox":"sbx_one","op":"rpc"}`
+	if op == "port" {
+		hello = `{"v":1,"sandbox":"sbx_one","op":"port","port":8080}`
+	}
+	m1, _ := in.WriteMessage1([]byte(hello))
+	relay.Write(frame2(m1))
+	m2, _ := readRecord(relay)
+	_, tr, err := in.ReadMessage2(m2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &secure{conn: relay, t: tr}
+	if err := s.send(map[string]string{"type": "open"}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := s.next(); err != nil || !strings.Contains(string(raw), `"ready"`) {
+		t.Fatalf("open: %s %v", raw, err)
+	}
+	return s, served
+}
+
+// removed is state without device id, as a remove-device entry leaves it.
+func removed(state *State, id string) *State {
+	next := state.clone()
+	delete(next.Devices, id)
+	return next
+}
+
+// A device removed while its session is open gets no further call, and its session ends.
+func TestARemovalEndsAnOpenSession(t *testing.T) {
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	state, err := VerifyChain(v.Entries, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := &memChain{state: state}
+	calls := 0
+	s, served := openSession(t, chain, ServeOptions{RPC: func(context.Context, Device, string, string, json.RawMessage, func(any)) (any, error) {
+		calls++
+		return map[string]bool{"ok": true}, nil
+	}}, "rpc")
+	call := func(id int) string {
+		if err := s.send(map[string]any{"id": id, "method": "sandbox.get"}); err != nil {
+			return err.Error()
+		}
+		raw, err := s.next()
+		if err != nil {
+			return err.Error()
+		}
+		return string(raw)
+	}
+	if got := call(1); !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("first call: %s", got)
+	}
+	chain.mu.Lock()
+	chain.state = removed(state, v.DeviceID)
+	chain.mu.Unlock()
+	if got := call(2); !strings.Contains(got, "forbidden") {
+		t.Fatalf("a call after the removal: %s", got)
+	}
+	if err := <-served; err == nil {
+		t.Fatal("the session didn't end")
+	}
+	if calls != 1 {
+		t.Fatalf("%d calls ran", calls)
+	}
+}
+
+// A port session is looked at again while it relays: a removal closes it.
+func TestARemovalClosesAnOpenPort(t *testing.T) {
+	old := revalidateEvery
+	revalidateEvery = 20 * time.Millisecond
+	defer func() { revalidateEvery = old }()
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	state, _ := VerifyChain(v.Entries, "")
+	chain := &memChain{state: state}
+	target, app := net.Pipe()
+	defer app.Close()
+	_, served := openSession(t, chain, ServeOptions{Port: func(context.Context, Device, string, int) (net.Conn, error) {
+		return target, nil
+	}}, "port")
+	select {
+	case <-served:
+		t.Fatal("the port closed while the device was still let in")
+	case <-time.After(100 * time.Millisecond):
+	}
+	chain.mu.Lock()
+	chain.state = removed(state, v.DeviceID)
+	chain.mu.Unlock()
+	select {
+	case err := <-served:
+		if err == nil || !strings.Contains(err.Error(), "isn't in the space's chain") {
+			t.Fatalf("ended with %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the port stayed open after the removal")
+	}
+}
+
+// A chain that stops verifying refuses the session rather than panicking.
+func TestNoChainRefusesTheSession(t *testing.T) {
+	host, relay := net.Pipe()
+	defer relay.Close()
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	err := Serve(context.Background(), host, ServeOptions{Static: x25519(t, unb64(t, v.HostStatic)), HostID: v.HostID, Chain: &memChain{}})
+	if err == nil {
+		t.Fatal("a session was served without a chain")
+	}
+}

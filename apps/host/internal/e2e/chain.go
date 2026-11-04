@@ -673,6 +673,9 @@ func ExtendChain(state *State, entries []Entry, from int) (*State, error) {
 			}
 			continue
 		}
+		if seq != next.Seq+1 {
+			return nil, &ChainError{seq, fmt.Sprintf("the entries skip seq %d", next.Seq+1)}
+		}
 		n, err := apply(next, e, "")
 		if err != nil {
 			return nil, &ChainError{seq, err.Error()}

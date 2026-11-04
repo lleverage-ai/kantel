@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 // A session's wire format is packages/e2e/src/session.ts's (its comment has it); Serve is the host's side, and replays
@@ -212,6 +213,9 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 		conn.Close()
 	}()
 	state := o.Chain.State()
+	if state == nil {
+		return errors.New("this host's chain for the space doesn't verify: no sessions")
+	}
 	first, err := readRecord(conn)
 	if err != nil {
 		return err
@@ -265,7 +269,24 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 		if err := s.send(ready{"ready"}); err != nil {
 			return err
 		}
-		done := make(chan error, 2)
+		done := make(chan error, 3)
+		// A port stays open only while the device may: the chain is looked at again every few seconds, so a removal
+		// (from another session, or a join on the host) ends it.
+		go func() {
+			tick := time.NewTicker(revalidateEvery)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					if why := stillAllowed(o, device); why != "" {
+						done <- errors.New(why)
+						return
+					}
+				}
+			}
+		}()
 		go func() {
 			_, err := io.Copy(target, s)
 			if c, ok := target.(interface{ CloseWrite() error }); ok {
@@ -295,7 +316,12 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 		return err
 	}
 	var calls sync.WaitGroup
-	defer calls.Wait()
+	// Cancel the calls and unblock their I/O before waiting for them, or a call would hold the session open.
+	defer func() {
+		cancel()
+		conn.Close()
+		calls.Wait()
+	}()
 	for {
 		raw, err := s.next()
 		if err != nil {
@@ -312,6 +338,12 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 		var n float64
 		if json.Unmarshal(req.ID, &n) != nil {
 			continue
+		}
+		// Each call is let in by the chain as it is now: a device removed since the session opened is refused, and its
+		// session ended.
+		if why := stillAllowed(o, device); why != "" {
+			_ = s.send(rpcReply{ID: req.ID, Error: &Error{"forbidden", why}})
+			return errors.New(why)
 		}
 		calls.Add(1)
 		go func() {
@@ -344,6 +376,22 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 	}
 }
 
+// revalidateEvery is how often an open port session looks at the chain again.
+var revalidateEvery = 3 * time.Second
+
+// stillAllowed says why device may no longer use its session under the chain as it is now, or "".
+func stillAllowed(o ServeOptions, device Device) string {
+	state := o.Chain.State()
+	if state == nil {
+		return "This host's chain for the space doesn't verify"
+	}
+	d, ok := state.Devices[device.ID]
+	if !ok || d.DH != device.DH {
+		return "This device isn't in the space's chain"
+	}
+	return state.Allowed(device.ID)
+}
+
 // open reads the device's `open`, takes the entries it brings, and finds the device.
 func open(s *secure, o ServeOptions, remoteStatic []byte, hello Hello) (Device, string) {
 	raw, err := s.next()
@@ -369,6 +417,9 @@ func open(s *secure, o ServeOptions, remoteStatic []byte, hello Hello) (Device, 
 		if state, err = o.Chain.Extend(*chain.From, chain.Entries); err != nil {
 			return Device{}, err.Error()
 		}
+	}
+	if state == nil {
+		return Device{}, "This host's chain for the space doesn't verify"
 	}
 	d, ok := state.DeviceByDH(B64(remoteStatic))
 	if !ok {

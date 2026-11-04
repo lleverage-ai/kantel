@@ -77,6 +77,8 @@ type Host struct {
 	egressLog *egressBatcher
 	// lifecycle is one CA-changing lifecycle call at a time per sandbox.
 	lifecycle sandboxLocks
+	// gate binds a gateway call's E2E check to the sandbox it reaches (e2e.go).
+	gate e2eGate
 	// e2e is the host's E2E keys and the chains of the spaces it joined (Root/e2e; e2e.go).
 	e2e *e2e.Store
 	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update

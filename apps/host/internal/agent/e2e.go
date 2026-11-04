@@ -7,6 +7,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -38,22 +39,24 @@ func (h *Host) ownerOf(sandboxID string) string {
 	return info.Owner
 }
 
-// snapshotOwner is the space of the sandbox a snapshot is of, when that sandbox is still on the host. A sandbox ID once
-// seen in an E2E space keeps that space, whoever has the ID now.
-func (h *Host) snapshotOwner(snapshotID string) (string, bool) {
-	for _, info := range h.List() {
-		for _, name := range h.order {
-			for _, snap := range h.tiers[name].Snapshots(info.ID) {
-				if snap.ID == snapshotID {
-					if h.e2e != nil {
-						if space, ok := h.e2e.RecordedOwner(info.ID); ok {
-							return space, true
-						}
-					}
-					return info.Owner, true
-				}
-			}
+// snapshotOwner is the space of the sandbox snapshotID in tier t is of: the one the call goes on to use, as snapshot IDs
+// aren't unique across tiers. The snapshot keeps its sandbox's ID after the sandbox is deleted; a sandbox ID once seen
+// in an E2E space keeps that space, whoever has the ID now. Unknown (false) when the sandbox is gone and wasn't E2E's.
+func (h *Host) snapshotOwner(t Tier, snapshotID string) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	for _, snap := range t.Snapshots("") {
+		if snap.ID != snapshotID {
+			continue
 		}
+		if space, ok := h.recordedOwner(snap.SandboxID); ok {
+			return space, true
+		}
+		if owner := h.ownerOf(snap.SandboxID); owner != "" {
+			return owner, true
+		}
+		return "", false
 	}
 	return "", false
 }
@@ -84,8 +87,8 @@ func (h *Host) anyE2E() bool {
 
 // snapshotGuarded is the space whose E2E covers a snapshot's content. A snapshot whose sandbox is gone has no owner
 // the host knows, so on a host with any E2E space it is treated as covered (refused), not as plaintext.
-func (h *Host) snapshotGuarded(snapshotID string) (space string, covered bool) {
-	owner, known := h.snapshotOwner(snapshotID)
+func (h *Host) snapshotGuarded(t Tier, snapshotID string) (space string, covered bool) {
+	owner, known := h.snapshotOwner(t, snapshotID)
 	if !known {
 		return "a space on this host", h.anyE2E()
 	}
@@ -119,8 +122,10 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		Port              int               `json:"port"`
 		From              string            `json:"from"`
 		Owner             string            `json:"owner"`
+		Tier              string            `json:"tier"`
 		Env               map[string]string `json:"env"`
 		SSHAuthorizedKeys []string          `json:"sshAuthorizedKeys"`
+		Egress            *proto.Egress     `json:"egress"`
 	}
 	_ = json.Unmarshal(params, &p)
 	if method == proto.MethodHostUpdate && h.anyE2E() {
@@ -132,6 +137,19 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			return err
 		}
 	}
+	// Egress the gateway sets may not put a CA of its own in the sandbox, nor take its traffic to an upstream of its
+	// own: either would let the gateway read what the sandbox sends.
+	if p.Egress != nil {
+		target := h.ownerOf(p.SandboxID)
+		if method == proto.MethodCreate {
+			target = p.Owner
+		}
+		if h.e2eMode(target) != e2e.ModeOff {
+			if why := egressReaches(p.Egress); why != "" {
+				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes take no %s from the gateway", target, why)}
+			}
+		}
+	}
 	space := ""
 	switch {
 	case slices.Contains(contentMethods, method):
@@ -139,7 +157,12 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	case method == proto.MethodPortOpen && p.Port != proto.PortE2E:
 		space = h.ownerOf(p.SandboxID)
 	case method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree:
-		if s, covered := h.snapshotGuarded(p.SnapshotID); covered {
+		// The tier the read will use (Host.Call's tierOfSnapshot), not whichever has a snapshot of that ID.
+		t, err := h.tierOfSnapshot(p.SnapshotID)
+		if err != nil {
+			return nil
+		}
+		if s, covered := h.snapshotGuarded(t, p.SnapshotID); covered {
 			return e2eRefusal(s)
 		}
 		return nil
@@ -148,11 +171,18 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		if was, ok := h.recordedOwner(p.SandboxID); ok && was != p.Owner {
 			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.SandboxID, was)}
 		}
+		// The gateway gives an E2E space's sandbox no environment or SSH keys of its own, made fresh or from a snapshot: an
+		// exported function such as BASH_FUNC_cat%% (or LD_PRELOAD, BASH_ENV) would run in every command a device runs.
+		if h.e2eMode(p.Owner) != e2e.ModeOff && (len(p.Env) > 0 || len(p.SSHAuthorizedKeys) > 0) {
+			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes take no environment variables or SSH keys from the gateway", p.Owner)}
+		}
 		if p.From != "" {
 			// A sandbox made from an E2E sandbox's snapshot stays in that space, or its content would be plaintext; and the
-			// gateway can't give it environment variables or SSH keys of its own.
-			owner, known := h.snapshotOwner(p.From)
-			if s, covered := h.snapshotGuarded(p.From); covered {
+			// gateway can't give it environment variables or SSH keys of its own. The snapshot is the one in the tier the
+			// create uses.
+			t, _ := h.tier(p.Tier)
+			owner, known := h.snapshotOwner(t, p.From)
+			if s, covered := h.snapshotGuarded(t, p.From); covered {
 				if !known || owner != p.Owner {
 					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("a sandbox made from a snapshot in %s, which is end-to-end encrypted, must be in that space", s)}
 				}
@@ -184,6 +214,155 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		return e2eRefusal(space)
 	}
 	return nil
+}
+
+// egressReaches says what in e would let the gateway read a sandbox's traffic ("" when nothing): an upstream proxy, a
+// CA, or interception (protected variables, or grants on methods or paths). Rules on hosts alone are fine.
+func egressReaches(e *proto.Egress) string {
+	switch {
+	case e.Upstream != "" || e.Token != "" || len(e.Headers) > 0:
+		return "upstream proxy"
+	case strings.TrimSpace(e.CACert) != "":
+		return "certificate authority"
+	case e.Protected != nil:
+		return "protected variables"
+	}
+	for _, g := range e.Grants {
+		if len(g.Methods) > 0 || len(g.Paths) > 0 {
+			return "intercepting grants"
+		}
+	}
+	return ""
+}
+
+// e2eGate keeps a gateway call's E2E check bound to the sandbox (or snapshot) it goes on to reach. The check is made
+// before the call resolves its ID again, so without it a sandbox deleted and made again in an E2E space between the two
+// would be reached. A gateway content call is in the gate from before its check until it is done; making an ID E2E's
+// (a create or fork into an E2E space, a snapshot of an E2E sandbox) first cancels and waits for the calls in the
+// gate for that ID, and keeps new ones out until it is done, after which their check sees the E2E owner.
+type e2eGate struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	calls   map[string]map[int]context.CancelFunc
+	claimed map[string]int
+	next    int
+}
+
+func (g *e2eGate) init() {
+	if g.cond == nil {
+		g.cond = sync.NewCond(&g.mu)
+		g.calls = map[string]map[int]context.CancelFunc{}
+		g.claimed = map[string]int{}
+	}
+}
+
+// enter puts a gateway call on key in the gate; false while key is being made E2E's.
+func (g *e2eGate) enter(ctx context.Context, key string) (context.Context, func(), bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.init()
+	if g.claimed[key] > 0 {
+		return ctx, func() {}, false
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	g.next++
+	n := g.next
+	if g.calls[key] == nil {
+		g.calls[key] = map[int]context.CancelFunc{}
+	}
+	g.calls[key][n] = cancel
+	return ctx, func() {
+		g.mu.Lock()
+		delete(g.calls[key], n)
+		if len(g.calls[key]) == 0 {
+			delete(g.calls, key)
+		}
+		g.cond.Broadcast()
+		g.mu.Unlock()
+		cancel()
+	}, true
+}
+
+// claim cancels the gateway calls on key and waits for them to end, keeping new ones out until release.
+func (g *e2eGate) claim(key string) (release func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.init()
+	g.claimed[key]++
+	for _, cancel := range g.calls[key] {
+		cancel()
+	}
+	for len(g.calls[key]) > 0 {
+		g.cond.Wait()
+	}
+	return func() {
+		g.mu.Lock()
+		g.claimed[key]--
+		if g.claimed[key] == 0 {
+			delete(g.claimed, key)
+		}
+		g.mu.Unlock()
+	}
+}
+
+// gatewayGuard is gatewayMayCall with the call bound to what it checked (e2eGate): ctx is the call's context, and done
+// is called when the call has ended.
+func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawMessage) (context.Context, func(), error) {
+	var p struct {
+		SandboxID  string `json:"sandboxId"`
+		NewID      string `json:"newId"`
+		SnapshotID string `json:"snapshotId"`
+		Port       int    `json:"port"`
+		Owner      string `json:"owner"`
+	}
+	_ = json.Unmarshal(params, &p)
+	var claims []string
+	var key string
+	switch {
+	case slices.Contains(contentMethods, method) || (method == proto.MethodPortOpen && p.Port != proto.PortE2E):
+		key = "sandbox:" + p.SandboxID
+	case method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree:
+		key = "snapshot:" + p.SnapshotID
+	case method == proto.MethodCreate:
+		if h.e2eMode(p.Owner) != e2e.ModeOff {
+			claims = append(claims, "sandbox:"+p.SandboxID)
+		}
+	case method == proto.MethodFork || method == proto.MethodStop || method == proto.MethodSnapshotSave:
+		if h.e2eMode(h.ownerOf(p.SandboxID)) != e2e.ModeOff {
+			if p.NewID != "" {
+				claims = append(claims, "sandbox:"+p.NewID)
+			}
+			if p.SnapshotID != "" {
+				claims = append(claims, "snapshot:"+p.SnapshotID)
+			}
+		}
+	}
+	done := func() {}
+	if key != "" {
+		var ok bool
+		var leave func()
+		if ctx, leave, ok = h.gate.enter(ctx, key); !ok {
+			return ctx, done, &proto.Error{Code: proto.ErrConflict, Message: "that sandbox is being made in an end-to-end encrypted space"}
+		}
+		done = leave
+	}
+	slices.Sort(claims)
+	var releases []func()
+	for _, c := range claims {
+		releases = append(releases, h.gate.claim(c))
+	}
+	if len(releases) > 0 {
+		done = func() {
+			for _, r := range releases {
+				r()
+			}
+		}
+	}
+	if err := h.gatewayMayCall(method, params); err != nil {
+		done()
+		return ctx, func() {}, err
+	}
+	return ctx, done, nil
 }
 
 // serveE2E runs one E2E session on conn, for a session the control plane relays to sandboxID.

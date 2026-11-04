@@ -245,7 +245,8 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error
-	if err = s.host.gatewayMayCall(m.Method, m.Params); err != nil {
+	callCtx, done, err := s.host.gatewayGuard(ctx, m.Method, m.Params)
+	if err != nil {
 		reply.Error = toError(err)
 		if err := s.send(ctx, reply); err != nil {
 			s.host.log.Warn("couldn't answer a call", "method", m.Method, "error", err)
@@ -254,7 +255,9 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	}
 	switch m.Method {
 	case proto.MethodPortOpen:
+		// The stream outlives the call, so it runs on the session's context; the gate holds until it is connected.
 		result, err = s.openPort(ctx, m.Params)
+		done()
 	case proto.MethodHostUpdate:
 		var p proto.UpdateParams
 		if err = json.Unmarshal(m.Params, &p); err == nil {
@@ -265,11 +268,13 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 			}
 		}
 		result = map[string]bool{"ok": err == nil}
+		done()
 	default:
-		result, err = s.host.Call(ctx, m.Method, m.Params, func(e proto.Event) {
+		result, err = s.host.Call(callCtx, m.Method, m.Params, func(e proto.Event) {
 			e.At = time.Now().UnixMilli()
 			_ = s.send(ctx, proto.Message{Type: "event", Call: m.ID, Event: &e})
 		})
+		done()
 	}
 	if err != nil {
 		reply.Error = toError(err)

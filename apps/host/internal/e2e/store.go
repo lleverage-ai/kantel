@@ -9,7 +9,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 )
 
 // Store is what a host keeps of E2E, under its root (Root/e2e, root's only):
@@ -53,16 +56,30 @@ func OpenStore(dir string) (*Store, error) {
 	return &Store{dir: dir, spaces: map[string]*spaceChain{}}, nil
 }
 
+// writeFile replaces path durably: once it returns, a crash leaves the new contents. Callers hold the store's lock,
+// so its one temporary file isn't shared.
 func writeFile(path string, v any) error {
 	raw, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	return fsutil.WriteFileDurably(path, append(raw, '\n'), 0o600)
+}
+
+// locked runs fn holding the store's lock (an flock on <dir>/lock), which every writer of its files holds: the daemon
+// and `kantel-host e2e join` are separate processes, so a mutex can't keep one from writing over the other's chain
+// between its read and its write. It isn't reentrant.
+func (s *Store) locked(fn func() error) error {
+	f, err := os.OpenFile(filepath.Join(s.dir, "lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	return fn()
 }
 
 // Identity is the host's keys, made the first time they are asked for.
@@ -135,12 +152,14 @@ func (s *Store) markJoined(space string) error {
 func (s *Store) RecordOwner(sandboxID, space string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	owners := s.ownersLocked()
-	if owners[sandboxID] == space {
-		return nil
-	}
-	owners[sandboxID] = space
-	return writeFile(filepath.Join(s.dir, "owners.json"), owners)
+	return s.locked(func() error {
+		owners := s.ownersLocked()
+		if owners[sandboxID] == space {
+			return nil
+		}
+		owners[sandboxID] = space
+		return writeFile(filepath.Join(s.dir, "owners.json"), owners)
+	})
 }
 
 // RecordedOwner is the E2E space sandboxID was recorded in, if any.
@@ -260,27 +279,42 @@ func (c *spaceChain) State() *State {
 func (c *spaceChain) Extend(from int, entries []Entry) (*State, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st, err := c.loadLocked()
+	var out *State
+	err := c.store.locked(func() error {
+		// Under the lock the file is read again whatever its time says, so another process's write is never lost.
+		c.state = nil
+		st, err := c.loadLocked()
+		if err != nil {
+			return err
+		}
+		next, err := ExtendChain(st, entries, from)
+		if err != nil {
+			return err
+		}
+		if next.Seq == st.Seq {
+			out = st
+			return nil
+		}
+		start := st.Seq + 1 - from
+		if from < 0 || start < 0 || start > len(entries) {
+			return fmt.Errorf("the entries don't follow seq %d", st.Seq)
+		}
+		f := spaceFile{Genesis: c.file.Genesis, Entries: append(append([]Entry{}, c.file.Entries...), entries[start:]...)}
+		if err := writeFile(c.path, f); err != nil {
+			return err
+		}
+		info, _ := os.Stat(c.path)
+		c.file, c.state = f, next
+		if info != nil {
+			c.modTime = info.ModTime()
+		}
+		out = next
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	next, err := ExtendChain(st, entries, from)
-	if err != nil {
-		return nil, err
-	}
-	if next.Seq == st.Seq {
-		return st, nil
-	}
-	f := spaceFile{Genesis: c.file.Genesis, Entries: append(append([]Entry{}, c.file.Entries...), entries[st.Seq+1-from:]...)}
-	if err := writeFile(c.path, f); err != nil {
-		return nil, err
-	}
-	info, _ := os.Stat(c.path)
-	c.file, c.state = f, next
-	if info != nil {
-		c.modTime = info.ModTime()
-	}
-	return next, nil
+	return out, nil
 }
 
 // Entries are the chain's entries from seq from on.
@@ -299,7 +333,20 @@ func (c *spaceChain) Entries(from int) []Entry {
 // Join adds the host to the space the ticket is for: entries are the space's chain as the gateway gave it, which must
 // start at the genesis the ticket pins; the host signs its host.add, keeps the chain with it, and gives the entry back
 // to publish. The host's ID is the one the gateway knows it by.
-func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.Time) (Entry, *State, error) {
+func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.Time) (e Entry, st *State, err error) {
+	// The check against the chain held and the write are one step under the store's lock, so a session's extension
+	// between them can't be written over.
+	lerr := s.locked(func() error {
+		e, st, err = s.join(join, entries, hostID, now)
+		return nil
+	})
+	if lerr != nil {
+		return Entry{}, nil, lerr
+	}
+	return e, st, err
+}
+
+func (s *Store) join(join *JoinTicket, entries []Entry, hostID string, now time.Time) (Entry, *State, error) {
 	space, genesis, _ := join.TicketSpace()
 	if !validSpace(space) {
 		return Entry{}, nil, errors.New("the ticket names no space")
@@ -318,6 +365,9 @@ func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.
 	// A chain the host holds already: the gateway's must carry it on, not go back on it or fork from it (an older
 	// prefix would bring back removed devices, and signing a host.add onto it would fork the chain).
 	if c := s.Space(space); c != nil {
+		c.mu.Lock()
+		c.state = nil
+		c.mu.Unlock()
 		cur, err := c.load()
 		if err != nil {
 			return Entry{}, nil, fmt.Errorf("this host's chain for %s doesn't verify, so it can't be joined again: %w", space, err)
