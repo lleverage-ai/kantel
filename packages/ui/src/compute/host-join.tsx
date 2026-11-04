@@ -46,11 +46,15 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	const inputKey = JSON.stringify(input ?? {});
 	const latestInput = useRef(input);
 	latestInput.current = input;
+	// The hosts there before any command is shown: a host that isn't among them joined with it.
+	const waiting = poll && onJoined !== undefined;
+	const baseline = useHostBaseline(source, waiting);
 
 	useEffect(() => {
 		// `generation` makes the command again after the public URL changes; `inputKey` after the name or labels do.
 		void generation;
 		void inputKey;
+		if (baseline.known === undefined) return;
 		let live = true;
 		setMade({});
 		source.join(latestInput.current ?? {}).then(
@@ -64,7 +68,7 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 		return () => {
 			live = false;
 		};
-	}, [source, inputKey, generation]);
+	}, [source, inputKey, generation, baseline.known]);
 
 	// The public URL, where this person may see and set it. An older gateway without the route leaves the warning out.
 	const publicUrl = useLoad(
@@ -74,7 +78,7 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	const [shownUrl, setShownUrl] = useState<PublicUrl>();
 	const url = shownUrl ?? (publicUrl.state.status === "ready" ? publicUrl.state.value : undefined);
 
-	useJoinWait(source, made.join !== undefined && poll && onJoined !== undefined, onJoined);
+	useJoinWait(source, waiting ? baseline.known : undefined, onJoined);
 
 	const now = fixedNow ?? Date.now();
 	return (
@@ -89,7 +93,9 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 					}}
 				/>
 			) : null}
-			{made.error !== undefined ? (
+			{baseline.error !== undefined && baseline.known === undefined ? (
+				<Notice level="error">{baseline.error}</Notice>
+			) : made.error !== undefined ? (
 				<Notice
 					level="error"
 					action={
@@ -127,29 +133,70 @@ export function JoinWaiting() {
 	);
 }
 
+const NO_HOSTS: ReadonlySet<string> = new Set();
+
 /**
- * Reads the hosts every few seconds while `on`, and calls `onJoined` with the first host that wasn't there when the
- * wait began. A failed read is tried again at the next tick.
+ * The ids of the hosts there when adding one began, read once per source (and tried again until a read succeeds), so
+ * neither making the command again nor a failed read in the wait forgets which hosts were already there. With no wait
+ * (`on` false) there's nothing to compare with, and it's empty at once.
  */
-function useJoinWait(source: HostsSource, on: boolean, onJoined: ((host: Host) => void) | undefined) {
+function useHostBaseline(
+	source: HostsSource,
+	on: boolean,
+): { readonly known?: ReadonlySet<string>; readonly error?: string } {
+	const [state, setState] = useState<{ readonly known?: ReadonlySet<string>; readonly error?: string }>({});
+	useEffect(() => {
+		if (!on) {
+			setState({ known: NO_HOSTS });
+			return;
+		}
+		let live = true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		setState({});
+		const read = () => {
+			source.list().then(
+				(hosts) => {
+					if (live) setState({ known: new Set(hosts.map((host) => host.id)) });
+				},
+				(caught: unknown) => {
+					if (!live) return;
+					setState({ error: messageOf(caught, "Kantel couldn't read the hosts. Trying again.") });
+					timer = setTimeout(read, POLL_MS);
+				},
+			);
+		};
+		read();
+		return () => {
+			live = false;
+			clearTimeout(timer);
+		};
+	}, [source, on]);
+	return state;
+}
+
+/**
+ * Reads the hosts every few seconds once `known` (the hosts there before) is set, and calls `onJoined` with the first
+ * host that isn't among them. A failed read is tried again at the next tick, against the same `known`.
+ */
+function useJoinWait(
+	source: HostsSource,
+	known: ReadonlySet<string> | undefined,
+	onJoined: ((host: Host) => void) | undefined,
+) {
 	const latest = useRef(onJoined);
 	latest.current = onJoined;
 	useEffect(() => {
-		if (!on) return;
+		if (known === undefined) return;
 		let live = true;
-		let known: ReadonlySet<string> | undefined;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const tick = () => {
 			source.list().then(
 				(hosts) => {
 					if (!live) return;
-					if (known === undefined) known = new Set(hosts.map((host) => host.id));
-					else {
-						const joined = hosts.find((host) => !known?.has(host.id));
-						if (joined !== undefined) {
-							latest.current?.(joined);
-							return;
-						}
+					const joined = hosts.find((host) => !known.has(host.id));
+					if (joined !== undefined) {
+						latest.current?.(joined);
+						return;
 					}
 					timer = setTimeout(tick, POLL_MS);
 				},
@@ -158,12 +205,12 @@ function useJoinWait(source: HostsSource, on: boolean, onJoined: ((host: Host) =
 				},
 			);
 		};
-		tick();
+		timer = setTimeout(tick, POLL_MS);
 		return () => {
 			live = false;
 			clearTimeout(timer);
 		};
-	}, [source, on]);
+	}, [source, known]);
 }
 
 /** The command's address is the control plane's loopback: say so, and take the one hosts should use. */
@@ -172,6 +219,8 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string>();
 	const save = () => {
+		// Enter in the field while a save runs: one at a time.
+		if (busy) return;
 		if (!looksLikeOrigin(text)) {
 			setError("Write an address such as https://kantel.example.com, with no path.");
 			return;

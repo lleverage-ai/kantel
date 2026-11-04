@@ -658,7 +658,18 @@ describe("hosts", () => {
 		for (const bad of ["kantel.example.com", "ftp://kantel.example.com", "https://kantel.example.com/console"]) {
 			expect((await failure(root.setPublicUrl({ publicUrl: bad }))).code).toBe("invalid");
 		}
+		// A host the URL parser allows but a shell would run, when the join command is pasted.
+		for (const bad of [
+			"https://$(id).example.com",
+			"https://`id`.example.com",
+			"http://a;id.example.com",
+			"http://a&b.com",
+		]) {
+			expect((await failure(root.setPublicUrl({ publicUrl: bad }))).code).toBe("invalid");
+		}
 		expect((await root.getPublicUrl()).publicUrl).toBe("https://kantel.example.com");
+		const safe = await root.createHostJoinToken({});
+		expect(safe.command).toContain(`--url https://kantel.example.com --token ${safe.token}`);
 
 		expect(await root.setPublicUrl({ publicUrl: "http://127.0.0.1:58090" })).toMatchObject({ loopback: true });
 		expect(await root.setPublicUrl({ publicUrl: null })).toEqual(before);
@@ -673,6 +684,14 @@ describe("hosts", () => {
 			expect(isLoopbackUrl(url)).toBe(false);
 		}
 		expect(publicOrigin(" https://Kantel.Example.com/ ")).toBe("https://kantel.example.com");
+		// DNS names, ports, IPv4 and IPv6, and an international name in its punycode form.
+		expect(publicOrigin("http://10.0.0.5:58090")).toBe("http://10.0.0.5:58090");
+		expect(publicOrigin("http://[fd00::5]:58090/")).toBe("http://[fd00::5]:58090");
+		expect(publicOrigin("https://kantel.tail1234.ts.net:8443")).toBe("https://kantel.tail1234.ts.net:8443");
+		expect(publicOrigin("https://bücher.example")).toBe("https://xn--bcher-kva.example");
+		for (const bad of ["https://$(id).example.com", "https://a'b.example.com", "https://a!b.example.com"]) {
+			expect(() => publicOrigin(bad)).toThrow("domain name or an IP address");
+		}
 	});
 
 	it("keeps a revocation that lands while a drain is in flight", async () => {

@@ -424,7 +424,15 @@ function checkUrl(url: string, what: string): void {
 }
 
 /**
- * A public URL as an origin, `https://kantel.example.com`: http(s), with nothing after the host but a trailing slash.
+ * A host the join command can carry as plain data: a DNS name (an international one in its punycode form, as the URL
+ * parser writes it) or an IPv4 address, or an IPv6 literal in brackets. The URL parser alone lets through hosts such as
+ * `$(id).example.com`, which a shell would run when the command is pasted.
+ */
+const PLAIN_HOST = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.?$|^\[[0-9a-f:.]+\]$/;
+
+/**
+ * A public URL as an origin, `https://kantel.example.com`: http(s), with nothing after the host but a trailing slash,
+ * and a host that's a DNS name or an IP address, so the origin goes into a shell command as data.
  */
 export function publicOrigin(url: string): string {
 	let parsed: URL;
@@ -444,6 +452,12 @@ export function publicOrigin(url: string): string {
 		parsed.hash !== ""
 	) {
 		throw new KantelError("invalid", "The public URL is an origin, with no path, such as https://kantel.example.com");
+	}
+	if (!PLAIN_HOST.test(parsed.hostname)) {
+		throw new KantelError(
+			"invalid",
+			"The public URL's host is a domain name or an IP address, such as kantel.example.com",
+		);
 	}
 	return parsed.origin;
 }

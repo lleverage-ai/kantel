@@ -2,7 +2,7 @@
 // address hosts reach the control plane at, which every join command carries. The deployment sets one
 // (`KANTEL_PUBLIC_URL`, or the address the console was opened at); one set here goes ahead of it until it's cleared.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { TextField } from "../primitives/controls.tsx";
 import { useLoad } from "../primitives/load.ts";
@@ -64,15 +64,22 @@ function PublicUrlForm({
 	const [text, setText] = useState(url.setHere ? url.publicUrl : "");
 	const [busy, setBusy] = useState<"save" | "clear">();
 	const [error, setError] = useState<string>();
+	// One change at a time: a Save and a reset both write the same setting, and the later one the person pressed must
+	// be the one that stays. The ref stops a second start in the same tick, before `busy` has re-rendered the buttons.
+	const inFlight = useRef(false);
 	const run = (kind: "save" | "clear", next: string | null) => {
+		if (inFlight.current) return;
+		inFlight.current = true;
 		setBusy(kind);
 		setError(undefined);
 		source.set(next).then(
 			(made) => {
+				inFlight.current = false;
 				setBusy(undefined);
 				onSaved(made);
 			},
 			(caught: unknown) => {
+				inFlight.current = false;
 				setBusy(undefined);
 				setError(messageOf(caught, "Kantel couldn't save the public URL. Try again."));
 			},
@@ -115,7 +122,13 @@ function PublicUrlForm({
 					autoCapitalize="off"
 					{...(error === undefined ? {} : { error })}
 				/>
-				<Button type="submit" variant="primary" size="md" busy={busy === "save"} disabled={text.trim() === ""}>
+				<Button
+					type="submit"
+					variant="primary"
+					size="md"
+					busy={busy === "save"}
+					disabled={text.trim() === "" || busy !== undefined}
+				>
 					Save
 				</Button>
 			</form>
@@ -124,7 +137,13 @@ function PublicUrlForm({
 					<span>
 						The deployment's is <code className="font-mono text-code">{url.deploymentUrl}</code>.
 					</span>
-					<Button size="sm" variant="ghost" busy={busy === "clear"} onClick={() => run("clear", null)}>
+					<Button
+						size="sm"
+						variant="ghost"
+						busy={busy === "clear"}
+						disabled={busy !== undefined}
+						onClick={() => run("clear", null)}
+					>
 						Use the deployment's
 					</Button>
 				</div>
