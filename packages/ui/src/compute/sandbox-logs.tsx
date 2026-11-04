@@ -91,7 +91,7 @@ export function SandboxLogs({
 	now: number;
 	narrow?: boolean;
 }) {
-	const { state, reload } = useLoad(
+	const { state, reload, pending } = useLoad(
 		() => Promise.all([source.history(sandbox.id), snapshots.history(sandbox.id)]),
 		[source, snapshots, sandbox.id],
 	);
@@ -100,12 +100,13 @@ export function SandboxLogs({
 	// Failed commands opened by the person; the newest failure starts open.
 	const [opened, setOpened] = useState<ReadonlySet<string>>();
 	const following = follow && sandbox.state === "running";
-	// The next read is asked for only once the last has answered, so a slow one isn't overtaken and only one runs.
+	// The next read is asked for only once none is on its way (Follow's own, a snapshot's, Try again's), so a slow one
+	// isn't overtaken and only one runs. A read starting clears a wait already set.
 	useEffect(() => {
-		if (!following || state.status !== "ready") return;
+		if (!following || pending || state.status !== "ready") return;
 		const timer = setTimeout(reload, FOLLOW_MS);
 		return () => clearTimeout(timer);
-	}, [following, state, reload]);
+	}, [following, pending, state, reload]);
 	// A stop (or a save) adds a snapshot, and its event, after Follow has ended: read again when it does.
 	useReloadOn(sandbox.snapshot?.id, reload);
 
