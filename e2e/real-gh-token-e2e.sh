@@ -530,12 +530,18 @@ else
 	sx_ok "$PARENT" "printf '%s\n' '$CANARY' >\$HOME/kantel-e2e-canary && sync" >/dev/null
 	results+=("kantel-doctor: ok (proxy, CA, GH_TOKEN would be swapped)")
 
+	# A marker in the guest's RAM (tmpfs): only a sandbox restored with this one's memory still has it.
+	MEM_MARK="kantel-e2e-memory-$PARENT"
+	sx_ok "$PARENT" "mkdir -p /dev/shm && printf '%s\n' '$MEM_MARK' >/dev/shm/kantel-e2e-memory && grep -qx '$MEM_MARK' /dev/shm/kantel-e2e-memory && findmnt -no FSTYPE --target /dev/shm" |
+		grep -qx tmpfs || die "/dev/shm in the sandbox isn't tmpfs, so it can't show that memory survives"
+	# has_memory SANDBOX: whether it has the parent's memory (the marker).
+	has_memory() { [[ "$(sx_ok "$1" 'cat /dev/shm/kantel-e2e-memory 2>/dev/null || true')" == "$MEM_MARK" ]]; }
+
 	# A live fork (before any snapshot, which a fork would start from instead): the microVM copied with its memory.
 	FORK=$(api POST "/v1/sandboxes/$PARENT/fork" '{"name": "rte-fork", "wait": true}' | jq -r '.items[0].id')
 	running "$FORK" || die "the fork $FORK isn't running"
-	fork_uptime=$(sx_ok "$FORK" 'cut -d. -f1 /proc/uptime')
-	parent_uptime=$(sx_ok "$PARENT" 'cut -d. -f1 /proc/uptime')
-	if ((fork_uptime + 5 >= parent_uptime)); then fork_kind="live, with memory"; else fork_kind="booted from disk"; fi
+	has_memory "$FORK" || die "the fork $FORK booted from disk: the parent's memory (a marker in /dev/shm) isn't there"
+	fork_kind="live, with the parent's memory"
 	fork_placeholder=$(sx_ok "$FORK" 'printf %s "$GH_TOKEN"')
 	[[ "$fork_placeholder" =~ ^kph_[A-Za-z0-9]{40}$ && "$fork_placeholder" != "$placeholder" ]] ||
 		die "the fork's GH_TOKEN isn't a placeholder of its own"
@@ -579,11 +585,12 @@ else
 	[[ "$(sandbox_state "$PARENT")" == paused ]] || die "$PARENT didn't pause: $(sandbox_state "$PARENT")"
 	api POST "/v1/sandboxes/$PARENT/resume" '{"wait": true}' >/dev/null
 	running "$PARENT" || die "$PARENT didn't resume: $(sandbox_state "$PARENT")"
+	has_memory "$PARENT" || die "$PARENT booted from disk on resume: its memory (a marker in /dev/shm) is gone"
 	[[ "$(sx_ok "$PARENT" 'printf %s "$GH_TOKEN"')" == "$placeholder" ]] || die "the placeholder changed across the pause"
 	gh_user "$PARENT" "$MODE" 15
 	memory_snapshots=$(api GET "/v1/snapshots?sandboxId=$PARENT" | jq '[.items[] | select(.memory)] | length')
-	ok "paused with its memory ($memory_snapshots memory snapshot(s)) and resumed: same placeholder, gh api user works"
-	results+=("pause with memory and resume: same placeholder, gh api user $([[ "$MODE" == real ]] && echo "$LOGIN" || echo 401)")
+	ok "paused with its memory and resumed from it (the RAM marker survived; $memory_snapshots memory snapshot(s)): same placeholder, gh api user works"
+	results+=("pause with memory and resume (memory kept): same placeholder, gh api user $([[ "$MODE" == real ]] && echo "$LOGIN" || echo 401)")
 
 	rm -f "$E2E_HOME/progress/scan"
 	printf '%s %s %s\n%s\n%s\n' "$PARENT" "$FORK" "$SNAPSHOT" "$(progress token)" "$(printf '%s\n' "${results[@]}")" \
