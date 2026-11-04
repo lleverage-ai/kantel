@@ -1,9 +1,9 @@
 // Your menu (compute console): at the foot of the sidebar, or your initials at the top right on a phone. Who is
-// signed in, the theme, Admin on a phone (a wide screen has it in the sidebar) and Sign out.
+// signed in, the theme, Profile, Docs, Admin on a phone (a wide screen has it in the sidebar) and Sign out.
 
 import type { ThemePreference } from "@kantel/contracts";
 import { initials } from "../identity/signed-in-as.tsx";
-import { ExpandIcon, ServerIcon, SignOutIcon } from "../primitives/lucide.tsx";
+import { DocsIcon, ExpandIcon, PersonIcon, ServerIcon, SignOutIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { useThemeMenuEntry } from "../theme/theme-switch.tsx";
@@ -28,6 +28,10 @@ export interface UserMenuProps {
 	readonly compact?: boolean;
 	/** Opens Admin: shown here on a phone, where the sidebar's Admin isn't. */
 	readonly onAdmin?: () => void;
+	/** Opens your profile, under Settings. */
+	readonly onProfile?: () => void;
+	/** Where Kantel's docs are: they open in a new tab. Default kantel.dev's. */
+	readonly docsHref?: string;
 	/** Ends your session, when you can end it yourself. */
 	readonly onSignOut?: () => void;
 	/** A theme was chosen and applied: the app keeps it for you. */
@@ -36,12 +40,17 @@ export interface UserMenuProps {
 	readonly defaultOpen?: boolean;
 }
 
-/** Your menu: who you are, the theme, Admin on a phone, Sign out. */
+/** Kantel's public docs. */
+export const DOCS_HREF = "https://kantel.dev/docs/";
+
+/** Your menu: who you are, the theme, Profile, Docs, Admin on a phone, Sign out. */
 export function UserMenu({
 	name,
 	email,
 	compact = false,
 	onAdmin,
+	onProfile,
+	docsHref = DOCS_HREF,
 	onSignOut,
 	onThemeChoose,
 	defaultOpen = false,
@@ -66,6 +75,16 @@ export function UserMenu({
 		},
 		{ kind: "separator", id: "sep-you" },
 		theme,
+		...(onProfile === undefined
+			? []
+			: [{ kind: "item" as const, id: "profile", label: "Profile", icon: <PersonIcon />, onSelect: onProfile }]),
+		{
+			kind: "item",
+			id: "docs",
+			label: "Docs",
+			icon: <DocsIcon />,
+			onSelect: () => void globalThis.open?.(docsHref, "_blank", "noopener"),
+		},
 		...(onAdmin === undefined
 			? []
 			: [{ kind: "item" as const, id: "admin", label: "Admin", icon: <ServerIcon />, onSelect: onAdmin }]),

@@ -786,6 +786,15 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `url` | string | yes | Another proxy every allowed request goes on to, such as a Mehen. |
 | `headerNames` | string[] | yes | The names of the headers Kantel sends it; their values are never shown. |
 
+### PublicUrl
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicUrl` | string | yes | Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`. |
+| `source` | `"console"` or `"deployment"` | yes | `console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at). |
+| `deploymentUrl` | string | yes | The deployment's own, which `publicUrl` goes back to when cleared. |
+| `loopback` | boolean | yes | `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. |
+
 ### PutEgressGrantsBody
 
 | Field | Type | Required | Description |
@@ -1070,6 +1079,12 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `microvmPerVcpuHour` | number | yes |  |
 | `microvmPerGbHour` | number | yes |  |
 | `isolatePerGbHour` | number | yes |  |
+
+### SetPublicUrlBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicUrl` | string or null | yes | An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. |
 
 ### Snapshot
 

@@ -271,6 +271,17 @@ export interface StoredJoinToken {
 
 export type StoredEvent = computeSchema.Event;
 
+/**
+ * A deployment-wide setting a super-admin changed in the console, by name: `publicUrl`, where hosts reach the control
+ * plane, ahead of the deployment's own.
+ */
+export interface StoredSetting {
+	readonly id: "publicUrl";
+	readonly value: string;
+	readonly updatedAt: number;
+	readonly updatedBy: string;
+}
+
 /** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
 export interface StoredDeviceLogin {
 	readonly id: string;
@@ -334,6 +345,7 @@ export interface ComputeStore {
 	readonly egress: Collection<StoredEgressEntry>;
 	/** Each organisation's E2E chain, an entry a record (`e2e.ts`). */
 	readonly e2eChain: Collection<StoredE2EEntry>;
+	readonly settings: Collection<StoredSetting>;
 }
 
 /**
@@ -415,6 +427,7 @@ export function createMemoryStore(): ComputeStore {
 		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
 		egress: memoryCollection(),
 		e2eChain: memoryCollection(),
+		settings: memoryCollection(),
 	};
 }
 
