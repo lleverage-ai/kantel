@@ -57,7 +57,7 @@ export function SandboxMounts({ mounts }: { mounts: readonly SandboxMount[] }) {
 							<MountSourceText source={mount.source} />
 						</div>
 						{mount.status === "failed" && mount.error !== undefined ? (
-							<p className="m-0 text-sm text-status-error wrap-anywhere">{mount.error}</p>
+							<p className="m-0 text-sm text-fg wrap-anywhere">{mount.error}</p>
 						) : null}
 					</li>
 				))}

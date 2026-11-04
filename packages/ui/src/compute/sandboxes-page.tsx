@@ -713,9 +713,17 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	return { pending, can, windows, resume, recover, actions, href, onLink, onScreen };
 }
 
-/** The state, in its colour. */
+/**
+ * The state: its dot in its colour, and its words in its colour only where it needs a look (an error, or one on its
+ * way up or down). Running, paused and stopped, most of a list, keep their words quiet.
+ */
 const StateLabel = ({ state }: { state: SandboxState }) => (
-	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
+	<StatusLabel
+		status={SANDBOX_STATE_STATUS[state]}
+		quiet={state === "running" || state === "paused" || state === "stopped"}
+	>
+		{SANDBOX_STATE_LABELS[state]}
+	</StatusLabel>
 );
 
 /**
@@ -727,20 +735,20 @@ function Cpu({
 	sandbox,
 	source,
 	percent = false,
-	labelled = false,
+	compact = false,
 }: {
 	sandbox: Sandbox;
 	source: SandboxesSource;
 	percent?: boolean;
-	/** In a line of meta text, as a phone's row has it: "CPU" before the line, and the figure at the line's size. */
-	labelled?: boolean;
+	/** Under a phone row's state: the figure at the text around it, not the table's fixed-width column. */
+	compact?: boolean;
 }) {
 	const shown = showsCpu(sandbox) && sandbox.state !== "error";
 	const live = useLiveUsage(shown ? source.usageSeries : undefined, sandbox.id, {
 		keepMs: ROW_SPAN_MS,
 	});
-	// Nothing to read: a dash in the table's column, as its other empty cells have, and nothing in a phone's line.
-	if (!shown) return labelled ? null : <span className="text-faint">–</span>;
+	// Nothing to read: a dash in the table's column, as its other empty cells have, and nothing under a phone row's state.
+	if (!shown) return compact ? null : <span className="text-faint">–</span>;
 	const series = seriesOf(live);
 	const line = lineOf(series, (point) => point.cpu, ROW_SPAN_MS);
 	// Without a live source, its recent CPU as listed, untimed.
@@ -755,7 +763,6 @@ function Cpu({
 			: `CPU ${series === undefined ? "lately" : "over the last 2 minutes"} for ${sandbox.name}, peak ${peak}%`;
 	return (
 		<span className="inline-flex items-center gap-2">
-			{labelled ? <span aria-hidden="true">CPU</span> : null}
 			<Sparkline
 				values={values}
 				// Busy past 80%: the line and its figure turn the caution colour, so a glance finds the loaded ones.
@@ -766,7 +773,7 @@ function Cpu({
 			/>
 			{percent && sandbox.state === "running" ? (
 				<span
-					className={`tabular-nums ${labelled ? "" : "w-9 text-right text-md "}${busy ? "text-status-approval" : "text-muted"}`}
+					className={`tabular-nums ${compact ? "" : "w-9 text-right text-md "}${busy ? "text-status-approval" : "text-muted"}`}
 				>
 					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
 				</span>
@@ -858,7 +865,7 @@ function SandboxRow({
 			</td>
 			<td className={cell}>
 				{SANDBOX_KIND_LABELS[sandbox.kind]}
-				<span className="text-faint">, {sizeText(sandbox.resources ?? sandbox.size)}</span>
+				<span className="text-muted">, {sizeText(sandbox.resources ?? sandbox.size)}</span>
 			</td>
 			<td className={cell}>
 				{sandbox.environment === undefined ? <span className="text-faint">–</span> : sandbox.environment.name}
@@ -938,8 +945,8 @@ function SandboxRow({
 }
 
 /**
- * A phone's row, all of it a link to the sandbox's page: the name with its state beside it, the machine, when it
- * stops and its CPU under it, and a chevron. The page has the actions. The tick box is beside the link, not in it.
+ * A phone's row, all of it a link to the sandbox's page: the name with its machine and when it stops under it, its
+ * state with its CPU under that on the right, and a chevron. The page has the actions. The tick box is beside the link, not in it.
  */
 function SandboxPhoneRow({
 	sandbox,
@@ -956,27 +963,32 @@ function SandboxPhoneRow({
 }) {
 	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
+	// Two columns: what it is on the left (its name, then its machine, environment and stop time), and how it is on the
+	// right (its state, then its CPU), so every healthy card stays two lines and the figures line up down the list.
 	const body = (
-		<div className="flex min-w-0 flex-1 flex-col gap-1">
-			<div className="flex min-w-0 items-center gap-3">
-				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<StateLabel state={sandbox.state} />
+		<div className="flex min-w-0 flex-1 items-start gap-3">
+			<div className="flex min-w-0 flex-1 flex-col gap-1">
+				<span className="min-w-0 truncate text-md font-medium text-fg">{sandbox.name}</span>
+				{sandbox.state === "error" && sandbox.error !== undefined ? (
+					<span className="line-clamp-2 text-sm text-fg">{sandbox.error}</span>
+				) : (
+					<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
+						<span>
+							{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
+						</span>
+						{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
+						{stops === "–" ? null : (
+							<span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>
+						)}
+					</span>
+				)}
 			</div>
-			{sandbox.state === "error" && sandbox.error !== undefined ? (
-				<span className="line-clamp-2 text-sm text-fg">{sandbox.error}</span>
-			) : (
-				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-					<span>
-						{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
-					</span>
-					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
-					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
-					{/* Its CPU on a line of its own, the same place on every row, not beside the name: the name leads alone. */}
-					<span className="basis-full empty:hidden">
-						<Cpu sandbox={sandbox} source={calls.source} percent labelled />
-					</span>
+			<div className="flex flex-none flex-col items-end gap-1">
+				<StateLabel state={sandbox.state} />
+				<span className="text-sm empty:hidden">
+					<Cpu sandbox={sandbox} source={calls.source} percent compact />
 				</span>
-			)}
+			</div>
 		</div>
 	);
 	return (

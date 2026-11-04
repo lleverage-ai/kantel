@@ -687,7 +687,7 @@ export function ComputeConsole({
 					/>
 				)}
 				{failed !== undefined ? (
-					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
+					<div className={`flex flex-1 flex-col ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<ConsoleUnavailable
 							title={inSettings ? "Settings" : pages.find((each) => each.on)?.label}
 							message={messageOf(failed.error, "Try again in a moment.")}
@@ -1157,8 +1157,10 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 									<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
 									<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
 								</div>
-								<div className="w-16 flex-none pt-0.5">
+								{/* The state, then its CPU under it, as a loaded row has them on the right. */}
+								<div className="flex w-16 flex-none flex-col items-end gap-2 py-0.5">
 									<Skeleton />
+									<Skeleton width="75%" />
 								</div>
 							</div>
 						))}
@@ -1183,17 +1185,18 @@ function ConsoleUnavailable({
 	onRetry: () => void;
 }) {
 	return (
-		<div className="flex w-full flex-col gap-6">
+		<div className="flex w-full flex-1 flex-col gap-6">
 			{/* The page keeps its title, so the failure reads as this page's, not a blank takeover. */}
 			{title === undefined ? null : (
 				<p className="m-0 border-b border-border pb-4 text-heading font-strong leading-tight text-fg">{title}</p>
 			)}
-			<div className="flex flex-col items-center gap-4 py-16 text-center" role="alert">
-				<span className="grid size-12 place-items-center rounded-full bg-status-error-soft text-status-error">
-					<AlertIcon />
+			{/* In the middle of the open page, a little above centre, where the eye goes when the page is otherwise empty. */}
+			<div className="flex flex-1 flex-col items-center justify-center gap-4 pt-8 pb-24 text-center" role="alert">
+				<span className="grid size-14 place-items-center rounded-full bg-status-error-soft text-status-error">
+					<AlertIcon size="md" />
 				</span>
-				<div className="flex max-w-md flex-col gap-1.5">
-					<h1 className="m-0 text-lg font-strong leading-tight text-fg">
+				<div className="flex max-w-md flex-col gap-2">
+					<h1 className="m-0 text-heading font-strong leading-tight text-fg">
 						{title === undefined ? "Can't load the console" : `Can't load ${title.toLowerCase()}`}
 					</h1>
 					<p className="m-0 text-md leading-normal text-muted">
