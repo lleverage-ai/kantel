@@ -46,7 +46,17 @@ function CommandLine({ command, copyLabel }: { command: string | undefined; copy
 					<BreakableCommand command={command} />
 				</code>
 			)}
-			{command === undefined ? null : <CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />}
+			{command === undefined ? null : (
+				<>
+					<span className="max-sm:hidden">
+						<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />
+					</span>
+					{/* On a phone Copy is its icon alone, so the command keeps the width. */}
+					<span className="sm:hidden">
+						<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" iconOnly />
+					</span>
+				</>
+			)}
 		</div>
 	);
 }

@@ -18,7 +18,7 @@ export interface FirstRunProps {
 
 /**
  * A step's number: filled while it's the one to do, quiet after it. Its title sits beside the number; what the step
- * holds goes under the title, and on a phone under both, across the whole width.
+ * holds goes under the title, at every width.
  */
 function Step({ n, current, title, children }: { n: number; current: boolean; title: string; children?: ReactNode }) {
 	return (
@@ -35,9 +35,7 @@ function Step({ n, current, title, children }: { n: number; current: boolean; ti
 				<span className="kt-sr-only">{`Step ${n}: `}</span>
 				{title}
 			</h3>
-			{children === undefined ? null : (
-				<div className="col-start-2 flex min-w-0 flex-col gap-3 max-sm:col-span-2 max-sm:col-start-1">{children}</div>
-			)}
+			{children === undefined ? null : <div className="col-start-2 flex min-w-0 flex-col gap-3">{children}</div>}
 		</li>
 	);
 }

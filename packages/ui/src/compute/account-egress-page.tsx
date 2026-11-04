@@ -130,7 +130,6 @@ export function AccountEgressPage({
 				overview === undefined ? undefined : (
 					<Button
 						variant="primary"
-						size="md"
 						icon={<PlusIcon size="sm" />}
 						disabled={busy !== undefined}
 						onClick={() => setDialog({ kind: "add" })}

@@ -25,7 +25,7 @@ export function Spinner({ size = "md", label }: { size?: "sm" | "md"; label?: st
  * than a line (an image's frame), with its own size; keeps the `kt-skeleton` hook.
  */
 export const skeletonClass =
-	"kt-skeleton block rounded-xs bg-active animate-[kt-shimmer_var(--kt-duration-shimmer)_ease-in-out_infinite]";
+	"kt-skeleton block rounded-xs bg-border animate-[kt-shimmer_var(--kt-duration-shimmer)_ease-in-out_infinite]";
 
 export function Skeleton({ width = "100%", lines = 1 }: { width?: string; lines?: number }) {
 	return (

@@ -34,8 +34,6 @@ function Visibility({ isPublic }: { isPublic: boolean }) {
 	);
 }
 
-const cell = "border-b border-border px-2 py-2 align-middle";
-
 export type PortChanges = Changes<number>;
 
 /**
@@ -149,10 +147,10 @@ export function SandboxPorts({
 			) : state.value.length === 0 ? (
 				<p className="m-0 text-sm text-muted">No ports yet. Expose one to give it an HTTPS URL.</p>
 			) : (
-				// On a phone each port is two lines, its number, visibility and actions over its whole address.
-				<div className="sm:rounded-panel sm:border sm:border-border sm:bg-raised sm:px-4 sm:[&_tr:last-child>td]:border-b-0">
-					<table className={`${table} table-fixed max-sm:block`}>
-						<tbody className="max-sm:block">
+				// Each port is two lines: its number, visibility and actions over its whole address, never broken mid-host.
+				<div className="sm:rounded-panel sm:border sm:border-border sm:bg-raised sm:px-4 sm:[&_tr:last-child]:border-b-0">
+					<table className={`${table} block`}>
+						<tbody className="block">
 							{state.value.map((port) => {
 								// A link that opens it: the listed URL for a public port, the one just issued for a private one.
 								const link = port.public ? port.url : issued?.port === port.port ? issued.url : undefined;
@@ -162,16 +160,10 @@ export function SandboxPorts({
 									<tr
 										key={port.port}
 										data-port={port.port}
-										className="max-sm:grid max-sm:grid-cols-[auto_minmax(0,1fr)_auto] max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-1 max-sm:border-b max-sm:border-border max-sm:py-2.5"
+										className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border py-2.5"
 									>
-										<td
-											className={`${cell} w-16 font-mono text-code tabular-nums max-sm:col-start-1 max-sm:row-start-1 max-sm:w-auto max-sm:border-0 max-sm:p-0`}
-										>
-											{port.port}
-										</td>
-										<td
-											className={`${cell} truncate font-mono text-code max-sm:col-span-3 max-sm:row-start-2 max-sm:border-0 max-sm:p-0 max-sm:whitespace-normal max-sm:wrap-break-word`}
-										>
+										<td className="col-start-1 row-start-1 p-0 font-mono text-code tabular-nums">{port.port}</td>
+										<td className="col-span-3 row-start-2 p-0 font-mono text-code wrap-break-word">
 											{link === undefined ? (
 												<span
 													className="kt-selectable text-muted"
@@ -190,14 +182,10 @@ export function SandboxPorts({
 												</a>
 											)}
 										</td>
-										<td
-											className={`${cell} w-24 max-sm:col-start-2 max-sm:row-start-1 max-sm:w-auto max-sm:border-0 max-sm:p-0`}
-										>
+										<td className="col-start-2 row-start-1 p-0">
 											<Visibility isPublic={port.public} />
 										</td>
-										<td
-											className={`${cell} w-20 text-right max-sm:col-start-3 max-sm:row-start-1 max-sm:w-auto max-sm:border-0 max-sm:p-0`}
-										>
+										<td className="col-start-3 row-start-1 p-0 text-right">
 											<span className="inline-flex items-center gap-0.5">
 												{/* The copy slot is kept on every row, so the menus line up. */}
 												{link === undefined ? (

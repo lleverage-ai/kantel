@@ -236,22 +236,24 @@ function RequestText({ entry }: { entry: LoggedEntry }) {
 	);
 }
 
-/** The request, as a button that opens the denial's reason when there is one. */
+/** The request, as a button that opens the denial's reason when there is one. `wrap`: all of it, over lines (a phone). */
 function RequestCell({
 	entry,
 	open,
 	detailId,
 	onToggle,
+	wrap = false,
 }: {
 	entry: LoggedEntry;
 	open: boolean;
 	detailId: string;
 	onToggle: () => void;
+	wrap?: boolean;
 }) {
 	const text = `${entry.method} ${hostText(entry)}${entry.path ?? ""}`;
 	if (!opens(entry)) {
 		return (
-			<span className={`${cellMono} block max-w-(--kt-card-width) truncate`} title={text}>
+			<span className={`${cellMono} block ${wrap ? "wrap-anywhere" : "max-w-(--kt-card-width) truncate"}`} title={text}>
 				<RequestText entry={entry} />
 			</span>
 		);
@@ -266,7 +268,7 @@ function RequestCell({
 			title={text}
 			onClick={onToggle}
 		>
-			<span className={`${cellMono} block max-w-(--kt-card-width) min-w-0 truncate`}>
+			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-anywhere" : "max-w-(--kt-card-width) truncate"}`}>
 				<RequestText entry={entry} />
 			</span>
 			<Chevron size="sm" className="flex-none text-faint" />
@@ -364,14 +366,10 @@ function PhoneEntry({
 			data-egress={entry.id}
 			data-decision={entry.decision}
 		>
-			<div className="flex min-w-0 items-center gap-2">
-				<div className="min-w-0 flex-1">
-					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} />
-				</div>
-				<Decision entry={entry} />
-			</div>
-			{/* What the wide log's columns say, in a line: when, which sandbox, what was swapped in, and how much moved. */}
+			{/* The request whole on its own line, then the decision with when, which sandbox and how much moved. */}
+			<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap />
 			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted">
+				<Decision entry={entry} />
 				<span className="tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
 					{agoText(entry.at, now)}
 				</span>

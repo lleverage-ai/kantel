@@ -69,7 +69,13 @@ export function CommandBlock({
 						<BreakableCommand command={command} />
 					</code>
 				</pre>
-				<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />
+				{/* On a phone Copy is its icon alone, so the command keeps the width and wraps less. */}
+				<span className="max-sm:hidden">
+					<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />
+				</span>
+				<span className="sm:hidden">
+					<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" iconOnly />
+				</span>
 			</div>
 		</div>
 	);

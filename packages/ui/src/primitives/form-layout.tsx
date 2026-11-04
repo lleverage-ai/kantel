@@ -15,7 +15,7 @@ function withClass(base: string, className: string | undefined): string {
  * and the lede under both across the page.
  */
 const pageHeader =
-	"kt-page-header grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1.5 border-b border-border pb-4";
+	"kt-page-header grid min-h-control-md min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1.5 border-b border-border pb-3";
 
 /** A control that sizes itself (a segmented control) keeps its own width straight in a form or a section. */
 const ownWidth = "[&>.kt-segmented]:max-w-full [&>.kt-segmented]:self-start";

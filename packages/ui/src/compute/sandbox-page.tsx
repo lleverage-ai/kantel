@@ -450,7 +450,7 @@ export function SandboxPage({
 			) : null}
 			{/* Stop stays in sight on a phone too, beside the ways in. */}
 			{can.stop ? (
-				<Button size={narrow ? "md" : "sm"} icon={<StopIcon size="sm" />} onClick={stop}>
+				<Button size={narrow ? "md" : "sm"} variant="ghost" icon={<StopIcon size="sm" />} onClick={stop}>
 					Stop
 				</Button>
 			) : null}

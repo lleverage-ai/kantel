@@ -45,8 +45,8 @@ export function SettingsFrame({
 			aria-label={label}
 			className={
 				narrow
-					? // On a phone the pages sit in a grid of three equal cells: every one in sight, none cut or left alone.
-						"grid min-w-0 grid-cols-3 gap-1 [&>a]:justify-center [&>a]:text-center"
+					? // On a phone the pages sit three to a line, packed to the start: every one in sight, none cut or left alone.
+						"grid min-w-0 grid-cols-[repeat(3,max-content)] justify-start gap-1"
 					: "sticky top-0 flex w-(--kt-menu-width) flex-none flex-col gap-0.5"
 			}
 		>

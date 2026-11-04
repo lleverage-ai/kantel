@@ -786,7 +786,9 @@ function SandboxRow({
 	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
 	// A failed sandbox's two rows share a faint error ground, so the row and what went wrong read as one.
-	const tone = ticked ? "bg-selected" : failure === undefined ? "hover:bg-hover" : "bg-status-error-soft";
+	// A failed sandbox's two rows share a light error ground and a red edge on the left: one band, read at a glance.
+	const failedGround = "bg-status-error-soft/60 [&>td:first-child]:shadow-[inset_2px_0_0_var(--kt-status-error)]";
+	const tone = ticked ? "bg-selected" : failure === undefined ? "hover:bg-hover" : failedGround;
 	const row = (
 		// The name's link covers the row (its ::after), so anywhere on it opens the sandbox; the tick box and the buttons
 		// sit above it.
@@ -855,8 +857,8 @@ function SandboxRow({
 								</a>
 							</span>
 						</span>
-					) : can.recover ? (
-						<Button size="sm" variant="primary" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+					) : can.recover && failure === undefined ? (
+						<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
 							Recover
 						</Button>
 					) : can.resume ? (
@@ -875,13 +877,18 @@ function SandboxRow({
 	return (
 		<>
 			{row}
-			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : "bg-status-error-soft"}`}>
+			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : failedGround}`}>
 				<td className="border-b border-border p-0" />
-				<td
-					className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error"
-					colSpan={hosting === "hosted" ? 9 : 8}
-				>
-					{failure}
+				{/* What went wrong under the name, and what to do about it at the end of the same line. */}
+				<td className="border-b border-border px-2 pt-0 pb-2.5 text-sm" colSpan={hosting === "hosted" ? 9 : 8}>
+					<span className="flex min-w-0 items-center gap-3">
+						<span className="min-w-0 flex-1 text-status-error">{failure}</span>
+						{can.recover ? (
+							<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+								Recover
+							</Button>
+						) : null}
+					</span>
 				</td>
 			</tr>
 		</>
@@ -929,7 +936,7 @@ function SandboxPhoneRow({
 	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 flex-wrap items-start gap-x-3 border-b border-border ${ticked ? "bg-selected" : sandbox.state === "error" ? "-mx-gutter-narrow bg-status-error-soft px-gutter-narrow" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 flex-wrap items-start gap-x-3 border-b border-border ${ticked ? "bg-selected" : sandbox.state === "error" ? "-mx-gutter-narrow bg-status-error-soft/60 px-gutter-narrow shadow-[inset_2px_0_0_var(--kt-status-error)]" : ""}`}
 			data-sandbox={sandbox.id}
 		>
 			{/* On the name's line, not the middle of the row: it selects the sandbox the name names. */}
@@ -953,7 +960,7 @@ function SandboxPhoneRow({
 			)}
 			{can.recover && href !== undefined ? (
 				<div className="basis-full pb-3 pl-6.5">
-					<Button size="sm" variant="primary" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+					<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
 						Recover
 					</Button>
 				</div>
@@ -1372,13 +1379,22 @@ export function NewSandboxDialog({
 	);
 }
 
-/** The loaded table's columns, as placeholder widths: name, state, machine, environment, stops, CPU, created. */
-const SKELETON_WIDTHS = ["w-32", "w-15", "w-44", "w-20", "w-16", "w-24", "w-10"] as const;
-
 /**
- * The sandboxes table while the console's first read is on its way: the same frame, header and row cells as the loaded
- * table, with placeholders in the cells, so nothing moves when the rows arrive.
+ * Typical cell text for each column after the name. A placeholder is that text drawn as a bar, its glyphs transparent,
+ * so the auto-sized columns come out the width the loaded rows give them.
  */
+const SKELETON_TEXT = ["Running", "MicroVM, 8 vCPU, 16 GB", "backend-dev", "in 52m", "CPU 00% ~~~~~~", "40m"] as const;
+const SKELETON_NAMES = [
+	"preview-pr-412",
+	"scratch",
+	"alpine-worker",
+	"eval-runner-12",
+	"ci-docker",
+	"api-server",
+	"browser-agent",
+	"dev-stack",
+];
+
 export function SandboxesTableSkeleton({ rows = 8 }: { rows?: number }) {
 	return (
 		<div className={tableFrame} aria-hidden="true">
@@ -1404,12 +1420,10 @@ export function SandboxesTableSkeleton({ rows = 8 }: { rows?: number }) {
 							<td className={`${cell} w-0 pr-0`}>
 								<span className={`${skeletonClass} size-3.5`} />
 							</td>
-							{SKELETON_WIDTHS.map((width, column) => (
+							{[SKELETON_NAMES[row % SKELETON_NAMES.length] ?? "sandbox", ...SKELETON_TEXT].map((text, column) => (
 								// biome-ignore lint/suspicious/noArrayIndexKey: fixed placeholder columns.
-								<td key={column} className={cell}>
-									<span className={`block ${width}`}>
-										<Skeleton width={column === 0 ? `${55 + ((row * 17) % 40)}%` : "80%"} />
-									</span>
+								<td key={column} className={`${cell} ${column === 6 ? "text-right" : ""}`}>
+									<span className={`${skeletonClass} inline-block text-transparent select-none`}>{text}</span>
 								</td>
 							))}
 							<td className={`${cell} w-0`}>
