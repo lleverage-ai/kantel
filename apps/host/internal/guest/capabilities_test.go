@@ -81,10 +81,26 @@ func TestDetectBrowserSurface(t *testing.T) {
 		"etc/systemd/system/kantel-browser.service":         "",
 		"etc/systemd/system/kantel-browser-display.service": "",
 		"etc/systemd/system/kantel-browser-stream.service":  "",
+		// What a host that forwards the report boots the guest with.
+		"proc/cmdline": "console=ttyS0 reboot=k panic=1 kantel.browser=surface memhp_default_state=online\n",
 	}
 	c := Detect(image(t, files), "v", "systemd", false)
 	if !c.BrowserSurface.Available || c.BrowserSurface.Detail != "Xtigervnc, Selkies" || !c.Browser.Available {
 		t.Errorf("Kantel's image: browser %+v, surface %+v", c.Browser, c.BrowserSurface)
+	}
+
+	// On a host from before it (no boot argument), Chromium stays on the desktop, whatever desktop.env says.
+	for _, env := range []string{"", "KANTEL_BROWSER_DISPLAY=:2\n"} {
+		oldHost := map[string]string{"proc/cmdline": "console=ttyS0 kantel.browser=surfaces\n", "etc/kantel/desktop.env": env}
+		for path, content := range files {
+			if path != "proc/cmdline" {
+				oldHost[path] = content
+			}
+		}
+		if c := Detect(image(t, oldHost), "v", "systemd", false); !c.Browser.Available || c.BrowserSurface.Available ||
+			c.BrowserSurface.Reason != "The image runs its browser on the desktop" {
+			t.Errorf("an older host (%q): browser %+v, surface %+v", env, c.Browser, c.BrowserSurface)
+		}
 	}
 
 	// Its own display doesn't need the desktop.

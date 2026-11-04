@@ -2,6 +2,7 @@
 Description=Kantel browser stream: Selkies on the browser's display :2 (web client and WebSocket on 127.0.0.1:6081)
 After=kantel-browser-display.service
 Wants=kantel-browser-display.service
+ConditionKernelCommandLine=kantel.browser=surface
 
 # Not enabled: the guest agent starts it when the host first opens port 6081 and stops it once nobody has been
 # connected for a while (/etc/kantel/on-demand).

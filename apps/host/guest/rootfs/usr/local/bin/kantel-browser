@@ -1,14 +1,17 @@
 #!/bin/sh
-# The sandbox's browser: Chromium (Debian's build) on its own display (:2, kantel-browser-display), with its DevTools
-# port (CDP) on loopback port 9222 for connectOverCDP through the host. The browser's stream (kantel-browser-stream)
-# shows that display, so a viewer sees the browser alone, apart from the desktop. KANTEL_BROWSER_DISPLAY=:1 in
-# /etc/kantel/desktop.env puts it back on the desktop (and the browser's own stream then shows nothing worth
-# watching: the guest agent says so, and the console opens the desktop for it). Closing its window brings it back
-# (the unit restarts it), so CDP stays reachable.
+# The sandbox's browser: Chromium (Debian's build) with its DevTools port (CDP) on loopback port 9222 for
+# connectOverCDP through the host. On a host that boots the guest with kantel.browser=surface it runs on its own
+# display (:2, kantel-browser-display), whose stream (kantel-browser-stream) shows the browser alone, apart from the
+# desktop. Otherwise, on a host from before it (which drops the guest agent's report of that surface, so the browser
+# view is the desktop's page), it runs on the desktop (:1), as it always has. KANTEL_BROWSER_DISPLAY in
+# /etc/kantel/desktop.env chooses either; the guest agent reports the surface only where Chromium is on :2.
+# Closing its window brings it back (the unit restarts it), so CDP stays reachable.
 # Its proxy is the guest agent's local forwarder, which follows the sandbox's egress proxy through forks and restores
 # (Chromium reads its proxy once, at start). Chrome is looked for first only so that a custom image which installs it
 # gets it; the default image has Chromium alone.
-export DISPLAY="${KANTEL_BROWSER_DISPLAY:-:2}"
+display=:1
+case " $(cat /proc/cmdline 2>/dev/null) " in *" kantel.browser=surface "*) display=:2 ;; esac
+export DISPLAY="${KANTEL_BROWSER_DISPLAY:-$display}"
 for _ in $(seq 200); do [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break; sleep 0.05; done
 browser=$(command -v google-chrome-stable || command -v chromium || command -v chromium-browser) || {
 	echo "no browser in this image" >&2

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,11 +40,13 @@ func Detect(root, version, pid1 string, injected bool) proto.GuestCapabilities {
 		c.Desktop.Detail = strings.Join(found(root, "Xtigervnc", "xfce4-session", "selkies"), ", ")
 	}
 
-	// The browser is Chromium on a display of its own (kantel-browser-display), or, in an image from before it or one
-	// that puts it back (KANTEL_BROWSER_DISPLAY=:1), on the desktop.
+	// The browser is Chromium on a display of its own (kantel-browser-display), or on the desktop: in an image from
+	// before it, one that puts it back (KANTEL_BROWSER_DISPLAY=:1), or on a host that doesn't boot the guest with
+	// kantel.browser=surface (one from before it, which would drop this report).
 	chromium := firstOf(root, "chromium", "chromium-browser", "google-chrome", "chrome")
+	// The display's unit runs only with the boot argument, whatever desktop.env says.
 	ownDisplay := exists(root, "/usr/local/bin/kantel-browser-display") && unitExists(root, "kantel-browser-display.service") &&
-		browserDisplay(root) != ":1"
+		bootedWith(root, BrowserSurfaceBootArg) && browserDisplay(root) == ":2"
 	switch {
 	case chromium == "":
 		c.Browser.Reason = "No browser in this image"
@@ -92,14 +95,22 @@ func Detect(root, version, pid1 string, injected bool) proto.GuestCapabilities {
 	return c
 }
 
-// browserDisplay is the X display the image's browser runs on: KANTEL_BROWSER_DISPLAY from /etc/kantel/desktop.env,
-// else its own (:2).
+// BrowserSurfaceBootArg on the guest's kernel command line is the host saying it forwards BrowserSurface: Kantel's
+// image then runs Chromium on its own display (kantel-browser, and the display's and stream's units' condition).
+const BrowserSurfaceBootArg = "kantel.browser=surface"
+
+// browserDisplay is the X display the image's browser runs on, as kantel-browser chooses it: KANTEL_BROWSER_DISPLAY
+// from /etc/kantel/desktop.env, else its own (:2) when the host booted the guest with BrowserSurfaceBootArg, else the
+// desktop's (:1).
 func browserDisplay(root string) string {
+	display := ":1"
+	if bootedWith(root, BrowserSurfaceBootArg) {
+		display = ":2"
+	}
 	raw, err := os.ReadFile(filepath.Join(root, "/etc/kantel/desktop.env"))
 	if err != nil {
-		return ":2"
+		return display
 	}
-	display := ":2"
 	for _, line := range strings.Split(string(raw), "\n") {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if ok && strings.TrimSpace(strings.TrimPrefix(k, "export ")) == "KANTEL_BROWSER_DISPLAY" {
@@ -109,6 +120,12 @@ func browserDisplay(root string) string {
 		}
 	}
 	return display
+}
+
+// bootedWith says whether the guest's kernel command line has arg, a whole word of it.
+func bootedWith(root, arg string) bool {
+	cmdline, err := os.ReadFile(filepath.Join(root, "/proc/cmdline"))
+	return err == nil && slices.Contains(strings.Fields(string(cmdline)), arg)
 }
 
 // osRelease reads ID, PRETTY_NAME and VERSION_ID from os-release.

@@ -102,7 +102,7 @@ CHECK
 	timeout "$TIMEOUT" qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth-impdef=on -smp 8 -m 4096 \
 		-accel tcg,thread=multi,tb-size=1024 -display none -serial none -monitor none \
 		-kernel /out/vmlinux-aarch64 \
-		-append "console=hvc0 panic=0 root=/dev/vda ro init=/usr/sbin/kantel-init loglevel=4" \
+		-append "console=hvc0 panic=0 root=/dev/vda ro init=/usr/sbin/kantel-init loglevel=4 kantel.browser=surface" \
 		-chardev file,id=con,path=/out/boot-check-arm64.log -device virtio-serial-pci -device virtconsole,chardev=con \
 		-drive if=none,id=root,file="$root",format=raw,readonly=on -device virtio-blk-pci,drive=root,addr=0x5 \
 		-drive if=none,id=disk,file="$work/disk.ext4",format=raw -device virtio-blk-pci,drive=disk,addr=0x6 \

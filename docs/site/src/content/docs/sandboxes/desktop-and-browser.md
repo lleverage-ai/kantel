@@ -103,7 +103,7 @@ On your own hosts, Kantel's image runs Chromium on a display of its own, apart f
 
 The browser's display takes the size of the window that shows it, and Chromium fills it. Its stream runs only while someone watches: the sandbox starts it when the first viewer connects, which adds a few seconds to that first page load, and stops it once nobody has been connected for five minutes, so a sandbox nobody watches spends nothing on encoding the browser. Chromium itself keeps running for CDP either way.
 
-A sandbox's `capabilities.browserSurface` says whether its image has a browser surface. An image without one, such as an image from before it or one that puts Chromium back on the desktop, answers `surface: "desktop"`, and `url` is the desktop page with that Chromium on it. The browser surface is experimental.
+A sandbox's `capabilities.browserSurface` says whether its image has a browser surface. An image without one, such as an image from before it or one that puts Chromium back on the desktop, or Kantel's image on a host from before it, answers `surface: "desktop"`, and `url` is the desktop page with that Chromium on it. The browser surface is experimental.
 
 `cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chromium is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
 
