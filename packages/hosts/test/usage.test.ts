@@ -11,8 +11,8 @@ const TICK = {
 	intervalMs: 5000,
 	host: { cpu: 0.42, memUsedBytes: 8e9, memTotalBytes: 64e9, diskUsedBytes: 1e11, diskTotalBytes: 5e11 },
 	sandboxes: [
-		{ id: "sbx_a", kind: "microvm", cpu: 0.1, memUsedBytes: 2e8, memLimitBytes: 1e9 },
-		{ id: "sbx_b", kind: "isolate", cpu: 0.02, memUsedBytes: 3e7, memLimitBytes: 0 },
+		{ id: "sbx_a", kind: "microvm", cpu: 0.1, memUsedBytes: 2e8, memLimitBytes: 1e9, memSource: "guest" },
+		{ id: "sbx_b", kind: "isolate", cpu: 0.02, memUsedBytes: 3e7, memLimitBytes: 0, memSource: "rss" },
 	],
 };
 
@@ -24,7 +24,7 @@ describe("parseHostUsage", () => {
 	it("takes the frame kantel-host's Go side marshals, with sandboxes or with none (a nil slice)", () => {
 		// As in usage-compat.test.ts, from TestUsageEventWireShape in apps/host/internal/agent/usage_test.go.
 		const frame = JSON.parse(
-			'{"type":"usage","usage":{"at":1,"intervalMs":5000,"host":{"cpu":0.25,"memUsedBytes":1,"memTotalBytes":2,"diskUsedBytes":3,"diskTotalBytes":4},"sandboxes":[{"id":"sbx_a","kind":"microvm","cpu":0.5,"memUsedBytes":5,"memLimitBytes":6}]}}',
+			'{"type":"usage","usage":{"at":1,"intervalMs":5000,"host":{"cpu":0.25,"memUsedBytes":1,"memTotalBytes":2,"diskUsedBytes":3,"diskTotalBytes":4},"sandboxes":[{"id":"sbx_a","kind":"microvm","cpu":0.5,"memUsedBytes":5,"memLimitBytes":6,"memSource":"guest"}]}}',
 		) as { usage: { sandboxes: unknown } };
 		expect(parseHostUsage(frame.usage)).toEqual({ ok: true, value: frame.usage });
 		expect(parseHostUsage({ ...frame.usage, sandboxes: null })).toMatchObject({ ok: true, value: { sandboxes: [] } });
@@ -39,6 +39,18 @@ describe("parseHostUsage", () => {
 		expect(parsed.ok && parsed.value.host.cpu).toBe(1);
 		expect(parsed.ok && parsed.value.sandboxes.map((each) => each.id)).toEqual(["sbx_a", "sbx_b"]);
 		expect(parseHostUsage({ ...TICK, sandboxes: null })).toMatchObject({ ok: true, value: { sandboxes: [] } });
+	});
+
+	it("takes a reading with no memory source (an older host's) and leaves out a source it doesn't know", () => {
+		const older = { id: "sbx_a", kind: "microvm", cpu: 0.1, memUsedBytes: 2e8, memLimitBytes: 1e9 };
+		const parsed = parseHostUsage({
+			...TICK,
+			sandboxes: [older, { ...older, id: "sbx_n", memSource: "psi" }, { ...older, id: "sbx_x", memSource: 3 }],
+		});
+		expect(parsed).toEqual({
+			ok: true,
+			value: { ...TICK, sandboxes: [older, { ...older, id: "sbx_n" }, { ...older, id: "sbx_x" }] },
+		});
 	});
 
 	it("refuses one that isn't shaped as a tick", () => {
