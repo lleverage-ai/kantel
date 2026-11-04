@@ -202,5 +202,16 @@ type BundleResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+// BundlesAnswer is the guest's answer to POST /bundles.
+type BundlesAnswer struct {
+	Mounts []BundleResult `json:"mounts"`
+	// Held are the bundle drives a file system is still mounted from after the call (a bundle that something in the
+	// sandbox still uses can't be unmounted): their images must not change. Nil from a guest agent that predates it,
+	// which unmounted lazily: then no drive is known to be free.
+	Held *[]int `json:"held,omitempty"`
+	// Unmounts are the bundles it couldn't unmount, by path, and why.
+	Unmounts map[string]string `json:"unmounts,omitempty"`
+}
+
 // BundleDevice is the guest's device for bundle drive i.
 func BundleDevice(i int) string { return "/dev/vd" + string(rune('c'+i)) }

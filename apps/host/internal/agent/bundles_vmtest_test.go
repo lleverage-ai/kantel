@@ -204,6 +204,27 @@ func TestBundles(t *testing.T) {
 		t.Fatalf("d: one mount at the path, not the snapshot's under the new one: %+v", r)
 	}
 
+	// The same, but a process in the snapshot works in the old bundle (its working directory and an open file there):
+	// the old bundle can't be unmounted, so its drive keeps its image (never changed under a live file system), the new
+	// bundle's mount fails saying why, and the sandbox runs with the process's view of the old bundle intact.
+	if r := sh("bundle-a", "sudo systemd-run --unit=bundle-holder --working-directory=/workspace/skills/skills/hello sh -c 'exec 3< data.txt; exec sleep 3600' && sleep 0.5 && systemctl is-active bundle-holder"); r.ExitCode != 0 {
+		t.Fatalf("a: start a process in the bundle: %+v", r)
+	}
+	vmCall[proto.SandboxInfo](t, h, proto.MethodFork, proto.ForkParams{SandboxID: "bundle-a", NewID: "bundle-fork2", SnapshotID: "snap-a3"})
+	e := vmCall[proto.SandboxInfo](t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "bundle-e", Tier: "microvm", From: "snap-a3", Mounts: []proto.Mount{
+		{Path: "/workspace/skills", Kind: proto.MountBundle, Digest: otherDigest},
+	}})
+	t.Logf("e: state %s, mounts %+v", e.State, e.Mounts)
+	if e.State != proto.StateRunning || len(e.Mounts) != 1 || e.Mounts[0].State != proto.MountFailed || !strings.Contains(e.Mounts[0].Error, "still in use in the sandbox") {
+		t.Fatalf("e: the new bundle fails, the sandbox runs: %+v", e)
+	}
+	if r := sh("bundle-e", "pid=$(systemctl show -p MainPID --value bundle-holder); sudo cat /proc/$pid/cwd/data.txt; sudo cat /proc/$pid/fd/3; cat /workspace/skills/skills/hello/data.txt; findmnt -rno SOURCE,FSTYPE /workspace/skills"); r.ExitCode != 0 || r.Stdout != "bundle data\nbundle data\nbundle data\n/dev/vdc erofs\n" {
+		t.Fatalf("e: the old bundle, as it was, for the process and at its path: %+v", r)
+	}
+	if r := sh("bundle-a", "sudo systemctl stop bundle-holder; true"); r.ExitCode != 0 {
+		t.Fatalf("a: %+v", r)
+	}
+
 	// Two bundles, one at two paths, and one that can't be fetched: the sandbox runs, that mount fails.
 	c := vmCall[proto.SandboxInfo](t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "bundle-c", Tier: "microvm", Mounts: []proto.Mount{
 		{Path: "/workspace/skills", Kind: proto.MountBundle, Digest: skillsDigest},
@@ -239,7 +260,7 @@ func TestBundles(t *testing.T) {
 	}
 
 	// Delete them all: the image is in use by no one, and may go.
-	for _, id := range []string{"bundle-a", "bundle-b", "bundle-fork", "bundle-c", "bundle-d", "bundle-plain"} {
+	for _, id := range []string{"bundle-a", "bundle-b", "bundle-fork", "bundle-fork2", "bundle-c", "bundle-d", "bundle-e", "bundle-plain"} {
 		vmCall[map[string]any](t, h, proto.MethodDelete, proto.SandboxRef{SandboxID: id})
 	}
 	if err := syscall.Stat(image, &st); err == nil && st.Nlink > 1 {

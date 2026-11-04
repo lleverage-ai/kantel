@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -288,8 +289,29 @@ func (m *Manager) attachBundles(ctx context.Context, s *sandbox, wait time.Durat
 		return out
 	}
 	if stale {
-		if _, err := s.guest.MountBundles(ctx, kept()); err != nil {
-			m.log.Warn("unmounting bundles before their drives change", "sandbox", s.meta.ID, "error", err)
+		// A drive whose old bundle is still mounted (something in the sandbox uses it) keeps its image: changing it
+		// under a live file system would show that file system the new image's bytes. The bundles that were to go on it
+		// fail, and the next start or resume tries again.
+		held, why := m.releaseDrives(ctx, s, kept())
+		for i := range next {
+			if slots[i] == "" || next[i] == slots[i] || !held(i) {
+				continue
+			}
+			if next[i] != "" {
+				for _, mt := range mounts {
+					if mt.Digest == next[i] {
+						set(mt, proto.MountFailed, "the bundle before it on its drive can't be unmounted ("+why+")")
+					}
+				}
+				delete(slotOf, next[i])
+			}
+			next[i] = slots[i]
+		}
+		changed = false
+		for i := range next {
+			if next[i] != slots[i] {
+				changed = true
+			}
 		}
 	}
 	if changed {
@@ -323,7 +345,8 @@ func (m *Manager) attachBundles(ctx context.Context, s *sandbox, wait time.Durat
 		i := slotOf[mt.Digest]
 		list = append(list, guest.BundleMount{Path: mt.Path, Drive: i, Digest: mt.Digest, Bytes: imageBytes(s.vmDir(), i)})
 	}
-	results, err := s.guest.MountBundles(ctx, list)
+	answer, err := s.guest.MountBundles(ctx, list)
+	results := answer.Mounts
 	if err != nil {
 		msg := err.Error()
 		if guest.IsNotFound(err) {
@@ -367,6 +390,37 @@ func anyAttached(slots []string) bool {
 		}
 	}
 	return false
+}
+
+// releaseDrives has the guest keep only the bundle mounts in keep, unmounting the rest, and answers which bundle
+// drives a file system is still mounted from (held), with why. When that isn't known (the call failed, or the guest
+// agent predates the answer and unmounted lazily), every drive is held: an image is never changed on a guess. A guest
+// with no bundle mounts at all (404) holds none.
+func (m *Manager) releaseDrives(ctx context.Context, s *sandbox, keep []guest.BundleMount) (held func(int) bool, why string) {
+	answer, err := s.guest.MountBundles(ctx, keep)
+	switch {
+	case err != nil && guest.IsNotFound(err):
+		return func(int) bool { return false }, ""
+	case err != nil:
+		m.log.Warn("unmounting bundles before their drives change", "sandbox", s.meta.ID, "error", err)
+		return func(int) bool { return true }, "unmounting it failed: " + err.Error()
+	case answer.Held == nil:
+		return func(int) bool { return true }, "its guest agent can't say it was unmounted"
+	}
+	set := map[int]bool{}
+	for _, i := range *answer.Held {
+		set[i] = true
+	}
+	var reasons []string
+	for path, reason := range answer.Unmounts {
+		reasons = append(reasons, path+": "+reason)
+	}
+	sort.Strings(reasons)
+	why = strings.Join(reasons, "; ")
+	if why == "" {
+		why = "it is still mounted"
+	}
+	return func(i int) bool { return set[i] }, why
 }
 
 // imageBytes is the size of the file at bundle drive i.

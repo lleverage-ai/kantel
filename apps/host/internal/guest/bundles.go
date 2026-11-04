@@ -43,10 +43,16 @@ func (s *Server) mountBundles(w http.ResponseWriter, r *http.Request) {
 	for _, b := range req.Mounts {
 		want[b.Path] = true
 	}
-	// A bundle mounted before that the sandbox no longer has (a sandbox made from another's snapshot).
+	// A bundle mounted before that the sandbox no longer has (a sandbox made from another's snapshot). Never a lazy
+	// unmount: one that a process still uses (an open file, its working directory) stays mounted, and is kept in the
+	// state, so its drive is reported held and the host doesn't change the image under it.
+	unmounted := map[string]string{}
 	for path := range state {
 		if !want[path] {
-			_ = unix.Unmount(path, unix.MNT_DETACH)
+			if err := unmountBundle(path); err != nil {
+				unmounted[path] = err.Error()
+				continue
+			}
 			delete(state, path)
 		}
 	}
@@ -62,15 +68,47 @@ func (s *Server) mountBundles(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"mounts": results})
+	writeJSON(w, 200, map[string]any{"mounts": results, "held": heldDrives(), "unmounts": unmounted})
 }
+
+// unmountBundle unmounts the bundle at path, unless something in the sandbox still uses it (EBUSY). One that isn't
+// mounted any longer is fine.
+func unmountBundle(path string) error {
+	err := unix.Unmount(path, 0)
+	if err == nil || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if errors.Is(err, unix.EBUSY) {
+		return errors.New("still in use in the sandbox")
+	}
+	return fmt.Errorf("unmount %s: %w", path, err)
+}
+
+// heldDrives are the bundle drives a file system is still mounted from, anywhere in the sandbox (a bundle mount, or a
+// bind mount of one): the host must not change their images.
+func heldDrives() []int {
+	sources := map[string]bool{}
+	for _, source := range mountPoints() {
+		sources[source] = true
+	}
+	held := []int{}
+	for i := 0; i <= maxBundleDrive; i++ {
+		if sources[BundleDevice(i)] {
+			held = append(held, i)
+		}
+	}
+	return held
+}
+
+// maxBundleDrive is the highest bundle drive a sandbox may have.
+const maxBundleDrive = 20
 
 func mountBundle(b BundleMount, state map[string]mountedBundle) error {
 	// The same paths as a bucket mount's (mounts.go).
 	if err := CheckMountPath(b.Path); err != nil {
 		return err
 	}
-	if b.Drive < 0 || b.Drive > 20 {
+	if b.Drive < 0 || b.Drive > maxBundleDrive {
 		return fmt.Errorf("no bundle drive %d", b.Drive)
 	}
 	dev := BundleDevice(b.Drive)
@@ -79,7 +117,9 @@ func mountBundle(b BundleMount, state map[string]mountedBundle) error {
 		if had.Drive == b.Drive && had.Digest == b.Digest && mounts[b.Path] == dev {
 			return nil
 		}
-		_ = unix.Unmount(b.Path, unix.MNT_DETACH)
+		if err := unmountBundle(b.Path); err != nil {
+			return fmt.Errorf("the bundle mounted at %s before can't be unmounted: %w", b.Path, err)
+		}
 		delete(state, b.Path)
 	}
 	if err := waitDeviceSize(dev, b.Bytes, 10*time.Second); err != nil {
