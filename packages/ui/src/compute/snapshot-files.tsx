@@ -164,7 +164,12 @@ function EntryTable({
 					{entries.map((entry) => {
 						const current = entry.path === open;
 						return (
-							<tr key={entry.path} className={current ? "bg-selected" : rowHover} data-entry={entry.path}>
+							<tr
+								key={entry.path}
+								className={current ? "bg-selected" : rowHover}
+								data-entry={entry.path}
+								data-row={current ? "selected" : undefined}
+							>
 								<td className={`${td} w-full max-w-0`}>
 									<button
 										type="button"

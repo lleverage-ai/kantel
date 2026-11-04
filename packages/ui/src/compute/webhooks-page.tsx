@@ -327,7 +327,7 @@ function WebhookRow({
 	];
 
 	return (
-		<tr data-webhook={webhook.id} className={open ? "bg-hover" : undefined}>
+		<tr data-webhook={webhook.id} className={open ? "bg-hover" : undefined} data-row={open ? "open" : undefined}>
 			<td className={td}>
 				<button
 					type="button"

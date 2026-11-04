@@ -52,6 +52,7 @@ import {
 	td,
 	th,
 } from "./parts.tsx";
+import { ChangeCounter, keepShown, stillToDo } from "./sandbox-selection.ts";
 
 export type SandboxFilter = "all" | "running" | "stopped";
 
@@ -182,13 +183,16 @@ export function SandboxesPage({
 		});
 	}, [listed]);
 
-	// What this page changed shows at once, and the list is read again behind it.
+	// What this page changed shows at once, and the list is read again behind it. A bulk stop's answer passes what it
+	// asked, so it doesn't undo a change (a delete) that came after it.
+	const changes = useRef(new ChangeCounter()).current;
 	const change = useCallback(
-		(box: Sandbox | null, id: string) => {
+		(box: Sandbox | null, id: string, asked?: number) => {
+			if (!changes.take(id, asked)) return;
 			setLocal((current) => new Map(current).set(id, box));
 			if (!id.startsWith("pending_")) reload();
 		},
-		[reload],
+		[reload, changes],
 	);
 
 	const create = async (input: CreateSandboxInput) => {
@@ -337,6 +341,7 @@ export function SandboxesPage({
 						{...(snapshotsHref === undefined ? {} : { snapshotsHref })}
 						{...(onEgress === undefined ? {} : { onEgress })}
 						onChange={change}
+						asked={(id) => changes.ask(id)}
 						onNotice={setNotice}
 					/>
 				</>
@@ -378,6 +383,7 @@ function SandboxTable({
 	snapshotsHref,
 	onEgress,
 	onChange,
+	asked,
 	onNotice,
 }: {
 	sandboxes: readonly Sandbox[];
@@ -387,15 +393,19 @@ function SandboxTable({
 	save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
 	snapshotsHref?: (sandboxId: string) => string;
 	onEgress?: (sandboxId: string) => void;
-	onChange: (box: Sandbox | null, id: string) => void;
+	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
+	/** Where a sandbox's changes have got to, for `onChange` from an answer that may be overtaken. */
+	asked: (id: string) => number;
 	onNotice: NoticeSetter;
 }) {
 	const [history, setHistory] = useState<Sandbox>();
 	const [deleting, setDeleting] = useState<readonly Sandbox[]>();
 	const [saving, setSaving] = useState<Sandbox>();
-	// The sandboxes ticked, by ID; only those still shown count, so a filter or a delete drops the rest.
+	// The sandboxes ticked, by ID. One a search, a filter or a delete hides is dropped, so it can't come back ticked.
 	const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
 	const selectable = sandboxes.filter((box) => !box.id.startsWith("pending_"));
+	const shownIds = selectable.map((box) => box.id).join(" ");
+	useEffect(() => setTicked((current) => keepShown(current, shownIds.split(" "))), [shownIds]);
 	const selected = selectable.filter((box) => ticked.has(box.id));
 	const allTicked = selectable.length > 0 && selected.length === selectable.length;
 	const someTicked = selected.length > 0 && !allTicked;
@@ -408,9 +418,17 @@ function SandboxTable({
 			return next;
 		});
 	const stoppable = selected.filter((box) => sandboxActions(box.state).stop);
+	const [stopping, setStopping] = useState(false);
 	const stopSelected = async () => {
-		const results = await Promise.allSettled(stoppable.map((box) => source.stop(box.id)));
-		for (const result of results) if (result.status === "fulfilled") onChange(result.value, result.value.id);
+		setStopping(true);
+		// Each answer shows as it comes, unless that sandbox changed since (a row's own stop or delete).
+		const results = await Promise.allSettled(
+			stoppable.map(async (box) => {
+				const since = asked(box.id);
+				onChange(await source.stop(box.id), box.id, since);
+			}),
+		);
+		setStopping(false);
 		const failed = results.filter((result) => result.status === "rejected").length;
 		if (failed > 0) onNotice({ level: "error", text: `Kantel couldn't stop ${failed} of them. Try again.` });
 	};
@@ -432,6 +450,7 @@ function SandboxTable({
 									size="sm"
 									icon={<StopIcon size="sm" />}
 									disabled={stoppable.length === 0}
+									busy={stopping}
 									onClick={() => void stopSelected()}
 								>
 									Stop
@@ -523,7 +542,11 @@ function SandboxTable({
 					for (const box of gone) onChange(null, box.id);
 					setTicked(new Set());
 					const failure = results.find((result) => result.status === "rejected");
-					if (failure !== undefined) throw failure.reason;
+					if (failure !== undefined) {
+						// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted.
+						setDeleting(stillToDo(boxes, results));
+						throw failure.reason;
+					}
 					onNotice({
 						level: "info",
 						text:

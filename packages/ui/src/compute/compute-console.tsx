@@ -196,16 +196,39 @@ export function ComputeConsole({
 	const [drawer, setDrawer] = useState(false);
 	const drawerRef = useRef<HTMLDivElement>(null);
 	const menuRef = useRef<HTMLButtonElement>(null);
-	// The drawer closes on a page change, on a wider window, and on Escape, which hands focus back to the menu button.
+	// The drawer closes on a page change, on a wider window, and on Escape. It is modal: the bar and the page behind it
+	// are inert and Tab goes round inside it. Once shut (the bar no longer inert), focus goes back to the menu button.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new path closes it.
 	useEffect(() => setDrawer(false), [pathname, narrow]);
+	const drawerWasOpen = useRef(false);
 	useEffect(() => {
-		if (!drawer) return;
-		drawerRef.current?.querySelector<HTMLElement>("a, button")?.focus();
+		if (!drawer) {
+			if (drawerWasOpen.current) menuRef.current?.focus();
+			drawerWasOpen.current = false;
+			return;
+		}
+		drawerWasOpen.current = true;
+		const panel = drawerRef.current;
+		panel?.querySelector<HTMLElement>("a, button")?.focus();
 		const onKey = (event: KeyboardEvent) => {
-			if (event.key !== "Escape") return;
-			setDrawer(false);
-			menuRef.current?.focus();
+			if (event.key === "Escape") {
+				setDrawer(false);
+				return;
+			}
+			if (event.key !== "Tab" || panel === null) return;
+			// What Tab stops at: a segmented control's unchosen options are -1, reached with the arrow keys.
+			const stops = [
+				...panel.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled])"),
+			].filter((stop) => stop.tabIndex >= 0);
+			const first = stops[0];
+			const last = stops.at(-1);
+			if (first === undefined || last === undefined) return;
+			const active = document.activeElement;
+			const away = !(active instanceof Node) || !panel.contains(active);
+			if (event.shiftKey ? away || active === first : away || active === last) {
+				event.preventDefault();
+				(event.shiftKey ? last : first).focus();
+			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
@@ -301,15 +324,7 @@ export function ComputeConsole({
 						<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
 					</SidebarBrand>
 					{narrow ? (
-						<IconButton
-							variant="ghost"
-							label="Close the menu"
-							icon={<XIcon />}
-							onClick={() => {
-								setDrawer(false);
-								menuRef.current?.focus();
-							}}
-						/>
+						<IconButton variant="ghost" label="Close the menu" icon={<XIcon />} onClick={() => setDrawer(false)} />
 					) : (
 						<SidebarToggle collapsed={collapsed} onToggle={() => setRailChoice((on) => !on)} />
 					)}
@@ -422,7 +437,8 @@ export function ComputeConsole({
 			onClick={onClick}
 		>
 			{narrow ? (
-				<header className={TOP_BAR}>
+				// Behind the open drawer, the bar and the page are inert: the keyboard stays in the drawer until it shuts.
+				<header className={TOP_BAR} inert={drawer}>
 					<IconButton
 						ref={menuRef}
 						variant="ghost"
@@ -452,7 +468,7 @@ export function ComputeConsole({
 					</div>
 				</div>
 			) : null}
-			<main className={MAIN}>
+			<main className={MAIN} inert={narrow && drawer}>
 				{failed !== undefined ? (
 					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<Notice

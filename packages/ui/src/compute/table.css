@@ -43,6 +43,11 @@
 		white-space: nowrap;
 	}
 
+	/* Its controls aren't reached either: the cards have their own (Select all is in the bar over them). */
+	.kt-table-cards > .kt-compute-table > table > thead :is(input, button, a, select) {
+		visibility: hidden;
+	}
+
 	.kt-table-cards > .kt-compute-table > table > tbody {
 		display: flex;
 		flex-direction: column;
@@ -60,6 +65,15 @@
 		border-radius: var(--kt-radius);
 		background: var(--kt-raised);
 		box-shadow: var(--kt-shadow-raised);
+	}
+
+	/* A row picked out in the table (the file being previewed, an open webhook) stays picked out as a card. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr[data-row="selected"] {
+		background: var(--kt-selected);
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr[data-row="open"] {
+		background: var(--kt-hover);
 	}
 
 	/* A value: its heading on the left, the value on the right, wrapping rather than running off the card. */
