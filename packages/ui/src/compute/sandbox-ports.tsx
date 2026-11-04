@@ -2,9 +2,10 @@
 // was exposed) or public (anyone with the URL). Expose gives a port a URL; a private port's link carries its token and
 // is shown once, to copy. A private port's listed address has no token, so it's shown as an address, not a link: New
 // link gives it another. One change to a port at a time, so a later Hide can't be undone by an earlier change landing
-// after it. Every call goes through the `SandboxesSource` the host binds.
+// after it; the guard belongs to the sandbox, not to this view, so leaving the tab mid-change doesn't drop it. Every
+// call goes through the `SandboxesSource` the host binds.
 
-import { useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField, CopyButton, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -34,25 +35,58 @@ function Visibility({ isPublic }: { isPublic: boolean }) {
 
 const cell = "border-b border-border px-2 py-2 align-middle";
 
+export interface PortChanges {
+	/** Runs `call` as the port's one change, or refuses if another is on its way; frees the port once it answers. */
+	run<T>(port: number, call: () => Promise<T>): Promise<T>;
+	/** The ports with a change on its way: the same set until one starts or ends. */
+	changing(): ReadonlySet<number>;
+	subscribe(listener: () => void): () => void;
+}
+
 /**
  * One change at a time to each port: `run` refuses a port with one on its way, and frees it once that answers, either
- * way. `onChange` hears the ports changing after each. Other ports go on as they like.
+ * way. Listeners hear each start and end. Other ports go on as they like.
  */
-export function portChanges(onChange: (changing: ReadonlySet<number>) => void) {
-	const changing = new Set<number>();
+export function portChanges(): PortChanges {
+	let changing: ReadonlySet<number> = new Set();
+	const listeners = new Set<() => void>();
+	const set = (next: ReadonlySet<number>) => {
+		changing = next;
+		for (const listener of listeners) listener();
+	};
 	return {
 		async run<T>(port: number, call: () => Promise<T>): Promise<T> {
 			if (changing.has(port)) throw new Error(`Port ${port} is still changing. Try again in a moment.`);
-			changing.add(port);
-			onChange(new Set(changing));
+			set(new Set([...changing, port]));
 			try {
 				return await call();
 			} finally {
-				changing.delete(port);
-				onChange(new Set(changing));
+				set(new Set([...changing].filter((other) => other !== port)));
 			}
 		},
+		changing: () => changing,
+		subscribe(listener) {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
 	};
+}
+
+const bySandbox = new Map<string, PortChanges>();
+
+/**
+ * The one guard for a sandbox's ports, for as long as the console runs: a view that unmounts (another tab) and mounts
+ * again mid-change finds the change still on its way.
+ */
+export function sandboxPortChanges(sandboxId: string): PortChanges {
+	let changes = bySandbox.get(sandboxId);
+	if (changes === undefined) {
+		changes = portChanges();
+		bySandbox.set(sandboxId, changes);
+	}
+	return changes;
 }
 
 export function SandboxPorts({
@@ -69,15 +103,21 @@ export function SandboxPorts({
 	// A private port's URL with its token, as exposing it answered: shown once.
 	const [issued, setIssued] = useState<SandboxPort>();
 	// The ports with a change on its way: another to the same port waits for it to answer.
-	const [busy, setBusy] = useState<ReadonlySet<number>>(new Set());
-	const [changes] = useState(() => portChanges(setBusy));
+	const changes = sandboxPortChanges(sandboxId);
+	const busy = useSyncExternalStore(changes.subscribe, changes.changing);
 	const one = <T,>(port: number, call: () => Promise<T>): Promise<T> => changes.run(port, call);
+	// Read the ports again whenever a change to one ends, including one started before this view mounted.
+	const before = useRef(busy);
+	useEffect(() => {
+		const ended = [...before.current].some((port) => !busy.has(port));
+		before.current = busy;
+		if (ended) reload();
+	}, [busy, reload]);
 
 	const expose = (port: number, isPublic: boolean) =>
 		one(port, async () => {
 			const made = await source.exposePort(sandboxId, port, isPublic);
 			setIssued(made.public ? (current) => (current?.port === port ? undefined : current) : made);
-			reload();
 		});
 	const change = (port: SandboxPort, isPublic: boolean) => {
 		expose(port.port, isPublic).catch((caught: unknown) =>
@@ -89,7 +129,6 @@ export function SandboxPorts({
 			() => {
 				setIssued((current) => (current?.port === port.port ? undefined : current));
 				onNotice({ level: "info", text: `Port ${port.port}'s URL no longer works.` });
-				reload();
 			},
 			(caught: unknown) =>
 				onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't hide port ${port.port}. Try again.`) }),

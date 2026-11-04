@@ -40,11 +40,12 @@ export function sandboxTimeline(
 	commands: readonly SandboxCommand[],
 	snapshots: readonly SandboxSnapshot[],
 ): readonly LogEntry[] {
+	// A fork keeps its parent's environment, so being forked comes first.
 	const made =
-		sandbox.environment !== undefined
-			? `Started from ${sandbox.environment.name}`
-			: sandbox.forkedFrom !== undefined
-				? `Forked from ${sandbox.forkedFrom}`
+		sandbox.forkedFrom !== undefined
+			? `Forked from ${sandbox.forkedFrom}`
+			: sandbox.environment !== undefined
+				? `Started from ${sandbox.environment.name}`
 				: "Created";
 	const entries: LogEntry[] = [
 		...commands.map((command) => ({ kind: "command" as const, id: command.id, at: command.startedAt, command })),

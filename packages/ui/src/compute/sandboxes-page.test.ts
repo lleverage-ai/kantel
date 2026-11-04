@@ -46,6 +46,18 @@ describe("a sandbox's logs", () => {
 			"Started from dev",
 		]);
 	});
+
+	it("names the sandbox a fork came from, even with the environment it inherited", () => {
+		const made = (sandbox: Pick<Sandbox, "environment" | "forkedFrom">) => {
+			const [entry] = sandboxTimeline({ ...box("api", "running"), ...sandbox }, [], []);
+			return entry?.kind === "event" ? entry.text : undefined;
+		};
+		const dev = { id: "e", name: "dev" };
+		expect(made({ environment: dev, forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
+		expect(made({ forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
+		expect(made({ environment: dev })).toBe("Started from dev");
+		expect(made({})).toBe("Created");
+	});
 });
 
 describe("the sandboxes list", () => {
