@@ -45,6 +45,7 @@ import {
 	type WebhookDelivery,
 	type WebhookLastDelivery,
 } from "@kantel/api/sdk";
+import { DeviceTrustError } from "@kantel/e2e/device";
 import type {
 	AccountsSource,
 	ApiKeysSource,
@@ -415,12 +416,22 @@ function sandboxesSource(context: Context): SandboxesSource {
 			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there, or
 			// this browser does over its own session once it is a device in the chain.
 			const { local, browser } = context;
-			const account = context.sandboxAccounts.get(id);
+			let account = context.sandboxAccounts.get(id);
+			if (account === undefined && (local !== undefined || browser !== undefined)) {
+				account = (await api.getSandbox(id)).accountId;
+				context.sandboxAccounts.set(id, account);
+			}
 			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
 				return hostHistory((params) => local.call<HostCommandPage>(id, "sandbox.history", params));
 			}
-			if (browser !== undefined && account !== undefined && (await chainMode(context, account)) !== "off") {
-				return hostHistory((params) => browser.call<HostCommandPage>(id, "sandbox.history", params));
+			if (browser !== undefined && account !== undefined) {
+				// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
+				// answers no chain, or one that goes back on it, throws rather than reading as off. Where it trusts none yet,
+				// the gateway's word is all there is, and a space on E2E then gets the session's refusal to set it up.
+				const mode = (await browser.mode(account)) ?? (await chainMode(context, account));
+				if (mode !== "off") {
+					return hostHistory((params) => browser.call<HostCommandPage>(id, "sandbox.history", params));
+				}
 			}
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
 		},
@@ -1234,6 +1245,49 @@ const pageHost = (): string | undefined => {
 };
 
 /**
+ * This browser as `person`'s device, for as long as the session that found them is the tab's. Its gateway calls carry
+ * that session's headers as they were (`asThem`), never the tab's current ones, so one person's keys never go with
+ * another's credentials. Before each thing it does it checks the tab is still signed in as that session and the gateway
+ * still says it is that person; once either isn't so it is retired for good, and the page must be loaded again. Behind
+ * Cloudflare Access the credential is a cookie the page can't read, so the gateway's answer is the whole check there.
+ */
+function sessionDevice(
+	person: string,
+	signedIn: { readonly [name: string]: string } | undefined,
+	options: ComputeApiOptions,
+	asThem: KantelClient,
+): BrowserDevice | undefined {
+	const credential = (headers: { readonly [name: string]: string } | undefined) =>
+		Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
+	let retired: string | undefined;
+	const retire = (reason: string): never => {
+		retired ??= reason;
+		throw new DeviceTrustError("refused", retired);
+	};
+	const ENDED =
+		"This page's sign-in has ended or another has replaced it: load the page again to use this browser's keys";
+	const user = async () => {
+		if (retired !== undefined) retire(retired);
+		const now = options.headers === undefined ? undefined : await options.headers();
+		if (credential(now) !== credential(signedIn)) retire(ENDED);
+		let who: string | undefined;
+		try {
+			who = (await asThem.getCaller()).user?.id;
+		} catch (error) {
+			if (error instanceof KantelApiError && (error.status === 401 || error.status === 403)) retire(ENDED);
+			throw error;
+		}
+		if (who !== person) retire(ENDED);
+		return person;
+	};
+	return browserDevice({
+		...options.browser,
+		gateway: { openE2E: (id) => asThem.openE2E(id, {}), getE2EChain: (space) => asThem.getE2EChain(space) },
+		user,
+	});
+}
+
+/**
  * The compute console on the gateway this console is served by. Asks who is calling first: a gateway that doesn't
  * serve the compute routes answers 404, this throws, and the console shows no compute pages. The
  * hosts source is there only for a deployment super-admin; billing isn't, as the API has no plans.
@@ -1250,8 +1304,16 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,
 	});
-	// The probe: the routes are served, and who is calling.
-	const caller = await api.getCaller();
+	// The probe: the routes are served, and who is calling, with the session's headers as they are now, kept: what
+	// this browser does as a device it does as that session, and no later one.
+	const signedIn = options.headers === undefined ? undefined : await options.headers();
+	const asSignedIn = (fetch: typeof globalThis.fetch) =>
+		createKantelClient({
+			baseUrl: options.baseUrl ?? "/v1",
+			...(signedIn === undefined ? {} : { headers: () => signedIn }),
+			fetch,
+		});
+	const caller = await asSignedIn(watched).getCaller();
 
 	// The domain sandbox addresses are under. The API names no deployment domain: the caller has none, and a sandbox
 	// answers only its subdomain. The one hostname it does answer is its SSH gateway's, `ssh.<domain>` as the UI's
@@ -1265,11 +1327,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 	const person = caller.user?.id;
 	const browser =
 		local === undefined && person !== undefined
-			? browserDevice({
-					...options.browser,
-					gateway: { openE2E: (id) => api.openE2E(id, {}), getE2EChain: (space) => api.getE2EChain(space) },
-					user: async () => person,
-				})
+			? sessionDevice(person, signedIn, options, asSignedIn(doFetch))
 			: undefined;
 	const context: Context = {
 		api,

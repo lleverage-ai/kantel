@@ -8,6 +8,7 @@
 // lets no `web` device in, and why `kantel console` (local.ts) is the stronger choice.
 
 import { toBase64url } from "@kantel/e2e/bytes";
+import type { SpaceMode } from "@kantel/e2e/chain";
 import {
 	callHost,
 	type DeviceGateway,
@@ -23,12 +24,9 @@ import {
 import { type DeviceKeys, generateWebKeys, keysFromWebKeys, type WebKeyPairs } from "@kantel/e2e/keys";
 import type { ByteChannel } from "@kantel/e2e/session";
 import type { BrowserDeviceSource, BrowserStanding } from "@kantel/ui";
+import { type DeviceDb, indexedDeviceDb } from "./device-db.ts";
 
-/** Where the browser keeps what it has: IndexedDB in a page, a map in tests. */
-export interface DeviceDb {
-	get<T>(store: "keys" | "trust", key: string): Promise<T | undefined>;
-	put(store: "keys" | "trust", key: string, value: unknown): Promise<void>;
-}
+export type { DeviceDb } from "./device-db.ts";
 
 /** This browser's keys for one person, and the label the chain lists them under. */
 interface KeptKeys {
@@ -39,11 +37,20 @@ interface KeptKeys {
 export interface BrowserDevice extends BrowserDeviceSource {
 	/** Runs `method` on the host of `sandboxId` over a session with this browser's keys. */
 	call<T>(sandboxId: string, method: string, params?: object): Promise<T>;
+	/**
+	 * The space's mode as this browser verified it, from the genesis it pinned and on from the newest chain it took;
+	 * undefined where it pinned none. A chain that doesn't verify, or goes back, throws: it never reads as off.
+	 */
+	mode(accountId: string): Promise<SpaceMode | undefined>;
 }
 
 export interface BrowserDeviceOptions {
+	/** The gateway, called as the person `user` names and no one else. */
 	readonly gateway: DeviceGateway;
-	/** The person signed in: each has their own keys and trust in a shared browser. */
+	/**
+	 * The person signed in: each has their own keys and trust in a shared browser. It throws a `DeviceTrustError` once
+	 * that sign-in has ended or another has replaced it, and the device then does nothing more.
+	 */
 	readonly user: () => Promise<string>;
 	readonly db?: DeviceDb;
 	readonly label?: string;
@@ -52,26 +59,33 @@ export interface BrowserDeviceOptions {
 
 /** This browser as a device, or undefined where the browser can't hold keys that way (no IndexedDB or WebCrypto). */
 export function browserDevice(options: BrowserDeviceOptions): BrowserDevice | undefined {
-	const db = options.db ?? indexedDb();
+	const db = options.db ?? indexedDeviceDb();
 	if (db === undefined || globalThis.crypto?.subtle === undefined) return undefined;
 	const label = options.label ?? browserLabel();
 	const trustOf = (user: string): TrustStore => ({
 		read: (space) => db.get<SpaceTrust>("trust", `${user}/${space}`),
-		write: (space, trust) => db.put("trust", `${user}/${space}`, trust),
+		update: (space, change) => db.update<SpaceTrust>("trust", `${user}/${space}`, change),
 	});
 	const keysOf = async (user: string, make: boolean): Promise<DeviceKeys | undefined> => {
 		const kept = await db.get<KeptKeys>("keys", user);
 		if (kept !== undefined) return keysFromWebKeys(kept.pairs);
 		if (!make) return undefined;
-		const pairs = await generateWebKeys();
-		await db.put("keys", user, { pairs, label } satisfies KeptKeys);
-		return keysFromWebKeys(pairs);
+		// Made here, kept only if no other tab kept a set first: every caller gets the set that is kept.
+		const made: KeptKeys = { pairs: await generateWebKeys(), label };
+		const winner = await db.update<KeptKeys>("keys", user, (current) => (current === undefined ? made : undefined));
+		return keysFromWebKeys((winner ?? made).pairs);
 	};
 	const labelOf = async (user: string) => (await db.get<KeptKeys>("keys", user))?.label ?? label;
 
 	return {
 		async standing(accountId): Promise<BrowserStanding> {
-			const user = await options.user();
+			let user: string;
+			try {
+				user = await options.user();
+			} catch (error) {
+				if (error instanceof DeviceTrustError) return { kind: "refused", reason: error.message };
+				throw error;
+			}
 			const trust = trustOf(user);
 			if ((await trust.read(accountId)) === undefined) return { kind: "unpinned" };
 			const keys = await keysOf(user, true);
@@ -102,6 +116,12 @@ export function browserDevice(options: BrowserDeviceOptions): BrowserDevice | un
 			const user = await options.user();
 			await pinGenesis(trustOf(user), accountId, genesis);
 			await keysOf(user, true);
+		},
+		async mode(accountId) {
+			const user = await options.user();
+			const trust = trustOf(user);
+			if ((await trust.read(accountId)) === undefined) return undefined;
+			return (await trustedChain(trust, accountId, (await options.gateway.getE2EChain(accountId)).entries)).mode;
 		},
 		async call<T>(sandboxId: string, method: string, params?: object): Promise<T> {
 			const user = await options.user();
@@ -137,40 +157,4 @@ export function browserLabel(userAgent = globalThis.navigator?.userAgent ?? ""):
 					? "Safari"
 					: "a browser";
 	return `Hosted console in ${name}`;
-}
-
-const DB_NAME = "kantel-e2e";
-
-/** IndexedDB, which keeps WebCrypto keys as they are (non-extractable stays so); undefined where there is none. */
-function indexedDb(): DeviceDb | undefined {
-	const factory = (globalThis as { indexedDB?: IDBFactory }).indexedDB;
-	if (factory === undefined) return undefined;
-	let opened: Promise<IDBDatabase> | undefined;
-	const open = () => {
-		opened ??= new Promise<IDBDatabase>((resolve, reject) => {
-			const request = factory.open(DB_NAME, 1);
-			request.onupgradeneeded = () => {
-				request.result.createObjectStore("keys");
-				request.result.createObjectStore("trust");
-			};
-			request.onsuccess = () => resolve(request.result);
-			request.onerror = () => reject(request.error ?? new Error("This browser couldn't open its key store"));
-		});
-		return opened;
-	};
-	const run = async <T>(store: "keys" | "trust", mode: IDBTransactionMode, act: (s: IDBObjectStore) => IDBRequest) =>
-		new Promise<T>((resolve, reject) => {
-			void open().then((db) => {
-				const transaction = db.transaction(store, mode);
-				const request = act(transaction.objectStore(store));
-				transaction.oncomplete = () => resolve(request.result as T);
-				transaction.onerror = () => reject(transaction.error ?? new Error("This browser's key store failed"));
-			}, reject);
-		});
-	return {
-		get: (store, key) => run(store, "readonly", (s) => s.get(key)),
-		put: async (store, key, value) => {
-			await run(store, "readwrite", (s) => s.put(value, key));
-		},
-	};
 }

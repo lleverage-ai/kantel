@@ -82,6 +82,17 @@ as long as its host is online. Deleting the sandbox deletes its history.
 device's key, which never reaches the browser. Only the browser that opens the link it prints gets in. What the
 gateway answers there is shown as data only: the console runs no page or script the gateway sends.
 
+### The hosted console as a device
+
+In a space that isn't strict, the console the gateway serves can be a device of its own (class `web`): paste the
+genesis into the strip at the top, then give an admin the `kantel e2e add-device` command it shows and check the
+fingerprint with them. Its keys are made in the browser, can't be read out of it, and are kept per person, so people
+sharing a browser each have their own keys and trust. Once it trusts the genesis it reads history only as the chain
+verifies from there, and refuses rather than falling back to the gateway's history when the chain doesn't verify or
+goes back on one it saw. A tab whose sign-in ends or changes (another tab signing out and in as someone else, say)
+stops using the keys until it is loaded again. The gateway serves this page's code, which is why strict keeps it out
+and `kantel console` is the stronger choice.
+
 ## Take access away
 
 `kantel e2e remove-device <device>`, `kantel e2e remove-member <user>` and `kantel e2e remove-host <host>` add a signed

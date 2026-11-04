@@ -9,9 +9,9 @@ import {
 	DeviceTrustError,
 	deviceCard,
 	keysFingerprint,
+	memoryTrustStore,
 	parseCard,
 	pinGenesis,
-	type SpaceTrust,
 	type TrustStore,
 	trustedChain,
 } from "../src/device.ts";
@@ -23,16 +23,7 @@ import { type Fixture, fixture, HOST_ID, SPACE, signAs, T0 } from "./fixture.ts"
 
 const SECRET = "OPENAI_API_KEY=sk-live-the-secret-value";
 
-function memoryTrust(): TrustStore & { readonly saved: Map<string, SpaceTrust> } {
-	const saved = new Map<string, SpaceTrust>();
-	return {
-		saved,
-		read: async (space) => saved.get(space),
-		write: async (space, trust) => {
-			saved.set(space, trust);
-		},
-	};
-}
+const memoryTrust = memoryTrustStore;
 
 /** The fixture's host, knowing `knows`, answering `sandbox.history` on sbx_one. */
 function host(f: Fixture, channel: ByteChannel, knows: readonly ChainEntry[]) {
@@ -167,5 +158,31 @@ describe("a browser device", () => {
 		const other = memoryTrust();
 		await pinGenesis(other, SPACE, b.state.head);
 		await expect(trustedChain(other, SPACE, b.entries)).rejects.toThrow();
+	});
+
+	it("keeps the newest chain it verified when checks overlap, and a pin never clears it", async () => {
+		const f = await fixture();
+		const b = await browser(f);
+		const trust = memoryTrust();
+		await pinGenesis(trust, SPACE, f.state.genesis);
+		const pinned = trust.saved.get(SPACE);
+		// Two checks read the pin; the one with the newer chain finishes first. The other, from what it read, would take
+		// its older chain: what is kept when it writes says no.
+		const stale: TrustStore = { read: async () => pinned, update: trust.update };
+		expect((await trustedChain(trust, SPACE, b.entries)).seq).toBe(b.state.seq);
+		await expect(trustedChain(stale, SPACE, f.entries)).rejects.toMatchObject({ problem: "rollback" });
+		expect(trust.saved.get(SPACE)).toEqual({ genesis: f.state.genesis, seq: b.state.seq, head: b.state.head });
+		// The same head again, however it was read, changes nothing.
+		expect((await trustedChain(stale, SPACE, b.entries)).seq).toBe(b.state.seq);
+		expect((await Promise.all([1, 2, 3].map(() => trustedChain(trust, SPACE, b.entries)))).map((s) => s.seq)).toEqual([
+			b.state.seq,
+			b.state.seq,
+			b.state.seq,
+		]);
+		// Pinning the genesis again, as a second tab's set-up would, keeps the checkpoint; another genesis is refused.
+		await Promise.all([pinGenesis(trust, SPACE, f.state.genesis), pinGenesis(trust, SPACE, f.state.genesis)]);
+		expect(trust.saved.get(SPACE)?.seq).toBe(b.state.seq);
+		await expect(pinGenesis(trust, SPACE, b.state.head)).rejects.toThrow(/already trusts another chain/);
+		expect(trust.saved.get(SPACE)?.genesis).toBe(f.state.genesis);
 	});
 });

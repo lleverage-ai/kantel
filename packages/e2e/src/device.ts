@@ -28,9 +28,33 @@ export interface SpaceTrust {
 	readonly head?: string;
 }
 
+/**
+ * Where a device keeps its trust. Every change is an `update`: one step that nothing else (another call, another tab)
+ * can come between, as one IndexedDB transaction is. `change` gets what is kept now and answers what to keep instead,
+ * or undefined to keep it as it is; what it throws refuses the change, and nothing is written. It answers what is kept
+ * after. So a check that verified an older chain while another took a newer one can't put the older one back.
+ */
 export interface TrustStore {
 	read(space: string): Promise<SpaceTrust | undefined>;
-	write(space: string, trust: SpaceTrust): Promise<void>;
+	update(
+		space: string,
+		change: (current: SpaceTrust | undefined) => SpaceTrust | undefined,
+	): Promise<SpaceTrust | undefined>;
+}
+
+/** A `TrustStore` in this process's memory (tests, and anything that keeps no trust across runs). */
+export function memoryTrustStore(): TrustStore & { readonly saved: Map<string, SpaceTrust> } {
+	const saved = new Map<string, SpaceTrust>();
+	return {
+		saved,
+		read: async (space) => saved.get(space),
+		// Read, changed and written with no await between: one step.
+		update: async (space, change) => {
+			const next = change(saved.get(space));
+			if (next !== undefined) saved.set(space, next);
+			return saved.get(space);
+		},
+	};
 }
 
 /** Why a device can't use a space's chain: none pinned, the gateway's goes back on it, or the device isn't let in. */
@@ -48,16 +72,21 @@ export class DeviceTrustError extends Error {
 /** An entry's hash as the chain gives it: base64url of SHA-256. */
 const HASH = /^[A-Za-z0-9_-]{43}$/;
 
-/** Trusts `genesis` for `space`; refused if this device trusts another already. */
+/**
+ * Trusts `genesis` for `space`; refused if this device trusts another already. Pinning the same genesis again keeps
+ * the chain verified from it.
+ */
 export async function pinGenesis(store: TrustStore, space: string, genesis: string): Promise<void> {
 	const given = genesis.trim();
 	if (!HASH.test(given))
 		throw new Error("That isn't a chain's genesis: ask an admin for what kantel e2e status prints");
-	const pinned = await store.read(space);
-	if (pinned !== undefined && pinned.genesis !== given) {
-		throw new Error(`This device already trusts another chain for ${space} (${pinned.genesis.slice(0, 16)})`);
-	}
-	if (pinned === undefined) await store.write(space, { genesis: given });
+	await store.update(space, (pinned) => {
+		if (pinned === undefined) return { genesis: given };
+		if (pinned.genesis !== given) {
+			throw new Error(`This device already trusts another chain for ${space} (${pinned.genesis.slice(0, 16)})`);
+		}
+		return undefined;
+	});
 }
 
 /**
@@ -79,17 +108,23 @@ export async function trustedChain(
 	if (entries.length === 0) throw new Error(`The gateway has no chain for ${space}`);
 	const state = await verifyChain(entries, trust.genesis);
 	if (state.space !== space) throw new Error(`The gateway's chain for ${space} is another space's`);
-	if (trust.seq !== undefined && trust.head !== undefined) {
-		if (state.seq < trust.seq || state.hashes[trust.seq] !== trust.head) {
-			throw new DeviceTrustError(
-				"rollback",
-				`The gateway's chain for ${space} goes back on what this device verified before (seq ${trust.seq}): it isn't used`,
-			);
+	// Checked against what is kept when it is written, not what was read before verifying: another check may have
+	// taken a newer chain meanwhile, and this one mustn't put an older one back.
+	await store.update(space, (current) => {
+		if (current?.genesis !== trust.genesis) {
+			throw new DeviceTrustError("unpinned", `This device's trust for ${space} changed while it checked: try again`);
 		}
-	}
-	if (trust.seq !== state.seq || trust.head !== state.head) {
-		await store.write(space, { genesis: trust.genesis, seq: state.seq, head: state.head });
-	}
+		if (current.seq !== undefined && current.head !== undefined) {
+			if (state.seq < current.seq || state.hashes[current.seq] !== current.head) {
+				throw new DeviceTrustError(
+					"rollback",
+					`The gateway's chain for ${space} goes back on what this device verified before (seq ${current.seq}): it isn't used`,
+				);
+			}
+			if (state.seq === current.seq) return undefined;
+		}
+		return { genesis: current.genesis, seq: state.seq, head: state.head };
+	});
 	return state;
 }
 

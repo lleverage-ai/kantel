@@ -1,10 +1,11 @@
 // The hosted console's browser device end to end: the console's own source (api-source.ts) as Bob signs in, against
 // the real compute API, the hosts service's hub and kantel-host's TypeScript twin (packages/hosts/test/e2e-host.ts).
 // The admin signs the chain's entries with `@kantel/e2e`, as `kantel e2e` does. The browser's store is a map here; in a
-// page it is IndexedDB.
+// page it is IndexedDB (device-db.ts, checked across tabs in Chromium by device-db.test.ts).
 
-import { fromBase64url, utf8 } from "@kantel/e2e/bytes";
+import { fromBase64url, toBase64url, utf8 } from "@kantel/e2e/bytes";
 import {
+	type ChainEntry,
 	chainDevice,
 	createHostTicket,
 	type EntryBody,
@@ -13,7 +14,7 @@ import {
 	signEntry,
 	verifyChain,
 } from "@kantel/e2e/chain";
-import { callHost, parseCard, pinGenesis, type SpaceTrust } from "@kantel/e2e/device";
+import { callHost, memoryTrustStore, parseCard, pinGenesis } from "@kantel/e2e/device";
 import { fingerprint, keyId, newIdentity, type WebKeyPairs } from "@kantel/e2e/keys";
 import { contains } from "@kantel/e2e/testing";
 import { describe, expect, it } from "vitest";
@@ -29,12 +30,22 @@ import {
 import { apiCompute } from "./api-source.ts";
 import { browserLabel, type DeviceDb } from "./browser-device.ts";
 
+/**
+ * The browser's store as a map, shared by every source (tab) given it. A change reads and writes with no wait
+ * between, as one IndexedDB transaction does, but each call waits a turn first, so tabs' calls interleave.
+ */
 function memoryDb() {
 	const kept = new Map<string, unknown>();
 	const db: DeviceDb = {
-		get: async <T>(store: string, key: string) => kept.get(`${store}:${key}`) as T | undefined,
-		put: async (store, key, value) => {
-			kept.set(`${store}:${key}`, value);
+		get: async <T>(store: string, key: string) => {
+			await Promise.resolve();
+			return kept.get(`${store}:${key}`) as T | undefined;
+		},
+		update: async <T>(store: string, key: string, change: (current: T | undefined) => T | undefined) => {
+			await Promise.resolve();
+			const next = change(kept.get(`${store}:${key}`) as T | undefined);
+			if (next !== undefined) kept.set(`${store}:${key}`, next);
+			return kept.get(`${store}:${key}`) as T | undefined;
 		},
 	};
 	return { kept, db };
@@ -70,11 +81,7 @@ async function organisation() {
 	const sandbox = await s.root.createSandbox({ account: org.id, type: "microvm", wait: true });
 	/** A call on the sandbox's host as Root's device, as `kantel e2e exec` makes it. */
 	const rootCalls = async (method: string, params: object) => {
-		const trust = new Map<string, SpaceTrust>();
-		const store = {
-			read: async (space: string) => trust.get(space),
-			write: async (space: string, t: SpaceTrust) => void trust.set(space, t),
-		};
+		const store = memoryTrustStore();
 		await pinGenesis(store, org.id, genesis.genesis);
 		return callHost({
 			gateway: s.root,
@@ -87,6 +94,23 @@ async function organisation() {
 		});
 	};
 	return { ...s, org, sandbox, append, genesis: genesis.genesis, rootCalls };
+}
+
+type Organisation = Awaited<ReturnType<typeof organisation>>;
+type Source = Awaited<ReturnType<typeof apiCompute>>;
+
+/** Bob's browser in `source` trusts the genesis, and Root adds Bob as a member and the browser's card. */
+async function enrol(s: Organisation, source: Source) {
+	const browser = source.e2e?.browser;
+	if (browser === undefined) throw new Error("The console offered no browser device");
+	await browser.trust(s.org.id, s.genesis);
+	const pending = await browser.standing(s.org.id);
+	if (pending.kind !== "pending") throw new Error(`Expected pending, got ${pending.kind}`);
+	const card = await parseCard(pending.command.split(" ").at(-1) ?? "");
+	await s.append({ type: "member.add", body: { user: PEOPLE.bob.userId, role: "member" } });
+	await s.append({ type: "device.add", body: { device: card } });
+	expect(await browser.standing(s.org.id)).toMatchObject({ kind: "ready" });
+	return { browser, card };
 }
 
 describe("the hosted console's browser device", () => {
@@ -185,6 +209,177 @@ describe("the hosted console's browser device", () => {
 			`keys:${PEOPLE.bob.userId}`,
 			`keys:${PEOPLE.root.userId}`,
 		]);
+	});
+
+	it("never lends one person's keys to another's sign-in, and retires once the tab's sign-in changes", async () => {
+		const s = await organisation();
+		await s.rootCalls("sandbox.exec", { command: SECRET_COMMAND });
+		const { db } = memoryDb();
+		// The tab's session as localStorage has it: another tab signing out and in changes it under this one.
+		let token = "bob";
+		const sent: { path: string; authorization: string | null }[] = [];
+		const fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			sent.push({ path: new URL(request.url).pathname, authorization: request.headers.get("authorization") });
+			return s.gatewayFetch(request);
+		};
+		const open = (who: string) =>
+			apiCompute({
+				baseUrl: "https://kantel.test/v1",
+				headers: () => ({ authorization: `Bearer ${who === "tab" ? token : who}` }),
+				fetch,
+				browser: { db, connect: s.tunnel },
+			});
+		const source = await open("tab");
+		const { card } = await enrol(s, source);
+		const read = [expect.objectContaining({ command: SECRET_COMMAND })];
+		// While the tab is Bob's, it reads as Bob; every call it makes as a device carries Bob's session.
+		sent.length = 0;
+		expect(await source.sandboxes.history(s.sandbox.id)).toEqual(read);
+		const asDevice = sent.filter(({ path }) => path.includes("/e2e"));
+		expect(asDevice.length).toBeGreaterThan(0);
+		expect(new Set(asDevice.map(({ authorization }) => authorization))).toEqual(new Set(["Bearer bob"]));
+
+		// Bob signs out and Root, with no device of his in this browser, signs in in another tab.
+		token = "root";
+		const ran = s.host.ran.length;
+		sent.length = 0;
+		await expect(source.sandboxes.history(s.sandbox.id)).rejects.toThrow(
+			/sign-in has ended or another has replaced it/,
+		);
+		expect(await source.e2e?.browser?.standing(s.org.id)).toEqual({
+			kind: "refused",
+			reason: expect.stringMatching(/load the page again/),
+		});
+		// No session opened with Bob's keys, and nothing went to the gateway as Root for one.
+		expect(s.host.ran.length).toBe(ran);
+		expect(sent.filter(({ path }) => path.includes("/e2e"))).toEqual([]);
+		// Retired for good: Bob's token back in storage doesn't bring it back.
+		token = "bob";
+		await expect(source.sandboxes.history(s.sandbox.id)).rejects.toThrow(/sign-in has ended/);
+		expect(s.host.ran.length).toBe(ran);
+
+		// A console loaded as Root has Root's keys and trust only, and he has trusted nothing in this browser.
+		const root = await open("root");
+		expect(await root.e2e?.browser?.standing(s.org.id)).toEqual({ kind: "unpinned" });
+		await expect(root.sandboxes.history(s.sandbox.id)).rejects.toThrow(/isn't a device in the organisation's chain/);
+		expect(s.host.ran.length).toBe(ran);
+		// One loaded as Bob again reads with Bob's browser keys.
+		expect(await (await open("bob")).sandboxes.history(s.sandbox.id)).toEqual(read);
+		expect(s.host.ran.at(-1)).toMatchObject({ device: card.id, method: "sandbox.history" });
+	});
+
+	it("retires behind a cookie the page can't read once the gateway says someone else is signed in", async () => {
+		const s = await organisation();
+		const { db } = memoryDb();
+		// Cloudflare Access: no header from the page; the browser sends the edge's cookie, here whoever `cookie` names.
+		let cookie = "bob";
+		const source = await apiCompute({
+			baseUrl: "https://kantel.test/v1",
+			headers: () => ({}),
+			fetch: (input, init) => {
+				const request = new Request(input, init);
+				request.headers.set("authorization", `Bearer ${cookie}`);
+				return s.gatewayFetch(request);
+			},
+			browser: { db, connect: s.tunnel },
+		});
+		await enrol(s, source);
+		expect(await source.sandboxes.history(s.sandbox.id)).toEqual([]);
+		cookie = "root";
+		const ran = s.host.ran.length;
+		await expect(source.sandboxes.history(s.sandbox.id)).rejects.toThrow(
+			/sign-in has ended or another has replaced it/,
+		);
+		expect(s.host.ran.length).toBe(ran);
+	});
+
+	it("reads plaintext history only where the chain it verified says off", async () => {
+		const s = await organisation();
+		await s.rootCalls("sandbox.exec", { command: SECRET_COMMAND });
+		const { db } = memoryDb();
+		// The gateway's chain as this test rewrites it, and every time the console asks the gateway for history.
+		let forge: ((entries: ChainEntry[]) => Promise<ChainEntry[]>) | undefined;
+		const askedGateway: string[] = [];
+		const chainPath = `/v1/accounts/${s.org.id}/e2e/chain`;
+		const source = await apiCompute({
+			baseUrl: "https://kantel.test/v1",
+			headers: () => ({ authorization: "Bearer bob" }),
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				const { pathname } = new URL(request.url);
+				if (pathname.endsWith("/commands")) askedGateway.push(pathname);
+				const response = await s.gatewayFetch(request);
+				if (forge === undefined || pathname !== chainPath || request.method !== "GET") return response;
+				const chain = (await response.json()) as { entries: ChainEntry[] };
+				return Response.json({ ...chain, entries: await forge(chain.entries) });
+			},
+			browser: { db, connect: s.tunnel },
+		});
+		await enrol(s, source);
+		const read = [expect.objectContaining({ command: SECRET_COMMAND })];
+		expect(await source.sandboxes.history(s.sandbox.id)).toEqual(read);
+
+		// Someone not in the chain says off: a whole new chain off from its genesis, or an entry on the end.
+		const impostor = await newIdentity();
+		const by = { id: await keyId("kd", impostor.signer.publicKey), signer: impostor.signer };
+		const device = await chainDevice(impostor, PEOPLE.bob.userId, "cli", "not root");
+		const offGenesis = await signEntry(undefined, s.org.id, { type: "genesis", body: { mode: "off", device } }, by, 1);
+		const forged: [string, (entries: ChainEntry[]) => Promise<ChainEntry[]>, RegExp][] = [
+			["no chain", async () => [], /no chain/],
+			["another genesis, off", async () => [offGenesis], /genesis|verif|signature/i],
+			[
+				"an entry off it didn't sign",
+				async (entries) => {
+					const state = await verifyChain(entries, s.genesis);
+					return [
+						...entries,
+						await signEntry(state, s.org.id, { type: "mode", body: { mode: "off" } }, by, Date.now()),
+					];
+				},
+				/./,
+			],
+			// From before the browser was added: it goes back on the chain the browser verified.
+			["an older chain", async (entries) => entries.slice(0, 1), /goes back on what this device verified/],
+		];
+		for (const [what, rewrite, refusal] of forged) {
+			forge = rewrite;
+			await expect(source.sandboxes.history(s.sandbox.id), what).rejects.toThrow(refusal);
+			expect(askedGateway, what).toEqual([]);
+		}
+
+		// Root really turns it off, signed in the chain: then the gateway's history is the one there is.
+		forge = undefined;
+		await s.append({ type: "mode", body: { mode: "off" } });
+		await source.sandboxes.history(s.sandbox.id);
+		expect(askedGateway).toEqual([`/v1/sandboxes/${s.sandbox.id}/commands`]);
+	});
+
+	it("keeps one set of keys when tabs make them at once, and every tab shows that set", async () => {
+		const s = await organisation();
+		const { kept, db } = memoryDb();
+		const tab = () =>
+			apiCompute({
+				baseUrl: "https://kantel.test/v1",
+				headers: () => ({ authorization: "Bearer bob" }),
+				fetch: s.gatewayFetch,
+				browser: { db, connect: s.tunnel },
+			});
+		const tabs = await Promise.all([tab(), tab(), tab()]);
+		// One tab has pinned the genesis and not yet kept keys when the others look: each would make a set.
+		kept.set(`trust:${PEOPLE.bob.userId}/${s.org.id}`, { genesis: s.genesis });
+		const standings = await Promise.all(tabs.map((t) => t.e2e?.browser?.standing(s.org.id)));
+		const commands = new Set(standings.map((standing) => (standing?.kind === "pending" ? standing.command : "")));
+		expect(commands.size).toBe(1);
+		// The card every tab shows is the set that is kept.
+		const card = await parseCard([...commands][0]?.split(" ").at(-1) ?? "");
+		const pairs = (kept.get(`keys:${PEOPLE.bob.userId}`) as { pairs: WebKeyPairs }).pairs;
+		const dh = new Uint8Array(await crypto.subtle.exportKey("raw", pairs.dh.publicKey));
+		expect(card.dh).toBe(toBase64url(dh));
+		// Once added, every tab reads with it.
+		await s.append({ type: "member.add", body: { user: PEOPLE.bob.userId, role: "member" } });
+		await s.append({ type: "device.add", body: { device: card } });
+		for (const t of tabs) expect(await t.e2e?.browser?.standing(s.org.id)).toMatchObject({ kind: "ready" });
 	});
 
 	it("is labelled by the browser it is in", () => {
