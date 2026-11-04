@@ -403,10 +403,13 @@ export const COMPUTE_MEMBERS_ONLY =
  * refuses every way in, a compute key or a device sign-in included, since only a person can make either. With account
  * hosts on (`accountHosts`) they are let in, never as a super-admin, to add and use hosts of their own: `sharedHosts`
  * (`membersOf`) keeps them, and their keys, off the stub, with account hosts on or off.
+ *
+ * Their email comes from `identity` too (a sign-in carries none): an invite made for an address is joined by matching
+ * it, so without it no such invite could be.
  */
 async function personOf(
 	authenticator: Authenticator,
-	identity: Pick<IdentityDirectory, "authorize">,
+	identity: Pick<IdentityDirectory, "authorize" | "getUser">,
 	request: Request,
 	adminOrganisationId: string | undefined,
 	accountHosts: boolean,
@@ -420,19 +423,24 @@ async function personOf(
 	if (caller.actor.kind !== "human") return undefined;
 	const outside = adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId;
 	if (outside && !accountHosts) throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
-	// Only an admin of the deployment's organisation, never one of a personal space.
-	const superAdmin =
+	const ctx = callContextFor(caller);
+	const [superAdmin, user] = await Promise.all([
+		// Only an admin of the deployment's organisation, never one of a personal space.
 		!outside &&
-		(await identity.authorize(callContextFor(caller), "admin").then(
-			() => true,
-			() => false,
-		));
+			identity.authorize(ctx, "admin").then(
+				() => true,
+				() => false,
+			),
+		identity.getUser(ctx, caller.actor.userId).catch(() => undefined),
+	]);
+	const email = user?.email === undefined || user.email === "" ? undefined : user.email;
 	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
 	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
 	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
 	return {
 		userId: caller.actor.userId,
 		name: caller.actor.userId,
+		...(email === undefined ? {} : { email }),
 		superAdmin,
 		...(session === undefined ? {} : { session }),
 	};
