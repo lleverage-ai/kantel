@@ -20,6 +20,7 @@ import (
 //	key.json            the host's seeds (Seeds), made on first use
 //	joined.json          every space the host has joined, so a chain file that goes missing locks its space
 //	owners.json          the sandbox IDs seen in E2E spaces, so their snapshots stay covered when an ID is reused
+//	born.json            the sandboxes made while their space was E2E (Born): the only ones a device's session reaches
 //	spaces/<space>.json  each space's chain: the genesis the host pinned when it joined, and the entries
 //
 // A chain file is verified from its pinned genesis whenever it is read, and kept only once extended entries verify, so
@@ -169,6 +170,68 @@ func (s *Store) RecordOwner(sandboxID, space string) error {
 		owners[sandboxID] = space
 		return writeFile(filepath.Join(s.dir, "owners.json"), owners)
 	})
+}
+
+// Born is the host's own record that a sandbox was made while its space was E2E: in Space, under the chain's OnSince
+// then, at At (epoch ms, the host's clock). Nothing the gateway sends sets it; only the host's create and fork do.
+type Born struct {
+	Space   string `json:"space"`
+	OnSince string `json:"onSince"`
+	At      int64  `json:"at"`
+}
+
+// RecordBorn keeps that sandboxID was made under E2E (born.json), replacing what an earlier sandbox of that ID left.
+func (s *Store) RecordBorn(sandboxID string, b Born) error {
+	return s.locked(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		all := s.bornLocked()
+		all[sandboxID] = b
+		return writeFile(filepath.Join(s.dir, "born.json"), all)
+	})
+}
+
+// ForgetBorn drops sandboxID's record: a sandbox made again under that ID without E2E isn't the one that was born.
+func (s *Store) ForgetBorn(sandboxID string) error {
+	return s.locked(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		all := s.bornLocked()
+		if _, ok := all[sandboxID]; !ok {
+			return nil
+		}
+		delete(all, sandboxID)
+		return writeFile(filepath.Join(s.dir, "born.json"), all)
+	})
+}
+
+// BornRecord is sandboxID's Born record, if it has one.
+func (s *Store) BornRecord(sandboxID string) (Born, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.bornLocked()[sandboxID]
+	return b, ok
+}
+
+func (s *Store) bornLocked() map[string]Born {
+	all := map[string]Born{}
+	if raw, err := os.ReadFile(filepath.Join(s.dir, "born.json")); err == nil {
+		_ = json.Unmarshal(raw, &all)
+	}
+	return all
+}
+
+// OnSince is the space's chain's OnSince, "" when E2E is off there or its chain can't be verified.
+func (s *Store) OnSince(space string) string {
+	c := s.Space(space)
+	if c == nil {
+		return ""
+	}
+	st, err := c.load()
+	if err != nil || st.Mode == ModeOff {
+		return ""
+	}
+	return st.OnSince
 }
 
 // RecordedOwner is the E2E space sandboxID was recorded in, if any.

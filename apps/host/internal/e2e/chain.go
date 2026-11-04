@@ -65,6 +65,10 @@ type State struct {
 	Head    string
 	Seq     int
 	Mode    string
+	// OnSince is the hash of the entry from which E2E has been on (or strict) without a break: the genesis, or the
+	// mode entry that last turned it on. "" while it is off. A sandbox made under one OnSince isn't trusted under
+	// another, as the gateway could reach it while E2E was off.
+	OnSince string
 	Members map[string]string
 	Devices map[string]Device
 	Hosts   map[string]ChainHost
@@ -504,6 +508,9 @@ func apply(state *State, e Entry, pin string) (*State, error) {
 			Members: map[string]string{d.User: "admin"}, Devices: map[string]Device{d.ID: d},
 			Hosts: map[string]ChainHost{}, spent: map[string]bool{}, Hashes: []string{hash}, At: p.at,
 		}
+		if p.mode != ModeOff {
+			next.OnSince = hash
+		}
 		if err := next.spendDevice(d); err != nil {
 			return nil, err
 		}
@@ -638,6 +645,12 @@ func apply(state *State, e Entry, pin string) (*State, error) {
 		case "mode":
 			if err := needAdmin(); err != nil {
 				return nil, err
+			}
+			switch {
+			case p.mode == ModeOff:
+				next.OnSince = ""
+			case next.Mode == ModeOff:
+				next.OnSince = hash
 			}
 			next.Mode = p.mode
 		}

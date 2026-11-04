@@ -105,6 +105,7 @@ type stateSummary struct {
 	Head    string            `json:"head"`
 	Seq     int               `json:"seq"`
 	Mode    string            `json:"mode"`
+	OnSince string            `json:"onSince"`
 	Members map[string]string `json:"members"`
 	Devices []string          `json:"devices"`
 	Hosts   []string          `json:"hosts"`
@@ -112,7 +113,7 @@ type stateSummary struct {
 }
 
 func summarise(s *State) stateSummary {
-	out := stateSummary{Space: s.Space, Genesis: s.Genesis, Head: s.Head, Seq: s.Seq, Mode: s.Mode, Members: s.Members, Devices: []string{}, Hosts: []string{}, Allowed: map[string]bool{}}
+	out := stateSummary{Space: s.Space, Genesis: s.Genesis, Head: s.Head, Seq: s.Seq, Mode: s.Mode, OnSince: s.OnSince, Members: s.Members, Devices: []string{}, Hosts: []string{}, Allowed: map[string]bool{}}
 	for id := range s.Devices {
 		out.Devices = append(out.Devices, id)
 		out.Allowed[id] = s.Allowed(id) == ""

@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,7 +94,7 @@ func e2eHost(t *testing.T) (*Host, *e2eTier, sessionVector) {
 	}
 	tier := &e2eTier{
 		owners: map[string]string{"sbx_one": v.Space, "sbx_other": "acc_plain"},
-		snaps:  []proto.SnapshotInfo{{ID: "snap_one", SandboxID: "sbx_one"}, {ID: "snap_gone", SandboxID: "sbx_deleted"}},
+		snaps:  []proto.SnapshotInfo{{ID: "snap_one", SandboxID: "sbx_one", CreatedAt: 2}, {ID: "snap_gone", SandboxID: "sbx_deleted"}},
 	}
 	h := newLifecycleHost(t, newLifecycleTier())
 	h.tiers = map[string]Tier{microvm.Tier: tier}
@@ -112,6 +111,14 @@ func e2eHost(t *testing.T) (*Host, *e2eTier, sessionVector) {
 	}
 	write("key.json", e2e.Seeds{Sign: e2e.NewSeeds().Sign, DH: v.HostStatic})
 	write("spaces/"+v.Space+".json", map[string]any{"genesis": e2e.EntryHash(v.Entries[0]), "entries": v.Entries})
+	// sbx_one was made while the space was E2E (as the host's create would have recorded it).
+	since := h.e2e.OnSince(v.Space)
+	if since == "" {
+		t.Fatal("the vector's space isn't E2E on")
+	}
+	if err := h.e2e.RecordBorn("sbx_one", e2e.Born{Space: v.Space, OnSince: since, At: 1}); err != nil {
+		t.Fatal(err)
+	}
 	return h, tier, v
 }
 
@@ -360,8 +367,11 @@ func TestAnE2ESessionIsForTheSandboxItWasRelayedFor(t *testing.T) {
 // E2E snapshot stays protected after its sandbox is deleted.
 func TestSnapshotsAreJudgedInTheTierTheCallUses(t *testing.T) {
 	h, vm, v := e2eHost(t)
-	vm.snaps = []proto.SnapshotInfo{{ID: "snap_s", SandboxID: "sbx_gone_e2e"}}
+	vm.snaps = []proto.SnapshotInfo{{ID: "snap_s", SandboxID: "sbx_gone_e2e", CreatedAt: 2}}
 	if err := h.e2e.RecordOwner("sbx_gone_e2e", v.Space); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.e2e.RecordBorn("sbx_gone_e2e", e2e.Born{Space: v.Space, OnSince: h.e2e.OnSince(v.Space), At: 1}); err != nil {
 		t.Fatal(err)
 	}
 	iso := &e2eTier{owners: map[string]string{"sbx_plain": "acc_plain"}, snaps: []proto.SnapshotInfo{{ID: "snap_s", SandboxID: "sbx_plain"}, {ID: "snap_p", SandboxID: "sbx_plain"}}}
@@ -763,6 +773,11 @@ func TestTurningE2EOnEndsPlaintextCallsInFlight(t *testing.T) {
 	if err := os.Rename(path, aside); err != nil {
 		t.Fatal(err)
 	}
+	// A host that hasn't joined yet.
+	var err error
+	if h.e2e, err = e2e.OpenStore(filepath.Join(h.cfg.Root, "e2e")); err != nil {
+		t.Fatal(err)
+	}
 	exec, _ := json.Marshal(map[string]any{"sandboxId": "sbx_one", "command": "tail -f /home/user/.env"})
 	ctx, done, err := h.gatewayGuard(context.Background(), proto.MethodExec, exec)
 	if err != nil {
@@ -815,51 +830,136 @@ func TestEgressOfAnE2ESandboxIsntPublished(t *testing.T) {
 	}
 }
 
-// A device's call in a space E2E protects waits until every plaintext call there (and any whose space the host can't
-// tell, such as an orphan snapshot's read) has been ended and has returned; those of another space run on.
-func TestADevicesCallWaitsForPlaintextCallsToEnd(t *testing.T) {
-	h, tier, v := e2eHost(t)
-	type call struct {
-		ended    chan struct{}
-		returned atomic.Bool
-	}
-	start := func(space string) *call {
-		c := &call{ended: make(chan struct{})}
-		var forget func()
-		forget = h.watchPlain(space, func() {
-			close(c.ended)
-			go func() {
-				// An operation that takes a while to notice it was cancelled.
-				time.Sleep(150 * time.Millisecond)
-				c.returned.Store(true)
-				forget()
-			}()
-		})
-		return c
-	}
-	same, orphan, other := start(v.Space), start(""), start("acc_plain")
+// openSession opens a device's session to sandbox through serveE2E, or says why it couldn't.
+func openSession(t *testing.T, h *Host, v sessionVector, sandbox string) (*e2e.Client, error) {
+	t.Helper()
 	hostSide, deviceSide := net.Pipe()
-	if err := h.serveE2E(context.Background(), hostSide, "sbx_one"); err != nil {
-		t.Fatal(err)
+	if err := h.serveE2E(context.Background(), hostSide, sandbox); err != nil {
+		return nil, err
 	}
 	_ = deviceSide.SetDeadline(time.Now().Add(10 * time.Second))
-	c, err := e2e.OpenClient(deviceSide, key(t, v.DeviceStatic), key(t, v.HostStatic).PublicKey().Bytes(), v.Space, v.HostID, "sbx_one", v.Entries)
+	c, err := e2e.OpenClient(deviceSide, key(t, v.DeviceStatic), key(t, v.HostStatic).PublicKey().Bytes(), v.Space, v.HostID, sandbox, v.Entries)
+	if err == nil {
+		t.Cleanup(func() { c.Close() })
+	}
+	return c, err
+}
+
+// Only a sandbox the host made while its space was E2E takes sessions. One made before the host joined (with whatever
+// the gateway left running in it, or wrote to it as E2E came on) takes none, and the gateway can't reach it either;
+// it can still be deleted. A create can't claim to be made under E2E.
+func TestOnlySandboxesMadeUnderE2ETakeSessions(t *testing.T) {
+	h, tier, v := e2eHost(t)
+	dir := filepath.Join(h.cfg.Root, "e2e")
+	path := filepath.Join(dir, "spaces", v.Space+".json")
+	aside := path + ".aside"
+	if err := os.Rename(path, aside); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	if h.e2e, err = e2e.OpenStore(dir); err != nil {
+		t.Fatal(err)
+	}
+	call := func(method string, params map[string]any) error {
+		raw, _ := json.Marshal(params)
+		return h.gatewayMayCall(method, raw)
+	}
+	// Before the host joins: the gateway makes a sandbox, claiming (in every way it could) that it was made under E2E.
+	if err := call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_old", "owner": v.Space, "createdUnderE2E": true, "born": true, "e2e": true}); err != nil {
+		t.Fatal(err)
+	}
+	tier.mu.Lock()
+	tier.owners["sbx_old"] = v.Space
+	tier.mu.Unlock()
+	// A command it started (a background process, say) and a file write still waiting as E2E comes on.
+	for _, m := range []string{proto.MethodExec, proto.MethodFileWrite} {
+		raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_old", "command": "sleep 1d &", "path": "/home/user/.bashrc"})
+		_, done, err := h.gatewayGuard(context.Background(), m, raw)
+		if err != nil {
+			t.Fatalf("%s before E2E: %v", m, err)
+		}
+		defer done()
+	}
+	// The host joins.
+	if err := os.Rename(aside, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openSession(t, h, v, "sbx_old"); err == nil || !strings.Contains(err.Error(), "made while E2E was off") {
+		t.Fatalf("a session reached a sandbox made before E2E: %v", err)
+	}
+	if call(proto.MethodExec, map[string]any{"sandboxId": "sbx_old", "command": "id"}) == nil {
+		t.Fatal("the gateway reached a sandbox in an E2E space")
+	}
+	if call(proto.MethodFork, map[string]any{"sandboxId": "sbx_old", "newId": "sbx_copy"}) == nil {
+		t.Fatal("a sandbox made before E2E was forked into one that would take sessions")
+	}
+	if err := call(proto.MethodDelete, map[string]any{"sandboxId": "sbx_old"}); err != nil {
+		t.Fatalf("deleting a retired sandbox: %v", err)
+	}
+	// Nor is a new sandbox made from its snapshot, or one of sbx_one's from before it was made.
+	tier.mu.Lock()
+	tier.snaps = append(tier.snaps, proto.SnapshotInfo{ID: "snap_old", SandboxID: "sbx_old", CreatedAt: time.Now().UnixMilli()}, proto.SnapshotInfo{ID: "snap_before", SandboxID: "sbx_one", CreatedAt: 0})
+	tier.mu.Unlock()
+	for _, from := range []string{"snap_old", "snap_before"} {
+		if call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_from_" + from, "owner": v.Space, "from": from}) == nil {
+			t.Errorf("a sandbox was made from %s", from)
+		}
+	}
+	if call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_from_one", "owner": v.Space, "from": "snap_one"}) != nil {
+		t.Error("a sandbox wasn't made from a snapshot of one made under E2E")
+	}
+	// One made now takes sessions.
+	if err := call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_new", "owner": v.Space}); err != nil {
+		t.Fatal(err)
+	}
+	tier.mu.Lock()
+	tier.owners["sbx_new"] = v.Space
+	tier.mu.Unlock()
+	c, err := openSession(t, h, v, "sbx_new")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
 	if _, err := c.Call(proto.MethodExec, map[string]any{"command": "id"}); err != nil {
 		t.Fatal(err)
 	}
-	if !same.returned.Load() || !orphan.returned.Load() {
-		t.Fatal("the device's call ran while a plaintext call in its space still did")
+}
+
+// A sandbox made under E2E isn't trusted after E2E is turned off and on again: while it was off the gateway could
+// reach it. The chain's entries are the shared vectors'.
+func TestTurningE2EOffAndOnRetiresItsSandboxes(t *testing.T) {
+	h, _, v := e2eHost(t)
+	if _, err := openSession(t, h, v, "sbx_one"); err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case <-other.ended:
-		t.Fatal("another space's plaintext call was ended")
-	default:
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "e2e", "vectors", "chain.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(tier.execs) != 1 {
-		t.Fatalf("%d commands ran", len(tier.execs))
+	var vectors struct {
+		Cases []struct {
+			Name    string      `json:"name"`
+			Entries []e2e.Entry `json:"entries"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	var entries []e2e.Entry
+	for _, c := range vectors.Cases {
+		if strings.HasPrefix(c.Name, "E2E turned off and on again") {
+			entries = c.Entries
+		}
+	}
+	if len(entries) != len(v.Entries)+2 {
+		t.Fatalf("the vector has %d entries", len(entries))
+	}
+	if _, err := h.e2e.Space(v.Space).Extend(len(v.Entries), entries[len(v.Entries):]); err != nil {
+		t.Fatal(err)
+	}
+	if h.e2eMode(v.Space) == e2e.ModeOff {
+		t.Fatal("E2E isn't on again")
+	}
+	if _, err := openSession(t, h, v, "sbx_one"); err == nil || !strings.Contains(err.Error(), "made while E2E was off") {
+		t.Fatalf("a sandbox from before E2E went off took a session: %v", err)
 	}
 }

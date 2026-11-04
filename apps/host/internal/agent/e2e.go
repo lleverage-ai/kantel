@@ -227,6 +227,11 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			if h.e2eMode(p.Owner) != e2e.ModeOff && (!known || owner != p.Owner) {
 				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes are made fresh or from its own snapshots, not from another space's", p.Owner)}
 			}
+			// Its own, taken of a sandbox made under E2E: not one from before E2E was on, which the gateway could have
+			// written.
+			if h.e2eMode(p.Owner) != e2e.ModeOff && !h.snapshotBorn(t, p.From, p.Owner) {
+				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: snapshot %s is of a sandbox made while E2E was off, so a new sandbox isn't made from it", p.Owner, p.From)}
+			}
 			if s, covered := h.snapshotGuarded(t, p.From); covered {
 				if !known || owner != p.Owner {
 					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("a sandbox made from a snapshot in %s, which is end-to-end encrypted, must be in that space", s)}
@@ -236,12 +241,19 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 				}
 			}
 		}
-		return h.recordE2E(p.SandboxID, p.Owner)
+		if err := h.recordE2E(p.SandboxID, p.Owner); err != nil {
+			return err
+		}
+		return h.markBorn(p.SandboxID, p.Owner)
 	case method == proto.MethodFork:
 		owner := h.ownerOf(p.SandboxID)
 		if h.e2eMode(owner) != e2e.ModeOff {
 			if len(p.Env) > 0 {
 				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a fork takes no environment variables from the gateway", owner)}
+			}
+			// A fork copies its source's disk: one of a sandbox made while E2E was off would carry what the gateway left.
+			if !h.bornIn(p.SandboxID, owner) {
+				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: %s was made while E2E was off, so it isn't forked", owner, p.SandboxID)}
 			}
 			if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
 				return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s", p.NewID, was)}
@@ -249,12 +261,15 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			if err := h.freshForE2E(p.NewID, owner); err != nil {
 				return err
 			}
-			return h.recordE2E(p.NewID, owner)
+			if err := h.recordE2E(p.NewID, owner); err != nil {
+				return err
+			}
+			return h.markBorn(p.NewID, owner)
 		}
 		if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
 			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.NewID, was)}
 		}
-		return nil
+		return h.markBorn(p.NewID, owner)
 	default:
 		return nil
 	}
@@ -279,15 +294,12 @@ func (h *Host) freshForE2E(id, space string) error {
 	if h.e2eMode(space) == e2e.ModeOff {
 		return nil
 	}
-	if was, ok := h.recordedOwner(id); ok && was == space {
-		return nil
-	}
 	if _, err := h.tierOf(id); err == nil {
 		return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", id)}
 	}
 	for _, name := range h.order {
 		if len(h.tiers[name].Snapshots(id)) > 0 {
-			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s has snapshots from another space on this host", id)}
+			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s has snapshots on this host: an E2E sandbox takes an ID of its own", id)}
 		}
 	}
 	return nil
@@ -584,7 +596,7 @@ func (h *Host) spaceOfCall(method string, params json.RawMessage) string {
 }
 
 // plainCalls are the gateway's plaintext calls and port streams in flight, by their space ("" when the host can't
-// tell it), so none outlives its space turning E2E on (drainPlain).
+// tell it), so none outlives its space turning E2E on by long (watchPlainLoop).
 type plainCalls struct {
 	mu       sync.Mutex
 	cond     *sync.Cond
@@ -601,7 +613,8 @@ type plainCall struct {
 
 // watchPlain tracks a plaintext call or stream until forget: end stops it (cancels its context, closes its stream)
 // when its space turns E2E on. A call registers before it checks its space's mode, so either it sees E2E on and is
-// refused, or drainPlain finds it.
+// refused, or watchPlainLoop finds it. (A device never reaches what such a call touched: only sandboxes made under E2E
+// take sessions, bornIn.)
 func (h *Host) watchPlain(space string, end func()) (forget func()) {
 	if h.e2e == nil {
 		return func() {}
@@ -642,50 +655,7 @@ func (h *Host) protectedNow(space string) bool {
 	return false
 }
 
-// drainPlain ends every plaintext call and stream of space (and those whose space the host can't tell) and waits until
-// they have returned. A device's session calls it before each call, so nothing a device does in a space E2E protects
-// overlaps a plaintext gateway call still running there, whether the space turned on by a join or by an entry.
-func (h *Host) drainPlain(ctx context.Context, space string) error {
-	if h.e2e == nil || h.e2eMode(space) == e2e.ModeOff {
-		return nil
-	}
-	pc := &h.plain
-	pc.mu.Lock()
-	if pc.calls == nil {
-		pc.mu.Unlock()
-		return nil
-	}
-	matches := func(c *plainCall) bool { return c.space == space || c.space == "" }
-	var ending []func()
-	for _, c := range pc.calls {
-		if matches(c) && !c.ended {
-			c.ended = true
-			ending = append(ending, c.end)
-		}
-	}
-	pc.mu.Unlock()
-	for _, end := range ending {
-		end()
-	}
-	stop := context.AfterFunc(ctx, func() {
-		pc.mu.Lock()
-		pc.cond.Broadcast()
-		pc.mu.Unlock()
-	})
-	defer stop()
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	for slices.ContainsFunc(slices.Collect(maps.Values(pc.calls)), matches) {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		pc.cond.Wait()
-	}
-	return nil
-}
-
-// watchPlainLoop ends, every plainRecheck while any plaintext call runs, those whose space has turned E2E on, for a
-// space no device is using yet.
+// watchPlainLoop ends, every plainRecheck while any plaintext call runs, those whose space has turned E2E on.
 func (h *Host) watchPlainLoop() {
 	every := h.plainRecheck
 	if every <= 0 {
@@ -725,6 +695,63 @@ func (h *Host) watchPlainLoop() {
 }
 
 // serveE2E runs one E2E session on conn, for a session the control plane relays to sandboxID.
+// notBorn is a session's refusal of a sandbox the host didn't make while its space was E2E.
+const notBorn = "This sandbox was made while E2E was off in its space (or before this host joined its chain): " +
+	"the gateway could have changed it, so no E2E session reaches it. Delete it and make a new one"
+
+// bornIn is whether sandboxID is one the host made while space was E2E, with E2E on there without a break since
+// (the chain's OnSince is still the one it was made under), and still in space. The record is the host's own
+// (born.json): nothing the gateway sends sets it.
+func (h *Host) bornIn(sandboxID, space string) bool {
+	if h.e2e == nil || space == "" {
+		return false
+	}
+	b, ok := h.e2e.BornRecord(sandboxID)
+	if !ok || b.Space != space || h.ownerOf(sandboxID) != space {
+		return false
+	}
+	since := h.e2e.OnSince(space)
+	return since != "" && since == b.OnSince
+}
+
+// snapshotBorn is whether a snapshot in tier t was taken of a sandbox bornIn space, after it was made: one taken of an
+// earlier sandbox of that ID, or while E2E was off, isn't.
+func (h *Host) snapshotBorn(t Tier, snapshotID, space string) bool {
+	if t == nil || h.e2e == nil {
+		return false
+	}
+	for _, snap := range t.Snapshots("") {
+		if snap.ID != snapshotID {
+			continue
+		}
+		b, ok := h.e2e.BornRecord(snap.SandboxID)
+		if !ok || b.Space != space || snap.CreatedAt <= b.At {
+			return false
+		}
+		since := h.e2e.OnSince(space)
+		return since != "" && since == b.OnSince
+	}
+	return false
+}
+
+// markBorn records, before the create or fork runs, whether sandboxID is made under E2E: born in space when E2E is on
+// there, and otherwise any record an earlier sandbox of that ID left is dropped.
+func (h *Host) markBorn(sandboxID, space string) error {
+	if h.e2e == nil || sandboxID == "" {
+		return nil
+	}
+	var err error
+	if since := h.e2e.OnSince(space); space != "" && since != "" && h.e2eMode(space) != e2e.ModeOff {
+		err = h.e2e.RecordBorn(sandboxID, e2e.Born{Space: space, OnSince: since, At: time.Now().UnixMilli()})
+	} else {
+		err = h.e2e.ForgetBorn(sandboxID)
+	}
+	if err != nil {
+		return &proto.Error{Code: proto.ErrInternal, Message: "couldn't record how a sandbox was made: " + err.Error()}
+	}
+	return nil
+}
+
 func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) error {
 	space := h.ownerOf(sandboxID)
 	if space == "" {
@@ -752,6 +779,9 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			if h.ownerOf(hello.Sandbox) != space {
 				return "No such sandbox in this space"
 			}
+			if !h.bornIn(hello.Sandbox, space) {
+				return notBorn
+			}
 			return ""
 		},
 		RPC: func(ctx context.Context, d e2e.Device, sandbox, method string, params json.RawMessage, emit func(any)) (any, error) {
@@ -768,8 +798,8 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			if h.ownerOf(sandbox) != space {
 				return nil, &e2e.Error{Code: proto.ErrNotFound, Message: "No such sandbox in this space"}
 			}
-			if err := h.drainPlain(ctx, space); err != nil {
-				return nil, err
+			if !h.bornIn(sandbox, space) {
+				return nil, &e2e.Error{Code: proto.ErrUnsupported, Message: notBorn}
 			}
 			var p map[string]any
 			if len(params) > 0 && string(params) != "null" {
@@ -806,8 +836,8 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			if h.ownerOf(sandbox) != space {
 				return nil, &e2e.Error{Code: proto.ErrNotFound, Message: "No such sandbox in this space"}
 			}
-			if err := h.drainPlain(ctx, space); err != nil {
-				return nil, err
+			if !h.bornIn(sandbox, space) {
+				return nil, &e2e.Error{Code: proto.ErrUnsupported, Message: notBorn}
 			}
 			return h.DialPort(ctx, sandbox, port)
 		},

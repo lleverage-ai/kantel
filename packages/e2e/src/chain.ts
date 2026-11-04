@@ -112,6 +112,11 @@ export interface SpaceState {
 	readonly head: string;
 	readonly seq: number;
 	readonly mode: SpaceMode;
+	/**
+	 * The hash of the entry from which E2E has been on (or strict) without a break: the genesis, or the mode entry that
+	 * last turned it on; "" while it is off. Hosts trust only sandboxes they made under the current one.
+	 */
+	readonly onSince: string;
 	readonly members: ReadonlyMap<string, MemberRole>;
 	/** Devices that are in, by ID. */
 	readonly devices: ReadonlyMap<string, ChainDevice>;
@@ -349,6 +354,7 @@ interface MutableState {
 	head: string;
 	seq: number;
 	mode: SpaceMode;
+	onSince: string;
 	members: Map<string, MemberRole>;
 	devices: Map<string, ChainDevice>;
 	hosts: Map<string, ChainHost>;
@@ -363,6 +369,7 @@ const copy = (state: SpaceState): MutableState => ({
 	head: state.head,
 	seq: state.seq,
 	mode: state.mode,
+	onSince: state.onSince,
 	members: new Map(state.members),
 	devices: new Map(state.devices),
 	hosts: new Map(state.hosts),
@@ -404,6 +411,7 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 			head: hash,
 			seq: 0,
 			mode: payload.body.mode,
+			onSince: payload.body.mode === "off" ? "" : hash,
 			members: new Map([[device.user, "admin"]]),
 			devices: new Map([[device.id, device]]),
 			hosts: new Map(),
@@ -504,6 +512,8 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 				break;
 			case "mode":
 				needAdmin();
+				if (payload.body.mode === "off") next.onSince = "";
+				else if (next.mode === "off") next.onSince = hash;
 				next.mode = payload.body.mode;
 				break;
 		}
