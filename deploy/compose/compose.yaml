@@ -98,6 +98,10 @@ services:
       # and secret files are refused; plain variables still work.
       KANTEL_SECRETS_KEY: ${KANTEL_SECRETS_KEY:-}
       KANTEL_ACCOUNT_HOSTS: ${KANTEL_ACCOUNT_HOSTS:-}
+      # `experimental` turns on read-only mounts, bundles, bucket sources and
+      # signed file URLs. Bundles' tars are kept in the gatewaystate volume,
+      # under /var/lib/harbour/bundles.
+      KANTEL_MOUNTS: ${KANTEL_MOUNTS:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes:

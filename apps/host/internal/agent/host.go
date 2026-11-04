@@ -232,11 +232,20 @@ func (h *Host) makeFacts() proto.Facts {
 	if reserve == 0 {
 		reserve = max(2048, total/10)
 	}
+	features := []string{proto.FeatureEgressPolicy}
+	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
+	// is refused as unsupported.
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(FileStreamer); ok {
+			features = append(features, proto.FeatureFileStreams)
+			break
+		}
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
 		KVM: kvm, Nested: nested && kvm, Tiers: h.Tiers(), Sizes: sizes, Labels: h.cfg.Labels, Egress: h.cfg.Egress,
-		Features: []string{proto.FeatureEgressPolicy},
+		Features: features,
 	}
 }
 

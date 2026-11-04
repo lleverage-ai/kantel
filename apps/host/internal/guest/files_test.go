@@ -3,6 +3,9 @@ package guest
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -86,6 +89,73 @@ func TestReadFileRangeFromAnOlderAgent(t *testing.T) {
 	tail, _, size, err := client.ReadFile(context.Background(), path, 2900, 500)
 	if err != nil || size != 3000 || !bytes.Equal(tail, content[2900:]) {
 		t.Fatalf("the tail: %d bytes, size %d, %v", len(tail), size, err)
+	}
+}
+
+// A file of several megabytes goes both ways as it comes: written from a reader of unknown length (so the body is
+// chunked), renamed into place, then read back whole with its size and mode.
+func TestFileStreamsRoundTrip(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	ctx := context.Background()
+	content := make([]byte, 6<<20+123)
+	for i := range content {
+		content[i] = byte(i * 31)
+	}
+	path := filepath.Join(t.TempDir(), "dir", "big.bin")
+	// A pipe, so the client can't know the length up front, as with a stream from the control plane.
+	pr, pw := io.Pipe()
+	go func() {
+		for rest := content; len(rest) > 0; {
+			n := min(len(rest), 100_000)
+			if _, err := pw.Write(rest[:n]); err != nil {
+				return
+			}
+			rest = rest[n:]
+		}
+		pw.Close()
+	}()
+	n, err := client.WriteFileStream(ctx, path, pr, 0o640)
+	if err != nil || n != int64(len(content)) {
+		t.Fatalf("write: %d bytes, %v", n, err)
+	}
+	if _, err := os.Stat(path + ".kantel-tmp"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the temporary file was left: %v", err)
+	}
+	body, size, mode, err := client.ReadFileStream(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	got, err := io.ReadAll(body)
+	if err != nil || size != int64(len(content)) || mode != 0o640 || !bytes.Equal(got, content) {
+		t.Fatalf("read: %d bytes, size %d, mode %o, %v", len(got), size, mode, err)
+	}
+}
+
+func TestReadFileStreamOfAMissingFile(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	body, _, _, err := client.ReadFileStream(context.Background(), filepath.Join(t.TempDir(), "missing"))
+	if !IsNotFound(err) || body != nil {
+		t.Fatalf("a missing file: %v", err)
+	}
+}
+
+// A write whose sender fails part-way (the control plane's stream aborted) leaves the file as it was: the body never
+// ends properly, so the agent never renames what it got into place.
+func TestAnAbortedFileStreamLeavesTheFile(t *testing.T) {
+	path, content := testFile(t, 3000)
+	client := clientFor(t, (&Server{}).Handler())
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write(bytes.Repeat([]byte("x"), 1<<20))
+		pw.CloseWithError(errors.New("the sender went away"))
+	}()
+	if _, err := client.WriteFileStream(context.Background(), path, pr, 0); err == nil {
+		t.Fatal("an aborted write succeeded")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("the file changed: %d bytes, %v", len(got), err)
 	}
 }
 

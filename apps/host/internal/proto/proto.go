@@ -93,6 +93,10 @@ type Facts struct {
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
 
+// FeatureFileStreams: the host serves sandbox.files.open (FileOpenParams), a file's bytes on a port stream, for the
+// sandboxes of a tier that streams files (the microVM tier).
+const FeatureFileStreams = "file-streams"
+
 // Size is a sandbox shape.
 type Size struct {
 	Name      string `json:"name"`
@@ -403,6 +407,28 @@ type PortParams struct {
 // PortE2E is the port.open target that is an E2E session with the host rather than a sandbox port.
 const PortE2E = 0
 
+// FileOpenParams is sandbox.files.open: a file's bytes on Stream, in binary frames as port.open's.
+//
+// Op "read": the call is answered {"size": n}, the file's bytes follow on the stream, and a stream.close ends it with
+// the reason "ok <size>", or "error <code>: <message>". Op "write": the call is answered {} once the host is ready;
+// Kantel sends the bytes, then an empty frame for the end; the host writes them beside the file, moves them over it once
+// all have arrived, and ends the stream with a stream.close as for a read. A stream.close from Kantel aborts either
+// (for a write, nothing is moved into place).
+type FileOpenParams struct {
+	SandboxID string `json:"sandboxId"`
+	Stream    uint32 `json:"stream"`
+	Path      string `json:"path"`
+	Op        string `json:"op"`
+	// Mode is a write's permissions, such as 0o644 (the default).
+	Mode uint32 `json:"mode,omitempty"`
+}
+
+// FileOpenParams' ops.
+const (
+	FileOpRead  = "read"
+	FileOpWrite = "write"
+)
+
 // UpdateParams is host.update.
 type UpdateParams struct {
 	Version string `json:"version"`
@@ -451,4 +477,6 @@ const (
 	MethodSecrets = "sandbox.secrets"
 	// MethodSecretsFetch (host → Kantel, SandboxRef) answers a SecretsTable.
 	MethodSecretsFetch = "secrets.fetch"
+	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).
+	MethodFileOpen = "sandbox.files.open"
 )

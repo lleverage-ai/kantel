@@ -311,6 +311,9 @@ export interface HostEvent {
 	readonly at: number;
 	/** For `egress`: a batch, at most 100 records or 2 seconds' worth. */
 	readonly egress?: readonly HostEgressRecord[];
+	/** For `sandbox.mounts` (`HOST_EVENT_MOUNTS`): the sandbox, and its mounts' statuses now. */
+	readonly sandboxId?: string;
+	readonly mounts?: readonly HostMountStatus[];
 }
 
 export interface HostMessage {

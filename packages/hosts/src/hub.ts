@@ -7,18 +7,26 @@
  * One connection per host: a newer one takes over, and the older is closed with 4008. Only the current connection's
  * close marks the host gone, so a takeover never reads as a disconnect.
  *
- * A welcomed host may call Kantel for one thing, `secrets.fetch`: the hub answers it through `secrets`, naming the
- * host the connection was checked against, never one the host names, so a host is given only its own sandboxes'
- * values. Its egress proxy's `egress` events go to `onEgress`.
+ * A welcomed host may call Kantel for two things, `secrets.fetch` and `bucket.fetch`: the hub answers them through
+ * `secrets` and `bucketSource`, naming the host the connection was checked against, never one the host names, so a
+ * host is given only its own sandboxes' values and bucket sources. Its egress proxy's `egress` events go to
+ * `onEgress`, and its `sandbox.mounts` events, checked, to `onMounts`.
+ *
+ * A file stream (`openFile`) is a port stream carrying a file of a sandbox's: the host sends a read's bytes and ends it
+ * with a `stream.close` whose reason says how it went; a write's bytes go the other way, then an empty frame for the
+ * end of them.
  *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
+import { parseMountStatuses } from "./facts.ts";
 import {
 	decodeStreamFrame,
 	encodeStreamFrame,
 	HOST_CLOSE_PROTOCOL,
 	HOST_CLOSE_REPLACED,
+	HOST_EVENT_MOUNTS,
 	HOST_PROTOCOL_VERSION,
+	type HostBucketSource,
 	type HostCapacity,
 	type HostEgressRecord,
 	type HostError,
@@ -26,6 +34,7 @@ import {
 	type HostHello,
 	type HostMessage,
 	HostMethods,
+	type HostMountStatus,
 	type HostSecrets,
 	type HostWelcome,
 	parseHostMessage,
@@ -36,6 +45,11 @@ export interface HostSocket {
 	sendText(text: string): void;
 	sendBinary(bytes: Uint8Array): void;
 	close(code: number, reason: string): void;
+	/**
+	 * The bytes sent but not yet written out (a WebSocket's `bufferedAmount`), so a file stream's writer can wait for
+	 * the host to keep up. Absent, a writer can't tell and doesn't wait.
+	 */
+	bufferedAmount?(): number;
 }
 
 /** What the hub gives back: the server feeds it the socket's frames. */
@@ -77,6 +91,37 @@ export interface PortStream {
 	close(): void;
 }
 
+/** `sandbox.files.open`'s params but the stream, which the hub picks. */
+export interface FileOpenParams {
+	readonly sandboxId: string;
+	readonly path: string;
+	readonly op: "read" | "write";
+	/** For a write: the file's permissions, such as 0o644. */
+	readonly mode?: number;
+}
+
+/** Kantel's end of a file stream: a port stream, and what a write needs on top. */
+export interface FileStreamHandle extends PortStream {
+	/** The end of a write's bytes: an empty frame, which the host reads as the end of input. */
+	finish(): void;
+	/**
+	 * Resolves once the host's socket has less than `FILE_STREAM_BUFFER_BYTES` waiting to go out, so a writer doesn't
+	 * pile a whole file into memory; at once when the socket can't tell, or the stream has ended.
+	 */
+	drained(): Promise<void>;
+}
+
+/** A file stream once the host has opened it: the size it answered for a read. */
+export interface OpenedFile {
+	readonly stream: FileStreamHandle;
+	readonly size?: number;
+}
+
+/** How much a file stream's writer lets wait in the host's socket before it waits too. */
+export const FILE_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
+const DRAIN_POLL_MS = 10;
+const OPEN_TIMEOUT_MS = 20_000;
+
 export interface HostHubOptions {
 	/**
 	 * The host said hello: reconcile and answer with its welcome. Throwing refuses the connection (closed with 4002 and
@@ -95,6 +140,13 @@ export interface HostHubOptions {
 	secrets?(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
 	/** A batch of what a host's egress proxy handled (an `egress` event). */
 	onEgress?(hostId: string, records: readonly HostEgressRecord[]): void | Promise<void>;
+	/**
+	 * A host's `bucket.fetch`: the bucket source with its credentials, or `undefined` unless the sandbox is on `hostId`
+	 * and mounts it (answered `not_found`). Absent, every fetch is answered `unavailable`.
+	 */
+	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
+	/** A sandbox's mounts changed status (a `sandbox.mounts` event), checked and clipped. */
+	onMounts?(hostId: string, sandboxId: string, mounts: readonly HostMountStatus[]): void | Promise<void>;
 	/** Default 120 s: a cold boot and a template build are slow. */
 	readonly callTimeoutMs?: number;
 	/** How long a host may take to say hello. Default 30 s. */
@@ -109,6 +161,11 @@ export interface HostHub {
 	call<T = unknown>(hostId: string, method: string, params: unknown, options?: CallOptions): Promise<T>;
 	/** Connects a stream to a port of a sandbox on the host. */
 	openPort(hostId: string, sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
+	/**
+	 * Opens a file of a sandbox on the host as a stream (`sandbox.files.open`): a read's bytes arrive at `sink.data`, and
+	 * either way the host's `stream.close` reason (`ok <size>` or `error <code>: <message>`) at `sink.end`.
+	 */
+	openFile(hostId: string, params: FileOpenParams, sink: PortSink): Promise<OpenedFile>;
 	/** Sends a welcome again, such as with new pools or a desired version. */
 	rewelcome(hostId: string, welcome: HostWelcome): void;
 	disconnect(hostId: string, code: number, reason: string): void;
@@ -232,12 +289,70 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		return connection;
 	};
 
-	/** Answers a call the host made: only `secrets.fetch`, for the host the connection was checked against. */
+	/** A new stream on `connection`, its frames from the host going to `sink`. */
+	const register = (connection: Connection, sink: PortSink): number => {
+		nextStream = (nextStream % 0x7fff_ffff) + 1;
+		connection.streams.set(nextStream, sink);
+		return nextStream;
+	};
+
+	/** Kantel's end of a stream the host opened. */
+	const portStream = (connection: Connection, stream: number): PortStream => ({
+		stream,
+		write(bytes) {
+			if (bytes.byteLength === 0 || connection.closed || !connection.streams.has(stream)) return;
+			connection.socket.sendBinary(encodeStreamFrame(stream, bytes));
+		},
+		close() {
+			if (!connection.streams.delete(stream)) return;
+			send(connection, { type: "stream.close", stream, reason: "closed by the client" });
+		},
+	});
+
+	/** Answers a host's `bucket.fetch`, for the host the connection was checked against, as `secrets.fetch` is. */
+	const answerBucket = async (
+		connection: Connection,
+		params: unknown,
+		reply: (body: { readonly result: unknown } | { readonly error: HostError }) => void,
+	) => {
+		const named: { readonly sandboxId?: unknown; readonly bucketSourceId?: unknown } = isObject(params) ? params : {};
+		const { sandboxId, bucketSourceId } = named;
+		if (typeof sandboxId !== "string" || sandboxId === "") {
+			reply({ error: { code: "not_found", message: "bucket.fetch names no sandbox" } });
+			return;
+		}
+		if (typeof bucketSourceId !== "string" || bucketSourceId === "") {
+			reply({ error: { code: "not_found", message: "bucket.fetch names no bucket source" } });
+			return;
+		}
+		if (!connection.welcomed || options.bucketSource === undefined) {
+			reply({ error: { code: "unavailable", message: "Kantel has no bucket sources to give now" } });
+			return;
+		}
+		try {
+			const source = await options.bucketSource(connection.hostId, sandboxId, bucketSourceId);
+			if (source === undefined) {
+				const message = `No bucket source ${bucketSourceId} for sandbox ${sandboxId} on this host`;
+				reply({ error: { code: "not_found", message } });
+			} else {
+				reply({ result: source });
+			}
+		} catch {
+			// Not the error's own text, as for secrets: the host needs only to retry later.
+			reply({ error: { code: "unavailable", message: "The bucket source is unavailable now" } });
+		}
+	};
+
+	/** Answers a host's call (`secrets.fetch` or `bucket.fetch`) for the host its connection was checked against. */
 	const answer = async (connection: Connection, message: HostMessage) => {
 		const id = message.id;
 		if (typeof id !== "string" || id === "") return;
 		const reply = (body: { readonly result: unknown } | { readonly error: HostError }) =>
 			send(connection, { type: "result", id, ...body });
+		if (message.method === HostMethods.bucketFetch) {
+			await answerBucket(connection, message.params, reply);
+			return;
+		}
 		if (message.method !== HostMethods.secretsFetch) {
 			reply({ error: { code: "unsupported", message: `Kantel answers no ${String(message.method)} call` } });
 			return;
@@ -270,6 +385,26 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			if (kept instanceof Promise) kept.catch(() => undefined);
 		} catch {
 			// A log that fails to keep is no reason to drop the host.
+		}
+	};
+
+	/**
+	 * A `sandbox.mounts` event: `{ sandboxId, mounts }`, or the sandbox with its `mounts` as a create answers it. One
+	 * that isn't shaped so is dropped; a report that fails to keep is no reason to drop the host.
+	 */
+	const mounts = (hostId: string, event: HostEvent) => {
+		if (options.onMounts === undefined) return;
+		const fields: { readonly sandboxId?: unknown; readonly mounts?: unknown } = event;
+		const sandbox: { readonly id?: unknown; readonly mounts?: unknown } = isObject(event.sandbox) ? event.sandbox : {};
+		const sandboxId = typeof fields.sandboxId === "string" ? fields.sandboxId : sandbox.id;
+		if (typeof sandboxId !== "string" || sandboxId === "") return;
+		const statuses = parseMountStatuses(fields.mounts !== undefined ? fields.mounts : sandbox.mounts);
+		if (statuses === undefined) return;
+		try {
+			const kept = options.onMounts(hostId, sandboxId, statuses);
+			if (kept instanceof Promise) kept.catch(() => undefined);
+		} catch {
+			// As for egress.
 		}
 	};
 
@@ -380,6 +515,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 							if (connection.welcomed && Array.isArray(message.event.egress)) egress(hostId, message.event.egress);
 							return;
 						}
+						if (message.event.kind === HOST_EVENT_MOUNTS) {
+							if (connection.welcomed) mounts(hostId, message.event);
+							return;
+						}
 						options.onEvent?.(hostId, message.event);
 						return;
 					}
@@ -458,25 +597,53 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		},
 		async openPort(hostId, sandboxId, port, sink) {
 			const connection = current(hostId);
-			nextStream = (nextStream % 0x7fff_ffff) + 1;
-			const stream = nextStream;
-			connection.streams.set(stream, sink);
+			const stream = register(connection, sink);
 			try {
-				await this.call(hostId, HostMethods.portOpen, { sandboxId, port, stream }, { timeoutMs: 20_000 });
+				await this.call(hostId, HostMethods.portOpen, { sandboxId, port, stream }, { timeoutMs: OPEN_TIMEOUT_MS });
 			} catch (error) {
 				connection.streams.delete(stream);
 				throw error;
 			}
+			return portStream(connection, stream);
+		},
+		async openFile(hostId, params, sink) {
+			const connection = current(hostId);
+			// Registered before the call: a read's bytes may follow its answer before the caller has the stream.
+			const stream = register(connection, sink);
+			let opened: unknown;
+			try {
+				opened = await this.call(hostId, HostMethods.fileOpen, { ...params, stream }, { timeoutMs: OPEN_TIMEOUT_MS });
+			} catch (error) {
+				connection.streams.delete(stream);
+				throw error;
+			}
+			const size = isObject(opened) ? (opened as { readonly size?: unknown }).size : undefined;
+			const open = () => !connection.closed && connection.streams.has(stream);
+			const handle: FileStreamHandle = {
+				...portStream(connection, stream),
+				finish() {
+					// Its own send: `write` drops an empty chunk, which would otherwise read as the end.
+					if (open()) connection.socket.sendBinary(encodeStreamFrame(stream, new Uint8Array(0)));
+				},
+				drained() {
+					const buffered = () => connection.socket.bufferedAmount?.();
+					const waiting = () => {
+						const amount = buffered();
+						return open() && amount !== undefined && amount >= FILE_STREAM_BUFFER_BYTES;
+					};
+					if (!waiting()) return Promise.resolve();
+					return new Promise<void>((resolve) => {
+						const poll = () => {
+							if (waiting()) setTimeout(poll, DRAIN_POLL_MS);
+							else resolve();
+						};
+						setTimeout(poll, DRAIN_POLL_MS);
+					});
+				},
+			};
 			return {
-				stream,
-				write(bytes) {
-					if (bytes.byteLength === 0 || connection.closed || !connection.streams.has(stream)) return;
-					connection.socket.sendBinary(encodeStreamFrame(stream, bytes));
-				},
-				close() {
-					if (!connection.streams.delete(stream)) return;
-					send(connection, { type: "stream.close", stream, reason: "closed by the client" });
-				},
+				stream: handle,
+				...(typeof size === "number" && Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
 			};
 		},
 		rewelcome(hostId, welcome) {

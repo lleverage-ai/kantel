@@ -1413,6 +1413,30 @@ func (m *Manager) WriteFile(ctx context.Context, p proto.FileParams, data []byte
 	return client.WriteFile(ctx, p.Path, data, p.Mode)
 }
 
+// ReadFileStream opens a running sandbox's file to be streamed whole (sandbox.files.open): its bytes, which the caller
+// closes, and its size. A missing file is not_found, as ReadFile's is.
+func (m *Manager) ReadFileStream(ctx context.Context, p proto.FileParams) (io.ReadCloser, int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return nil, 0, err
+	}
+	body, size, _, err := client.ReadFileStream(ctx, p.Path)
+	if guest.IsNotFound(err) {
+		return nil, 0, &proto.Error{Code: proto.ErrNotFound, Message: err.Error()}
+	}
+	return body, size, err
+}
+
+// WriteFileStream writes what r gives to a running sandbox's file, which the guest moves into place only once r has
+// ended (io.EOF); a read error from r, or a cancelled ctx, leaves the file as it was. It answers the size written.
+func (m *Manager) WriteFileStream(ctx context.Context, p proto.FileParams, r io.Reader) (int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, err
+	}
+	return client.WriteFileStream(ctx, p.Path, r, p.Mode)
+}
+
 func (m *Manager) DeleteFile(ctx context.Context, p proto.FileParams) error {
 	client, err := m.running(p.SandboxID)
 	if err != nil {

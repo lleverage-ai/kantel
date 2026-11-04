@@ -6,7 +6,9 @@
 //   /auth/otp/start, /verify    email one-time PIN sign-in (@kantel/identity/otp/http), no credentials, limited per
 //   /auth/session/end           client address; it issues Kantel sessions (`kts_…`), which every API below accepts
 //   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
-//   /v1/hosts/...               what `kantel-host` calls: registration, its tunnel and the host images (compute.ts)
+//   /v1/hosts/...               what `kantel-host` calls: registration, its tunnel, the host images and its sandboxes'
+//                               bundles (compute.ts)
+//   /v1/file-urls/{token}       a signed file URL (with KANTEL_MOUNTS), whose token is its grant: no credentials
 //   /v1/...                     the compute plane's API (@kantel/compute, compute.ts): sandboxes, snapshots, keys,
 //                               webhooks, OpenTelemetry, organisations, billing and hosts
 //   /v1/audit/events, /event    audit query API (@kantel/audit/http)

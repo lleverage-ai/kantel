@@ -253,10 +253,16 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		}
 		return
 	}
+	// start, when set, begins what follows the answer (a file stream's transfer), so nothing of it comes before it.
+	var start func()
 	switch m.Method {
 	case proto.MethodPortOpen:
 		// The stream outlives the call, so it runs on the session's context; the gate holds until it is connected.
 		result, err = s.openPort(ctx, callCtx, m.Params)
+		done()
+	case proto.MethodFileOpen:
+		// As a port's, the stream outlives the call: it runs on the session's context; the gate holds until it is set up.
+		result, start, err = s.openFile(ctx, callCtx, m.Params)
 		done()
 	case proto.MethodHostUpdate:
 		var p proto.UpdateParams
@@ -290,6 +296,9 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	}
 	if err := s.send(ctx, reply); err != nil {
 		s.host.log.Warn("couldn't answer a call", "method", m.Method, "error", err)
+	}
+	if start != nil {
+		start()
 	}
 }
 

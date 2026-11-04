@@ -472,6 +472,15 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 					if (peer === undefined) throw NOT_CONNECTED(hostId);
 					return transport.openPort(peer, hostId, sandboxId, port, sink);
 				},
+				// A file stream isn't relayed between replicas: its host must be connected to this one.
+				async openFile(hostId, params, sink) {
+					if (local.connected(hostId)) return local.openFile(hostId, params, sink);
+					if ((await ownerOf(hostId)) === undefined) throw NOT_CONNECTED(hostId);
+					throw new HostCallError({
+						code: "unavailable",
+						message: `File streams need host ${hostId} connected to this gateway`,
+					});
+				},
 				rewelcome(hostId, welcome) {
 					if (local.connected(hostId)) return local.rewelcome(hostId, welcome);
 					safely(
