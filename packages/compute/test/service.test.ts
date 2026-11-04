@@ -8,6 +8,7 @@ import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	checkShape,
 	hourlyRate,
+	inviteForSomeoneElse,
 	isLoopbackUrl,
 	microvmShapes,
 	NEVER_MADE,
@@ -637,6 +638,28 @@ describe("organisations", () => {
 		expect((await failure(tom.removeMember(org.id, "usr_tom"))).code).toBe("conflict");
 		await ann.removeMember(org.id, "usr_ann");
 		expect((await failure(ann.listSandboxes({ account: org.id }))).code).toBe("forbidden");
+	});
+
+	it("lets only the person an emailed invite is for join, whatever case either email is in, and says who it's for (#657)", async () => {
+		const { tom, ann, root } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "  Ann@Example.COM ", role: "admin" });
+		expect(invite.email).toBe("ann@example.com");
+		const code = invite.code ?? "";
+
+		const refused = await failure(root.joinOrganisation({ code }));
+		expect(refused.code).toBe("forbidden");
+		expect(refused.message).toBe(
+			"This invite is for ann@example.com, but you're signed in as root@example.com. Sign in as ann@example.com to join.",
+		);
+		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "admin" });
+		expect((await failure(tom.createInvite(org.id, { email: "not an email" }))).code).toBe("invalid");
+	});
+
+	it("tells someone signed in with no email which email an invite is for", () => {
+		expect(inviteForSomeoneElse("Ann@Example.com", undefined)).toBe(
+			"This invite is for ann@example.com, but you're signed in with no email. Sign in as ann@example.com to join.",
+		);
 	});
 
 	it("keeps someone off the shared hosts (sharedHosts) out of a sandbox there, though a member shared its account", async () => {

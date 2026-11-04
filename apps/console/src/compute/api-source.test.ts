@@ -1084,6 +1084,37 @@ describe("hosts", () => {
 		expect(hosts.find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
 	});
 
+	it("reads a sandbox's and a host's live usage, newer than a point it has", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, kind: "microvm", shape: { vcpus: 3, memoryMb: 6144 } });
+		await api.service.idle();
+
+		const read = source.sandboxes.usageSeries;
+		if (read === undefined) throw new Error("No live sandbox usage");
+		// Just booted, so no readings yet, but its limit is its own shape's memory, not a size preset's.
+		const sandbox = await read(made.id, Date.now() - 600_000);
+		expect(sandbox).toEqual({ intervalMs: expect.any(Number), memLimitBytes: 6144 * 1024 ** 2, points: [] });
+
+		const host = source.hosts?.usage;
+		if (host === undefined) throw new Error("No live host usage for a super-admin");
+		const usage = await host(STUB_HOST_ID, Date.now() - 600_000);
+		expect(usage).toMatchObject({
+			intervalMs: 5_000,
+			memLimitBytes: 256 * 1024 ** 3,
+			diskTotalBytes: 2048 * 1024 ** 3,
+		});
+		expect(usage.points.length).toBeGreaterThan(0);
+		for (const point of usage.points) {
+			expect(point.cpu).toBeGreaterThanOrEqual(0);
+			expect(point.cpu).toBeLessThanOrEqual(1);
+			expect(point.diskUsedBytes).toBeGreaterThan(0);
+		}
+		const newest = usage.points.at(-1)?.at ?? 0;
+		expect((await host(STUB_HOST_ID, newest)).points.every((point) => point.at > newest)).toBe(true);
+	});
+
 	it("has no hosts for someone who isn't a super-admin", async () => {
 		const { fetchApi } = setup();
 		const source = await open(fetchApi, "person-bob");
