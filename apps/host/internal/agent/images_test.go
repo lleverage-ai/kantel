@@ -228,7 +228,34 @@ func TestHostImagesAnswersTheImagesAsTheyAreNow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := raw.(*proto.HostImages); !ok || got.Version != "host-images-20261104" {
+	if got, ok := raw.(proto.HostImages); !ok || got.Version != "host-images-20261104" {
 		t.Fatalf("host.images answered %#v", raw)
 	}
+
+	// For a sandbox: its tier's version, which a root filesystem named by path can hold back from the store's.
+	tier := newLifecycleTier()
+	tier.stopped["sbx_1"] = true
+	h.tiers[microvm.Tier] = tier
+	if err := call(t, h, proto.MethodHostImages, proto.HostImagesParams{SandboxID: "sbx_1"}); err == nil || !strings.Contains(err.Error(), "isn't moved onto other images") {
+		t.Fatalf("host.images for a sandbox whose tier doesn't rebase: %v", err)
+	}
+	h.tiers[microvm.Tier] = rebasingTier{tier, "host-images-20261101"}
+	raw, err = h.Call(context.Background(), proto.MethodHostImages, json.RawMessage(`{"sandboxId":"sbx_1"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := raw.(proto.HostImages); !ok || got.Version != "host-images-20261101" {
+		t.Fatalf("host.images for a sandbox answered %#v", raw)
+	}
+	if err := call(t, h, proto.MethodHostImages, proto.HostImagesParams{SandboxID: "sbx_none"}); err == nil {
+		t.Fatal("host.images for a sandbox the host doesn't have answered")
+	}
 }
+
+// rebasingTier is a lifecycle tier that rebases onto version.
+type rebasingTier struct {
+	*lifecycleTier
+	version string
+}
+
+func (r rebasingTier) RebaseVersion() string { return r.version }

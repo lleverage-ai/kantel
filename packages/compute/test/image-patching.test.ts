@@ -159,6 +159,30 @@ describe("image patching on", () => {
 		expect(starts.map((how) => how.rebase)).toEqual([true]);
 	});
 
+	it("names stable's host images as the target for a sandbox with no recorded base, and none without an index", async () => {
+		const { api, tom, prepared } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await api.store.sandboxes.update(sandbox.id, (current) => {
+			const { base: _base, ...rest } = current;
+			return rest;
+		});
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect(prepared.map((how) => how.rebaseTo)).toEqual([HOST_LATEST]);
+
+		const unread = setup({
+			indexUrl: "https://example.test/index.json",
+			index: async () => {
+				throw new Error("unreachable");
+			},
+		});
+		const other = await unread.tom.createSandbox({ wait: true });
+		await unread.tom.restartSandboxOnLatest(other.id);
+		await unread.api.service.idle();
+		// No target: the backend that holds it decides (a host's refuses, test above in @kantel/hosts).
+		expect(unread.prepared).toEqual([{ eligibleHosts: expect.any(Array) }]);
+	});
+
 	it("leaves a running sandbox running when its host can't take the latest base yet", async () => {
 		const { api, tom, starts } = setup(indexed, () => {
 			throw new KantelError("unavailable", "not yet");

@@ -257,6 +257,16 @@ func (m *Manager) rebaseTarget(to string) error {
 	return nil
 }
 
+// RebaseVersion is the host images version a rebase moves a sandbox onto: the version Rootfs resolves to now, which is
+// the store's current one unless the config names its root filesystem by another path (then "" when that isn't a
+// version's file). A restart on latest asks it before stopping the sandbox.
+func (m *Manager) RebaseVersion() string {
+	if !m.cfg.PinBase {
+		return ""
+	}
+	return images.VersionOf(m.baseRootfs())
+}
+
 // useTemplate holds a size's template in use until the returned func is called.
 func (m *Manager) useTemplate(size string) func() {
 	l := m.inUse[size]

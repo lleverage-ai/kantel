@@ -357,6 +357,11 @@ type StopParams struct {
 	Memory *bool `json:"memory,omitempty"`
 }
 
+// HostImagesParams is host.images's: with SandboxID, the answer's Version is where a rebase of that sandbox lands.
+type HostImagesParams struct {
+	SandboxID string `json:"sandboxId,omitempty"`
+}
+
 // ResumeParams is sandbox.resume and sandbox.start.
 type ResumeParams struct {
 	SandboxID string  `json:"sandboxId"`
@@ -536,8 +541,8 @@ const (
 	MethodPortOpen     = "port.open"
 	MethodHostUpdate   = "host.update"
 	MethodHostPools    = "host.pools"
-	// MethodHostImages (Kantel → host, no params; FeatureImagePatching) answers the host's HostImages as they are now,
-	// which a hello's facts can be behind: a restart on latest asks it before stopping the sandbox.
+	// MethodHostImages (Kantel → host, HostImagesParams; FeatureImagePatching) answers the host's HostImages as they
+	// are now, which a hello's facts can be behind: a restart on latest asks it before stopping the sandbox.
 	MethodHostImages = "host.images"
 	// MethodEgress replaces a sandbox's egress (ResumeParams: sandboxId, egress; null egress is the host's default).
 	MethodEgress = "sandbox.egress"

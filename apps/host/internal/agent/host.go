@@ -832,13 +832,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		h.SetPools(want)
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodHostImages:
-		if !h.cfg.ImagePatching {
-			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "image patching is off on this host (imagePatching in its config)"}
-		}
-		if images := h.patching.facts.Load(); images != nil {
-			return images, nil
-		}
-		return proto.HostImages{}, nil
+		return h.hostImages(params)
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
 }

@@ -484,7 +484,12 @@ describe("a restart on the latest base, checked with the host first", () => {
 		// Its own host isn't one it may use now (another one is).
 		await expect(prepare("host-images-20261103.1", ["hst_other"])).rejects.toMatchObject({ code: "unavailable" });
 		await expect(prepare("host-images-20261103.1")).resolves.toBeUndefined();
-		await expect(prepare()).resolves.toBeUndefined();
+		// Asked about this sandbox: its tier's images.
+		expect(host.params.filter((call) => call.method === "host.images").at(-1)?.params).toEqual({
+			sandboxId: sandbox.id,
+		});
+		// No version to land on (the index names no stable host images): refused, not left to whatever the host has.
+		await expect(prepare()).rejects.toMatchObject({ code: "unavailable" });
 		// No sandbox stopped for any of it.
 		expect(host.calls.filter((method) => method === "sandbox.stop")).toEqual([]);
 	});

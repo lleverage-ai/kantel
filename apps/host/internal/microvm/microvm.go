@@ -1309,8 +1309,11 @@ func (m *Manager) latestSnapshot(sandboxID string) string {
 	return ""
 }
 
-// pruneAuto keeps the newest AutoSnapshots automatic snapshots of a sandbox, and memory only on the newest one.
+// pruneAuto keeps the newest AutoSnapshots automatic snapshots of a sandbox, and memory only on the newest one. It
+// rewrites snapshot metadata, which names each snapshot's base, so it holds the base lock to read (a prune's walk never
+// reads one half written) and replaces each meta.json by a rename rather than truncating it.
 func (m *Manager) pruneAuto(sandboxID string) {
+	defer m.holdBases()()
 	auto := 0
 	for _, snap := range m.snapshotsOf(sandboxID) {
 		if snap.Kind != "auto" {
@@ -1327,7 +1330,7 @@ func (m *Manager) pruneAuto(sandboxID string) {
 			_ = os.Remove(filepath.Join(dir, "state"))
 			snap.Memory = false
 			raw, _ := json.MarshalIndent(snap, "", "  ")
-			_ = os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600)
+			_ = fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync/atomic"
@@ -138,6 +139,43 @@ func (h *Host) checkImages(ctx context.Context, u *images.Updater, ch proto.Imag
 		return u.Check(ctx, ch)
 	}
 	return h.e2e.Unenrolled(func() error { return u.Check(ctx, ch) })
+}
+
+// rebaseTier is a tier that can move a sandbox onto other images (the microVM tier), and says which version it would.
+type rebaseTier interface {
+	RebaseVersion() string
+}
+
+// hostImages answers host.images: the host's images as they are now. With a sandboxId, Version is the version a
+// rebase of that sandbox would land on (its tier's, which a config naming its root filesystem by path can hold back
+// from the store's current one), and a sandbox whose tier doesn't rebase is refused as unsupported.
+func (h *Host) hostImages(params json.RawMessage) (any, error) {
+	if !h.cfg.ImagePatching {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "image patching is off on this host (imagePatching in its config)"}
+	}
+	var p proto.HostImagesParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &proto.Error{Code: proto.ErrInvalid, Message: "bad host.images params"}
+		}
+	}
+	answer := proto.HostImages{}
+	if have := h.patching.facts.Load(); have != nil {
+		answer = *have
+	}
+	if p.SandboxID == "" {
+		return answer, nil
+	}
+	t, name, err := h.tierOfNamed(p.SandboxID)
+	if err != nil {
+		return nil, err
+	}
+	rt, ok := t.(rebaseTier)
+	if !ok {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "a " + name + " sandbox isn't moved onto other images"}
+	}
+	answer.Version = rt.RebaseVersion()
+	return answer, nil
 }
 
 // rebaseTarget refuses a sandbox.start whose rebase the gateway expects to land on to when this host's current images

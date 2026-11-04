@@ -279,3 +279,44 @@ func TestLockBasesHoldsOffNewReferences(t *testing.T) {
 		t.Fatalf("base after = %q, want new", got)
 	}
 }
+
+// Dropping an older automatic snapshot's memory rewrites its metadata, which names its base: it waits for a prune
+// holding the bases, so the prune's walk never reads it half written.
+func TestPruneAutoWaitsForAPruneOfTheBases(t *testing.T) {
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root, AutoSnapshots: 3}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	unlock := m.LockBases()
+	done := make(chan struct{})
+	go func() {
+		m.pruneAuto("sbx_1")
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("pruneAuto ran while a prune held the bases")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pruneAuto didn't go ahead once the prune was done")
+	}
+}
+
+// A rebase lands on the version Rootfs resolves to now; one named by a path that isn't a version's file has none.
+func TestRebaseVersionIsWhatRootfsResolvesTo(t *testing.T) {
+	images := versionedImages(t)
+	m := &Manager{cfg: Config{Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}}
+	if got := m.RebaseVersion(); got != "new" {
+		t.Fatalf("RebaseVersion = %q, want new", got)
+	}
+	m.cfg.Rootfs = filepath.Join(images, "v", "old", "sandbox.ext4")
+	if got := m.RebaseVersion(); got != "old" {
+		t.Fatalf("RebaseVersion with an older version's file = %q, want old", got)
+	}
+	m.cfg.PinBase = false
+	if got := m.RebaseVersion(); got != "" {
+		t.Fatalf("RebaseVersion with image patching off = %q", got)
+	}
+}

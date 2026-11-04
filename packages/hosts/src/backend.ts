@@ -357,9 +357,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async prepareRebase(sandboxId, { eligibleHosts, rebaseTo }) {
 			const { hostId } = await tierOf(sandboxId);
 			mayUse(hostId, eligibleHosts);
-			// Asked now rather than read from the hello's facts, which an update since has left behind.
+			// A host's sandbox is on host images: without a version to land on (the index unread, or naming no stable host
+			// release) a rebase would land on whatever the host has, so it's refused before the sandbox stops.
+			if (rebaseTo === undefined) {
+				throw new KantelError(
+					"unavailable",
+					"Kantel's base image index names no stable host images now, so there's no latest base to restart on: try again later",
+				);
+			}
+			// Asked now rather than read from the hello's facts, which an update since has left behind, and for this sandbox:
+			// its tier's images, which a host config naming its root filesystem by path can hold back.
 			const images = await hosts.hub
-				.call<{ version?: string }>(hostId, HostMethods.hostImages, {})
+				.call<{ version?: string }>(hostId, HostMethods.hostImages, { sandboxId })
 				.catch((error: unknown) => {
 					const mapped = kantelErrorFromHost(error);
 					throw isKantelError(mapped, "not_supported")
@@ -370,7 +379,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						: mapped;
 				});
 			const have = images.version ?? "";
-			if (rebaseTo !== undefined && have !== rebaseTo) {
+			if (have !== rebaseTo) {
 				throw new KantelError(
 					"unavailable",
 					`The host its disk is on (${hostId}) has images ${have === "" ? "that aren't versioned" : have}, not ${rebaseTo}, yet: try again once it has taken the update`,
