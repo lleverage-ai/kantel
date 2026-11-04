@@ -550,7 +550,8 @@ export function ComputeConsole({
 			// While the accounts are read, the switcher's shape, so the pages under it don't move when it arrives.
 			<span className={`${skeletonClass} h-control-md w-full rounded-control`} />
 		) : (
-			<span className="block h-control-md" />
+			// The accounts couldn't be read: said in the switcher's place, as the account is in the foot.
+			<span className="flex h-control-md items-center px-2.5 text-sm text-faint">Organisation unavailable</span>
 		);
 	const backToConsole = (
 		<a
@@ -1139,12 +1140,14 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-control`} />
 				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
 			</div>
-			<div className="flex flex-col">
+			{/* On a wide screen in the tables' white card, under a header row's height, as the list that replaces it. */}
+			<div className={narrow ? "flex flex-col" : "flex flex-col rounded-panel border border-border bg-raised"}>
+				{narrow ? null : <div className="h-control-md border-b border-border" />}
 				{Array.from({ length: rows }, (_, row) => (
 					<div
 						// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
 						key={row}
-						className={`flex items-center border-b border-border ${narrow ? "gap-3 py-4" : "gap-4 py-3.5"}`}
+						className={`flex items-center border-b border-border ${narrow ? "gap-3 py-4" : "gap-4 px-4 py-3.5 last:border-b-0"}`}
 					>
 						<span className={`${skeletonClass} size-3.5 flex-none`} />
 						{narrow ? (

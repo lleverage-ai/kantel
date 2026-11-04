@@ -386,11 +386,9 @@ function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; o
 	return (
 		<li className="kt-key-row flex min-w-0 items-center gap-2 border-b border-border py-3" data-key={apiKey.id}>
 			<div className="flex min-w-0 flex-1 flex-col gap-1">
-				<span className="flex min-w-0 items-baseline gap-2">
-					<span className={`truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>{apiKey.name}</span>
-					<span className="flex-none font-mono text-code text-faint">{apiKey.prefix}…</span>
-				</span>
+				<span className={`truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>{apiKey.name}</span>
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
+					<span className="font-mono text-code">{apiKey.prefix}…</span>
 					<span>{accessText(apiKey.scopes)}</span>
 					{apiKey.lastUsedAt === undefined ? (
 						<span>Never used</span>

@@ -762,7 +762,7 @@ function Overview({
 					? `${failedMounts[0]?.path} didn't mount.`
 					: `${failedMounts.length} mounts didn't mount.`}{" "}
 				{failedMounts.length === 1 && failedMounts[0]?.error !== undefined
-					? failedMounts[0].error
+					? failedMounts[0].error.replace(/[^.]$/, "$&.")
 					: "Mounts, below, says why."}
 			</Notice>
 		);

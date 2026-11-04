@@ -10,6 +10,10 @@ import { Notice, Panel } from "./surface.tsx";
 const codeFrame =
 	"m-0 min-w-0 flex-1 overflow-x-auto rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all whitespace-pre [scrollbar-width:none] mask-r-from-92% mask-r-to-100%";
 
+/** A command's text inside its field: one line, scrolling sideways with a fade where it is wider than the field. */
+const commandText =
+	"m-0 min-w-0 flex-1 overflow-x-auto py-1 font-mono text-code leading-normal text-fg select-all whitespace-pre [scrollbar-width:none] mask-r-from-92% mask-r-to-100%";
+
 /**
  * A command to run, in code's font, with its own Copy. It stays on one line and scrolls sideways where it is wider
  * than its box, fading at the edge it continues past, so no part of a copyable string is ever broken.
@@ -27,11 +31,12 @@ export function CommandBlock({
 	return (
 		<div className="kt-command-block flex min-w-0 flex-col gap-1">
 			{label === undefined ? null : <span className="text-sm text-muted">{label}</span>}
-			<div className="flex min-w-0 items-center gap-2">
-				<pre className={codeFrame}>
+			{/* One field with Copy pinned inside it, as a sandbox's SSH command has it. */}
+			<div className="flex min-w-0 items-center gap-2 rounded-control border border-border-input bg-sunken py-1 pr-1 pl-2.5">
+				<pre className={commandText}>
 					<code>{command}</code>
 				</pre>
-				<CopyButton text={command} label={copyLabel} size="sm" />
+				<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />
 			</div>
 		</div>
 	);

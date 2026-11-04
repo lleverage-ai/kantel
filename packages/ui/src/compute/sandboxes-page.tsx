@@ -927,10 +927,13 @@ function SandboxPhoneRow({
 	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 flex-wrap items-center gap-x-3 border-b border-border ${ticked ? "bg-selected" : sandbox.state === "error" ? "-mx-gutter-narrow bg-status-error-soft px-gutter-narrow" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 flex-wrap items-start gap-x-3 border-b border-border ${ticked ? "bg-selected" : sandbox.state === "error" ? "-mx-gutter-narrow bg-status-error-soft px-gutter-narrow" : ""}`}
 			data-sandbox={sandbox.id}
 		>
-			<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
+			{/* On the name's line, not the middle of the row: it selects the sandbox the name names. */}
+			<span className="flex h-(--kt-control-xs) items-center self-start pt-3 box-content">
+				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
+			</span>
 			{href === undefined ? (
 				<div className="flex min-w-0 flex-1 items-center gap-2 py-3">
 					{body}

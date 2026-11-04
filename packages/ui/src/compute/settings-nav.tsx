@@ -47,7 +47,7 @@ export function SettingsFrame({
 				narrow
 					? // Sideways on a phone: the row fades at its end so a page past the edge reads as more to scroll to, and the
 						// page shown scrolls into view.
-						"-mx-gutter-narrow flex min-w-0 gap-1 overflow-x-auto px-gutter-narrow [scrollbar-width:none] mask-r-from-85% mask-r-to-100%"
+						"-mx-gutter-narrow flex min-w-0 gap-1 overflow-x-auto px-gutter-narrow [scrollbar-width:none] mask-r-from-75% mask-r-to-100%"
 					: "sticky top-0 flex w-(--kt-menu-width) flex-none flex-col gap-0.5"
 			}
 		>
