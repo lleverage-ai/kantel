@@ -530,6 +530,47 @@ describe("proxy", () => {
 		// Removing the last host for every sandbox is Nothing again.
 		expect(await source.proxy.update(accountId, { allow: [] })).toMatchObject({ policy: "closed" });
 	});
+
+	it("never undoes a change made between its read and its write: it is made again on a fresh read", async () => {
+		const { fetchApi } = setup();
+		let meanwhile: (() => Promise<unknown>) | undefined;
+		const puts: unknown[] = [];
+		// Someone else's write lands just before this source's next PUT.
+		const racing: typeof fetch = async (input, init) => {
+			if (init?.method === "PUT" && String(input).includes("/proxy")) {
+				puts.push(JSON.parse(String(init.body)));
+				const other = meanwhile;
+				meanwhile = undefined;
+				if (other !== undefined) await other();
+			}
+			return fetchApi(input, init);
+		};
+		const source = await open(racing);
+		const theirs = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		await theirs.proxy.update(accountId, { enabled: true, policy: "allowlist", allow: ["api.github.com"] });
+
+		// A change with no `expected`: the settings form's. Made again over their deny.
+		meanwhile = () => theirs.proxy.update(accountId, { deny: ["evil.example"] });
+		const saved = await source.proxy.update(accountId, { upstream: { url: "http://upstream.example:3128" } });
+		expect(saved).toMatchObject({ deny: ["evil.example"], upstream: { url: "http://upstream.example:3128" } });
+		expect(puts).toHaveLength(2);
+		expect(puts[0]).toMatchObject({ deny: [], expected: { deny: [] } });
+
+		// A change made from the caller's own read, which someone changed since: refused, for the caller to redo.
+		const read = await source.proxy.get(accountId);
+		await theirs.proxy.update(accountId, { allow: ["api.github.com", "pypi.org"] });
+		await expect(
+			source.proxy.update(accountId, { allow: [...read.allow, "crates.io"], expected: read }),
+		).rejects.toMatchObject({ code: "conflict" });
+		// And when someone writes between its read and its write, Kantel refuses it.
+		const fresh = await source.proxy.get(accountId);
+		meanwhile = () => theirs.proxy.update(accountId, { deny: [] });
+		await expect(
+			source.proxy.update(accountId, { allow: [...fresh.allow, "crates.io"], expected: fresh }),
+		).rejects.toMatchObject({ code: "conflict" });
+		expect(await source.proxy.get(accountId)).toMatchObject({ allow: ["api.github.com", "pypi.org"], deny: [] });
+	});
 });
 
 describe("environments", () => {
