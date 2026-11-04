@@ -335,7 +335,11 @@ func checkArch(manifest ImageManifest, arch string) error {
 }
 
 // fetchFirecracker gets Firecracker's release from GitHub and checks it against the release's SHA256SUMS.
-func fetchFirecracker(dst string) error { return images.FetchFirecracker(dst, FirecrackerVersion) }
+func fetchFirecracker(dst string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	return images.FetchFirecracker(ctx, dst, FirecrackerVersion)
+}
 
 func untar(r io.Reader, dir string) error {
 	gz, err := gzip.NewReader(r)

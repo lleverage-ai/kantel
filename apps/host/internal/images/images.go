@@ -557,6 +557,37 @@ func stage(src, dst string) error {
 	return os.Chtimes(dst, info.ModTime(), info.ModTime())
 }
 
+// PruneStaging removes the staging directories (v/<version>.part) of installs that didn't finish, all but the newest:
+// that one is kept for a retry to reuse what it had fetched, and each older one's version has been superseded. The
+// caller makes sure no install is running (Updater.Prune holds the updater's lock). It answers what it removed.
+func (s Store) PruneStaging() []string {
+	entries, _ := os.ReadDir(filepath.Join(s.Dir, "v"))
+	type staging struct {
+		name string
+		at   time.Time
+	}
+	var parts []staging
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), ".part")
+		if !e.IsDir() || !ok || !ValidVersion(name) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		parts = append(parts, staging{name: e.Name(), at: info.ModTime()})
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].at.After(parts[j].at) })
+	var removed []string
+	for _, p := range parts[min(1, len(parts)):] {
+		if err := os.RemoveAll(filepath.Join(s.Dir, "v", p.name)); err == nil {
+			removed = append(removed, p.name)
+		}
+	}
+	return removed
+}
+
 // Prune removes the versions that aren't current, aren't among the newest keepNewest, and that keep doesn't want
 // (the microVM tier's sandboxes, snapshots and templates still on them). It answers what it removed.
 func (s Store) Prune(keep func(version string) bool, keepNewest int) []string {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -38,6 +39,40 @@ type imageTier interface {
 	LockBases() (unlock func())
 	// ImagesChanged says a new version is current, so stale templates start rebuilding.
 	ImagesChanged()
+	// PinBases pins what was made before the images were versioned to the version it is on (a no-op once done): until
+	// it has, an activation would move those references with current and a prune couldn't see them, so neither runs.
+	PinBases() error
+}
+
+// pinBases runs every image tier's PinBases: an update or prune goes ahead only once all have succeeded.
+func (h *Host) pinBases() error {
+	var errs []error
+	for _, name := range h.order {
+		if t, ok := h.tiers[name].(imageTier); ok {
+			if err := t.PinBases(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// configuredVersions are the store versions the host config's image and kernel paths resolve to: one pinned by path
+// to an older version's file is in use for as long as the config names it (the defaults, through current, are the
+// current version's).
+func (h *Host) configuredVersions() map[string]bool {
+	in := map[string]bool{}
+	for _, p := range []string{h.cfg.Kernel, h.cfg.SandboxImage, h.cfg.IsolateImage} {
+		if p == "" {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			if v := images.VersionOf(resolved); v != "" {
+				in[v] = true
+			}
+		}
+	}
+	return in
 }
 
 func imageStore(cfg Config) images.Store { return images.Store{Dir: cfg.ImagesDir} }
@@ -69,7 +104,7 @@ func PrepareImages(ctx context.Context, cfg Config, firecrackerVersion string, l
 		// Replaced by a rename: running VMs keep their process; the templates' fingerprint sees the new binary.
 		if have := images.FirecrackerVersionOf(cfg.Firecracker); have != firecrackerVersion {
 			log.Info("fetching Firecracker", "have", have, "want", firecrackerVersion)
-			if err := images.FetchFirecracker(cfg.Firecracker, firecrackerVersion); err != nil {
+			if err := images.FetchFirecracker(ctx, cfg.Firecracker, firecrackerVersion); err != nil {
 				log.Warn("couldn't fetch Firecracker; running the one installed", "error", err)
 			}
 		}
@@ -135,6 +170,9 @@ func (h *Host) followImages(ctx context.Context, ch *proto.ImageChannel) {
 // before the join completes, and none runs on a host that has joined (e2e.ErrEnrolled). The images are what every
 // sandbox boots, so one the gateway picks could read an E2E space's sandboxes.
 func (h *Host) checkImages(ctx context.Context, u *images.Updater, ch proto.ImageChannel) error {
+	if err := h.pinBases(); err != nil {
+		return err
+	}
 	if h.e2e == nil {
 		return u.Check(ctx, ch)
 	}
@@ -227,9 +265,13 @@ func (h *Host) pruneImages() []string {
 	if u == nil {
 		return nil
 	}
+	if err := h.pinBases(); err != nil {
+		h.log.Warn("not pruning host images: what was made before they were versioned isn't pinned yet", "error", err)
+		return nil
+	}
 	inUse := func() (func(string) bool, func()) {
 		var unlocks []func()
-		used := map[string]bool{}
+		used := h.configuredVersions()
 		for _, name := range h.order {
 			if t, ok := h.tiers[name].(imageTier); ok {
 				unlocks = append(unlocks, t.LockBases())

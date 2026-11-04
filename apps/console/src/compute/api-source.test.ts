@@ -42,7 +42,13 @@ const notFound = (): Response =>
 	});
 
 /** A fresh API, and a `fetch` that hands each call to it. */
-function setup(options: { accountHosts?: boolean; backend?: SandboxBackend } = {}) {
+function setup(
+	options: {
+		accountHosts?: boolean;
+		backend?: SandboxBackend;
+		baseImages?: Parameters<typeof createComputeApi>[0]["baseImages"];
+	} = {},
+) {
 	const { backend = createStubBackend(), ...rest } = options;
 	const api = createComputeApi({
 		backend,
@@ -1055,6 +1061,25 @@ describe("hosts", () => {
 		const hosts = await source.hosts.list();
 		expect(hosts.map((host) => host.id)).toContain(STUB_HOST_ID);
 		expect(hosts.find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
+	});
+
+	it("offers a super-admin Images only where the gateway has image patching on", async () => {
+		const off = await open(setup().fetchApi);
+		expect(off.hosts).toBeDefined();
+		expect(off.images).toBeUndefined();
+
+		// On, with an index it can't read: the page opens and says so.
+		const baseImages = {
+			indexUrl: "https://example.test/index.json",
+			index: async () => {
+				throw new Error("The base image index couldn't be read: unreachable");
+			},
+		};
+		const { fetchApi } = setup({ baseImages });
+		const on = await open(fetchApi);
+		if (on.images === undefined) throw new Error("No Images with image patching on");
+		expect((await on.images.overview()).error).toContain("couldn't be read");
+		expect((await open(fetchApi, "person-bob")).images).toBeUndefined();
 	});
 
 	it("has no hosts for someone who isn't a super-admin", async () => {

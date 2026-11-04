@@ -14,13 +14,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // FetchFirecracker installs Firecracker's release version (such as v1.17.0) at dst from GitHub, checked against the
 // release's SHA256SUMS; one that already reports the version is kept. The binary is replaced in one rename, so a VM
-// running on the old one keeps its process.
-func FetchFirecracker(dst, version string) error {
-	if out, err := exec.Command(dst, "--version").Output(); err == nil && strings.Contains(string(out), strings.TrimPrefix(version, "v")) {
+// running on the old one keeps its process. Every request and the version check are ctx's: one that ends leaves the
+// installed binary as it is.
+func FetchFirecracker(ctx context.Context, dst, version string) error {
+	if out, err := exec.CommandContext(ctx, dst, "--version").Output(); err == nil && strings.Contains(string(out), strings.TrimPrefix(version, "v")) {
 		fmt.Printf("  firecracker %s: up to date\n", version)
 		return nil
 	}
@@ -30,14 +32,17 @@ func FetchFirecracker(dst, version string) error {
 	}
 	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + version + "/"
 	name := fmt.Sprintf("firecracker-%s-%s.tgz", version, arch)
-	sums, err := httpGet(context.Background(), base+name+".sha256.txt")
+	sums, err := httpGet(ctx, base+name+".sha256.txt")
 	if err != nil {
 		return err
 	}
-	sumText, _ := io.ReadAll(sums)
+	sumText, err := io.ReadAll(sums)
 	sums.Close()
+	if err != nil {
+		return err
+	}
 	want := strings.Fields(string(sumText))
-	body, err := httpGet(context.Background(), base+name)
+	body, err := httpGet(ctx, base+name)
 	if err != nil {
 		return err
 	}
@@ -85,7 +90,9 @@ func FetchFirecracker(dst, version string) error {
 
 // FirecrackerVersionOf is the version a Firecracker binary reports (such as v1.17.0), or "" when it doesn't run.
 func FirecrackerVersionOf(path string) string {
-	out, err := exec.Command(path, "--version").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").Output()
 	if err != nil {
 		return ""
 	}

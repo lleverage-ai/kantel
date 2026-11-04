@@ -131,6 +131,31 @@ describe("baseImageIndexReader", () => {
 		expect(read.indexUrl).toBe("https://example.test/index.json");
 	});
 
+	it("gives up on an index that stalls, aborting it, and reads again once the failure is old", async () => {
+		let at = NOW;
+		const signals: AbortSignal[] = [];
+		let calls = 0;
+		const read = baseImageIndexReader({
+			url: "https://example.test/index.json",
+			now: () => at,
+			timeoutMs: 20,
+			fetch: async (_url, init) => {
+				calls += 1;
+				if (init?.signal) signals.push(init.signal);
+				// The first answers headers, then never finishes its body; the second answers.
+				if (calls === 1) return { ok: true, json: () => new Promise(() => {}) } as unknown as Response;
+				return Response.json(INDEX);
+			},
+		});
+		await expect(Promise.all([read.index(), read.index()])).rejects.toThrow(/took longer than 0.02s/);
+		expect(calls).toBe(1);
+		expect(signals[0]?.aborted).toBe(true);
+		await expect(read.index()).rejects.toThrow(/took longer/);
+		at += BASE_IMAGE_INDEX_FAILURE_TTL_MS;
+		await expect(read.index()).resolves.toMatchObject({ version: 1 });
+		expect(calls).toBe(2);
+	});
+
 	it("keeps a failure for a minute, saying why", async () => {
 		const { read, calls, advance } = reader([() => new Response("gone", { status: 503 }), ok]);
 		await expect(read.index()).rejects.toThrow("answered 503");

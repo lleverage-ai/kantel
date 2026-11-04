@@ -100,10 +100,14 @@ func (u *Updater) Check(ctx context.Context, ch proto.ImageChannel) error {
 // Prune is Store.Prune, one at a time with Check, so a version being installed or activated is never removed. inUse,
 // when set, is called once Check is out of the way: it holds off new references to versions (the tiers' base lock)
 // and answers what is in use, and release is called once the versions are removed, so a version judged unused can't
-// gain a reference before it goes. (Taken after mu, so a long download doesn't hold up the tiers.)
+// gain a reference before it goes. (Taken after mu, so a long download doesn't hold up the tiers.) The staging left by
+// installs that didn't finish goes too, all but the newest (Store.PruneStaging): with mu held none is in progress.
 func (u *Updater) Prune(inUse func() (keep func(version string) bool, release func()), keepNewest int) []string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if staged := u.Store.PruneStaging(); len(staged) > 0 && u.Log != nil {
+		u.Log.Info("removed the staging of host image installs that didn't finish", "dirs", staged)
+	}
 	var keep func(string) bool
 	if inUse != nil {
 		var release func()

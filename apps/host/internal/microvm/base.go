@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -184,19 +186,36 @@ func (m *Manager) BasesInUse() map[string]bool {
 	return in
 }
 
-// pinBases, with PinBase, points what still names Rootfs itself (made before the images were versioned) at the file
-// Rootfs resolves to now, which is what it was made on, so a later update doesn't move it.
-func (m *Manager) pinBases() {
+// PinBases, with PinBase, points what still names Rootfs itself (made before the images were versioned) at the file
+// Rootfs resolves to now, which is what it was made on, so a later update doesn't move it. Each file is replaced
+// durably (the old one stays readable until its replacement is in place) and a pass that fails is said: an update or
+// a prune doesn't go ahead until one has succeeded, as a legacy reference follows current wherever it moves. Safe to
+// run again; the first success is remembered.
+func (m *Manager) PinBases() error {
+	m.pinning.Lock()
+	defer m.pinning.Unlock()
+	if m.pinned.Load() {
+		return nil
+	}
 	defer m.holdBases()()
+	if err := m.pinBasesLocked(); err != nil {
+		return fmt.Errorf("pinning what this host made before its images were versioned: %w", err)
+	}
+	m.pinned.Store(true)
+	return nil
+}
+
+func (m *Manager) pinBasesLocked() error {
 	base := m.baseRootfs()
 	if !m.cfg.PinBase || base == m.cfg.Rootfs {
-		return
+		return nil
 	}
+	var errs []error
 	vms, _ := filepath.Glob(filepath.Join(m.cfg.Root, "sandboxes", "*", "vm"))
 	for _, vm := range vms {
 		if vmRootfs(vm) == m.cfg.Rootfs {
 			if err := relinkRootfs(vm, base); err != nil {
-				m.log.Warn("couldn't pin a sandbox to its images", "vm", vm, "error", err)
+				errs = append(errs, fmt.Errorf("%s: %w", vm, err))
 			}
 		}
 	}
@@ -204,7 +223,9 @@ func (m *Manager) pinBases() {
 	for _, ready := range readies {
 		dir := filepath.Dir(ready)
 		if m.templateRootfs(dir) == m.cfg.Rootfs {
-			_ = os.WriteFile(filepath.Join(dir, "rootfs"), []byte(base), 0o600)
+			if err := fsutil.WriteFileDurably(filepath.Join(dir, "rootfs"), []byte(base), 0o600); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			}
 		}
 	}
 	for _, snap := range m.snapshotsOf("") {
@@ -212,9 +233,15 @@ func (m *Manager) pinBases() {
 			continue
 		}
 		snap.Rootfs, snap.Base = base, images.VersionOf(base)
-		raw, _ := json.MarshalIndent(snap, "", "  ")
-		_ = os.WriteFile(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
+		raw, err := json.MarshalIndent(snap, "", "  ")
+		if err == nil {
+			err = fsutil.WriteFileDurably(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("snapshot %s: %w", snap.ID, err))
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // rebase moves a stopped sandbox onto the current images before a cold boot (whose kernel follows its root

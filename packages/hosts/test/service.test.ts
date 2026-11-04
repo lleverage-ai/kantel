@@ -231,6 +231,54 @@ describe("hosts service", () => {
 		expect(welcomes().at(-1)).toMatchObject({ images: { version: "host-images-20261104.2" } });
 	});
 
+	it("passes on the bases a host reports for its own sandboxes, from its hello and its events", async () => {
+		const { service, store, join } = await setup();
+		const recorded: { hostId: string; sandboxId: string; base: string }[] = [];
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordBases: async (hostId, reports) => {
+				for (const report of reports) recorded.push({ hostId, ...report });
+			},
+		});
+		const a = await join("a");
+		const placed = (sandboxId: string) =>
+			store.putPlacement({
+				sandboxId,
+				hostId: a.hostId,
+				tier: "microvm",
+				size: "default",
+				vcpus: 2,
+				memoryMiB: 2048,
+				diskGiB: 20,
+				state: "stopped",
+				createdAt: 1,
+				updatedAt: 1,
+			});
+		await placed("sbx-old");
+		await placed("sbx-unversioned");
+		const host = new FakeHost(service, a.hostId);
+		host.connect([
+			{ id: "sbx-old", tier: "microvm", size: "default", state: "stopped", createdAt: 1, base: "host-images-1" },
+			// An older host's report: no base, so nothing is said (and nothing erased).
+			{ id: "sbx-unversioned", tier: "microvm", size: "default", state: "stopped", createdAt: 1 },
+			// Not Kantel's placement on this host: never passed on.
+			{ id: "stray", tier: "microvm", size: "default", state: "stopped", createdAt: 1, base: "host-images-1" },
+		]);
+		await tick();
+		expect(recorded).toEqual([{ hostId: a.hostId, sandboxId: "sbx-old", base: "host-images-1" }]);
+		// An event with the state unchanged still says its base.
+		host.send({
+			type: "event",
+			event: {
+				kind: "sandbox.state",
+				sandbox: { id: "sbx-old", tier: "microvm", state: "stopped", createdAt: 1, base: "host-images-2" },
+			},
+		});
+		await tick();
+		expect(recorded.at(-1)).toEqual({ hostId: a.hostId, sandboxId: "sbx-old", base: "host-images-2" });
+	});
+
 	it("reads no image index on a heartbeat with image patching off", async () => {
 		let now = 1_000_000;
 		const { service, join } = await setup({ now: () => now });

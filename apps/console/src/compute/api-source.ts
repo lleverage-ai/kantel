@@ -1745,6 +1745,19 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 }
 
 /** Whether the deployment lets accounts add hosts of their own: it answers `not_supported` when it doesn't. */
+/**
+ * Whether the gateway has image patching on (KANTEL_IMAGE_PATCHING), so Admin > Images has something to show: off, its
+ * overview answers `not_supported`. An index the gateway can't read still opens the page, which says so.
+ */
+async function offersImages({ call }: Context): Promise<boolean> {
+	try {
+		await call<ApiImagesOverview>({ method: "GET", path: "/admin/hosts/images" });
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && caught.code === "not_supported");
+	}
+}
+
 async function offersOwnHosts({ api }: Context): Promise<boolean> {
 	try {
 		await api.listAccountHosts({});
@@ -1895,7 +1908,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		egress: egressSource(context),
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
-		...(caller.superAdmin ? { hosts: hostsSource(context), images: imagesSource(context) } : {}),
+		...(caller.superAdmin ? { hosts: hostsSource(context) } : {}),
+		...(caller.superAdmin && (await offersImages(context)) ? { images: imagesSource(context) } : {}),
 		// Anyone else manages their accounts' own hosts, where the deployment allows it.
 		...(!caller.superAdmin && (await offersOwnHosts(context))
 			? { ownHosts: (accountId: string) => ownHostsSource(context, accountId) }

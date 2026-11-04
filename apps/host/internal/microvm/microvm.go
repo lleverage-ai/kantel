@@ -159,6 +159,9 @@ type Manager struct {
 	// bases is the base lock: read while a reference to an image version is made or moved, written by a prune from its
 	// walk of what is in use until its removals (base.go).
 	bases sync.RWMutex
+	// pinning serialises PinBases; pinned is its first success (base.go).
+	pinning sync.Mutex
+	pinned  atomic.Bool
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -194,7 +197,10 @@ func New(cfg Config) (*Manager, error) {
 	if err := m.adopt(); err != nil {
 		return nil, err
 	}
-	m.pinBases()
+	if err := m.PinBases(); err != nil {
+		// Retried before each image update and prune, which wait for it.
+		m.log.Warn("couldn't pin everything to its images; image updates and prunes wait until it is", "error", err)
+	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
 	snapMems, _ := filepath.Glob(filepath.Join(cfg.Root, "snapshots", "*", "mem"))

@@ -6,7 +6,7 @@ import type { BootOptions, SandboxBackend } from "../src/backend.ts";
 import type { BaseImages } from "../src/base-status.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createStubBackend } from "../src/stub-backend.ts";
-import { HOST_BEHIND, HOST_LATEST, INDEX } from "./base-index-fixture.ts";
+import { HOST_BEHIND, HOST_LATEST, HOST_OLDEST, INDEX } from "./base-index-fixture.ts";
 
 const BASE_URL = "http://compute.test/v1";
 
@@ -119,6 +119,26 @@ describe("image patching on", () => {
 			security: true,
 		});
 		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_BEHIND);
+	});
+
+	it("keeps the base a sandbox's own host reports, without a boot, and nobody else's", async () => {
+		const { api, tom } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await api.store.sandboxes.update(sandbox.id, (current) => {
+			const { base: _base, ...rest } = current;
+			return rest;
+		});
+		expect((await tom.getSandbox(sandbox.id)).base).toBeUndefined();
+		const hostId = (await api.store.sandboxes.get(sandbox.id))?.hostId ?? "";
+		await api.service.recordBases("host_someone_else", [{ sandboxId: sandbox.id, base: HOST_LATEST }]);
+		await api.service.recordBases(hostId, [{ sandboxId: sandbox.id, base: "not a base!" }]);
+		expect((await tom.getSandbox(sandbox.id)).base).toBeUndefined();
+		await api.service.recordBases(hostId, [{ sandboxId: sandbox.id, base: HOST_OLDEST }]);
+		expect((await tom.getSandbox(sandbox.id)).base).toMatchObject({
+			version: HOST_OLDEST,
+			outdated: true,
+			behind: { versions: 2 },
+		});
 	});
 
 	it("restarts a running sandbox on the latest base, from a snapshot of its disk", async () => {

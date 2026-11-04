@@ -123,6 +123,14 @@ export interface HostComputeLink {
 	/** A sandbox's protected values, or `undefined` unless the sandbox is on `hostId`. */
 	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
 	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
+	/**
+	 * Keeps the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching), from its hello and its
+	 * events, so a sandbox's base is known without another boot (`ComputeService.recordBases`).
+	 */
+	recordBases?(
+		hostId: string,
+		reports: readonly { readonly sandboxId: string; readonly base: string }[],
+	): Promise<void>;
 	/** An organisation's E2E chain for the host (`ComputeService.hostE2EChain`), and the host's own entries to it. */
 	readonly e2eChain?: {
 		read(hostId: string, space: string): Promise<readonly E2EChainEntry[]>;
@@ -400,12 +408,18 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
 		const sandboxes = message.sandboxes ?? [];
 		const held = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
+		const bases: { sandboxId: string; base: string }[] = [];
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const state = sandbox?.state ?? "lost";
 			if (state !== placement.state) await store.putPlacement({ ...placement, state, updatedAt: now });
+			// What its disk is on, where the host says (one without image patching doesn't, and nothing is erased).
+			if (typeof sandbox?.base === "string" && sandbox.base !== "") {
+				bases.push({ sandboxId: placement.sandboxId, base: sandbox.base });
+			}
 			held.delete(placement.sandboxId);
 		}
+		if (bases.length > 0 && compute?.recordBases !== undefined) report(compute.recordBases(hostId, bases));
 		if (held.size > 0) {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
@@ -446,6 +460,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);
 					if (placement === undefined || placement.hostId !== hostId) return;
+					const base = (sandbox as { base?: unknown }).base;
+					if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
+						await compute?.recordBases?.(hostId, [{ sandboxId: sandbox.id, base }]);
+					}
 					// The call that caused the event usually recorded the state already (a create's `running`).
 					if (sandbox.state === placement.state) return;
 					if (sandbox.state === "deleted") await store.removePlacement(sandbox.id);

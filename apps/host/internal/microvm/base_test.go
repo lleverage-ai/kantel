@@ -320,3 +320,42 @@ func TestRebaseVersionIsWhatRootfsResolvesTo(t *testing.T) {
 		t.Fatalf("RebaseVersion with image patching off = %q", got)
 	}
 }
+
+// Pinning a snapshot made before the images were versioned replaces its metadata durably: a pass that can't write
+// leaves the old metadata readable and says so, and a retry pins it with every other field kept.
+func TestPinBasesKeepsSnapshotMetadataThroughAFailedPass(t *testing.T) {
+	images := versionedImages(t)
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	dir := m.snapshotDir("snap_1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"id":"snap_1","sandboxId":"sbx_1","kind":"saved","name":"before","createdAt":1793491200000,"size":"small"}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := m.PinBases(); err == nil {
+		t.Fatal("a pass that couldn't write the snapshot's metadata succeeded")
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dir, "meta.json")); string(raw) != legacy {
+		t.Fatalf("the failed pass changed the metadata: %s", raw)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PinBases(); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.readSnapshot("snap_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Base != "new" || snap.Rootfs != filepath.Join(images, "v", "new", "sandbox.ext4") || snap.Name != "before" || snap.SandboxID != "sbx_1" || snap.Size != "small" || snap.Kind != "saved" || snap.CreatedAt != 1793491200000 {
+		t.Fatalf("pinned snapshot = %+v", snap)
+	}
+}

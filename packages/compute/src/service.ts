@@ -259,6 +259,12 @@ export interface ComputeService {
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
 	 */
 	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
+	/**
+	 * Keeps the bases a host says its sandboxes' disks are on (image patching, experimental: its hello and its events), so
+	 * a sandbox made before the host versioned its images shows its base without another boot. Only a sandbox on
+	 * `hostId` is changed, and only to a base that looks like one (a host images version or a digest).
+	 */
+	recordBases(hostId: string, reports: readonly { readonly sandboxId: string; readonly base: string }[]): Promise<void>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
 	idle(): Promise<void>;
 	/** Kills the detached commands and waits for the work under way. */
@@ -4723,6 +4729,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { version: environment.secretsVersion, entries };
 		},
 
+		async recordBases(hostId, reports) {
+			for (const { sandboxId, base } of reports) {
+				if (typeof sandboxId !== "string" || typeof base !== "string" || !REPORTED_BASE.test(base)) continue;
+				const sandbox = await store.sandboxes.get(sandboxId);
+				if (sandbox === undefined || sandbox.hostId !== hostId || sandbox.base === base) continue;
+				if (sandbox.state === "deleted" || sandbox.state === "deleting") continue;
+				await store.sandboxes.update(sandboxId, (current) =>
+					current.hostId === hostId && current.base !== base ? { ...current, base } : current,
+				);
+			}
+		},
+
 		async recordEgress(hostId, records) {
 			const bySandbox = new Map<string, ReportedEgress[]>();
 			for (const record of records) {
@@ -4751,6 +4769,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		idle,
 	};
 }
+
+/** A base a host may report: a host images version (such as host-images-20261104.812) or an image digest. */
+const REPORTED_BASE = /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,127}|sha256:[0-9a-f]{64})$/;
 
 /** A host's report as a log entry: checked field by field, as a host is trusted with no more than its own sandboxes. */
 function egressEntryFrom(record: ReportedEgress, sandbox: StoredSandbox, at: number): StoredEgressEntry {

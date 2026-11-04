@@ -125,7 +125,10 @@ type baseTier struct {
 	walked  bool // BasesInUse ran with the lock held
 	unlock  func()
 	unlocks int
+	pinErr  error
 }
+
+func (b *baseTier) PinBases() error { return b.pinErr }
 
 func (b *baseTier) BasesInUse() map[string]bool {
 	b.walked = b.locked
@@ -184,6 +187,60 @@ func TestAPruneHoldsTheBasesUntilItHasRemoved(t *testing.T) {
 		t.Fatalf("walked under the lock %v, unlocked %d times, still locked %v", tier.walked, tier.unlocks, tier.locked)
 	}
 	for _, v := range []string{"a", "d", "e"} {
+		if gone(v) {
+			t.Errorf("%s was removed", v)
+		}
+	}
+}
+
+// A prune keeps the versions the config's kernel and image paths name, through links or by path, and waits for a
+// tier that hasn't pinned what it made before the images were versioned; an update does too.
+func TestAPruneKeepsConfiguredVersionsAndWaitsForPinning(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	store := images.Store{Dir: filepath.Join(h.cfg.Root, "images")}
+	first := time.Now().Add(-time.Hour)
+	for i, v := range []string{"a", "b", "c", "d", "e", "f"} {
+		dir := filepath.Join(store.Dir, "v", v)
+		writeFile(t, filepath.Join(dir, "manifest.json"), "{}")
+		for _, name := range []string{"vmlinux", "sandbox.ext4", "isolate.ext4"} {
+			writeFile(t, filepath.Join(dir, name), "x")
+		}
+		at := first.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(dir, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Activate("f"); err != nil {
+		t.Fatal(err)
+	}
+	// The kernel pinned by path, the sandbox image through a link of the operator's, the isolate image by default.
+	h.cfg.Kernel = filepath.Join(store.Dir, "v", "a", "vmlinux")
+	h.cfg.SandboxImage = filepath.Join(h.cfg.Root, "my-sandbox.ext4")
+	if err := os.Symlink(filepath.Join(store.Dir, "v", "b", "sandbox.ext4"), h.cfg.SandboxImage); err != nil {
+		t.Fatal(err)
+	}
+	h.cfg.IsolateImage = filepath.Join(store.Dir, "current", "isolate.ext4")
+	tier := &baseTier{inUse: map[string]bool{}, pinErr: errors.New("disk full")}
+	h.tiers = map[string]Tier{microvm.Tier: tier}
+	h.order = []string{microvm.Tier}
+	h.patching.updater = &images.Updater{Store: store, Log: h.log}
+	gone := func(v string) bool {
+		_, err := os.Stat(filepath.Join(store.Dir, "v", v))
+		return errors.Is(err, os.ErrNotExist)
+	}
+	if removed := h.pruneImages(); len(removed) != 0 || tier.locked || tier.unlocks != 0 {
+		t.Fatalf("a prune went ahead before the tier had pinned its bases: removed %v", removed)
+	}
+	if err := h.checkImages(context.Background(), h.patching.updater, proto.ImageChannel{Version: "g"}); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("an update went ahead before the tier had pinned its bases: %v", err)
+	}
+	tier.pinErr = nil
+	removed := h.pruneImages()
+	slices.Sort(removed)
+	if !slices.Equal(removed, []string{"c", "d"}) {
+		t.Fatalf("removed %v, want [c d]", removed)
+	}
+	for _, v := range []string{"a", "b", "e", "f"} {
 		if gone(v) {
 			t.Errorf("%s was removed", v)
 		}

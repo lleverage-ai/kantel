@@ -497,3 +497,25 @@ func TestFetchCosign(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The updater's prune removes the staging of installs that didn't finish, all but the newest, which a retry reuses.
+func TestUpdaterPruneRemovesSupersededStaging(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	first := time.Now().Add(-time.Hour)
+	for i, v := range []string{"host-images-20261101.part", "host-images-20261102.part", "host-images-20261103.part"} {
+		dir := filepath.Join(store.Dir, "v", v)
+		touch(t, filepath.Join(dir, "sandbox.ext4"), []byte("partial"))
+		at := first.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(dir, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u := &Updater{Store: store}
+	u.Prune(nil, 2)
+	for v, want := range map[string]bool{"host-images-20261101.part": false, "host-images-20261102.part": false, "host-images-20261103.part": true} {
+		_, err := os.Stat(filepath.Join(store.Dir, "v", v))
+		if got := err == nil; got != want {
+			t.Errorf("%s there = %v, want %v", v, got, want)
+		}
+	}
+}

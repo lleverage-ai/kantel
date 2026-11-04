@@ -474,6 +474,7 @@ export async function gatewayCompute(options: {
 						const index = await baseImages.index();
 						return index === undefined ? undefined : hostImageChannel(index);
 					},
+					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
 				}),
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());

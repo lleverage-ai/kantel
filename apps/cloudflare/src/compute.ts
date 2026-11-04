@@ -543,6 +543,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						const index = await baseImages.index();
 						return index === undefined ? undefined : hostImageChannel(index);
 					},
+					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
 				}),
 	});
 	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));

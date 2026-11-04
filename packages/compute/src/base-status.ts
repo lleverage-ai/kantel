@@ -23,6 +23,11 @@ export const DEFAULT_BASE_IMAGE_INDEX =
 export const BASE_IMAGE_INDEX_TTL_MS = 5 * 60_000;
 /** How long a gateway reuses a failure to read it, so a GitHub outage isn't asked on every request. */
 export const BASE_IMAGE_INDEX_FAILURE_TTL_MS = 60_000;
+/**
+ * How long one read of the index may take, its body included: sandbox calls and host welcomes wait on it, so an
+ * endpoint that stalls fails (and is kept as a failure) rather than holding them up.
+ */
+export const BASE_IMAGE_INDEX_TIMEOUT_MS = 10_000;
 
 /** The base image index, for the compute service: undefined `baseImages` (`ComputeServiceOptions`) is the feature off. */
 export interface BaseImages {
@@ -86,13 +91,16 @@ export const baseImageOf = (base: string): string => (DIGEST.test(base) ? SANDBO
 /**
  * The index at `url`, read with `fetch` and `parseIndex` and kept for `BASE_IMAGE_INDEX_TTL_MS`; a failure is kept for
  * `BASE_IMAGE_INDEX_FAILURE_TTL_MS` and rejects every read meanwhile. Reads that come while one is under way share it.
+ * A read, body and all, that takes longer than `timeoutMs` (`BASE_IMAGE_INDEX_TIMEOUT_MS`) is aborted and fails.
  * The gateways make one (KANTEL_BASE_IMAGE_INDEX) and hand it to the compute API and the host welcome alike.
  */
 export function baseImageIndexReader(options: {
 	readonly url: string;
 	readonly fetch?: typeof fetch;
 	readonly now?: () => number;
+	readonly timeoutMs?: number;
 }): BaseImages {
+	const timeoutMs = options.timeoutMs ?? BASE_IMAGE_INDEX_TIMEOUT_MS;
 	// Called as a plain function: a Worker's fetch refuses to be called as another object's method.
 	const get = options.fetch ?? globalThis.fetch;
 	const now = options.now ?? Date.now;
@@ -101,11 +109,24 @@ export function baseImageIndexReader(options: {
 		| { readonly until: number; readonly error: Error }
 		| undefined;
 	let reading: Promise<BaseImageIndex> | undefined;
+	const transfer = async (signal: AbortSignal): Promise<unknown> => {
+		const response = await get(options.url, { headers: { accept: "application/json" }, signal });
+		if (!response.ok) throw new Error(`it answered ${response.status}`);
+		return response.json();
+	};
 	const read = async (): Promise<BaseImageIndex> => {
+		const abort = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		// Raced as well as aborted, so a fetch that doesn't heed its signal can't hold the read either.
+		const expired = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				const error = new Error(`it took longer than ${timeoutMs / 1000}s`);
+				abort.abort(error);
+				reject(error);
+			}, timeoutMs);
+		});
 		try {
-			const response = await get(options.url, { headers: { accept: "application/json" } });
-			if (!response.ok) throw new Error(`it answered ${response.status}`);
-			const index = parseIndex(await response.json());
+			const index = parseIndex(await Promise.race([transfer(abort.signal), expired]));
 			kept = { until: now() + BASE_IMAGE_INDEX_TTL_MS, index };
 			return index;
 		} catch (error) {
@@ -113,6 +134,8 @@ export function baseImageIndexReader(options: {
 			const failure = new Error(`The base image index at ${options.url} couldn't be read: ${reason}`);
 			kept = { until: now() + BASE_IMAGE_INDEX_FAILURE_TTL_MS, error: failure };
 			throw failure;
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
 		}
 	};
 	return {
