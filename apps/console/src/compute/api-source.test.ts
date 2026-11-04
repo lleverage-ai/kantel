@@ -478,6 +478,11 @@ describe("sandboxes", () => {
 		expect(older.microvm.custom).toBe(false);
 		const current = shapesOf({ isolate, microvm: { ...microvm, custom: true } });
 		expect(current.microvm.custom).toBe(true);
+		expect(current.microvm.available).toBeUndefined();
+		// No host for microVMs: the sample's ranges stand in, but no microVM may be made from them.
+		const none = shapesOf({ isolate });
+		expect(none.microvm.available).toBe(false);
+		expect(none.isolate.memoryMb).toEqual(isolate.memoryMb);
 	});
 
 	it("asks for the shape the sliders chose, and reads what may be chosen from the API", async () => {

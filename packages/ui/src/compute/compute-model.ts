@@ -150,6 +150,11 @@ export interface SandboxShapes {
 		 * may be chosen. Absent: true.
 		 */
 		readonly custom?: boolean;
+		/**
+		 * False: no host the account may use runs microVMs, so none can be made (the ranges above are placeholders).
+		 * Absent: true.
+		 */
+		readonly available?: boolean;
 	};
 	/** Hosted only: US cents an hour while it runs, per vCPU and per GB of memory. */
 	readonly rates?: {
@@ -246,6 +251,13 @@ export function presetOf(shapes: SandboxShapes, shape: SandboxShape): ShapePrese
 
 /** Whether New sandbox offers any vCPUs and memory, or only the presets (no host makes custom shapes; maybe none). */
 export const customShapes = (shapes: SandboxShapes): boolean => shapes.microvm.custom !== false;
+
+/** Whether a microVM can be made at all: some host the account may use runs them. */
+export const microvmsAvailable = (shapes: SandboxShapes): boolean => shapes.microvm.available !== false;
+
+/** Whether New sandbox may ask for this: an isolate, or a microVM some host makes (a preset, or within the bounds). */
+export const shapeCreatable = (shapes: SandboxShapes, kind: SandboxKind, shape: SandboxShape): boolean =>
+	kind === "isolate" || (microvmsAvailable(shapes) && shapeAllowed(shapes, shape));
 
 /** US cents an hour for a sandbox of `shape`, at the shapes' rates; undefined where there are none (self-hosted). */
 export function shapeCentsPerHour(shapes: SandboxShapes, kind: SandboxKind, shape: SandboxShape): number | undefined {

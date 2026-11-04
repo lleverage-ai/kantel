@@ -8,11 +8,13 @@ import {
 	fitMemory,
 	memoryRangeFor,
 	memoryText,
+	microvmsAvailable,
 	onGrid,
 	presetOf,
 	type SandboxShapes,
 	shapeAllowed,
 	shapeCentsPerHour,
+	shapeCreatable,
 	sizeText,
 	vcpuRangeFor,
 } from "./compute-model.ts";
@@ -172,6 +174,21 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		expect(html).not.toContain('type="range"');
 		expect(html.match(/<option/g)).toHaveLength(DEFAULT_SANDBOX_SHAPES.microvm.presets.length);
 		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).toContain('type="range"');
+	});
+
+	it("makes no microVM where no host runs them, whatever the sliders say", () => {
+		const none: SandboxShapes = {
+			...DEFAULT_SANDBOX_SHAPES,
+			microvm: { ...DEFAULT_SANDBOX_SHAPES.microvm, available: false },
+		};
+		const preset = DEFAULT_SANDBOX_SHAPES.microvm.presets[0];
+		if (preset === undefined) throw new Error("No preset");
+		expect(microvmsAvailable(none)).toBe(false);
+		expect(shapeCreatable(none, "microvm", preset)).toBe(false);
+		expect(shapeCreatable(none, "isolate", { vcpus: 0, memoryMb: 256 })).toBe(true);
+		// Hosts that run them: a preset may be made, and isolates still.
+		expect(microvmsAvailable(DEFAULT_SANDBOX_SHAPES)).toBe(true);
+		expect(shapeCreatable(DEFAULT_SANDBOX_SHAPES, "microvm", preset)).toBe(true);
 	});
 
 	it("never says a shape boots cold or comes from a warm pool: hosts keep none", () => {

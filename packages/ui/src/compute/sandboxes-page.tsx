@@ -33,6 +33,7 @@ import {
 	type HostingMode,
 	memoryRangeFor,
 	memoryText,
+	microvmsAvailable,
 	onGrid,
 	presetOf,
 	SANDBOX_KIND_LABELS,
@@ -47,8 +48,8 @@ import {
 	type SavedSnapshot,
 	sandboxActions,
 	sandboxMoving,
-	shapeAllowed,
 	shapeCentsPerHour,
+	shapeCreatable,
 	sizeText,
 	stopsInText,
 	vcpuRangeFor,
@@ -1203,6 +1204,8 @@ export function NewSandboxDialog({
 					setMemoryMb(start.memoryMb);
 				}
 				setIsolateMb(onGrid(read.isolate.memoryMb, read.isolate.memoryMb.default));
+				// No host runs microVMs: an isolate is all that can be made.
+				if (!microvmsAvailable(read)) setKind("isolate");
 				setShapesRead("ready");
 			},
 			() => setShapesRead("failed"),
@@ -1219,7 +1222,8 @@ export function NewSandboxDialog({
 	const fromOptions = saved.filter((entry) => entry.kind === kind);
 	const shape: SandboxShape = kind === "isolate" ? { vcpus: 0, memoryMb: isolateMb } : { vcpus, memoryMb };
 	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
-	const ready = valid && shapesRead === "ready" && (kind === "isolate" || shapeAllowed(shapes, shape));
+	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
+	const ready = valid && shapesRead === "ready" && shapeCreatable(shapes, kind, shape);
 	const submit = () => {
 		if (!ready) return;
 		onCreate({
@@ -1264,16 +1268,18 @@ export function NewSandboxDialog({
 					<SegmentedControl
 						label="Type"
 						options={[
-							{ value: "microvm", label: "MicroVM" },
+							{ value: "microvm", label: "MicroVM", ...(noMicrovms ? { disabled: true } : {}) },
 							{ value: "isolate", label: "Isolate" },
 						]}
 						value={kind}
 						onChange={setKind}
 					/>
 					<span className="text-xs text-muted">
-						{kind === "microvm"
-							? "A Firecracker microVM: root, Docker, systemd and /dev/kvm inside. Up in about a second."
-							: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
+						{noMicrovms
+							? "None of this organisation's hosts run microVMs, so only isolates can be made here."
+							: kind === "microvm"
+								? "A Firecracker microVM: root, Docker, systemd and /dev/kvm inside. Up in about a second."
+								: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
 					</span>
 				</div>
 				{shapesRead === "reading" ? (

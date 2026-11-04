@@ -199,7 +199,8 @@ type Manager struct {
 	guest atomic.Pointer[proto.GuestCapabilities]
 }
 
-// guestFile, in a template, is its agent's capability report.
+// guestFile, in a template, is its agent's capability report. The manager's root keeps the latest report too, from a
+// template or a custom shape's boot (which has no template), so a host that restarts still has it.
 const guestFile = "guest.json"
 
 // bootConfig is a cold boot of size: through Kantel's initramfs when the host injects the agent.
@@ -215,6 +216,22 @@ func (m *Manager) bootConfig(size proto.Size, tap, mac string, cid uint32) fc.Bo
 func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
 	// Even nil: a template with no report mustn't keep the one before it (another image's).
 	m.guest.Store(caps)
+	for _, d := range []string{dir, m.cfg.Root} {
+		writeGuest(d, caps)
+	}
+}
+
+// noteBootGuest keeps what a custom shape's boot reported: there is no template to keep it in, so the root does.
+func (m *Manager) noteBootGuest(caps *proto.GuestCapabilities) {
+	m.guest.Store(caps)
+	writeGuest(m.cfg.Root, caps)
+}
+
+// writeGuest puts a report in dir's guestFile, or removes it for nil. No dir: kept in memory only.
+func writeGuest(dir string, caps *proto.GuestCapabilities) {
+	if dir == "" {
+		return
+	}
 	if caps == nil {
 		_ = os.Remove(filepath.Join(dir, guestFile))
 		return
@@ -224,7 +241,7 @@ func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
 	}
 }
 
-// loadGuest reads a ready template's report, for a host that restarted (its templates are kept).
+// loadGuest reads a kept report (the root's, else a ready template's), for a host that restarted.
 func (m *Manager) loadGuest(dir string) {
 	if m.guest.Load() != nil {
 		return
@@ -254,6 +271,8 @@ func New(cfg Config) (*Manager, error) {
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
+	// The latest report, a custom shape's boot's included; a host from before the root kept one has its templates'.
+	m.loadGuest(cfg.Root)
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
 		// What the image has, before any sandbox needs a template: from one made before a restart.
@@ -859,7 +878,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 					return fail(fmt.Errorf("boot: %w", err))
 				}
 				if caps != nil {
-					m.guest.Store(caps)
+					m.noteBootGuest(caps)
 				}
 				t.step("capabilities", &start)
 			}

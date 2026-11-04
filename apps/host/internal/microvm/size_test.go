@@ -111,3 +111,20 @@ func TestNewClearsAnOldWarmPool(t *testing.T) {
 		t.Fatalf("pool/ is still there: %v", err)
 	}
 }
+
+// A custom shape boots with no template, so its report is kept in the root: a host that restarts with no templates
+// still says what the image has.
+func TestACustomBootsReportOutlivesARestart(t *testing.T) {
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root}}
+	m.noteBootGuest(&proto.GuestCapabilities{Arch: "aarch64"})
+
+	again, err := New(Config{Root: root, Sizes: DefaultSizes, SpoolMaxMiB: -1, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if got := again.guest.Load(); got == nil || got.Arch != "aarch64" {
+		t.Fatalf("after a restart with no templates the report is %+v, want the custom boot's", got)
+	}
+}

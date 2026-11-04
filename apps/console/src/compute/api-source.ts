@@ -325,7 +325,8 @@ async function learnEnvironmentNames(
 
 /**
  * What New sandbox's sliders may choose, as the API says. With no host for microVMs, the sample's microVM ranges stand
- * in (the page offers no microVM then); the API's rates are a currency's units an hour, the page's US cents.
+ * in, marked unavailable, so the page offers no microVM; the API's rates are a currency's units an hour, the page's
+ * US cents.
  */
 export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
 	const microvm = shapes.microvm;
@@ -333,7 +334,7 @@ export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
 		isolate: { memoryMb: { ...shapes.isolate.memoryMb } },
 		microvm:
 			microvm === undefined
-				? DEFAULT_SANDBOX_SHAPES.microvm
+				? { ...DEFAULT_SANDBOX_SHAPES.microvm, available: false }
 				: {
 						vcpus: { ...microvm.vcpus },
 						memoryMb: { ...microvm.memoryMb },
