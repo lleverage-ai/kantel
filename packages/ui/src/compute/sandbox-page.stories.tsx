@@ -60,8 +60,17 @@ function Scenario({
 	);
 }
 
-/** A running microVM: previews of its desktop and browser, SSH, ports, CPU and details. */
+/** A running microVM: previews of its desktop and browser, SSH, ports, CPU, details and its read-only mounts. */
 export const Overview: Story = () => <Scenario />;
+
+/** The same, for its mounts: a bundle and a bucket in place, and a bundle its host couldn't mount, with why. */
+export const Mounts: Story = () => <Scenario />;
+
+/** Another's mounts while one is still pending. */
+export const MountsPending: Story = () => <Scenario sandboxId="sbx_4d8n1x7pe2" />;
+
+/** Where the deployment hasn't turned mounts on: no Mounts at all. */
+export const MountsOff: Story = () => <Scenario options={{ noMounts: true }} />;
 
 /** Served by `kantel console`, which can't frame them: Browser, Desktop and the previews open each in a tab. */
 export const LocalConsole: Story = () => <Scenario local />;
@@ -123,7 +132,7 @@ export const Loading: Story = () => <Scenario options={{ hang: true }} />;
 /** When Kantel can't be reached. */
 export const Unreachable: Story = () => <Scenario options={{ fail: true }} />;
 
-/** On a phone: no previews, Stop in ⋯, the sections stacked. */
+/** On a phone: no previews, Stop in ⋯, the sections stacked, its mounts last. */
 export const Mobile: Story = () => <Scenario narrow />;
 Mobile.meta = { width: 390 };
 

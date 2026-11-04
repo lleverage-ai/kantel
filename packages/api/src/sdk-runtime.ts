@@ -74,7 +74,7 @@ export class KantelApiError extends Error {
 }
 
 /** A raw request body: bytes, a `Blob` (such as a `File`), or a stream of bytes. */
-export type RawBody = Blob | ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>;
+export type RawBody = Blob | ArrayBuffer | Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>;
 
 /** One call, as the generated methods describe it. */
 export interface ApiCall {

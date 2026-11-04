@@ -59,6 +59,10 @@ export const TelemetryHosted: Story = () => <Scenario page="telemetry" hosting="
 export const Organisation: Story = () => <Scenario page="organisation" />;
 export const OrganisationHosted: Story = () => <Scenario page="organisation" hosting="hosted" />;
 export const Billing: Story = () => <Scenario page="billing" hosting="hosted" />;
+/** Settings' Mounts, where the deployment has turned mounts on. */
+export const Mounts: Story = () => <Scenario page="mounts" />;
+/** Mounts off: no Mounts in Settings, and its address opens Sandboxes. */
+export const MountsOff: Story = () => <Scenario page="mounts" options={{ noMounts: true }} />;
 export const Hosts: Story = () => <Scenario page="hosts" />;
 export const HostsHosted: Story = () => <Scenario page="hosts" hosting="hosted" />;
 /** A member who isn't a super-admin has no Hosts. */
