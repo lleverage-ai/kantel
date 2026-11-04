@@ -5,6 +5,7 @@ import { Button, Notice, reloadForNewBuild, SignInScreen, Spinner, themeControll
 import { type ReactNode, StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+	browserLanding,
 	type ConsoleBoot,
 	createConsoleIdentity,
 	memoryChoice,
@@ -20,8 +21,9 @@ import "./ui/styles.css";
 // The console is the compute console (compute/compute-app.tsx): sandboxes, snapshots, keys, the egress proxy,
 // webhooks, OpenTelemetry, organisations and, for a super-admin, hosts, on the gateway's compute API under /v1.
 //
-// It asks `GET /v1/me` first (api/identity.ts). A 401 shows Kantel's email-code sign-in where the deployment signs
-// people in that way (self-hosted), and asks for a reload where Access does it at the edge.
+// It asks `GET /v1/me` first (api/identity.ts). A 401 shows Kantel's own sign-in (an email code, and GitHub and Google
+// where they are on) where the deployment signs people in that way, and asks for a reload where Access does it at the
+// edge.
 //
 // `?source=recorded` (or `VITE_KANTEL_SOURCE=recorded` for a build) shows the console on @kantel/ui's sample data with
 // no backend and no sign-in, for demos and screenshots.
@@ -47,11 +49,13 @@ const source =
 	import.meta.env.VITE_HARBOUR_SOURCE ??
 	"api";
 
-const identity = createConsoleIdentity(
-	hasStorage()
+const identity = createConsoleIdentity({
+	...(hasStorage()
 		? { tokens: storageTokens(localStorage), choice: storageChoice(localStorage) }
-		: { tokens: memoryTokens(), choice: memoryChoice() },
-);
+		: { tokens: memoryTokens(), choice: memoryChoice() }),
+	// Back from GitHub or Google: the session to pick up, or why it failed.
+	...(source === "recorded" ? {} : { landing: browserLanding() }),
+});
 
 function hasStorage(): boolean {
 	try {
@@ -137,7 +141,13 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 	if (state.kind === "sign-in") {
 		return (
 			<div className={BOOT}>
-				<SignInScreen api={state.api} onSignedIn={reboot} />
+				<SignInScreen
+					api={state.api}
+					onSignedIn={reboot}
+					providers={state.providers}
+					emailCode={state.emailCode}
+					{...(state.providerProblem === undefined ? {} : { providerProblem: state.providerProblem })}
+				/>
 			</div>
 		);
 	}

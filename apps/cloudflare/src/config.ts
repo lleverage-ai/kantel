@@ -3,6 +3,7 @@
  * are what every visitor's token already names, and the admin email only invites someone Access must still let in.
  */
 import { KantelError } from "@kantel/contracts";
+import { type OAuthClients, oauthClientsFromEnv } from "@kantel/identity/oauth";
 
 export interface GatewayVars {
 	readonly KANTEL_ACCESS_TEAM_DOMAIN?: string;
@@ -28,6 +29,14 @@ export interface GatewayVars {
 	 * the Worker changes.
 	 */
 	readonly KANTEL_ACCOUNT_HOSTS?: string;
+	/**
+	 * Sign-in with GitHub and with Google on the public origin, beside email codes: each provider's OAuth client, Worker
+	 * secrets (`scripts/vault-secrets.ts`), never vars. A provider is on with both its ID and secret, and email sign-in.
+	 */
+	readonly KANTEL_GITHUB_CLIENT_ID?: string;
+	readonly KANTEL_GITHUB_CLIENT_SECRET?: string;
+	readonly KANTEL_GOOGLE_CLIENT_ID?: string;
+	readonly KANTEL_GOOGLE_CLIENT_SECRET?: string;
 }
 
 /**
@@ -90,6 +99,11 @@ export interface GatewayConfig {
 		readonly publicUrl: string;
 		readonly from: string;
 		readonly dailyCap: number;
+		/**
+		 * The OAuth clients of the providers people may also sign in with there (GitHub, Google): those with both their
+		 * ID and secret set. Absent when there are none.
+		 */
+		readonly oauth?: OAuthClients;
 	};
 }
 
@@ -128,6 +142,16 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	const accountHosts = accountHostsConfig(vars);
 	// Set either way, the switch says the public origin may be for hosts alone: turning them off keeps it valid.
 	const emailSignIn = emailSignInConfig(vars, trimmed(vars.KANTEL_ACCOUNT_HOSTS) !== "");
+	const oauthVars = [
+		vars.KANTEL_GITHUB_CLIENT_ID,
+		vars.KANTEL_GITHUB_CLIENT_SECRET,
+		vars.KANTEL_GOOGLE_CLIENT_ID,
+		vars.KANTEL_GOOGLE_CLIENT_SECRET,
+	];
+	if (emailSignIn === undefined && oauthVars.some((value) => trimmed(value) !== "")) {
+		// Off rather than refused: the Access hostname alone (harbour.myslop.app) stays as it is with the secrets on it.
+		console.warn("kantel: sign-in with GitHub and Google needs KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM; it is off");
+	}
 	return {
 		...(emailSignIn === undefined ? {} : { emailSignIn }),
 		...(portsDomain === "" ? {} : { portsDomain }),
@@ -187,5 +211,11 @@ function emailSignInConfig(vars: GatewayVars, accountHosts: boolean): GatewayCon
 	if (!(Number.isInteger(dailyCap) && dailyCap >= 0)) {
 		throw new KantelError("invalid", "KANTEL_SIGN_IN_DAILY_CAP must be a whole number");
 	}
-	return { publicUrl: new URL(publicUrl).origin, from, dailyCap };
+	const oauth = oauthClientsFromEnv(vars);
+	return {
+		publicUrl: new URL(publicUrl).origin,
+		from,
+		dailyCap,
+		...(Object.keys(oauth).length === 0 ? {} : { oauth }),
+	};
 }
