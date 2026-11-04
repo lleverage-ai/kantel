@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,15 +31,24 @@ func TestManifest(t *testing.T) {
 	objs := []bucket.Object{
 		{Key: "org/42/a.txt", Size: 3, ETag: "e1", LastModified: at},
 		{Key: "org/42/dir/b.txt", Size: 5, ETag: "e2"},
-		{Key: "org/42/folder/", Size: 0},            // a "folder" object: an empty directory
-		{Key: "org/42/x", Size: 1, ETag: "e3"},      // a file where a directory is: the directory wins
-		{Key: "org/42/x/y", Size: 2, ETag: "e4"},    //
-		{Key: "org/42/bad//name", Size: 1},          // an empty segment
-		{Key: "org/42/../escape", Size: 1},          // a dot segment
-		{Key: "org/43/other", Size: 1, ETag: "e5"},  // outside the prefix
-		{Key: "org/42/" + strings.Repeat("n", 256)}, // a name too long
+		{Key: "org/42/folder/", Size: 0},                   // a "folder" object: an empty directory
+		{Key: "org/42/x", Size: 1, ETag: "e3"},             // a file where a directory is: the directory wins
+		{Key: "org/42/x/y", Size: 2, ETag: "e4"},           //
+		{Key: "org/42/bad//name", Size: 1},                 // an empty segment
+		{Key: "org/42/../escape", Size: 1},                 // a dot segment
+		{Key: "org/43/other", Size: 1, ETag: "e5"},         // outside the prefix
+		{Key: "org/42/" + strings.Repeat("n", 256)},        // a name too long
+		{Key: "org/42/" + strings.Repeat("a/", 600) + "f"}, // a key longer than a store allows
 	}
-	m := buildManifest(objs, normalPrefix("/org/42"), nil)
+	build := func(objs []bucket.Object, prefix string) *manifest {
+		t.Helper()
+		m, err := buildManifest(objs, prefix, nil, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	m := build(objs, normalPrefix("/org/42"))
 	var paths []string
 	for _, e := range m.wire.Entries {
 		if e.Dir {
@@ -50,7 +61,7 @@ func TestManifest(t *testing.T) {
 	if got := strings.Join(paths, " "); got != want {
 		t.Fatalf("entries %q, want %q", got, want)
 	}
-	if m.skipped != 5 || m.bytes != 10 || m.objects["a.txt"].key != "org/42/a.txt" || m.objects["a.txt"].tag != "ee1" {
+	if m.skipped != 6 || m.bytes != 10 || m.objects["a.txt"].key != "org/42/a.txt" || m.objects["a.txt"].tag != "ee1" {
 		t.Errorf("skipped %d, bytes %d, a.txt %+v", m.skipped, m.bytes, m.objects["a.txt"])
 	}
 	if m.wire.Entries[0].MTimeMs != at.UnixMilli() {
@@ -59,15 +70,45 @@ func TestManifest(t *testing.T) {
 	// The same listing in another order is the same manifest; a changed object is another.
 	rev := append([]bucket.Object{}, objs...)
 	sort.Slice(rev, func(i, j int) bool { return rev[i].Key > rev[j].Key })
-	if again := buildManifest(rev, "org/42/", nil); again.wire.Version != m.wire.Version || m.wire.Version <= 0 {
+	if again := build(rev, "org/42/"); again.wire.Version != m.wire.Version || m.wire.Version <= 0 {
 		t.Errorf("versions %d and %d", m.wire.Version, again.wire.Version)
 	}
 	objs[0].ETag = "changed"
-	if changed := buildManifest(objs, "org/42/", nil); changed.wire.Version == m.wire.Version {
+	if changed := build(objs, "org/42/"); changed.wire.Version == m.wire.Version {
 		t.Error("a changed object kept the version")
 	}
-	if e := buildManifest(nil, "", nil); len(e.wire.Entries) != 0 || !bytes.Contains(e.encoded, []byte(`"entries":[]`)) {
+	if e := build(nil, ""); len(e.wire.Entries) != 0 || !bytes.Contains(e.encoded, []byte(`"entries":[]`)) {
 		t.Errorf("an empty prefix: %s", e.encoded)
+	}
+}
+
+// A listing within its object limit that would expand into a huge tree (deep keys whose directories multiply) is
+// refused before the tree is built further or encoded.
+func TestManifestTreeIsBounded(t *testing.T) {
+	// One key at the store's limit, all directories: 512 entries.
+	deep := []bucket.Object{{Key: strings.Repeat("a/", 511) + "f", Size: 1, ETag: "e"}}
+	if m, err := buildManifest(deep, "", nil, 1000); err != nil || len(m.wire.Entries) != 512 {
+		t.Fatalf("one deep key: %v", err)
+	}
+	// A few hundred such keys, each in its own tree: within the objects allowed, far beyond the entries.
+	var many []bucket.Object
+	for i := range 300 {
+		many = append(many, bucket.Object{Key: fmt.Sprintf("%03d/", i) + strings.Repeat("a/", 509) + "f", Size: 1, ETag: "e"})
+	}
+	if _, err := buildManifest(many, "", nil, 2*1000); !errors.Is(err, errTooBig) {
+		t.Fatalf("300 deep keys: %v", err)
+	}
+	// Within the entries, beyond the names' bytes.
+	if _, err := buildManifest(many, "", nil, 0); !errors.Is(err, errTooBig) {
+		t.Fatalf("300 deep keys, no entry limit: %v", err)
+	}
+	// Folder objects count the same.
+	var folders []bucket.Object
+	for i := range 50 {
+		folders = append(folders, bucket.Object{Key: fmt.Sprintf("d%d/", i)})
+	}
+	if _, err := buildManifest(folders, "", nil, 40); !errors.Is(err, errTooBig) {
+		t.Fatalf("50 folders, 40 entries: %v", err)
 	}
 }
 
@@ -202,6 +243,8 @@ type fakeS3 struct {
 	gets    atomic.Int64
 	// ignoreRange answers a read with the whole object (200), as a store or proxy that drops Range does.
 	ignoreRange bool
+	// refuseList answers listings 503 (a store outage, or a prefix grown past the limit).
+	refuseList atomic.Bool
 }
 
 func (s *fakeS3) put(k, v string) {
@@ -217,6 +260,10 @@ func (s *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	if r.URL.Query().Get("list-type") == "2" {
 		s.lists.Add(1)
+		if s.refuseList.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		fmt.Fprint(w, "<ListBucketResult><IsTruncated>false</IsTruncated>")
 		for k, v := range s.objects {
 			if strings.HasPrefix(k, r.URL.Query().Get("prefix")) {
@@ -485,8 +532,19 @@ func TestIgnoredRangeIsNotCached(t *testing.T) {
 
 func TestPrincipalNeverTheSecret(t *testing.T) {
 	src := proto.BucketSource{Credentials: &proto.BucketCredentials{AccessKeyID: "AKID", SecretAccessKey: "s3cr3t"}}
-	if p := principal(src); p != "key:AKID" {
+	p := principal(src)
+	if !strings.HasPrefix(p, "key:AKID:") || strings.Contains(p, "s3cr3t") {
 		t.Errorf("principal %q", p)
+	}
+	// The whole credential: the same one is the same principal (on any host, after a restart); another secret or
+	// session token under the same key ID isn't.
+	if principal(proto.BucketSource{Credentials: &proto.BucketCredentials{AccessKeyID: "AKID", SecretAccessKey: "s3cr3t"}}) != p {
+		t.Error("the same credential, another principal")
+	}
+	for _, other := range []proto.BucketCredentials{{AccessKeyID: "AKID", SecretAccessKey: "guess"}, {AccessKeyID: "AKID", SecretAccessKey: "s3cr3t", SessionToken: "tok"}} {
+		if principal(proto.BucketSource{Credentials: &other}) == p {
+			t.Errorf("%+v shares the principal", other)
+		}
 	}
 	sa := proto.BucketSource{Credentials: &proto.BucketCredentials{ServiceAccountKey: `{"private_key":"PEM"}`}}
 	if p := principal(sa); strings.Contains(p, "PEM") || !strings.HasPrefix(p, "sa:") {
@@ -548,5 +606,218 @@ func TestGuestRefreshDoesntWaitForTheStatus(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("the listing's status never went out")
+	}
+}
+
+// review3 is a test bed: a store, a cache directory, and managers on it (a host, restarted or another).
+type review3 struct {
+	t     *testing.T
+	store *fakeS3
+	srv   *httptest.Server
+	dir   string
+	creds map[string]proto.BucketCredentials
+}
+
+func newReview3(t *testing.T, objects map[string]string) *review3 {
+	b := &review3{t: t, store: &fakeS3{objects: objects}, dir: t.TempDir(), creds: map[string]proto.BucketCredentials{"bks_1": {AccessKeyID: "k", SecretAccessKey: "s"}}}
+	b.srv = httptest.NewServer(b.store)
+	t.Cleanup(b.srv.Close)
+	return b
+}
+
+func (b *review3) manager(key []byte) *Manager {
+	cache, err := OpenCache(b.dir, 1<<30)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return New(Config{Cache: cache, HTTP: b.srv.Client(), ProofKey: key, Resolve: func(_ context.Context, _, sourceID string) (proto.BucketSource, error) {
+		c, ok := b.creds[sourceID]
+		if !ok {
+			return proto.BucketSource{}, &proto.Error{Code: proto.ErrNotFound, Message: "no such source"}
+		}
+		return proto.BucketSource{Provider: "s3", Bucket: "b", Endpoint: b.srv.URL, Credentials: &c}, nil
+	}})
+}
+
+func get(h http.Handler, target string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+	return rec
+}
+
+func readEntry(h http.Handler, e guest.ManifestEntry) *httptest.ResponseRecorder {
+	return get(h, fmt.Sprintf("/mounts/0/object?path=%s&tag=%s&size=%d&k=%s", url.QueryEscape(e.Path), url.QueryEscape(e.Tag), e.Size, url.QueryEscape(e.Proof)))
+}
+
+func manifestOf(t *testing.T, h http.Handler) map[string]guest.ManifestEntry {
+	t.Helper()
+	var man guest.Manifest
+	if err := json.Unmarshal(get(h, "/mounts/0/manifest").Body.Bytes(), &man); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]guest.ManifestEntry{}
+	for _, e := range man.Entries {
+		out[e.Path] = e
+	}
+	return out
+}
+
+// After a host restart, an adopted guest reads a version it holds by its proof, from the cache, without the host
+// first listing the prefix (which may fail: a store outage, a prefix grown past the limit); a bad proof still reads
+// nothing.
+func TestAdoptedProofReadsWithoutAListing(t *testing.T) {
+	b := newReview3(t, map[string]string{"p/a.txt": "hello"})
+	key := bytes.Repeat([]byte{7}, 32)
+	spec := []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p"}}
+	before := b.manager(key).Sandbox("sbx", spec)
+	before.Load(context.Background())
+	held := manifestOf(t, before.handler())["a.txt"]
+	if rec := readEntry(before.handler(), held); rec.Body.String() != "hello" {
+		t.Fatalf("before the restart: %d %q", rec.Code, rec.Body.String())
+	}
+	b.store.refuseList.Store(true)
+	lists, gets := b.store.lists.Load(), b.store.gets.Load()
+	after := b.manager(key).Sandbox("sbx", spec)
+	if rec := readEntry(after.handler(), held); rec.Code != 200 || rec.Body.String() != "hello" {
+		t.Fatalf("after the restart, listings refused: %d %q", rec.Code, rec.Body.String())
+	}
+	if b.store.lists.Load() != lists || b.store.gets.Load() != gets {
+		t.Errorf("%d listings and %d reads from the store (want none: the cache has it)", b.store.lists.Load()-lists, b.store.gets.Load()-gets)
+	}
+	forged := held
+	forged.Proof = "AAAAAAAAAAAAAAAAAAAAAA"
+	if rec := readEntry(after.handler(), forged); rec.Code == 200 {
+		t.Error("a forged proof read the cached bytes")
+	}
+	if rec := readEntry(b.manager(nil).Sandbox("sbx", spec).handler(), held); rec.Code == 200 {
+		t.Error("another key's host read by this one's proof")
+	}
+}
+
+// The cache is shared by the whole credential: the same one shares cached bytes; the same key ID with another
+// secret or session token reads from the store (whose listing it may well pass), never another's cache.
+func TestCacheIsTheWholeCredential(t *testing.T) {
+	b := newReview3(t, map[string]string{"p/a.txt": "hello"})
+	b.creds["bks_same"] = proto.BucketCredentials{AccessKeyID: "k", SecretAccessKey: "s"}
+	b.creds["bks_guess"] = proto.BucketCredentials{AccessKeyID: "k", SecretAccessKey: "guessed"}
+	b.creds["bks_token"] = proto.BucketCredentials{AccessKeyID: "k", SecretAccessKey: "s", SessionToken: "t"}
+	m := b.manager(nil)
+	read := func(id, source string) {
+		t.Helper()
+		s := m.Sandbox(id, []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: source, Prefix: "p"}})
+		s.Load(context.Background())
+		if rec := readEntry(s.handler(), manifestOf(t, s.handler())["a.txt"]); rec.Body.String() != "hello" {
+			t.Fatalf("%s: %d %q", source, rec.Code, rec.Body.String())
+		}
+	}
+	read("sbx_1", "bks_1")
+	read("sbx_2", "bks_same")
+	if g := b.store.gets.Load(); g != 1 {
+		t.Errorf("the same credential: %d reads from the store (want 1, then the cache)", g)
+	}
+	read("sbx_3", "bks_guess")
+	read("sbx_4", "bks_token")
+	if g := b.store.gets.Load(); g != 3 {
+		t.Errorf("other secrets: %d reads from the store (want each its own)", g)
+	}
+}
+
+// A manifest past its TTL is listed again before the guest's check gets its answer: the check takes the new listing
+// now, rather than the old manifest (a 304) and another whole TTL before it sees the change.
+func TestExpiredManifestAnswersTheNewListing(t *testing.T) {
+	b := newReview3(t, map[string]string{"p/a.txt": "hello"})
+	m := b.manager(nil)
+	var skew atomic.Int64
+	m.now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	s := m.Sandbox("sbx", []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p"}})
+	s.Load(context.Background())
+	if _, ok := manifestOf(t, s.handler())["new.txt"]; ok {
+		t.Fatal("new.txt before it was put")
+	}
+	b.store.put("p/new.txt", "new")
+	if _, ok := manifestOf(t, s.handler())["new.txt"]; ok {
+		t.Error("new.txt within the TTL (the manifest held is still fresh)")
+	}
+	skew.Add(int64(DefaultTTL + time.Second))
+	if _, ok := manifestOf(t, s.handler())["new.txt"]; !ok {
+		t.Error("the first check past the TTL hasn't new.txt")
+	}
+	if n := b.store.lists.Load(); n != 2 {
+		t.Errorf("%d listings", n)
+	}
+}
+
+// The chunks the host's mounts fetch or send at once are bounded, per sandbox and host-wide, read-ahead included; and
+// a guest that stops taking a read's bytes gives its chunk up within the write timeout.
+func TestOpenChunksAreBounded(t *testing.T) {
+	big := strings.Repeat("z", int(2*ChunkSize))
+	b := newReview3(t, map[string]string{"p/big": big, "p/a.txt": "hello"})
+	m := b.manager(nil)
+	m.writeTimeout = 300 * time.Millisecond
+	spec := []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p"}}
+	s := m.Sandbox("sbx", spec)
+	var held []func()
+	for range SandboxOpenChunks {
+		release, err := s.slot(context.Background(), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, release)
+	}
+	if _, err := s.slot(context.Background(), false); err == nil {
+		t.Error("a sandbox took more than its share")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := s.slot(ctx, true); err == nil {
+		t.Error("a read waiting for a chunk didn't give up with its context")
+	}
+	for _, release := range held {
+		release()
+	}
+	// Host-wide: other sandboxes share the rest.
+	held = nil
+	for i := range DefaultMaxOpenChunks {
+		o := m.Sandbox(fmt.Sprintf("sbx_%d", i/SandboxOpenChunks), spec)
+		release, err := o.slot(context.Background(), false)
+		if err != nil {
+			t.Fatalf("chunk %d: %v", i, err)
+		}
+		held = append(held, release)
+	}
+	if _, err := s.slot(context.Background(), false); err == nil {
+		t.Error("the host gave out more than its chunks")
+	}
+	for _, release := range held {
+		release()
+	}
+	// A guest that asks for 16 MiB and reads none of it: its chunk is given back once the write times out.
+	s.Load(context.Background())
+	e := manifestOf(t, s.handler())["big"]
+	l, err := os.MkdirTemp("", "mnt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(l)
+	if err := s.Listen(l, "v"); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	conn, err := (&net.Dialer{}).Dial("unix", filepath.Join(l, fmt.Sprintf("v_%d", guest.MountPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET /mounts/0/object?path=big&tag=%s&size=%d&k=%s HTTP/1.1\r\nHost: host\r\nRange: bytes=0-%d\r\n\r\n", url.QueryEscape(e.Tag), e.Size, url.QueryEscape(e.Proof), e.Size-1)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && b.store.gets.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	for time.Now().Before(deadline) && (len(s.slots) > 0 || len(m.slots) > 0) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(s.slots) > 0 || len(m.slots) > 0 {
+		t.Errorf("a stalled read still holds %d chunks (host %d)", len(s.slots), len(m.slots))
 	}
 }

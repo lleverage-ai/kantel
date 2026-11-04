@@ -82,6 +82,10 @@ type fakeStore struct {
 	ignoreRange bool
 	// wrongRange answers a range one byte later than the one asked for.
 	wrongRange bool
+	// noToken truncates pages without a continuation token (start-after pages on).
+	noToken bool
+	// queries are the listings' queries.
+	queries []url.Values
 }
 
 func (s *fakeStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +97,7 @@ func (s *fakeStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/b/")
 	if r.URL.Query().Get("list-type") == "2" {
 		s.lists.Add(1)
+		s.queries = append(s.queries, r.URL.Query())
 		prefix := r.URL.Query().Get("prefix")
 		var keys []string
 		for k := range s.objects {
@@ -102,12 +107,17 @@ func (s *fakeStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		sort.Strings(keys)
 		start, _ := strconv.Atoi(r.URL.Query().Get("continuation-token"))
+		if after := r.URL.Query().Get("start-after"); after != "" {
+			start = sort.SearchStrings(keys, after+"\x00")
+		}
 		end := min(start+s.page, len(keys))
 		fmt.Fprint(w, "<ListBucketResult>")
 		for _, k := range keys[start:end] {
 			fmt.Fprintf(w, "<Contents><Key>%s</Key><Size>%d</Size><LastModified>2026-11-04T10:00:00.000Z</LastModified><ETag>&quot;%s&quot;</ETag></Contents>", k, len(s.objects[k]), s.etags[k])
 		}
-		if end < len(keys) {
+		if end < len(keys) && s.noToken {
+			fmt.Fprint(w, "<IsTruncated>true</IsTruncated>")
+		} else if end < len(keys) {
 			fmt.Fprintf(w, "<IsTruncated>true</IsTruncated><NextContinuationToken>%d</NextContinuationToken>", end)
 		} else {
 			fmt.Fprint(w, "<IsTruncated>false</IsTruncated>")
@@ -217,6 +227,41 @@ func TestListAndGet(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Errorf("the error quotes the secret: %v", err)
+	}
+}
+
+// GCS's XML API lists with the same ListObjectsV2 request (list-type=2, continuation-token, NextContinuationToken;
+// https://cloud.google.com/storage/docs/xml-api/get-bucket-list), HMAC-signed; and a store that truncates a page with
+// no token is asked again from its last key.
+func TestListPagesOnGCSAndWithoutTokens(t *testing.T) {
+	store := &fakeStore{page: 1000, objects: map[string]string{}, etags: map[string]string{}}
+	for i := range 2500 {
+		k := fmt.Sprintf("p/f%05d", i)
+		store.objects[k], store.etags[k] = "x", "e"
+	}
+	store.auth = func(r *http.Request) bool {
+		return strings.Contains(r.Header.Get("Authorization"), "Credential=GOOG1/")
+	}
+	srv := httptest.NewServer(store)
+	defer srv.Close()
+	c, err := NewClient(Source{Provider: "gcs", Bucket: "b", Endpoint: srv.URL, Credentials: Credentials{AccessKeyID: "GOOG1", SecretAccessKey: "s"}}, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs, pages, err := c.List(context.Background(), "p/", 0)
+	if err != nil || len(objs) != 2500 || pages != 3 {
+		t.Fatalf("GCS: %d objects in %d pages: %v", len(objs), pages, err)
+	}
+	if q := store.queries[1]; q.Get("list-type") != "2" || q.Get("continuation-token") != "1000" || q.Has("marker") {
+		t.Errorf("GCS's second page: %v", q)
+	}
+	store.noToken, store.queries = true, nil
+	objs, pages, err = c.List(context.Background(), "p/", 0)
+	if err != nil || len(objs) != 2500 || pages != 3 || objs[2499].Key != "p/f02499" {
+		t.Fatalf("no tokens: %d objects in %d pages: %v", len(objs), pages, err)
+	}
+	if q := store.queries[2]; q.Get("start-after") != "p/f01999" {
+		t.Errorf("the third page without a token: %v", q)
 	}
 }
 

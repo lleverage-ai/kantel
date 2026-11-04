@@ -100,6 +100,8 @@ func mountProofKey(path string) ([]byte, error) {
 }
 
 // storeClient reaches object stores, never an address the egress proxy would refuse a sandbox (checked after DNS).
+// Each request, its body included, ends within mounts.FetchTimeout (one listing page, one chunk, a token), so a store
+// that answers and then stalls can't hold a listing a sandbox's create, refresh or adoption waits for.
 func storeClient(dest egress.Destinations) *http.Client {
 	dialer := &net.Dialer{
 		Timeout: 10 * time.Second,
@@ -111,7 +113,7 @@ func storeClient(dest egress.Destinations) *http.Client {
 			return dest.Check(ap.Addr())
 		},
 	}
-	return &http.Client{Transport: &http.Transport{
+	return &http.Client{Timeout: mounts.FetchTimeout, Transport: &http.Transport{
 		// Not the host's environment's proxy: the store is reached as the dialer allows.
 		Proxy:                 nil,
 		DialContext:           dialer.DialContext,

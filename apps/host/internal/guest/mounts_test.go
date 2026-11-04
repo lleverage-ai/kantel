@@ -138,3 +138,26 @@ func TestManifestUpdatesAreOrdered(t *testing.T) {
 		t.Errorf("after a 304 the tree is version %d", v)
 	}
 }
+
+// A refresh that changes only a file's modification time (the same bytes uploaded again, the same ETag) gives it a
+// new inode, so a fresh lookup shows the new time rather than reusing the node holding the old one; the same entry
+// keeps its inode (Lookup and Readdir agree).
+func TestMetadataChangeIsANewInode(t *testing.T) {
+	e := ManifestEntry{Path: "a.txt", Size: 5, MTimeMs: 1000, Tag: "e1", Proof: "p1"}
+	same := e
+	same.Proof = "p2"
+	touched := e
+	touched.MTimeMs = 2000
+	ino := func(e ManifestEntry) uint64 { return inoFor("f", e.Path, fileVersion(e)) }
+	if ino(e) != ino(same) {
+		t.Error("the same version, another inode")
+	}
+	if ino(e) == ino(touched) {
+		t.Error("a new modification time kept the inode")
+	}
+	resized := e
+	resized.Size = 6
+	if ino(e) == ino(resized) {
+		t.Error("a new size kept the inode")
+	}
+}

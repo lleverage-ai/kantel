@@ -30,6 +30,8 @@ type Sandbox struct {
 	specs []proto.Mount
 
 	mounts []*mount
+	// slots are the sandbox's share of the host's open chunks (SandboxOpenChunks).
+	slots chan struct{}
 
 	lmu      sync.Mutex
 	listener net.Listener
@@ -118,6 +120,35 @@ func newMount(s *Sandbox, index int, spec proto.Mount) *mount {
 		}
 	}
 	return mt
+}
+
+// slot takes one of the sandbox's open chunks and one of the host's, waiting for them (wait) or not; release gives
+// them back.
+func (s *Sandbox) slot(ctx context.Context, wait bool) (release func(), err error) {
+	take := func(c chan struct{}) error {
+		if !wait {
+			select {
+			case c <- struct{}{}:
+				return nil
+			default:
+				return errors.New("no chunk free")
+			}
+		}
+		select {
+		case c <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := take(s.slots); err != nil {
+		return nil, err
+	}
+	if err := take(s.m.slots); err != nil {
+		<-s.slots
+		return nil, err
+	}
+	return func() { <-s.m.slots; <-s.slots }, nil
 }
 
 // Len is how many mounts the sandbox has.
@@ -342,6 +373,8 @@ func (mt *mount) list(ctx context.Context) (*manifest, error) {
 	if mt.spec.Kind != proto.MountBucket {
 		return nil, errors.New("not a bucket mount")
 	}
+	ctx, cancel := context.WithTimeout(ctx, ListTimeout)
+	defer cancel()
 	src, err := mt.s.m.client(ctx, mt.s.id, mt.spec.BucketSourceID, false)
 	if err != nil {
 		return nil, err
@@ -359,11 +392,13 @@ func (mt *mount) list(ctx context.Context) (*manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildManifest(objs, mt.prefix, mt.proof), nil
+	// Each object a file, in a directory of its own at most: twice the objects.
+	return buildManifest(objs, mt.prefix, mt.proof, 2*mt.s.m.cfg.MaxObjects)
 }
 
-// manifestFor is the manifest the guest asks for, listing first when there is none (a host restart) and, when it
-// is older than the TTL, listing again in the background.
+// manifestFor is the manifest the guest asks for, listing first when there is none (a host restart) or when it is
+// older than the TTL (the guest's TTL check, which runs beside its file system: it gets the new listing now, not a
+// TTL later; a failed listing answers the manifest the mount has).
 func (mt *mount) manifestFor(ctx context.Context) (*manifest, error) {
 	mt.mu.Lock()
 	cur, at := mt.current, mt.refreshedAt
@@ -381,23 +416,28 @@ func (mt *mount) manifestFor(ctx context.Context) (*manifest, error) {
 		return cur, nil
 	}
 	if mt.ttl > 0 && mt.s.m.now().Sub(at) > mt.ttl {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if listed, err := mt.refresh(ctx); listed && err != nil {
-				mt.s.m.changed(mt.s.id)
-			}
-		}()
+		if listed, _ := mt.refresh(ctx); listed {
+			// Not waited for, as serveRefresh's.
+			go mt.s.m.changed(mt.s.id)
+		}
+		mt.mu.Lock()
+		cur = mt.current
+		mt.mu.Unlock()
 	}
 	return cur, nil
 }
 
 // object finds the object version the guest names: in the current manifest, or by its proof (an older version).
+// A proven version needs no listing: with none yet (a host restart), it reads from the cache or the store all the
+// same.
 func (mt *mount) object(ctx context.Context, path, tag, size, proof string) (object, bool, error) {
 	mt.mu.Lock()
 	cur := mt.current
 	mt.mu.Unlock()
 	if cur == nil {
+		if o, ok := mt.proven(path, tag, size, proof); ok {
+			return o, true, nil
+		}
 		var err error
 		if cur, err = mt.manifestFor(ctx); err != nil {
 			return object{}, false, err
@@ -538,9 +578,20 @@ func (s *Sandbox) serveObject(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("content-length", strconv.FormatInt(end-start+1, 10))
 	w.Header().Set("content-type", "application/octet-stream")
 	wrote := false
+	rc := http.NewResponseController(w)
 	for chunk := start / ChunkSize; chunk <= end/ChunkSize; chunk++ {
+		// Held while the chunk is fetched and sent: the host's open chunks are bounded, and a guest that stops reading
+		// gives its chunk up after ChunkWriteTimeout.
+		release, err := s.slot(r.Context(), true)
+		if err != nil {
+			if !wrote {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			}
+			return
+		}
 		f, err := cache.Chunk(r.Context(), id, chunk, mt.getChunk(src, obj, chunk))
 		if err != nil {
+			release()
 			if !wrote {
 				code := http.StatusBadGateway
 				if errors.Is(err, bucket.ErrStale) {
@@ -552,25 +603,34 @@ func (s *Sandbox) serveObject(w http.ResponseWriter, r *http.Request) {
 		}
 		lo := max(start, chunk*ChunkSize) - chunk*ChunkSize
 		hi := min(end, (chunk+1)*ChunkSize-1) - chunk*ChunkSize
+		_ = rc.SetWriteDeadline(time.Now().Add(s.m.writeTimeout))
 		if !wrote {
 			w.WriteHeader(http.StatusOK)
 			wrote = true
 		}
 		_, err = io.Copy(w, io.NewSectionReader(f, lo, hi-lo+1))
+		if err == nil {
+			err = rc.Flush()
+		}
 		f.Close()
+		release()
 		if err != nil {
 			return
 		}
 		// Read ahead: a read into the second half of a chunk fetches the next one, so a file read from start to end
 		// waits for the store only once.
+		// Only with a chunk free: read-ahead never waits for one, nor takes one beyond the bounds.
 		if next := chunk + 1; hi >= ChunkSize/2 && next*ChunkSize < obj.size && chunk == end/ChunkSize && !cache.Cached(id, next) {
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
-				defer cancel()
-				if f, err := cache.Chunk(ctx, id, next, mt.getChunk(src, obj, next)); err == nil {
-					f.Close()
-				}
-			}()
+			if release, err := s.slot(r.Context(), false); err == nil {
+				go func() {
+					defer release()
+					ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
+					defer cancel()
+					if f, err := cache.Chunk(ctx, id, next, mt.getChunk(src, obj, next)); err == nil {
+						f.Close()
+					}
+				}()
+			}
 		}
 	}
 }

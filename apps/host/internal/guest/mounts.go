@@ -331,7 +331,7 @@ func (m *bucketMount) invalidate(old, next *tree) {
 	}
 	changed := map[string]bool{}
 	for p, e := range old.entries {
-		if n, ok := next.entries[p]; !ok || n.Dir != e.Dir || n.Tag != e.Tag || n.Size != e.Size {
+		if n, ok := next.entries[p]; !ok || n.Dir != e.Dir || fileVersion(n) != fileVersion(e) {
 			changed[p] = true
 		}
 	}
@@ -357,6 +357,16 @@ func (m *bucketMount) invalidate(old, next *tree) {
 			_ = parent.NotifyEntry(path.Base(p))
 		}
 	}
+}
+
+// fileVersion is what a file's inode is of: its version and the metadata the manifest shows with it, so a refresh
+// that changes only a file's modification time (the same bytes written again) gives fresh lookups a new node, while a
+// file opened before keeps its own.
+func fileVersion(e ManifestEntry) string {
+	if e.Dir {
+		return ""
+	}
+	return e.Tag + "\x00" + strconv.FormatInt(e.Size, 10) + "\x00" + strconv.FormatInt(e.MTimeMs, 10)
 }
 
 func inoFor(kind, p, tag string) uint64 {
@@ -420,7 +430,7 @@ func (d *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 		return d.NewInode(ctx, &dirNode{m: d.m, path: p}, fs.StableAttr{Mode: syscall.S_IFDIR, Ino: out.Ino}), 0
 	}
 	fileAttr(&out.Attr, e)
-	out.Ino = inoFor("f", p, e.Tag)
+	out.Ino = inoFor("f", p, fileVersion(e))
 	return d.NewInode(ctx, &fileNode{m: d.m, entry: e}, fs.StableAttr{Mode: syscall.S_IFREG, Ino: out.Ino}), 0
 }
 
@@ -435,7 +445,7 @@ func (d *dirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		if e.Dir {
 			list = append(list, fuse.DirEntry{Name: name, Mode: syscall.S_IFDIR, Ino: inoFor("d", p, "")})
 		} else {
-			list = append(list, fuse.DirEntry{Name: name, Mode: syscall.S_IFREG, Ino: inoFor("f", p, e.Tag)})
+			list = append(list, fuse.DirEntry{Name: name, Mode: syscall.S_IFREG, Ino: inoFor("f", p, fileVersion(e))})
 		}
 	}
 	return fs.NewListDirStream(list), 0

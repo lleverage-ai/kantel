@@ -38,6 +38,22 @@ const DefaultMaxObjects = 200_000
 // MaxMounts bounds a sandbox's mounts.
 const MaxMounts = 16
 
+// DefaultMaxOpenChunks bounds the chunks the host's mounts fetch or send at once, all sandboxes together (512 MiB
+// of chunks), and SandboxOpenChunks one sandbox's share. A chunk being sent is open, so its disk space stays used
+// even once the cache has evicted it, and a fetch writes a chunk beside the cache: these bound both beyond the cache's
+// own limit.
+const (
+	DefaultMaxOpenChunks = 64
+	SandboxOpenChunks    = 16
+)
+
+// ChunkWriteTimeout is how long the host waits for a guest to take one chunk's bytes before it gives up on the read
+// (and closes the chunk): a guest that stops reading can't hold chunks open.
+const ChunkWriteTimeout = time.Minute
+
+// ListTimeout bounds one listing of a prefix, all its pages (each a request within the store client's own timeout).
+const ListTimeout = 10 * time.Minute
+
 // sourceTTL is how long the host keeps a bucket source it resolved before asking again.
 const sourceTTL = 10 * time.Minute
 
@@ -57,6 +73,8 @@ type Config struct {
 	// reads its version. Kept across a restart of the host, so an adopted guest's open files do too; empty: a random
 	// key for this run.
 	ProofKey []byte
+	// MaxOpenChunks bounds the chunks fetched or sent at once (default DefaultMaxOpenChunks).
+	MaxOpenChunks int
 }
 
 // Manager holds every sandbox's mounts on the host.
@@ -70,6 +88,10 @@ type Manager struct {
 	// now is the clock for listings' timing (tests give another).
 	now      func() time.Time
 	proofKey []byte
+	// slots are the host's open chunks (Config.MaxOpenChunks).
+	slots chan struct{}
+	// writeTimeout is ChunkWriteTimeout (tests give another).
+	writeTimeout time.Duration
 }
 
 type source struct {
@@ -93,7 +115,10 @@ func New(cfg Config) *Manager {
 		key = make([]byte, 32)
 		_, _ = rand.Read(key)
 	}
-	return &Manager{cfg: cfg, log: cfg.Log.With("part", "mounts"), sandboxes: map[string]*Sandbox{}, sources: map[string]*source{}, now: time.Now, proofKey: key}
+	if cfg.MaxOpenChunks <= 0 {
+		cfg.MaxOpenChunks = DefaultMaxOpenChunks
+	}
+	return &Manager{cfg: cfg, log: cfg.Log.With("part", "mounts"), sandboxes: map[string]*Sandbox{}, sources: map[string]*source{}, now: time.Now, proofKey: key, slots: make(chan struct{}, cfg.MaxOpenChunks), writeTimeout: ChunkWriteTimeout}
 }
 
 // Cache is the host's read cache.
@@ -139,7 +164,7 @@ func (m *Manager) Sandbox(sandboxID string, specs []proto.Mount) *Sandbox {
 	} else if ok {
 		s.closeListener()
 	}
-	s := &Sandbox{id: sandboxID, m: m, specs: specs}
+	s := &Sandbox{id: sandboxID, m: m, specs: specs, slots: make(chan struct{}, SandboxOpenChunks)}
 	for i, spec := range specs {
 		s.mounts = append(s.mounts, newMount(s, i, spec))
 	}
@@ -230,15 +255,21 @@ func (m *Manager) client(ctx context.Context, sandboxID, sourceID string, fresh 
 	return s, nil
 }
 
-// principal names who reads a bucket source, for the cache's keys: an access key's ID, or a hash of a service
-// account's key. Never the secret itself. Two sources with the same principal read the same objects.
+// principal names who reads a bucket source, for the cache's keys: a digest of the whole credential (an access key's
+// ID, secret and session token; or a service account's key), never the secret itself. Two sources share cached bytes
+// only with the same credential, so naming another account's key ID with another secret reads none of its cache.
 func principal(src proto.BucketSource) string {
 	c := src.Credentials
 	switch {
 	case c == nil:
 		return ""
 	case c.AccessKeyID != "":
-		return "key:" + c.AccessKeyID
+		h := sha256.New()
+		for _, part := range []string{"kantel-bucket-principal", c.AccessKeyID, c.SecretAccessKey, c.SessionToken} {
+			h.Write([]byte(part))
+			h.Write([]byte{0})
+		}
+		return "key:" + c.AccessKeyID + ":" + hex.EncodeToString(h.Sum(nil)[:16])
 	case c.ServiceAccountKey != "":
 		h := sha256.Sum256([]byte(c.ServiceAccountKey))
 		return "sa:" + hex.EncodeToString(h[:16])

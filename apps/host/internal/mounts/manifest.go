@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"path"
 	"sort"
 	"strings"
@@ -42,8 +43,20 @@ func normalPrefix(p string) string {
 
 const maxName = 255
 
+// maxKey is the longest object key S3 and GCS allow (1024 bytes): a store's listing names nothing longer, so a key
+// that is longer (a store that isn't one, inflating the tree) has no place in it.
+const maxKey = 1024
+
+// maxTreeBytes bounds the names a manifest's tree holds, its directories' included, beside its entries' count
+// (twice the objects it may list): a listing within its object limit may still name deep paths whose directories
+// multiply, and the tree is built, encoded and sent whole.
+const maxTreeBytes = 64 << 20
+
+// errTooBig is a listing whose tree is beyond its bounds.
+var errTooBig = errors.New("the prefix's tree is too large for a mount")
+
 func validRel(rel string) bool {
-	if rel == "" {
+	if rel == "" || len(rel) > maxKey {
 		return false
 	}
 	for _, seg := range strings.Split(rel, "/") {
@@ -57,14 +70,31 @@ func validRel(rel string) bool {
 // buildManifest makes the tree of a prefix's objects. Directories come from the keys' paths, and from "folder"
 // objects (keys ending in "/"). Its version is a digest of what it holds, so the same listing has the same version
 // on any host, and across a restart of this one (the entries' proofs aren't in it). sign, when set, gives each
-// object's proof (mount.proof).
-func buildManifest(objs []bucket.Object, prefix string, sign func(object) string) *manifest {
+// object's proof (mount.proof). A tree of more than maxEntries entries (files and directories) or maxTreeBytes of
+// names is refused before it is built further or encoded.
+func buildManifest(objs []bucket.Object, prefix string, sign func(object) string, maxEntries int) (*manifest, error) {
 	m := &manifest{objects: map[string]object{}}
 	dirs := map[string]bool{}
-	addDirs := func(rel string) {
-		for d := path.Dir(rel); d != "." && d != "/" && !dirs[d]; d = path.Dir(d) {
-			dirs[d] = true
+	count, names := 0, 0
+	add := func(p string) bool {
+		count++
+		names += len(p)
+		return (maxEntries <= 0 || count <= maxEntries) && names <= maxTreeBytes
+	}
+	addDir := func(d string) bool {
+		if dirs[d] {
+			return true
 		}
+		dirs[d] = true
+		return add(d)
+	}
+	addDirs := func(rel string) bool {
+		for d := path.Dir(rel); d != "." && d != "/" && !dirs[d]; d = path.Dir(d) {
+			if !addDir(d) {
+				return false
+			}
+		}
+		return true
 	}
 	files := map[string]bucket.Object{}
 	for _, o := range objs {
@@ -82,16 +112,22 @@ func buildManifest(objs []bucket.Object, prefix string, sign func(object) string
 				m.skipped++
 				continue
 			}
-			dirs[d] = true
-			addDirs(d)
+			if !addDir(d) || !addDirs(d) {
+				return nil, errTooBig
+			}
 			continue
 		}
 		if !validRel(rel) {
 			m.skipped++
 			continue
 		}
+		if _, dup := files[rel]; !dup && !add(rel) {
+			return nil, errTooBig
+		}
 		files[rel] = o
-		addDirs(rel)
+		if !addDirs(rel) {
+			return nil, errTooBig
+		}
 	}
 	for rel, o := range files {
 		if dirs[rel] {
@@ -123,5 +159,5 @@ func buildManifest(objs []bucket.Object, prefix string, sign func(object) string
 		}
 	}
 	m.encoded, _ = json.Marshal(m.wire)
-	return m
+	return m, nil
 }

@@ -240,10 +240,11 @@ type listResult struct {
 
 // List lists every object under prefix, recursively: one ListObjectsV2 of as many pages as it takes (1000 objects
 // a page), answering how many pages (requests) it took. It stops with an error once more than limit objects are
-// listed.
+// listed. GCS's XML API takes the same request (list-type=2, continuation-token): its marker paging is list-type 1's.
+// A store that truncates a page without a continuation token is asked again from the page's last key (start-after).
 func (c *Client) List(ctx context.Context, prefix string, limit int) ([]Object, int, error) {
 	var out []Object
-	token := ""
+	token, after := "", ""
 	for pages := 1; ; pages++ {
 		q := url.Values{"list-type": {"2"}, "max-keys": {"1000"}}
 		if prefix != "" {
@@ -251,6 +252,8 @@ func (c *Client) List(ctx context.Context, prefix string, limit int) ([]Object, 
 		}
 		if token != "" {
 			q.Set("continuation-token", token)
+		} else if after != "" {
+			q.Set("start-after", after)
 		}
 		u := c.objectURL("", q)
 		// The bucket's URL ends in "/": "/bucket/" path-style, "/" virtual-hosted.
@@ -279,10 +282,14 @@ func (c *Client) List(ctx context.Context, prefix string, limit int) ([]Object, 
 		if !page.IsTruncated {
 			return out, pages, nil
 		}
-		if page.NextContinuationToken == "" || page.NextContinuationToken == token {
+		switch next := page.NextContinuationToken; {
+		case next != "" && next != token:
+			token = next
+		case next == "" && len(page.Contents) > 0 && page.Contents[len(page.Contents)-1].Key > after:
+			token, after = "", page.Contents[len(page.Contents)-1].Key
+		default:
 			return nil, pages, fmt.Errorf("list %s: a truncated page with no continuation", c.src.Bucket)
 		}
-		token = page.NextContinuationToken
 	}
 }
 
