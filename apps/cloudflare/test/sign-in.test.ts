@@ -236,6 +236,29 @@ describe("email-code sign-in on the public origin", () => {
 		expect((await call(PUBLIC, "GET", "/v1/me", as(bobs))).status).toBe(403);
 		await close();
 	});
+
+	it("lets the person a compute invite was made for join with its code, and nobody else (#657)", async () => {
+		const { call, signIn, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
+		const ada = await signIn("ada@example.test");
+		const ann = await signIn("ann@example.test");
+		const bob = await signIn("bob@example.test");
+		const org = await call(PUBLIC, "POST", "/v1/accounts", { token: ada, body: { name: "Acme" } });
+		expect(org.status).toBe(201);
+		const invite = await call(PUBLIC, "POST", `/v1/accounts/${org.body.id}/invites`, {
+			token: ada,
+			body: { email: "Ann@Example.test", role: "member" },
+		});
+		expect(invite.status).toBe(201);
+		const join = { body: { code: invite.body.code } };
+
+		const refused = await call(PUBLIC, "POST", "/v1/accounts/join", { token: bob, ...join });
+		expect(refused.status).toBe(403);
+		expect(refused.body.error).toMatchObject({ code: "forbidden", message: "The invite is for someone else" });
+		const joined = await call(PUBLIC, "POST", "/v1/accounts/join", { token: ann, ...join });
+		expect(joined.status).toBe(200);
+		expect(joined.body).toMatchObject({ id: org.body.id, role: "member" });
+		await close();
+	});
 });
 
 describe("a sign-up that stopped part-way", () => {

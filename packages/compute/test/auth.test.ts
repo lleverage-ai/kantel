@@ -1,7 +1,7 @@
 // A key's use is recorded at most once a minute, off the call's path, and never over a newer use, a revoke or a
 // rotation (STATE-CONTRACT.md §2).
 import { describe, expect, it } from "vitest";
-import { API_KEY_PREFIX, authenticate } from "../src/auth.ts";
+import { API_KEY_PREFIX, authenticate, ensurePerson } from "../src/auth.ts";
 import { createMemoryStore, type StoredApiKey } from "../src/store.ts";
 import { sha256Hex } from "../src/util.ts";
 
@@ -93,5 +93,20 @@ describe("recording a key's use", () => {
 		const stored = await store.apiKeys.get("key_1");
 		expect(stored?.revokedAt).toBe(T);
 		expect(stored?.lastUsedAt).toBe(T - MINUTE);
+	});
+});
+
+describe("a person's record", () => {
+	it("takes their email when a later sign-in carries one, and keeps it when one doesn't", async () => {
+		// Gateways passed no email before the fix for #657, so people first seen before then have none stored.
+		const store = createMemoryStore();
+		const first = await ensurePerson(store, { userId: "usr_1", name: "usr_1" }, T);
+		expect(first.email).toBeUndefined();
+		const later = await ensurePerson(store, { userId: "usr_1", name: "usr_1", email: "ann@example.com" }, T + MINUTE);
+		expect(later).toMatchObject({ email: "ann@example.com", personalAccountId: first.personalAccountId });
+		expect((await store.users.get("usr_1"))?.email).toBe("ann@example.com");
+		expect((await ensurePerson(store, { userId: "usr_1", name: "usr_1" }, T + 2 * MINUTE)).email).toBe(
+			"ann@example.com",
+		);
 	});
 });
