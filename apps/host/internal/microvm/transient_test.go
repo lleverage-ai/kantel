@@ -1,12 +1,15 @@
 package microvm
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -15,7 +18,7 @@ import (
 )
 
 // A stand-in for a fork's Firecracker: a process attached as one, whose exit is noticed as a machine's.
-func fakeMachine(t *testing.T, vm string) (*fc.Machine, func()) {
+func fakeMachine(t *testing.T, vm string, cmd *exec.Cmd) (*fc.Machine, func()) {
 	t.Helper()
 	if err := os.MkdirAll(vm, 0o700); err != nil {
 		t.Fatal(err)
@@ -23,7 +26,9 @@ func fakeMachine(t *testing.T, vm string) (*fc.Machine, func()) {
 	if err := os.WriteFile(filepath.Join(vm, fc.APISocket), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sleep", "60")
+	if cmd == nil {
+		cmd = exec.Command("sleep", "60")
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -66,16 +71,12 @@ func TestSpoolCountsAForksMappedMemoryUntilItExits(t *testing.T) {
 	m := &Manager{cfg: Config{Root: root, SpoolDir: spoolDir}, spool: sp, log: slog.New(slog.NewTextHandler(io.Discard, nil)), sandboxes: map[string]*sandbox{}}
 	s := &sandbox{dir: filepath.Join(root, "sandboxes", "sbx_fork")}
 	s.meta.ID = "sbx_fork"
-	machine, exit := fakeMachine(t, s.vmDir())
+	machine, exit := fakeMachine(t, s.vmDir(), nil)
 	s.machine = machine
 	m.sandboxes[s.meta.ID] = s
 
 	mem := spoolFile(t, sp, 3<<19) // 1.5 MiB of the 2
 	m.keepMapped("sbx_fork", mem)
-	link := filepath.Join(s.vmDir(), mappedMem)
-	if dest, err := os.Readlink(link); err != nil || dest != mem {
-		t.Fatalf("the fork's link to its memory: %q, %v", dest, err)
-	}
 	if got := sp.reserve(1 << 20); got != "" {
 		t.Fatal("the spool took a snapshot it has no room for while a fork maps its memory")
 	}
@@ -94,56 +95,81 @@ func TestSpoolCountsAForksMappedMemoryUntilItExits(t *testing.T) {
 	if _, err := os.Stat(mem); !os.IsNotExist(err) {
 		t.Fatalf("the fork's spooled memory is still there: %v", err)
 	}
-	if _, err := os.Lstat(link); !os.IsNotExist(err) {
-		t.Fatalf("the fork's link is still there: %v", err)
-	}
 	if got := sp.reserve(1 << 20); got == "" {
 		t.Fatal("no room in the spool once the fork had gone")
 	}
 }
 
-// After a daemon restart, a running fork's mapped memory is counted again; a fork that no longer runs has its link
-// and file removed.
+// TestHelperMapsAFile is a stand-in Firecracker for TestAdoptMappedMemory: it maps the file it is given, privately as
+// Firecracker maps a memory file, and waits to be killed.
+func TestHelperMapsAFile(t *testing.T) {
+	path := os.Getenv("KANTEL_TEST_MAP")
+	if path == "" {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		os.Exit(2)
+	}
+	if _, err := syscall.Mmap(int(f.Fd()), 0, 4096, syscall.PROT_READ, syscall.MAP_PRIVATE); err != nil {
+		os.Exit(3)
+	}
+	_ = f.Close()
+	fmt.Println("mapped")
+	time.Sleep(time.Minute)
+	os.Exit(0)
+}
+
+// After a daemon restart (or one between a fork starting and its memory being counted), the spooled memory a running
+// fork maps is counted again, found in its machine's mappings; spooled memory nothing links or maps (an interrupted
+// fork's) is deleted; memory a link still points at is left for spool.adopt.
 func TestAdoptMappedMemory(t *testing.T) {
 	root := t.TempDir()
 	spoolDir := filepath.Join(root, "spool")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	before := newSpool(spoolDir, 2<<20, log)
-	running := spoolFile(t, before, 4096)
-	gone := spoolFile(t, before, 4096)
+	mappedMem := spoolFile(t, before, 4096)
+	orphan := spoolFile(t, before, 4096)
+	linked := spoolFile(t, before, 4096)
+	stopped := &sandbox{dir: filepath.Join(root, "sandboxes", "sbx_stopped")}
+	if err := os.MkdirAll(stopped.vmDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linked, filepath.Join(stopped.vmDir(), "mem")); err != nil {
+		t.Fatal(err)
+	}
 
 	// The new run's spool counts nothing yet.
 	sp := newSpool(spoolDir, 2<<20, log)
 	m := &Manager{cfg: Config{Root: root, SpoolDir: spoolDir}, spool: sp, log: log, sandboxes: map[string]*sandbox{}}
 	fork := &sandbox{dir: filepath.Join(root, "sandboxes", "sbx_running")}
 	fork.meta.ID = "sbx_running"
-	machine, exit := fakeMachine(t, fork.vmDir())
-	fork.machine = machine
-	m.sandboxes[fork.meta.ID] = fork
-	stopped := &sandbox{dir: filepath.Join(root, "sandboxes", "sbx_stopped")}
-	stopped.meta.ID = "sbx_stopped"
-	m.sandboxes[stopped.meta.ID] = stopped
-	if err := os.MkdirAll(stopped.vmDir(), 0o700); err != nil {
+	helper := exec.Command(os.Args[0], "-test.run=^TestHelperMapsAFile$")
+	helper.Env = append(os.Environ(), "KANTEL_TEST_MAP="+mappedMem)
+	out, err := helper.StdoutPipe()
+	if err != nil {
 		t.Fatal(err)
 	}
-	for link, dest := range map[string]string{
-		filepath.Join(fork.vmDir(), mappedMem):    running,
-		filepath.Join(stopped.vmDir(), mappedMem): gone,
-	} {
-		if err := os.Symlink(dest, link); err != nil {
-			t.Fatal(err)
-		}
+	machine, exit := fakeMachine(t, fork.vmDir(), helper)
+	if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || line != "mapped\n" {
+		t.Fatalf("the stand-in Firecracker said %q, %v", line, err)
 	}
+	fork.machine = machine
+	m.sandboxes[fork.meta.ID] = fork
+	stopped.meta.ID = "sbx_stopped"
+	m.sandboxes[stopped.meta.ID] = stopped
 
 	m.adoptMappedMemory()
 	if got := used(sp); got != 4096 {
 		t.Fatalf("the spool counts %d bytes after adopting, want the running fork's 4096", got)
 	}
-	if _, err := os.Lstat(filepath.Join(stopped.vmDir(), mappedMem)); !os.IsNotExist(err) {
-		t.Fatalf("a stopped fork's link is still there: %v", err)
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("spooled memory nothing uses is still there: %v", err)
 	}
-	if _, err := os.Stat(gone); !os.IsNotExist(err) {
-		t.Fatalf("a stopped fork's spooled memory is still there: %v", err)
+	for _, kept := range []string{mappedMem, linked} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("%s went: %v", kept, err)
+		}
 	}
 	exit()
 	deadline := time.Now().Add(10 * time.Second)
