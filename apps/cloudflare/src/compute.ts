@@ -27,6 +27,11 @@
  *   /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET /v1/admin/hosts/images` lists the images
  *   and their CVE scans, and account hosts are told the host images to fetch in their welcome. Off, there is no `base`
  *   and those routes answer 501 not_supported.
+ * - **Protected values:** with `secretsKey` (the KANTEL_SECRETS_KEY Worker secret), environments' protected variables
+ *   and secret files are sealed with it in the object's SQLite, by the same sealer as self-hosted
+ *   (`@kantel/compute/secrets`), and an account host fetches its sandboxes' protected values over its connection for its
+ *   egress proxy to swap in (`protectedTable`), as a self-hosted gateway's hosts do. Without it they are refused with
+ *   `not_supported`, `GET /v1/whoami` says `protectedValues: false`, and the object logs why at start.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
  *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
  *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
@@ -54,6 +59,7 @@ import {
 	personName,
 	type SandboxBackend,
 	type StoredSandbox,
+	secretsKeyMissing,
 } from "@kantel/compute";
 import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
@@ -377,6 +383,11 @@ export interface StackComputeOptions {
 	readonly accountHosts?: { readonly publicUrl: string };
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
 	readonly templates?: boolean;
+	/**
+	 * KANTEL_SECRETS_KEY: 32 bytes, base64, sealing environments' protected values and secret files. Absent, the stack
+	 * object's SQLite store refuses them (`not_supported`); the memory store (tests) seals with a key of its own.
+	 */
+	readonly secretsKey?: string;
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
 	readonly hostSweepMs?: number;
 	/** Image patching (KANTEL_IMAGE_PATCHING=experimental): where the base image index is read. Absent, off. */
@@ -547,13 +558,19 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
 		...(options.templates === true ? { templates: true } : {}),
+		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
+	// The operator's advice goes to the log, never to a user: they are told only that the deployment doesn't support it.
+	if (options.secretsKey === undefined && store.persistent === true) {
+		console.warn(secretsKeyMissing("Set it as a Worker secret: wrangler secret put KANTEL_SECRETS_KEY"));
+	}
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));
-	// Hosts report what their egress proxies did. Protected values stay off here (no secrets key, so no environment holds
-	// one): a host asking for a sandbox's is answered that there are none.
+	// Hosts fetch their sandboxes' protected values over their link, for their egress proxies to swap in, and report what
+	// those proxies did: as the self-hosted gateway's hosts do. Without a secrets key no environment holds a protected
+	// value, so a host asking is answered that there are none.
 	own?.service.useCompute({
-		secrets: async () => undefined,
+		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();

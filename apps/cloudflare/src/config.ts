@@ -1,8 +1,9 @@
 /**
- * The gateway's configuration, read from the Worker's vars. Nothing here is secret: the Access team domain and AUD tag
- * are what every visitor's token already names, and the admin email only invites someone Access must still let in.
+ * The gateway's configuration, read from the Worker's vars and secrets. The vars aren't secret: the Access team domain
+ * and AUD tag are what every visitor's token already names, and the admin email only invites someone Access must still
+ * let in. The OAuth clients' secrets and KANTEL_SECRETS_KEY are Worker secrets, never vars.
  */
-import { DEFAULT_BASE_IMAGE_INDEX } from "@kantel/compute";
+import { DEFAULT_BASE_IMAGE_INDEX, parseSecretsKey } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
 import { type OAuthClients, oauthClientsFromEnv } from "@kantel/identity/oauth";
 
@@ -51,6 +52,13 @@ export interface GatewayVars {
 	 * background (`/v1/templates`). Unset, empty or `off`: off, and their routes answer `not_supported`.
 	 */
 	readonly KANTEL_TEMPLATES?: string;
+	/**
+	 * The key environments' protected variables and secret files (and bucket sources' credentials) are sealed with in the
+	 * stack object's SQLite, as self-hosted's (`@kantel/compute/secrets`): 32 random bytes in base64, a Worker secret set
+	 * with `wrangler secret put KANTEL_SECRETS_KEY` (README). Unset: they are refused, and plain variables still work.
+	 * Losing or changing it loses every value sealed with it.
+	 */
+	readonly KANTEL_SECRETS_KEY?: string;
 }
 
 /**
@@ -108,6 +116,8 @@ export interface GatewayConfig {
 	readonly imagePatching?: { readonly indexUrl: string };
 	/** Templates, from KANTEL_TEMPLATES=experimental. Absent, off. */
 	readonly templates?: boolean;
+	/** KANTEL_SECRETS_KEY, checked: 32 bytes in base64. Absent, protected values and secret files are refused. */
+	readonly secretsKey?: string;
 	/**
 	 * Email-code sign-in and open sign-up on the public origin. Absent unless KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM
 	 * are both set; it then also needs the `SIGN_IN_MAIL` binding to send anything.
@@ -160,6 +170,16 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	const accountHosts = accountHostsConfig(vars);
 	const imagePatching = imagePatchingConfig(vars);
 	const templates = templatesSwitch(vars);
+	const secretsKey = trimmed(vars.KANTEL_SECRETS_KEY);
+	// A key that isn't one is refused here, as the self-hosted gateway refuses to start with it, rather than on the first
+	// protected value. The message names the setting, never the value.
+	if (secretsKey !== "") {
+		try {
+			parseSecretsKey(secretsKey);
+		} catch (error) {
+			throw new KantelError("invalid", error instanceof Error ? error.message : "KANTEL_SECRETS_KEY isn't a key");
+		}
+	}
 	// Set either way, the switch says the public origin may be for hosts alone: turning them off keeps it valid.
 	const emailSignIn = emailSignInConfig(vars, trimmed(vars.KANTEL_ACCOUNT_HOSTS) !== "");
 	const oauthVars = [
@@ -181,6 +201,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		...(accountHosts === undefined ? {} : { accountHosts }),
 		...(imagePatching === undefined ? {} : { imagePatching }),
 		...(templates ? { templates } : {}),
+		...(secretsKey === "" ? {} : { secretsKey }),
 	};
 }
 

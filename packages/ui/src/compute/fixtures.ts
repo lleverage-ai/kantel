@@ -1615,7 +1615,16 @@ export interface ComputeFixtureOptions {
 	 * memory alone, with no history beyond the live hour and no process list.
 	 */
 	readonly metrics?: "all" | "cpu-memory";
+	/**
+	 * The deployment keeps no protected values (it has no secrets key): the samples have no protected variables or secret
+	 * files, the Environments pages offer neither, and setting one is refused as the API refuses it.
+	 */
+	readonly noProtectedValues?: boolean;
 }
+
+/** What the fixtures refuse a protected value or a secret file with under `noProtectedValues`, as the API does. */
+const NO_PROTECTED_VALUES =
+	"This deployment doesn't support protected variables or secret files; plain variables still work";
 
 let counter = 0;
 const nextId = (prefix: string): string => {
@@ -1637,6 +1646,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const at = (time: number): number => time + shift;
 	const now = (): number => (options.now === undefined ? base : Date.now());
 	const settleMs = options.settleMs ?? 1200;
+	const noProtectedValues = options.noProtectedValues === true;
 	const allMetrics = (options.metrics ?? "all") === "all";
 	/** A sandbox's made-up readings between two times: none while it isn't running, its disk and IO where measured. */
 	const sandboxUsage = (id: string, since: number, to: number, intervalMs?: number, history = false): UsageSeries => {
@@ -1758,8 +1768,10 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			env.id,
 			{
 				...moved(env, ["createdAt", "updatedAt"]),
-				variables: env.variables.map((variable) => moved(variable, ["updatedAt"])),
-				files: env.files.map((file) => moved(file, ["updatedAt"])),
+				variables: env.variables
+					.filter((variable) => !(noProtectedValues && variable.protected))
+					.map((variable) => moved(variable, ["updatedAt"])),
+				files: noProtectedValues ? [] : env.files.map((file) => moved(file, ["updatedAt"])),
 			},
 		]),
 	);
@@ -2402,6 +2414,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		},
 		...(templates === undefined ? {} : { templates }),
 		environments: {
+			...(noProtectedValues ? { protectedValues: false } : {}),
 			list: (accountId) =>
 				gate(() =>
 					[...environments.values()]
@@ -2451,6 +2464,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				gate(() => {
 					const env = find(environments, id, "environment");
 					const existing = env.variables.find((variable) => variable.name === input.name);
+					if (input.protected && noProtectedValues)
+						throw Object.assign(new Error(NO_PROTECTED_VALUES), { code: "not_supported" });
 					if (input.protected && input.bindings.length === 0) {
 						throw new Error("A protected variable needs at least one host it's bound to.");
 					}
@@ -2480,6 +2495,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 			setFile: (id, input) =>
 				gate(() => {
+					if (noProtectedValues) throw Object.assign(new Error(NO_PROTECTED_VALUES), { code: "not_supported" });
 					const env = find(environments, id, "environment");
 					const existing = env.files.find((file) => file.path === input.path);
 					if (input.content === undefined && existing === undefined)

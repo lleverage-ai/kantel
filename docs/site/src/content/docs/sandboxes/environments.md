@@ -249,6 +249,6 @@ curl -s "$KANTEL_URL/v1/sandboxes" \
 
 The [API reference](/api/reference/) has every field. The console edits the same environments.
 
-On a self-hosted install, protected values and secret files need `KANTEL_SECRETS_KEY` set on the control plane. Without it, an install with a database refuses them, and plain variables still work. See [Your own settings](/self-hosting/install/#your-own-settings).
+Protected values and secret files need the deployment to have a secrets key. Where it has none, setting one is refused with `not_supported` ("This deployment doesn't support protected variables or secret files"), plain variables still work, and `GET /v1/whoami` says `protectedValues: false`: the CLI and console check it and say so before writing anything. On a self-hosted install the key is `KANTEL_SECRETS_KEY` on the control plane; see [Your own settings](/self-hosting/install/#your-own-settings).
 
 <!-- Sources: the TASK-4826 contract (protected environment variables); packages/cli/src/commands.ts and packages/cli/src/environments.ts for the commands and their output. -->
