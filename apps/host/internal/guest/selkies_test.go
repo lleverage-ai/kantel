@@ -1,6 +1,7 @@
 package guest
 
 import (
+	"os"
 	"os/exec"
 	"testing"
 )
@@ -12,8 +13,15 @@ func TestKantelSelkiesHoldsSizeAndDPIToTheBudget(t *testing.T) {
 	if err != nil {
 		t.Skip("no python3")
 	}
-	out, err := exec.Command(python, "../../guest/kantel-selkies-test.py",
-		"../../guest/rootfs/usr/local/bin/kantel-selkies").CombinedOutput()
+	script, test := "../../guest/rootfs/usr/local/bin/kantel-selkies", "../../guest/kantel-selkies-test.py"
+	// Read here so go test's cache sees the files: python3 reading them doesn't count, and a change to either
+	// would otherwise rerun nothing.
+	for _, f := range []string{script, test} {
+		if _, err := os.ReadFile(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := exec.Command(python, test, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("kantel-selkies-test.py: %v\n%s", err, out)
 	}
