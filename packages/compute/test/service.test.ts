@@ -558,7 +558,9 @@ describe("sandboxes", () => {
 	});
 
 	it("makes a sandbox from a snapshot holding memory as the snapshot's machine, refusing another before storing it", async () => {
-		const { tom } = setup();
+		const backend = createStubBackend();
+		const create = vi.spyOn(backend, "create");
+		const { tom } = setup(backend);
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
 		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
 		const [paused] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
@@ -583,6 +585,11 @@ describe("sandboxes", () => {
 		expect(same).toMatchObject({ size: "large", state: "running" });
 		const plain = await tom.createSandbox({ from: id, wait: true });
 		expect(plain).toMatchObject({ size: "large", state: "running" });
+		// Its backend is told it restores memory, with the snapshot's own size by name; a fresh create isn't.
+		const restore = create.mock.calls.find(([spec]) => spec.sandboxId === plain.id)?.[0];
+		expect(restore).toMatchObject({ size: "large", restoresMemory: true });
+		const fresh = create.mock.calls.find(([spec]) => spec.sandboxId === vm.id)?.[0];
+		expect(fresh?.restoresMemory).toBeUndefined();
 	});
 
 	it("keeps a pause's memory when it is saved, so a sandbox made from the save is its machine too", async () => {

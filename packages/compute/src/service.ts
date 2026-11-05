@@ -3108,7 +3108,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function holdsMemory(snapshot: StoredSnapshot): Promise<boolean> {
 		if (snapshot.memory) return true;
 		if (snapshot.ref === undefined) return false;
-		return (await store.snapshots.list({ ref: snapshot.ref })).some((other) => other.memory);
+		return (await store.snapshots.list({ ref: snapshot.ref, memory: true })).length > 0;
 	}
 
 	async function releaseRef(ref: string | undefined): Promise<void> {
@@ -4918,10 +4918,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(body.size === undefined ? {} : { size: body.size }),
 					...(shape === undefined ? {} : { shape }),
 				};
+				// Whether it restores memory: then its host must make the snapshot's own size, by name.
+				const restoresMemory = type === "microvm" && from !== undefined && (await holdsMemory(from));
 				const machineAsked =
-					type === "microvm" && from !== undefined
-						? restoreAsked({ ...from, memory: await holdsMemory(from) }, wanted)
-						: wanted;
+					type === "microvm" && from !== undefined ? restoreAsked({ ...from, memory: restoresMemory }, wanted) : wanted;
 				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
@@ -5026,6 +5026,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								env: sandbox.env,
 								eligibleHosts: start?.eligibleHosts ?? hosts,
 								fromSnapshot: from?.ref,
+								...(restoresMemory ? { restoresMemory } : {}),
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
@@ -5151,6 +5152,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Their machine, as every create decides it (`sandboxMachine`): from a snapshot, that of the sandbox it was taken
 				// of (the source's now, for one from before snapshots kept it) unless `size` names another. Forked live, the
 				// source's own, whatever `size` says: a host copies the running machine as it is.
+				// Whether its forks restore memory: then their host must make the snapshot's own size, by name.
+				const snapshotMemory = snapshot !== undefined && current.type === "microvm" && (await holdsMemory(snapshot));
 				const machine =
 					current.type !== "microvm"
 						? undefined
@@ -5162,7 +5165,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									},
 									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
 									restoreAsked(
-										{ id: snapshot.id, memory: await holdsMemory(snapshot), ...recordedMachine(snapshot) },
+										{ id: snapshot.id, memory: snapshotMemory, ...recordedMachine(snapshot) },
 										body.size === undefined ? {} : { size: body.size },
 									),
 									[],
@@ -5258,6 +5261,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											image: fork.image,
 											env: fork.env,
 											eligibleHosts: hosts,
+											...(snapshotMemory ? { restoresMemory: true } : {}),
 											...egress,
 											...(fork.mounts === undefined ? {} : { mounts: backendMounts(fork.mounts) }),
 										},
@@ -5923,15 +5927,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "snapshots:read", role);
 			const visible: StoredSnapshot[] = [];
-			for (const snapshot of await store.snapshots.list({ accountId: account.id })) {
+			const all = await store.snapshots.list({ accountId: account.id });
+			// The bytes that hold memory, from the same read (`holdsMemory`): a save shares its source's ref, in its account.
+			const memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			for (const snapshot of all) {
 				if (query.kind !== undefined && snapshot.kind !== query.kind) continue;
 				if (query.sandboxId !== undefined && snapshot.sandboxId !== query.sandboxId) continue;
 				if (snapshot.state === "deleting") continue;
 				if (await canSeeSnapshot(principal, snapshot)) visible.push(snapshot);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
-			const items = await Promise.all(
-				page.items.map(async (snapshot) => snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) })),
+			const items = page.items.map((snapshot) =>
+				snapshotView({
+					...snapshot,
+					memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
+				}),
 			);
 			return { items, nextCursor: page.nextCursor };
 		},

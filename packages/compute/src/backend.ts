@@ -89,6 +89,11 @@ export interface SandboxSpec {
 	readonly eligibleHosts: readonly string[];
 	/** Start from this snapshot's disk (a `ref` the backend answered); absent, from an empty disk. */
 	readonly fromSnapshot?: string;
+	/**
+	 * Whether `fromSnapshot` holds memory, which restores only into the size it was taken of: its host makes `size` by
+	 * that name, not another size of the same numbers. `size` is then the snapshot's own, never one inferred.
+	 */
+	readonly restoresMemory?: boolean;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
 	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
