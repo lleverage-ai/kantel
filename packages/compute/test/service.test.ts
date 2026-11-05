@@ -921,13 +921,13 @@ describe("idle stop", () => {
 		const started = clock.at;
 		const sandbox = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 1, wait: true });
 
-		// A use whose write fails still counts: past a minute from its start, it runs on.
+		// A use whose write fails still counts: past a minute and its grace from its start, it runs on.
 		mode = "fail";
 		await after(50_000);
 		const used = clock.at;
 		api.service.noteActivity(sandbox.id);
 		await api.service.idle();
-		await after(20_000);
+		await after(50_000);
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
 		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(started);
 		// It's tried again at the next sweep after its window, and once the store is back it's written.
@@ -941,8 +941,8 @@ describe("idle stop", () => {
 		await after(15_000);
 		const held = clock.at;
 		api.service.noteActivity(sandbox.id);
-		clock.at += 30_000;
-		// Stored, its last use is over a minute ago (`used`); seen here, it's half a minute.
+		clock.at += 50_000;
+		// Stored, its last use is over 90 s ago (`used`); seen here, it's 50 s.
 		await tom.getCaller();
 		const during = await tom.getSandbox(sandbox.id);
 		expect(during.state).toBe("running");
@@ -952,11 +952,66 @@ describe("idle stop", () => {
 		await api.service.idle();
 		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(held);
 
-		// Once its last use is a minute behind, stored or not, it stops.
-		await after(45_000);
+		// Once its last use is a minute and its grace behind, it stops.
+		await after(100_000);
 		const stopped = await tom.getSandbox(sandbox.id);
 		expect(stopped.state).toBe("stopped");
 		expect(stopped.reason).toBe("idle-stop");
+	});
+
+	it("waits out its grace, so a use another gateway holds back lands before this one's sweep can stop it", async () => {
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const store = createMemoryStore();
+		const backend = createStubBackend();
+		const gateway = () => {
+			const api = createComputeApi({
+				backend,
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+			});
+			opened.push(api);
+			const tom = createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+			/** Its sweep, now: a request lets it sweep, and it waits for what it began. */
+			const sweep = async () => {
+				await tom.getCaller();
+				await api.service.idle();
+			};
+			return { api, tom, sweep };
+		};
+		const a = gateway();
+		const b = gateway();
+		const sandbox = await a.tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 1, wait: true });
+		const started = clock.at;
+
+		// Gateway A writes a use at once, then holds the next one back for its window.
+		clock.at = started + 50_000;
+		a.api.service.noteActivity(sandbox.id);
+		await a.api.service.idle();
+		clock.at = started + 64_000;
+		a.api.service.noteActivity(sandbox.id);
+		// Past a minute from the use A stored, B sweeps before A has written the one it held: within its grace, it runs on.
+		clock.at = started + 111_000;
+		await b.sweep();
+		expect((await b.tom.getSandbox(sandbox.id)).state).toBe("running");
+		// A's sweep writes it; past a minute from the stored use but not its grace, B leaves it running.
+		clock.at = started + 112_000;
+		await a.sweep();
+		expect((await b.tom.getSandbox(sandbox.id)).lastActiveAt).toBe(started + 64_000);
+		clock.at = started + 141_000;
+		await b.sweep();
+		expect((await b.tom.getSandbox(sandbox.id)).state).toBe("running");
+		// Unused a minute and its grace, B stops it.
+		clock.at = started + 64_000 + 60_000 + 30_000;
+		await b.sweep();
+		const stopped = await b.tom.getSandbox(sandbox.id);
+		expect([stopped.state, stopped.reason]).toEqual(["stopped", "idle-stop"]);
 	});
 
 	it("stops for its auto-stop or a stop it is owed however recently it was used", async () => {

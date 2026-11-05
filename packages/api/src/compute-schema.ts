@@ -822,7 +822,7 @@ export const Sandbox = Type.Object(
 			Type.Integer({
 				description:
 					"When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` " +
-					"plus `idleStopMinutes`.",
+					"plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in.",
 			}),
 		),
 		latestSnapshotId: Type.Optional(Type.String({ description: "The snapshot a resume or fork would use." })),

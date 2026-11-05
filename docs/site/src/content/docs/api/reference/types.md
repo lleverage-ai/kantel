@@ -1241,7 +1241,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `stopsAt` | integer | no | When it will stop by itself, while running; the console's stops-in. |
 | `idleStopMinutes` | integer or null | no | How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, and its hosted ports. Stopping keeps its disk, as any stop does. |
 | `lastActiveAt` | integer | no | When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds. |
-| `idleStopsAt` | integer | no | When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. |
+| `idleStopsAt` | integer | no | When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |

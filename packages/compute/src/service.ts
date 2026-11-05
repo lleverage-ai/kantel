@@ -806,21 +806,31 @@ export const AUTO_STOP_REASON = "auto-stop";
  */
 export const ACTIVITY_WRITE_MS = 15_000;
 
+/**
+ * How long past its idle time a sandbox's idle stop waits before it is due: longer than any gateway takes to store a use
+ * it saw (held for up to `ACTIVITY_WRITE_MS`, then written at its next sweep, every 5 s on a self-hosted gateway). So a
+ * use seen only by another gateway, whose record of it is held back or on its way, has landed before this gateway's
+ * sweep can claim the stop; its own unstored use counts directly (`idleStopDue`'s `seenAt`). It delays only the idle
+ * stop, never an auto-stop or a stop a sandbox is owed.
+ */
+export const IDLE_STOP_GRACE_MS = 2 * ACTIVITY_WRITE_MS;
+
 /** When a running sandbox was last used, for its idle stop: its latest recorded use, else its start. */
 function lastUse(sandbox: StoredSandbox): number | undefined {
 	return sandbox.lastActiveAt ?? sandbox.startedAt;
 }
 
 /**
- * Whether a running sandbox's idle stop is due at `at`: it has one, and has gone that long without use. `seenAt` is a
- * later use this gateway saw that may not be stored yet (its write held back, in flight or failed): it counts too.
+ * Whether a running sandbox's idle stop is due at `at`: it has one, and has gone that long without use, and
+ * `IDLE_STOP_GRACE_MS` more for other gateways' use to land. `seenAt` is a later use this gateway saw that may not be
+ * stored yet (its write held back, in flight or failed): it counts too.
  */
 export function idleStopDue(sandbox: StoredSandbox, at: number, seenAt?: number): boolean {
 	const minutes = sandbox.idleStopMinutes;
 	if (minutes === undefined || minutes === null) return false;
 	const stored = lastUse(sandbox);
 	const last = seenAt === undefined ? stored : Math.max(stored ?? seenAt, seenAt);
-	return last !== undefined && last + minutes * 60_000 <= at;
+	return last !== undefined && last + minutes * 60_000 + IDLE_STOP_GRACE_MS <= at;
 }
 /**
  * How stale a host record's `lastSeenAt` may get before it is written again: it moves on every heartbeat, and the host

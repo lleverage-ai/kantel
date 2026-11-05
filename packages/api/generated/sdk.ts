@@ -1435,7 +1435,7 @@ export interface Sandbox {
 	readonly idleStopMinutes?: number | null;
 	/** When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds. */
 	readonly lastActiveAt?: number;
-	/** When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. */
+	/** When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. */
 	readonly idleStopsAt?: number;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
