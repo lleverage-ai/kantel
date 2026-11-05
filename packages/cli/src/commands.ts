@@ -1034,6 +1034,13 @@ const E2E_DETAILS =
 	"the host's key, and the host this device's, against the organisation's signed chain. The chain is trusted from\n" +
 	"its genesis, which this device made (init) or an admin gave it (join), never from the gateway.";
 
+/** A genesis: its entry's hash, base64url(SHA-256), which may start with "-". */
+const GENESIS = /^[A-Za-z0-9_-]{43}$/;
+
+/** The command a member trusts a chain with; a genesis that starts with "-" goes after `--`, so it can't be a flag. */
+const joinCommand = (space: string, genesis: string): string =>
+	`kantel e2e join ${space} ${genesis.startsWith("-") ? "-- " : ""}${genesis}`;
+
 const E2E_COMMANDS: readonly CommandSpec[] = [
 	{
 		name: "console",
@@ -1170,8 +1177,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 				[
 					`Started ${space}'s chain, E2E ${started}. Its genesis is ${chain.state.genesis}.`,
 					...(started === mode ? [] : [`It is E2E ${started}, not ${mode}: kantel e2e mode ${mode} changes it.`]),
-					"Give each member that genesis yourself (not through Kantel) for: kantel e2e join " +
-						`${space} ${chain.state.genesis}`,
+					`Give each member that genesis yourself (not through Kantel) for: ${joinCommand(space, chain.state.genesis)}`,
 					"Then enrol your hosts: kantel e2e host-ticket <name>.",
 				].join("\n"),
 			);
@@ -1184,8 +1190,13 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 		flags: {
 			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
 		},
+		details:
+			'A genesis may start with "-". One that starts with "--" goes after --: kantel e2e join <space> -- <genesis>.',
 		async run(ctx) {
 			const [space, genesis] = [ctx.arg(0), ctx.arg(1)];
+			if (!GENESIS.test(genesis)) {
+				throw new UsageError(`"${genesis}" isn't a genesis: 43 characters of base64url, as kantel e2e init prints`);
+			}
 			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
 			await e2e.pinGenesis(ctx.io.configDir, space, genesis).catch((error: unknown) => {
 				throw e2eFailure(error);
@@ -1240,7 +1251,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			emitChain(
 				ctx,
 				chain,
-				`Added ${device.id}. They trust the chain with: kantel e2e join ${chain.state.space} ${chain.state.genesis}`,
+				`Added ${device.id}. They trust the chain with: ${joinCommand(chain.state.space, chain.state.genesis)}`,
 			);
 		},
 	},
@@ -3630,6 +3641,10 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 	if (missing.length > 0) throw new UsageError(`${command.name} needs ${missing.map(argUsage).join(" ")}`);
 	const variadic = args.at(-1)?.variadic === true;
 	if (!variadic && positionals.length > args.length) {
+		// A word after one dash is taken as an argument (a base64url genesis may start with "-"), so one argument too
+		// many is most likely a mistyped flag: name it.
+		const dashed = parsed.positionals.findLast((token) => /^-[^\d-]/.test(token));
+		if (dashed !== undefined) throw new UsageError(`unknown flag ${dashed}`);
 		const extra = positionals[args.length] ?? "";
 		throw new UsageError(takesRest ? `put the ${command.rest} after --` : `${command.name} takes no "${extra}"`);
 	}

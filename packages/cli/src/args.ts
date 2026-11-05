@@ -1,6 +1,8 @@
 /**
  * A small argument parser: `--flag value`, `--flag=value`, repeated flags collected in order, booleans (`--flag`,
  * `--flag=false`, `--no-flag`), one-letter aliases (`-h`), and `--`, after which everything is left as it is.
+ * A longer word after one dash isn't a flag, since aliases are one letter and aren't bundled: it is an argument, such
+ * as a negative number or a base64url value that happens to start with `-`.
  */
 import { UsageError } from "./errors.ts";
 
@@ -88,7 +90,7 @@ export function parseArgs(argv: readonly string[], specs: FlagSpecs): ParsedArgs
 			}
 			continue;
 		}
-		if (token.length > 1 && token.startsWith("-") && !/^-\d/.test(token)) {
+		if (token.length === 2 && token.startsWith("-") && !/^-\d/.test(token)) {
 			const name = shorts.get(token.slice(1));
 			const spec = name === undefined ? undefined : specs[name];
 			if (name === undefined || spec === undefined) throw new UsageError(`unknown flag ${token}`);

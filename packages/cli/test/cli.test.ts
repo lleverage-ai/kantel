@@ -206,6 +206,40 @@ describe("parsing", () => {
 		expect(() => parseArgs(["--nope"], specs)).toThrow(/unknown flag --nope/);
 		expect(() => parseArgs(["--name"], specs)).toThrow(/--name needs a value/);
 		expect(() => parseArgs(["--name", "--all"], specs)).toThrow(/--name needs a value/);
+		expect(() => parseArgs(["-x"], specs)).toThrow(/unknown flag -x/);
+	});
+
+	it("takes a word that starts with one dash as an argument, since aliases are one letter", () => {
+		// A base64url genesis starts with "-" one time in 64 (this one failed Main CI as "unknown flag -qWbW…").
+		const genesis = "-qWbW7snP-gnS05KGEXLZGvxASDaweXJ8s3WBAU8llQ";
+		const parsed = parseArgs(["org_1", genesis, "--all", "-h", "-5", "--name", "-n-"], specs);
+		expect(parsed.positionals).toEqual(["org_1", genesis, "-5"]);
+		expect(parsed.flags).toEqual({ all: true, help: true, name: "-n-" });
+		// One that starts with "--" goes after --.
+		expect(parseArgs(["org_1", "--", `-${genesis}`], specs).rest).toEqual([`-${genesis}`]);
+	});
+
+	it("joins an E2E chain from a genesis that starts with a dash, and says so for one that starts with two", async () => {
+		const routes = { "GET /v1/whoami": (): Caller => ({ ...CALLER, user: { id: "usr_bob", name: "Bob" } }) };
+		const genesis = "-qWbW7snP-gnS05KGEXLZGvxASDaweXJ8s3WBAU8llQ";
+		const joined = await kantel(["e2e", "join", "org_1", genesis, "--json"], { routes });
+		expect(joined.stderr).toBe("");
+		expect(joined.code).toBe(0);
+		expect(JSON.parse(joined.stdout)).toMatchObject({ space: "org_1", genesis });
+		// Two dashes would be a flag; after -- it is the genesis.
+		const dashes = `-${genesis.slice(0, -1)}`;
+		const after = await kantel(["e2e", "join", "org_2", "--json", "--", dashes], { routes });
+		expect(after.stderr).toBe("");
+		expect(JSON.parse(after.stdout)).toMatchObject({ space: "org_2", genesis: dashes });
+		const help = await kantel(["help", "e2e", "join"]);
+		expect(help.stdout).toContain("kantel e2e join <space> -- <genesis>");
+		// A mistyped flag isn't pinned as the genesis, nor taken as one argument too many.
+		const typo = await kantel(["e2e", "join", "org_3", "-json"], { routes });
+		expect(typo.code).toBe(2);
+		expect(typo.stderr).toContain(`"-json" isn't a genesis`);
+		const extra = await kantel(["e2e", "join", "org_3", genesis, "-json"], { routes });
+		expect(extra.code).toBe(2);
+		expect(extra.stderr).toContain("unknown flag -json");
 	});
 
 	it("quotes several words after -- for the shell, and keeps one as a command line", () => {
