@@ -2,7 +2,11 @@
 // host and a fake clock: a detached command runs past every old limit (the guest's 120 s, the call's hour) and its
 // result still lands, across the host's connection dropping; a kill reaches the host and stops the command; and a host
 // from before `exec-control` runs as it did, with the command saying so.
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createKantelClient } from "@kantel/api/sdk";
+import { run } from "@kantel/cli";
 import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend, OLD_HOST_DETACHED } from "../src/backend.ts";
@@ -412,6 +416,36 @@ describe("commands on kantel-host hosts", () => {
 		expect(callsOf(host, "sandbox.exec")).toHaveLength(1);
 	});
 
+	it("shows a running foreground command's output so far, before and after a newer connection takes over", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const running = root.runCommand(sandbox.id, { command: "apt-get install -y gcc", timeoutMs: 600_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const commandId = String(callsOf(host, "sandbox.exec")[0]?.params.commandId);
+		host.output(commandId, "Reading package lists...\n");
+		// Asked of the host while this gateway waits for its end: what attach shows of it.
+		expect(await root.getCommand(sandbox.id, commandId)).toMatchObject({
+			state: "running",
+			stdout: "Reading package lists...\n",
+		});
+		host.takeOver(RUNNING(sandbox.id));
+		await vi.advanceTimersByTimeAsync(5_000);
+		host.output(commandId, "Reading package lists...\nSetting up gcc\n", "debconf: delaying\n");
+		expect(await root.getCommand(sandbox.id, commandId)).toMatchObject({
+			state: "running",
+			stdout: "Reading package lists...\nSetting up gcc\n",
+			stderr: "debconf: delaying\n",
+		});
+		// Its end is still the waiting call's to record.
+		host.end(commandId, { exitCode: 0, stdout: "Reading package lists...\nSetting up gcc\nDone\n", stderr: "" });
+		await vi.advanceTimersByTimeAsync(31_000);
+		expect(await running).toMatchObject({ id: commandId, state: "exited", exitCode: 0 });
+		expect(await root.getCommand(sandbox.id, commandId)).toMatchObject({
+			state: "exited",
+			stdout: "Reading package lists...\nSetting up gcc\nDone\n",
+		});
+	});
+
 	it("gives up on a foreground command whose host doesn't come back by its limit, saying so", async () => {
 		const { root, host, sandbox } = await setup(true);
 		vi.useFakeTimers();
@@ -631,5 +665,104 @@ describe("commands on kantel-host hosts", () => {
 		}
 		expect(added).toHaveBeenCalledTimes(5);
 		expect(removed).toHaveBeenCalledTimes(5);
+	});
+});
+
+/**
+ * `kantel exec`, the CLI, against this gateway: what it prints as it goes, and its exit code. `drop` makes the CLI's own
+ * connection to the gateway reset for each call it says yes to. Its waits are cut short, so following is quick.
+ */
+async function cliExec(api: ComputeApi, argv: readonly string[], drop: (request: Request) => boolean = () => false) {
+	const configDir = await mkdtemp(join(tmpdir(), "kantel-exec-"));
+	closers.push(() => rm(configDir, { recursive: true, force: true }));
+	const out: string[] = [];
+	const err: string[] = [];
+	const sink = (into: string[]) => ({
+		isTTY: false,
+		write(chunk: string | Uint8Array) {
+			into.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			return true;
+		},
+	});
+	const code = run(["exec", ...argv], {
+		env: { KANTEL_URL: "https://kantel.test", KANTEL_API_KEY: "root" },
+		fetch: async (input, init) => {
+			const request = new Request(input, init);
+			if (drop(request)) throw new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+			return (await api.fetch(request)) ?? new Response(null, { status: 404 });
+		},
+		configDir,
+		home: configDir,
+		stdout: sink(out),
+		stderr: sink(err),
+		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))),
+	});
+	return { code, stdout: () => out.join(""), stderr: () => err.join("") };
+}
+
+describe("kantel exec on kantel-host hosts", () => {
+	const RUNNING = (id: string) => [{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }];
+
+	it("follows a plain exec through a newer connection taking over, its output coming as it is written (#703)", async () => {
+		const { api, host, sandbox } = await setup(true);
+		const exec = await cliExec(api, [sandbox.id, "--timeout", "600", "--", "apt-get install -y gcc"]);
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const [start] = callsOf(host, "sandbox.exec");
+		// Started by its ID with its limit, and answered at once: the CLI has the ID before any output.
+		expect(start?.params).toMatchObject({ detached: true, timeoutMs: 600_000 });
+		const id = String(start?.params.commandId);
+
+		host.output(id, "Reading package lists...\n");
+		await vi.waitFor(() => expect(exec.stdout()).toBe("Reading package lists...\n"));
+		host.takeOver(RUNNING(sandbox.id));
+		host.output(id, "Reading package lists...\nSetting up gcc\n", "debconf: delaying\n");
+		await vi.waitFor(() => expect(exec.stdout()).toBe("Reading package lists...\nSetting up gcc\n"), {
+			timeout: 10_000,
+		});
+		const out = "Reading package lists...\nSetting up gcc\nDone\n";
+		host.end(id, { exitCode: 0, stdout: out, stderr: "debconf: delaying\n" });
+		expect(await exec.code).toBe(0);
+		expect(exec.stdout()).toBe(out);
+		expect(exec.stderr()).toBe("debconf: delaying\n");
+		expect(callsOf(host, "sandbox.exec")).toHaveLength(1);
+	});
+
+	it("follows a plain exec on through its own connection resetting, and gives its ID once it gives up", async () => {
+		const { api, host, sandbox } = await setup(true);
+		let resetting = false;
+		const drop = (request: Request) => resetting && request.method === "GET";
+		const exec = await cliExec(api, [sandbox.id, "--timeout", "600", "--", "pnpm install"], drop);
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const id = String(callsOf(host, "sandbox.exec")[0]?.params.commandId);
+		host.output(id, "Progress: 10%\n");
+		await vi.waitFor(() => expect(exec.stdout()).toBe("Progress: 10%\n"));
+
+		// Reset for good: given up on after two minutes of retries (its waits cut short here), with the ID and how to
+		// attach, and the command left running.
+		resetting = true;
+		expect(await exec.code).toBe(1);
+		expect(exec.stderr()).toContain("read ECONNRESET; trying again");
+		expect(exec.stderr()).toContain(`${id} may still be running: kantel attach ${sandbox.id} ${id}`);
+		expect(host.commands.get(id)?.ended).toBeUndefined();
+
+		// Attach picks it up again from its output so far, and follows it to its end.
+		resetting = false;
+		host.output(id, "Progress: 10%\nProgress: 60%\n");
+		const attachDir = await mkdtemp(join(tmpdir(), "kantel-attach-"));
+		closers.push(() => rm(attachDir, { recursive: true, force: true }));
+		const out: string[] = [];
+		const attached = run(["attach", sandbox.id, id], {
+			env: { KANTEL_URL: "https://kantel.test", KANTEL_API_KEY: "root" },
+			fetch: async (input, init) => (await api.fetch(new Request(input, init))) ?? new Response(null, { status: 404 }),
+			configDir: attachDir,
+			home: attachDir,
+			stdout: { isTTY: false, write: (chunk: string | Uint8Array) => out.push(String(chunk)) > 0 },
+			stderr: { isTTY: false, write: () => true },
+			sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))),
+		});
+		await vi.waitFor(() => expect(out.join("")).toBe("Progress: 10%\nProgress: 60%\n"));
+		host.end(id, { exitCode: 0, stdout: "Progress: 10%\nProgress: 60%\nDone\n", stderr: "" });
+		expect(await attached).toBe(0);
+		expect(out.join("")).toBe("Progress: 10%\nProgress: 60%\nDone\n");
 	});
 });
