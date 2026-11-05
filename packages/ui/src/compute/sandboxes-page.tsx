@@ -995,10 +995,18 @@ function SandboxPhoneRow({
 					</span>
 				)}
 			</div>
+			{/* The chevron on the state's line, in a slot the CPU line keeps too, so state, figure and chevron share
+			    one right edge on every card. */}
 			<div className="flex flex-none flex-col items-end gap-1">
-				<StateLabel state={sandbox.state} />
-				<span className="text-sm empty:hidden">
+				<span className="flex items-center gap-1">
+					<StateLabel state={sandbox.state} />
+					{href === undefined ? null : (
+						<ChevronRightIcon size="sm" className="flex-none text-faint" aria-hidden="true" />
+					)}
+				</span>
+				<span className="flex items-center gap-1 text-sm not-has-[.kt-sparkline]:hidden">
 					<Cpu sandbox={sandbox} source={calls.source} percent compact />
+					{href === undefined ? null : <span className="w-4 flex-none" aria-hidden="true" />}
 				</span>
 			</div>
 		</div>
@@ -1024,7 +1032,6 @@ function SandboxPhoneRow({
 					onClick={follow(calls.navigate)}
 				>
 					{body}
-					<ChevronRightIcon size="sm" className="flex-none text-faint" />
 				</a>
 			)}
 			{can.recover && href !== undefined ? (
