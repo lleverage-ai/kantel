@@ -409,7 +409,8 @@ function General({
 			{account.role === "owner" ? null : (
 				<section className="flex min-w-0 flex-col gap-2 pt-4" aria-labelledby={`${headingId}-leave`}>
 					<SectionHeading id={`${headingId}-leave`} title="Leave" />
-					<div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+					{/* A card like the members list above it, so the page ends on a block rather than loose text. */}
+					<div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-panel border border-border bg-raised px-4 py-3">
 						<p className="m-0 min-w-0 text-sm text-muted">
 							You lose access to {account.name}'s sandboxes, snapshots and keys.
 						</p>
