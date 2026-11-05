@@ -14,23 +14,24 @@
  * reports `file-streams`; on one that doesn't, `not_supported` sends the compute service back to `readFile` and
  * `writeFile`.
  */
-import type {
-	BackendCapabilities,
-	BackendEgress,
-	BackendFileEntry,
-	BackendHost,
-	BackendMount,
-	BackendSize,
-	BootOptions,
-	BuiltTemplate,
-	ExecResult,
-	FileStream,
-	Placement,
-	SandboxBackend,
-	SandboxSpec,
-	SandboxTemplateBoot,
-	TakenSnapshot,
-	TemplateRuntime,
+import {
+	type BackendCapabilities,
+	type BackendEgress,
+	type BackendFileEntry,
+	type BackendHost,
+	type BackendMount,
+	type BackendSize,
+	type BootOptions,
+	type BuiltTemplate,
+	DetachedWaitEnded,
+	type ExecResult,
+	type FileStream,
+	type Placement,
+	type SandboxBackend,
+	type SandboxSpec,
+	type SandboxTemplateBoot,
+	type TakenSnapshot,
+	type TemplateRuntime,
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
@@ -44,6 +45,10 @@ import {
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
 	type HostEgress,
+	type HostExecParams,
+	type HostExecRef,
+	type HostExecResult,
+	type HostExecStatus,
 	type HostGuest,
 	HostMethods,
 	type HostMount,
@@ -57,6 +62,7 @@ import {
 	kantelErrorFromHost,
 	mountHandoff,
 	type SandboxPlacement,
+	unanswered,
 } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
@@ -78,6 +84,46 @@ const BROWSER_SURFACE_CHECK = `[ "$(cat ${BROWSER_DISPLAY_RECORD} 2>/dev/null)" 
 const PUBLIC_KEY =
 	/^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$/;
 const FINGERPRINT_MARK = "--kantel-host-key--";
+
+/** How long each `sandbox.exec.get` of a detached command asks the host to hold its answer for the command to end. */
+export const EXEC_WAIT_MS = 30_000;
+/** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
+const EXEC_RETRY_MIN_MS = 1_000;
+const EXEC_RETRY_MAX_MS = 30_000;
+
+/** Added to a detached command's stderr when a host from before detached commands stopped it at its own limit. */
+export const OLD_HOST_DETACHED =
+	"Kantel: this sandbox's host runs a kantel-host from before detached commands, which stops one at its own time limit (2 minutes on a microVM); upgrade its kantel-host to run them with no limit\n";
+/** Why a kill can't reach the process on a host from before kills. */
+export const OLD_HOST_KILL =
+	"this sandbox's host runs a kantel-host from before kills, which can't stop a command; upgrade its kantel-host";
+
+/** A host's `sandbox.exec` answer as the compute API takes it. */
+function execResult(result: HostExecResult): ExecResult {
+	return {
+		exitCode: result.exitCode,
+		stdout: result.stdout,
+		stderr: result.stderr,
+		timedOut: result.timedOut === true,
+	};
+}
+
+/** Waits `ms`, or until `signal` aborts. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve();
+			return;
+		}
+		const done = () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener("abort", done, { once: true });
+	});
+}
 
 /** Lets a key in for `user` (making a pair when none is given), and prints the private key and the host key's SHA256. */
 const SSH_ACCESS_SCRIPT = [
@@ -365,6 +411,61 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	/** What the host reports doing beyond protocol 1 (`HOST_FEATURES`). */
 	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
 
+	/** Whether the sandbox's host runs commands by Kantel's ID (`execControl`): detached ones, and kills. */
+	async function controlsCommands(sandboxId: string): Promise<boolean> {
+		const { hostId } = await tierOf(sandboxId);
+		return (await featuresOf(hostId)).includes(HOST_FEATURES.execControl);
+	}
+
+	/**
+	 * A detached command's end, from its host (`sandbox.exec.get`, each held up to `EXEC_WAIT_MS` for it to end): not one
+	 * call, so it survives the host's connection dropping and coming back, a gateway taking the host over, and however
+	 * long the command runs. A host out of reach is asked again, from 1 s doubling to 30 s apart; one that no longer
+	 * knows the command (it, or the sandbox, restarted) ends it with that said, or, after a start that went unanswered
+	 * (`unanswered`), with that start's error: it never started. `signal` ends the wait, not the command
+	 * (`DetachedWaitEnded`).
+	 */
+	async function commandEnd(
+		sandboxId: string,
+		commandId: string,
+		signal: AbortSignal | undefined,
+		unanswered?: unknown,
+	): Promise<ExecResult> {
+		let backoff = EXEC_RETRY_MIN_MS;
+		for (;;) {
+			if (signal?.aborted) throw new DetachedWaitEnded();
+			let status: HostExecStatus | undefined;
+			try {
+				status = await call<HostExecStatus>(
+					sandboxId,
+					HostMethods.execGet,
+					{ commandId, waitMs: EXEC_WAIT_MS } satisfies HostExecRef,
+					signal,
+					EXEC_WAIT_MS + 15_000,
+				);
+			} catch (error) {
+				if (signal?.aborted) throw new DetachedWaitEnded();
+				if (isKantelError(error) && error.code === "not_found") {
+					if (unanswered !== undefined) throw unanswered;
+					return {
+						exitCode: 1,
+						stdout: "",
+						stderr:
+							"The sandbox's host no longer knows this command (it or the sandbox restarted), so its result is lost\n",
+						timedOut: false,
+					};
+				}
+				await pause(backoff, signal);
+				backoff = Math.min(backoff * 2, EXEC_RETRY_MAX_MS);
+				continue;
+			}
+			backoff = EXEC_RETRY_MIN_MS;
+			if (status.state === "exited" && status.result !== undefined) return execResult(status.result);
+			// Still running: the host held the answer for its wait, so ask again after a moment.
+			await pause(EXEC_RETRY_MIN_MS, signal);
+		}
+	}
+
 	/**
 	 * Refuses a file stream with `not_supported` unless the sandbox's host can stream files, so the compute service falls
 	 * back to `readFile` and `writeFile`.
@@ -647,26 +748,55 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 		},
 		async exec(sandboxId, request): Promise<ExecResult> {
-			const result = await call<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>(
+			const controls = request.commandId !== undefined && (await controlsCommands(sandboxId));
+			const params: HostExecParams = {
+				command: request.command,
+				...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+				...(request.env === undefined ? {} : { env: request.env }),
+				...(request.stdin === undefined ? {} : { stdin: toBase64(new TextEncoder().encode(request.stdin)) }),
+				...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+				// Only to a host that takes them: an older one would run a "detached" command as a foreground one anyway.
+				...(controls ? { commandId: request.commandId } : {}),
+			};
+			if (controls && request.detached === true && request.commandId !== undefined) {
+				try {
+					await call<HostExecStatus>(sandboxId, HostMethods.exec, { ...params, detached: true }, request.signal);
+				} catch (error) {
+					if (request.signal?.aborted) throw new DetachedWaitEnded();
+					// Sent and never answered (`unanswered`: the connection dropped, or the call timed out), or a peer replica's
+					// response cut off as a plain error: the host may have started it all the same, so it is followed by its
+					// ID, and only a host that never heard of it makes this the command's end. The host's own refusals, and a
+					// call never sent (its host not connected), are answers.
+					if (isKantelError(error) && !unanswered(error)) throw error;
+					return commandEnd(sandboxId, request.commandId, request.signal, error);
+				}
+				return commandEnd(sandboxId, request.commandId, request.signal);
+			}
+			const result = await call<HostExecResult>(
 				sandboxId,
-				"sandbox.exec",
-				{
-					command: request.command,
-					...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-					...(request.env === undefined ? {} : { env: request.env }),
-					...(request.stdin === undefined ? {} : { stdin: toBase64(new TextEncoder().encode(request.stdin)) }),
-					...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
-				},
+				HostMethods.exec,
+				params,
 				request.signal,
 				// The command's own limit, and some for the answer to come back; with none, an hour.
 				request.timeoutMs === undefined ? 3_600_000 : request.timeoutMs + 10_000,
 			);
-			return {
-				exitCode: result.exitCode,
-				stdout: result.stdout,
-				stderr: result.stderr,
-				timedOut: result.timedOut === true,
-			};
+			const ended = execResult(result);
+			// A host from before detached commands ran this one as a foreground one, which its guest stops at its default.
+			if (request.detached === true && !controls && ended.timedOut) {
+				return { ...ended, stderr: `${ended.stderr}${OLD_HOST_DETACHED}` };
+			}
+			return ended;
+		},
+		async killCommand(sandboxId, commandId) {
+			if (!(await controlsCommands(sandboxId))) throw new KantelError("not_supported", OLD_HOST_KILL);
+			await call<{ killed: boolean }>(sandboxId, HostMethods.execKill, { commandId } satisfies HostExecRef);
+		},
+		async commandResult(sandboxId, commandId) {
+			if (!(await controlsCommands(sandboxId))) {
+				throw new KantelError("not_supported", "This sandbox's host keeps no command results");
+			}
+			const status = await call<HostExecStatus>(sandboxId, HostMethods.execGet, { commandId } satisfies HostExecRef);
+			return status.state === "exited" && status.result !== undefined ? execResult(status.result) : undefined;
 		},
 		async readFile(sandboxId, path, range) {
 			const answer = await call<{ data: string; fileSize?: number }>(

@@ -204,6 +204,20 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return ((await options.holds(id)) ? primary : fallback).destroy(id);
 		},
 		exec: async (id, request) => (await on(id)).exec(id, request),
+		async killCommand(id, commandId) {
+			const backend = await on(id);
+			if (backend.killCommand === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't stop a command");
+			}
+			await backend.killCommand(id, commandId);
+		},
+		async commandResult(id, commandId) {
+			const backend = await on(id);
+			if (backend.commandResult === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend keeps no command results");
+			}
+			return backend.commandResult(id, commandId);
+		},
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
 		writeFile: async (id, path, content, mode) => (await on(id)).writeFile(id, path, content, mode),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),

@@ -218,7 +218,9 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	}
 	space := ""
 	switch {
-	case slices.Contains(contentMethods, method), method == proto.MethodFileOpen, method == proto.MethodFileExtract:
+	case slices.Contains(contentMethods, method), method == proto.MethodFileOpen, method == proto.MethodFileExtract,
+		method == proto.MethodExecGet, method == proto.MethodExecKill:
+		// A command's output (sandbox.exec.get) is what its exec would have answered, and a kill reaches what it runs.
 		// A file stream (or an archive's extraction) reads or writes what the file calls do, so it is refused exactly when
 		// they are.
 		space = h.ownerOf(p.SandboxID)
@@ -577,7 +579,7 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 	}
 	slices.Sort(uses)
 	uses = slices.DeleteFunc(slices.Compact(uses), func(k string) bool { return slices.Contains(claims, k) })
-	cancellable := slices.Contains(contentMethods, method) || method == proto.MethodPortOpen ||
+	cancellable := slices.Contains(contentMethods, method) || method == proto.MethodExecGet || method == proto.MethodPortOpen ||
 		method == proto.MethodFileOpen || method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree
 	ctx, leave, ok := h.gate.use(ctx, uses, cancellable)
 	if !ok {

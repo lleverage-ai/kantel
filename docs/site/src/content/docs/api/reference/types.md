@@ -347,7 +347,7 @@ The key the call was signed in with, when it was a key.
 | `cwd` | string | no |  |
 | `state` | [CommandState](/api/reference/types/#commandstate) | yes |  |
 | `exitCode` | integer | no |  |
-| `stdout` | string | yes | Its output so far, up to 1 MiB; `truncated` says if there was more. |
+| `stdout` | string | yes | Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. |
 | `stderr` | string | yes |  |
 | `truncated` | boolean | yes |  |
 | `startedAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -1213,8 +1213,8 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `cwd` | string | no | Default: the sandbox user's home. |
 | `env` | Record&lt;string, string&gt; | no |  |
 | `stdin` | string | no |  |
-| `timeoutMs` | integer | no | Default 30 000; at most 600 000 (10 minutes). (minimum 1, maximum 600000) |
-| `detached` | boolean | no | Start it and answer at once, with no time limit; read it back by its ID. |
+| `timeoutMs` | integer | no | Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one. (minimum 1, maximum 600000) |
+| `detached` | boolean | no | Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID. |
 
 ### Sandbox
 

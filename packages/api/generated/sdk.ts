@@ -363,7 +363,7 @@ export interface Command {
 	readonly cwd?: string;
 	readonly state: CommandState;
 	readonly exitCode?: number;
-	/** Its output so far, up to 1 MiB; `truncated` says if there was more. */
+	/** Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. */
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly truncated: boolean;
@@ -1387,9 +1387,9 @@ export interface RunCommandBody {
 		readonly [key: string]: string;
 	};
 	readonly stdin?: string;
-	/** Default 30 000; at most 600 000 (10 minutes). */
+	/** Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one. */
 	readonly timeoutMs?: number;
-	/** Start it and answer at once, with no time limit; read it back by its ID. */
+	/** Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID. */
 	readonly detached?: boolean;
 }
 
@@ -2690,13 +2690,13 @@ export interface KantelClient {
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox's usage. CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
 	getSandboxUsage(sandboxId: string, query?: UsageQuery, options?: CallOptions): Promise<SandboxUsage>;
-	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
+	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless `timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
 	runCommand(sandboxId: string, body: RunCommandBody, options?: CallOptions): Promise<Command>;
 	/** List a sandbox's commands. Its commands, newest first, also while it is stopped. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands` */
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
-	/** Get a command. Its state and its output so far. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Get a command. Its state, and once it has ended its exit code and output. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
-	/** Kill a command. Ends a running command; one that has ended is answered as it is. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Kill a command. Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
 	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a binary file, or of a text file cut mid-character. A key needs `files`. `GET /sandboxes/{sandboxId}/files` */
 	readFile(sandboxId: string, query: ReadFileQuery, options?: CallOptions): Promise<FileContent>;

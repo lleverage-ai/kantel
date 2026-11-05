@@ -391,6 +391,12 @@ func IsRefused(err error) bool {
 	return errors.As(err, &api) && api.Status == 400
 }
 
+// IsConflict reports a 409 from the agent (a command ID already known).
+func IsConflict(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && api.Status == 409
+}
+
 // IsUnknownRoute reports the agent not serving what it was asked for at all: one from before it.
 func IsUnknownRoute(err error) bool {
 	var api *apiError
@@ -469,3 +475,34 @@ type readerConn struct {
 }
 
 func (c *readerConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+// StartCommand runs req (with its ID) in the background (POST /exec/start) and answers its pid. A guest from before
+// detached commands by ID answers IsUnknownRoute.
+func (c *Client) StartCommand(ctx context.Context, req ExecRequest) (ExecResult, error) {
+	req.Stream, req.Detached = false, false
+	var out ExecResult
+	_, err := c.do(ctx, http.MethodPost, "/exec/start", jsonBody(req), &out)
+	return out, err
+}
+
+// CommandStatus is a command's state by its ID (GET /exec/{id}), waiting up to wait for a running one to end. A
+// command the guest doesn't know is IsNotFound.
+func (c *Client) CommandStatus(ctx context.Context, id string, wait time.Duration) (ExecStatus, error) {
+	var out ExecStatus
+	path := "/exec/" + url.PathEscape(id)
+	if wait > 0 {
+		path += "?waitMs=" + strconv.FormatInt(wait.Milliseconds(), 10)
+	}
+	_, err := c.do(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+
+// KillCommand kills a command by its ID and its process group (POST /exec/{id}/kill), saying whether it was running.
+// A command the guest doesn't know is IsNotFound; a guest from before kills answers IsUnknownRoute.
+func (c *Client) KillCommand(ctx context.Context, id string) (bool, error) {
+	var out struct {
+		Killed bool `json:"killed"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/exec/"+url.PathEscape(id)+"/kill", nil, &out)
+	return out.Killed, err
+}
