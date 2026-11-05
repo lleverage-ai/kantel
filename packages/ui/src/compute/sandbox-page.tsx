@@ -124,6 +124,9 @@ export interface SandboxPageProps {
 	readonly filesHref?: (at: FilesAt, sealed: boolean) => string;
 }
 
+/** A section's body as a card, as the page's other sections (ports, mounts, SSH) have theirs. */
+const sectionCard = "rounded-panel border border-border bg-raised p-4";
+
 /** The state, by the list's rule: words in its colour only for an error or a change under way, quiet otherwise. */
 const StateLabel = ({ state }: { state: Sandbox["state"] }) => (
 	<StatusLabel status={SANDBOX_STATE_STATUS[state]} quiet={quietState(state)}>
@@ -488,8 +491,11 @@ export function SandboxPage({
 			{crumbs(<span>{sandbox.name}</span>)}
 			<header className="kt-sandbox-header flex min-w-0 flex-col gap-3">
 				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-3">
-					<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
-					<StateLabel state={sandbox.state} />
+					{/* The state on the name's baseline, so it reads as part of the title rather than beside it. */}
+					<div className="flex min-w-0 items-baseline gap-3">
+						<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
+						<StateLabel state={sandbox.state} />
+					</div>
 					<div className={`flex items-center gap-2 ${narrow ? "w-full" : "ml-auto"}`}>{actions}</div>
 				</div>
 				<div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted">
@@ -711,43 +717,45 @@ function Overview({
 
 	const created = compactAge(sandbox.createdAt, now);
 	const detailsList = (
-		<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
-			<dt className={dt}>ID</dt>
-			<dd className={`${dd} flex items-center gap-1`}>
-				<span className="truncate font-mono text-code">{sandbox.id}</span>
-				<CopyButton text={sandbox.id} iconOnly size="xs" variant="ghost" label="Copy ID" />
-			</dd>
-			<dt className={dt}>Type</dt>
-			<dd className={dd}>{SANDBOX_KIND_LABELS[sandbox.kind]}</dd>
-			<dt className={dt}>Size</dt>
-			<dd className={dd}>
-				{sizeText(spec)}
-				{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
-			</dd>
-			{sandbox.snapshot === undefined ? null : (
-				<>
-					<dt className={dt}>Snapshot</dt>
-					<dd className={dd}>{agoText(sandbox.snapshot.takenAt, now)}</dd>
-				</>
-			)}
-			<dt className={dt}>Created</dt>
-			<dd className={dd}>
-				{created === "now" ? "Just now" : `${created} ago`}
-				{sandbox.createdBy === "" ? "" : ` by ${sandbox.createdBy}`}
-			</dd>
-			{hosting === "hosted" && sandbox.costCents !== undefined ? (
-				<>
-					<dt className={dt}>Cost</dt>
-					<dd className={dd}>{costText(sandbox.costCents)} this period</dd>
-				</>
-			) : null}
-			{sandbox.hostId === undefined ? null : (
-				<>
-					<dt className={dt}>Host</dt>
-					<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
-				</>
-			)}
-		</dl>
+		<div className={sectionCard}>
+			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
+				<dt className={dt}>ID</dt>
+				<dd className={`${dd} flex items-center gap-1`}>
+					<span className="truncate font-mono text-code">{sandbox.id}</span>
+					<CopyButton text={sandbox.id} iconOnly size="xs" variant="ghost" label="Copy ID" />
+				</dd>
+				<dt className={dt}>Type</dt>
+				<dd className={dd}>{SANDBOX_KIND_LABELS[sandbox.kind]}</dd>
+				<dt className={dt}>Size</dt>
+				<dd className={dd}>
+					{sizeText(spec)}
+					{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
+				</dd>
+				{sandbox.snapshot === undefined ? null : (
+					<>
+						<dt className={dt}>Snapshot</dt>
+						<dd className={dd}>{agoText(sandbox.snapshot.takenAt, now)}</dd>
+					</>
+				)}
+				<dt className={dt}>Created</dt>
+				<dd className={dd}>
+					{created === "now" ? "Just now" : `${created} ago`}
+					{sandbox.createdBy === "" ? "" : ` by ${sandbox.createdBy}`}
+				</dd>
+				{hosting === "hosted" && sandbox.costCents !== undefined ? (
+					<>
+						<dt className={dt}>Cost</dt>
+						<dd className={dd}>{costText(sandbox.costCents)} this period</dd>
+					</>
+				) : null}
+				{sandbox.hostId === undefined ? null : (
+					<>
+						<dt className={dt}>Host</dt>
+						<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
+					</>
+				)}
+			</dl>
+		</div>
 	);
 	// A phone folds it to one line: what it is and its size.
 	const details = narrow ? (
@@ -898,7 +906,7 @@ export function ImageSection({ image, folded = false }: { image: SandboxImage; f
 		? { available: true, detail: "/dev/kvm" }
 		: { available: false, reason: "Not on this host" };
 	const body = (
-		<>
+		<div className={`${sectionCard} flex flex-col gap-3`}>
 			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
 				<dt className={dt}>OS</dt>
 				<dd className={`${dd} truncate`} title={image.os}>
@@ -920,7 +928,7 @@ export function ImageSection({ image, folded = false }: { image: SandboxImage; f
 				<FeatureRow label="Docker" feature={image.docker} />
 				<FeatureRow label="Nested virtualisation" feature={kvm} />
 			</ul>
-		</>
+		</div>
 	);
 	// A phone folds it to one line: the OS and architecture.
 	return folded ? (
@@ -986,7 +994,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 				title="Usage"
 				actions={<span className="text-sm text-muted">{live.status === "off" ? "Recent" : "Last 10 minutes"}</span>}
 			/>
-			<div className="flex flex-col gap-4 text-sm">
+			<div className={`${sectionCard} flex flex-col gap-4 text-sm`}>
 				<UsageGraph
 					title="CPU"
 					{...(latestCpu === undefined ? {} : { value: `${Math.round(latestCpu * 100)}%` })}

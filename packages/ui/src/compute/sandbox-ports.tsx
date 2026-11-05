@@ -168,7 +168,9 @@ export function SandboxPorts({
 										data-port={port.port}
 										className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border py-2.5"
 									>
-										<td className="col-start-1 row-start-1 p-0 font-mono text-code tabular-nums">{port.port}</td>
+										<td className="col-start-1 row-start-1 p-0 font-mono text-code font-medium tabular-nums">
+											{port.port}
+										</td>
 										<td className="col-span-3 row-start-2 p-0 font-mono text-code wrap-break-word">
 											{link === undefined ? (
 												<span

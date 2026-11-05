@@ -48,7 +48,10 @@ export function SandboxMounts({ mounts }: { mounts: readonly SandboxMount[] }) {
 						data-mount={mount.path}
 					>
 						<div className="flex min-w-0 items-baseline justify-between gap-3">
-							<span className="kt-selectable min-w-0 truncate font-mono text-code text-fg" title={mount.path}>
+							<span
+								className="kt-selectable min-w-0 truncate font-mono text-code font-medium text-fg"
+								title={mount.path}
+							>
 								{mount.path}
 							</span>
 							<StatusLabel status={MOUNT_STATUS_STATUS[mount.status]} quiet={mount.status === "ready"}>
