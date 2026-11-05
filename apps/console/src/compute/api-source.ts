@@ -583,8 +583,8 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 			: {
 					snapshot: {
 						id: sandbox.latestSnapshotId,
-						// The API names the snapshot but not when it was taken; a stop takes one, so the stop is nearest.
-						takenAt: sandbox.stoppedAt ?? sandbox.startedAt ?? sandbox.createdAt,
+						// When the snapshot itself was taken, not a guess from its starts and stops (a running sandbox's can be new).
+						...(sandbox.latestSnapshotAt === undefined ? {} : { takenAt: sandbox.latestSnapshotAt }),
 					},
 				}),
 		// Hosted only: the API's cost is in its currency's units, the UI's in cents.

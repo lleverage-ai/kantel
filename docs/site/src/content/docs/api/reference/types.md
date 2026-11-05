@@ -1238,6 +1238,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `autoStopMinutes` | integer or null | yes | How long after a start or resume it stops by itself; `null` never. |
 | `stopsAt` | integer | no | When it will stop by itself, while running; the console's stops-in. |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
+| `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
 | `environmentId` | string | no | The environment it was made from. |
 | `template` | [SandboxTemplate](/api/reference/types/#sandboxtemplate) | no |  |

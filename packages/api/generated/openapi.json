@@ -14125,6 +14125,10 @@
 						"type": "string",
 						"description": "The snapshot a resume or fork would use."
 					},
+					"latestSnapshotAt": {
+						"type": "integer",
+						"description": "When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone."
+					},
 					"source": {
 						"$ref": "#/components/schemas/SandboxSource"
 					},

@@ -42,9 +42,16 @@ export const TYPE_FILTERS: readonly { value: TypeFilter; label: string }[] = [
 export const stateBucket = (state: SandboxState): Exclude<StateFilter, "all"> =>
 	state === "error" ? "error" : state === "stopped" || state === "paused" ? "stopped" : "running";
 
-/** Which snapshot filter a sandbox counts under. */
-export function snapshotBucket(box: Pick<Sandbox, "snapshot">, now: number): Exclude<SnapshotFilter, "all"> {
+/**
+ * Which snapshot filter a sandbox counts under: `unknown`, which no filter but Any picks, for a snapshot whose time the
+ * source doesn't say.
+ */
+export function snapshotBucket(
+	box: Pick<Sandbox, "snapshot">,
+	now: number,
+): Exclude<SnapshotFilter, "all"> | "unknown" {
 	if (box.snapshot === undefined) return "none";
+	if (box.snapshot.takenAt === undefined) return "unknown";
 	return now - box.snapshot.takenAt <= DAY ? "day" : "older";
 }
 

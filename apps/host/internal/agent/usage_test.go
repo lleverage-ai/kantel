@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"testing"
@@ -309,6 +310,58 @@ func TestUsageSampleMicroVMDiskAndIOPressure(t *testing.T) {
 	raw, _ := json.Marshal(proto.SandboxUsage{ID: "sbx_a", Kind: "microvm"})
 	if string(raw) != `{"id":"sbx_a","kind":"microvm","cpu":0,"memUsedBytes":0,"memLimitBytes":0}` {
 		t.Fatalf("wire %s", raw)
+	}
+}
+
+// Guests that don't answer cost a pass one guestStatsTimeout in all, not one each, and the others' figures still come.
+func TestUsageSampleGuestStatsAskedAtOnce(t *testing.T) {
+	const vms = 20
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 1_000, Idle: 500},
+		procs: map[int]usage.ProcCPU{},
+		rss:   map[int]int64{},
+	}
+	for i := range vms {
+		pid := 100 + i
+		f.procs[pid] = usage.ProcCPU{Ticks: 10, Start: 7}
+		stuck := i%2 == 0
+		f.vms = append(f.vms, usage.Process{SandboxID: fmt.Sprintf("sbx_%d", i), Pid: pid, CPUs: 1, MemLimitBytes: 1 << 30,
+			ReadStats: func(ctx context.Context) (usage.GuestStats, error) {
+				if stuck {
+					<-ctx.Done()
+					return usage.GuestStats{}, ctx.Err()
+				}
+				return usage.GuestStats{DiskUsedBytes: 1 << 30, DiskTotalBytes: 4 << 30}, nil
+			}})
+	}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	s.sample(t0)
+	f.host.Total += 1_000
+	f.host.Idle += 500
+	for pid, p := range f.procs {
+		f.procs[pid] = usage.ProcCPU{Ticks: p.Ticks + 100, Start: 7}
+	}
+	started := time.Now()
+	sample, ok := s.sample(t0.Add(5 * time.Second))
+	if took := time.Since(started); took > 3*guestStatsTimeout {
+		t.Fatalf("a pass with %d stuck guests took %v", vms/2, took)
+	}
+	if !ok || len(sample.Sandboxes) != vms {
+		t.Fatalf("want %d sandboxes, got %+v", vms, sample.Sandboxes)
+	}
+	for i := range vms {
+		got := byID(sample)[fmt.Sprintf("sbx_%d", i)]
+		if got.CPU == 0 {
+			t.Fatalf("sbx_%d lost its CPU", i)
+		}
+		var want int64 // a stuck guest's: none
+		if i%2 == 1 {
+			want = 4 << 30
+		}
+		if got.DiskTotalBytes != want {
+			t.Fatalf("sbx_%d disk %d, want %d", i, got.DiskTotalBytes, want)
+		}
 	}
 }
 

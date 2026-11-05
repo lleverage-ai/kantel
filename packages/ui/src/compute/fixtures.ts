@@ -644,7 +644,7 @@ function historyFor(box: Sandbox): readonly SandboxSnapshot[] {
 	const out: SandboxSnapshot[] = [];
 	const count = box.state === "running" ? 6 : 3;
 	for (let at = 0; at < count; at += 1) {
-		const takenAt = box.snapshot.takenAt - at * (box.state === "running" ? 10 * MINUTE : 7 * HOUR);
+		const takenAt = (box.snapshot.takenAt ?? box.createdAt) - at * (box.state === "running" ? 10 * MINUTE : 7 * HOUR);
 		out.push({
 			id: at === 0 ? box.snapshot.id : `${box.snapshot.id}_${at}`,
 			sandboxId: box.id,
@@ -1690,7 +1690,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
 			const copy = moved(box, ["createdAt", "stopsAt"]);
 			const snapshot =
-				box.snapshot === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
+				box.snapshot?.takenAt === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
 			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot })))];
 		}),
 	);

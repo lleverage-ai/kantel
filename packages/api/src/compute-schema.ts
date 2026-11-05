@@ -796,6 +796,12 @@ export const Sandbox = Type.Object(
 			Type.Integer({ description: "When it will stop by itself, while running; the console's stops-in." }),
 		),
 		latestSnapshotId: Type.Optional(Type.String({ description: "The snapshot a resume or fork would use." })),
+		latestSnapshotAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone.",
+			}),
+		),
 		source: Type.Optional(
 			Type.Object(
 				{

@@ -173,6 +173,8 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 	for _, sh := range s.shared() {
 		out = append(out, s.isolates(mem, sh)...)
 	}
+	// The guests' disk and IO, asked of their agents all at once after the loop, under one deadline for the pass.
+	var asks []statsAsk
 	for _, p := range procs {
 		if p.Held {
 			// Mid-operation, so unread (its owner too): keep following it.
@@ -196,10 +198,23 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 			ID: p.SandboxID, Kind: microvm.Tier, CPU: usage.Utilisation(grew, over, p.CPUs),
 			MemUsedBytes: used, MemLimitBytes: p.MemLimitBytes, MemSource: source,
 		}
-		s.guestStats(p, cpu.Epoch(p.Pid), &reading)
+		if p.ReadStats != nil {
+			asks = append(asks, statsAsk{p: p, epoch: cpu.Epoch(p.Pid), index: len(out)})
+		}
 		out = append(out, reading)
 	}
+	s.guestStats(asks, out)
 	return out
+}
+
+// statsAsk is one microVM's guest to ask for its disk and IO: its reading's place in the tick, and the answer.
+type statsAsk struct {
+	p     usage.Process
+	epoch string
+	index int
+	st    usage.GuestStats
+	err   error
+	at    time.Time
 }
 
 // microVMMemory is a microVM's used memory and where it came from: the guest's own MemTotal - MemAvailable (its
@@ -219,19 +234,38 @@ func (s *usageSampler) microVMMemory(p usage.Process) (int64, string) {
 	return rss, proto.MemSourceRSS
 }
 
-// guestStats adds a microVM's disk and IO pressure, as its guest's agent has them, to its reading. IO pressure is a
-// difference, so it comes from the second answer of the same VM (epoch, its Firecracker's) on. A guest that doesn't
-// answer in time, or whose agent predates /stats, has neither: its counter is kept, so the next answer still has one
-// to differ from.
-func (s *usageSampler) guestStats(p usage.Process, epoch string, reading *proto.SandboxUsage) {
-	key := "io/" + p.SandboxID
-	if p.ReadStats == nil {
+// guestStats adds each asked microVM's disk and IO pressure, as its guest's agent has them, to its reading in out.
+// The guests are asked at once, all under one guestStatsTimeout, so a pass waits that long at most however many don't
+// answer; the answers are then taken one by one (the counters aren't safe to share). IO pressure is a difference, so
+// it comes from the second answer of the same VM (epoch, its Firecracker's) on, over the time between the answers. A
+// guest that doesn't answer in time, or whose agent predates /stats, has neither: its counter is kept, so the next
+// answer still has one to differ from.
+func (s *usageSampler) guestStats(asks []statsAsk, out []proto.SandboxUsage) {
+	if len(asks) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), guestStatsTimeout)
-	st, err := p.ReadStats(ctx)
-	cancel()
-	if err != nil {
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := range asks {
+		wg.Add(1)
+		go func(a *statsAsk) {
+			defer wg.Done()
+			a.st, a.err = a.p.ReadStats(ctx)
+			a.at = s.now()
+		}(&asks[i])
+	}
+	wg.Wait()
+	for i := range asks {
+		s.applyStats(&asks[i], &out[asks[i].index])
+	}
+}
+
+// applyStats puts one guest's answer in its reading.
+func (s *usageSampler) applyStats(a *statsAsk, reading *proto.SandboxUsage) {
+	key := "io/" + a.p.SandboxID
+	st := a.st
+	if a.err != nil {
 		s.counters.Keep(key)
 		return
 	}
@@ -241,7 +275,7 @@ func (s *usageSampler) guestStats(p usage.Process, epoch string, reading *proto.
 	if st.IOSomeMicros == nil {
 		return
 	}
-	grew, over, ok := s.counters.Delta(key, epoch, float64(*st.IOSomeMicros)/1e6, s.now())
+	grew, over, ok := s.counters.Delta(key, a.epoch, float64(*st.IOSomeMicros)/1e6, a.at)
 	if ok && over > 0 {
 		// Seconds of stall over seconds of wall time: a share, which a task stalled throughout makes 1.
 		pressure := min(1, max(0, grew/over.Seconds()))

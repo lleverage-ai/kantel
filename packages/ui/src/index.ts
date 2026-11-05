@@ -190,6 +190,7 @@ export {
 export { Switch, type SwitchProps } from "./primitives/switch.tsx";
 export { TabBar, type TabBarItem, type TabBarProps } from "./primitives/tab-bar.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
+export { HelpHint, Tooltip, type TooltipProps } from "./primitives/tooltip.tsx";
 export { DEFAULT_THEME_PREFERENCE, THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
 export {
 	createThemeController,

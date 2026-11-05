@@ -169,6 +169,10 @@ export function Tooltip({
 	const child = isValidElement(children)
 		? cloneElement(children, open && !disabled ? { "aria-describedby": id } : {})
 		: children;
+	// Inside a modal dialog it goes in the dialog: the dialog is in the browser's top layer, over anything in the body.
+	// The dialog has no transform, so the fixed layer still places it against the window.
+	const layer =
+		typeof document === "undefined" ? undefined : (anchor.current?.closest("dialog[open]") ?? document.body);
 	return (
 		<>
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: it only listens for the pointer and focus of what it wraps, which is what a keyboard reaches. */}
@@ -189,7 +193,7 @@ export function Tooltip({
 			>
 				{child}
 			</span>
-			{open && !disabled && typeof document !== "undefined"
+			{open && !disabled && layer !== undefined
 				? createPortal(
 						<div className={layerClass}>
 							<div
@@ -202,7 +206,7 @@ export function Tooltip({
 								{content}
 							</div>
 						</div>,
-						document.body,
+						layer,
 					)
 				: null}
 		</>

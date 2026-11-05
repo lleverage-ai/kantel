@@ -153,6 +153,9 @@ describe("sandboxes", () => {
 		const [stopped] = await source.sandboxes.list(accountId);
 		expect(stopped?.state).toBe("stopped");
 		expect(stopped?.snapshot?.id).toMatch(/^snap_/);
+		// When it was taken is the snapshot's own time.
+		const snapshot = await api.store.snapshots.get(stopped?.snapshot?.id ?? "");
+		expect(stopped?.snapshot?.takenAt).toBe(snapshot?.createdAt);
 
 		expect((await source.sandboxes.resume(made.id)).state).toBe("starting");
 		await api.service.idle();

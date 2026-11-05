@@ -771,7 +771,9 @@ function Overview({
 				{sandbox.snapshot === undefined ? null : (
 					<>
 						<dt className={dt}>Snapshot</dt>
-						<dd className={dd}>{agoText(sandbox.snapshot.takenAt, now)}</dd>
+						<dd className={dd}>
+							{sandbox.snapshot.takenAt === undefined ? "Saved" : agoText(sandbox.snapshot.takenAt, now)}
+						</dd>
 					</>
 				)}
 				<dt className={dt}>Created</dt>
@@ -1121,7 +1123,11 @@ function FilesTab({
 	}
 	return (
 		<div className="flex min-w-0 flex-col gap-3">
-			<p className="m-0 text-sm text-muted">From its snapshot {agoText(sandbox.snapshot.takenAt, now)}.</p>
+			<p className="m-0 text-sm text-muted">
+				{sandbox.snapshot.takenAt === undefined
+					? "From its snapshot."
+					: `From its snapshot ${agoText(sandbox.snapshot.takenAt, now)}.`}
+			</p>
 			<SnapshotFiles source={snapshots} snapshotId={sandbox.snapshot.id} {...browse} />
 		</div>
 	);

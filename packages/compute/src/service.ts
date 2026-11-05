@@ -603,6 +603,7 @@ export function spanMean(
 	const disk = { weight: 0, sum: 0 };
 	const io = { weight: 0, sum: 0 };
 	for (const sample of samples) {
+		const readings = sample.readings ?? 1;
 		const covered =
 			sample.readings !== undefined
 				? Math.min(to, sample.at + (sample.spanMs ?? ROLLUP_MS)) - Math.max(from, sample.at)
@@ -613,13 +614,16 @@ export function spanMean(
 		weight += covered;
 		cpu += covered * sample.cpu;
 		memoryMb += covered * sample.memoryMb;
+		// Disk and IO count for the share of its readings that had them.
 		if (sample.diskMb !== undefined) {
-			disk.weight += covered;
-			disk.sum += covered * sample.diskMb;
+			const share = covered * (diskReadings(sample) / readings);
+			disk.weight += share;
+			disk.sum += share * sample.diskMb;
 		}
 		if (sample.io !== undefined) {
-			io.weight += covered;
-			io.sum += covered * sample.io;
+			const share = covered * (ioReadings(sample) / readings);
+			io.weight += share;
+			io.sum += share * sample.io;
 		}
 	}
 	if (weight === 0) return { cpu: 0, memoryMb: 0, measured: false };
@@ -654,22 +658,35 @@ export function keptSamples(samples: readonly StoredSample[]): StoredSample[] {
 	return [...hourly.slice(-HOURLY_SAMPLES), ...fine.slice(-MAX_SAMPLES)];
 }
 
-/** An hourly mean with one more 5-minute mean (or reading) in it, to `end`. */
+/** Of a sample's readings, those with a disk figure: all of them unless it says (`diskReadings`), none without one. */
+const diskReadings = (sample: StoredSample): number =>
+	sample.diskMb === undefined ? 0 : (sample.diskReadings ?? sample.readings ?? 1);
+/** Of a sample's readings, those with IO pressure, likewise. */
+const ioReadings = (sample: StoredSample): number =>
+	sample.io === undefined ? 0 : (sample.ioReadings ?? sample.readings ?? 1);
+
+/**
+ * An hourly mean with one more 5-minute mean (or reading) in it, to `end`. CPU and memory are weighted by all their
+ * readings; disk and IO only by those that had them, so a gap between two figures doesn't dilute either.
+ */
 function foldSample(into: StoredSample, sample: StoredSample, end: number): StoredSample {
 	const a = into.readings ?? 1;
 	const b = sample.readings ?? 1;
-	const both = (x: number | undefined, y: number | undefined) =>
-		x === undefined ? y : y === undefined ? x : (x * a + y * b) / (a + b);
-	const diskMb = both(into.diskMb, sample.diskMb);
-	const io = both(into.io, sample.io);
+	const readings = a + b;
+	const fold = (x: number | undefined, wx: number, y: number | undefined, wy: number) =>
+		x === undefined || wx === 0 ? y : y === undefined || wy === 0 ? x : (x * wx + y * wy) / (wx + wy);
+	const disks = diskReadings(into) + diskReadings(sample);
+	const ios = ioReadings(into) + ioReadings(sample);
+	const diskMb = fold(into.diskMb, diskReadings(into), sample.diskMb, diskReadings(sample));
+	const io = fold(into.io, ioReadings(into), sample.io, ioReadings(sample));
 	return {
 		at: into.at,
-		cpu: (into.cpu * a + sample.cpu * b) / (a + b),
-		memoryMb: (into.memoryMb * a + sample.memoryMb * b) / (a + b),
-		readings: a + b,
+		cpu: (into.cpu * a + sample.cpu * b) / readings,
+		memoryMb: (into.memoryMb * a + sample.memoryMb * b) / readings,
+		readings,
 		spanMs: Math.max(into.at + (into.spanMs ?? ROLLUP_MS), end) - into.at,
-		...(diskMb === undefined ? {} : { diskMb }),
-		...(io === undefined ? {} : { io }),
+		...(diskMb === undefined ? {} : { diskMb, ...(disks === readings ? {} : { diskReadings: disks }) }),
+		...(io === undefined ? {} : { io, ...(ios === readings ? {} : { ioReadings: ios }) }),
 	};
 }
 const MIB = 1024 * 1024;
@@ -1677,11 +1694,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hourlyRate(rates, sandbox.type, resources);
 	};
 
-	/** A sandbox's mean CPU: its kept 5-minute means and the one under way. */
-	const meanCpu = (sandbox: StoredSandbox) => {
-		const samples = withPartial(sandbox);
-		return samples.length === 0 ? 0 : samples.reduce((total, sample) => total + sample.cpu, 0) / samples.length;
-	};
+	/**
+	 * A sandbox's mean CPU over `[from, to)` (all it has kept, without): its kept means and the one under way, each
+	 * weighted by the time it covers, so an hourly mean counts for its hour and one outside the span not at all.
+	 */
+	const meanCpu = (sandbox: StoredSandbox, from = 0, to = now()) => spanMean(withPartial(sandbox), from, to).cpu;
 
 	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
@@ -1705,6 +1722,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			autoStopMinutes: sandbox.autoStopMinutes,
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			latestSnapshotId: sandbox.latestSnapshotId,
+			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
 			environmentId: sandbox.environmentId,
 			template: sandbox.template === undefined ? undefined : { ...sandbox.template },
@@ -2406,6 +2424,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const withMakerNamed = async <T extends { readonly createdBy: Sandbox["createdBy"] }>(item: T): Promise<T> =>
 		(await withMakersNamed([item]))[0] ?? item;
 
+	/**
+	 * Sandboxes with when their latest snapshot was taken, for those whose record has the snapshot but not when (kept
+	 * before records had it): from the snapshot's own record, if it is still there.
+	 */
+	async function withSnapshotTimes(items: readonly Sandbox[]): Promise<Sandbox[]> {
+		return Promise.all(
+			items.map(async (item) => {
+				if (item.latestSnapshotId === undefined || item.latestSnapshotAt !== undefined) return item;
+				const snapshot = await store.snapshots.get(item.latestSnapshotId);
+				return snapshot === undefined ? item : { ...item, latestSnapshotAt: snapshot.createdAt };
+			}),
+		);
+	}
+
 	// Events.
 
 	async function emit(
@@ -2991,6 +3023,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const result = await transition(sandbox.id, "stopping", (current) =>
 					withState(current, keepMemory ? "paused" : "stopped", {
 						latestSnapshotId: snapshot.id,
+						latestSnapshotAt: snapshot.createdAt,
 						ports: [],
 						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
 						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
@@ -3733,8 +3766,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			cpu: rollup.cpu,
 			memoryMb: rollup.memUsedBytes / MIB,
 			readings: rollup.readings,
-			...(rollup.noDisk === true ? {} : { diskMb: rollup.diskUsedBytes / MIB }),
-			...(rollup.ioPressure === undefined ? {} : { io: rollup.ioPressure }),
+			...(rollup.noDisk === true
+				? {}
+				: {
+						diskMb: rollup.diskUsedBytes / MIB,
+						...(rollup.diskReadings === rollup.readings ? {} : { diskReadings: rollup.diskReadings }),
+					}),
+			...(rollup.ioPressure === undefined
+				? {}
+				: {
+						io: rollup.ioPressure,
+						...(rollup.ioReadings === rollup.readings ? {} : { ioReadings: rollup.ioReadings }),
+					}),
 		};
 	}
 
@@ -4203,7 +4246,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			return {
-				items: await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				items: await withSnapshotTimes(
+					await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				),
 				nextCursor: page.nextCursor,
 			};
 		},
@@ -4480,7 +4525,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getSandbox: async (principal, { params }) => {
 			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			return withMakerNamed(sandboxView(sandbox, principal));
+			const [view] = await withSnapshotTimes([await withMakerNamed(sandboxView(sandbox, principal))]);
+			return view as Sandbox;
 		},
 
 		updateSandbox: async (principal, { params, body }) => {
@@ -4871,7 +4917,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						}
 					}
 					const result = await transition(current.id, "deleting", (latest) =>
-						withState(latest, "deleted", { ports: [], latestSnapshotId: undefined, pausedSnapshotId: undefined }),
+						withState(latest, "deleted", {
+							ports: [],
+							latestSnapshotId: undefined,
+							latestSnapshotAt: undefined,
+							pausedSnapshotId: undefined,
+						}),
 					);
 					if (!("moved" in result)) return;
 					const deleted = result.moved;
@@ -4932,7 +4983,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				points,
 				totals: {
 					runningSeconds: round(seconds),
-					cpuSeconds: round(seconds * meanCpu(current)),
+					cpuSeconds: round(seconds * meanCpu(current, since, at)),
 					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
 				},
 				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
@@ -5316,7 +5367,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(taken.base === undefined ? {} : { base: taken.base }),
 			};
 			await store.snapshots.put(snapshot);
-			await patchSandbox(current.id, (latest) => ({ ...latest, latestSnapshotId: snapshot.id }));
+			await patchSandbox(current.id, (latest) => ({
+				...latest,
+				latestSnapshotId: snapshot.id,
+				latestSnapshotAt: snapshot.createdAt,
+			}));
 			return snapshotView(snapshot);
 		},
 
@@ -5436,7 +5491,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					),
 				);
 				await patchSandbox(current.id, (latest) =>
-					latest.latestSnapshotId === snapshot.id ? { ...latest, latestSnapshotId: newest?.id } : undefined,
+					latest.latestSnapshotId === snapshot.id
+						? { ...latest, latestSnapshotId: newest?.id, latestSnapshotAt: newest?.createdAt }
+						: undefined,
 				);
 			}
 			if (snapshot.kind === "saved") {

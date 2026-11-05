@@ -85,9 +85,15 @@ export interface UsageMeta {
 /**
  * A 5-minute mean: `at` is its start. `readings`: how many points it is the mean of. `local`: whether any was taken
  * here rather than passed on (`UsagePoint.shared`), so this replica may keep it. Disk and IO pressure are the means of
- * the points that had them: `noDisk` when none did, no `ioPressure` when none did.
+ * the points that had them: `noDisk` when none did, no `ioPressure` when none did. `diskReadings` and `ioReadings`:
+ * how many points had each, so a longer mean can weight them by those alone.
  */
-export type Rollup = Omit<UsagePoint, "shared"> & { readonly readings: number; readonly local: boolean };
+export type Rollup = Omit<UsagePoint, "shared"> & {
+	readonly readings: number;
+	readonly local: boolean;
+	readonly diskReadings: number;
+	readonly ioReadings: number;
+};
 
 export interface UsageSeries {
 	/**
@@ -146,6 +152,8 @@ const mean = (bucket: Bucket): Rollup => ({
 	...(bucket.disks === 0 ? { noDisk: true } : {}),
 	...(bucket.ios === 0 ? {} : { ioPressure: clamp01(bucket.io / bucket.ios) }),
 	readings: bucket.count,
+	diskReadings: bucket.disks,
+	ioReadings: bucket.ios,
 	local: bucket.local > 0,
 });
 

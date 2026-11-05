@@ -89,6 +89,8 @@ describe("a usage series", () => {
 			memUsedBytes: 200,
 			diskUsedBytes: 0,
 			readings: 2,
+			diskReadings: 2,
+			ioReadings: 0,
 			local: true,
 		});
 		const closed = series.add("s", point(start + ROLLUP_MS, 1, 1000), { intervalMs: 5000 });
@@ -106,7 +108,7 @@ describe("a usage series", () => {
 		const start = ROLLUP_MS * 1000;
 		series.add("s", point(start), { intervalMs: 5000 });
 		expect(series.settle(start + ROLLUP_MS)).toEqual([]);
-		const mean = { ...point(start), readings: 1, local: true };
+		const mean = { ...point(start), readings: 1, diskReadings: 1, ioReadings: 0, local: true };
 		expect(series.settle(start + ROLLUP_MS + 10_000)).toEqual([{ key: "s", rollup: mean }]);
 		expect(series.keys()).toEqual(["s"]);
 		// A point late for the closed 5 minutes is kept, but makes no second mean for them.
@@ -210,6 +212,45 @@ describe("a host's usage ticks", () => {
 		// And the closed 5-minute mean is kept in the sandbox's record with them.
 		const stored = await api.store.sandboxes.get(box.id);
 		expect(stored?.samples[0]).toMatchObject({ at: start, diskMb: 2048, io: 0.25 });
+		// With how many of its 60 readings had them, for when it is folded into an hour.
+		expect(stored?.samples[0]).toMatchObject({ readings: 60, diskReadings: 55, ioReadings: 55 });
+	});
+
+	it("count CPU seconds by the time each kept mean covers, and only within the span asked for", async () => {
+		const HOUR = 3_600_000;
+		const DAY = 24 * HOUR;
+		const t0 = Date.UTC(2026, 10, 1, 0, 0, 0);
+		let clock = t0;
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		// Six days of hourly means at full CPU, then a day of 5-minute means at none, running all week.
+		const hours = Array.from({ length: HOURLY_SAMPLES }, (_, i) => ({
+			at: t0 + i * HOUR,
+			cpu: 1,
+			memoryMb: 10,
+			readings: 720,
+			spanMs: HOUR,
+		}));
+		const day = Array.from({ length: MAX_SAMPLES }, (_, i) => ({
+			at: t0 + 6 * DAY + i * ROLLUP_MS,
+			cpu: 0,
+			memoryMb: 10,
+			readings: 60,
+		}));
+		await api.store.sandboxes.update(box.id, (current) => ({
+			...current,
+			createdAt: t0,
+			runs: [{ from: t0 }],
+			samples: [...hours, ...day],
+		}));
+		clock = t0 + 7 * DAY;
+		// The last day ran at no CPU, whatever the week before it did.
+		expect((await tom.getSandboxUsage(box.id)).totals).toMatchObject({ runningSeconds: DAY / 1000, cpuSeconds: 0 });
+		// The week: six days of full CPU, each hour counting for an hour, not for five minutes.
+		const week = await tom.getSandboxUsage(box.id, { since: t0, intervalSeconds: 3600 });
+		expect(week.totals.cpuSeconds).toBe((6 * DAY) / 1000);
+		expect((await tom.getSandbox(box.id)).usage.cpuSeconds).toBe((6 * DAY) / 1000);
 	});
 
 	it("keep an isolate's (no disk, no IO) without either", async () => {
@@ -1124,6 +1165,36 @@ describe("keptSamples", () => {
 		expect(next[0]?.at).toBe(HOUR);
 		expect(next[HOURLY_SAMPLES - 2]).toMatchObject({ at: last, readings: 720, spanMs: HOUR });
 		expect(next[HOURLY_SAMPLES - 1]).toMatchObject({ at: last + HOUR, readings: 60, spanMs: ROLLUP_MS });
+	});
+
+	it("weights an hour's disk and IO only by the readings that had them", () => {
+		// IO 0, then a 5-minute mean whose guest never answered, then IO 1: the hour's IO is 1/2, not 1/3. Disk: 100 MB
+		// from all 60 readings, then 400 MB from 20 of 60.
+		const hour = [
+			fiveMinute(0, 0.5, { io: 0, diskMb: 100 }),
+			fiveMinute(ROLLUP_MS, 0.5),
+			fiveMinute(2 * ROLLUP_MS, 0.5, { io: 1, diskMb: 400, diskReadings: 20 }),
+		];
+		const day = Array.from({ length: MAX_SAMPLES }, (_, i) => fiveMinute(HOUR + i * ROLLUP_MS, 0.5));
+		const [folded] = keptSamples([...hour, ...day]);
+		expect(folded).toMatchObject({ readings: 180, diskReadings: 80, ioReadings: 120 });
+		expect(folded?.io).toBeCloseTo(0.5);
+		expect(folded?.diskMb).toBeCloseTo(175);
+		// Folding it again keeps the weights: another 60 readings at IO 1 make it (0 + 60 + 60) / 180.
+		const [again] = keptSamples([
+			folded as NonNullable<typeof folded>,
+			fiveMinute(3 * ROLLUP_MS, 0.5, { io: 1 }),
+			...day,
+		]);
+		expect(again).toMatchObject({ readings: 240, ioReadings: 180 });
+		expect(again?.io).toBeCloseTo(2 / 3);
+		// A spanMean over the hour weights them the same way.
+		expect(spanMean([folded as NonNullable<typeof folded>], 0, HOUR).io).toBeCloseTo(0.5);
+		// An hour with neither has neither.
+		const [bare] = keptSamples([fiveMinute(0, 0.5), fiveMinute(ROLLUP_MS, 0.5), ...day]);
+		expect(bare).not.toHaveProperty("io");
+		expect(bare).not.toHaveProperty("diskMb");
+		expect(bare).not.toHaveProperty("ioReadings");
 	});
 });
 

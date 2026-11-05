@@ -854,6 +854,7 @@ function IdCell({ sandbox }: { sandbox: Sandbox }) {
 /** Its latest snapshot's age, or None; its tooltip has when, and that it starts from it. */
 function SnapshotCell({ sandbox, now }: { sandbox: Sandbox; now: number }) {
 	if (sandbox.snapshot === undefined) return <span className="text-faint">None</span>;
+	if (sandbox.snapshot.takenAt === undefined) return <span className="text-muted">Saved</span>;
 	return <When at={sandbox.snapshot.takenAt} now={now} />;
 }
 
@@ -1242,8 +1243,9 @@ function SandboxRow({
 }
 
 /**
- * A phone's row, all of it a link to the sandbox's page: the name with its CPU and state beside it, the machine and
- * when it stops under it, and a chevron. The page has the actions. The tick box is beside the link, not in it.
+ * A phone's row, a link to the sandbox's page: the name with its state beside it, the machine and when it stops under
+ * it, then its usage chart and a chevron. The page has the actions. The tick box and the usage chart (a button that
+ * opens its metrics) are beside the link, not in it.
  */
 function SandboxPhoneRow({
 	sandbox,
@@ -1264,7 +1266,6 @@ function SandboxPhoneRow({
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
 				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<Usage sandbox={sandbox} calls={calls} />
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (
@@ -1290,17 +1291,21 @@ function SandboxPhoneRow({
 			{href === undefined ? (
 				<div className="flex min-w-0 flex-1 items-center gap-2 py-3">
 					{body}
+					<Usage sandbox={sandbox} calls={calls} />
 					{actions}
 				</div>
 			) : (
-				<a
-					className="kt-focusable flex min-w-0 flex-1 items-center gap-2 py-3 text-inherit no-underline"
-					href={href()}
-					onClick={follow(calls.navigate)}
-				>
-					{body}
+				<>
+					<a
+						className="kt-focusable flex min-w-0 flex-1 items-center gap-2 py-3 text-inherit no-underline"
+						href={href()}
+						onClick={follow(calls.navigate)}
+					>
+						{body}
+					</a>
+					<Usage sandbox={sandbox} calls={calls} />
 					<ChevronRightIcon size="sm" className="flex-none text-faint" />
-				</a>
+				</>
 			)}
 			{can.recover && href !== undefined ? (
 				<div className="basis-full pb-3 pl-6.5">

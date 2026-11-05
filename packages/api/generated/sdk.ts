@@ -1429,6 +1429,8 @@ export interface Sandbox {
 	readonly stopsAt?: number;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
+	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
+	readonly latestSnapshotAt?: number;
 	/** What it was made from. */
 	readonly source?: SandboxSource;
 	/** The environment it was made from. */

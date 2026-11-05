@@ -281,7 +281,8 @@ export function memoryText(memoryMb: number): string {
 /** The latest snapshot a sandbox has: what a resume or fork starts from. */
 export interface SnapshotRef {
 	readonly id: string;
-	readonly takenAt: number;
+	/** When it was taken; absent where the source doesn't say (its record gone), never a guess. */
+	readonly takenAt?: number;
 }
 
 export interface Sandbox {

@@ -113,6 +113,12 @@ export interface StoredSample {
 	readonly diskMb?: number;
 	/** IO pressure, 0 to 1, from a guest with the figures. */
 	readonly io?: number;
+	/**
+	 * Of `readings`, how many had a disk figure and how many IO pressure, where not all of them did (a guest that
+	 * didn't answer in time, one restored from an older snapshot): `diskMb` and `io` are the means of those alone.
+	 */
+	readonly diskReadings?: number;
+	readonly ioReadings?: number;
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */

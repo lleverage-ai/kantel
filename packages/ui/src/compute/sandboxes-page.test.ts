@@ -220,6 +220,14 @@ describe("the sandboxes list", () => {
 		expect(names({ snapshot: "none" })).toEqual(["never"]);
 		expect(names({ type: "isolate" })).toEqual(["never"]);
 		expect(names({ type: "microvm", state: "running" })).toEqual(["fresh"]);
+		// A snapshot whose time the source doesn't say is in no age's filter, only Any's.
+		const unknown = [...all, { ...box("undated", "stopped"), snapshot: { id: "snp_3" } }];
+		const shown = (filters: Partial<SandboxFilters>) =>
+			sandboxesShown(unknown, { ...NO_FILTERS, ...filters }, now).map((each) => each.name);
+		expect(shown({ snapshot: "day" })).toEqual(["fresh"]);
+		expect(shown({ snapshot: "older" })).toEqual(["old"]);
+		expect(shown({ snapshot: "none" })).toEqual(["never"]);
+		expect(shown({})).toContain("undated");
 		const counts = filterCounts(all, { ...NO_FILTERS, state: "running" }, "type", TYPE_FILTERS, now);
 		expect([...counts]).toEqual([
 			["all", 2],
