@@ -22,6 +22,8 @@ const render = (access: SandboxAccess) =>
 			access,
 			onAccessRetry: () => {},
 			now: 0,
+			// The CLI's setup is folded on the page; open, so its lines can be read.
+			cliSetupOpen: true,
 		}),
 	)
 		.replaceAll("<wbr/>", "")

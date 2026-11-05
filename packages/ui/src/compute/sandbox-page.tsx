@@ -7,7 +7,7 @@
 // previews and Stop go (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds;
 // stories bind them to fixtures.
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { CopyButton } from "../primitives/controls.tsx";
@@ -902,6 +902,7 @@ const LIBC_LABELS: Readonly<Record<SandboxImage["libc"], string>> = {
  * each there or plainly missing, so nothing the image lacks is offered as a button that fails.
  */
 export function ImageSection({ image, folded = false }: { image: SandboxImage; folded?: boolean }) {
+	const capabilitiesId = useId();
 	const kvm: SandboxFeature = image.kvm
 		? { available: true, detail: "/dev/kvm" }
 		: { available: false, reason: "Not on this host" };
@@ -922,12 +923,18 @@ export function ImageSection({ image, folded = false }: { image: SandboxImage; f
 					<span className="text-muted">, {image.agentVersion}</span>
 				</dd>
 			</dl>
-			<ul className="m-0 flex list-none flex-col gap-2.5 p-0 text-sm" aria-label="What the image has">
-				<FeatureRow label="Desktop" feature={image.desktop} />
-				<FeatureRow label="Browser" feature={image.browser} />
-				<FeatureRow label="Docker" feature={image.docker} />
-				<FeatureRow label="Nested virtualisation" feature={kvm} />
-			</ul>
+			{/* Its own block under a rule, so the checklist doesn't break the label and value grid above it. */}
+			<div className="flex min-w-0 flex-col gap-2.5 border-t border-border pt-3">
+				<span id={capabilitiesId} className="text-sm text-muted">
+					Capabilities
+				</span>
+				<ul className="m-0 flex list-none flex-col gap-2.5 p-0 text-sm" aria-labelledby={capabilitiesId}>
+					<FeatureRow label="Desktop" feature={image.desktop} />
+					<FeatureRow label="Browser" feature={image.browser} />
+					<FeatureRow label="Docker" feature={image.docker} />
+					<FeatureRow label="Nested virtualisation" feature={kvm} />
+				</ul>
+			</div>
 		</div>
 	);
 	// A phone folds it to one line: the OS and architecture.

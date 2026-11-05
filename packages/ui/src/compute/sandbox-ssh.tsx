@@ -224,6 +224,7 @@ export function SandboxSsh({
 	onAccessRetry,
 	now,
 	withoutCliOpen = false,
+	cliSetupOpen = false,
 }: {
 	source: Pick<SandboxesSource, "sshKey">;
 	sandboxId: string;
@@ -232,6 +233,8 @@ export function SandboxSsh({
 	now: number;
 	/** Starts with "Without the Kantel CLI" open, for stories. */
 	withoutCliOpen?: boolean;
+	/** Starts with "Set up the Kantel CLI" open, for stories and tests. */
+	cliSetupOpen?: boolean;
 }) {
 	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
 	const { sshKey } = source;
@@ -253,12 +256,17 @@ export function SandboxSsh({
 			) : (
 				<>
 					<CommandLine command={ready?.ssh} copyLabel="Copy" />
-					<p className="m-0 text-sm text-muted">
-						With the Kantel CLI, which needs Node.js 22 or later.{" "}
-						{ready?.cliLogin === undefined ? "To install it:" : "Install it, then sign it in to this Kantel once:"}
-					</p>
-					<CommandLine command={CLI_INSTALL_COMMAND} copyLabel="Copy" />
-					{ready?.cliLogin === undefined ? null : <CommandLine command={ready.cliLogin} copyLabel="Copy" />}
+					{/* The way in stays in front; setting up the CLI, done once, is folded under it. */}
+					<Disclosure summary="Set up the Kantel CLI" defaultOpen={cliSetupOpen}>
+						<div className="flex min-w-0 flex-col gap-2">
+							<p className="m-0 text-sm text-muted">
+								It needs Node.js 22 or later.{" "}
+								{ready?.cliLogin === undefined ? "To install it:" : "Install it, then sign it in to this Kantel once:"}
+							</p>
+							<CommandLine command={CLI_INSTALL_COMMAND} copyLabel="Copy" />
+							{ready?.cliLogin === undefined ? null : <CommandLine command={ready.cliLogin} copyLabel="Copy" />}
+						</div>
+					</Disclosure>
 					{ready?.sshWithoutCli === true && sshKey !== undefined ? (
 						<Disclosure summary="Without the Kantel CLI" defaultOpen={withoutCliOpen}>
 							<WithoutCli grant={grant} now={now} />
