@@ -423,7 +423,7 @@ export function UsageGraph({
 				})}
 			</svg>
 			{ends === undefined ? null : (
-				<span className="flex justify-between text-xs text-faint tabular-nums" aria-hidden="true">
+				<span className="flex justify-between text-sm text-muted tabular-nums" aria-hidden="true">
 					<span>{ends[0]}</span>
 					<span>{ends[1]}</span>
 				</span>

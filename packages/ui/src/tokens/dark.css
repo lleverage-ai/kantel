@@ -53,7 +53,7 @@
 	/* Text: never pure white. The disabled grey is his muted-fg-subtle, under AA (3.99:1 on the canvas) as disabled text
 	   may be; the faint text a step under the muted is a mix of the two that keeps AA. */
 	--kt-text: hsl(50 20% 93%); /* foreground */
-	--kt-text-muted: hsl(50 10% 67%); /* muted-fg, a step lighter so secondary columns read on the dark card */
+	--kt-text-muted: hsl(50 10% 72%); /* muted-fg, two steps lighter so secondary text reads easily on the dark card */
 	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 85%, var(--kt-text-disabled));
 	--kt-text-disabled: hsl(50 10% 45%); /* muted-fg-subtle */
 
