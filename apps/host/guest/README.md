@@ -27,6 +27,13 @@ Google Chrome, nothing from Ubuntu's `restricted` or `multiverse`), and update t
 The sandbox user is `user` (uid 1000): passwordless sudo, and in the `docker` and `kvm` groups, so it runs
 containers and nested VMs without root.
 
+apt in a sandbox takes Ubuntu's packages from the snapshot the image was built from when the snapshot has them, and
+from the live archive (`archive.ubuntu.com` and `security.ubuntu.com`, `ports.ubuntu.com` on arm64, at priority 100)
+when it doesn't, so `apt-get install` keeps working while `snapshot.ubuntu.com` is down (#706). The build itself
+reads the snapshot alone; `kantel-apt-sources` writes the sandbox's sources last (run it again with another snapshot
+ID to move). The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so a plain
+`sudo apt-get update` works too: sudo drops `HTTP_PROXY`, and a sandbox has no other way out.
+
 ## What listens where
 
 Everything is on the guest's loopback; the host reaches it over vsock (`GET /ports/{port}` on the guest agent) and

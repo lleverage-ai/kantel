@@ -303,6 +303,7 @@ func (s *Server) applyIdentity(id *Identity, steps map[string]float64) error {
 	} else {
 		_ = os.Remove("/etc/kantel/proxy.env")
 	}
+	writeAptProxy(aptProxyFile, len(id.ProxyEnv) > 0)
 	if id.CACert != "" {
 		_ = os.MkdirAll("/usr/local/share/ca-certificates", 0o755)
 		_ = os.WriteFile("/usr/local/share/ca-certificates/kantel-egress.crt", []byte(id.CACert), 0o644)
@@ -368,6 +369,27 @@ func addEntropy(raw []byte) error {
 func (s *Server) sync(w http.ResponseWriter, _ *http.Request) {
 	syscall.Sync()
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// aptProxyFile points apt at the sandbox's egress proxy whatever environment it runs in. sudo resets the environment
+// (env_reset drops HTTP_PROXY), and a sandbox has no way out but the proxy, so a plain `sudo apt-get update` would
+// otherwise fail on every source with "Temporary failure resolving".
+const aptProxyFile = "/etc/apt/apt.conf.d/90kantel-proxy"
+
+// writeAptProxy writes path for an identity with a proxy (in an image with apt), through LocalProxyAddr so that it
+// follows a fork's new proxy as dockerd does, and removes it for one without.
+func writeAptProxy(path string, proxied bool) {
+	if !proxied {
+		_ = os.Remove(path)
+		return
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		return
+	}
+	proxy := "http://" + LocalProxyAddr
+	conf := "// Written by Kantel's guest agent at each start: apt goes through the sandbox's egress proxy, under sudo too.\n" +
+		"Acquire::http::Proxy \"" + proxy + "\";\nAcquire::https::Proxy \"" + proxy + "\";\n"
+	_ = os.WriteFile(path, []byte(conf), 0o644)
 }
 
 // envFile holds the sandbox's own variables, which every command gets.

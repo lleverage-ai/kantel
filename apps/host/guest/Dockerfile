@@ -139,6 +139,13 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& chown -R 1000:1000 /home/user && mkdir -p /etc/kantel \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor
 
+# What a sandbox installs: Ubuntu's archive at UBUNTU_SNAPSHOT first and the live archive (archive.ubuntu.com and
+# security.ubuntu.com, ports.ubuntu.com on arm64) at a lower priority, so that apt still works when snapshot.ubuntu.com
+# fails (it answered 503 for hours on 5 Nov 2026, lleverage-ai/kantel#706) and takes a package from the snapshot
+# whenever the snapshot has it. Written last: every step above took the snapshot alone, so the build stays
+# reproducible and fails loudly rather than quietly reading the live archive. kantel-apt-sources says how.
+RUN /usr/local/sbin/kantel-apt-sources "$UBUNTU_SNAPSHOT"
+
 # No serial getty (the console is Firecracker's stdout), no units that wait for hardware a microVM doesn't have or
 # fetch things on a timer, and SSH keys only per sandbox (the guest agent makes them after every create and fork).
 # sshd runs as a plain service rather than Ubuntu's socket activation (see ssh.service.d/kantel.conf).

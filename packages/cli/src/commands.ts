@@ -2886,7 +2886,8 @@ const SECTIONS: readonly Section[] = [
 				},
 				details:
 					"CODE/RULE is the X-Kantel-Proxy-Error code the sandbox saw, and the grant or setting that decided.\n" +
-					"Paths are kept without their query. An HTTPS tunnel the proxy doesn't open shows as one CONNECT.",
+					"Paths are kept without their query. An HTTPS tunnel the proxy doesn't open shows as one CONNECT, with no\n" +
+					"status: an HTTP error inside it (a 503, say) is the site's. The proxy's own failures show as upstream-failed.",
 				async run(ctx) {
 					const limit = whole(ctx.string("limit"), "--limit");
 					const client = await ctx.client();
