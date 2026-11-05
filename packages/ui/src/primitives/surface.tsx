@@ -54,7 +54,7 @@ const noticeIcon = {
  * --kt-on-cap).
  */
 const noticeClass =
-	"flex min-w-0 items-start gap-2 rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.kt-icon]:translate-y-(--kt-on-cap) [&>.kt-icon]:self-baseline";
+	"flex min-w-0 items-start gap-2 max-sm:flex-wrap rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.kt-icon]:translate-y-(--kt-on-cap) [&>.kt-icon]:self-baseline";
 
 /** Each level's border, words and icon colour. */
 const noticeLevel = {
@@ -89,7 +89,10 @@ export function Notice({
 		>
 			{noticeIcon[level]}
 			<div className="kt-notice-text min-w-0 flex-1 self-baseline wrap-anywhere">{children}</div>
-			{action === undefined ? null : <div className="kt-notice-action -my-0.5 flex-none">{action}</div>}
+			{/* On a phone the action goes under the words, lined up with them, so the message keeps the notice's width. */}
+			{action === undefined ? null : (
+				<div className="kt-notice-action -my-0.5 flex-none max-sm:my-0 max-sm:basis-full max-sm:pl-5.5">{action}</div>
+			)}
 		</div>
 	);
 }

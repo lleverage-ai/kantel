@@ -18,7 +18,7 @@ export interface FirstRunProps {
 
 /**
  * A step's number: filled while it's the one to do, quiet after it. Its title sits beside the number; what the step
- * holds goes under the title, and on a phone under the number too, so it has the page's whole width.
+ * holds goes under the title, lined up with it, at every width.
  */
 function Step({ n, current, title, children }: { n: number; current: boolean; title: string; children?: ReactNode }) {
 	return (
@@ -35,9 +35,7 @@ function Step({ n, current, title, children }: { n: number; current: boolean; ti
 				<span className="kt-sr-only">{`Step ${n}: `}</span>
 				{title}
 			</h3>
-			{children === undefined ? null : (
-				<div className="col-start-2 flex min-w-0 flex-col gap-3 max-sm:col-span-2 max-sm:col-start-1">{children}</div>
-			)}
+			{children === undefined ? null : <div className="col-start-2 flex min-w-0 flex-col gap-3">{children}</div>}
 		</li>
 	);
 }
@@ -75,7 +73,7 @@ export function FirstRun({ source, now, onJoined, poll = true }: FirstRunProps) 
 				</Step>
 				<Step n={3} current={false} title="Use it from your code">
 					<span className="-mt-2 text-sm text-faint">
-						<code className="font-mono text-code">kantel login</code>, or an API key.
+						<code className="rounded-xs bg-active px-1 font-mono text-code text-fg">kantel login</code>, or an API key.
 					</span>
 				</Step>
 			</ol>

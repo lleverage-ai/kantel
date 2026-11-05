@@ -283,9 +283,10 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 	return (
 		<Notice level="warning">
 			<div className="flex min-w-0 flex-col gap-2">
-				<span>
-					<strong className="font-medium text-fg">Other machines can't reach {url.publicUrl}.</strong> Give the console
-					an address hosts can reach, and the install command will use it.
+				{/* A heading line, then the instruction under it: the callout reads as what's wrong, then what to do. */}
+				<span className="flex min-w-0 flex-col gap-0.5">
+					<strong className="font-medium text-fg">Other machines can't reach {url.publicUrl}.</strong>
+					<span>Give the console an address hosts can reach, and the install command will use it.</span>
 				</span>
 				<form
 					className="flex min-w-0 items-end gap-2 max-sm:flex-col max-sm:items-stretch"
