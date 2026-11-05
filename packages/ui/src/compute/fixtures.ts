@@ -42,6 +42,7 @@ import type {
 	Sandbox,
 	SandboxBase,
 	SandboxCommand,
+	SandboxCreator,
 	SandboxEgress,
 	SandboxImage,
 	SandboxKind,
@@ -200,6 +201,14 @@ const sampleResources = (size: SandboxSize) => {
 	return { vcpus, memoryGb, diskGb };
 };
 
+/** The sample's makers by name: its people, and ci-runner, an API key. */
+const sampleCreator = (name: string): SandboxCreator =>
+	name === VIEWER.name
+		? { kind: "user", id: VIEWER.id }
+		: name === "ci-runner"
+			? { kind: "api_key", id: "key_ci_runner" }
+			: { kind: "user", id: `usr_${name.split(" ")[0]?.toLowerCase()}` };
+
 const sandbox = (
 	fields: Omit<Sandbox, "hostname" | "usage" | "createdBy"> &
 		Partial<Pick<Sandbox, "usage" | "createdBy">> & { readonly slug: string },
@@ -207,6 +216,7 @@ const sandbox = (
 	const { slug, ...rest } = fields;
 	return {
 		createdBy: "Tom Davies",
+		creator: sampleCreator(rest.createdBy ?? VIEWER.name),
 		usage: rest.state === "running" ? usageSeries(rest.id.length + rest.name.length) : flat(),
 		// What its host gave it, as a real one says: the page shows only that (or the shape it asked for).
 		...(rest.kind === "microvm" && rest.resources === undefined && rest.size !== undefined
@@ -2102,6 +2112,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						state: "starting",
 						createdAt: now(),
 						createdBy: VIEWER.name,
+						creator: { kind: "user", id: VIEWER.id },
 						...(input.autoStopMinutes === undefined ? {} : { stopsAt: now() + input.autoStopMinutes * MINUTE }),
 						...(input.idleStopMinutes === undefined
 							? {}
@@ -2180,6 +2191,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						state: "starting",
 						createdAt: now(),
 						createdBy: VIEWER.name,
+						creator: { kind: "user", id: VIEWER.id },
 						stopsAt: now() + HOUR,
 						usage: flat(),
 						forkedFrom: from.id,
