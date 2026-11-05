@@ -2823,11 +2823,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			current.strandedOn !== placement.hostId;
 		if ("lost" in result && strandedElsewhere(result.lost)) {
 			const stranded = result.lost;
-			// Back to `starting`, then on as any boot, its egress reconciled the same way.
+			// Back to `starting`, then on as any boot. Its egress gets a revision of its own, as a recovery's does: changes
+			// made while it was `error` (its environment's, the proxy settings) skip an errored sandbox, so the egress as it
+			// is now is sent, by the rounds below, before it runs.
 			const back = await transition(
 				sandboxId,
 				"error",
-				(current) => withState(current, "starting"),
+				(current) => withState(current, "starting", { egressRevision: later(current.egressRevision) }),
 				(current) => strandedElsewhere(current) && current.lifecycle === stranded.lifecycle,
 			);
 			if ("moved" in back) result = await transition(sandboxId, "starting", toRunning, upToDate);

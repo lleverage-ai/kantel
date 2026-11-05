@@ -1606,6 +1606,36 @@ describe("hosts", () => {
 		expect(sandbox.reason).toBeUndefined();
 	});
 
+	it("sends a reclaimed boot the egress as it is now, at a revision of its own, before it runs", async () => {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		const delivered: (number | undefined)[] = [];
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup(
+			{
+				...stub,
+				placedOn: async () => STUB_HOST_ID,
+				async create(spec) {
+					const placement = await stub.create(spec);
+					await revokeMeanwhile?.();
+					return { ...placement, hostId: "host_elsewhere" };
+				},
+				async updateEgress(_sandboxId, _egress, revision) {
+					delivered.push(revision);
+				},
+			},
+			{ store },
+		);
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const stored = await store.sandboxes.get(sandbox.id);
+		// Moved on from what its create sent, delivered, and taken as applied.
+		expect(stored?.egressRevision).toBeDefined();
+		expect(delivered).toContain(stored?.egressRevision);
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
 	it("doesn't strand a boot whose record moved on after its placement was read", async () => {
 		const stub = createStubBackend();
 		const store = createMemoryStore();
