@@ -1521,9 +1521,13 @@ func (m *Manager) adoptMappedMemory() {
 	}
 	mapped := map[string]*fc.Machine{}
 	for _, s := range m.sandboxes {
-		if s.machine != nil {
-			for _, path := range mappedFiles(s.machine.Pid(), dir) {
-				mapped[path] = s.machine
+		// Under its lock: adopt's watch clears it when the machine exits.
+		s.mu.Lock()
+		machine := s.machine
+		s.mu.Unlock()
+		if machine != nil {
+			for _, path := range mappedFiles(machine.Pid(), dir) {
+				mapped[path] = machine
 			}
 		}
 	}
