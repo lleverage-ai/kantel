@@ -2,7 +2,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
-import { idleStopText, type Sandbox, type SandboxState, stoppedByText, type Template } from "./compute-model.ts";
+import {
+	type HostChoice,
+	idleStopText,
+	type Sandbox,
+	type SandboxState,
+	stoppedByText,
+	type Template,
+} from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 import { IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
 import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
@@ -10,6 +17,8 @@ import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
 import {
 	countdownText,
+	hostOptions,
+	hostProblem,
 	newSandboxInput,
 	newSandboxType,
 	QUICK_SANDBOX,
@@ -311,6 +320,39 @@ describe("New sandbox", () => {
 				autoStopMinutes: 60,
 			},
 		);
+	});
+
+	it("puts it on the host picked, and leaves Kantel to pick without one", () => {
+		expect(newSandboxInput({ ...form, host: "hst_home" }).hostId).toBe("hst_home");
+		expect("hostId" in newSandboxInput({ ...form, host: "" })).toBe(false);
+		expect("hostId" in newSandboxInput(form)).toBe(false);
+	});
+
+	it("offers the hosts that can take the type now, and keeps a picked one that can't with why", () => {
+		const hosts: HostChoice[] = [
+			{ id: "hst_a", name: "box-a", state: "online", kinds: ["microvm", "isolate"], shared: false },
+			{ id: "hst_b", name: "box-b", state: "draining", kinds: ["microvm", "isolate"], shared: false },
+			{ id: "hst_c", name: "box-c", state: "online", kinds: ["isolate"], shared: true },
+		];
+		expect(hostOptions(hosts, "microvm", "")).toEqual([
+			{ value: "", label: "Any host" },
+			{ value: "hst_a", label: "box-a" },
+		]);
+		expect(hostOptions(hosts, "isolate", "").map((option) => option.label)).toEqual([
+			"Any host",
+			"box-a",
+			"box-c (shared)",
+		]);
+		// Picked for an isolate, then the type changed: it stays, with why, and the create waits for another.
+		expect(hostOptions(hosts, "microvm", "hst_c").at(-1)).toEqual({
+			value: "hst_c",
+			label: "box-c (shared): no microvms",
+		});
+		expect(hostProblem(hosts, "microvm", "hst_c")).toBe("box-c doesn't run microvms.");
+		expect(hostProblem(hosts, "microvm", "hst_b")).toBe("box-b is draining, so it takes no new sandboxes.");
+		expect(hostProblem(hosts, "microvm", "hst_gone")).toBe("That host is gone. Pick another.");
+		expect(hostProblem(hosts, "microvm", "hst_a")).toBeUndefined();
+		expect(hostProblem(hosts, "microvm", "")).toBeUndefined();
 	});
 
 	it("keeps a sandbox's own idle stop in its dialog when no preset matches it, so an untouched Save keeps it", () => {

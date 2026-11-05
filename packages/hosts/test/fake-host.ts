@@ -300,6 +300,12 @@ export class FakeHost {
 				return answer({ ok: true });
 			case "sandbox.secrets":
 				return answer({});
+			case "snapshot.save": {
+				const { sandboxId, snapshotId } = params as { sandboxId: string; snapshotId: string };
+				if (!this.sandboxes.has(sandboxId)) return fail("not_found", "no such sandbox");
+				this.snapshots.push({ id: snapshotId, sandboxId });
+				return answer({ id: snapshotId, sandboxId, sizeBytes: 0 });
+			}
 			case "snapshot.list":
 				return answer({
 					snapshots: this.snapshots.filter((s) => params.sandboxId === "" || s.sandboxId === params.sandboxId),

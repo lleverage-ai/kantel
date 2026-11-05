@@ -1871,6 +1871,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 *
 	 * `shared`: whether the caller may use the shared hosts at all (`ComputeServiceOptions.sharedHosts`); without, only
 	 * the account's own.
+	 *
+	 * `pin`: the one host it was asked to go on (`CreateSandboxBody.host`), whether or not the account has hosts of its
+	 * own; `host_unavailable` when that host can't take it now.
 	 */
 	function requireHosts(
 		hosts: readonly StoredHost[],
@@ -1879,6 +1882,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		labels: { readonly [key: string]: string },
 		affine: boolean,
 		shared: boolean,
+		pin?: string,
+	): string[] {
+		if (pin !== undefined) {
+			const pinned = hosts.find((host) => host.id === pin);
+			const eligible =
+				pinned === undefined ? [] : requireHostsOrNone([pinned], accountId, type, labels, affine, shared);
+			if (eligible.length === 0) {
+				throw placementError(
+					"unavailable",
+					"host_unavailable",
+					`The host ${pinned?.name ?? pin} can't run ${article(type)} ${type} sandbox now: it is offline, draining, doesn't run ${type} sandboxes or lacks the host labels asked for`,
+				);
+			}
+			return eligible;
+		}
+		return requireHostsOrNone(hosts, accountId, type, labels, affine, shared, true);
+	}
+
+	/** `requireHosts` without a pin: the eligible hosts, or with `refuse` an `unavailable` error when there are none. */
+	function requireHostsOrNone(
+		hosts: readonly StoredHost[],
+		accountId: string,
+		type: SandboxType,
+		labels: { readonly [key: string]: string },
+		affine: boolean,
+		shared: boolean,
+		refuse = false,
 	): string[] {
 		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none.
 		const up = hosts
@@ -1891,7 +1921,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const own = qualifying.filter((host) => host.accountId === accountId);
 		const common = shared ? qualifying.filter((host) => host.accountId === undefined) : [];
 		const eligible = (affine ? [...own, ...common] : own.length > 0 ? own : common).map((host) => host.id);
-		if (eligible.length === 0) {
+		if (eligible.length === 0 && refuse) {
 			// Bound to its disk or snapshot, it can go only on that one host, whatever else the fleet has: that host is the
 			// reason, as it is when the boot finds it gone with other hosts up.
 			const reason: PlacementReason = affine
@@ -1920,6 +1950,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function mayShare(principal: Principal): Promise<boolean> {
 		if (options.sharedHosts === undefined || principal.superAdmin) return true;
 		return options.sharedHosts(principal.userId);
+	}
+
+	/**
+	 * The host a snapshot's disk is on, where its backend's ref says (a host backend's is `{hostId}/{snapshotId}`);
+	 * undefined where the ref names no known host.
+	 */
+	function snapshotHolder(ref: string, hosts: readonly StoredHost[]): StoredHost | undefined {
+		const [hostId] = ref.split("/");
+		return hosts.find((host) => host.id === hostId);
+	}
+
+	/**
+	 * Whether `principal` may be told that `host` exists, and which of an account's sandboxes run on it: a super-admin any
+	 * host, anyone else only a host of the account the sandbox is in (account hosts).
+	 */
+	const mayKnowHost = (principal: Principal, host: StoredHost, accountId: string): boolean =>
+		principal.superAdmin || (host.accountId !== undefined && host.accountId === accountId);
+
+	/**
+	 * The host `ref` (an ID or a name) names, for a sandbox of `accountId` to be pinned to (or, with `revoked`, for its
+	 * sandboxes to be listed by): one of the account's own hosts, or for a super-admin a shared one. Another account's host, and for anyone else a shared host, is `not_found`,
+	 * as `accountHostFor` answers, so a host's existence isn't given away.
+	 */
+	function pinnableHost(
+		principal: Principal,
+		accountId: string,
+		hosts: readonly StoredHost[],
+		ref: string,
+		{ revoked = false }: { readonly revoked?: boolean } = {},
+	): StoredHost {
+		const known = hosts.filter(
+			(host) =>
+				(revoked || host.state !== "revoked") &&
+				(host.accountId === undefined ? principal.superAdmin : host.accountId === accountId),
+		);
+		const byId = known.find((host) => host.id === ref);
+		if (byId !== undefined) return byId;
+		const named = known.filter((host) => host.name === ref);
+		if (named.length > 1) throw new KantelError("invalid", `${named.length} hosts are named ${ref}: give its ID`);
+		const [host] = named;
+		if (host === undefined) throw notFound("host");
+		return host;
 	}
 
 	// Views: what the API answers for a record.
@@ -1954,7 +2026,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			: { idleStopMinutes: minutes, lastActiveAt: last, idleStopsAt: last + minutes * 60_000 };
 	}
 
-	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
+	/**
+	 * The host a sandbox is on, as `principal` may be told it (`mayKnowHost`): its ID and name, or nothing. `hosts` keeps
+	 * the host records read for one answer, so a page of sandboxes on a few hosts reads each once.
+	 */
+	async function hostOfView(
+		sandbox: StoredSandbox,
+		principal: Principal,
+		hosts: Map<string, Promise<StoredHost | undefined>> = new Map(),
+	): Promise<Pick<Sandbox, "hostId" | "hostName">> {
+		const id = sandbox.hostId;
+		if (id === undefined) return {};
+		let read = hosts.get(id);
+		if (read === undefined) {
+			read = store.hosts.get(id);
+			hosts.set(id, read);
+		}
+		const host = await read;
+		// A super-admin is shown the ID of a host it has no record of, as before hosts were recorded.
+		if (host === undefined) return principal.superAdmin ? { hostId: id } : {};
+		return mayKnowHost(principal, host, sandbox.accountId) ? { hostId: id, hostName: host.name } : {};
+	}
+
+	async function sandboxView(
+		sandbox: StoredSandbox,
+		principal: Principal,
+		hosts?: Map<string, Promise<StoredHost | undefined>>,
+	): Promise<Sandbox> {
+		const host = await hostOfView(sandbox, principal, hosts);
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
 		const rate = rateOf(sandbox);
 		return {
@@ -1995,7 +2094,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
 				...sparklines(sandbox),
 			},
-			hostId: principal.superAdmin ? sandbox.hostId : undefined,
+			...host,
 			base: baseView(sandbox.base),
 		};
 	}
@@ -2999,6 +3098,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sandbox.hostLabels,
 			!neverPlaced(sandbox) || sandbox.source !== undefined,
 			await mayShare(principal),
+			sandbox.hostPin,
 		);
 	}
 
@@ -4774,9 +4874,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:read", role);
 			const active: readonly SandboxState[] = ["starting", "running", "stopping"];
+			const hosts = new Map<string, Promise<StoredHost | undefined>>();
+			const onHost =
+				query.host === undefined
+					? undefined
+					: pinnableHost(principal, account.id, await ensureHosts(), query.host, { revoked: true }).id;
 			const visible: StoredSandbox[] = [];
 			for (const sandbox of await store.sandboxes.list({ accountId: account.id })) {
 				if (sandbox.state === "deleted") continue;
+				if (onHost !== undefined && sandbox.hostId !== onHost) continue;
 				const wanted =
 					query.state !== undefined
 						? sandbox.state === query.state
@@ -4789,7 +4895,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			return {
 				items: await withSnapshotTimes(
-					await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+					await withMakersNamed(await Promise.all(page.items.map((sandbox) => sandboxView(sandbox, principal, hosts)))),
 				),
 				nextCursor: page.nextCursor,
 			};
@@ -4801,10 +4907,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const read = backend.capabilities();
 			const [records, capabilities, shared] = await Promise.all([ensureHosts(read), read, mayShare(principal)]);
 			const byId = new Map(capabilities.hosts.map((host) => [host.id, host]));
-			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones.
-			const running = records.filter((record) => record.state === "online" && record.tiers.includes("microvm"));
+			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones; or the one host
+			// a sandbox is to be pinned to.
+			const pinned = query.host === undefined ? undefined : pinnableHost(principal, account.id, records, query.host).id;
+			const running = records.filter(
+				(record) =>
+					record.state === "online" &&
+					record.tiers.includes("microvm") &&
+					(pinned === undefined || record.id === pinned),
+			);
 			const own = running.filter((record) => record.accountId === account.id);
-			const usable = own.length > 0 ? own : shared ? running.filter((record) => record.accountId === undefined) : [];
+			const usable =
+				pinned !== undefined
+					? running
+					: own.length > 0
+						? own
+						: shared
+							? running.filter((record) => record.accountId === undefined)
+							: [];
 			const hosts = usable.flatMap((record) => {
 				const host = byId.get(record.id);
 				return host === undefined ? [] : [host];
@@ -4889,6 +5009,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A check below may refuse the call before this is awaited.
 				known.catch(() => undefined);
 				const capabilities = await read;
+				// The host it was asked to go on, resolved first: a host the caller may not name is `not_found` whatever the
+				// fleet runs.
+				const hostPin =
+					body.host === undefined ? undefined : pinnableHost(principal, account.id, await known, body.host).id;
+				// From a snapshot, a pin can only be the host that holds it: refused now, before anything is stored, rather than
+				// left as a sandbox that can never start.
+				if (hostPin !== undefined && from?.ref !== undefined) {
+					const holder = snapshotHolder(from.ref, await known);
+					if (holder !== undefined && holder.id !== hostPin) {
+						throw placementError(
+							"unavailable",
+							"host_unavailable",
+							`The snapshot is on another host (${mayKnowHost(principal, holder, account.id) ? holder.name : "not one you can name"}): a sandbox made from it runs only there`,
+						);
+					}
+				}
 				if (!capabilities.types.includes(type)) {
 					// Why, as `requireHosts` would say it: of the hosts the caller may use, and from a snapshot its own host.
 					let reason: PlacementReason = "no_host_for_type";
@@ -4900,6 +5036,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							{ ...body.hostLabels },
 							from !== undefined,
 							await mayShare(principal),
+							hostPin,
 						);
 					} catch (error) {
 						reason = placementReasonOf(error) ?? reason;
@@ -4934,6 +5071,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					hostLabels,
 					from !== undefined,
 					await mayShare(principal),
+					hostPin,
 				);
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
 				// its template's resources (unless it names a size), which a template snapshot was built as.
@@ -5019,6 +5157,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					placeholders,
 					egressRevision,
 					hostLabels,
+					...(hostPin === undefined ? {} : { hostPin }),
 					runs: [],
 					samples: [],
 					ports: [],
@@ -5070,21 +5209,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 					return booted;
 				});
+				// Its host's record from those read for placement, not read again.
+				const placedOn = new Map((await known).map((host) => [host.id, Promise.resolve<StoredHost | undefined>(host)]));
 				if (body.wait !== true) {
 					keepGoing(work);
 					// As written: it is starting.
-					return sandboxView(sandbox, principal);
+					return sandboxView(sandbox, principal, placedOn);
 				}
 				// As the boot wrote it (`running` or `error`), unless something else moved it meanwhile, such as a delete.
 				const booted = await work;
-				return sandboxView(booted ?? (await mustGetSandbox(sandbox.id)), principal);
+				return sandboxView(booted ?? (await mustGetSandbox(sandbox.id)), principal, placedOn);
 			});
 		},
 
 		getSandbox: async (principal, { params }) => {
 			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			const [view] = await withSnapshotTimes([await withMakerNamed(sandboxView(sandbox, principal))]);
+			const [view] = await withSnapshotTimes([await withMakerNamed(await sandboxView(sandbox, principal))]);
 			return view as Sandbox;
 		},
 
@@ -5176,6 +5317,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					current.hostLabels,
 					true,
 					await mayShare(principal),
+					current.hostPin,
 				);
 				const forks: StoredSandbox[] = [];
 				// Their machine, as every create decides it (`sandboxMachine`): from a snapshot, that of the sandbox it was taken
@@ -5242,6 +5384,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						placeholders,
 						egressRevision,
 						hostLabels: { ...current.hostLabels },
+						...(current.hostPin === undefined ? {} : { hostPin: current.hostPin }),
 						runs: [],
 						samples: [],
 						ports: [],
@@ -5304,7 +5447,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.wait === true) await work;
 				else keepGoing(work);
 				const items: Sandbox[] = [];
-				for (const fork of forks) items.push(sandboxView(await mustGetSandbox(fork.id), principal));
+				for (const fork of forks) items.push(await sandboxView(await mustGetSandbox(fork.id), principal));
 				return { items };
 			});
 		},
@@ -5395,6 +5538,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					current.hostLabels,
 					true,
 					await mayShare(principal),
+					current.hostPin,
 				);
 				// Where it is to land: the host images version the index's `stable` names, whatever base it reported (none, for
 				// one from before image patching); a container's image (a digest) is its backend's to pick. Checked with the

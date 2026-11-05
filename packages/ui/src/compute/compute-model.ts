@@ -324,8 +324,13 @@ export interface Sandbox {
 	readonly costCents?: number;
 	/** CPU use over the last hour, 0 to 1, oldest first: the row's sparkline. */
 	readonly usage: readonly number[];
-	/** The host it runs on, for a super-admin. */
+	/**
+	 * The host it runs on (or last ran on), where the viewer may know it: a super-admin any host, anyone else one of the
+	 * account's own hosts.
+	 */
 	readonly hostId?: string;
+	/** That host's name, with `hostId`. */
+	readonly hostName?: string;
 	/** What went wrong, when it's in `error`. */
 	readonly error?: string;
 	/** Shared with the organisation it belongs to (an organisation's sandboxes are shared unless made private). */
@@ -601,6 +606,19 @@ export interface CreateSandboxInput {
 	readonly environmentId?: string;
 	/** The template it is made from (experimental): its newest built snapshot, or a fresh boot of its image. */
 	readonly templateId?: string;
+	/** The host it goes on, which it then stays on. Absent: Kantel picks. */
+	readonly hostId?: string;
+}
+
+/** A host New sandbox may put a sandbox on: one of the account's own, or for a super-admin a shared one. */
+export interface HostChoice {
+	readonly id: string;
+	readonly name: string;
+	readonly state: HostState;
+	/** The sandbox types it runs. */
+	readonly kinds: readonly SandboxKind[];
+	/** One of the deployment's shared hosts, rather than the account's own. */
+	readonly shared: boolean;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -793,10 +811,16 @@ export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
 
 export interface SandboxesSource {
 	/**
-	 * What New sandbox's sliders may choose, from the hosts the account may use, and what each costs. Absent:
+	 * What New sandbox's sliders may choose, from the hosts the account may use (or with `hostId` that one host), and
+	 * what each costs. Absent:
 	 * `DEFAULT_SANDBOX_SHAPES`.
 	 */
-	shapes?(accountId: string): Promise<SandboxShapes>;
+	shapes?(accountId: string, hostId?: string): Promise<SandboxShapes>;
+	/**
+	 * The hosts New sandbox may put a sandbox on, for its host picker: the account's own, and for a super-admin the
+	 * shared ones. Absent, or none: no picker, and Kantel picks.
+	 */
+	hosts?(accountId: string): Promise<readonly HostChoice[]>;
 	list(accountId: string): Promise<readonly Sandbox[]>;
 	/**
 	 * Follows the account's sandboxes live: `changed` with a sandbox's ID each time one changes state, whoever changed it

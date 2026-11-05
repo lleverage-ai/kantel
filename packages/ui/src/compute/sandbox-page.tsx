@@ -804,7 +804,14 @@ function Overview({
 				{sandbox.hostId === undefined ? null : (
 					<>
 						<dt className={dt}>Host</dt>
-						<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
+						{sandbox.hostName === undefined ? (
+							<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
+						) : (
+							<dd className={`${dd} flex min-w-0 flex-wrap items-baseline gap-x-2`}>
+								<span className="truncate">{sandbox.hostName}</span>
+								<span className="truncate font-mono text-code text-muted">{sandbox.hostId}</span>
+							</dd>
+						)}
 					</>
 				)}
 			</dl>

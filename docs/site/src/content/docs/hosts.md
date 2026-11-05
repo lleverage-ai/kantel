@@ -255,10 +255,12 @@ On the host:
 
 ```sh
 sudo kantel-host status
+sudo kantel-host sandboxes
+sudo kantel-host sandboxes show sbx_…
 journalctl -u kantel-host -f
 ```
 
-`status` prints the agent's version, the control plane it's registered with, its host ID and whether the service is active. The journal has the connection, each sandbox the host starts, and the [egress proxy's](/sandboxes/egress-proxy/#what-a-refusal-looks-like) decisions.
+`status` prints the agent's version, the control plane it's registered with, its host ID, whether the service is active and how many sandboxes it holds in each state. `sandboxes` lists them: ID, type, size, state, the account that owns each, its base image version, its address on the host and when it was made. `sandboxes show` prints one in full, and `--json` gives either as JSON. Both read the running service over a socket only root can use (`/run/kantel-host/agent.sock`; `controlSocket` in the config moves it, `"off"` turns it off), and they only read: stop or delete a sandbox through Kantel (`kantel stop`, or the console), which keeps the record of every sandbox. The journal has the connection, each sandbox the host starts, and the [egress proxy's](/sandboxes/egress-proxy/#what-a-refusal-looks-like) decisions.
 
 From anywhere, with a key that has `hosts:admin`:
 
@@ -300,7 +302,15 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes" \
   -d '{"type": "microvm", "hostLabels": {"zone": "ams"}}'
 ```
 
-The `kantel` command has no flag for this yet. When no host can take a sandbox, Kantel says why: the create answers `503` with `unavailable` and `details.reason` `no_host_with_labels` when no host has the labels, and a sandbox whose matching hosts are all full goes to `error` with `placementReason` `insufficient_capacity`. [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed) lists them.
+To put it on one host, give the create `host`, the host's ID or name. A super-admin may name any host; anyone else may name one of the account's [own hosts](/own-hosts/), and naming any other host answers `not_found`. When that host is offline, draining, doesn't run the type or lacks a label in `hostLabels`, the create answers `503` `unavailable` with `details.reason` `host_unavailable`, rather than placing the sandbox elsewhere. From the command line, and in the console's New sandbox under Host:
+
+```sh
+kantel create --type microvm --on builder-1
+kantel create --type microvm --host-label zone=ams
+kantel list --on builder-1
+```
+
+A sandbox's `hostId` and `hostName` say where it runs, as `kantel info` and its page in the console do. A super-admin is shown every sandbox's host; anyone else is shown it when it is one of the account's own hosts. `kantel list --on <host>` (the API's `host` query) lists only the sandboxes on one host. When no host can take a sandbox, Kantel says why: the create answers `503` with `unavailable` and `details.reason` `no_host_with_labels` when no host has the labels, and a sandbox whose matching hosts are all full goes to `error` with `placementReason` `insufficient_capacity`. [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed) lists them.
 
 A host offers three microVM sizes unless its settings say otherwise:
 

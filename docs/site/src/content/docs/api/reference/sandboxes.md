@@ -23,6 +23,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | no | `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. |
 | `all` | boolean | no | Include stopped, paused and errored sandboxes. Default: only active ones. |
 | `label` | Record&lt;string, string&gt; | no | Only those with each label: `label.ticket=PROJ-12`. |
+| `host` | string | no | Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host. |
 | `limit` | integer | no | At most this many; default 50. (minimum 1, maximum 500) |
 | `cursor` | string | no | A previous page's `nextCursor`. |
 
@@ -30,7 +31,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 
 - `200`: [SandboxPage](/api/reference/types/#sandboxpage) (`application/json`). A page of sandboxes.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Create a sandbox
 
@@ -56,19 +57,20 @@ Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a s
 
 `GET /v1/sandbox-shapes` (SDK method `getSandboxShapes`)
 
-What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`.
+What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. With `host`, from that host alone. A key needs `sandboxes:read`.
 
 **Query parameters**
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `host` | string | no | The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use. |
 
 **Answers**
 
 - `200`: [SandboxShapes](/api/reference/types/#sandboxshapes) (`application/json`). The shapes.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a sandbox
 

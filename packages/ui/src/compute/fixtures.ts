@@ -292,6 +292,7 @@ export const API_SERVER = sandbox({
 	costCents: 31,
 	usage: usageSeries(4, 0.8),
 	hostId: "hst_hetzner_1",
+	hostName: "hetzner-fsn1-01",
 	shared: true,
 	createdBy: "Alex Kemp",
 	environment: { id: "env_backend", name: "backend-dev" },
@@ -334,6 +335,7 @@ export const DEV_STACK = sandbox({
 	costCents: 1094,
 	usage: usageSeries(9, 0.6),
 	hostId: "hst_hetzner_1",
+	hostName: "hetzner-fsn1-01",
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
@@ -369,6 +371,7 @@ export const ALPINE_WORKER = sandbox({
 	costCents: 1,
 	usage: usageSeries(3, 0.3),
 	hostId: "hst_hetzner_1",
+	hostName: "hetzner-fsn1-01",
 	shared: true,
 	createdBy: "Dean Smit",
 	image: ALPINE_IMAGE,
@@ -392,6 +395,7 @@ export const DEBIAN_CI = sandbox({
 	costCents: 8,
 	usage: usageSeries(6, 0.5),
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	shared: true,
 	createdBy: "ci-runner",
 	image: DEBIAN_DOCKER_IMAGE,
@@ -411,6 +415,7 @@ export const SCRATCH = sandbox({
 	costCents: 0.2,
 	usage: usageSeries(2, 0.2),
 	hostId: "hst_home",
+	hostName: "home-server",
 	createdBy: "ci-runner",
 });
 
@@ -429,6 +434,7 @@ export const RENDER = sandbox({
 	snapshot: { id: "snp_render_1", takenAt: FIXTURE_NOW - 20 * HOUR },
 	costCents: 412,
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	shared: true,
 	createdBy: "Bethan Price",
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.11.02.811", { days: 2, versions: 1 }),
@@ -446,6 +452,7 @@ export const BROWSER_AGENT = sandbox({
 	snapshot: { id: "snp_browser_3", takenAt: FIXTURE_NOW - 40 * MINUTE },
 	costCents: 33,
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	shared: true,
 });
 
@@ -461,6 +468,7 @@ export const EVAL_RUNNER = sandbox({
 	snapshot: { id: "snp_eval_2", takenAt: FIXTURE_NOW - 12 * MINUTE },
 	costCents: 3,
 	hostId: "hst_home",
+	hostName: "home-server",
 	error: "The machine stopped answering. Its disk is safe: recover it, or resume it on another host.",
 	forkedFrom: DEV_STACK.id,
 	environment: { id: "env_evals", name: "evals" },
@@ -479,6 +487,7 @@ export const NEW_ONE = sandbox({
 	stopsAt: FIXTURE_NOW + HOUR,
 	costCents: 0,
 	hostId: "hst_home",
+	hostName: "home-server",
 });
 
 export const PERSONAL_BOX = sandbox({
@@ -495,6 +504,7 @@ export const PERSONAL_BOX = sandbox({
 	costCents: 2,
 	usage: usageSeries(1, 0.4),
 	hostId: "hst_home",
+	hostName: "home-server",
 });
 
 export const PERSONAL_OLD = sandbox({
@@ -509,6 +519,7 @@ export const PERSONAL_OLD = sandbox({
 	snapshot: { id: "snp_wine_4", takenAt: FIXTURE_NOW - 5 * DAY },
 	costCents: 96,
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.23.803", { days: 12, versions: 9 }),
 });
 
@@ -2024,6 +2035,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						? { rates: DEFAULT_SANDBOX_SHAPES.rates }
 						: {}),
 				})),
+			// The sample's hosts as a super-admin sees them: each one shared, so any account may be put on one.
+			hosts: () =>
+				gate(() =>
+					HOSTS.map((host) => ({
+						id: host.id,
+						name: host.name,
+						state: host.state,
+						kinds: host.kvm ? (["microvm", "isolate"] as const) : (["isolate"] as const),
+						shared: true,
+					})),
+				),
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
@@ -2067,7 +2089,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							: { idleStopMinutes: input.idleStopMinutes, idleStopsAt: now() + input.idleStopMinutes * MINUTE }),
 						usage: flat(),
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
-						hostId: input.kind === "isolate" ? "hst_home" : "hst_hetzner_1",
+						// The host asked for, else where the sample's placement puts each type.
+						...((input.hostId ?? (input.kind === "isolate" ? "hst_home" : "hst_hetzner_1")) === "hst_home"
+							? { hostId: "hst_home", hostName: "home-server" }
+							: input.hostId === undefined || input.hostId === "hst_hetzner_1"
+								? { hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01" }
+								: {
+										hostId: input.hostId,
+										hostName: HOSTS.find((host) => host.id === input.hostId)?.name ?? input.hostId,
+									}),
 						shared: input.accountId !== PERSONAL.id,
 						...(input.environmentId === undefined
 							? {}
