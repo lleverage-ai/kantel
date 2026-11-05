@@ -74,11 +74,11 @@ import {
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
 
-// Lucide icons (lucide.dev) in Kantel's icon shape: 16px (14 small), a 1.5px stroke whatever the size, in
+// Lucide icons (lucide.dev) in Kantel's icon shape: 16px (14 small, 24 large), a 1.5px stroke whatever the size, in
 // currentColor, decorative unless given a `label`. Imported one by one, so only the icons a screen uses are bundled.
 // New menus and controls use these; the inline icons in icons.tsx stay until each is replaced.
 
-const SIZES = { sm: 14, md: 16 } as const;
+const SIZES = { sm: 14, md: 16, lg: 24 } as const;
 
 function lucide(Icon: LucideIcon, name: string) {
 	function KantelLucide({ label, size = "md", className, ...rest }: IconProps) {

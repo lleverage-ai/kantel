@@ -36,7 +36,7 @@
 	/* Lines. */
 	--kt-border: hsl(60 6% 83.7%); /* border: Grey 400 */
 	--kt-border-strong: hsl(60 6% 78%); /* a step over the border */
-	--kt-skeleton: var(--kt-border); /* a placeholder bar, the border grey, which reads on white */
+	--kt-skeleton: var(--kt-active); /* a placeholder bar: the pressed tint, quieter than the text it stands for */
 	--kt-border-input: hsl(60 6% 83.7%); /* input */
 
 	/* Text. The disabled grey is his muted-fg-subtle, under AA (2.51:1 on the canvas) as disabled text may be; the faint

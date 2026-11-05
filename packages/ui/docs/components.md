@@ -296,5 +296,5 @@ stopped when nothing listens. `RelativeTime` stops ticking once a time is a day 
 composer's icon-only send button.
 
 New icons come from [lucide](https://lucide.dev) (`lucide-react`, imported one by one so only those used are
-bundled). Give one `className="kt-icon kt-icon-md"` (or `-sm`) so it sizes like the rest, and `aria-hidden` unless it
+bundled). Give one `className="kt-icon kt-icon-md"` (or `-sm`, or `-lg` for a state's mark) so it sizes like the rest, and `aria-hidden` unless it
 carries meaning on its own.

@@ -71,7 +71,7 @@ modifiers such as `bg-accent/50`.
 | `--kt-radius`, `-radius-control`, `-sm`, `-xs`, `-bubble`, `-full` | `rounded-panel`, `rounded-control`, `rounded-sm`, `rounded-xs`, `rounded-bubble`, `rounded-full` |
 | `--kt-shadow-float`, `-shadow-composer` | `shadow-float`, `shadow-composer` |
 | `--kt-logo-edge`, `-logo-dark-mark`, `-logo-light-mark` | `drop-shadow-logo`, `filter-(--kt-logo-dark-mark)`, `filter-(--kt-logo-light-mark)` (a service's logo, drawn with no tile: provider-logo.tsx) |
-| `--kt-control-xs` … `-control-lg`, `-icon-sm`, `-icon-md`, `-dot`, `-thumb` | `size-control-sm`, `h-control-md`, `size-icon-sm`, `size-dot`, `size-thumb` (any sizing or spacing utility) |
+| `--kt-control-xs` … `-control-lg`, `-icon-sm`, `-icon-md`, `-icon-lg`, `-dot`, `-thumb` | `size-control-sm`, `h-control-md`, `size-icon-sm`, `size-dot`, `size-thumb` (any sizing or spacing utility) |
 | `--kt-content-width`, `-card-width`, `-sidebar-width`, `-rail-width`, `-popover-width`, `-menu-width`, `-palette-width`, `-share-width`, `-doc-width` | `max-w-content`, `max-w-card`, `w-sidebar`, `w-rail`, `w-popover`, `w-menu`, `w-palette`, `w-share`, `max-w-doc` |
 | `--kt-nav-width`, `-topbar-height`, `-tabbar-height` | `w-(--kt-nav-width)`, `h-(--kt-topbar-height)`, `h-(--kt-tabbar-height)`: the compute console's sidebar, and a phone's top bar and tab bar |
 | `--kt-ease`, `-ease-breathe` | `ease-standard`, `ease-breathe`; `transition-*` default to `--kt-duration` and `--kt-ease` |
@@ -133,7 +133,7 @@ rather than its hook names: `buttonClass(variant, size)` and `buttonLabelClass` 
 
 Their .css files keep only what utilities can't say, each with a comment:
 
-- shared hooks other components wear on their own elements: `.kt-icon`, `.kt-icon-sm` and `.kt-icon-md` (icons.css,
+- shared hooks other components wear on their own elements: `.kt-icon`, `.kt-icon-sm`, `.kt-icon-md` and `.kt-icon-lg` (icons.css,
   on raw lucide-react icons too), and the six `.kt-status-<status>` classes that set `--kt-status-current` and
   `--kt-status-current-soft` (status.css);
 - container queries at sizes the theme has no name for (breadcrumbs.css, form-layout.css);

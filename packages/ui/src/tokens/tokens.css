@@ -155,6 +155,7 @@
 	--kt-control-lg: 36px; /* the touch size: the floor for primary actions under a coarse pointer */
 	--kt-icon-sm: 14px;
 	--kt-icon-md: 16px;
+	--kt-icon-lg: 24px; /* a state's mark: an empty or error page's icon in its disc */
 	--kt-dot: 6px;
 	/*
 	 * Text looks centred on its cap height, not on its line box: in most UI fonts the descent is deeper than the space
