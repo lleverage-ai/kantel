@@ -2,7 +2,9 @@
  * The `conflict` a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the
  * sandbox isn't running, with a `SandboxNotRunning` in its details: a stable code, the state, why it stopped where that
  * was recorded, and what to do. A sandbox is never resumed for such a call: its auto-stop is a lifetime from its start,
- * not idleness, so a call reviving it would undo the stop its owner set.
+ * so a call reviving it would undo the stop its owner set. An idle stop (`idle-stop`) is the one stop a call could
+ * fairly undo, and its reason is kept apart for that, but no call resumes it yet either: neither does a request to one
+ * of its hosted ports, which is answered `portNotRunningText` instead.
  */
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
@@ -36,6 +38,46 @@ interface NotRunningSandbox {
 	readonly id: string;
 	readonly state: computeSchema.SandboxState;
 	readonly reason?: string;
+}
+
+/** Why a sandbox stopped, in words, from its recorded `reason`: its auto-stop, its idle stop, a rule's, or nobody's. */
+function stoppedBecause(sandbox: NotRunningSandbox & { readonly idleStopMinutes?: number | null }): string {
+	const reason = sandbox.reason?.trim().replace(/\.$/, "") ?? "";
+	if (reason === "idle-stop") {
+		const minutes = sandbox.idleStopMinutes;
+		return typeof minutes === "number"
+			? `it went ${minutes} minute${minutes === 1 ? "" : "s"} without use (its idle stop)`
+			: "it went unused for its idle stop's time";
+	}
+	if (reason === "auto-stop") return "its auto-stop time came";
+	return reason === "" ? `someone ${sandbox.state === "paused" ? "paused" : "stopped"} it` : reason;
+}
+
+/**
+ * What a request to a hosted port of `sandbox` is told while it isn't running: a plain page with its state, why, and
+ * how to resume it. Kantel doesn't resume it for the request (see the module's comment), and its ports' URLs end once it
+ * starts again, so the page says to expose the port again too.
+ */
+export function portNotRunningText(
+	sandbox: NotRunningSandbox & { readonly name: string; readonly idleStopMinutes?: number | null },
+	apiBasePath: string,
+): string {
+	const resume = `kantel resume ${sandbox.id}, Resume on its page in the Kantel console, or POST ${apiBasePath.replace(/\/+$/, "")}/sandboxes/${sandbox.id}/resume`;
+	const named = `This port's sandbox, ${sandbox.name} (${sandbox.id}),`;
+	switch (sandbox.state) {
+		case "stopped":
+			return `${named} is stopped: ${stoppedBecause(sandbox)}. Its disk is kept. Whoever runs it can resume it (${resume}), then expose this port again.`;
+		case "paused":
+			return `${named} is paused: ${stoppedBecause(sandbox)}. Whoever runs it can resume it (${resume}), then expose this port again.`;
+		case "starting":
+			return `${named} is starting. Once it runs, expose this port again.`;
+		case "stopping":
+			return `${named} is stopping. Whoever runs it can resume it once it has stopped (${resume}).`;
+		case "deleting":
+			return `${named} is being deleted.`;
+		default:
+			return `${named} is in error${sandbox.reason === undefined ? "" : ` (${sandbox.reason.replace(/\.$/, "")})`}. Whoever runs it can resume it (${resume}).`;
+	}
 }
 
 /**

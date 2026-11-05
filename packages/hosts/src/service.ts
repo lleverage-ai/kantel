@@ -279,6 +279,12 @@ export interface HostComputeLink {
 	 */
 	bundle?(hostId: string, sandboxId: string, digest: string): Promise<HostBundle | undefined>;
 	/**
+	 * A use of a sandbox through the relay (`ComputeService.noteActivity`, for its idle stop): a port stream opened to it
+	 * (`sandboxes.openPort`: SSH, the desktop or browser, a hosted port's request or WebSocket), and each frame either
+	 * way. Called for every frame, so it must be cheap. Absent: nothing counts.
+	 */
+	activity?(sandboxId: string): void;
+	/**
 	 * Keeps a host's usage tick, checked (`parseHostUsage`). `shared`: it came from the replica holding the host's
 	 * connection, not from the host (`recordSharedUsage`). Absent: ticks are dropped.
 	 */
@@ -1455,11 +1461,30 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					throw new KantelError("invalid", "Not a port");
 				}
 				const placement = await placementOf(sandboxId);
+				// Every relayed stream is someone using the sandbox: its opening, and its bytes either way, count toward its
+				// idle stop. An open stream that carries nothing (an SSH session left alone) doesn't.
+				const used = () => compute?.activity?.(sandboxId);
+				let stream: PortStream;
 				try {
-					return await hub.openPort(placement.hostId, sandboxId, port, sink);
+					stream = await hub.openPort(placement.hostId, sandboxId, port, {
+						data(bytes) {
+							used();
+							sink.data(bytes);
+						},
+						end: (reason) => sink.end(reason),
+					});
 				} catch (error) {
 					throw kantelErrorFromHost(error);
 				}
+				used();
+				return {
+					stream: stream.stream,
+					write(bytes) {
+						used();
+						stream.write(bytes);
+					},
+					close: () => stream.close(),
+				};
 			},
 			async openFile(sandboxId, params, sink) {
 				if (params.op !== "read" && params.op !== "write") throw new KantelError("invalid", "op is read or write");

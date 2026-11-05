@@ -307,6 +307,18 @@ export interface Sandbox {
 	readonly createdBy: string;
 	/** When auto-stop stops it; absent when it's always on or not running. */
 	readonly stopsAt?: number;
+	/**
+	 * How long it may go unused before its idle stop stops it, in minutes: no command, SSH, desktop, browser or port
+	 * traffic. Absent: no idle stop.
+	 */
+	readonly idleStopMinutes?: number;
+	/** When its idle stop stops it if nobody uses it first; absent with none, or when it isn't running. */
+	readonly idleStopsAt?: number;
+	/**
+	 * Why Kantel stopped or paused it, while it is: `auto-stop` (its time came), `idle-stop` (it went unused), or a
+	 * rule's reason. Absent: someone stopped it.
+	 */
+	readonly stopReason?: string;
 	readonly snapshot?: SnapshotRef;
 	/** Hosted only: what it has cost this billing period, in US cents. */
 	readonly costCents?: number;
@@ -583,6 +595,8 @@ export interface CreateSandboxInput {
 	readonly fromSnapshot?: string;
 	/** Minutes until auto-stop; undefined is always on. */
 	readonly autoStopMinutes?: number;
+	/** Minutes unused before its idle stop; undefined is none. */
+	readonly idleStopMinutes?: number;
 	/** The environment it starts with. */
 	readonly environmentId?: string;
 	/** The template it is made from (experimental): its newest built snapshot, or a fresh boot of its image. */
@@ -816,6 +830,11 @@ export interface SandboxesSource {
 	get(id: string): Promise<Sandbox>;
 	/** Minutes until auto-stop stops it, from now; undefined keeps it always on. */
 	setAutoStop?(id: string, minutes: number | undefined): Promise<Sandbox>;
+	/**
+	 * Minutes unused before its idle stop stops it, counting from now; undefined turns it off. Absent: the console
+	 * offers no idle stop.
+	 */
+	setIdleStop?(id: string, minutes: number | undefined): Promise<Sandbox>;
 	/** What a running sandbox is using now. Absent: its page shows CPU only. */
 	usageNow?(id: string): Promise<SandboxUsageNow>;
 	/** Its CPU and memory every few seconds, for the live graphs. Absent: they draw `usage` and don't move. */
@@ -1878,6 +1897,34 @@ export function stopsInText(sandbox: Pick<Sandbox, "state" | "stopsAt">, now: nu
 	if (left <= 0) return "Now";
 	// Whole minutes: a countdown in seconds would change the row every second.
 	return duration(Math.ceil(left / MINUTE) * MINUTE);
+}
+
+/**
+ * Its idle stop, for its page: "Idle stop in 28m" while it runs, "Idle stop now" once due; undefined without one or
+ * when it isn't running.
+ */
+export function idleStopText(
+	sandbox: Pick<Sandbox, "state" | "idleStopMinutes" | "idleStopsAt">,
+	now: number,
+): string | undefined {
+	if (sandbox.idleStopMinutes === undefined || sandbox.state !== "running") return undefined;
+	if (sandbox.idleStopsAt === undefined) return `Idle stop after ${duration(sandbox.idleStopMinutes * MINUTE)}`;
+	const left = sandbox.idleStopsAt - now;
+	if (left <= 0) return "Idle stop now";
+	return `Idle stop in ${duration(Math.ceil(left / MINUTE) * MINUTE)}`;
+}
+
+/** Why a stopped or paused sandbox stopped, in words, where Kantel stopped it: "Stopped by its idle stop". */
+export function stoppedByText(sandbox: Pick<Sandbox, "state" | "stopReason" | "idleStopMinutes">): string | undefined {
+	if ((sandbox.state !== "stopped" && sandbox.state !== "paused") || sandbox.stopReason === undefined) return undefined;
+	const verb = sandbox.state === "paused" ? "Paused" : "Stopped";
+	if (sandbox.stopReason === "idle-stop") {
+		return sandbox.idleStopMinutes === undefined
+			? `${verb} by its idle stop`
+			: `${verb} after ${duration(sandbox.idleStopMinutes * MINUTE)} unused`;
+	}
+	if (sandbox.stopReason === "auto-stop") return `${verb} by its auto-stop`;
+	return `${verb}: ${sandbox.stopReason}`;
 }
 
 /** "$0.42", "$12.08", "<$0.01" for a cost above zero that rounds to nothing. */

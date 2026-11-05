@@ -385,6 +385,17 @@ function pairs(values: readonly string[], what: string): { [key: string]: string
 const autoStopOf = (value: string | undefined): number | null | undefined =>
 	value === "never" ? null : whole(value, "--auto-stop");
 
+/** `--idle-stop`'s minutes, or `null` for `never` (no idle stop). */
+const idleStopOf = (value: string | undefined): number | null | undefined =>
+	value === "never" ? null : whole(value, "--idle-stop");
+
+/** The flag for a sandbox's idle stop, on `new` and `extend`. */
+const idleStopFlag = {
+	type: "string",
+	value: "<minutes|never>",
+	description: "Also stop once it goes this long unused: no command, SSH, desktop, browser or port traffic",
+} as const;
+
 /** One word for a POSIX shell, quoted only when it needs to be. */
 export function shellQuote(word: string): string {
 	if (/^[\w@%+=:,./-]+$/.test(word)) return word;
@@ -479,6 +490,14 @@ function sandboxTable(sandboxes: readonly Sandbox[]): string {
 	);
 }
 
+/** "after 30 min unused (stops in 28 min unless used)", or undefined with no idle stop. */
+function idleStopText(sandbox: Sandbox): string | undefined {
+	const minutes = sandbox.idleStopMinutes;
+	if (minutes === undefined || minutes === null) return undefined;
+	const idle = `after ${minutes} min unused`;
+	return sandbox.idleStopsAt === undefined ? idle : `${idle} (stops ${until(sandbox.idleStopsAt)} unless used)`;
+}
+
 function describeSandbox(sandbox: Sandbox): string {
 	const resources = sandbox.resources;
 	const machine = [
@@ -499,6 +518,7 @@ function describeSandbox(sandbox: Sandbox): string {
 		["visibility", sandbox.visibility],
 		["labels", labels.join(", ")],
 		["auto-stop", sandbox.stopsAt === undefined ? autoStop : `${autoStop} (stops ${until(sandbox.stopsAt)})`],
+		["idle stop", idleStopText(sandbox)],
 		["snapshot", sandbox.latestSnapshotId],
 		["created", `${timestamp(sandbox.createdAt)} (${ago(sandbox.createdAt)})`],
 		["running", duration(sandbox.usage.runningSeconds)],
@@ -1795,6 +1815,7 @@ const SECTIONS: readonly Section[] = [
 						value: "<minutes|never>",
 						description: "Stop by itself this long after it starts (default 60)",
 					},
+					"idle-stop": { ...idleStopFlag, description: `${idleStopFlag.description} (default never)` },
 					label: { type: "string", multiple: true, value: "<k=v>", description: "A label; repeat for more" },
 					env: {
 						type: "string",
@@ -1815,7 +1836,11 @@ const SECTIONS: readonly Section[] = [
 				details:
 					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
-					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.",
+					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
+					"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
+					"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
+					"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
+					"page saying it is stopped and why: it doesn't wake it.",
 				async run(ctx) {
 					const hosts = ctx.list("host").map(hostedPort);
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
@@ -1834,6 +1859,7 @@ const SECTIONS: readonly Section[] = [
 						image: ctx.string("image"),
 						from: ctx.string("from"),
 						autoStopMinutes: autoStopOf(ctx.string("auto-stop")),
+						idleStopMinutes: idleStopOf(ctx.string("idle-stop")),
 						labels: pairs(ctx.list("label"), "--label"),
 						env: pairs(
 							envs.filter((item) => item.includes("=")),
@@ -1968,14 +1994,29 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "extend",
-				summary: "Move a sandbox's auto-stop to this many minutes from now",
-				args: [{ name: "id" }, { name: "minutes" }],
+				summary: "Move a sandbox's auto-stop to this many minutes from now, or change its idle stop",
+				args: [{ name: "id" }, { name: "minutes", optional: true }],
+				flags: { "idle-stop": idleStopFlag },
+				details:
+					"kantel extend <id> 120 moves its stop to two hours from now. kantel extend <id> --idle-stop 30 stops it\n" +
+					"once it goes 30 minutes unused, counting from now; --idle-stop never turns that off. Both may be given.",
 				async run(ctx) {
-					const minutes = whole(ctx.arg(1), "minutes") ?? 0;
-					const sandbox = await (await ctx.client()).updateSandbox(ctx.arg(0), { extendMinutes: minutes });
+					const minutes = whole(ctx.optional(1), "minutes");
+					const idleStopMinutes = idleStopOf(ctx.string("idle-stop"));
+					if (minutes === undefined && idleStopMinutes === undefined) {
+						throw new UsageError("give the minutes to extend it by, or --idle-stop <minutes|never>");
+					}
+					const sandbox = await (await ctx.client()).updateSandbox(ctx.arg(0), {
+						...(minutes === undefined ? {} : { extendMinutes: minutes }),
+						...(idleStopMinutes === undefined ? {} : { idleStopMinutes }),
+					});
 					const { stopsAt } = sandbox;
+					const idle = idleStopText(sandbox);
 					ctx.emit(sandbox, () =>
-						stopsAt === undefined ? `${sandbox.id} ${sandbox.state}` : `${sandbox.id} stops ${until(stopsAt)}`,
+						[
+							stopsAt === undefined ? `${sandbox.id} ${sandbox.state}` : `${sandbox.id} stops ${until(stopsAt)}`,
+							...(idleStopMinutes === undefined ? [] : [`idle stop: ${idle ?? "never"}`]),
+						].join("\n"),
 					);
 				},
 			},

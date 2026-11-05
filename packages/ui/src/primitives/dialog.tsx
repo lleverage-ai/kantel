@@ -6,10 +6,11 @@ import { CloseIcon } from "./lucide.tsx";
 
 /**
  * A modal dialog: the browser's top layer, a dimmed page behind (its ::backdrop), a raised card no wider than a short
- * sentence needs.
+ * sentence needs. It sets its own alignment and wrapping: one opened from a table row's ⋯ menu would otherwise take
+ * the cell's right-aligned, unwrapped text, and a long line would run out of the card.
  */
 const dialogFrame =
-	"kt-dialog m-auto max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md text-fg backdrop:bg-scrim";
+	"kt-dialog m-auto max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md text-fg text-start whitespace-normal backdrop:bg-scrim";
 
 /** Its width: a short sentence's, or a chart's and a table's (`wide`), never wider than the window. */
 const dialogWidth = {

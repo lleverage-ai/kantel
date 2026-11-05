@@ -174,7 +174,7 @@ Commands, files, ports, file URLs and archives need a running sandbox.
 
 A call made while the sandbox is `starting`, such as a command sent straight after `resumeSandbox` with `"wait": false`, waits for it to run, then goes on as usual. The wait is up to 60 seconds and doesn't count against the command's `timeoutMs`. If the start fails, the call answers as for a sandbox in `error`. If the sandbox is still starting after 60 seconds, the call answers `409` with `sandbox_starting`: send it again.
 
-Kantel never resumes a sandbox for such a call. Auto-stop is a lifetime from the sandbox's start, not idleness, so a call that resumed it would undo the stop you set. A call to a sandbox that is `stopped`, `paused`, `stopping` or in `error` answers `409` `conflict`. Its `details` are a [SandboxNotRunning](/api/reference/types/#sandboxnotrunning): a stable `code`, the sandbox's `state`, the `stopReason` where Kantel recorded why it stopped, and a `hint`:
+Kantel never resumes a sandbox for such a call. Auto-stop is a lifetime from the sandbox's start, not idleness, so a call that resumed it would undo the stop you set. An [idle stop](/sandboxes/lifecycle/#idle-stop) has its own `stopReason`, `idle-stop`, and isn't resumed by a call either. A call to a sandbox that is `stopped`, `paused`, `stopping` or in `error` answers `409` `conflict`. Its `details` are a [SandboxNotRunning](/api/reference/types/#sandboxnotrunning): a stable `code`, the sandbox's `state`, the `stopReason` where Kantel recorded why it stopped, and a `hint`:
 
 ```json
 {

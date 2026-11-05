@@ -2,8 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
-import type { Sandbox, SandboxState, Template } from "./compute-model.ts";
+import { idleStopText, type Sandbox, type SandboxState, stoppedByText, type Template } from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
+import { IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
 import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
@@ -89,6 +90,21 @@ describe("a sandbox's logs", () => {
 
 describe("a sandbox's page", () => {
 	const tabs: readonly SandboxTab[] = ["overview", "logs", "snapshots", "files"];
+
+	it("says when its idle stop comes while it runs, and that it stopped it once it has", () => {
+		const running = { state: "running" as const, idleStopMinutes: 30, idleStopsAt: FIXTURE_NOW + 24 * MINUTE };
+		expect(idleStopText(running, FIXTURE_NOW)).toBe("Idle stop in 24m");
+		expect(idleStopText(running, FIXTURE_NOW + HOUR)).toBe("Idle stop now");
+		expect(idleStopText({ state: "running" }, FIXTURE_NOW)).toBeUndefined();
+		expect(idleStopText({ ...running, state: "stopped" }, FIXTURE_NOW)).toBeUndefined();
+		expect(stoppedByText({ state: "stopped", stopReason: "idle-stop", idleStopMinutes: 30 })).toBe(
+			"Stopped after 30m unused",
+		);
+		expect(stoppedByText({ state: "stopped", stopReason: "auto-stop" })).toBe("Stopped by its auto-stop");
+		// Someone stopped it: nothing to say.
+		expect(stoppedByText({ state: "stopped" })).toBeUndefined();
+		expect(stoppedByText({ state: "running", stopReason: "idle-stop" })).toBeUndefined();
+	});
 
 	it("shows Browser and Desktop in the console, and on Overview where they open in a tab of their own", () => {
 		const running = { inTab: false, windows: true, known: true, tabs };
@@ -295,6 +311,39 @@ describe("New sandbox", () => {
 				autoStopMinutes: 60,
 			},
 		);
+	});
+
+	it("keeps a sandbox's own idle stop in its dialog when no preset matches it, so an untouched Save keeps it", () => {
+		// Below, between and above the presets, as the CLI or API may set them.
+		for (const [minutes, label] of [
+			[1, "1 minute"],
+			[45, "45 minutes"],
+			[120, "2 hours"],
+			[1440, "1 day"],
+			[43_200, "30 days"],
+		] as const) {
+			const { options, choice } = idleStopChoices(minutes);
+			// Saving the first choice sends its own minutes, unchanged.
+			expect(Number(choice)).toBe(minutes);
+			expect(options).toContainEqual({ value: String(minutes), label });
+			// The presets and Never are still there to pick, in order, Never first.
+			for (const preset of IDLE_STOP_CHOICES) expect(options).toContainEqual(preset);
+			expect(options[0]?.value).toBe("never");
+			const values = options.slice(1).map((option) => Number(option.value));
+			expect(values).toEqual([...values].sort((a, b) => a - b));
+		}
+		// A preset or none: the presets alone.
+		expect(idleStopChoices(30)).toEqual({ options: IDLE_STOP_CHOICES, choice: "30" });
+		expect(idleStopChoices(undefined)).toEqual({ options: IDLE_STOP_CHOICES, choice: "never" });
+	});
+
+	it("sends an idle stop only when one is chosen", () => {
+		expect(newSandboxInput({ ...form, idleStop: "30" }).idleStopMinutes).toBe(30);
+		expect("idleStopMinutes" in newSandboxInput({ ...form, idleStop: "never" })).toBe(false);
+		expect("idleStopMinutes" in newSandboxInput(form)).toBe(false);
+		// Beside auto-stop, which stays as chosen.
+		expect(newSandboxInput({ ...form, autoStop: "never", idleStop: "15" })).toMatchObject({ idleStopMinutes: 15 });
+		expect("autoStopMinutes" in newSandboxInput({ ...form, autoStop: "never", idleStop: "15" })).toBe(false);
 	});
 
 	it("keeps a requested template until the list is read, and says so when it can't be had", () => {

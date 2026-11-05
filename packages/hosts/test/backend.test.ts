@@ -206,12 +206,15 @@ function setup(options: { ports?: boolean } = {}) {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
 	const relay = createMemoryRelayStore();
 	const tickets = createTunnelTickets(relay);
+	// The compute API comes after the router, as on a gateway: it is bound once there is one.
+	let compute: ComputeApi | undefined;
 	const ports =
 		options.ports === true
 			? createPortRouter({
 					domain: "kantel-ports.test",
 					openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
 					store: relay,
+					notRunning: async (sandboxId) => compute?.service.portNotRunning(sandboxId),
 				})
 			: undefined;
 	const backend = createHostBackend({
@@ -227,6 +230,7 @@ function setup(options: { ports?: boolean } = {}) {
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
 	});
+	compute = api;
 	service.useJoinTokens(joinTokenSpender(api.store));
 	closers.push(
 		() => service.close(),
@@ -429,7 +433,7 @@ describe("the compute API on kantel-host hosts", () => {
 		expect((await failure(root.openSsh(sandbox.id, { publicKey: "ssh-ed25519 AAAA\nrm -rf /" }))).code).toBe("invalid");
 	});
 
-	it("exposes a microVM's ports only with a name for them, token-gated unless public, and forgets them on stop", async () => {
+	it("exposes a microVM's ports only with a name for them, token-gated unless public, and says so on stop and forgets them on boot", async () => {
 		const without = setup();
 		const lone = await without.root.createHostJoinToken({});
 		new FakeHost(without.service, (await without.service.register({ token: lone.token, facts })).hostId).connect();
@@ -479,7 +483,18 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(await relay.exposuresOf(recovered.id)).toEqual([]);
 		expect((await ports?.fetch(new Request(before.url)))?.status).toBe(404);
 
+		// A stopped sandbox's port says so, and how it is resumed: the request doesn't wake it.
 		await root.stopSandbox(sandbox.id, { wait: true });
+		const stopped = await ports?.fetch(new Request(open.url));
+		expect(stopped?.status).toBe(503);
+		expect(await stopped?.text()).toContain(`kantel resume ${sandbox.id}`);
+		// Without the port's token, nothing is said about the sandbox.
+		expect((await ports?.fetch(bare))?.status).toBe(401);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+		// Its URLs end when it boots again; the port is exposed again for a new one.
+		await root.resumeSandbox(sandbox.id, { wait: true });
+		expect((await root.listPorts(sandbox.id)).items).toEqual([]);
+		expect(await relay.exposuresOf(sandbox.id)).toEqual([]);
 		expect((await ports?.fetch(new Request(open.url)))?.status).toBe(404);
 	});
 

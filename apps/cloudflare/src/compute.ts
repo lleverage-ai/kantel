@@ -572,6 +572,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	own?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
+		activity: (sandboxId) => api.service.noteActivity(sandboxId),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);
@@ -590,7 +592,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
 				}),
 	});
-	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
+	own?.bind(
+		(grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId),
+		(sandboxId) => api.service.portNotRunning(sandboxId),
+	);
 	const timers = whileBusy(api, now);
 	// The dispatcher runs only while compute requests come (`whileBusy`), so the sweep sends what it queued itself: a
 	// stop's `sandbox.stopped`, on the tick after, and any delivery whose retry has come due.
@@ -655,7 +660,10 @@ async function accountHostsSide(
 	publicUrl: string;
 	hosts: StackHosts;
 	access: ReturnType<typeof createRelayAccess>;
-	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
+	bind(
+		stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>,
+		notRunning?: (sandboxId: string) => Promise<string | undefined>,
+	): void;
 	/** The sandboxes placed on a host of the registry as microVMs, now. */
 	microvms(): Promise<string[]>;
 }> {
@@ -668,6 +676,7 @@ async function accountHostsSide(
 	const relay = sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql);
 	const tickets = sweptAsUsed(createTunnelTickets(relay, now), now);
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
+	let stopped: ((sandboxId: string) => Promise<string | undefined>) | undefined;
 	// Its timer runs only while a session is held, so it never keeps the object awake on its own.
 	const access = createRelayAccess({
 		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
@@ -681,6 +690,8 @@ async function accountHostsSide(
 		store: relay,
 		// Whoever exposed a port must still be able to open its sandbox, asked as a tunnel's holder is.
 		stillAllowed: (grantee, sandboxId) => access.allowed(grantee, sandboxId),
+		// A stopped sandbox's port says so, and how it is resumed.
+		notRunning: (sandboxId) => stopped?.(sandboxId) ?? Promise.resolve(undefined),
 		now,
 	});
 	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, ports, now });
@@ -726,8 +737,9 @@ async function accountHostsSide(
 		backend,
 		access,
 		publicUrl: config.publicUrl,
-		bind(stillAllowed) {
+		bind(stillAllowed, notRunning) {
 			check = stillAllowed;
+			stopped = notRunning;
 		},
 		async microvms() {
 			const placed = await Promise.all((await hostStore.listHosts()).map((host) => hostStore.placementsOn(host.id)));

@@ -92,7 +92,7 @@ A key needs `sandboxes:read`.
 
 `PATCH /v1/sandboxes/{sandboxId}` (SDK method `updateSandbox`)
 
-Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`.
+Renames it, changes its auto-stop or idle stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`.
 
 **Path parameters**
 
