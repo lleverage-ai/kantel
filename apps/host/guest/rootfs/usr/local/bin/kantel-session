@@ -22,6 +22,33 @@ fi
 hsetroot -solid '#15171b' >/dev/null 2>&1 || xsetroot -solid '#15171b'
 xsetroot -cursor_name left_ptr
 
+# The desktop's DPI follows the viewer's. Selkies (kantel-stream) sets the DPI a viewer's pixel ratio asks for as
+# Xft.dpi in the X resources, which Chromium reads as it starts, but nothing else here watches. So xsettingsd hands it
+# to the GTK apps (the terminal, the file manager, the editor), which follow it live, and the watcher at the end
+# restarts Openbox and the panels, which read it as they start. xsettingsd reads a file of the session's own, with
+# the DPI alone: the ~/.xsettingsd Selkies writes would also turn on subpixel (RGB) antialiasing, which fringes
+# text in colour on a viewer's screen; Selkies' reload signal just has it read this one again.
+run=${XDG_RUNTIME_DIR:-/tmp}/kantel-session
+mkdir -p "$run"
+dpi() {
+	d=$(xrdb -get Xft.dpi 2>/dev/null)
+	d=${d%%.*}
+	case $d in '' | *[!0-9]*) d=96 ;; esac
+	[ "$d" -gt 0 ] || d=96
+	echo "$d"
+}
+xsettings() {
+	printf 'Xft/DPI %d\n' $(($1 * 1024)) > "$run/xsettingsd.new" && mv -f "$run/xsettingsd.new" "$run/xsettingsd"
+}
+applied=$(dpi)
+xsettings "$applied"
+(
+	while :; do
+		xsettingsd -c "$run/xsettingsd" >/dev/null 2>&1
+		sleep 1
+	done
+) &
+
 # Openbox, started again if it ever falls over (it exits 0 only when asked to).
 (
 	while :; do
@@ -32,13 +59,35 @@ xsetroot -cursor_name left_ptr
 wm=$!
 for _ in $(seq 100); do xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q 'window id' && break; sleep 0.05; done
 
-# The bar and the dock, likewise.
+# The bar and the dock, likewise, each at the DPI it starts at. tint2 scales itself by the monitor's DPI over
+# scale_relative_to_dpi, and Xvnc's monitor has no physical size, so tint2 counts 96: a reference of 96 × 96 / DPI
+# scales it by DPI / 96. The line goes first, so a setting of its own in the panel's file still wins.
 for panel in topbar dock; do
 	(
 		while :; do
-			tint2 -c "$HOME/.config/tint2/$panel.tint2rc" >/dev/null 2>&1
+			{
+				awk -v d="$(dpi)" 'BEGIN { printf "scale_relative_to_dpi = %.4f\n", 96 * 96 / d }'
+				cat "$HOME/.config/tint2/$panel.tint2rc"
+			} > "$run/$panel.tint2rc"
+			tint2 -c "$run/$panel.tint2rc" >/dev/null 2>&1
 			sleep 1
 		done
 	) &
 done
+
+# A new DPI: xsettingsd reads it again (the GTK apps follow), Openbox restarts in place (its window titles and menus;
+# windows stay open) and the panels start again at it. xprop prints the resources once, then again on each change,
+# so a DPI set since xsettingsd's was written (Selkies restores the last viewer's as it starts) is caught too.
+(
+	last=$applied
+	xprop -root -spy RESOURCE_MANAGER 2>/dev/null | while read -r _; do
+		now=$(dpi)
+		[ "$now" = "$last" ] && continue
+		last=$now
+		xsettings "$now"
+		pkill -HUP -u "$(id -u)" -x xsettingsd
+		openbox --restart >/dev/null 2>&1
+		pkill -u "$(id -u)" -x tint2
+	done
+) &
 wait "$wm"
