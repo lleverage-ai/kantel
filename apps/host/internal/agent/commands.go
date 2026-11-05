@@ -34,7 +34,8 @@ type CommandRunner interface {
 // from before (which has a default of 120 s, and honours a timeout): about 35 years.
 const noLimitMs = 1 << 40
 
-// maxEndedRuns is how many ended detached commands the host keeps the results of, across its sandboxes.
+// maxEndedRuns is how many ended commands the host keeps the results of (detached ones, and foreground ones whose
+// connection went before they ended), across its sandboxes.
 const maxEndedRuns = 256
 
 // maxCommandID bounds a CommandID.
