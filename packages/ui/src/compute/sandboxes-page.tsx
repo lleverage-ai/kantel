@@ -933,8 +933,9 @@ function SandboxRow({
 				<td className="border-b border-border p-0" />
 				{/* What went wrong under the name, and what to do about it at the end of the same line. */}
 				<td className="border-b border-border px-2 pt-0 pb-2.5 text-sm" colSpan={hosting === "hosted" ? 9 : 8}>
-					{/* The fix right after the problem it answers, in one eye movement, not at the row's far end. */}
-					<span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+					{/* The fix directly under the problem it answers, on the message's own left edge: one eye movement, and
+					    the same place on every failed row. */}
+					<span className="flex min-w-0 flex-col items-start gap-2">
 						<span className="min-w-0 text-fg">{failure}</span>
 						{can.recover ? (
 							<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
