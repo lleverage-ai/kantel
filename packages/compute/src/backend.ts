@@ -35,6 +35,10 @@ export interface BackendHost {
 	readonly id: string;
 	readonly name: string;
 	readonly version?: string;
+	/** The version it should run (`Host.latestVersion`); absent when the backend knows none. */
+	readonly latestVersion?: string;
+	/** It runs an older version than `latestVersion`, so `updateHostAgent` can move it. */
+	readonly updateAvailable?: boolean;
 	readonly os?: string;
 	readonly arch?: "x86_64" | "aarch64";
 	readonly tiers: readonly computeSchema.SandboxType[];
@@ -619,6 +623,11 @@ export interface SandboxBackend {
 	deleteTemplateSnapshot?(bytes: TemplateSnapshotBytes): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
+	/**
+	 * Asks a connected host to update its host agent to `latestVersion`, answering once it has the new one in place,
+	 * with the version it's moving to. Absent: hosts aren't updated from the control plane (the stub).
+	 */
+	updateHostAgent?(hostId: string): Promise<{ readonly version: string }>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,

@@ -2114,6 +2114,66 @@ describe("hosts", () => {
 		expect(deleted.state).toBe("deleted");
 	});
 
+	it("says which hosts are out of date, updates one, and shows it updating until it's back on the version", async () => {
+		const stub = createStubBackend();
+		let version = "0.4.1";
+		const asked: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			async capabilities() {
+				const caps = await stub.capabilities();
+				return {
+					...caps,
+					hosts: caps.hosts.map((host) => ({
+						...host,
+						version,
+						latestVersion: "0.4.2",
+						...(version === "0.4.2" ? {} : { updateAvailable: true }),
+					})),
+				};
+			},
+			async updateHostAgent(hostId) {
+				asked.push(hostId);
+				return { version: "0.4.2" };
+			},
+		};
+		const { root, tom } = setup(backend);
+		const listed = await root.listHosts();
+		expect(listed.items[0]).toMatchObject({ version: "0.4.1", latestVersion: "0.4.2", updateAvailable: true });
+		expect(listed.items[0]?.updating).toBeUndefined();
+		// Only the deployment's super-admin updates its hosts.
+		expect((await failure(tom.updateHostAgent(STUB_HOST_ID))).code).toBe("forbidden");
+
+		const started = Date.now();
+		const updating = await root.updateHostAgent(STUB_HOST_ID);
+		expect(asked).toEqual([STUB_HOST_ID]);
+		expect(updating.updating).toEqual({ version: "0.4.2", requestedAt: expect.any(Number) });
+		expect((await root.getHost(STUB_HOST_ID)).updating?.version).toBe("0.4.2");
+		// Ten minutes on without coming back on it, it isn't said to be updating any more.
+		const clock = vi.spyOn(Date, "now").mockReturnValue(started + 11 * 60 * 1000);
+		try {
+			expect((await root.getHost(STUB_HOST_ID)).updating).toBeUndefined();
+		} finally {
+			clock.mockRestore();
+		}
+		await root.updateHostAgent(STUB_HOST_ID);
+		// Back on the new version: no longer updating, nor out of date.
+		version = "0.4.2";
+		const back = await root.getHost(STUB_HOST_ID);
+		expect(back).toMatchObject({ version: "0.4.2", latestVersion: "0.4.2" });
+		expect(back.updating).toBeUndefined();
+		expect(back.updateAvailable).toBeUndefined();
+	});
+
+	it("refuses an update where the backend doesn't update hosts", async () => {
+		const { root } = setup();
+		expect((await failure(root.updateHostAgent(STUB_HOST_ID))).code).toBe("not_supported");
+		// A host the stub reports names no version to run, so it isn't said to be out of date.
+		const [host] = (await root.listHosts()).items;
+		expect(host?.latestVersion).toBeUndefined();
+		expect(host?.updateAvailable).toBeUndefined();
+	});
+
 	it("doesn't run a first create on a host revoked while the host made it", async () => {
 		const stub = createStubBackend();
 		let revokeMeanwhile: (() => Promise<unknown>) | undefined;

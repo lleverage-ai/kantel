@@ -1640,8 +1640,10 @@ export interface Host {
 	readonly os: string;
 	/** The host agent's version. */
 	readonly version: string;
-	/** A newer version is out. */
+	/** The version it should be on, when it runs an older one: it's out of date. */
 	readonly updateAvailable?: string;
+	/** An update asked for that it hasn't come back on yet: the version, and when it was asked for. */
+	readonly updating?: { readonly version: string; readonly since: number };
 	readonly vcpus: number;
 	readonly memoryGb: number;
 	readonly diskGb: number;
@@ -1696,6 +1698,11 @@ export interface HostsSource {
 	undrain(id: string): Promise<Host>;
 	/** Revokes its credential: it's cut off at once, and its sandboxes can't be reached until it joins again. */
 	remove(id: string): Promise<void>;
+	/**
+	 * Updates its host agent to `updateAvailable`: it fetches the release, checks it and restarts, its sandboxes running
+	 * on. Answers the host with `updating` set. Absent: hosts aren't updated from the console.
+	 */
+	update?(id: string): Promise<Host>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

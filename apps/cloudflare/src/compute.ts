@@ -93,6 +93,7 @@ import {
 import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
 import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
+import { createHostReleases } from "@kantel/hosts/releases";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
@@ -379,8 +380,11 @@ export interface StackComputeOptions {
 	readonly portLimits?: PortServingLimits;
 	/** Bounds on relayed WebSockets (desktops, CDP, exposed ports) in this object. Default `RELAY_*`. */
 	readonly relayLimits?: RelayLimits;
-	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker. Absent, off. */
-	readonly accountHosts?: { readonly publicUrl: string };
+	/**
+	 * Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker, and where the latest kantel-host
+	 * release is read (`releasesUrl`; absent, it isn't, and no host is said to be out of date). Absent, off.
+	 */
+	readonly accountHosts?: { readonly publicUrl: string; readonly releasesUrl?: string };
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
 	readonly templates?: boolean;
 	/**
@@ -511,6 +515,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						...options.accountHosts,
 						portsDomain,
 						...(options.relayLimits === undefined ? {} : { relayLimits: options.relayLimits }),
+						...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 					},
 					options.sql,
 					now,
@@ -651,7 +656,13 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
  * gateway's ticket and access checks, and exposed ports on `portsDomain`'s names, pages (`servePort`) and WebSockets.
  */
 async function accountHostsSide(
-	config: { readonly publicUrl: string; readonly portsDomain: string; readonly relayLimits?: RelayLimits },
+	config: {
+		readonly publicUrl: string;
+		readonly portsDomain: string;
+		readonly relayLimits?: RelayLimits;
+		readonly releasesUrl?: string;
+		readonly fetch?: typeof fetch;
+	},
 	sql: SqlDriver | undefined,
 	now: () => number,
 ): Promise<{
@@ -672,7 +683,20 @@ async function accountHostsSide(
 		await migrateRelay(sql);
 	}
 	const hostStore = sql === undefined ? createMemoryHostStore() : createSqlHostStore(sql);
-	const service = createHostsService({ store: hostStore, publicUrl: config.publicUrl });
+	// Hosts aren't moved on their own here: the latest release only flags those behind it, for their people to update.
+	const releases =
+		config.releasesUrl === undefined
+			? undefined
+			: createHostReleases({
+					url: config.releasesUrl,
+					...(config.fetch === undefined ? {} : { fetch: config.fetch }),
+					log: (message) => console.warn(message),
+				});
+	const service = createHostsService({
+		store: hostStore,
+		publicUrl: config.publicUrl,
+		...(releases === undefined ? {} : { releases }),
+	});
 	const relay = sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql);
 	const tickets = sweptAsUsed(createTunnelTickets(relay, now), now);
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;

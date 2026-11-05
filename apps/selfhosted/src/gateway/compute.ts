@@ -29,7 +29,11 @@
  *   KANTEL_HOST_VERSION, KANTEL_HOST_UPDATE_URL
  *                                the kantel-host version hosts should run and where they fetch it ({version}, {os},
  *                                {arch}; default that version's GitHub Release, DEFAULT_HOST_UPDATE_URL); without a
- *                                version, hosts aren't asked to update
+ *                                version, hosts aren't asked to update on their own
+ *   KANTEL_HOST_RELEASES         without KANTEL_HOST_VERSION: where the latest kantel-host release is read, hourly, to
+ *                                say which hosts are out of date and update one from the console. A URL answering
+ *                                `{"tag_name": "v0.4.2"}` or `{"version": "0.4.2"}`; default Kantel's latest GitHub
+ *                                Release (DEFAULT_HOST_RELEASES_URL); `off` reads none
  *   KANTEL_COMPUTE_IMAGES        where `kantel-host install` gets the kernel and images (GET /v1/hosts/images/...): a
  *                                directory this gateway serves (with manifest.json from `kantel-host manifest <dir>`), or
  *                                an http(s) URL it redirects to; `off` serves none. Default: Kantel's published images,
@@ -137,6 +141,7 @@ import {
 	type RelayAccess,
 } from "@kantel/hosts/relay-access";
 import type { RelayStore } from "@kantel/hosts/relay-store";
+import { createHostReleases, DEFAULT_HOST_RELEASES_URL, DEFAULT_HOST_UPDATE_URL } from "@kantel/hosts/releases";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
@@ -162,6 +167,8 @@ export interface ComputeHostsConfig {
 	readonly joinCommand?: string;
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
+	/** Where the latest kantel-host release is read; absent, it isn't (KANTEL_HOST_RELEASES=off). */
+	readonly releasesUrl?: string;
 	readonly images?: string;
 	readonly attributionKey?: string;
 	/** Exposed ports' wildcard name's parent, such as `kantel-ports.example`. */
@@ -208,6 +215,11 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	}
 	const version = env.KANTEL_HOST_VERSION?.trim() ?? "";
 	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() || DEFAULT_HOST_UPDATE_URL;
+	const rawReleases = env.KANTEL_HOST_RELEASES?.trim() || DEFAULT_HOST_RELEASES_URL;
+	const releasesUrl = rawReleases.toLowerCase() === "off" ? "" : rawReleases;
+	if (releasesUrl !== "" && !/^https?:\/\/[^/\s]+/.test(releasesUrl)) {
+		throw new Error("KANTEL_HOST_RELEASES is an http(s) URL, or `off`");
+	}
 	const rawImages = env.KANTEL_COMPUTE_IMAGES?.trim() || DEFAULT_HOST_IMAGES;
 	const images = rawImages.toLowerCase() === "off" ? "" : rawImages;
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
@@ -236,7 +248,9 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
 			...(joinCommand === "" ? {} : { joinCommand }),
-			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version, updateUrl }),
+			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version }),
+			...(updateUrl === "" ? {} : { updateUrl }),
+			...(version !== "" || releasesUrl === "" ? {} : { releasesUrl }),
 		},
 		...patching,
 	};
@@ -289,6 +303,9 @@ export function gatewayHosts(
 		...(config.joinCommand === undefined ? {} : { joinCommand: config.joinCommand }),
 		...(config.desiredVersion === undefined ? {} : { desiredVersion: config.desiredVersion }),
 		...(config.updateUrl === undefined ? {} : { updateUrl: config.updateUrl }),
+		...(config.releasesUrl === undefined
+			? {}
+			: { releases: createHostReleases({ url: config.releasesUrl, ...(log === undefined ? {} : { log }) }) }),
 		...(log === undefined ? {} : { log }),
 	});
 }
@@ -297,11 +314,11 @@ export function gatewayHosts(
 export const HOST_IMAGES_PATH = HOSTS_IMAGES_PATH;
 
 /** Kantel's published host images (`@kantel/hosts/http`); the hosted gateway serves the same ones. */
-export { DEFAULT_HOST_IMAGES };
-
-/** Where a host fetches the kantel-host that KANTEL_HOST_VERSION names: that version's GitHub Release. */
-export const DEFAULT_HOST_UPDATE_URL =
-	"https://github.com/lleverage-ai/kantel/releases/download/v{version}/kantel-host-{os}-{arch}";
+/**
+ * Where a host fetches the kantel-host it's moved to (KANTEL_HOST_VERSION's, or the latest release's): that version's
+ * GitHub Release; and where the latest release is read.
+ */
+export { DEFAULT_HOST_IMAGES, DEFAULT_HOST_RELEASES_URL, DEFAULT_HOST_UPDATE_URL };
 
 /**
  * Serves the host images from a directory, or redirects to where they are; undefined for any other path. A file name

@@ -318,6 +318,12 @@ An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 
 
 ## Update a host
 
+The control plane checks Kantel's latest `kantel-host` release about once an hour. The console's **Hosts** page marks a host that runs an older version **Out of date** and counts those hosts over the table. To update one, choose **Update to** *version* from the host's **⋯** menu. The host downloads that release, checks it against the release's `SHA256SUMS` and restarts on it. The row shows **Updating to** *version* until the host connects on the new version, usually within seconds. Its sandboxes keep running, but SSH sessions, terminals and port connections to them through Kantel drop while the host reconnects. `kantel-admin host update <hostId>` and `POST /v1/admin/hosts/{hostId}/update` do the same, and an account's own hosts are updated with `POST /v1/hosts/{hostId}/update`.
+
+Nothing updates on its own this way: a host moves only when someone asks. A host that is offline can be updated once it's back. A host in an E2E space refuses an update from the control plane, so update it on the machine. A host on a newer prerelease or its own build isn't marked. To read the latest release from a mirror, set `KANTEL_HOST_RELEASES` to a URL that answers `{"tag_name": "v0.4.2"}` or `{"version": "0.4.2"}`; set it to `off` to stop checking.
+
+On the machine itself:
+
 ```sh
 sudo kantel-host update                  # the latest release
 sudo kantel-host update --version 0.2.0  # or a given one
@@ -331,7 +337,7 @@ To have hosts update themselves, set the version you want on the control plane:
 kantel-admin config set KANTEL_HOST_VERSION=0.2.0 --apply
 ```
 
-A host on another version then fetches that version from Kantel's GitHub Release, checks it against the release's `SHA256SUMS`, and restarts into it. To serve the binaries yourself, also set `'KANTEL_HOST_UPDATE_URL=https://downloads.example.com/{version}/kantel-host-{os}-{arch}'`. A host fetches that URL, with `{os}` as `linux` and `{arch}` as `amd64` or `arm64`, and restarts into it. `kantel-admin host list` shows the newer version beside each host that hasn't moved yet. To keep a host where it is, set `"autoUpdate": false` in its settings file.
+Every connected host on another version then fetches that version from Kantel's GitHub Release, checks it against the release's `SHA256SUMS`, and restarts into it. To serve the binaries yourself, also set `'KANTEL_HOST_UPDATE_URL=https://downloads.example.com/{version}/kantel-host-{os}-{arch}'`. A host fetches that URL, with `{os}` as `linux` and `{arch}` as `amd64` or `arm64`, and restarts into it. `kantel-admin host list` and the console show the version beside each host that hasn't moved yet. With `KANTEL_HOST_VERSION` set, the console marks any host on another version, an older pin included, and its **Update to** moves the host to that version. To keep a host where it is, set `"autoUpdate": false` in its settings file. That stops only the automatic move, not an update someone asks for.
 
 ## Drain, revoke and remove
 
