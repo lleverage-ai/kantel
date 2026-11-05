@@ -74,7 +74,7 @@ curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/commands" \
   -d '{"command": "cd app && npm run dev -- --host 0.0.0.0 --port 3000", "detached": true}' | jq -r .id
 ```
 
-Read it back by its ID for its state, and once it has ended its exit code and output (up to 1 MiB of each stream, as for any command). Kill it when you're done:
+Read it back by its ID for its state, its output so far while it runs (on a microVM, for any command, detached or not), and once it has ended its exit code and output (up to 1 MiB of each stream, as for any command). Kill it when you're done:
 
 ```ts
 const server = await kantel.runCommand("sbx_4kq9x2mt", {

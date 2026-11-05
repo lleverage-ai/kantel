@@ -766,8 +766,9 @@ type ExecStatus struct {
 	State     string      `json:"state"`
 	Pid       int         `json:"pid,omitempty"`
 	Result    *ExecResult `json:"result,omitempty"`
-	// Stdout, Stderr and Truncated, while it runs in a sandbox that keeps it (the guest's detached commands): its output
-	// so far, the start of each stream to its cap, only ever more of the same. Left out where the host has none.
+	// Stdout, Stderr and Truncated, while it runs in a sandbox that keeps it (the guest's commands with an ID, detached
+	// or foreground): its output so far, the start of each stream to its cap, only ever more of the same. Left out where
+	// the host has none.
 	Stdout    string `json:"stdout,omitempty"`
 	Stderr    string `json:"stderr,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`

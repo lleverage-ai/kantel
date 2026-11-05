@@ -3143,16 +3143,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A running detached command as its backend has it now: its output so far (what `attach` shows while it runs), and
-	 * ended once the backend says so. One no gateway here is waiting for (the one that started it closed, or is another
-	 * replica) is lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
+	 * A running command as its backend has it now: its output so far (what `attach` shows while it runs), and ended once
+	 * the backend says so. One no gateway here is waiting for (the one that started it closed, or is another replica) is
+	 * lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
 		if (command.state !== "running" || backend.commandResult === undefined) return command;
 		const followed = runningCommands.has(command.id);
-		// A foreground one a gateway here waits for is answered by that wait; one none here does outlived its gateway (on a
-		// backend that runs commands on past their call) or is another replica's, and is asked for as a detached one is.
-		if (command.detached !== true && followed) return command;
+		// A foreground one a gateway here waits for is ended by that wait, and only its output so far is recorded; one none
+		// here does outlived its gateway (on a backend that runs commands on past their call) or is another replica's, and
+		// is asked for as a detached one is.
+		if (command.detached !== true && followed) return progressOf(command);
 		let result: ExecResult | CommandProgress | undefined;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
@@ -3176,6 +3177,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (result === undefined) return command;
 		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
 		return (await endCommand(command.id, result)) ?? command;
+	}
+
+	/**
+	 * A running foreground command's output so far, from its backend, for one a gateway here waits for: recorded, while
+	 * its end is left to that wait (the backend's answer to it has the whole of its output). A backend that can't say
+	 * leaves it as it is.
+	 */
+	async function progressOf(command: StoredCommand): Promise<StoredCommand> {
+		const result = await backend.commandResult?.(command.sandboxId, command.id).catch(() => undefined);
+		if (result === undefined || !isCommandProgress(result)) return command;
+		return (await recordProgress(command.id, result)) ?? command;
 	}
 
 	/**

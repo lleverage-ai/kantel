@@ -665,7 +665,11 @@ export const getCommand = defineRoute({
 	path: "/sandboxes/{sandboxId}/commands/{commandId}",
 	tag: "commands",
 	summary: "Get a command",
-	description: describe("Its state, and once it has ended its exit code and output.", scope("exec")),
+	description: describe(
+		"Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox",
+		"reports it (a microVM on a current kantel-host), detached or not.",
+		scope("exec"),
+	),
 	params: CommandPath,
 	answer: { status: 200, description: "The command.", schema: Command },
 	errors: readErrors,

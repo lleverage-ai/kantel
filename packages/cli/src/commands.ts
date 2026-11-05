@@ -759,6 +759,19 @@ function killed(ctx: Context, command: Command): number {
 const FOLLOW_RETRY_MS = 120_000;
 /** How long one look at a followed command may take before it counts as Kantel out of reach. */
 const FOLLOW_LOOK_MS = 30_000;
+/**
+ * A plain `exec`'s limit when `--timeout` gives none, in seconds: the API's default. Kantel enforces it, as it does any
+ * detached command's `timeoutMs` (#683).
+ */
+const EXEC_DEFAULT_SECONDS = 30;
+
+/** How `follow` follows a command. */
+interface FollowOptions {
+	/** Say at the start how to follow it again (`exec --timeout 0`). */
+	readonly announce?: boolean;
+	/** Its limit in seconds, said when it timed out. */
+	readonly limitSeconds?: number;
+}
 
 /**
  * A failure to reach Kantel, or Kantel unable to answer for now, that asking again may get past: why, or undefined for
@@ -783,10 +796,10 @@ function hasCode(value: unknown): boolean {
 }
 
 /**
- * Follows a detached command: prints what it has written since the last look, every second or so, until it ends, and
+ * Follows a command by its ID: prints what it has written since the last look, every second or so, until it ends, and
  * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show. Kantel out of
- * reach for a while (a gateway restarting, a network blip) is asked again; given up on, it says the command may still
- * be running and how to follow it again.
+ * reach for a while (a gateway restarting, a network blip, this connection reset) is asked again; given up on, it says
+ * the command may still be running and how to follow it again.
  */
 async function follow(
 	ctx: Context,
@@ -794,9 +807,11 @@ async function follow(
 	sandboxId: string,
 	commandId: string,
 	first?: Command,
+	options: FollowOptions = {},
 ): Promise<number> {
 	let shown = { stdout: 0, stderr: 0 };
-	let wait = 250;
+	// Soon after its start, so a short command's end comes quickly, then every second.
+	let wait = 100;
 	const again = `kantel attach ${sandboxId} ${commandId}`;
 	const fetch = async (): Promise<Command> => {
 		// An outage's time so far: from the start of its first failed look, each look's time and each wait's. (The waits are
@@ -829,7 +844,7 @@ async function follow(
 		}
 	};
 	let command = first ?? (await fetch());
-	if (!ctx.json && first !== undefined) {
+	if (!ctx.json && options.announce === true) {
 		ctx.note(`kantel: started ${command.id}; Ctrl-C leaves it running, and ${again} follows it again`);
 	}
 	for (;;) {
@@ -848,8 +863,10 @@ async function follow(
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {
 		if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
-		if (command.state === "killed") ctx.note("kantel: the command was killed");
-		if (command.state === "timed_out") ctx.note("kantel: the command timed out and was killed");
+		if (command.state === "timed_out") {
+			const after = options.limitSeconds === undefined ? "" : ` after ${options.limitSeconds} s`;
+			ctx.note(`kantel: the command timed out${after} and was killed`);
+		} else if (command.state === "killed") ctx.note("kantel: the command was killed");
 	}
 	return exitCodeOf(command);
 }
@@ -2064,7 +2081,9 @@ const SECTIONS: readonly Section[] = [
 					"One word is a shell command line: kantel exec <id> 'make && make test'. Several are a command and its\n" +
 					"arguments, quoted for the shell; put them after -- when they have flags of their own:\n" +
 					"kantel exec <id> -- ls -la. Its stdout and stderr come out on ours, and kantel exits with its exit\n" +
-					"code (124 when it timed out). A server or a long job: --detach, then kantel attach <id> <command>.",
+					"code (124 when it timed out). Its output comes as it is written, and kantel follows it on through a\n" +
+					"reconnect; if it can't reach Kantel for two minutes it prints the command's ID and how to attach.\n" +
+					"A server or a long job: --detach, then kantel attach <id> <command>.",
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
 					const client = await ctx.client();
@@ -2078,28 +2097,33 @@ const SECTIONS: readonly Section[] = [
 					if (words.length === 0) throw new UsageError("give the command: kantel exec <id> -- <command…>");
 					const seconds = whole(ctx.string("timeout"), "--timeout", 0);
 					const unlimited = seconds === 0;
-					const detached = ctx.boolean("detach") || unlimited;
-					const timeoutMs = seconds === undefined || unlimited ? undefined : seconds * 1000;
+					const detach = ctx.boolean("detach");
+					// Every command is started detached, so its ID comes back at once, and followed by it unless --detach: a
+					// plain one with its limit (Kantel's default unless --timeout gives one), --timeout 0 with none. Its output
+					// comes as it is written, and a reconnect or a reset connection on the way loses neither it nor its ID.
+					const limitSeconds = detach || unlimited ? undefined : (seconds ?? EXEC_DEFAULT_SECONDS);
 					const body = {
 						command: commandLine(words),
 						cwd: ctx.string("cwd"),
 						env: pairs(ctx.list("env"), "--env"),
-						timeoutMs: detached ? undefined : timeoutMs,
-						detached: detached ? true : undefined,
+						timeoutMs: limitSeconds === undefined ? undefined : limitSeconds * 1000,
+						detached: true,
 						stdin: ctx.boolean("stdin") ? new TextDecoder().decode(await readAll(ctx.io.stdin())) : undefined,
 					};
-					const result = await client.runCommand(sandboxId, body);
-					if (unlimited && result.state === "running") return follow(ctx, client, sandboxId, result.id, result);
-					// A foreground command Kantel stopped waiting for (its gateway restarting), which runs on: not its end.
-					const stopped = !detached && result.state === "running";
-					const why = `Kantel stopped waiting for ${result.id}, which may still be running: kantel attach ${sandboxId} ${result.id}`;
+					let result: Command;
+					try {
+						result = await client.runCommand(sandboxId, body);
+					} catch (error) {
+						// Sent, and retried under its key, with no answer: whether it started is unknown, and its ID with it.
+						const why = transient(error);
+						if (why === undefined) throw error;
+						throw new CliError(`${why}; it may have started: kantel ps ${sandboxId} lists it`);
+					}
+					if (!detach) return follow(ctx, client, sandboxId, result.id, result, { announce: unlimited, limitSeconds });
 					if (ctx.json) {
 						ctx.out(JSON.stringify(result, null, 2));
-						if (!stopped) return exitCodeOf(result);
-						ctx.note(`kantel: ${why}`);
-						return 1;
+						return exitCodeOf(result);
 					}
-					if (stopped) throw new CliError(why);
 					if (result.state === "running") {
 						ctx.out(result.id);
 						ctx.note(

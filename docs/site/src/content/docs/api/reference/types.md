@@ -349,7 +349,7 @@ The key the call was signed in with, when it was a key.
 | `cwd` | string | no |  |
 | `state` | [CommandState](/api/reference/types/#commandstate) | yes |  |
 | `exitCode` | integer | no |  |
-| `stdout` | string | yes | Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. |
+| `stdout` | string | yes | Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere. |
 | `stderr` | string | yes |  |
 | `truncated` | boolean | yes |  |
 | `startedAt` | integer | yes | Epoch milliseconds, UTC. |

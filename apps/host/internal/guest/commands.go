@@ -18,9 +18,9 @@ import (
 // then runs a detached command itself, as a foreground one held open (agent's background runs).
 
 // ExecStatus is GET /exec/{id}'s answer: State is ExecRunning or ExecEnded, and an ended one has its Result. A running
-// detached one has its output so far (Stdout, Stderr and Truncated): the start of each stream up to its cap, so only
-// ever more of the same, and never a partial UTF-8 sequence at its end. A guest from before running output leaves them
-// out.
+// one (detached, or a foreground one with an ID that isn't streamed) has its output so far (Stdout, Stderr and
+// Truncated): the start of each stream up to its cap, so only ever more of the same, and never a partial UTF-8 sequence
+// at its end. A guest from before running output leaves them out.
 type ExecStatus struct {
 	ID        string      `json:"id"`
 	State     string      `json:"state"`
@@ -54,7 +54,8 @@ type command struct {
 	// detached: its result is kept once it ends.
 	detached bool
 	result   ExecResult
-	// stdout and stderr are a detached command's output as it comes (its status while it runs).
+	// stdout and stderr are its output as it comes (its status while it runs): a detached command's, and a foreground
+	// one's that isn't streamed.
 	stdout, stderr *cappedBuffer
 }
 

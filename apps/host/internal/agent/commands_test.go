@@ -73,6 +73,10 @@ type runnerTier struct {
 	killErr error
 	// probeErr: the guest can't be asked for a command's status either.
 	probeErr error
+	// soFar is a running command's output so far, as the guest reports it.
+	soFar proto.ExecStatus
+	// asked counts status asks.
+	asked int
 }
 
 func (r *runnerTier) StartCommand(_ context.Context, p proto.ExecParams) (int, error) {
@@ -98,6 +102,7 @@ func (r *runnerTier) StartCommand(_ context.Context, p proto.ExecParams) (int, e
 func (r *runnerTier) CommandStatus(_ context.Context, _, id string, _ time.Duration) (proto.ExecStatus, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.asked++
 	if r.probeErr != nil {
 		return proto.ExecStatus{}, r.probeErr
 	}
@@ -106,7 +111,7 @@ func (r *runnerTier) CommandStatus(_ context.Context, _, id string, _ time.Durat
 			return proto.ExecStatus{CommandID: id, State: proto.ExecEnded, Result: &proto.ExecResult{ExitCode: 137}}, nil
 		}
 	}
-	return proto.ExecStatus{CommandID: id, State: proto.ExecRunning}, nil
+	return proto.ExecStatus{CommandID: id, State: proto.ExecRunning, Stdout: r.soFar.Stdout, Stderr: r.soFar.Stderr, Truncated: r.soFar.Truncated}, nil
 }
 
 func (r *runnerTier) KillCommand(_ context.Context, _, id string) (bool, error) {
@@ -286,6 +291,48 @@ func TestAForegroundCommandKeepsItsResultWhenItsAnswerIsSent(t *testing.T) {
 	kept, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_s"})
 	if err != nil || kept.State != proto.ExecEnded || kept.Result == nil || kept.Result.ExitCode != 3 || kept.Result.Stdout != "built\n" {
 		t.Fatalf("kept: %+v, %v", kept, err)
+	}
+}
+
+// A running foreground command in a sandbox that keeps commands by ID has its output so far in sandbox.exec.get, from
+// the guest, as a detached one has: what attach shows of a command whose call outlived its connection. A guest that
+// can't be asked leaves it out, and the command is still running.
+func TestARunningForegroundCommandShowsTheGuestsOutputSoFar(t *testing.T) {
+	tier := &runnerTier{heldTier: newHeldTier(), soFar: proto.ExecStatus{Stdout: "Reading package lists...\n", Stderr: "warn\n", Truncated: true}}
+	h := hostWith(t, tier)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := callCmd[proto.ExecResult](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "apt-get install -y gcc", CommandID: "cmd_l", TimeoutMs: 600_000})
+		answered <- err
+	}()
+	<-tier.started
+	now, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_l"})
+	if err != nil || now.State != proto.ExecRunning || now.Stdout != "Reading package lists...\n" || now.Stderr != "warn\n" || !now.Truncated {
+		t.Fatalf("while it runs: %+v, %v", now, err)
+	}
+	tier.mu.Lock()
+	tier.probeErr = errors.New("vsock: connection reset")
+	tier.mu.Unlock()
+	now, err = callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_l"})
+	if err != nil || now.State != proto.ExecRunning || now.Stdout != "" {
+		t.Fatalf("with the guest out of reach: %+v, %v", now, err)
+	}
+	tier.release <- proto.ExecResult{ExitCode: 0, Stdout: "Reading package lists...\nDone\n"}
+	if err := <-answered; err != nil {
+		t.Fatalf("its call: %v", err)
+	}
+	// Once it has ended, its kept result is the answer, and the guest isn't asked.
+	tier.mu.Lock()
+	asked := tier.asked
+	tier.mu.Unlock()
+	ended, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_l"})
+	if err != nil || ended.State != proto.ExecEnded || ended.Result == nil || ended.Result.Stdout != "Reading package lists...\nDone\n" || ended.Stdout != "" {
+		t.Fatalf("after its end: %+v, %v", ended, err)
+	}
+	tier.mu.Lock()
+	defer tier.mu.Unlock()
+	if tier.asked != asked {
+		t.Fatalf("the guest was asked about an ended command")
 	}
 }
 

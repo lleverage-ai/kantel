@@ -367,7 +367,7 @@ export interface Command {
 	readonly cwd?: string;
 	readonly state: CommandState;
 	readonly exitCode?: number;
-	/** Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. */
+	/** Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere. */
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly truncated: boolean;
@@ -2720,7 +2720,7 @@ export interface KantelClient {
 	runCommand(sandboxId: string, body: RunCommandBody, options?: CallOptions): Promise<Command>;
 	/** List a sandbox's commands. Its commands, newest first, also while it is stopped. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands` */
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
-	/** Get a command. Its state, and once it has ended its exit code and output. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Get a command. Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox reports it (a microVM on a current kantel-host), detached or not. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
 	/** Kill a command. Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;

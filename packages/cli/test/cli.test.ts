@@ -438,11 +438,13 @@ describe("exec", () => {
 		expect(result.code).toBe(3);
 		expect(result.stdout).toBe("out\n");
 		expect(result.stderr).toBe("err\n");
+		// Started with its limit and followed by its ID (here it had ended by its start's answer).
 		expect(result.calls[0]?.body).toEqual({
 			command: "sh -c 'echo hi; exit 3'",
 			cwd: "/app",
 			env: { A: "1" },
 			timeoutMs: 5000,
+			detached: true,
 		});
 		expect(result.calls[0]?.authorization).toBe("Bearer ksk_test");
 	});
@@ -460,7 +462,7 @@ describe("exec", () => {
 		});
 		expect(slow.code).toBe(124);
 		expect(slow.stderr).toContain("timed out after 10 s");
-		expect(slow.calls[0]?.body).toEqual({ command: "sleep 5", timeoutMs: 10_000 });
+		expect(slow.calls[0]?.body).toEqual({ command: "sleep 5", timeoutMs: 10_000, detached: true });
 	});
 
 	it("prints the command as JSON with --json, still exiting with its code", async () => {
@@ -480,7 +482,8 @@ describe("exec", () => {
 		const routes = { "POST /v1/sandboxes/sbx_test1/commands": () => command({}) };
 		const unseparated = await kantel(["exec", "sbx_test1", "make && make test"], { routes });
 		expect(unseparated.code).toBe(0);
-		expect(unseparated.calls[0]?.body).toEqual({ command: "make && make test" });
+		// With the default limit of 30 s.
+		expect(unseparated.calls[0]?.body).toEqual({ command: "make && make test", timeoutMs: 30_000, detached: true });
 	});
 
 	it("detaches, printing the command's ID, and attach follows it to its exit code", async () => {
@@ -564,25 +567,112 @@ describe("exec", () => {
 		expect(result.calls.length).toBeLessThan(30);
 	});
 
-	it("says a foreground command Kantel stopped waiting for may still run, and how to attach", async () => {
-		const result = await kantel(["exec", "sbx_test1", "--", "pnpm install"], {
+	it("follows a plain exec by its ID, printing its output as it comes, and exits with its code", async () => {
+		const views = [
+			command({ state: "running", exitCode: undefined, stdout: "Reading package lists...\n" }),
+			command({ state: "running", exitCode: undefined, stdout: "Reading package lists...\nSetting up gcc\n" }),
+			command({
+				state: "exited",
+				exitCode: 3,
+				stdout: "Reading package lists...\nSetting up gcc\n",
+				stderr: "E: broken\n",
+			}),
+		];
+		const result = await kantel(["exec", "sbx_test1", "--", "apt-get install -y gcc"], {
 			routes: {
 				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift(),
+			},
+		});
+		expect(result.code).toBe(3);
+		expect(result.stdout).toBe("Reading package lists...\nSetting up gcc\n");
+		// Nothing of kantel's own on a plain exec's stderr: only the command's.
+		expect(result.stderr).toBe("E: broken\n");
+		expect(result.calls.map((call) => call.method)).toEqual(["POST", "GET", "GET", "GET"]);
+		// Looked at soon after its start, so a short command's end comes quickly.
+		expect(result.slept[0]).toBeLessThanOrEqual(100);
+	});
+
+	it("gives a plain exec's ID and how to attach when its connection to Kantel resets while it runs", async () => {
+		const views: (Command | Error)[] = [command({ state: "running", exitCode: undefined, stdout: "Progress: 10%\n" })];
+		const result = await kantel(["exec", "sbx_test1", "--timeout", "600", "--", "pnpm install"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => {
+					const view = views.shift() ?? new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+					if (view instanceof Error) throw view;
+					return view;
+				},
 			},
 		});
 		expect(result.code).toBe(1);
-		expect(result.stderr).toBe(
-			"kantel: Kantel stopped waiting for cmd_1, which may still be running: kantel attach sbx_test1 cmd_1\n",
-		);
-		// In JSON too: the command as it is, and not a success.
+		expect(result.stdout).toBe("Progress: 10%\n");
+		expect(result.stderr).toContain("read ECONNRESET; trying again");
+		expect(result.stderr).toContain("cmd_1 may still be running: kantel attach sbx_test1 cmd_1");
+		// In JSON too: the ID on stderr, and not a success.
 		const json = await kantel(["exec", "sbx_test1", "--json", "--", "pnpm install"], {
 			routes: {
 				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => {
+					throw new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+				},
 			},
 		});
 		expect(json.code).toBe(1);
-		expect(JSON.parse(json.stdout)).toMatchObject({ id: "cmd_1", state: "running" });
-		expect(json.stderr).toContain("kantel attach sbx_test1 cmd_1");
+		expect(json.stderr).toContain("cmd_1 may still be running: kantel attach sbx_test1 cmd_1");
+	});
+
+	it("says how to find a command whose start went unanswered, which may have started", async () => {
+		const result = await kantel(["exec", "sbx_test1", "--", "pnpm install"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => {
+					throw new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+				},
+			},
+		});
+		expect(result.code).toBe(1);
+		// Sent three times under one key, then given up on.
+		expect(result.calls).toHaveLength(3);
+		expect(result.stderr).toContain("read ECONNRESET");
+		expect(result.stderr).toContain("it may have started: kantel ps sbx_test1 lists it");
+	});
+
+	it("leaves a plain exec's limit to Kantel, following it however long Kantel reports it running", async () => {
+		// Running long past its limit as far as the CLI can tell (its host out of reach, say, with its end still to come):
+		// never killed from here, which would throw away an end its host may yet report, and its timeout is Kantel's.
+		let looks = 0;
+		let killed = false;
+		const result = await kantel(["exec", "sbx_test1", "--timeout", "10", "--", "sleep 9999"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () =>
+					++looks < 120
+						? command({ state: "running", exitCode: undefined, stdout: "a" })
+						: command({ state: "timed_out", exitCode: undefined, stdout: "ab" }),
+				"DELETE /v1/sandboxes/sbx_test1/commands/cmd_1": () => {
+					killed = true;
+					return command({ state: "killed", exitCode: 137 });
+				},
+			},
+		});
+		expect(result.slept.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThan(100_000);
+		expect(killed).toBe(false);
+		expect(result.code).toBe(124);
+		expect(result.stdout).toBe("ab");
+		expect(result.stderr).toContain("timed out after 10 s");
+	});
+
+	it("answers a plain exec's command as JSON once it has ended", async () => {
+		const views = [command({ state: "exited", exitCode: 2, stdout: "x" })];
+		const json = await kantel(["exec", "sbx_test1", "--json", "--", "false"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift(),
+			},
+		});
+		expect(json.code).toBe(2);
+		expect(JSON.parse(json.stdout)).toMatchObject({ id: "cmd_1", state: "exited", stdout: "x" });
+		expect(json.stderr).toBe("");
 		// A detached start is a success.
 		const started = await kantel(["exec", "sbx_test1", "--json", "-d", "--", "./serve"], {
 			routes: {
