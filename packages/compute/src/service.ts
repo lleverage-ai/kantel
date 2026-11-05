@@ -78,6 +78,7 @@ import {
 	reportMountStatuses,
 } from "./mounts-service.ts";
 import { isPlaceholderName, personName } from "./names.ts";
+import { delay, START_HOLD_MS, START_POLL_MS, sandboxNotRunning } from "./not-running.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -250,6 +251,13 @@ export interface ComputeServiceOptions {
 	 * another did. Absent, one process alone: its own changes only.
 	 */
 	readonly liveRelay?: LiveRelay;
+	/**
+	 * How long a call that needs a running sandbox (a command, a file) waits for one that is starting, before it answers
+	 * `conflict` with `sandbox_starting`. Not counted against a command's own timeout. Default `START_HOLD_MS`, 60 s.
+	 */
+	readonly startHoldMs?: number;
+	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
+	readonly startPollMs?: number;
 }
 
 /** One invite to email: the same message as identity's `InviteMessage`, so its mailers send it as they are. */
@@ -1299,6 +1307,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
+	const apiBasePath = (options.apiBasePath ?? "/v1").replace(/\/+$/, "");
+	const startHoldMs = options.startHoldMs ?? START_HOLD_MS;
+	const startPollMs = options.startPollMs ?? START_POLL_MS;
 	/**
 	 * The base image index as last read (image patching on), for the views, which answer synchronously: the routes that
 	 * answer sandboxes or snapshots read it first (`BASE_ROUTES`). One that fails to read keeps the last one read.
@@ -2496,13 +2507,59 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 	}
 
-	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
-	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
-		const sandbox = await settledFor(principal, sandboxId);
-		if (sandbox.state !== "running") {
-			throw new KantelError("conflict", `The sandbox is ${sandbox.state}; it must be running (resume it first)`);
+	/**
+	 * `settledFor`, refused with `conflict` (`sandboxNotRunning`) unless the sandbox is running. One that is starting is
+	 * waited for, up to `startHoldMs`: its start's own work when this gateway carries it out, else read again every
+	 * `startPollMs` (another gateway's). It moves nothing itself: concurrent callers each wait, and a stopped sandbox
+	 * stays stopped.
+	 */
+	function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, (id) => settledFor(principal, id));
+	}
+
+	/**
+	 * `requireRunning` for a call a token authorises rather than a principal (a signed file URL): the same wait and the
+	 * same refusals, with no check of who may use the sandbox, which the token already made.
+	 */
+	function requireRunningByToken(sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, async (id) => {
+			await settledOn(id);
+			return mustGetSandbox(id);
+		});
+	}
+
+	/** The wait behind `requireRunning`: `settled` reads the sandbox once its queued work ends. */
+	async function runningOnce(
+		sandboxId: string,
+		settled: (sandboxId: string) => Promise<StoredSandbox>,
+	): Promise<StoredSandbox> {
+		let held = false;
+		const hold = delay(startHoldMs);
+		const holdOver = hold.done.then(() => {
+			held = true;
+		});
+		try {
+			for (;;) {
+				const latest = await mustGetSandbox(sandboxId);
+				if (latest.state !== "starting") {
+					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
+					const sandbox = await settled(sandboxId);
+					if (sandbox.state === "running") return sandbox;
+					// Started by what was queued (a start queued behind a stop): waited for as any start.
+					if (sandbox.state === "starting") continue;
+					if (sandbox.state === "deleted") throw notFound("sandbox");
+					throw sandboxNotRunning(sandbox, apiBasePath);
+				}
+				if (held) throw sandboxNotRunning(latest, apiBasePath, startHoldMs);
+				// Its start's own work, when this gateway carries it out; never a tight loop on the store when it doesn't.
+				const work = pending.get(sandboxId);
+				const poll = delay(startPollMs);
+				await Promise.race([...(work === undefined ? [] : [work]), poll.done, holdOver]);
+				poll.cancel();
+			}
+		} finally {
+			hold.cancel();
 		}
-		return sandbox;
 	}
 
 	/** Mounts, bundles, bucket sources, file URLs and archives, when the deployment turned them on. */
@@ -2524,9 +2581,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						return sealer;
 					},
 					publicUrl: (request) => (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, ""),
-					apiBasePath: (options.apiBasePath ?? "/v1").replace(/\/+$/, ""),
+					apiBasePath,
 					sandboxFor,
 					requireRunning,
+					requireRunningByToken,
 				});
 
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {
@@ -2850,6 +2908,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						latestSnapshotId: snapshot.id,
 						ports: [],
 						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
+						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
+						reason,
 					}),
 				);
 				if (!("moved" in result)) return;

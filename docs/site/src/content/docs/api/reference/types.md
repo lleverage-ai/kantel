@@ -691,7 +691,7 @@ A repository every new sandbox starts with, cloned through the egress proxy once
 
 ### ErrorBody
 
-Every error: the KantelError's code and message.
+Every error: the KantelError's `code` and `message`, and for some errors `details`, such as a `SandboxNotRunning`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1230,7 +1230,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
 | `health` | [SandboxHealth](/api/reference/types/#sandboxhealth) | no |  |
-| `reason` | string | no | Why it is in `error` or `degraded`, in words. |
+| `reason` | string | no | Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, or a rule's reason. A stop someone asked for has none. |
 | `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `capabilities` | [SandboxCapabilities](/api/reference/types/#sandboxcapabilities) | yes |  |
@@ -1339,6 +1339,24 @@ A mount of a sandbox's, and whether its files are in place.
 | `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
 | `status` | [MountStatus](/api/reference/types/#mountstatus) | yes |  |
 | `error` | string | no | Why it is `failed`, in words. |
+
+### SandboxNotRunning
+
+The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | [SandboxNotRunningCode](/api/reference/types/#sandboxnotrunningcode) | yes |  |
+| `sandboxId` | string | yes |  |
+| `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
+| `stopReason` | string | no | Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. |
+| `hint` | string | yes | What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again`. |
+
+### SandboxNotRunningCode
+
+Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted.
+
+One of: `"sandbox_starting"` or `"sandbox_stopping"` or `"sandbox_stopped"` or `"sandbox_paused"` or `"sandbox_error"` or `"sandbox_deleting"`.
 
 ### SandboxPage
 

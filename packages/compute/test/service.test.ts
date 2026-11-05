@@ -40,7 +40,10 @@ afterEach(async () => {
 
 function setup(
 	backend: SandboxBackend = createStubBackend(),
-	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts" | "invites" | "limits"> = {},
+	extra: Pick<
+		Parameters<typeof createComputeApi>[0],
+		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs"
+	> = {},
 ) {
 	const api = createComputeApi({
 		...extra,
@@ -443,6 +446,160 @@ describe("sandboxes", () => {
 		expect(stopped.state).toBe("stopped");
 		expect(stopped.usage.runningSeconds).toBe(31 * 60);
 		expect(stopped.cost.total).toBeGreaterThan(0);
+		expect(stopped.reason).toBe("auto-stop");
+
+		// A command then is refused with why it stopped and how to resume it; nothing resumes it.
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is stopped (auto-stop); resume it first");
+		expect(refused.details).toEqual({
+			code: "sandbox_stopped",
+			sandboxId: sandbox.id,
+			state: "stopped",
+			stopReason: "auto-stop",
+			hint: `Resume it with kantel resume ${sandbox.id} or POST /v1/sandboxes/${sandbox.id}/resume, then try again`,
+		});
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+		// Its reason goes once it runs again.
+		expect((await tom.resumeSandbox(sandbox.id, { wait: true })).reason).toBeUndefined();
+	});
+});
+
+/** A backend whose resumes wait for `release` and then go on, or fail with `failWith`. */
+function gatedResumes() {
+	const stub = createStubBackend();
+	let release: () => void = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const state = { resumes: 0, failWith: undefined as Error | undefined };
+	const backend: SandboxBackend = {
+		...stub,
+		resume: async (sandboxId, options) => {
+			state.resumes++;
+			await gate;
+			if (state.failWith !== undefined) throw state.failWith;
+			return stub.resume(sandboxId, options);
+		},
+	};
+	return { backend, release: () => release(), state };
+}
+
+describe("calls on a sandbox that isn't running", () => {
+	it("refuses a stopped or paused sandbox with a stable code and the resume call, and stops nothing else", async () => {
+		const { tom } = setup();
+		const isolate = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(isolate.id, { wait: true });
+		const stopped = await failure(tom.readFile(isolate.id, { path: "f.txt" }));
+		expect(stopped.status).toBe(409);
+		expect(stopped.code).toBe("conflict");
+		expect(stopped.message).toBe("The sandbox is stopped; resume it first");
+		// A stop someone asked for records no reason.
+		expect(stopped.details).toEqual({
+			code: "sandbox_stopped",
+			sandboxId: isolate.id,
+			state: "stopped",
+			hint: `Resume it with kantel resume ${isolate.id} or POST /v1/sandboxes/${isolate.id}/resume, then try again`,
+		});
+		for (const call of [
+			tom.runCommand(isolate.id, { command: "true" }),
+			tom.writeFile(isolate.id, { path: "f.txt", content: "x" }),
+			tom.listFiles(isolate.id),
+			tom.deleteFile(isolate.id, { path: "f.txt" }),
+		]) {
+			expect((await failure(call)).details).toMatchObject({ code: "sandbox_stopped", state: "stopped" });
+		}
+
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const paused = await failure(tom.runCommand(vm.id, { command: "true" }));
+		expect(paused.code).toBe("conflict");
+		expect(paused.message).toBe("The sandbox is paused; resume it first");
+		expect(paused.details).toMatchObject({ code: "sandbox_paused", sandboxId: vm.id, state: "paused" });
+		expect(paused.details?.hint).toContain(`kantel resume ${vm.id}`);
+		expect((await tom.getSandbox(vm.id)).state).toBe("paused");
+	});
+
+	it("holds a call made while the sandbox starts and runs it once it is running", async () => {
+		const gated = gatedResumes();
+		const { api, tom } = setup(gated.backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const starting = await tom.resumeSandbox(sandbox.id, { wait: false });
+		expect(starting.state).toBe("starting");
+
+		// Two callers wait on the one start; its own timeout starts only once it runs.
+		const first = tom.runCommand(sandbox.id, { command: "echo one", timeoutMs: 50 });
+		const second = tom.writeFile(sandbox.id, { path: "two.txt", content: "two" });
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		gated.release();
+		const command = await first;
+		expect(command).toMatchObject({ state: "exited", exitCode: 0, stdout: "one\n" });
+		expect(await second).toMatchObject({ path: "/home/user/two.txt" });
+		expect(gated.state.resumes).toBe(1);
+		await api.service.idle();
+		const events = await tom.listEvents({ sandboxId: sandbox.id });
+		expect(events.items.filter((event) => event.type === "sandbox.running")).toHaveLength(2);
+	});
+
+	it("holds a call while another gateway starts the sandbox, reading it again until it runs", async () => {
+		const { api, tom } = setup(createStubBackend(), { startPollMs: 10 });
+		const sandbox = await tom.createSandbox({ wait: true });
+		const running = await api.store.sandboxes.get(sandbox.id);
+		if (running === undefined) throw new Error("No record");
+		// As this gateway sees a start another gateway carries out: starting, with no work of its own to wait on.
+		await api.store.sandboxes.put({ ...running, state: "starting" });
+		setTimeout(() => void api.store.sandboxes.put(running), 100);
+		const command = await tom.runCommand(sandbox.id, { command: "echo ran" });
+		expect(command).toMatchObject({ state: "exited", stdout: "ran\n" });
+	});
+
+	it("answers sandbox_starting once the hold runs out, so the caller sends it again", async () => {
+		const gated = gatedResumes();
+		const { api, tom } = setup(gated.backend, { startHoldMs: 100, startPollMs: 10 });
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.resumeSandbox(sandbox.id, { wait: false });
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is still starting after 100 ms; send the call again");
+		expect(refused.details).toEqual({
+			code: "sandbox_starting",
+			sandboxId: sandbox.id,
+			state: "starting",
+			hint: "It is still starting: send the call again in a moment",
+		});
+		// Nothing was run or recorded for it; the start carries on, and the call sent again runs.
+		expect((await tom.listCommands(sandbox.id)).items).toEqual([]);
+		gated.release();
+		await api.service.idle();
+		expect((await tom.runCommand(sandbox.id, { command: "true" })).exitCode).toBe(0);
+	});
+
+	it("refuses a held call with sandbox_error and its reason when the start fails", async () => {
+		const gated = gatedResumes();
+		const { tom } = setup(gated.backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.resumeSandbox(sandbox.id, { wait: false });
+		gated.state.failWith = new Error("The host ran out of disk");
+		const held = failure(tom.runCommand(sandbox.id, { command: "true" }));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		gated.release();
+		const refused = await held;
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is in error (The host ran out of disk); resume it first");
+		expect(refused.details).toMatchObject({
+			code: "sandbox_error",
+			sandboxId: sandbox.id,
+			state: "error",
+			stopReason: "The host ran out of disk",
+		});
+		// Not `details.reason`, which the SDK reads as a placement's.
+		expect(refused.details).not.toHaveProperty("reason");
+		expect(refused.details?.hint).toContain(`kantel resume ${sandbox.id}`);
 	});
 });
 
