@@ -872,6 +872,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const placements = allocations ? await store.placementsOn(host.id) : [];
 		const live = placements.filter((placement) => LIVE.has(placement.state));
 		const facts = storedFacts(host.facts);
+		const reported = storedCapacity(host.capacity);
 		const arch =
 			facts?.arch === "amd64" || facts?.arch === "x86_64"
 				? "x86_64"
@@ -897,7 +898,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			kvm: facts?.kvm ?? false,
 			nestedVirtualisation: facts?.nested ?? false,
 			features: [...(facts?.features ?? [])],
-			capacity: { vcpus: facts?.cpus ?? 0, memoryMb: facts?.memoryMiB ?? 0, diskGb: facts?.diskGiB ?? 0 },
+			// Disk is free space, which changes as the host runs: the latest heartbeat's, else the hello's.
+			capacity: {
+				vcpus: facts?.cpus ?? 0,
+				memoryMb: facts?.memoryMiB ?? 0,
+				diskGb: reported?.freeDiskGiB ?? facts?.diskGiB ?? 0,
+			},
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),
