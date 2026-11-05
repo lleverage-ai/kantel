@@ -50,7 +50,7 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later. (at most 255 characters) |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
 
 **Body**: [RunCommandBody](/api/reference/types/#runcommandbody)
 
@@ -58,7 +58,7 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 - `200`: [Command](/api/reference/types/#command) (`application/json`). The command, ended (or running, when detached).
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a command
 

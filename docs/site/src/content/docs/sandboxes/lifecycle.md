@@ -102,7 +102,7 @@ The fields you can set when you create one:
 | `account` | The organisation to create it in, when you're signed in as a person. A key always uses its own account |
 | `wait` | Answer once it's `running` (or in `error`) |
 
-A create is safe to retry. Send an `Idempotency-Key` header with a value of your own, such as a UUID; a retry with the same key gets the first answer and makes no second sandbox. In the SDK, pass `{ idempotencyKey: crypto.randomUUID() }` as the last argument.
+A create is safe to retry. Send an `Idempotency-Key` header with a value of your own, such as a UUID; a retry with the same key gets the first answer and makes no second sandbox. If the first call failed part way or stopped answering, a retry is `409` `conflict` with `details.idempotencyKey: "held"` and makes none: list your sandboxes (by label, say) to see whether it was made, then use a new key. In the SDK, pass `{ idempotencyKey: crypto.randomUUID() }` as the last argument. Fork, change, recover and delete take a key too; [Safe retries](/api/reference/#safe-retries) lists every call that does, and why the others need none.
 
 ### When it can't be placed
 
@@ -181,7 +181,7 @@ A pause keeps the sandbox's memory as well as its disk, so a resume carries on e
 await kantel.stopSandbox("sbx_4kq9x2mt", { keepMemory: true, wait: true }); // paused
 ```
 
-Without `wait`, a stop answers at once with the sandbox in `stopping`.
+Without `wait`, a stop answers at once with the sandbox in `stopping`. A stop is safe to retry without a key: once the first has finished, stopping a stopped sandbox (or pausing a paused one) answers it as it is.
 
 ## Resume or start
 
@@ -208,6 +208,8 @@ curl -s -X PATCH "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt" \
 ```
 
 Set `"autoStopMinutes": null` to turn auto-stop off, so it runs until you stop it. The same call renames a sandbox, replaces its `labels` (send them all: the ones you leave out go) and changes its `visibility`.
+
+`extendMinutes` and `autoStopMinutes` count from when the call arrives, so a retry a minute later moves the stop time a minute on. Send an `Idempotency-Key` to have a retry keep the first call's `stopsAt`.
 
 ## Fork
 
@@ -238,6 +240,8 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/recover" \
 
 A resume also works on a sandbox in `error`, from its newest snapshot.
 
+A running sandbox is recovered too, so a retry would restart it again and end what had started since. Send an `Idempotency-Key` to make a retry answer the first recover instead.
+
 ## Delete permanently
 
 Deleting a sandbox erases it and its automatic snapshots for good. It can't be undone. [Saved snapshots](/snapshots/saved/) taken from it stay. The key needs `sandboxes:delete`, which the `agent` preset leaves out on purpose.
@@ -247,7 +251,7 @@ curl -s -X DELETE "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt" \
   -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
-The answer is the sandbox in `deleting`. It leaves the list once it's gone.
+The answer is the sandbox in `deleting`. It leaves the list once it's gone. A second delete once it's gone is `404` with `not_found`; with an `Idempotency-Key`, a retry gets the first answer instead.
 
 ## Usage and cost
 

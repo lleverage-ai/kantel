@@ -39,13 +39,19 @@ Every host that has joined, revoked ones included. A deployment super-admin only
 
 A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`).
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Body**: [CreateHostJoinTokenBody](/api/reference/types/#createhostjointokenbody)
 
 **Answers**
 
 - `201`: [HostJoinToken](/api/reference/types/#hostjointoken) (`application/json`). The token and its command.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a host
 

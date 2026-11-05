@@ -316,6 +316,13 @@ export interface TemplateServiceOptions {
 	/** Refuses resources a microVM can't ask for (`checkShape`): a template's sandboxes ask for them. */
 	readonly checkResources: (resources: computeSchema.TemplateResources) => void;
 	readonly actorOf: (principal: Principal) => Actor;
+	/** Does `work` once for the call's `Idempotency-Key` and request, answering a retry the first answer (the service's). */
+	readonly once: <T>(
+		principal: Principal,
+		operation: string,
+		input: { readonly params?: unknown; readonly body?: unknown; readonly idempotencyKey?: string },
+		work: () => Promise<T>,
+	) => Promise<T>;
 }
 
 export interface TemplateService {
@@ -1318,41 +1325,44 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			return { items: await Promise.all(templates.map(templateView)) };
 		},
 
-		createTemplate: async (principal, { body }) => {
+		createTemplate: async (principal, { body, idempotencyKey }) => {
 			requireTemplates();
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			const spec = normaliseSpec(body.spec);
-			await checkBase(spec.base ?? DEFAULT_TEMPLATE_BASE);
-			const at = now();
-			const id = randomId("tpl", 8);
-			const createdBy = options.actorOf(principal);
-			const template: StoredTemplate = {
-				id,
-				accountId: account.id,
-				name: body.name,
-				...(body.description === undefined || body.description === "" ? {} : { description: body.description }),
-				version: 1,
-				spec,
-				cacheEpoch: 0,
-				ownerUserId: principal.userId,
-				createdAt: at,
-				updatedAt: at,
-				createdBy,
-			};
-			const version: StoredTemplateVersion = {
-				id: templateVersionId(id, 1),
-				templateId: id,
-				version: 1,
-				spec: copySpec(spec),
-				createdAt: at,
-				createdBy,
-			};
-			if (!(await naming(body.name, () => store.templateWrites.insert(template, version)))) {
-				throw new KantelError("conflict", "A template with that ID exists");
-			}
-			await reconcile(id);
-			return templateView(template);
+			// Its name is the account's only once: a retry would be `conflict`, though the first call made it.
+			return options.once(principal, "createTemplate", { body, idempotencyKey }, async () => {
+				const spec = normaliseSpec(body.spec);
+				await checkBase(spec.base ?? DEFAULT_TEMPLATE_BASE);
+				const at = now();
+				const id = randomId("tpl", 8);
+				const createdBy = options.actorOf(principal);
+				const template: StoredTemplate = {
+					id,
+					accountId: account.id,
+					name: body.name,
+					...(body.description === undefined || body.description === "" ? {} : { description: body.description }),
+					version: 1,
+					spec,
+					cacheEpoch: 0,
+					ownerUserId: principal.userId,
+					createdAt: at,
+					updatedAt: at,
+					createdBy,
+				};
+				const version: StoredTemplateVersion = {
+					id: templateVersionId(id, 1),
+					templateId: id,
+					version: 1,
+					spec: copySpec(spec),
+					createdAt: at,
+					createdBy,
+				};
+				if (!(await naming(body.name, () => store.templateWrites.insert(template, version)))) {
+					throw new KantelError("conflict", "A template with that ID exists");
+				}
+				await reconcile(id);
+				return templateView(template);
+			});
 		},
 
 		getTemplate: async (principal, { params }) =>
@@ -1425,20 +1435,23 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			return { items: newestFirst(entries, (entry) => entry.startedAt).map(templateSnapshotView) };
 		},
 
-		rebuildTemplate: async (principal, { params }) => {
+		rebuildTemplate: async (principal, { params, idempotencyKey }) => {
 			const template = await templateFor(principal, params.templateId, "account:admin");
-			// A new epoch first, so the builds it starts are new entries, never the ones set aside.
-			const bumped = await store.templates.update(template.id, (current) =>
-				current.retiredAt === undefined ? { ...current, cacheEpoch: current.cacheEpoch + 1 } : undefined,
-			);
-			if (bumped === undefined) throw new KantelError("not_found", "No such template");
-			// Its ready snapshots stay usable, stale, until the rebuild's replace them; the rest are thrown away.
-			for (const entry of await store.templateSnapshots.list({ templateId: template.id })) {
-				// One of the new epoch's (or a later one's), claimed meanwhile by another reconcile, is the rebuild's own.
-				if (cacheEpochOf(entry.id) < bumped.cacheEpoch) await setAside(entry);
-			}
-			await reconcile(template.id);
-			return templateView(bumped);
+			// A retry would start another epoch, setting aside the builds the first one started: with the key it answers that.
+			return options.once(principal, "rebuildTemplate", { params, idempotencyKey }, async () => {
+				// A new epoch first, so the builds it starts are new entries, never the ones set aside.
+				const bumped = await store.templates.update(template.id, (current) =>
+					current.retiredAt === undefined ? { ...current, cacheEpoch: current.cacheEpoch + 1 } : undefined,
+				);
+				if (bumped === undefined) throw new KantelError("not_found", "No such template");
+				// Its ready snapshots stay usable, stale, until the rebuild's replace them; the rest are thrown away.
+				for (const entry of await store.templateSnapshots.list({ templateId: template.id })) {
+					// One of the new epoch's (or a later one's), claimed meanwhile by another reconcile, is the rebuild's own.
+					if (cacheEpochOf(entry.id) < bumped.cacheEpoch) await setAside(entry);
+				}
+				await reconcile(template.id);
+				return templateView(bumped);
+			});
 		},
 
 		listTemplateBases: async () => {

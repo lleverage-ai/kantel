@@ -439,6 +439,20 @@ describe("bundles", () => {
 	});
 });
 
+describe("bucket sources", () => {
+	it("makes one for one Idempotency-Key, and refuses the key for another", async () => {
+		const { tom } = setup();
+		const body = { name: "org", provider: "s3" as const, bucket: "org" };
+		const first = await tom.createBucketSource(body, { idempotencyKey: "bks-1" });
+		expect(await tom.createBucketSource(body, { idempotencyKey: "bks-1" })).toEqual(first);
+		expect((await tom.listBucketSources()).items).toHaveLength(1);
+		const other = await tom
+			.createBucketSource({ ...body, bucket: "other" }, { idempotencyKey: "bks-1" })
+			.catch((error: unknown) => error);
+		expect(other).toMatchObject({ code: "refused" });
+	});
+});
+
 describe("a sandbox's mounts", () => {
 	it("are checked, handed to the backend, and failed when the backend says nothing of them", async () => {
 		const { tom, specs } = setup();

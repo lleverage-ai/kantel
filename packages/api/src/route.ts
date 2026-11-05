@@ -48,8 +48,10 @@ export interface RouteDefinition {
 	 */
 	readonly otherAnswers?: readonly RouteAnswer[];
 	/**
-	 * Takes an `Idempotency-Key` header: a retry with the same key gets the first call's answer and does nothing again.
-	 * The handler is given the key (`input.idempotencyKey`) and keeps the promise.
+	 * Takes an `Idempotency-Key` header: a retry with the same key gets the first call's answer and does nothing again,
+	 * and the same key with a different request is `refused`. The handler is given the key (`input.idempotencyKey`) and
+	 * keeps the promise. Mark a route whose retry could do it twice or answer worse than the first time; one whose retry
+	 * answers what it did, such as stopping a stopped sandbox, needs no key.
 	 */
 	readonly idempotent?: true;
 	/**

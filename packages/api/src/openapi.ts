@@ -108,7 +108,10 @@ function parameters(route: RouteDefinition, registry: SchemaRegistry): JsonSchem
 			required: false,
 			description:
 				"A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer " +
-				"and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+				"and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` " +
+				"`in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is " +
+				"never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The " +
+				"same key with a different request is `refused`.",
 			schema: { type: "string", minLength: 1, maxLength: MAX_IDEMPOTENCY_KEY_LENGTH },
 		});
 	}
@@ -169,7 +172,13 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 		[String(UNAUTHENTICATED_STATUS)]: errorResponse("The request needs a valid credential (`unauthenticated`)."),
 	};
 	const byStatus = new Map<number, ErrorCode[]>();
-	for (const code of route.errors) byStatus.set(statusFor(code), [...(byStatus.get(statusFor(code)) ?? []), code]);
+	// An idempotent route can also answer a retry `conflict` (its first call still working) or `refused` (the key was for
+	// another request).
+	const codes = new Set<ErrorCode>([
+		...route.errors,
+		...(route.idempotent === true ? (["conflict", "refused"] as const) : []),
+	]);
+	for (const code of codes) byStatus.set(statusFor(code), [...(byStatus.get(statusFor(code)) ?? []), code]);
 	for (const [status, codes] of [...byStatus].sort(([a], [b]) => a - b)) {
 		responses[String(status)] = errorResponse(codes.map((code) => `\`${code}\``).join(" or "));
 	}

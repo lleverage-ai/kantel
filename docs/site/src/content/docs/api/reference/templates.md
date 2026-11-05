@@ -38,13 +38,19 @@ The account's templates, oldest first, each with its build. With `baseDigest`, o
 
 A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Body**: [CreateTemplateBody](/api/reference/types/#createtemplatebody)
 
 **Answers**
 
 - `201`: [Template](/api/reference/types/#template) (`application/json`). The template.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a template
 
@@ -150,11 +156,17 @@ Builds its snapshots again, failed ones included. A ready one is kept, stale, an
 | --- | --- | --- | --- |
 | `templateId` | string | yes | The template's ID. |
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Answers**
 
 - `200`: [Template](/api/reference/types/#template) (`application/json`). The template, building.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## List base images' channels
 

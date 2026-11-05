@@ -91,9 +91,15 @@ The per-call options are:
 | Option | What it does |
 | --- | --- |
 | `signal` | An `AbortSignal` to cancel the call |
-| `idempotencyKey` | Sent as `Idempotency-Key` on the calls that take one (creating and forking sandboxes, running commands), so a retry with the same key does nothing twice |
+| `idempotencyKey` | Sent as `Idempotency-Key` on the calls that take one (their docs say so; [Safe retries](/api/reference/#safe-retries) lists them), so a retry with the same key does nothing twice. A `409` whose `details.idempotencyKey` is `"held"` means the first call didn't finish: check, then use a new key |
 | `requestId` | Sent as `kantel-request-id`, which ties the call to its entries in Kantel's audit trail |
 | `headers` | More headers for this call |
+
+To send a key with every call that takes one, give the client a maker. It makes one key per call, so a `fetch` of your own that retries the request sends the same key:
+
+```ts
+const kantel = createKantelClient({ baseUrl, token, idempotencyKey: () => crypto.randomUUID() });
+```
 
 ## Errors
 

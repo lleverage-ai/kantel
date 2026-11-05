@@ -5,6 +5,7 @@ import type { PersonIdentity } from "../src/auth.ts";
 import type { BootOptions, SandboxBackend } from "../src/backend.ts";
 import type { BaseImages } from "../src/base-status.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { CLAIM_LAPSED } from "../src/service.ts";
 import { createStubBackend } from "../src/stub-backend.ts";
 import { HOST_BEHIND, HOST_LATEST, HOST_OLDEST, INDEX } from "./base-index-fixture.ts";
 
@@ -91,7 +92,7 @@ function setup(baseImages?: BaseImages, ready?: () => void | Promise<void>) {
 			fetch: (input, init) =>
 				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 		});
-	return { api, starts, prepared, calls, tom: client("tom-token"), root: client("root-token") };
+	return { api, backend, starts, prepared, calls, tom: client("tom-token"), root: client("root-token") };
 }
 
 const indexed: BaseImages = { indexUrl: "https://example.test/index.json", index: async () => INDEX };
@@ -156,6 +157,84 @@ describe("image patching on", () => {
 			outdated: true,
 			behind: { versions: 2 },
 		});
+	});
+
+	it("restarts on latest once for one Idempotency-Key", async () => {
+		const { api, tom } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const first = await tom.restartSandboxOnLatest(sandbox.id, { idempotencyKey: "rebase-1" });
+		await api.service.idle();
+		const lifecycle = (await api.store.sandboxes.get(sandbox.id))?.lifecycle;
+		// Running again: without the key, a retry would stop and boot it a second time.
+		expect(await tom.restartSandboxOnLatest(sandbox.id, { idempotencyKey: "rebase-1" })).toEqual(first);
+		await api.service.idle();
+		expect((await api.store.sandboxes.get(sandbox.id))?.lifecycle).toBe(lifecycle);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+	});
+
+	it("keeps a restart's key when its stop fails part way, so a retry never ends commands again", async () => {
+		const { api, backend, tom, calls } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		// The stop has begun (its commands ended) when the host refuses it.
+		(backend as { stop: SandboxBackend["stop"] }).stop = async () => {
+			calls.push("stop");
+			throw new KantelError("conflict", "The host lost the machine");
+		};
+		const first = await failure(tom.restartSandboxOnLatest(sandbox.id, { idempotencyKey: "k-stop-failed" }));
+		expect(first.status).toBe(409);
+		expect(first.code).toBe("aborted");
+		await api.service.idle();
+		const stops = calls.filter((call) => call === "stop").length;
+		expect(stops).toBe(1);
+		const retried = await failure(tom.restartSandboxOnLatest(sandbox.id, { idempotencyKey: "k-stop-failed" }));
+		expect(retried.message).toBe(CLAIM_LAPSED);
+		await api.service.idle();
+		expect(calls.filter((call) => call === "stop")).toHaveLength(stops);
+	});
+
+	it("keeps a restart's key once it has stopped the sandbox, so a retry never stops what started it since", async () => {
+		const { api, tom, starts } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		// Another call starts the sandbox the moment this restart's stop has written it stopped.
+		const sandboxes = api.store.sandboxes;
+		const update = sandboxes.update.bind(sandboxes);
+		let moved = false;
+		(sandboxes as { update: typeof update }).update = async (id, change, expected) => {
+			const result = await update(id, change, expected);
+			if (!moved && result?.state === "stopped") {
+				moved = true;
+				await update(id, (current) => ({ ...current, state: "running", lifecycle: (current.lifecycle ?? 0) + 1 }));
+			}
+			return result;
+		};
+		const first = await failure(tom.restartSandboxOnLatest(sandbox.id, { idempotencyKey: "k-moved" }));
+		expect(moved).toBe(true);
+		expect(first.status).toBe(409);
+		expect(first.code).toBe("aborted");
+		const booted = starts.length;
+		const retried = await failure(tom.restartSandboxOnLatest(sandbox.id, { idempotencyKey: "k-moved" }));
+		expect(retried.code).toBe("conflict");
+		expect(retried.message).toBe(CLAIM_LAPSED);
+		await api.service.idle();
+		expect(starts).toHaveLength(booted);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+	});
+
+	it("never takes over a restart's lapsed key: a retry is conflict, and nothing restarts again", async () => {
+		const { api, tom } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const lifecycle = (await api.store.sandboxes.get(sandbox.id))?.lifecycle;
+		// A restart whose gateway stopped renewing its claim before it read the sandbox, and may yet go on.
+		await api.store.idempotency.put({
+			id: "user:usr_tom:restartSandboxOnLatest:k-lapsed",
+			createdAt: 0,
+			claim: "claim_stalled",
+			claimExpiresAt: 1,
+		});
+		const retried = await failure(tom.restartSandboxOnLatest(sandbox.id, { idempotencyKey: "k-lapsed" }));
+		expect(retried.code).toBe("conflict");
+		await api.service.idle();
+		expect((await api.store.sandboxes.get(sandbox.id))?.lifecycle).toBe(lifecycle);
 	});
 
 	it("never lets a late report replace the base a boot recorded", async () => {
