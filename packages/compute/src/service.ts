@@ -59,7 +59,9 @@ import {
 	type BackendMountStatus,
 	type BackendSize,
 	type BootOptions,
+	type CommandProgress,
 	type ExecResult,
+	isCommandProgress,
 	isDetachedWaitEnded,
 	type Placement,
 	type SandboxBackend,
@@ -1110,6 +1112,21 @@ const truncate = (text: string): { text: string; truncated: boolean } =>
 	text.length > MAX_OUTPUT_CHARS
 		? { text: text.slice(0, MAX_OUTPUT_CHARS), truncated: true }
 		: { text, truncated: false };
+
+/**
+ * A command's stream at its end, from what was recorded while it ran and its end's. A real end's starts with what was
+ * recorded (its backend keeps the start of each stream), and is kept to the cap. Any other is an end Kantel made up,
+ * such as its result lost, which says why: what was recorded is kept whole, and the reason follows it, past the cap if
+ * it must be, so it is never cut off and an attach that has shown what was recorded shows it next.
+ */
+function endStream(recorded: string, final: string): { text: string; truncated: boolean } {
+	if (final.startsWith(recorded)) return truncate(final);
+	if (final === "") return { text: recorded, truncated: false };
+	return {
+		text: recorded === "" || recorded.endsWith("\n") ? recorded + final : `${recorded}\n${final}`,
+		truncated: false,
+	};
+}
 
 // Environments: names, destinations and grants, checked and kept in one form.
 
@@ -2915,21 +2932,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await backend.deleteSnapshot(ref).catch(() => undefined);
 	}
 
-	/** Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. */
+	/**
+	 * Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. Output
+	 * already recorded while it ran is kept: a real end's output starts with it, and an end Kantel made up (its result
+	 * lost, its host gone) adds its reason after it.
+	 */
 	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
-		const stdout = truncate(result.stdout);
-		const stderr = truncate(result.stderr);
 		const at = now();
-		const ended = await settleCommand(commandId, (latest) => ({
-			...latest,
-			state: result.timedOut ? "timed_out" : "exited",
-			exitCode: result.exitCode,
-			stdout: stdout.text,
-			stderr: stderr.text,
-			truncated: stdout.truncated || stderr.truncated,
-			endedAt: at,
-			durationMs: at - latest.startedAt,
-		}));
+		const ended = await settleCommand(commandId, (latest) => {
+			const stdout = endStream(latest.stdout, result.stdout);
+			const stderr = endStream(latest.stderr, result.stderr);
+			return {
+				...latest,
+				state: result.timedOut ? "timed_out" : "exited",
+				exitCode: result.exitCode,
+				stdout: stdout.text,
+				stderr: stderr.text,
+				// One whose recorded output was cut, and that kept it, still has it cut.
+				truncated:
+					stdout.truncated ||
+					stderr.truncated ||
+					(latest.truncated && !(result.stdout.startsWith(latest.stdout) && result.stderr.startsWith(latest.stderr))),
+				endedAt: at,
+				durationMs: at - latest.startedAt,
+			};
+		});
 		return ended ?? (await store.commands.get(commandId));
 	}
 
@@ -2950,24 +2977,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A detached command no gateway here is waiting for (the one that started it closed, or is another replica), as its
-	 * backend has it now: ended once the backend says so, and lost once it no longer knows it.
+	 * A running detached command as its backend has it now: its output so far (what `attach` shows while it runs), and
+	 * ended once the backend says so. One no gateway here is waiting for (the one that started it closed, or is another
+	 * replica) is lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
-		if (
-			command.state !== "running" ||
-			command.detached !== true ||
-			runningCommands.has(command.id) ||
-			backend.commandResult === undefined
-		) {
-			return command;
-		}
-		let result: ExecResult | undefined;
+		if (command.state !== "running" || backend.commandResult === undefined) return command;
+		const followed = runningCommands.has(command.id);
+		// A foreground one a gateway here waits for is answered by that wait; one none here does outlived its gateway (on a
+		// backend that runs commands on past their call) or is another replica's, and is asked for as a detached one is.
+		if (command.detached !== true && followed) return command;
+		let result: ExecResult | CommandProgress | undefined;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
 		} catch (error) {
 			// Not just started (a start the backend hasn't recorded yet reads as unknown too).
 			if (
+				followed ||
 				!(error instanceof KantelError && error.code === "not_found") ||
 				now() - command.startedAt < LOST_COMMAND_MS
 			) {
@@ -2982,7 +3008,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 		}
 		if (result === undefined) return command;
+		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
 		return (await endCommand(command.id, result)) ?? command;
+	}
+
+	/**
+	 * A running command's output so far, written while it is still running and only when it has more than is recorded
+	 * (its backend keeps the start of each stream, so it only grows).
+	 */
+	async function recordProgress(commandId: string, progress: CommandProgress): Promise<StoredCommand | undefined> {
+		const stdout = truncate(progress.stdout);
+		const stderr = truncate(progress.stderr);
+		return store.commands
+			.update(commandId, (latest) => {
+				if (latest.state !== "running") return undefined;
+				if (stdout.text.length <= latest.stdout.length && stderr.text.length <= latest.stderr.length) return undefined;
+				return {
+					...latest,
+					stdout: stdout.text.length > latest.stdout.length ? stdout.text : latest.stdout,
+					stderr: stderr.text.length > latest.stderr.length ? stderr.text : latest.stderr,
+					truncated: latest.truncated || stdout.truncated || stderr.truncated || progress.truncated === true,
+				};
+			})
+			.then(async (written) => written ?? (await store.commands.get(commandId)));
 	}
 
 	/**
@@ -5323,8 +5371,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				const failed = async (error: unknown): Promise<StoredCommand> => {
 					// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
-					// it runs on, and getCommand fetches its end.
-					if (detached && isDetachedWaitEnded(error)) {
+					// it runs on, and getCommand fetches its end. A foreground one too, on a backend that keeps it past its call.
+					if (isDetachedWaitEnded(error)) {
 						runningCommands.delete(command.id);
 						return (await store.commands.get(command.id)) ?? command;
 					}

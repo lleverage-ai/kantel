@@ -518,6 +518,112 @@ describe("exec", () => {
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("built\n");
 		expect(result.calls[0]?.body).toEqual({ command: "make", detached: true });
+		// Its ID, and how to follow it again, from the start.
+		expect(result.stderr).toContain("kantel attach sbx_test1 cmd_1 follows it again");
+	});
+
+	it("follows a command on while Kantel is out of reach for a moment, printing each part of its output once", async () => {
+		const dropped = new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+		const views: (Command | Response | Error)[] = [
+			command({ state: "running", exitCode: undefined, stdout: "Reading package lists...\n" }),
+			dropped,
+			kantelError(503, "unavailable", "The gateway is restarting"),
+			kantelError(502, "bad_gateway", "Bad gateway"),
+			command({ state: "running", exitCode: undefined, stdout: "Reading package lists...\nSetting up gcc\n" }),
+			command({ state: "exited", exitCode: 0, stdout: "Reading package lists...\nSetting up gcc\nDone\n" }),
+		];
+		const result = await kantel(["exec", "sbx_test1", "--timeout", "0", "--", "apt-get install -y gcc"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => {
+					const view = views.shift();
+					if (view instanceof Error) throw view;
+					return view;
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("Reading package lists...\nSetting up gcc\nDone\n");
+		expect(result.stderr).toContain(
+			"kantel: couldn't reach Kantel at https://kantel.test: read ECONNRESET; trying again",
+		);
+	});
+
+	it("gives up following once Kantel has been out of reach for a while, saying the command may still run and how to attach", async () => {
+		const result = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => kantelError(503, "unavailable", "The gateway is down"),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain(
+			"Kantel can't answer for now (The gateway is down); cmd_1 may still be running: kantel attach sbx_test1 cmd_1",
+		);
+		// Asked again for two minutes of waits, then no more: the last wait is cut to what is left.
+		expect(result.slept.reduce((sum, ms) => sum + ms, 0)).toBe(120_000);
+		expect(result.calls.length).toBeLessThan(30);
+	});
+
+	it("says a foreground command Kantel stopped waiting for may still run, and how to attach", async () => {
+		const result = await kantel(["exec", "sbx_test1", "--", "pnpm install"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toBe(
+			"kantel: Kantel stopped waiting for cmd_1, which may still be running: kantel attach sbx_test1 cmd_1\n",
+		);
+		// In JSON too: the command as it is, and not a success.
+		const json = await kantel(["exec", "sbx_test1", "--json", "--", "pnpm install"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+			},
+		});
+		expect(json.code).toBe(1);
+		expect(JSON.parse(json.stdout)).toMatchObject({ id: "cmd_1", state: "running" });
+		expect(json.stderr).toContain("kantel attach sbx_test1 cmd_1");
+		// A detached start is a success.
+		const started = await kantel(["exec", "sbx_test1", "--json", "-d", "--", "./serve"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+			},
+		});
+		expect(started.code).toBe(0);
+	});
+
+	it("follows on after a connection that drops while an answer's body comes", async () => {
+		const cut = () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('{"id":"cmd_1",'));
+						const socket = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+						controller.error(new TypeError("terminated", { cause: socket }));
+					},
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		const views: (() => Command | Response)[] = [
+			cut,
+			() => command({ state: "exited", exitCode: 0, stdout: "Done\n" }),
+		];
+		const result = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: { "GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift()?.() },
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("Done\n");
+		expect(result.stderr).toContain("the connection to Kantel dropped (other side closed); trying again");
+	});
+
+	it("doesn't ask again after an answer that won't change, such as an unknown command", async () => {
+		const result = await kantel(["attach", "sbx_test1", "cmd_9"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_9": () => kantelError(404, "not_found", "No such command"),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.calls).toHaveLength(1);
 	});
 
 	it("lists a sandbox's commands and kills one", async () => {

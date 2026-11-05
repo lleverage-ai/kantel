@@ -34,7 +34,8 @@ type CommandRunner interface {
 // from before (which has a default of 120 s, and honours a timeout): about 35 years.
 const noLimitMs = 1 << 40
 
-// maxEndedRuns is how many ended detached commands the host keeps the results of, across its sandboxes.
+// maxEndedRuns is how many ended commands the host keeps the results of (detached ones, and foreground ones whose
+// connection went before they ended), across its sandboxes.
 const maxEndedRuns = 256
 
 // maxCommandID bounds a CommandID.
@@ -154,8 +155,9 @@ func (c *commandRuns) get(key string) *commandRun {
 	return c.byKey[key]
 }
 
-// end records a run's result: a killed one's is 137, and a run that failed to run has its error as stderr. A foreground
-// run is forgotten, a detached one kept.
+// end records a run's result: a killed one's is 137, and a run that failed to run has its error as stderr. It is kept,
+// a foreground run's as a detached one's (its answer may never reach the control plane: its connection may go as it
+// is sent), the newest maxEndedRuns of them.
 func (c *commandRuns) end(key string, run *commandRun, result proto.ExecResult, err error) (proto.ExecResult, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -168,15 +170,9 @@ func (c *commandRuns) end(key string, run *commandRun, result proto.ExecResult, 
 	}
 	run.result = result
 	close(run.done)
-	if !run.detached {
-		if c.byKey[key] == run {
-			delete(c.byKey, key)
-		}
-		return result, killed
-	}
 	c.ended = append(c.ended, key)
 	for len(c.ended) > maxEndedRuns {
-		if old := c.byKey[c.ended[0]]; old != nil && old.detached && ended(old) {
+		if old := c.byKey[c.ended[0]]; old != nil && !old.reserved && ended(old) {
 			delete(c.byKey, c.ended[0])
 		}
 		c.ended = c.ended[1:]
@@ -271,6 +267,11 @@ func isUnsupported(err error) bool {
 }
 
 // runCommand is sandbox.exec with a CommandID: a foreground one run so a kill can stop it, a detached one started.
+//
+// A foreground one runs on when the connection its call came on goes (a reconnect, a newer connection taking over):
+// its call's context outlives the session (keptExec), so it ends at its own limit, a kill or a claim on its sandbox.
+// Its result is kept, as a detached one's is, for the control plane to fetch by its ID (sandbox.exec.get) on the next
+// connection when its answer had nowhere to go.
 func (h *Host) runCommand(ctx context.Context, t Tier, p proto.ExecParams, onOutput func(stdout, stderr string)) (any, error) {
 	if !validCommandID(p.CommandID) {
 		return nil, invalid("a command's ID is up to %d letters, digits, _, - and .", maxCommandID)
@@ -411,17 +412,17 @@ func shareRelease(ctx context.Context) (func(), bool) {
 	return sync.OnceFunc(r.letGo), true
 }
 
-// detachedExec is whether a call is a detached sandbox.exec with a CommandID, whose guard may be held past the call
-// and the session (startDetached).
-func detachedExec(method string, params json.RawMessage) bool {
+// keptExec is whether a call is a sandbox.exec with a CommandID, whose run outlives the session it came on: a detached
+// one's guard may be held past the call and the session (startDetached), and a foreground one runs on to its own end
+// when the session goes (runCommand).
+func keptExec(method string, params json.RawMessage) bool {
 	if method != proto.MethodExec {
 		return false
 	}
 	var p struct {
-		Detached  bool   `json:"detached"`
 		CommandID string `json:"commandId"`
 	}
-	return json.Unmarshal(params, &p) == nil && p.Detached && p.CommandID != ""
+	return json.Unmarshal(params, &p) == nil && p.CommandID != ""
 }
 
 // commandStatus is sandbox.exec.get.
@@ -431,7 +432,7 @@ func (h *Host) commandStatus(ctx context.Context, p proto.ExecRef) (any, error) 
 	}
 	wait := time.Duration(min(max(p.WaitMs, 0), proto.ExecMaxWaitMs)) * time.Millisecond
 	if run := h.runs.get(runKey(p.SandboxID, p.CommandID)); run != nil {
-		if run.detached && wait > 0 {
+		if wait > 0 {
 			timer := time.NewTimer(wait)
 			select {
 			case <-run.done:

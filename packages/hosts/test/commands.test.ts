@@ -34,6 +34,8 @@ const OLD_GUEST_LIMIT_MS = 120_000;
 interface Running {
 	readonly params: { [key: string]: unknown };
 	ended?: { exitCode: number; stdout: string; stderr: string; timedOut?: boolean };
+	/** What it has written so far, as a host that reports a running command's output answers a get with it. */
+	output?: { stdout: string; stderr: string };
 	/** Answers waiting for its end: a foreground call's, or held gets. */
 	readonly waiting: ((ended: NonNullable<Running["ended"]>) => void)[];
 }
@@ -80,6 +82,32 @@ class CommandHost {
 	}
 
 	private beat?: ReturnType<typeof setInterval>;
+
+	/**
+	 * The host dials again while its old connection is still held, as a host that took its link for dead does: the hub
+	 * shuts the old one ("A newer connection for the host took over"), and calls waiting on it go unanswered. A host with
+	 * `exec-control` keeps its commands running; one from before ends them with the old connection.
+	 */
+	takeOver(sandboxes: { id: string; tier: string; size: string; state: string; createdAt: number }[]) {
+		this.connect(sandboxes);
+		// Its answers go to the old connection, which is gone.
+		if (!this.controls) {
+			for (const [id, command] of this.commands) {
+				if (command.ended === undefined) this.end(id, { exitCode: 137, stdout: "", stderr: "" });
+			}
+		}
+	}
+
+	/** Forgets a command, as a host or sandbox that restarted has. */
+	forget(commandId: string) {
+		this.commands.delete(commandId);
+	}
+
+	/** A running command's output so far. */
+	output(commandId: string, stdout: string, stderr = "") {
+		const command = this.commands.get(commandId);
+		if (command !== undefined) command.output = { stdout, stderr };
+	}
 
 	/** The connection drops, as a network blip or a gateway restart would. */
 	drop() {
@@ -140,7 +168,7 @@ class CommandHost {
 				if (command === undefined) return fail("not_found", "no such command");
 				const status = (ended: Running["ended"]) =>
 					ended === undefined
-						? { commandId: p.commandId, state: "running" }
+						? { commandId: p.commandId, state: "running", ...(command.output ?? {}) }
 						: { commandId: p.commandId, state: "exited", result: ended };
 				if (command.ended !== undefined || typeof p.waitMs !== "number") return answer(status(command.ended));
 				// Held for its wait, as a host holds it.
@@ -218,7 +246,25 @@ async function setup(controls: boolean, wrapCall?: (call: SandboxCall) => Sandbo
 	closers.push(() => host.stop());
 	await vi.waitFor(() => expect(service.hub.connected(hostId)).toBe(true));
 	const sandbox = await root.createSandbox({ type: "microvm", wait: true, autoStopMinutes: null });
-	return { service, api, root, host, sandbox };
+	/** Another gateway on the same store and hosts, as the next one after a restart is. */
+	const nextGateway = () => {
+		const next = createComputeApi({
+			backend,
+			store: api.store,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+		});
+		closers.push(() => next.close());
+		return createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				next.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+	};
+	return { service, api, root, host, sandbox, nextGateway };
 }
 
 const callsOf = (host: CommandHost, method: string) => host.calls.filter((call) => call.method === method);
@@ -315,6 +361,84 @@ describe("commands on kantel-host hosts", () => {
 		});
 	});
 
+	const RUNNING = (id: string) => [{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }];
+
+	it("leaves a detached command running when a newer connection for its host takes over, its output so far shown (#703)", async () => {
+		const { service, root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const started = await root.runCommand(sandbox.id, {
+			command: "apt-get install -y build-essential",
+			detached: true,
+		});
+		await vi.advanceTimersByTimeAsync(5_000);
+		host.output(started.id, "Reading package lists...\n");
+		// What it has written so far, while it runs: what attach shows first.
+		expect(await root.getCommand(sandbox.id, started.id)).toMatchObject({
+			state: "running",
+			stdout: "Reading package lists...\n",
+		});
+
+		host.takeOver(RUNNING(sandbox.id));
+		await vi.advanceTimersByTimeAsync(10);
+		expect(service.hub.connected(host.hostId)).toBe(true);
+		host.output(started.id, "Reading package lists...\nSetting up gcc\n", "debconf: delaying\n");
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(await root.getCommand(sandbox.id, started.id)).toMatchObject({
+			state: "running",
+			stdout: "Reading package lists...\nSetting up gcc\n",
+			stderr: "debconf: delaying\n",
+		});
+
+		const out = "Reading package lists...\nSetting up gcc\nDone\n";
+		host.end(started.id, { exitCode: 0, stdout: out, stderr: "debconf: delaying\n" });
+		await vi.advanceTimersByTimeAsync(31_000);
+		expect(await root.getCommand(sandbox.id, started.id)).toMatchObject({ state: "exited", exitCode: 0, stdout: out });
+		// Started once, never again.
+		expect(callsOf(host, "sandbox.exec")).toHaveLength(1);
+	});
+
+	it("keeps a foreground command when a newer connection for its host takes over, and answers with its end", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const running = root.runCommand(sandbox.id, { command: "pnpm install", timeoutMs: 600_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const commandId = String(callsOf(host, "sandbox.exec")[0]?.params.commandId);
+		host.takeOver(RUNNING(sandbox.id));
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect((await root.getCommand(sandbox.id, commandId)).state).toBe("running");
+		host.end(commandId, { exitCode: 0, stdout: "Done in 42s\n", stderr: "" });
+		await vi.advanceTimersByTimeAsync(31_000);
+		expect(await running).toMatchObject({ id: commandId, state: "exited", exitCode: 0, stdout: "Done in 42s\n" });
+		expect(callsOf(host, "sandbox.exec")).toHaveLength(1);
+	});
+
+	it("gives up on a foreground command whose host doesn't come back by its limit, saying so", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const running = root.runCommand(sandbox.id, { command: "make", timeoutMs: 30_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		host.drop();
+		await vi.advanceTimersByTimeAsync(30_000 + 120_000);
+		const ended = await running;
+		expect(ended).toMatchObject({ state: "exited", exitCode: 1 });
+		expect(ended.stderr).toMatch(/disconnected.*didn't come back/s);
+	});
+
+	it("says why a host from before exec-control loses a command when a newer connection takes over", async () => {
+		const { root, host, sandbox } = await setup(false);
+		const started = await root.runCommand(sandbox.id, {
+			command: "apt-get install -y build-essential",
+			detached: true,
+		});
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		host.takeOver(RUNNING(sandbox.id));
+		await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, started.id)).state).toBe("exited"));
+		const ended = await root.getCommand(sandbox.id, started.id);
+		expect(ended.exitCode).toBe(1);
+		expect(ended.stderr).toContain("A newer connection for the host took over");
+		expect(ended.stderr).toMatch(/kantel-host from before .* upgrade its kantel-host/);
+	});
+
 	it("sends a kill to the host, which stops a detached command", async () => {
 		const { root, host, sandbox } = await setup(true);
 		const started = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
@@ -376,6 +500,66 @@ describe("commands on kantel-host hosts", () => {
 		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec.get").length).toBeGreaterThan(0));
 		await api.close();
 		expect((await api.store.commands.get(started.id))?.state).toBe("running");
+	});
+
+	it("leaves a host-kept foreground command running when its gateway closes, and the next gateway records its end", async () => {
+		const { api, root, host, sandbox, nextGateway } = await setup(true);
+		const running = root.runCommand(sandbox.id, { command: "pnpm install", timeoutMs: 600_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const commandId = String(callsOf(host, "sandbox.exec")[0]?.params.commandId);
+		await api.close();
+		// Not recorded as failed: it runs on at its host.
+		expect((await running).state).toBe("running");
+		expect((await api.store.commands.get(commandId))?.state).toBe("running");
+
+		const next = nextGateway();
+		expect((await next.getCommand(sandbox.id, commandId)).state).toBe("running");
+		host.end(commandId, { exitCode: 0, stdout: "Done in 42s\n", stderr: "" });
+		expect(await next.getCommand(sandbox.id, commandId)).toMatchObject({
+			state: "exited",
+			exitCode: 0,
+			stdout: "Done in 42s\n",
+		});
+		// And one still running is killed at its host by the next gateway.
+		const again = root.runCommand(sandbox.id, { command: "sleep 600", timeoutMs: 600_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(2));
+		const againId = String(callsOf(host, "sandbox.exec")[1]?.params.commandId);
+		void again.catch(() => undefined);
+		await expect(next.killCommand(sandbox.id, againId)).resolves.toMatchObject({ state: "killed" });
+		expect(callsOf(host, "sandbox.exec.kill").map((call) => call.params.commandId)).toEqual([againId]);
+	});
+
+	it("keeps a command's output recorded while it ran when its result is lost", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const started = await root.runCommand(sandbox.id, { command: "./build.sh", detached: true });
+		await vi.advanceTimersByTimeAsync(5_000);
+		host.output(started.id, "step 1\nstep 2\n", "warning: slow");
+		expect((await root.getCommand(sandbox.id, started.id)).stdout).toBe("step 1\nstep 2\n");
+		host.forget(started.id);
+		await vi.advanceTimersByTimeAsync(61_000);
+		const ended = await root.getCommand(sandbox.id, started.id);
+		expect(ended).toMatchObject({ state: "exited", exitCode: 1, stdout: "step 1\nstep 2\n" });
+		// What was recorded, then why its end is unknown (the gateway following it was told so by the host).
+		expect(ended.stderr).toMatch(/^warning: slow\n.*no longer knows/s);
+	});
+
+	it("keeps recorded output, a full stream's too, when a later gateway finds the command's result lost", async () => {
+		const { api, root, host, sandbox, nextGateway } = await setup(true);
+		const started = await root.runCommand(sandbox.id, { command: "./build.sh", detached: true });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const full = "e".repeat(1024 * 1024);
+		host.output(started.id, "step 1\n", full);
+		await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, started.id)).stderr).toBe(full));
+		await api.close();
+		host.forget(started.id);
+		// Lost once its host hasn't known it for a while: recorded when it started, a minute and more ago.
+		await api.store.commands.update(started.id, (latest) => ({ ...latest, startedAt: latest.startedAt - 61_000 }));
+		const ended = await nextGateway().getCommand(sandbox.id, started.id);
+		expect(ended).toMatchObject({ state: "exited", exitCode: 1, stdout: "step 1\n" });
+		expect(ended.stderr.startsWith(full)).toBe(true);
+		expect(ended.stderr.slice(full.length)).toMatch(/^\nKantel lost this command's result/);
+		// (A real end, which extends what was recorded, is kept as it is: see the #703 takeover above.)
 	});
 
 	it("follows a detached command whose start went unanswered, which the host had started", async () => {

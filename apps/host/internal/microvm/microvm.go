@@ -2766,6 +2766,9 @@ func (m *Manager) CommandStatus(ctx context.Context, sandboxID, commandID string
 		return proto.ExecStatus{}, err
 	}
 	out := proto.ExecStatus{CommandID: commandID, State: status.State}
+	if status.State == guest.ExecRunning {
+		out.Stdout, out.Stderr, out.Truncated = status.Stdout, status.Stderr, status.Truncated
+	}
 	if status.Result != nil {
 		r := proto.ExecResult(*status.Result)
 		out.Result = &r
