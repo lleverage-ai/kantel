@@ -70,11 +70,17 @@ The host asks for this by booting the guest with `kantel.browser=surface` on its
 `kantel-host` from this change on does (and the display's and stream's units have as their condition). A host from
 before it would drop the guest agent's report of the surface, so the control plane would open the desktop's page for
 the browser: booted without the argument, the image keeps Chromium on the desktop, where that page shows it. Any image
-works on any host; the browser alone needs both to be new. A machine keeps the command line it booted with through a
-pause and resume, so `openBrowser` checks the sandbox's own `/proc/cmdline` and display rather than trust its image's
-report alone, and answers the desktop's page for a sandbox paused under an older host.
+works on any host; the browser alone needs both to be new.
 
-`KANTEL_BROWSER_DISPLAY=:1` in `desktop.env` puts Chromium back on the desktop, as before (no other value moves it):
+The guest agent's `browserSurface` report is a prediction, made at boot before services start, and the control plane
+keeps it by image version. What a machine shows is decided from the machine itself: `kantel-browser` writes the display
+it started Chromium on to `/run/kantel-browser/display` (its unit's runtime directory: removed when the unit stops and
+on a cold boot, kept in memory snapshots), and `openBrowser` reads it in the same command that asks Chromium for its
+DevTools target. `:2` with the display up gives the browser alone (6081); anything else, including an image from
+before this record, a sandbox paused under an older host or a setup that moved Chromium back, gives the desktop's page.
+
+`KANTEL_BROWSER_DISPLAY=:1` in `desktop.env` (its last assignment) puts Chromium back on the desktop, as before (no
+other value moves it):
 the guest agent then reports
 no browser surface and `openBrowser` answers the desktop's page. `KANTEL_BROWSER_SIZE` sets `:2`'s size until a viewer
 resizes it (1280x800), and `KANTEL_BROWSER_STREAM_FLAGS` adds Selkies flags. Another streaming stack would take the

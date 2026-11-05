@@ -4747,14 +4747,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			requireScreen(current, "browser");
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
-			// The browser alone where the image has a surface for it (its guest says so); else the desktop it runs on.
-			const surface = current.capabilities.browserSurface === true ? "browser" : "desktop";
-			const access = await backend.openBrowser(current.id, {
-				viewOnly,
-				ttlMinutes,
-				grantee: encodeGrantee(principal),
-				surface,
-			});
+			// The browser alone where the machine runs it on its own surface, as the backend finds it there (not the image's
+			// report, which another boot of it made); else the desktop it runs on.
+			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
 			return {
 				url: access.url,
 				embedUrl: access.url,

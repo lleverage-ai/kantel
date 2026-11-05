@@ -98,20 +98,22 @@ func Detect(root, version, pid1 string, injected bool) proto.GuestCapabilities {
 // image then runs Chromium on its own display (kantel-browser, and the display's and stream's units' condition).
 const BrowserSurfaceBootArg = "kantel.browser=surface"
 
-// browserDisplay is the X display the image's browser runs on, as kantel-browser chooses it: the desktop's (:1) when
-// /etc/kantel/desktop.env has KANTEL_BROWSER_DISPLAY=:1 (no other value moves it), else its own (:2) when the host
-// booted the guest with BrowserSurfaceBootArg, else the desktop's.
+// browserDisplay is the X display the image's browser will run on, as kantel-browser chooses it: the desktop's (:1)
+// when /etc/kantel/desktop.env sets KANTEL_BROWSER_DISPLAY=:1 (its last assignment, as systemd reads it; no other
+// value moves it), else its own (:2) when the host booted the guest with BrowserSurfaceBootArg, else the desktop's.
+// It is a prediction, made before services start: the host chooses a machine's view from where kantel-browser
+// recorded it started Chromium (/run/kantel-browser/display), which a setup's change or a later boot can move.
 func browserDisplay(root string) string {
+	set := ""
 	if raw, err := os.ReadFile(filepath.Join(root, "/etc/kantel/desktop.env")); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
-			if ok && strings.TrimSpace(strings.TrimPrefix(k, "export ")) == "KANTEL_BROWSER_DISPLAY" &&
-				strings.Trim(strings.TrimSpace(v), `"'`) == ":1" {
-				return ":1"
+			if ok && strings.TrimSpace(strings.TrimPrefix(k, "export ")) == "KANTEL_BROWSER_DISPLAY" {
+				set = strings.Trim(strings.TrimSpace(v), `"'`)
 			}
 		}
 	}
-	if bootedWith(root, BrowserSurfaceBootArg) {
+	if set != ":1" && bootedWith(root, BrowserSurfaceBootArg) {
 		return ":2"
 	}
 	return ":1"

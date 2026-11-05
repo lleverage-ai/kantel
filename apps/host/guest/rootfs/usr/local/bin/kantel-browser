@@ -5,7 +5,9 @@
 # desktop. Otherwise, on a host from before it (which drops the guest agent's report of that surface, so the browser
 # view is the desktop's page), it runs on the desktop (:1), as it always has. KANTEL_BROWSER_DISPLAY=:1 in
 # /etc/kantel/desktop.env keeps it on the desktop on any host; no other value moves it, since :2 runs only with the
-# boot argument. The guest agent reports the surface only where Chromium is on :2.
+# boot argument. The guest agent reports the surface only where Chromium is on :2 (a prediction, before services start);
+# the display chosen is recorded in the unit's runtime directory (/run/kantel-browser/display), which the host reads to
+# choose the browser's view for this machine as it is now.
 # Closing its window brings it back (the unit restarts it), so CDP stays reachable.
 # Its proxy is the guest agent's local forwarder, which follows the sandbox's egress proxy through forks and restores
 # (Chromium reads its proxy once, at start). Chrome is looked for first only so that a custom image which installs it
@@ -16,6 +18,7 @@ if [ "${KANTEL_BROWSER_DISPLAY:-}" != :1 ]; then
 fi
 export DISPLAY="$display"
 for _ in $(seq 200); do [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break; sleep 0.05; done
+if [ -n "${RUNTIME_DIRECTORY:-}" ]; then printf '%s\n' "$DISPLAY" >"$RUNTIME_DIRECTORY/display"; fi
 browser=$(command -v google-chrome-stable || command -v chromium || command -v chromium-browser) || {
 	echo "no browser in this image" >&2
 	exec sleep infinity

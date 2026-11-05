@@ -110,6 +110,19 @@ func TestDetectBrowserSurface(t *testing.T) {
 	if c := Detect(image(t, other), "v", "systemd", false); !c.BrowserSurface.Available {
 		t.Errorf("KANTEL_BROWSER_DISPLAY=:3: surface %+v", c.BrowserSurface)
 	}
+	// The last assignment counts, as systemd's EnvironmentFile reads it.
+	for env, want := range map[string]bool{
+		"KANTEL_BROWSER_DISPLAY=:1\nKANTEL_BROWSER_DISPLAY=:2\n": true,
+		"KANTEL_BROWSER_DISPLAY=:2\nKANTEL_BROWSER_DISPLAY=:1\n": false,
+	} {
+		twice := map[string]string{"etc/kantel/desktop.env": env}
+		for path, content := range files {
+			twice[path] = content
+		}
+		if c := Detect(image(t, twice), "v", "systemd", false); c.BrowserSurface.Available != want {
+			t.Errorf("%q: surface %+v, want %v", env, c.BrowserSurface, want)
+		}
+	}
 
 	// Its own display doesn't need the desktop.
 	noDesktop := map[string]string{}
