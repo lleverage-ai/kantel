@@ -172,9 +172,10 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	/**
 	 * Made from a template: how a fresh boot of it boots, its base and setup as its create resolved them, so a create
 	 * that failed before placing it (`bootAgain`) is made again the same, whatever its template has become since. No
-	 * snapshot: a retry boots fresh.
+	 * snapshot: a retry boots fresh. A custom image's (`rootfsKey`) names the hosts holding it (`holders`), the only ones
+	 * a retry may boot it on, among those the sandbox may use then.
 	 */
-	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot">;
+	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
 };
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };
@@ -348,6 +349,14 @@ export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state
 	 * gateway is taken to have died with it, and a sweep deletes them by its ID.
 	 */
 	readonly buildLeaseEnds?: number;
+	/**
+	 * A custom image's: the key's hash it was claimed under, before its build named the image's digest. Its `keyHash`
+	 * covers the digest once its build has answered (`key.imageDigest`); a reconcile wants it by this one. Absent, its
+	 * `keyHash`.
+	 */
+	readonly claimHash?: string;
+	/** A custom image's root filesystem on its host, which a fresh boot there boots (`SandboxTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
 };
 
 /** A template as `TemplateWrites.update` changes it, and the version the change makes when it makes one. */

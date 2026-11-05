@@ -116,10 +116,29 @@ export interface BackendMountStatus {
 }
 
 /**
+ * A template's custom image as a backend builds it (`TemplateBuildSpec.image`) or boots it (`SandboxTemplateBoot.image`):
+ * a Dockerfile, or an image reference, built or pulled only in an isolated build microVM whose sole way out is the
+ * sandbox egress proxy, never on a host's Docker. `scope` is the template, its version and its rebuild
+ * (`<templateId>@<version>#<epoch>`): a rebuild builds or pulls it again.
+ */
+export type BackendTemplateImage =
+	| { readonly kind: "dockerfile"; readonly dockerfile: string; readonly scope: string }
+	| { readonly kind: "image"; readonly ref: string; readonly scope: string };
+
+/**
  * How a sandbox made from a template boots, as its spec's `shape` either way: a snapshot is picked only when it was
  * built with those vCPUs and memory, so a restore and a fresh boot get the same machine.
  */
 export interface SandboxTemplateBoot {
+	/**
+	 * Its custom image, which only a host that built it boots: a fresh boot boots the root filesystem `rootfsKey` names on
+	 * its host, which a build there made (`BuiltTemplate.rootfsKey`), and never builds one. The spec's eligible hosts are
+	 * only hosts holding it.
+	 */
+	readonly image?: BackendTemplateImage;
+	readonly rootfsKey?: string;
+	/** The custom image's digest (`BuiltTemplate.imageDigest`): what the sandbox records it boots. */
+	readonly imageDigest?: string;
 	/** The base image's name, such as `kantel/sandbox`, which a host pulls from its operator's registry by digest. */
 	readonly baseImage: string;
 	/** Empty while the default base's channel has no published digest: each host's own sandbox image. */
@@ -147,6 +166,8 @@ export interface TemplateRuntime {
 	readonly hostId: string;
 	readonly kernel: string;
 	readonly firecracker: string;
+	/** It builds templates' custom images, in a build microVM; only such a host is given one to build or boot. */
+	readonly customImages?: boolean;
 }
 
 /** A template snapshot to build: the template's base image booted once, its setup run, then snapshotted. */
@@ -167,7 +188,12 @@ export interface TemplateBuildSpec {
 	readonly shape: BackendShape;
 	readonly env: { readonly [name: string]: string };
 	readonly setup?: string;
-	/** The template's grants (and the account's proxy settings), for the build's boot. */
+	/**
+	 * Its custom image, built or pulled in a build microVM under `egress` (and the registries the host's operator allows)
+	 * before the boot; absent, the base. Only a runtime with `customImages` is given one.
+	 */
+	readonly image?: BackendTemplateImage;
+	/** The template's grants (and the account's proxy settings), for the build's boot, and a custom image's build. */
 	readonly egress?: BackendEgress;
 	readonly keyHash: string;
 	/** The host to build on: the one whose runtime the key names. */
@@ -188,8 +214,11 @@ export interface TemplateSnapshotBytes {
 export interface BuiltTemplate {
 	readonly ref: string;
 	readonly hostId: string;
+	/** The image booted: a pulled base's ID, or a custom image's digest (a reference's resolved one, a build's image ID). */
 	readonly imageDigest?: string;
 	readonly sizeBytes: number;
+	/** A custom image's root filesystem on its host, which a fresh boot there names (`SandboxTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
 }
 
 /**

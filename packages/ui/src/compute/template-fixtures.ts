@@ -1,5 +1,6 @@
 // Sample templates for the console's Templates pages and New sandbox's picker: one of each build state (ready, a new
-// version building over a stale one, a pinned base behind its channel, a failed setup), the base channels they follow
+// version building over a stale one, a pinned base behind its channel, a failed setup), a Dockerfile built on the
+// base and an image reference (custom images, built in an isolated build microVM), the base channels they follow
 // or pin, and an in-memory source that builds in the background as Kantel does, so a story or the sample console can
 // make, change and rebuild one.
 
@@ -43,26 +44,46 @@ const snapshot = (
 	version: number,
 	fields: Partial<TemplateSnapshot> & Pick<TemplateSnapshot, "id" | "state" | "startedAt">,
 	baseDigest = spec.base.digest ?? BASE_STABLE,
-): TemplateSnapshot => ({
-	version,
-	key: {
-		templateVersion: `${templateId}@${version}`,
-		baseDigest,
-		kernel: KERNEL,
-		firecracker: FIRECRACKER,
-		vcpus: spec.vcpus,
-	},
-	keyHash: sampleDigest(templateId.length * 31 + version * 7 + baseDigest.length).slice(7, 71),
-	hostId: "hst_hetzner_1",
-	builtFrom: {
-		baseImage: spec.base.image,
-		...(spec.base.channel === undefined ? {} : { channel: spec.base.channel }),
-		baseDigest,
-		pinned: spec.base.digest !== undefined,
-		imageDigest: sampleDigest(templateId.length * 13 + version),
-	},
-	...fields,
-});
+): TemplateSnapshot => {
+	const imageDigest = sampleDigest(templateId.length * 13 + version);
+	// A custom image's key has its source from the claim, and the digest its build made once it is built.
+	const built = fields.state === "ready" || fields.state === "stale";
+	const custom =
+		spec.image.kind === "dockerfile"
+			? {
+					key: { source: `dockerfile:${sampleDigest(spec.image.dockerfile.length)}` },
+					builtFrom: { source: "dockerfile" as const, dockerfileDigest: sampleDigest(spec.image.dockerfile.length) },
+				}
+			: spec.image.kind === "image"
+				? {
+						key: { source: `image:${spec.image.ref}` },
+						builtFrom: { source: "image" as const, imageRef: spec.image.ref },
+					}
+				: undefined;
+	return {
+		version,
+		key: {
+			templateVersion: `${templateId}@${version}`,
+			baseDigest,
+			...custom?.key,
+			...(custom !== undefined && built ? { imageDigest } : {}),
+			kernel: KERNEL,
+			firecracker: FIRECRACKER,
+			vcpus: spec.vcpus,
+		},
+		keyHash: sampleDigest(templateId.length * 31 + version * 7 + baseDigest.length).slice(7, 71),
+		hostId: "hst_hetzner_1",
+		builtFrom: {
+			baseImage: spec.base.image,
+			...(spec.base.channel === undefined ? {} : { channel: spec.base.channel }),
+			baseDigest,
+			pinned: spec.base.digest !== undefined,
+			...(custom === undefined || built ? { imageDigest } : {}),
+			...custom?.builtFrom,
+		},
+		...fields,
+	};
+};
 
 // The samples boot Kantel's base and install the rest in their setup scripts, which run in the machine behind the
 // template's egress grants: each allows the hosts its script fetches from (Ubuntu's packages are snapshot.ubuntu.com on
@@ -141,6 +162,42 @@ const RUST: TemplateSpec = {
 	],
 };
 
+/** A Dockerfile on the template's base (`FROM $KANTEL_BASE`), built with no build context in a build microVM. */
+const CI_DOCKERFILE = [
+	"ARG KANTEL_BASE",
+	"FROM $KANTEL_BASE",
+	"RUN apt-get update && apt-get install -y --no-install-recommends ripgrep jq shellcheck \\",
+	" && rm -rf /var/lib/apt/lists/*",
+	"RUN curl -fsSL https://github.com/cli/cli/releases/download/v2.63.0/gh_2.63.0_linux_amd64.tar.gz \\",
+	"  | tar -xz -C /usr/local --strip-components=1",
+	"ENV GH_PROMPT_DISABLED=1",
+	"",
+].join("\n");
+
+const CI_TOOLS: TemplateSpec = {
+	image: { kind: "dockerfile", dockerfile: CI_DOCKERFILE },
+	base: { image: BASE_IMAGE, channel: "stable" },
+	vcpus: 2,
+	memoryMb: 4096,
+	env: {},
+	grants: [
+		UBUNTU_GRANT,
+		allow("grt_tpl_github", "github.com"),
+		allow("grt_tpl_ghobjects", "objects.githubusercontent.com"),
+	],
+};
+
+/** An image reference, pulled in a build microVM; it boots with Kantel's guest agent added. */
+const PYTHON_SLIM: TemplateSpec = {
+	image: { kind: "image", ref: "python:3.13-slim" },
+	base: { image: BASE_IMAGE, channel: "stable" },
+	vcpus: 2,
+	memoryMb: 2048,
+	env: { PYTHONUNBUFFERED: "1" },
+	setup: "pip install --no-cache-dir httpx==0.28.1",
+	grants: [allow("grt_tpl_pypi_slim", "pypi.org"), allow("grt_tpl_pyfiles_slim", "files.pythonhosted.org")],
+};
+
 /**
  * The deployment's published bases: `kantel/sandbox`'s stable channel, its digest now and the three before it (the
  * oldest is media-tools' pin), and a beta channel a release ahead of it.
@@ -166,6 +223,22 @@ function samples(now: number): readonly Sample[] {
 	const node = "tpl_node";
 	const pinned = "tpl_media";
 	const rust = "tpl_rust";
+	const ci = "tpl_ci";
+	const slim = "tpl_slim";
+	const ciReady = snapshot(ci, CI_TOOLS, 1, {
+		id: "tsn_ci_1",
+		state: "ready",
+		startedAt: now - 5 * HOUR - 6 * MINUTE,
+		readyAt: now - 5 * HOUR,
+		sizeBytes: 1_356_000_000,
+	});
+	const slimReady = snapshot(slim, PYTHON_SLIM, 1, {
+		id: "tsn_slim_1",
+		state: "ready",
+		startedAt: now - 26 * HOUR - 3 * MINUTE,
+		readyAt: now - 26 * HOUR,
+		sizeBytes: 412_000_000,
+	});
 	const pythonReady = snapshot(python, PYTHON, 3, {
 		id: "tsn_python_3",
 		state: "ready",
@@ -318,6 +391,36 @@ function samples(now: number): readonly Sample[] {
 			),
 			versions: [{ version: 1, spec: RUST, createdAt: now - 41 * MINUTE, by: "ci-bot" }],
 			snapshots: [rustFailed],
+		},
+		{
+			template: template(
+				ci,
+				"ci-tools",
+				"ripgrep, jq, shellcheck and the GitHub CLI, from a Dockerfile on the stable base.",
+				CI_TOOLS,
+				1,
+				{ state: "ready", ready: ciReady },
+				2,
+				now - 5 * HOUR - 6 * MINUTE,
+				now - 5 * HOUR - 6 * MINUTE,
+			),
+			versions: [{ version: 1, spec: CI_TOOLS, createdAt: now - 5 * HOUR - 6 * MINUTE, by: "Tom Davies" }],
+			snapshots: [ciReady],
+		},
+		{
+			template: template(
+				slim,
+				"python-slim",
+				"Docker Hub's python:3.13-slim, with httpx.",
+				PYTHON_SLIM,
+				1,
+				{ state: "ready", ready: slimReady },
+				1,
+				now - 26 * HOUR - 3 * MINUTE,
+				now - 26 * HOUR - 3 * MINUTE,
+			),
+			versions: [{ version: 1, spec: PYTHON_SLIM, createdAt: now - 26 * HOUR - 3 * MINUTE, by: "Ana Ruiz" }],
+			snapshots: [slimReady],
 		},
 	];
 }

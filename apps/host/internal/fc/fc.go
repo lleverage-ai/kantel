@@ -192,6 +192,16 @@ type BootConfig struct {
 	// MiB, deflate_on_oom in case one is ever set), its guest driver's memory statistics refreshed this often, for
 	// ReadBalloonStats. A snapshot keeps the device, so every VM restored from one made with it reports too.
 	BalloonStatsSeconds int
+	// Drives are attached after rootfs (/dev/vda) and disk (/dev/vdb), in order, as /dev/vdc on: a template builder's
+	// output drive. Their paths are relative to the VM's directory, as the others' are.
+	Drives []Drive
+}
+
+// Drive is an extra block device.
+type Drive struct {
+	ID       string
+	Path     string
+	ReadOnly bool
 }
 
 // balloon is the reporting-only balloon BootConfig.BalloonStatsSeconds asks for.
@@ -215,20 +225,26 @@ const HotplugBlockMiB = 2
 
 // Boot configures the VM (rootfs.ext4 read-only, disk.ext4 writable, eth0, vsock) and starts it.
 func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
-	steps := []struct {
+	type step struct {
 		path string
 		body any
-	}{
+	}
+	steps := []step{
 		{"/machine-config", map[string]any{"vcpu_count": cfg.VCPUs, "mem_size_mib": cfg.MemoryMiB, "smt": false}},
 		{"/boot-source", bootSource(cfg)},
 		{"/drives/rootfs", map[string]any{"drive_id": "rootfs", "path_on_host": RootfsFile, "is_root_device": true, "is_read_only": true}},
 		{"/drives/disk", map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false}},
-		{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},
-		{"/vsock", map[string]any{"guest_cid": cfg.GuestCID, "uds_path": VsockSocket}},
-		{"/entropy", map[string]any{}},
-		{"/hotplug/memory", map[string]any{"total_size_mib": cfg.HotplugMiB, "block_size_mib": HotplugBlockMiB, "slot_size_mib": HotplugSlotMiB}},
-		{"/balloon", balloon(cfg.BalloonStatsSeconds)},
 	}
+	for _, d := range cfg.Drives {
+		steps = append(steps, step{"/drives/" + d.ID, map[string]any{"drive_id": d.ID, "path_on_host": d.Path, "is_root_device": false, "is_read_only": d.ReadOnly}})
+	}
+	steps = append(steps,
+		step{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},
+		step{"/vsock", map[string]any{"guest_cid": cfg.GuestCID, "uds_path": VsockSocket}},
+		step{"/entropy", map[string]any{}},
+		step{"/hotplug/memory", map[string]any{"total_size_mib": cfg.HotplugMiB, "block_size_mib": HotplugBlockMiB, "slot_size_mib": HotplugSlotMiB}},
+		step{"/balloon", balloon(cfg.BalloonStatsSeconds)},
+	)
 	for _, step := range steps {
 		if step.path == "/network-interfaces/eth0" && cfg.TapDevice == "" {
 			// No network device (the isolate tier's VM talks to the host over vsock only).

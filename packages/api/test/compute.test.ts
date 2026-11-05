@@ -61,11 +61,18 @@ describe("compute routes", () => {
 describe("a template's spec", () => {
 	const digest = `sha256:${"1".repeat(64)}`;
 
-	it("takes Kantel's base image, or no image at all", () => {
+	it("takes Kantel's base image, a Dockerfile, an image reference, or no image at all", () => {
 		expect(Value.Check(TemplateSpec, {})).toBe(true);
 		expect(Value.Check(TemplateSpec, { image: { kind: "kantel-base" } })).toBe(true);
-		expect(Value.Check(TemplateSpec, { image: { kind: "dockerfile", dockerfile: "FROM alpine\n" } })).toBe(false);
-		expect(Value.Check(TemplateSpec, { image: { kind: "image", ref: "ghcr.io/acme/agent:1" } })).toBe(false);
+		expect(Value.Check(TemplateSpec, { image: { kind: "dockerfile", dockerfile: "FROM alpine\n" } })).toBe(true);
+		expect(Value.Check(TemplateSpec, { image: { kind: "image", ref: "ghcr.io/acme/agent:1" } })).toBe(true);
+		expect(Value.Check(TemplateSpec, { image: { kind: "image", ref: `python@${digest}` } })).toBe(true);
+		expect(Value.Check(TemplateSpec, { image: { kind: "dockerfile", dockerfile: "" } })).toBe(false);
+		expect(Value.Check(TemplateSpec, { image: { kind: "dockerfile", dockerfile: "#".repeat(65_537) } })).toBe(false);
+		for (const ref of ["", "Python:3", "python:3 && curl x", "--network=host", "python@sha256:feed"]) {
+			expect(Value.Check(TemplateSpec, { image: { kind: "image", ref } }), ref).toBe(false);
+		}
+		expect(Value.Check(TemplateSpec, { image: { kind: "oci-layout", path: "/" } })).toBe(false);
 	});
 
 	it("names a base image by its repository path alone, with no registry port, tag or digest", () => {

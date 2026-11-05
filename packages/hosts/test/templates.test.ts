@@ -2,7 +2,13 @@
 // deleted on the host a build names (an account's own host only for that account), and a sandbox made from one placed
 // on the host holding it, with its template relayed, as the shape it asks for. Only a host that reports templates gets
 // either, and a build is admitted and holds its machine's memory and disk as a create does.
-import type { BackendEgress, SandboxBackend, SandboxSpec, TemplateBuildSpec } from "@kantel/compute";
+import {
+	type BackendEgress,
+	type SandboxBackend,
+	type SandboxSpec,
+	TEMPLATE_BUILD_LEASE_MS,
+	type TemplateBuildSpec,
+} from "@kantel/compute";
 import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
@@ -10,7 +16,12 @@ import { parseHostFacts } from "../src/facts.ts";
 import { HOST_FEATURES } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { customSizeName } from "../src/scheduler.ts";
-import { createHostsService, type HostsService } from "../src/service.ts";
+import {
+	createHostsService,
+	type HostsService,
+	TEMPLATE_BUILD_TIMEOUT_MS,
+	TEMPLATE_IMAGE_BUILD_TIMEOUT_MS,
+} from "../src/service.ts";
 import { createMemoryHostStore, type HostStore } from "../src/store.ts";
 import { createTunnelTickets } from "../src/tunnel.ts";
 import { FakeHost, facts } from "./fake-host.ts";
@@ -47,6 +58,8 @@ async function addHost(
 		old?: boolean;
 		templates?: boolean;
 		custom?: boolean;
+		/** It builds templates' custom images in a build microVM (`HOST_FEATURES.templateImages`). */
+		images?: boolean;
 		freeMemoryMiB?: number;
 	} = {},
 ) {
@@ -70,6 +83,7 @@ async function addHost(
 					HOST_FEATURES.egressPolicy,
 					...(options.custom === false ? [] : [HOST_FEATURES.customShapes]),
 					...(options.templates === false ? [] : [HOST_FEATURES.templates]),
+					...(options.images === true ? [HOST_FEATURES.templateImages] : []),
 				];
 	const host = new FakeHost(service, id, features);
 	if (options.freeMemoryMiB !== undefined) host.freeMemoryMiB = options.freeMemoryMiB;
@@ -388,6 +402,62 @@ describe("host backend templates", () => {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 const TEMPLATE = { baseImage: "kantel/sandbox" };
 
+describe("templates' custom images", () => {
+	const image = { kind: "dockerfile", dockerfile: "FROM $KANTEL_BASE\nRUN true\n", scope: "tpl_1@2#0" } as const;
+
+	it("go only to hosts that build them, which say so, with the image relayed and the root filesystem answered", async () => {
+		const { store, service, backend } = await setup();
+		const plain = await addHost(store, service, "host_plain", { freeMemoryMiB: 30_000 });
+		const builder = await addHost(store, service, "host_builder", { images: true });
+		expect(await backend.templateRuntimes?.()).toEqual([
+			{ hostId: "host_plain", kernel: RUNTIME.guestKernel, firecracker: RUNTIME.firecracker },
+			{ hostId: "host_builder", kernel: RUNTIME.guestKernel, firecracker: RUNTIME.firecracker, customImages: true },
+		]);
+		// A host without the builder would drop `image` and build the base: it is sent nothing.
+		await expect(backend.buildTemplate?.({ ...buildSpec("host_plain"), image })).rejects.toSatisfy((error) =>
+			isKantelError(error, "not_supported"),
+		);
+		expect(plain.calls.some((call) => call.method === "template.build")).toBe(false);
+		builder.answer = (method) =>
+			method === "template.build"
+				? {
+						ref: "tsn_1",
+						imageDigest: `sha256:${"c".repeat(64)}`,
+						rootfsKey: "f".repeat(64),
+						source: "dockerfile",
+						sizeBytes: 7,
+					}
+				: undefined;
+		const built = await backend.buildTemplate?.({ ...buildSpec("host_builder"), image });
+		expect(built).toEqual({
+			ref: "host_builder/tsn_1",
+			hostId: "host_builder",
+			imageDigest: `sha256:${"c".repeat(64)}`,
+			rootfsKey: "f".repeat(64),
+			sizeBytes: 7,
+		});
+		expect(builder.calls.find((call) => call.method === "template.build")?.params).toMatchObject({
+			image,
+			egress: { mode: "proxy" },
+		});
+
+		// A create from it goes only to a host that builds them, told the image and its root filesystem.
+		const boot = { ...TEMPLATE, image, rootfsKey: "f".repeat(64) };
+		for (const sandboxId of ["sbx_img_1", "sbx_img_2"]) {
+			expect((await service.sandboxes.create({ tier: "microvm", sandboxId, template: boot })).hostId).toBe(
+				"host_builder",
+			);
+		}
+		expect(builder.calls.find((call) => call.method === "sandbox.create")?.params).toMatchObject({
+			template: { image, rootfsKey: "f".repeat(64) },
+		});
+		await expect(
+			service.sandboxes.create({ tier: "microvm", template: boot, hostIds: ["host_plain"] }),
+		).rejects.toSatisfy((error) => isKantelError(error, "not_supported"));
+		expect(plain.calls.some((call) => call.method === "sandbox.create")).toBe(false);
+	});
+});
+
 describe("hosts from before templates", () => {
 	it("are sent no template, neither a create from one nor a build, while ordinary creates still go to them", async () => {
 		const { store, service, backend } = await setup();
@@ -412,6 +482,14 @@ describe("hosts from before templates", () => {
 		);
 		expect(older.calls.map((call) => call.method)).toEqual(["sandbox.create"]);
 		expect(older.calls.some((call) => "template" in call.params)).toBe(false);
+	});
+});
+
+describe("a template build's time", () => {
+	it("ends, a custom image's too, well within the stored build's lease, so no other gateway reclaims it while it may run", () => {
+		for (const timeout of [TEMPLATE_BUILD_TIMEOUT_MS, TEMPLATE_IMAGE_BUILD_TIMEOUT_MS]) {
+			expect(TEMPLATE_BUILD_LEASE_MS - timeout).toBeGreaterThanOrEqual(15 * 60_000);
+		}
 	});
 });
 

@@ -2542,9 +2542,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		booted: (boot: BootOptions) => Promise<Placement>,
 	): Promise<Placement> {
 		if (!neverPlaced(sandbox)) return booted(boot);
-		const template = sandbox.source === undefined ? sandbox.templateBoot : undefined;
+		const stored = sandbox.source === undefined ? sandbox.templateBoot : undefined;
+		let template: Omit<SandboxTemplateBoot, "snapshot"> | undefined;
+		let eligibleHosts = boot.eligibleHosts;
+		if (stored !== undefined) {
+			const { holders, ...fresh } = stored;
+			template = fresh;
+			// A custom image boots only where it was built: on its holders the sandbox may still use.
+			if (holders !== undefined) {
+				eligibleHosts = holders.filter((hostId) => boot.eligibleHosts.includes(hostId));
+				if (eligibleHosts.length === 0) {
+					throw new KantelError(
+						"unavailable",
+						"No host this sandbox may use holds its template's image now; make a new sandbox from the template once it's built",
+					);
+				}
+			}
+		}
 		const placement = await backend.create({
 			...boot,
+			eligibleHosts,
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
 			type: sandbox.type,
@@ -4092,7 +4109,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ownerUserId: principal.userId,
 					env,
 					...(environment === undefined ? {} : { environmentId: environment.id }),
-					...(start === undefined ? {} : { template: start.record, templateBoot: freshBoot(start.boot) }),
+					...(start === undefined
+						? {}
+						: {
+								template: start.record,
+								templateBoot: {
+									...freshBoot(start.boot),
+									// A custom image's holders, which a retry of the create keeps to.
+									...(start.boot.rootfsKey === undefined ? {} : { holders: [...start.eligibleHosts] }),
+								},
+							}),
 					grants,
 					placeholders,
 					egressRevision,

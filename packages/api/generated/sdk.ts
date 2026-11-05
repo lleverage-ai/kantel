@@ -511,7 +511,7 @@ export interface CreateSandboxBody {
 	};
 	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. */
 	readonly environment?: string;
-	/** Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. */
+	/** Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. */
 	readonly template?: string;
 	/** Place it only on a host with each label, such as `{ site: "home" }`. */
 	readonly hostLabels?: {
@@ -1572,7 +1572,7 @@ export interface SandboxTemplate {
 	readonly version: number;
 	/** The template snapshot it started from, `tsn_…`; absent for a fresh boot. */
 	readonly snapshotId?: string;
-	/** `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself. */
+	/** `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself (a custom image: the one its build made). */
 	readonly start: "snapshot" | "boot";
 }
 
@@ -1875,7 +1875,7 @@ export interface TemplateBehind {
 }
 
 export interface TemplateBuildStatus {
-	/** `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. */
+	/** `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that build (`unavailable` until then). */
 	readonly state: "none" | "building" | "ready" | "stale" | "failed";
 	/** A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots. */
 	readonly ready?: TemplateSnapshot;
@@ -1894,8 +1894,14 @@ export interface TemplateBuiltFrom {
 	/** Empty while the channel has no published digest. */
 	readonly baseDigest: string;
 	readonly pinned: boolean;
-	/** The digest of the image its host booted, as the host reported it. */
+	/** The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference resolved to; for a `dockerfile`, the built image's ID. */
 	readonly imageDigest?: string;
+	/** The template image's kind it was built from. Absent: `kantel-base`. */
+	readonly source?: "kantel-base" | "dockerfile" | "image";
+	/** For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`. */
+	readonly dockerfileDigest?: string;
+	/** For an `image`, the reference pulled. */
+	readonly imageRef?: string;
 	readonly kernel: string;
 	readonly firecracker: string;
 }
@@ -1905,6 +1911,10 @@ export interface TemplateCacheKey {
 	/** `<templateId>@<version>`. */
 	readonly templateVersion: string;
 	readonly baseDigest: string;
+	/** A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`. */
+	readonly source?: string;
+	/** A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, recorded once the build answers. Absent for `kantel-base`. */
+	readonly imageDigest?: string;
 	readonly kernel: string;
 	readonly firecracker: string;
 	readonly vcpus: number;
@@ -1912,8 +1922,22 @@ export interface TemplateCacheKey {
 	readonly memoryMb: number;
 }
 
-/** What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`. */
-export type TemplateImage = TemplateKantelBaseImage;
+/** Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address. */
+export interface TemplateDockerfileImage {
+	readonly kind: "dockerfile";
+	/** A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the template's `base`; any other `FROM` image is pulled. */
+	readonly dockerfile: string;
+}
+
+/** What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`. */
+export type TemplateImage = TemplateKantelBaseImage | TemplateDockerfileImage | TemplateImageRef;
+
+/** Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An image that isn't one of Kantel's boots through the guest agent the host injects. */
+export interface TemplateImageRef {
+	readonly kind: "image";
+	/** An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the template is built, and again on a rebuild. */
+	readonly ref: string;
+}
 
 /** The template's `base` itself, as its deployment publishes it; the setup script adds the rest. */
 export interface TemplateKantelBaseImage {
@@ -1970,7 +1994,7 @@ export type TemplateSnapshotState = "queued" | "building" | "ready" | "stale" | 
 
 /** A template version's definition, never changed once made. Answered with every default filled in. */
 export interface TemplateSpec {
-	/** What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`. */
+	/** What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`. */
 	readonly image?: TemplateImage;
 	/** The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image. */
 	readonly base?: TemplateBase;
@@ -2598,11 +2622,11 @@ export interface KantelClient {
 	putSandboxGrants(sandboxId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<SandboxEgress>;
 	/** List templates. The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates` */
 	listTemplates(query?: ListTemplatesQuery, options?: CallOptions): Promise<TemplateList>;
-	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates` */
+	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates` */
 	createTemplate(body: CreateTemplateBody, options?: CallOptions): Promise<Template>;
 	/** Get a template. With its build, and how far behind a pinned base is. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}` */
 	getTemplate(templateId: string, options?: CallOptions): Promise<Template>;
-	/** Change a template. Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `PATCH /templates/{templateId}` */
+	/** Change a template. Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready; a Dockerfile's or image reference's wait for the new version's image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `PATCH /templates/{templateId}` */
 	updateTemplate(templateId: string, body?: UpdateTemplateBody, options?: CallOptions): Promise<Template>;
 	/** Delete a template. Deletes it, its versions and its built snapshots. Sandboxes made from it keep running. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `DELETE /templates/{templateId}` */
 	deleteTemplate(templateId: string, options?: CallOptions): Promise<void>;
@@ -2610,7 +2634,7 @@ export interface KantelClient {
 	listTemplateVersions(templateId: string, options?: CallOptions): Promise<TemplateVersionList>;
 	/** List a template's snapshots. Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}/snapshots` */
 	listTemplateSnapshots(templateId: string, options?: CallOptions): Promise<TemplateSnapshotList>;
-	/** Rebuild a template. Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates/{templateId}/rebuild` */
+	/** Rebuild a template. Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready, or, for a Dockerfile or image reference, wait for its image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates/{templateId}/rebuild` */
 	rebuildTemplate(templateId: string, options?: CallOptions): Promise<Template>;
 	/** List base images' channels. Every base channel templates may follow, with the digests it has published. Any signed-in caller. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /template-bases` */
 	listTemplateBases(options?: CallOptions): Promise<TemplateBaseList>;

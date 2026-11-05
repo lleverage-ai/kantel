@@ -1144,6 +1144,9 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 		const record = await sandboxes.get(sandboxId);
 		if (record === undefined || record.state === "deleted") throw cause;
 		if (record.hostId !== undefined && record.hostId !== STUB_HOST_ID) throw onHost();
+		// Its custom image's holders are the service's to place by; here there's only the stub.
+		const template =
+			record.templateBoot === undefined ? undefined : (({ holders: _holders, ...boot }) => boot)(record.templateBoot);
 		const made = stub.create({
 			sandboxId,
 			accountId: record.accountId,
@@ -1155,7 +1158,7 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 			...(record.image === undefined ? {} : { image: record.image }),
 			// One made from a template is made again from the base and setup its create resolved, booted fresh, as `bootAgain`
 			// makes it: what its template is now, or whether it still is, doesn't matter.
-			...(record.templateBoot === undefined ? {} : { template: { ...record.templateBoot } }),
+			...(template === undefined ? {} : { template }),
 			env: record.env,
 			eligibleHosts: [STUB_HOST_ID],
 		});

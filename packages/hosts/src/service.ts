@@ -108,6 +108,12 @@ export interface HostBundle {
 /** Whether a host reports templates (`HOST_FEATURES.templates`): only such a host is sent a build or a template create. */
 export const runsTemplates = (host: HostRecord): boolean =>
 	storedFacts(host.facts)?.features?.includes(HOST_FEATURES.templates) === true;
+/**
+ * Whether a host builds templates' custom images in a build microVM (`HOST_FEATURES.templateImages`, beside
+ * `templates`): only such a host is sent a custom image's build or create.
+ */
+export const buildsTemplateImages = (host: HostRecord): boolean =>
+	runsTemplates(host) && storedFacts(host.facts)?.features?.includes(HOST_FEATURES.templateImages) === true;
 
 export const JOIN_TOKEN_PREFIX = "kth_";
 export const HOST_CREDENTIAL_PREFIX = "khc_";
@@ -191,6 +197,8 @@ export interface HostTemplateRuntime {
 	/** Absent for a host from before templates. */
 	readonly guestKernel?: string;
 	readonly firecracker?: string;
+	/** It builds templates' custom images in a build microVM (`HOST_FEATURES.templateImages`). */
+	readonly customImages?: boolean;
 }
 
 /**
@@ -198,6 +206,8 @@ export interface HostTemplateRuntime {
  * minutes). A create from a template is given as long: booting fresh, it pulls the image and runs the setup too.
  */
 export const TEMPLATE_BUILD_TIMEOUT_MS = 50 * 60_000;
+/** How long a custom image's template build may take: its build microVM (which the host bounds at 45 minutes) too. */
+export const TEMPLATE_IMAGE_BUILD_TIMEOUT_MS = 100 * 60_000;
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
@@ -1125,8 +1135,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					.filter((host) => only === undefined || only.has(host.id))
 					// An account's own host takes only that account's sandboxes, whatever the caller named.
 					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
-				// A template goes only to a host that runs templates.
-				const templating = input.template === undefined ? usable : usable.filter(runsTemplates);
+				// A template goes only to a host that runs templates; a custom image's only to one that builds them.
+				const templating =
+					input.template === undefined
+						? usable
+						: usable.filter(input.template.image === undefined ? runsTemplates : buildsTemplateImages);
 				if (templating.length === 0 && usable.length > 0) {
 					throw new KantelError("not_supported", "No host that could take it runs templates; upgrade kantel-host");
 				}
@@ -1343,6 +1356,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						hostId: host.id,
 						...(facts.guestKernel === undefined ? {} : { guestKernel: facts.guestKernel }),
 						...(facts.firecracker === undefined ? {} : { firecracker: facts.firecracker }),
+						...(buildsTemplateImages(host) ? { customImages: true } : {}),
 					});
 				}
 				return out;
@@ -1362,6 +1376,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						`The host ${host.name} doesn't run templates; upgrade its kantel-host`,
 					);
 				}
+				// A custom image only to a host that builds it in a build microVM: an older one would drop `image` and build the
+				// base instead.
+				if (input.image !== undefined && !buildsTemplateImages(host)) {
+					throw new KantelError(
+						"not_supported",
+						`The host ${host.name} doesn't build templates' custom images; switch its templateBuilder on`,
+					);
+				}
 				const shape = buildShape(host, input);
 				const params: HostTemplateBuild = {
 					...input,
@@ -1376,7 +1398,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						hostId,
 						HostMethods.templateBuild,
 						params,
-						{ timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS },
+						{ timeoutMs: input.image === undefined ? TEMPLATE_BUILD_TIMEOUT_MS : TEMPLATE_IMAGE_BUILD_TIMEOUT_MS },
 						host,
 					);
 				} finally {

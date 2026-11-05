@@ -71,6 +71,39 @@ Add `--inject-guest-agent` to the host's join command, or set `injectGuestAgent`
 
 The installer fetches the agent (`kantel-guest-amd64` or `kantel-guest-arm64`) with the other images; `guestAgent` names another one. Running the installer again (an upgrade, say) keeps a `sandboxImage` or `guestAgent` of your own and fetches only the files it put there itself. Those are `images/sandbox.ext4` and `images/kantel-guest` under the host's root, so give your own files any other name; the installer stops with an error rather than treat one of yours as its own. The host builds its initramfs from the agent and makes its templates again when the agent changes. A host runs one image, so to offer several, run a host per image and choose between them with [labels](/hosts/).
 
+## A template's custom image
+
+:::caution[Experimental]
+Templates are on only with `KANTEL_TEMPLATES=experimental`, and a host builds custom images only with `templateBuilder` in its settings.
+:::
+
+A template's image can be a Dockerfile (`{ "kind": "dockerfile", "dockerfile": "…" }`) or an image reference (`{ "kind": "image", "ref": "python:3.13-slim" }`) instead of Kantel's base. The host never builds or pulls it with its own Docker: a build microVM boots the host's sandbox image, runs Docker inside itself and writes the image's files to a new root filesystem. That microVM is on a network link like any sandbox's, so its only way out is the host's egress proxy, which checks each connection's address as it connects. A pull, a registry's redirect, a `RUN` step's download or an `ONBUILD` trigger in a pulled image reaches a public address the build's rules allow, or nothing. It never reaches the host, its network, cloud metadata or another sandbox, and the private ranges a host's `egressAllowCIDRs` opens to ordinary sandboxes (a LAN mirror, say) are closed to it too.
+
+A build may reach the template's grants, the account's proxy settings and the host's `templateBuilder.registries`; every other host is refused. A Dockerfile has no build context, so `COPY` has nothing to copy; fetch what it needs with `RUN`. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` builds on the template's base; a base pinned to a published digest is pulled from the host's `templateRegistry`. An image reference ignores the template's base and needs no `templateRegistry`, and a new Kantel base release doesn't pull it again; a rebuild does.
+
+A grant with methods or paths, or a protected variable's bound host, has the egress proxy open HTTPS with the build's own CA, which a stage on a pulled image doesn't trust. Every stage may mount the build microVM's trust store, which holds that CA and the public roots, as the secret `kantel-ca`:
+
+```dockerfile
+FROM curlimages/curl
+RUN --mount=type=secret,id=kantel-ca,mode=0444 \
+    curl --cacert /run/secrets/kantel-ca -fsSL https://example.com/tool.tar.gz -o /tmp/tool.tar.gz
+```
+
+The secret is mounted for that step alone and never ends up in the image; `mode=0444` lets a stage that runs as another user than root, as `curlimages/curl` does, read it. Tools that read a bundle from the environment take it the same way, such as `SSL_CERT_FILE=/run/secrets/kantel-ca` or `NODE_EXTRA_CA_CERTS=/run/secrets/kantel-ca`.
+
+The image is built once per template version and rebuild, for that account alone. Its digest (the pulled image's, or the one the Dockerfile made) is part of the template snapshot's key, and shows as the snapshot's `builtFrom.imageDigest`. An image reference pinned `@sha256:…` must pull that digest. Sandboxes of the template boot the image through the injected guest agent, so a host needs `injectGuestAgent` as well. Only hosts with `templateBuilder` on build or boot them, and Kantel places those sandboxes on those hosts.
+
+Unlike a template on Kantel's base, which boots its image fresh while its snapshot builds, a template with a Dockerfile or image reference has nothing to boot until its current version's image is built: until then a create from it answers `unavailable`, and the console says it waits for its image. The image is only on the host that built it, so if that host is drained, revoked or no longer builds custom images, Kantel builds it again on another one that does. A build microVM holds twice the template's disk while it runs, for Docker's storage and the image it writes.
+
+```json
+{
+  "injectGuestAgent": true,
+  "templateBuilder": {
+    "registries": ["registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com"]
+  }
+}
+```
+
 ## What a sandbox says its image has
 
 When a microVM starts, its agent looks at the image and the host passes on what it found as the sandbox's `capabilities.guest`. A sandbox's `desktop`, `browser`, `docker` and `kvm` capabilities are `false` where its image lacks them, and the console shows the image's details on the sandbox's page and hides the desktop and browser it doesn't have, saying why.
@@ -98,4 +131,4 @@ When a microVM starts, its agent looks at the image and the host passes on what 
 
 Opening the desktop or browser of a sandbox whose image has none answers `501` with `not_supported` and the reason. A sandbox on a host from before the guest agent reported has no `guest`, and Kantel's own image's capabilities.
 
-<!-- Sources: apps/host/internal/guestinit/init_linux.go, apps/host/internal/guestinit/initramfs.go, apps/host/internal/guest/capabilities.go, apps/host/internal/guest/sshd.go, apps/host/internal/guest/server.go (LoginUser, identity), apps/host/internal/agent/config.go (InjectGuestAgent, GuestAgent), apps/host/internal/microvm/injected_vmtest_test.go, apps/host/test/injected.sh, packages/hosts/src/backend.ts (capabilitiesOf), packages/compute/src/service.ts (openDesktop, openBrowser) -->
+<!-- Sources: apps/host/internal/guestinit/init_linux.go, apps/host/internal/guestinit/initramfs.go, apps/host/internal/guest/capabilities.go, apps/host/internal/guest/sshd.go, apps/host/internal/guest/server.go (LoginUser, identity), apps/host/internal/agent/config.go (InjectGuestAgent, GuestAgent), apps/host/internal/microvm/injected_vmtest_test.go, apps/host/test/injected.sh, packages/hosts/src/backend.ts (capabilitiesOf), packages/compute/src/service.ts (openDesktop, openBrowser), apps/host/internal/microvm/builder.go, apps/host/internal/agent/templates.go (TemplateBuilderConfig), packages/compute/src/templates.ts (customSource) -->

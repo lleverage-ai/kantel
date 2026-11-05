@@ -64,6 +64,8 @@ interface HeldBuild {
 	readonly spec: TemplateBuildSpec;
 	/** Runs the stub's build and answers it. */
 	release(): void;
+	/** Runs the stub's build and answers it as `change` makes it: a host answering something else. */
+	releaseWith(change: (built: BuiltTemplate) => BuiltTemplate): void;
 	fail(message: string): void;
 	/** Rejects with `error` as it is: a `KantelError`'s code, say. */
 	reject(error: Error): void;
@@ -97,6 +99,8 @@ function controllableBackend(
 	const bytesOnHosts = options.bytesOnHosts ?? new Set<string>();
 	const runtime = { kernel: "6.1.100", firecracker: "1.10.1" };
 	const runtimeHosts = [STUB_HOST_ID, ...(options.moreHosts ?? [])];
+	/** The hosts that build templates' custom images (`TemplateRuntime.customImages`): every one at first. */
+	const customImageHosts = new Set(runtimeHosts);
 	const hostSizes = new Map<string, readonly BackendSize[]>();
 	const refuse = { deletes: false, snapshotHost: false, creates: false };
 	const builds: HeldBuild[] = [];
@@ -152,7 +156,12 @@ function controllableBackend(
 			? withoutTemplates
 			: {
 					...base,
-					templateRuntimes: async () => runtimeHosts.map((hostId) => ({ hostId, ...runtime })),
+					templateRuntimes: async () =>
+						runtimeHosts.map((hostId) => ({
+							hostId,
+							...runtime,
+							...(customImageHosts.has(hostId) ? { customImages: true } : {}),
+						})),
 					buildTemplate: (spec) =>
 						new Promise<BuiltTemplate>((resolve, reject) => {
 							let released = false;
@@ -173,6 +182,7 @@ function controllableBackend(
 							const held: HeldBuild = {
 								spec,
 								release: () => run(resolve),
+								releaseWith: (change) => run((built) => resolve(change(built))),
 								fail: (message) => reject(new Error(message)),
 								reject,
 								timeOut: () =>
@@ -212,6 +222,7 @@ function controllableBackend(
 		stub,
 		runtime,
 		runtimeHosts,
+		customImageHosts,
 		hostSizes,
 		refuse,
 		builds,
@@ -275,6 +286,12 @@ async function failure(call: Promise<unknown>): Promise<KantelApiError> {
 		throw error;
 	}
 	throw new Error("Expected the call to fail");
+}
+
+/** The SHA-256 hex of a string, as the service hashes a Dockerfile. */
+async function sha256(text: string): Promise<string> {
+	const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+	return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** The machine the backend made for a sandbox. */
@@ -807,11 +824,16 @@ describe("a template's image", () => {
 		await releaseAll(() => api.service.idle());
 	});
 
-	it("refuses a Dockerfile, an image reference, and a base naming a registry, tag or digest", async () => {
+	it("refuses a blank Dockerfile, a malformed image reference, and a base naming a registry, tag or digest", async () => {
 		const { api, tom, releaseAll } = setup();
 		const refused = [
-			{ ...SPEC, image: { kind: "dockerfile", dockerfile: "FROM alpine\nRUN apk add jq\n" } },
-			{ ...SPEC, image: { kind: "image", ref: "ghcr.io/acme/agent:1" } },
+			{ ...SPEC, image: { kind: "dockerfile", dockerfile: " \n\t" } },
+			{ ...SPEC, image: { kind: "dockerfile", dockerfile: "#".repeat(65_537) } },
+			{ ...SPEC, image: { kind: "image", ref: "GHCR.io/Acme/Agent:1" } },
+			{ ...SPEC, image: { kind: "image", ref: "acme/agent:1; curl http://169.254.169.254" } },
+			{ ...SPEC, image: { kind: "image", ref: "-v/:/host" } },
+			{ ...SPEC, image: { kind: "image", ref: `acme/agent@sha256:${"z".repeat(64)}` } },
+			{ ...SPEC, image: { kind: "tarball", url: "http://10.0.0.1/rootfs.tar" } },
 			{ ...SPEC, base: { image: "registry.example.com:5000/acme/base", channel: "stable" } },
 			{ ...SPEC, base: { image: "kantel/sandbox:latest", channel: "stable" } },
 			{ ...SPEC, base: { image: `kantel/sandbox@${D1}`, channel: "stable" } },
@@ -822,11 +844,305 @@ describe("a template's image", () => {
 		}
 		const template = await tom.createTemplate({ name: "web", spec: SPEC });
 		const edit = {
-			spec: { ...SPEC, image: { kind: "image", ref: "acme/agent:1" } } as unknown as computeSchema.TemplateSpec,
+			spec: { ...SPEC, image: { kind: "image", ref: "acme/agent: 1" } } as unknown as computeSchema.TemplateSpec,
 		};
 		expect((await failure(tom.updateTemplate(template.id, edit))).code).toBe("invalid");
 		expect((await tom.listTemplates()).items.map((each) => [each.name, each.version])).toEqual([["web", 1]]);
 		await releaseAll(() => api.service.idle());
+	});
+});
+
+describe("a template's custom image", () => {
+	const DOCKERFILE = "ARG KANTEL_BASE\nFROM $KANTEL_BASE\nRUN apt-get install -y ripgrep\n";
+	const dockerfileSpec = (dockerfile = DOCKERFILE): computeSchema.TemplateSpec => ({
+		...SPEC,
+		image: { kind: "dockerfile", dockerfile },
+	});
+
+	it("is built from a Dockerfile, its key covering the Dockerfile and then the digest its build made", async () => {
+		const { api, tom, build, builds, created } = setup();
+		const template = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		expect(template.spec.image).toEqual({ kind: "dockerfile", dockerfile: DOCKERFILE });
+		const held = await build(0);
+		// The build is given the Dockerfile, scoped to the template's version and rebuild, beside its grants: the host
+		// builds it in a build microVM.
+		expect(held.spec.image).toEqual({ kind: "dockerfile", dockerfile: DOCKERFILE, scope: `${template.id}@1#0` });
+		const claimed = (await api.store.templateSnapshots.list({ templateId: template.id }))[0];
+		const source = `dockerfile:sha256:${await sha256(DOCKERFILE)}`;
+		expect(claimed?.key).toMatchObject({ source });
+		expect(claimed?.key.imageDigest).toBeUndefined();
+		held.release();
+		await api.service.idle();
+
+		const ready = (await tom.getTemplate(template.id)).build.ready;
+		expect(ready?.state).toBe("ready");
+		expect(ready?.builtFrom).toMatchObject({
+			source: "dockerfile",
+			dockerfileDigest: `sha256:${await sha256(DOCKERFILE)}`,
+		});
+		const digestBuilt = ready?.builtFrom.imageDigest;
+		expect(digestBuilt).toMatch(/^sha256:[0-9a-f]{64}$/);
+		// Its key has the built digest now, and its hash covers it.
+		expect(ready?.key).toMatchObject({ source, imageDigest: digestBuilt });
+		expect(ready?.keyHash).toBe((await templateCacheKey(ready?.key as computeSchema.TemplateCacheKey)).keyHash);
+		expect(ready?.keyHash).not.toBe(claimed?.keyHash);
+		// A reconcile wants it still: nothing is built again.
+		await api.service.sweep();
+		await api.service.idle();
+		expect(builds).toHaveLength(1);
+
+		// A create starts from its snapshot, told the image and its root filesystem, and records the digest it boots.
+		const sandbox = await tom.createSandbox({ template: "rg", wait: true });
+		const boot = specOf(created, sandbox.id).template;
+		expect(boot).toMatchObject({
+			image: { kind: "dockerfile", dockerfile: DOCKERFILE, scope: `${template.id}@1#0` },
+			imageDigest: digestBuilt,
+			snapshot: expect.any(String),
+		});
+		expect(boot?.rootfsKey).toMatch(/^[0-9a-f]{64}$/);
+		expect(sandbox.image).toBe(`dockerfile@${digestBuilt}`);
+		expect(sandbox.template).toMatchObject({ start: "snapshot", snapshotId: ready?.id });
+	});
+
+	it("is an image reference, a pinned one's digest in its key from the start and checked against the build", async () => {
+		const { api, tom, build } = setup();
+		const tagged = await tom.createTemplate({
+			name: "py",
+			spec: { ...SPEC, image: { kind: "image", ref: "python:3.13-slim" } },
+		});
+		const first = await build(0);
+		expect(first.spec.image).toEqual({ kind: "image", ref: "python:3.13-slim", scope: `${tagged.id}@1#0` });
+		first.release();
+		await api.service.idle();
+		const ready = (await tom.getTemplate(tagged.id)).build.ready;
+		expect(ready?.builtFrom).toMatchObject({ source: "image", imageRef: "python:3.13-slim" });
+		expect(ready?.key).toMatchObject({ source: "image:python:3.13-slim", imageDigest: ready?.builtFrom.imageDigest });
+
+		const ref = `ghcr.io/acme/ci@${D1}`;
+		const pinned = await tom.createTemplate({ name: "ci", spec: { ...SPEC, image: { kind: "image", ref } } });
+		const claimed = (await api.store.templateSnapshots.list({ templateId: pinned.id }))[0];
+		expect(claimed?.key).toMatchObject({ source: `image:${ref}`, imageDigest: D1 });
+		(await build(1)).release();
+		await api.service.idle();
+		expect((await tom.getTemplate(pinned.id)).build.ready?.key.imageDigest).toBe(D1);
+
+		// A host answering another digest than the reference pins: the build failed, and nothing is used.
+		const wrong = await tom.createTemplate({
+			name: "ci-two",
+			spec: { ...SPEC, image: { kind: "image", ref: `ghcr.io/acme/ci@${D2}` } },
+		});
+		(await build(2)).releaseWith((built) => ({ ...built, imageDigest: D3 }));
+		await api.service.idle();
+		const failed = await tom.getTemplate(wrong.id);
+		expect(failed.build.state).toBe("failed");
+		expect(failed.build.error).toContain(D3);
+		// A host that doesn't name the image it built (one from before custom images) fails it too.
+		const unnamed = await tom.createTemplate({ name: "old", spec: dockerfileSpec("FROM alpine\n") });
+		(await build(3)).releaseWith(({ rootfsKey: _none, ...built }) => built);
+		await api.service.idle();
+		expect((await tom.getTemplate(unnamed.id)).build.state).toBe("failed");
+	});
+
+	it("is built and booted only on hosts that build custom images", async () => {
+		const { api, tom, build, builds, customImageHosts, created, releaseAll } = setup({ moreHosts: ["hst_two"] });
+		customImageHosts.clear();
+		const template = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		await api.service.idle();
+		expect(builds).toHaveLength(0);
+		expect((await tom.getTemplate(template.id)).build.state).toBe("none");
+		const refusal = await failure(tom.createSandbox({ template: "rg" }));
+		expect(refusal.code).toBe("not_supported");
+		expect(refusal.message).toContain("templateBuilder");
+
+		// One host switches its builder on: it alone builds it.
+		customImageHosts.add("hst_two");
+		await api.service.sweep();
+		const held = await build(0);
+		expect(held.spec.hostId).toBe("hst_two");
+		// Until a build is ready, no host holds the image: a create waits for it.
+		expect((await failure(tom.createSandbox({ template: "rg" }))).code).toBe("unavailable");
+		held.release();
+		await releaseAll(() => api.service.idle());
+		expect(builds).toHaveLength(1);
+		const sandbox = await tom.createSandbox({ template: "rg", wait: true });
+		expect(specOf(created, sandbox.id).eligibleHosts).toEqual(["hst_two"]);
+	});
+
+	it("is built again on an eligible host when the host holding it can't serve it, the old entry kept for its bytes", async () => {
+		const { api, tom, build, builds, customImageHosts, created, bytesOnHosts } = setup({ moreHosts: ["hst_two"] });
+		const template = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		const first = await build(0);
+		expect(first.spec.hostId).toBe(STUB_HOST_ID);
+		first.release();
+		await api.service.idle();
+		const held = (await tom.getTemplate(template.id)).build.ready;
+		expect(held).toMatchObject({ state: "ready", hostId: STUB_HOST_ID });
+		// A Kantel-base template on the same host is kept as it is when its host goes: a create boots its base elsewhere.
+		const plain = await tom.createTemplate({ name: "plain", spec: SPEC });
+		(await build(1)).release();
+		await api.service.idle();
+
+		// Its host stops building custom images (its builder switched off): another host with the same runtime builds
+		// the image again, as a new attempt, while the old entry keeps its ID and host.
+		customImageHosts.delete(STUB_HOST_ID);
+		await api.service.sweep();
+		const again = await build(2);
+		expect(again.spec).toMatchObject({ hostId: "hst_two", templateId: template.id });
+		expect(again.spec.snapshotId).not.toBe(held?.id);
+		expect(await api.store.templateSnapshots.get(held?.id ?? "")).toMatchObject({
+			state: "stale",
+			hostId: STUB_HOST_ID,
+		});
+		// Nothing serves it meanwhile: the old host can't, and the new one hasn't the image yet.
+		expect((await failure(tom.createSandbox({ template: "rg" }))).code).toBe("unavailable");
+		again.release();
+		await api.service.idle();
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await tom.getTemplate(template.id)).build.ready).toMatchObject({
+			id: again.spec.snapshotId,
+			hostId: "hst_two",
+		});
+		// The replaced entry's bytes are deleted on its own host, by its own ID.
+		expect(bytesOnHosts.has(`${STUB_HOST_ID} ${held?.id}`)).toBe(false);
+		expect(bytesOnHosts.has(`hst_two ${again.spec.snapshotId}`)).toBe(true);
+		const sandbox = await tom.createSandbox({ template: "rg", wait: true });
+		expect(specOf(created, sandbox.id).eligibleHosts).toEqual(["hst_two"]);
+		// The Kantel-base template was never built again.
+		expect(builds.filter((each) => each.spec.templateId === plain.id)).toHaveLength(1);
+		expect(builds).toHaveLength(3);
+	});
+
+	it("is booted again, on a retry of a failed create, only on a host holding its image", async () => {
+		const { api, tom, build, refuse, created } = setup({ moreHosts: ["hst_two"] });
+		const template = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		(await build(0)).release();
+		await api.service.idle();
+		const holder = (await tom.getTemplate(template.id)).build.ready?.hostId;
+		expect(holder).toBe(STUB_HOST_ID);
+		refuse.creates = true;
+		const failed = await tom.createSandbox({ template: "rg", wait: true });
+		expect(failed.state).toBe("error");
+		refuse.creates = false;
+		expect((await api.store.sandboxes.get(failed.id))?.templateBoot?.holders).toEqual([STUB_HOST_ID]);
+		// Its template edited and deleted meanwhile: the retry boots the same image, on the host holding it alone.
+		await tom.deleteTemplate(template.id);
+		await api.service.idle();
+		await tom.recoverSandbox(failed.id);
+		await api.service.idle();
+		const retried = created.filter((spec) => spec.sandboxId === failed.id);
+		expect(retried).toHaveLength(2);
+		expect(retried[1]?.eligibleHosts).toEqual([STUB_HOST_ID]);
+		expect(retried[1]?.template).not.toHaveProperty("holders");
+		expect(retried[1]?.template?.rootfsKey).toBe(retried[0]?.template?.rootfsKey);
+		expect((await tom.getSandbox(failed.id)).state).toBe("running");
+	});
+
+	it("is built again for a base release only when it is a Dockerfile, which builds on the base", async () => {
+		const { api, tom, root, build, builds, releaseAll } = setup();
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		const py = await tom.createTemplate({
+			name: "py",
+			spec: { ...SPEC, image: { kind: "image", ref: "python:3.13-slim" } },
+		});
+		const rg = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		await releaseAll(() => api.service.idle());
+		const before = (await tom.getTemplate(py.id)).build.ready;
+		expect(builds).toHaveLength(2);
+
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D2 });
+		await api.service.sweep();
+		const again = await build(2);
+		expect(again.spec).toMatchObject({ templateId: rg.id, baseDigest: D2 });
+		await releaseAll(() => api.service.idle());
+		// The image reference's key, and its pulled image, are as they were: nothing pulled it again.
+		expect(builds.filter((each) => each.spec.templateId === py.id)).toHaveLength(1);
+		const after = (await tom.getTemplate(py.id)).build;
+		expect(after).toMatchObject({ state: "ready", ready: { id: before?.id, keyHash: before?.keyHash } });
+	});
+
+	it("is never reclaimed by another gateway while its build may still run, and is once its lease has lapsed", async () => {
+		const store = createMemoryStore();
+		const bytesOnHosts: BytesOnHosts = new Set();
+		const first = setup({ store, bytesOnHosts });
+		const template = await first.tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		const running = await first.build(0);
+		const id = running.spec.snapshotId;
+
+		// Another gateway sweeps at the last moment the hosts service still waits for a custom image's build
+		// (TEMPLATE_IMAGE_BUILD_TIMEOUT_MS, 100 minutes): the build is left alone.
+		const second = setup({ store, bytesOnHosts });
+		second.clock.skip = 100 * 60_000;
+		await second.api.service.sweep();
+		await second.api.service.idle();
+		expect(second.builds).toHaveLength(0);
+		expect(await store.templateSnapshots.get(id)).toMatchObject({ state: "building" });
+
+		// Its lease lapsed (its gateway taken to have died with it): another attempt, with a new ID, replaces it, and the
+		// abandoned one is thrown away with its ID and host kept for its bytes.
+		second.clock.skip = TEMPLATE_BUILD_LEASE_MS;
+		await second.api.service.sweep();
+		const again = await second.build(0);
+		expect(again.spec.snapshotId).not.toBe(id);
+		const abandoned = await store.templateSnapshots.get(id);
+		expect(abandoned).toMatchObject({ hostId: STUB_HOST_ID });
+		expect(["deleting", "discarded"]).toContain(abandoned?.state);
+		again.release();
+		await second.api.service.idle();
+		// The first gateway's build answers at last: its result isn't used.
+		running.release();
+		await first.api.service.idle();
+		expect((await second.tom.getTemplate(template.id)).build.ready?.id).toBe(again.spec.snapshotId);
+	});
+
+	it("boots fresh, at another shape, only on a host holding the image, from its root filesystem", async () => {
+		const { api, tom, build, created } = setup();
+		await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		(await build(0)).release();
+		await api.service.idle();
+		const [entry] = await api.store.templateSnapshots.list();
+		const sandbox = await tom.createSandbox({ template: "rg", resources: { vcpus: 1, memoryMb: 2048 }, wait: true });
+		const spec = specOf(created, sandbox.id);
+		expect(spec.template?.snapshot).toBeUndefined();
+		expect(spec.template).toMatchObject({
+			rootfsKey: entry?.rootfsKey,
+			imageDigest: entry?.key.imageDigest,
+			setup: SETUP,
+		});
+		expect(spec.eligibleHosts).toEqual([entry?.hostId]);
+		expect(sandbox.template?.start).toBe("boot");
+		expect(sandbox.image).toBe(`dockerfile@${entry?.key.imageDigest}`);
+	});
+
+	it("is built again for a new Dockerfile and on a rebuild, which re-resolves a tag, never touching user snapshots", async () => {
+		const { api, tom, build, builds, deletedSnapshots, releaseAll } = setup();
+		const template = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		(await build(0)).release();
+		await api.service.idle();
+		const sandbox = await tom.createSandbox({ template: "rg", wait: true });
+		const snapshot = await tom.takeSnapshot(sandbox.id, {});
+		const first = (await tom.getTemplate(template.id)).build.ready;
+
+		const changed = `${DOCKERFILE}RUN apt-get install -y jq\n`;
+		await tom.updateTemplate(template.id, { spec: dockerfileSpec(changed) });
+		const second = await build(1);
+		expect(second.spec.image).toEqual({ kind: "dockerfile", dockerfile: changed, scope: `${template.id}@2#0` });
+		// The old one is kept, stale, until the new one is ready.
+		expect((await tom.getTemplate(template.id)).build.ready).toMatchObject({ id: first?.id, state: "stale" });
+		second.release();
+		await api.service.idle();
+		const secondReady = (await tom.getTemplate(template.id)).build.ready;
+		expect(secondReady?.key.source).toBe(`dockerfile:sha256:${await sha256(changed)}`);
+		expect(secondReady?.key.imageDigest).not.toBe(first?.key.imageDigest);
+
+		// A rebuild builds the image again, in its own scope: a tag moved since resolves again.
+		await tom.rebuildTemplate(template.id);
+		const third = await build(2);
+		expect(third.spec.image).toMatchObject({ scope: `${template.id}@2#1` });
+		await releaseAll(() => api.service.idle());
+		expect(builds).toHaveLength(3);
+		expect(deletedSnapshots).toEqual([]);
+		expect((await api.store.snapshots.get(snapshot.id))?.id).toBe(snapshot.id);
 	});
 });
 

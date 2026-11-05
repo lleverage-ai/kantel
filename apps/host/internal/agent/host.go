@@ -178,7 +178,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		}
 		mv, err := microvm.New(microvm.Config{
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
-			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
+			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
+			Root:            cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events:         h.sandboxEvent,
@@ -309,6 +310,10 @@ func (h *Host) Facts() proto.Facts {
 	}
 	if h.canBuildTemplates(context.Background()) == nil {
 		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
+		// Custom images only beside template builds: the control plane sends them to a host with both.
+		if h.canBuildTemplateImages() == nil {
+			f.Features = append(f.Features, proto.FeatureTemplateImageBuild)
+		}
 	}
 	return f
 }
@@ -407,6 +412,7 @@ func (h *Host) egressRules(sandboxID, account string, e *proto.Egress) egress.Ru
 		r.Mode = e.Mode
 	}
 	r.Allow, r.Deny, r.DefaultDeny = e.Allow, e.Deny, e.DefaultDeny
+	r.PublicOnly = e.PublicOnly
 	// Protected variables and grants apply whatever the data path: a placeholder is worthless unless swapped, and a
 	// grant restricts.
 	if e.Protected != nil {

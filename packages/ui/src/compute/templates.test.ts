@@ -9,6 +9,7 @@ import {
 	templateBasePicked,
 	templateDraft,
 	templateDraftProblems,
+	templateEditorChange,
 	templateEditorInput,
 	templateEnv,
 	templateVariableDraft,
@@ -19,12 +20,14 @@ import { buildPollMs } from "./template-view.ts";
 import {
 	baseText,
 	behindText,
+	builtFromText,
 	freshnessText,
 	imageText,
 	rebuildText,
 	resourcesText,
 	shortFreshnessText,
 	templatePickHint,
+	waitsForImage,
 } from "./templates-page.tsx";
 
 const MINUTE = 60_000;
@@ -107,6 +110,50 @@ describe("what the console says about a template", () => {
 		const rust = byName("rust-ci");
 		expect(templatePickHint(rust, FIXTURE_NOW, { vcpus: 2, memoryMb: rust.spec.memoryMb })).toMatch(
 			/^At 2 vCPU, .* rather than its own/,
+		);
+	});
+});
+
+describe("a custom image's availability", () => {
+	const python = byName("python-data");
+	const ready = python.build.ready;
+	if (ready === undefined) throw new Error("python-data has no snapshot");
+	const dockerfile = { ...python.spec, image: { kind: "dockerfile" as const, dockerfile: "FROM alpine\n" } };
+	const unbuilt = { ...python, spec: dockerfile, version: 4, build: { state: "building" as const, ready } };
+
+	it("never promises a fresh boot before its current version's image is built", () => {
+		expect(waitsForImage(unbuilt)).toBe(true);
+		expect(waitsForImage(python)).toBe(false);
+		const said = [
+			freshnessText(unbuilt, FIXTURE_NOW),
+			freshnessText({ ...unbuilt, build: { state: "none" } }, FIXTURE_NOW),
+			freshnessText({ ...unbuilt, build: { state: "failed", ready } }, FIXTURE_NOW),
+			shortFreshnessText(unbuilt, FIXTURE_NOW),
+			shortFreshnessText({ ...unbuilt, build: { state: "failed" } }, FIXTURE_NOW),
+			rebuildText(unbuilt),
+			templatePickHint(unbuilt, FIXTURE_NOW),
+			templatePickHint(unbuilt, FIXTURE_NOW, { vcpus: 8, memoryMb: 16384 }),
+		];
+		for (const text of said) expect(text).not.toMatch(/fresh|boots the image/i);
+		expect(freshnessText(unbuilt, FIXTURE_NOW)).toBe("Building v4; new sandboxes wait for its image to build");
+		expect(shortFreshnessText(unbuilt, FIXTURE_NOW)).toBe("Waits for its image");
+		expect(rebuildText(unbuilt)).toBe("Rebuilding. New sandboxes can't start from it until its image is built.");
+		expect(templatePickHint(unbuilt, FIXTURE_NOW)).toMatch(/^v4's image isn't built yet/);
+	});
+
+	it("still serves a built image: its snapshot, a stale one during a rebuild, and a fresh boot at another shape", () => {
+		const built = { ...python, spec: dockerfile };
+		expect(freshnessText(built, FIXTURE_NOW)).toBe("Snapshot built 2h ago");
+		const stale = { ...ready, state: "stale" as const };
+		const rebuilding = { ...built, build: { state: "building" as const, ready: stale } };
+		expect(shortFreshnessText(rebuilding, FIXTURE_NOW)).toBe(`v${ready.version} serves while it rebuilds`);
+		expect(rebuildText(rebuilding)).toMatch(/current snapshot until the new one is ready/);
+		expect(templatePickHint(built, FIXTURE_NOW, { vcpus: 8, memoryMb: 16384 })).toMatch(
+			/boots the built image and runs the setup itself/,
+		);
+		// A Kantel base with nothing built still boots fresh.
+		expect(freshnessText({ ...python, version: 4, build: { state: "none" } }, FIXTURE_NOW)).toMatch(
+			/boot the image fresh/,
 		);
 	});
 });
@@ -282,14 +329,93 @@ describe("the template editor's base", () => {
 });
 
 describe("the sample templates' setup scripts", () => {
-	it("allow every host their scripts fetch from", () => {
+	it("allow every host their scripts and Dockerfiles fetch from", () => {
+		const kinds = new Set<string>();
 		for (const template of sampleTemplates(FIXTURE_NOW)) {
 			const { image, setup = "", grants } = template.spec;
-			expect(image, template.name).toEqual({ kind: "kantel-base" });
+			kinds.add(image.kind);
+			// A Dockerfile's RUN steps fetch behind the same grants, in the build microVM.
+			const fetches = `${setup}\n${image.kind === "dockerfile" ? image.dockerfile : ""}`;
 			const hosts = grants.map((grant) => grant.host);
-			for (const [, host] of setup.matchAll(/https:\/\/([^/\s]+)/g)) expect(hosts, template.name).toContain(host);
-			if (/\bapt-get\b/.test(setup)) expect(hosts, template.name).toContain("snapshot.ubuntu.com");
+			for (const [, host] of fetches.matchAll(/https:\/\/([^/\s]+)/g)) expect(hosts, template.name).toContain(host);
+			if (/\bapt-get\b/.test(fetches)) expect(hosts, template.name).toContain("snapshot.ubuntu.com");
 		}
+		expect([...kinds].sort()).toEqual(["dockerfile", "image", "kantel-base"]);
+	});
+});
+
+describe("a template's custom image", () => {
+	it("is read into the draft and saved back as the kind picked, the others' text kept but not sent", () => {
+		const ci = byName("ci-tools");
+		const draft = templateDraft(ci);
+		expect(draft).toMatchObject({ imageKind: "dockerfile", imageRef: "" });
+		expect(draft.dockerfile).toContain("FROM $KANTEL_BASE");
+		expect(templateEditorChange(ci, draft)).toEqual({});
+		const ref = { ...draft, imageKind: "image" as const, imageRef: " ghcr.io/acme/ci:1.8 " };
+		expect(templateEditorChange(ci, ref).spec?.image).toEqual({ kind: "image", ref: "ghcr.io/acme/ci:1.8" });
+		// Back to the Dockerfile: it is as it was, and nothing changed.
+		expect(templateEditorChange(ci, { ...ref, imageKind: "dockerfile" })).toEqual({});
+		const base = templateEditorChange(ci, { ...draft, imageKind: "kantel-base" });
+		expect(base.spec?.image).toEqual({ kind: "kantel-base" });
+		expect(templateDraft(byName("python-slim"))).toMatchObject({ imageKind: "image", imageRef: "python:3.13-slim" });
+	});
+
+	it("can't be saved blank, too long, or as a reference that isn't one", () => {
+		const draft = { ...templateDraft(), name: "custom" };
+		expect(templateDraftProblems({ ...draft, imageKind: "dockerfile", dockerfile: "  \n" }).ready).toBe(false);
+		const long = templateDraftProblems({ ...draft, imageKind: "dockerfile", dockerfile: "#".repeat(65_537) });
+		expect(long.ready).toBe(false);
+		expect(long.dockerfile).toContain("65,536");
+		expect(templateDraftProblems({ ...draft, imageKind: "dockerfile", dockerfile: "FROM alpine\n" }).ready).toBe(true);
+		expect(templateDraftProblems({ ...draft, imageKind: "image", imageRef: "" }).ready).toBe(false);
+		for (const bad of ["Python:3", "python:3 ; curl 169.254.169.254", "-v/:/host", `python@sha256:${"z".repeat(64)}`]) {
+			const problems = templateDraftProblems({ ...draft, imageKind: "image", imageRef: bad });
+			expect(problems.ready, bad).toBe(false);
+			expect(problems.imageRef, bad).toBeDefined();
+		}
+		for (const good of [
+			"python:3.13-slim",
+			"ghcr.io/acme/ci:1.8",
+			`registry.example.com:5000/a/b@sha256:${"0".repeat(64)}`,
+		]) {
+			expect(templateDraftProblems({ ...draft, imageKind: "image", imageRef: good }).ready, good).toBe(true);
+		}
+	});
+
+	it("saves as an image reference whatever its hidden base fields hold, which switching back still has", () => {
+		// A digest to pin picked on a deployment that published none: the base fields can't be saved as they are.
+		const halfway = { ...templateDraft(), name: "py", baseMode: "digest" as const, digest: "" };
+		expect(templateDraftProblems(halfway).ready).toBe(false);
+		const ref = { ...halfway, imageKind: "image" as const, imageRef: "python:3.13-slim" };
+		expect(templateDraftProblems(ref).ready).toBe(true);
+		expect(templateEditorInput(ref, []).spec.base).toEqual(DEFAULT_TEMPLATE_BASE);
+		// Back to a Dockerfile or the base: the half-picked base is as it was, and must be finished first.
+		for (const imageKind of ["dockerfile", "kantel-base"] as const) {
+			const back = { ...ref, imageKind, dockerfile: "FROM alpine\n" };
+			expect(back).toMatchObject({ baseMode: "digest", digest: "" });
+			expect(templateDraftProblems(back).ready, imageKind).toBe(false);
+		}
+		// A whole base picked is saved as picked, and an image-reference template read back saves nothing new.
+		const pinned = { ...ref, digest: BASE_STABLE };
+		expect(templateEditorInput(pinned, []).spec.base).toEqual({ image: "kantel/sandbox", digest: BASE_STABLE });
+		const slim = byName("python-slim");
+		expect(templateEditorChange(slim, templateDraft(slim))).toEqual({});
+	});
+
+	it("says what it is and what a snapshot was built from", () => {
+		const ci = byName("ci-tools");
+		const slim = byName("python-slim");
+		expect(imageText(ci.spec)).toBe("Dockerfile on kantel/sandbox");
+		expect(imageText(slim.spec)).toBe("Image python:3.13-slim");
+		const ciReady = ci.build.ready as NonNullable<typeof ci.build.ready>;
+		expect(builtFromText(ciReady)).toMatch(/^Dockerfile [0-9a-f]{12}, built [0-9a-f]{12}$/);
+		expect(builtFromText(slim.build.ready as NonNullable<typeof slim.build.ready>)).toMatch(
+			/^python:3\.13-slim@[0-9a-f]{12}$/,
+		);
+		expect(ciReady.key.imageDigest).toBe(ciReady.builtFrom.imageDigest);
+		expect(builtFromText(byName("python-data").build.ready as NonNullable<Template["build"]["ready"]>)).toMatch(
+			/^kantel\/sandbox:stable@[0-9a-f]{12}$/,
+		);
 	});
 });
 

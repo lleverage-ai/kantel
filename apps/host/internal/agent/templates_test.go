@@ -31,9 +31,18 @@ type fakeTemplateTier struct {
 	usedMiB int64
 	// held are the builds it reports admitted (TemplateBuilds).
 	held map[string]proto.Size
+	// builder: it builds custom images in a build microVM.
+	builder bool
 }
 
 func (f *fakeTemplateTier) CanBuildTemplates(context.Context) error { return f.noDocker }
+
+func (f *fakeTemplateTier) CanBuildTemplateImages() error {
+	if !f.builder {
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't build templates' custom images"}
+	}
+	return nil
+}
 
 func (f *fakeTemplateTier) TemplateBuildMachine(p proto.TemplateBuildParams) (proto.Size, error) {
 	if p.MemoryMiB > 16_384 {
@@ -144,6 +153,55 @@ func TestTemplateBuildsNeedDocker(t *testing.T) {
 	iso := templateHost(t, map[string]Tier{isolate.Tier: &fakeTier{running: map[string]bool{}}}, []string{isolate.Tier})
 	if f := iso.Facts(); slices.Contains(f.Features, proto.FeatureTemplateBuild) {
 		t.Fatalf("features %v", f.Features)
+	}
+}
+
+// A host reports custom images only beside template builds, while its builder is on; a custom image's build needs the
+// builder and never the host's Docker, and one is refused, untried, by a host without the builder.
+func TestCustomImagesNeedTheBuilderAndNotTheHostsDocker(t *testing.T) {
+	tier := &fakeTemplateTier{fakeTier: fakeTier{running: map[string]bool{}}}
+	h := templateHost(t, map[string]Tier{microvm.Tier: tier}, []string{microvm.Tier})
+	if f := h.Facts(); slices.Contains(f.Features, proto.FeatureTemplateImageBuild) {
+		t.Fatalf("features without the builder %v", f.Features)
+	}
+	custom, _ := json.Marshal(proto.TemplateBuildParams{SnapshotID: "tsn_1", BaseImage: "kantel/sandbox", VCPUs: 1, MemoryMiB: 1024,
+		Image: &proto.TemplateImage{Kind: proto.TemplateImageRef, Ref: "python:3.13-slim", Scope: "tpl_1@1#0"}})
+	var pe *proto.Error
+	if _, err := h.Call(context.Background(), proto.MethodTemplateBuild, custom, nil); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
+		t.Fatalf("a custom image without the builder: %v", err)
+	}
+	if len(tier.builds) != 0 {
+		t.Fatalf("built %v", tier.builds)
+	}
+	tier.builder = true
+	if f := h.Facts(); !slices.Contains(f.Features, proto.FeatureTemplateBuild) || !slices.Contains(f.Features, proto.FeatureTemplateImageBuild) {
+		t.Fatalf("features with the builder %v", f.Features)
+	}
+	// Docker gone: no template builds reported, so no custom images either; but a custom image's build needs none.
+	tier.noDocker = &proto.Error{Code: proto.ErrUnsupported, Message: "Docker isn't installed on this host"}
+	if f := h.Facts(); slices.Contains(f.Features, proto.FeatureTemplateImageBuild) {
+		t.Fatalf("features without Docker %v", f.Features)
+	}
+	if _, err := h.Call(context.Background(), proto.MethodTemplateBuild, custom, nil); err != nil {
+		t.Fatalf("a custom image's build asked for the host's Docker: %v", err)
+	}
+	if len(tier.builds) != 1 || tier.builds[0].Image == nil || tier.builds[0].Image.Ref != "python:3.13-slim" {
+		t.Fatalf("builds %+v", tier.builds)
+	}
+}
+
+// templateBuilder, read from the settings file, is off unless it is there.
+func TestTemplateBuilderIsTheSettingsFiles(t *testing.T) {
+	if templateBuilder(nil) != nil {
+		t.Fatal("no setting switched the builder on")
+	}
+	got := templateBuilder(&TemplateBuilderConfig{Registries: []string{" ghcr.io ", "", "*.docker.io"}})
+	if got == nil || !slices.Equal(got.Registries, []string{"ghcr.io", "*.docker.io"}) {
+		t.Fatalf("builder %+v", got)
+	}
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"templateBuilder":{"registries":["ghcr.io"]}}`), &cfg); err != nil || cfg.TemplateBuilder == nil || cfg.TemplateBuilder.Registries[0] != "ghcr.io" {
+		t.Fatalf("settings %+v %v", cfg.TemplateBuilder, err)
 	}
 }
 

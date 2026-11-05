@@ -165,6 +165,13 @@ export const HOST_FEATURES = {
 	 * Kantel), a tick is done with once written, as before.
 	 */
 	usageAcks: "usage-acks",
+	/**
+	 * Templates' custom images: a `HostTemplateImage` (a Dockerfile, or an image reference) built or pulled in a build
+	 * microVM whose only network is the host's egress proxy, never on the host's Docker, and booted through the injected
+	 * guest agent. Reported beside `templates` by a host whose settings switch its template builder on. A host without
+	 * it is never sent a `HostTemplateImage`, in a build or a create.
+	 */
+	templateImages: "template-image-build",
 } as const;
 
 /**
@@ -661,8 +668,21 @@ interface HostTemplateBase {
 	readonly baseDigest?: string;
 }
 
+/**
+ * A template's custom image, built or pulled in a build microVM (`HOST_FEATURES.templateImages`). `scope` is the
+ * template, its version and its rebuild (`<templateId>@<version>#<epoch>`): a rebuild builds or pulls it again.
+ */
+export type HostTemplateImage =
+	| { readonly kind: "dockerfile"; readonly dockerfile: string; readonly scope: string }
+	| { readonly kind: "image"; readonly ref: string; readonly scope: string };
+
 /** How a sandbox made from a template boots, on `sandbox.create` (microVMs only). */
 export interface HostTemplateBoot extends HostTemplateBase {
+	/**
+	 * Its custom image; a fresh boot boots the root filesystem `rootfsKey` names, which a build on the host made (a
+	 * create never builds one).
+	 */
+	readonly image?: HostTemplateImage;
 	/** The image's root filesystem on the host (`images/templates/<key>.ext4`); absent, the host works it out. */
 	readonly rootfsKey?: string;
 	/** Run as root in a sandbox booted fresh (no `snapshot`), once it has its identity. */
@@ -682,6 +702,8 @@ export interface HostTemplateBoot extends HostTemplateBase {
  */
 export interface HostTemplateBuild extends HostTemplateBase {
 	readonly snapshotId: string;
+	/** Its custom image, built in a build microVM under `egress` and the operator's registries; absent, the base. */
+	readonly image?: HostTemplateImage;
 	readonly setup?: string;
 	readonly env?: { readonly [name: string]: string };
 	readonly vcpus: number;
@@ -698,7 +720,14 @@ export interface HostTemplateBuild extends HostTemplateBase {
 /** `template.build`'s answer: `ref` names the snapshot on its host. */
 export interface HostTemplateBuilt {
 	readonly ref: string;
+	/** The pulled base's image ID; for a custom image, its resolved digest (a reference's) or built image ID. */
 	readonly imageDigest?: string;
+	/** A custom image's root filesystem on the host, which a create's fresh boot names (`HostTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
+	/** A custom image's provenance: its kind, and the Dockerfile's digest or the reference pulled. */
+	readonly source?: "dockerfile" | "image";
+	readonly dockerfileDigest?: string;
+	readonly imageRef?: string;
 	readonly sizeBytes: number;
 	readonly timings?: { readonly [step: string]: number };
 }

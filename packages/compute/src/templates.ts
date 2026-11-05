@@ -15,10 +15,17 @@
  * can, where the backend boots the template's base image and runs its setup in the new machine. A shape other than the
  * template's has no snapshot, so it boots fresh.
  *
- * A template's image is Kantel's base (`kantel-base`): a channel of a base image the deployment's super-admin published
- * (`publishTemplateBase`), or a digest one of that image's channels published, or the default channel unpublished (each
- * host's own sandbox image). An account never names where an image comes from, and nothing an account gives is built:
- * hosts pull a base by digest from their operator's registry, and the setup script customises it in the machine.
+ * A template's image is Kantel's base (`kantel-base`) by default: a channel of a base image the deployment's
+ * super-admin published (`publishTemplateBase`), or a digest one of that image's channels published, or the default
+ * channel unpublished (each host's own sandbox image), which hosts pull by digest from their operator's registry and the
+ * setup script customises in the machine. Or it is a custom image: a `dockerfile` (no build context; `FROM
+ * $KANTEL_BASE` is the base) or an `image` reference. Only a host that builds custom images (`customImages`) builds
+ * one, in an isolated build microVM whose sole way out is the sandbox egress proxy, under the template's grants and its
+ * operator's registries, never on the host's Docker; it keeps the root filesystem made, and boots it for the
+ * template's sandboxes there, which no other host can. Its key has its source (the Dockerfile's digest, or the
+ * reference) from the claim, and the image's digest once the build named it (`key.imageDigest`, which `keyHash` then
+ * covers; a reconcile wants the entry by the hash it was claimed under, `claimHash`). An entry is built once: a new
+ * digest comes only with a new entry, of a new version or a rebuild, which builds or pulls the image again.
  *
  * Deleting a template, or its account, retires it: it is marked retired first (gone to every caller and build from
  * then), then every cache entry is thrown away and its versions go, and its record last, so a sweep finishes a
@@ -34,7 +41,7 @@
  * Template snapshots are not user snapshots: they are kept in `store.templateSnapshots` and their bytes are deleted
  * with `backend.deleteTemplateSnapshot`. Nothing here reads or writes `store.snapshots` or calls `backend.deleteSnapshot`.
  */
-import type { computeSchema, RouteHandlers, SignedInComputeRoutes, templateRoutes } from "@kantel/api";
+import { computeSchema, type RouteHandlers, type SignedInComputeRoutes, type templateRoutes } from "@kantel/api";
 import { isKantelError, KantelError } from "@kantel/contracts";
 import { actingAccount, type Principal, requireScope, roleIn } from "./auth.ts";
 import type {
@@ -42,6 +49,7 @@ import type {
 	BackendHost,
 	BackendShape,
 	BackendSize,
+	BackendTemplateImage,
 	SandboxBackend,
 	SandboxTemplateBoot,
 	TemplateRuntime,
@@ -80,17 +88,21 @@ interface SpecInput {
 
 /** The base a template follows when its spec names none. */
 export const DEFAULT_TEMPLATE_BASE = { image: "kantel/sandbox", channel: "stable" } as const;
-/** A template's image when its spec names none, and the only one there is for now. */
+/** A template's image when its spec names none. */
 const DEFAULT_TEMPLATE_IMAGE: computeSchema.TemplateImage = { kind: "kantel-base" };
+/** The longest Dockerfile a template may give, as the API allows. */
+const MAX_DOCKERFILE_LENGTH = 65_536;
 /** A template's resources when its spec names none: the `default` size's. */
 export const DEFAULT_TEMPLATE_RESOURCES = { vcpus: 2, memoryMb: 4096 } as const;
 /** A base channel keeps this many digests in its history. */
 export const MAX_TEMPLATE_BASE_HISTORY = 100;
 /**
  * A build `queued` or `building` this long without this gateway working on it is taken to have died with its gateway,
- * and another may claim it again.
+ * and another may claim it again. It outlasts the longest a build may take, a custom image's (the hosts service's
+ * `TEMPLATE_IMAGE_BUILD_TIMEOUT_MS`, 100 minutes), with a margin, so no gateway reclaims or deletes a build still
+ * within its time.
  */
-export const TEMPLATE_BUILD_LEASE_MS = 60 * 60_000;
+export const TEMPLATE_BUILD_LEASE_MS = 120 * 60_000;
 /** A build its host had no room for (`exhausted`) is tried again by the first reconcile this long after. */
 export const TEMPLATE_BUILD_RETRY_MS = 60_000;
 
@@ -104,14 +116,17 @@ export interface TemplateCacheKeyHash {
 }
 
 /**
- * A template snapshot's cache key and its hash: the SHA-256 hex of the JSON of the six parts in a fixed order
- * (`templateVersion`, `baseDigest`, `kernel`, `firecracker`, `vcpus`, `memoryMb`), so each part changes the hash and the
- * same parts always hash the same.
+ * A template snapshot's cache key and its hash: the SHA-256 hex of the JSON of its parts in a fixed order
+ * (`templateVersion`, `baseDigest`, a custom image's `source` and `imageDigest` when it has them, `kernel`,
+ * `firecracker`, `vcpus`, `memoryMb`), so each part changes the hash and the same parts always hash the same. A
+ * `kantel-base` template's key has no `source` or `imageDigest`, so it hashes as it always has.
  */
 export async function templateCacheKey(parts: CacheKey): Promise<TemplateCacheKeyHash> {
 	const key: CacheKey = {
 		templateVersion: parts.templateVersion,
 		baseDigest: parts.baseDigest,
+		...(parts.source === undefined ? {} : { source: parts.source }),
+		...(parts.imageDigest === undefined ? {} : { imageDigest: parts.imageDigest }),
 		kernel: parts.kernel,
 		firecracker: parts.firecracker,
 		vcpus: parts.vcpus,
@@ -137,6 +152,53 @@ export const templateSnapshotId = (keyHash: string, cacheEpoch: number, attempt 
 /** The rebuild count a template snapshot's ID was made with (`templateSnapshotId`). */
 const cacheEpochOf = (snapshotId: string): number =>
 	Number(/^tsn_[0-9a-f]{24}(?:_(\d+))?(?:_a\d+)?$/.exec(snapshotId)?.[1] ?? 0);
+
+/** An image reference a template may name (`TEMPLATE_IMAGE_REF_PATTERN`). */
+const IMAGE_REF = new RegExp(computeSchema.TEMPLATE_IMAGE_REF_PATTERN);
+
+/** The digest an image reference pins (`…@sha256:<hex>`), if it pins one. */
+const pinnedDigest = (ref: string): string | undefined => /@(sha256:[0-9a-f]{64})$/.exec(ref)?.[1];
+
+/** A template's custom image as its cache key and `builtFrom` name it; undefined for `kantel-base`. */
+interface CustomSource {
+	readonly image: Exclude<computeSchema.TemplateImage, { kind: "kantel-base" }>;
+	/** The key's `source`: `dockerfile:sha256:<hex>` or `image:<ref>`. */
+	readonly source: string;
+	/** The digest known before the build: a reference's pinned one. */
+	readonly pinned?: string;
+	readonly builtFrom: Pick<computeSchema.TemplateBuiltFrom, "source" | "dockerfileDigest" | "imageRef">;
+}
+
+async function customSource(image: computeSchema.TemplateImage | undefined): Promise<CustomSource | undefined> {
+	if (image === undefined || image.kind === "kantel-base") return undefined;
+	if (image.kind === "dockerfile") {
+		const digest = `sha256:${await sha256Hex(image.dockerfile)}`;
+		return { image, source: `dockerfile:${digest}`, builtFrom: { source: "dockerfile", dockerfileDigest: digest } };
+	}
+	const pinned = pinnedDigest(image.ref);
+	return {
+		image,
+		source: `image:${image.ref}`,
+		...(pinned === undefined ? {} : { pinned }),
+		builtFrom: { source: "image", imageRef: image.ref },
+	};
+}
+
+/** A custom image as a backend builds or boots it, in the scope of the template's version and rebuild. */
+const backendImage = (
+	image: CustomSource["image"],
+	templateId: string,
+	version: number,
+	cacheEpoch: number,
+): BackendTemplateImage => {
+	const scope = `${templateVersionId(templateId, version)}#${cacheEpoch}`;
+	return image.kind === "dockerfile"
+		? { kind: "dockerfile", dockerfile: image.dockerfile, scope }
+		: { kind: "image", ref: image.ref, scope };
+};
+
+/** The hash a reconcile wants an entry by: the one it was claimed under. */
+const claimHashOf = (entry: StoredTemplateSnapshot): string => entry.claimHash ?? entry.keyHash;
 
 /** What the cache is built for: each host's runtime, the hosts themselves, and the sizes the backend offers. */
 interface Fleet {
@@ -197,12 +259,22 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 export type TemplateHandlers = Pick<RouteHandlers<SignedInComputeRoutes, Principal>, keyof typeof templateRoutes>;
 
 /** How a sandbox made from a template starts: what `createSandbox` gives the backend and records. */
-/** A sandbox's `image` for a template base: `<image>@<digest>`, or the image's name alone with no digest published. */
+/**
+ * A sandbox's `image` for a template: for a base, `<image>@<digest>`, or the image's name alone with no digest
+ * published; for a custom image, its reference (or `dockerfile`) at the digest its build made.
+ */
 export const templateBootImage = ({
 	baseImage,
 	baseDigest,
-}: Pick<SandboxTemplateBoot, "baseImage" | "baseDigest">): string =>
-	baseDigest === "" ? baseImage : `${baseImage}@${baseDigest}`;
+	image,
+	imageDigest,
+}: Pick<SandboxTemplateBoot, "baseImage" | "baseDigest" | "image" | "imageDigest">): string => {
+	if (image !== undefined) {
+		const name = image.kind === "dockerfile" ? "dockerfile" : image.ref.replace(/@sha256:[0-9a-f]{64}$/, "");
+		return imageDigest === undefined ? name : `${name}@${imageDigest}`;
+	}
+	return baseDigest === "" ? baseImage : `${baseImage}@${baseDigest}`;
+};
 
 export interface TemplateStart {
 	/**
@@ -308,18 +380,34 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	/**
 	 * The runtimes a template is built for, as `shape`: one per distinct kernel and Firecracker among the hosts it may
 	 * use, each on a host that can make that shape (`makesShape`, as a create of it is placed), which alone can build it.
+	 * A custom image's are only hosts that build custom images (`customImages`).
 	 */
 	async function runtimesFor(template: StoredTemplate, given: Fleet, shape: BackendShape): Promise<TemplateRuntime[]> {
-		const hosts = new Set(await options.buildHosts(template.accountId, template.ownerUserId));
 		const distinct = new Map<string, TemplateRuntime>();
-		for (const runtime of given.runtimes) {
-			if (!hosts.has(runtime.hostId)) continue;
-			const host = given.hosts.find((each) => each.id === runtime.hostId);
-			if (host === undefined || !makesShape(host, given.sizes, shape)) continue;
+		for (const runtime of await eligibleRuntimes(template, given, shape)) {
 			const key = JSON.stringify([runtime.kernel, runtime.firecracker]);
 			if (!distinct.has(key)) distinct.set(key, runtime);
 		}
 		return [...distinct.values()];
+	}
+
+	/**
+	 * Every host a template's builds may use now, with its runtime: connected with a runtime, one the template's account
+	 * may build on, making its shape, and building custom images when its image is one. `runtimesFor` is one a runtime.
+	 */
+	async function eligibleRuntimes(
+		template: StoredTemplate,
+		given: Fleet,
+		shape: BackendShape,
+	): Promise<TemplateRuntime[]> {
+		const hosts = new Set(await options.buildHosts(template.accountId, template.ownerUserId));
+		const custom = (template.spec.image ?? DEFAULT_TEMPLATE_IMAGE).kind !== "kantel-base";
+		return given.runtimes.filter((runtime) => {
+			if (!hosts.has(runtime.hostId)) return false;
+			if (custom && runtime.customImages !== true) return false;
+			const host = given.hosts.find((each) => each.id === runtime.hostId);
+			return host !== undefined && makesShape(host, given.sizes, shape);
+		});
 	}
 
 	async function resolveBase(spec: TemplateSpec): Promise<ResolvedBase> {
@@ -510,6 +598,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		base: ResolvedBase,
 		runtime: TemplateRuntime,
 		shape: BackendShape,
+		custom: CustomSource | undefined,
 	): Promise<void> {
 		const ours = (current: StoredTemplateSnapshot, state: StoredTemplateSnapshot["state"]) =>
 			current.state === state && current.startedAt === entry.startedAt;
@@ -541,10 +630,30 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					shape: { vcpus: shape.vcpus, memoryMb: shape.memoryMb },
 					env: { ...spec.env },
 					...(spec.setup === undefined ? {} : { setup: spec.setup }),
+					...(custom === undefined
+						? {}
+						: { image: backendImage(custom.image, template.id, entry.version, cacheEpochOf(entry.id)) }),
 					...(egress === undefined ? {} : { egress }),
 					keyHash: entry.keyHash,
 					hostId: runtime.hostId,
 				});
+				// A custom image's key covers the digest its build made (or resolved), which its host must name, and a pinned
+				// reference's must be the one it pins; without them the build failed (its bytes, deleted by its ID on its host once
+				// it is set aside, never used).
+				let customKey: TemplateCacheKeyHash | undefined;
+				if (custom !== undefined) {
+					const digest = built.imageDigest;
+					if (digest === undefined || built.rootfsKey === undefined) {
+						throw new KantelError("unavailable", "The host didn't say which image it built; upgrade its kantel-host");
+					}
+					if (custom.pinned !== undefined && digest !== custom.pinned) {
+						throw new KantelError(
+							"invalid",
+							`The image pulled is ${digest}, not the ${custom.pinned} its reference pins`,
+						);
+					}
+					customKey = await templateCacheKey({ ...entry.key, imageDigest: digest });
+				}
 				// Retired while it built (on any gateway): its result and its entry go.
 				const kept = await stillThere(template.id);
 				const ready = !kept
@@ -561,6 +670,14 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 											...current.builtFrom,
 											...(built.imageDigest === undefined ? {} : { imageDigest: built.imageDigest }),
 										},
+										...(customKey === undefined
+											? {}
+											: {
+													key: customKey.key,
+													keyHash: customKey.keyHash,
+													claimHash: claimHashOf(current),
+													...(built.rootfsKey === undefined ? {} : { rootfsKey: built.rootfsKey }),
+												}),
 									}
 								: undefined,
 						);
@@ -593,6 +710,12 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	 * (which has no bytes) whose lease lapsed, or deferred long enough, is claimed again in place. One `building` whose
 	 * lease lapsed is taken to have died with its gateway: it is thrown away (its bytes, which its host may have made or
 	 * be making, deleted by its ID there) and the key's next attempt claimed, so its ID and host stay its bytes' name.
+	 *
+	 * A custom image is only on the host that built it, and nothing boots it elsewhere (`startCustom`), so a ready or
+	 * stale one whose host can't serve the template now (`servedBy` false: disconnected, draining, no longer one the
+	 * account may use) doesn't satisfy its key: it is set aside (stale, its ID and host kept for its bytes, replaced and
+	 * deleted once the next attempt is ready) and the next attempt claimed on an eligible host. A Kantel base's entry is
+	 * kept whatever its host: a create boots its base fresh on another.
 	 */
 	async function claim(
 		template: StoredTemplate,
@@ -600,6 +723,8 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		runtime: TemplateRuntime,
 		wanted: TemplateCacheKeyHash,
 		shape: BackendShape,
+		custom: CustomSource | undefined,
+		servedBy: (entry: StoredTemplateSnapshot) => boolean,
 	): Promise<void> {
 		const at = now();
 		const fresh = (id: string): StoredTemplateSnapshot => ({
@@ -616,6 +741,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				...(base.channel === undefined ? {} : { channel: base.channel }),
 				baseDigest: base.digest,
 				pinned: base.pinned,
+				...custom?.builtFrom,
 				kernel: runtime.kernel,
 				firecracker: runtime.firecracker,
 			},
@@ -638,6 +764,15 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			} else if (thrownAway(existing)) {
 				attempt += 1;
 				continue;
+			} else if (
+				custom !== undefined &&
+				(existing.state === "ready" || existing.state === "stale") &&
+				!servedBy(existing)
+			) {
+				// A custom image on a host that can't serve it: kept for its bytes, and built again on one that can.
+				if (existing.state === "ready") await setAside(existing);
+				attempt += 1;
+				continue;
 			} else if (existing.state === "stale") {
 				// Wanted again (a host back on its old runtime): ready as it is.
 				await store.templateSnapshots.update(id, (current) =>
@@ -652,7 +787,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				await discard(existing, (current) => abandoned(current) && current.startedAt === existing.startedAt);
 				continue;
 			}
-			if (claimed !== undefined) options.keepGoing(build(template, claimed, base, runtime, shape));
+			if (claimed !== undefined) options.keepGoing(build(template, claimed, base, runtime, shape, custom));
 			return;
 		}
 	}
@@ -668,16 +803,31 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		}
 		const resources = template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES;
 		const shape: BackendShape = { vcpus: resources.vcpus, memoryMb: resources.memoryMb };
-		const [base, hostRuntimes] = await Promise.all([
+		const hosts = given ?? (await fleet());
+		const [base, hostRuntimes, eligible, custom] = await Promise.all([
 			resolveBase(template.spec),
-			runtimesFor(template, given ?? (await fleet()), shape),
+			runtimesFor(template, hosts, shape),
+			eligibleRuntimes(template, hosts, shape),
+			customSource(template.spec.image),
 		]);
-		// By each wanted key's hash; none while no host can make its shape.
+		// Whether an entry's host may serve creates from it now, on the runtime it was built for.
+		const servedBy = (entry: StoredTemplateSnapshot) =>
+			eligible.some(
+				(runtime) =>
+					runtime.hostId === entry.hostId &&
+					runtime.kernel === entry.key.kernel &&
+					runtime.firecracker === entry.key.firecracker,
+			);
+		// By each wanted key's hash (a custom image's as it is claimed, before its build names its digest); none while no
+		// host can make its shape.
 		const wanted = new Map<string, { runtime: TemplateRuntime; key: TemplateCacheKeyHash }>();
 		for (const runtime of hostRuntimes) {
 			const key = await templateCacheKey({
 				templateVersion: templateVersionId(template.id, template.version),
-				baseDigest: base.digest,
+				// An image reference doesn't use the base, so a base release never builds it again (a rebuild does).
+				baseDigest: custom?.image.kind === "image" ? "" : base.digest,
+				...(custom === undefined ? {} : { source: custom.source }),
+				...(custom?.pinned === undefined ? {} : { imageDigest: custom.pinned }),
 				kernel: runtime.kernel,
 				firecracker: runtime.firecracker,
 				vcpus: shape.vcpus,
@@ -687,7 +837,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		}
 		// An entry of a wanted key in the template's current rebuild, whichever attempt.
 		const wantedNow = (entry: StoredTemplateSnapshot) =>
-			wanted.has(entry.keyHash) && cacheEpochOf(entry.id) === template.cacheEpoch;
+			wanted.has(claimHashOf(entry)) && cacheEpochOf(entry.id) === template.cacheEpoch;
 		// What is no longer wanted (another key, or an earlier rebuild's) is set aside: one ready goes stale, still used
 		// until its replacement is ready; one queued, building or failed is thrown away (a build of it under way throws its
 		// result away; a failed one's bytes, which its host may have made after all, are deleted by its ID), as nothing
@@ -706,7 +856,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				await setAside(entry);
 			}
 		}
-		for (const each of wanted.values()) await claim(template, base, each.runtime, each.key, shape);
+		for (const each of wanted.values()) await claim(template, base, each.runtime, each.key, shape, custom, servedBy);
 		// A stale entry goes once a ready one wanted now (of this rebuild, so never itself) has replaced it: on its
 		// runtime, or its host.
 		const entries = await store.templateSnapshots.list({ templateId });
@@ -843,12 +993,36 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		};
 	}
 
+	/**
+	 * A template's image as given, checked: a Dockerfile that isn't blank and isn't too long, or an image reference of the
+	 * API's form (`TEMPLATE_IMAGE_REF_PATTERN`, which the route checks too), lower case where OCI requires it.
+	 */
+	function normaliseImage(given: Readonly<computeSchema.TemplateImage>): computeSchema.TemplateImage {
+		switch (given.kind) {
+			case "kantel-base":
+				return { kind: "kantel-base" };
+			case "dockerfile": {
+				if (given.dockerfile.trim() === "") throw new KantelError("invalid", "A template's Dockerfile is empty");
+				if (given.dockerfile.length > MAX_DOCKERFILE_LENGTH) {
+					throw new KantelError("invalid", `A template's Dockerfile is at most ${MAX_DOCKERFILE_LENGTH} characters`);
+				}
+				return { kind: "dockerfile", dockerfile: given.dockerfile };
+			}
+			case "image": {
+				const ref = given.ref.trim();
+				if (!IMAGE_REF.test(ref) || ref.length > 512) {
+					throw new KantelError("invalid", `${JSON.stringify(given.ref)} isn't an image reference`);
+				}
+				return { kind: "image", ref };
+			}
+			default:
+				throw new KantelError("invalid", "A template's image is kantel-base, a dockerfile or an image reference");
+		}
+	}
+
 	/** A spec as given, checked, with every default filled in, in one order. */
 	function normaliseSpec(input: SpecInput): TemplateSpec {
-		if (input.image !== undefined && input.image.kind !== DEFAULT_TEMPLATE_IMAGE.kind) {
-			throw new KantelError("invalid", "A template's image is Kantel's base (kantel-base) for now");
-		}
-		const image: computeSchema.TemplateImage = { ...DEFAULT_TEMPLATE_IMAGE };
+		const image = normaliseImage(input.image ?? DEFAULT_TEMPLATE_IMAGE);
 		const given = input.base ?? DEFAULT_TEMPLATE_BASE;
 		if ("digest" in given && "channel" in given) {
 			throw new KantelError("invalid", "A template's base follows a channel or pins a digest, not both");
@@ -952,20 +1126,26 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	): Promise<TemplateStart> {
 		const { spec } = template;
 		const { shape } = start;
-		const [base, hostRuntimes, entries] = await Promise.all([
+		const [base, allRuntimes, entries] = await Promise.all([
 			resolveBase(spec),
 			runtimes(),
 			store.templateSnapshots.list({ templateId: template.id }),
 		]);
-		// Only hosts that can boot templates (a host from before them would boot the default image instead).
+		const custom = (spec.image ?? DEFAULT_TEMPLATE_IMAGE).kind !== "kantel-base";
+		// Only hosts that can boot templates (a host from before them would boot the default image instead); a custom
+		// image's, only hosts that build them.
+		const hostRuntimes = custom ? allRuntimes.filter((runtime) => runtime.customImages === true) : allRuntimes;
 		const booting = new Set(hostRuntimes.map((runtime) => runtime.hostId));
 		const eligible = start.eligibleHosts.filter((hostId) => booting.has(hostId));
 		if (eligible.length === 0) {
 			throw new KantelError(
 				"not_supported",
-				"No host this sandbox may use can boot templates; upgrade its kantel-host",
+				custom
+					? "No host this sandbox may use builds templates' custom images; switch a host's templateBuilder on"
+					: "No host this sandbox may use can boot templates; upgrade its kantel-host",
 			);
 		}
+		if (custom) return startCustom(template, start.shape, base, hostRuntimes, entries, eligible);
 		// A snapshot is the machine it was built as: only one built as this sandbox's shape will do, so a restore and a
 		// fresh boot give it the same machine.
 		const [snapshot] = newestFirst(
@@ -1010,6 +1190,83 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				start: snapshot === undefined ? "boot" : "snapshot",
 			},
 			image,
+		};
+	}
+
+	/**
+	 * How a sandbox made from a template with a custom image starts. A host boots one only from the root filesystem a
+	 * build there made, so the create goes only to the hosts holding the image of the template's version its newest usable
+	 * entry was built from (a rebuild's new image once one of its entries is ready): from that entry's snapshot when it was
+	 * built as this shape, on its host, else booting that image fresh on one of them. None yet: `unavailable`, for trying
+	 * again once a build is ready.
+	 */
+	async function startCustom(
+		template: StoredTemplate,
+		shape: BackendShape,
+		base: ResolvedBase,
+		hostRuntimes: readonly TemplateRuntime[],
+		entries: readonly StoredTemplateSnapshot[],
+		eligibleHosts: readonly string[],
+	): Promise<TemplateStart> {
+		const { spec } = template;
+		const image = spec.image as CustomSource["image"];
+		const onRuntime = (entry: StoredTemplateSnapshot) =>
+			hostRuntimes.some(
+				(runtime) =>
+					runtime.hostId === entry.hostId &&
+					runtime.kernel === entry.key.kernel &&
+					runtime.firecracker === entry.key.firecracker,
+			);
+		const usable = newestFirst(
+			entries.filter(
+				(entry) =>
+					(entry.state === "ready" || entry.state === "stale") &&
+					entry.ref !== undefined &&
+					entry.rootfsKey !== undefined &&
+					entry.key.imageDigest !== undefined &&
+					entry.version === template.version &&
+					entry.hostId !== undefined &&
+					eligibleHosts.includes(entry.hostId) &&
+					onRuntime(entry),
+			),
+			(entry) => (entry.state === "ready" ? 1 : 0) * 1e15 + (entry.readyAt ?? entry.startedAt),
+		);
+		const [newest] = usable;
+		if (newest?.rootfsKey === undefined) {
+			throw new KantelError(
+				"unavailable",
+				"The template's image isn't built yet on a host this sandbox may use; try again once its build is ready",
+			);
+		}
+		// The image that entry was built from, on each host holding it: its root filesystem, and the digest the key covers.
+		const same = usable.filter(
+			(entry) => entry.rootfsKey === newest.rootfsKey && entry.key.imageDigest === newest.key.imageDigest,
+		);
+		const snapshot = same.find((entry) => entry.key.vcpus === shape.vcpus && entry.key.memoryMb === shape.memoryMb);
+		const holding = [...new Set(same.map((entry) => entry.hostId as string))];
+		// The snapshot's host first, then the others holding the image.
+		const eligible =
+			snapshot?.hostId === undefined ? holding : [snapshot.hostId, ...holding.filter((id) => id !== snapshot.hostId)];
+		const boot: SandboxTemplateBoot = {
+			baseImage: base.image,
+			baseDigest: base.digest,
+			image: backendImage(image, template.id, newest.version, cacheEpochOf(newest.id)),
+			rootfsKey: newest.rootfsKey,
+			...(newest.key.imageDigest === undefined ? {} : { imageDigest: newest.key.imageDigest }),
+			...(spec.setup === undefined ? {} : { setup: spec.setup }),
+			...(snapshot?.ref === undefined ? {} : { snapshot: snapshot.ref }),
+		};
+		return {
+			eligibleHosts: eligible,
+			boot,
+			record: {
+				id: template.id,
+				name: template.name,
+				version: template.version,
+				...(snapshot === undefined ? {} : { snapshotId: snapshot.id }),
+				start: snapshot === undefined ? "boot" : "snapshot",
+			},
+			image: templateBootImage(boot),
 		};
 	}
 

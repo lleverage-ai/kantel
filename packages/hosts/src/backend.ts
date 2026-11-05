@@ -198,6 +198,9 @@ function hostTemplateBoot(
 		...hostTemplateBase(template.baseImage, template.baseDigest),
 		...(template.setup === undefined ? {} : { setup: template.setup }),
 		...(snapshotId === undefined ? {} : { snapshot: snapshotId }),
+		// A custom image boots the root filesystem a build on the host made, which `rootfsKey` names.
+		...(template.image === undefined ? {} : { image: { ...template.image } }),
+		...(template.rootfsKey === undefined ? {} : { rootfsKey: template.rootfsKey }),
 	};
 }
 
@@ -866,6 +869,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				hostId: runtime.hostId,
 				kernel: runtime.guestKernel ?? "unknown",
 				firecracker: runtime.firecracker ?? "unknown",
+				...(runtime.customImages === true ? { customImages: true } : {}),
 			}));
 		},
 		async buildTemplate(spec): Promise<BuiltTemplate> {
@@ -873,6 +877,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				snapshotId: spec.snapshotId,
 				...hostTemplateBase(spec.baseImage, spec.baseDigest),
 				...(spec.setup === undefined ? {} : { setup: spec.setup }),
+				...(spec.image === undefined ? {} : { image: { ...spec.image } }),
 				env: { ...spec.env },
 				vcpus: spec.shape.vcpus,
 				memoryMiB: spec.shape.memoryMb,
@@ -885,6 +890,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				hostId: spec.hostId,
 				...(built.imageDigest === undefined ? {} : { imageDigest: built.imageDigest }),
 				sizeBytes: built.sizeBytes,
+				...(built.rootfsKey === undefined || spec.image === undefined ? {} : { rootfsKey: built.rootfsKey }),
 			};
 		},
 		async deleteTemplateSnapshot(bytes) {

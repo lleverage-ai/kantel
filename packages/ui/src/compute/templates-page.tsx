@@ -1,5 +1,6 @@
 // The Templates pages (compute console, experimental): how a sandbox's machine is made. A template is a Kantel base
-// image the deployment publishes (a channel it follows, or a digest it pins), its default vCPUs and memory, variables,
+// image the deployment publishes (a channel it follows, or a digest it pins), or a custom image (a Dockerfile, or an
+// image reference, built in an isolated build microVM behind its egress grants), its default vCPUs and memory, variables,
 // a setup script that installs what it needs inside the machine, and egress grants, versioned. Kantel builds each
 // version once (image to disk, boot, setup, snapshot) and new sandboxes start from that snapshot; the snapshot is only
 // a cache, rebuilt in the background whenever what it was built from changes (the version, the base's digest, the
@@ -47,6 +48,7 @@ import {
 	th,
 } from "./parts.tsx";
 import {
+	DOCKERFILE_EXAMPLE,
 	type TemplateDraft,
 	templateBaseChoices,
 	templateBasePicked,
@@ -76,9 +78,30 @@ export const resourcesText = (spec: Pick<TemplateSpec, "vcpus" | "memoryMb">): s
 export const shortDigest = (digest: string): string =>
 	digest === "" ? "none yet" : digest.replace(/^sha256:/, "").slice(0, 12);
 
-/** What a template's machines boot, in a few words: "Kantel base (kantel/sandbox)". */
-export function imageText(spec: Pick<TemplateSpec, "base">): string {
-	return `Kantel base (${spec.base.image})`;
+/**
+ * What a template's machines boot, in a few words: "Kantel base (kantel/sandbox)", "Dockerfile on kantel/sandbox" or
+ * "Image python:3.13-slim".
+ */
+export function imageText(spec: Pick<TemplateSpec, "base" | "image">): string {
+	switch (spec.image.kind) {
+		case "dockerfile":
+			return `Dockerfile on ${spec.base.image}`;
+		case "image":
+			return `Image ${spec.image.ref}`;
+		default:
+			return `Kantel base (${spec.base.image})`;
+	}
+}
+
+/** What a snapshot was built from, in one line: its base at its digest, or its custom image at the digest built. */
+export function builtFromText(snapshot: Pick<TemplateSnapshot, "builtFrom">): string {
+	const from = snapshot.builtFrom;
+	const built = from.imageDigest === undefined ? "" : `@${shortDigest(from.imageDigest)}`;
+	if (from.source === "image") return `${(from.imageRef ?? "image").replace(/@sha256:[0-9a-f]{64}$/, "")}${built}`;
+	if (from.source === "dockerfile") {
+		return `Dockerfile ${shortDigest(from.dockerfileDigest ?? "")}${built === "" ? "" : `, built ${built.slice(1)}`}`;
+	}
+	return `${from.baseImage}${from.channel === undefined ? "" : `:${from.channel}`}@${shortDigest(from.baseDigest)}`;
 }
 
 /** Its base: the channel it follows (`kantel/sandbox:stable`), or the digest it's pinned to. */
@@ -108,17 +131,33 @@ const SNAPSHOT_STATUS: Readonly<Record<TemplateSnapshotState, { status: Status; 
 /** A stale entry of an older version: kept in the cache, but no new sandbox starts from it. */
 const STALE_UNUSED: { status: Status; label: string } = { status: "idle", label: "Stale, not used" };
 
+/** A template as the availability texts read it: its spec's image tells a Kantel base from a custom image. */
+type Availability = Pick<Template, "version" | "build"> & { readonly spec?: Pick<TemplateSpec, "image"> };
+
 /**
- * What new sandboxes made from it start from now, in one line: the snapshot they restore (and how old it is), or a
- * fresh boot of the image while none of its current version is built.
+ * Whether its sandboxes need its current version's image built first: a Dockerfile or image reference is only on the
+ * host that built it, so nothing boots it fresh before then; a Kantel base boots anywhere.
  */
-export function freshnessText(template: Pick<Template, "version" | "build">, now: number): string {
+export function waitsForImage(template: Availability): boolean {
+	const kind = template.spec?.image.kind;
+	return kind !== undefined && kind !== "kantel-base";
+}
+
+/** What new sandboxes do while none of its current version is built: boot fresh, or wait for its image. */
+const unbuiltText = (template: Availability): string =>
+	waitsForImage(template) ? "new sandboxes wait for its image to build" : "new sandboxes boot the image fresh";
+
+/**
+ * What new sandboxes made from it start from now, in one line: the snapshot they restore (and how old it is), or, while
+ * none of its current version is built, a fresh boot of the image (a Kantel base) or a wait for its image (a custom one).
+ */
+export function freshnessText(template: Availability, now: number): string {
 	const { build } = template;
 	const ready = build.ready;
 	const start = startingSnapshot(template);
 	const serving =
 		start === undefined
-			? "new sandboxes boot the image fresh"
+			? unbuiltText(template)
 			: `new sandboxes start from its snapshot, built ${agoText(start.readyAt ?? start.startedAt, now)}`;
 	switch (build.state) {
 		case "ready":
@@ -130,46 +169,57 @@ export function freshnessText(template: Pick<Template, "version" | "build">, now
 		case "failed":
 			return `Build failed; ${serving}`;
 		case "none":
-			return "Not built yet; new sandboxes boot the image fresh";
+			return `Not built yet; ${unbuiltText(template)}`;
 	}
 }
 
 /**
  * What Rebuild says once Kantel has started it, from the template it answers: a snapshot of its current version goes on
- * serving, stale, until the rebuild's replaces it, and after a rebuild that fails; with none, sandboxes boot fresh until
- * it's ready.
+ * serving, stale, until the rebuild's replaces it, and after a rebuild that fails; with none, sandboxes boot fresh (a
+ * Kantel base) or wait for its image (a custom one) until it's ready.
  */
-export function rebuildText(template: Pick<Template, "version" | "build">): string {
+export function rebuildText(template: Availability): string {
 	const start = startingSnapshot(template);
-	return start === undefined
-		? "Rebuilding. New sandboxes boot the image fresh until it's ready."
-		: `Rebuilding. New sandboxes start from v${start.version}'s current snapshot until the new one is ready, and still do if the rebuild fails.`;
+	if (start === undefined) {
+		return waitsForImage(template)
+			? "Rebuilding. New sandboxes can't start from it until its image is built."
+			: "Rebuilding. New sandboxes boot the image fresh until it's ready.";
+	}
+	return `Rebuilding. New sandboxes start from v${start.version}'s current snapshot until the new one is ready, and still do if the rebuild fails.`;
 }
 
 /**
  * What picking a template in New sandbox means for how it starts, at `shape` (the template's own vCPUs and memory when
- * none is given). A snapshot restores only into the machine it was built as, so at another shape it boots fresh.
+ * none is given). A snapshot restores only into the machine it was built as, so at another shape it boots fresh: a
+ * custom image only once its current version is built.
  */
 export function templatePickHint(
 	template: Pick<Template, "version" | "build" | "spec">,
 	now: number,
 	shape: Pick<TemplateSpec, "vcpus" | "memoryMb"> = template.spec,
 ): string {
-	if (shape.vcpus !== template.spec.vcpus || shape.memoryMb !== template.spec.memoryMb)
-		return `At ${resourcesText(shape)} rather than its own ${resourcesText(template.spec)}, it boots the image and runs the setup itself, which takes longer.`;
 	const start = startingSnapshot(template);
+	if (waitsForImage(template) && start === undefined)
+		return `v${template.version}'s image isn't built yet: a sandbox can't start from it until its build finishes.`;
+	if (shape.vcpus !== template.spec.vcpus || shape.memoryMb !== template.spec.memoryMb)
+		return `At ${resourcesText(shape)} rather than its own ${resourcesText(template.spec)}, it boots the ${waitsForImage(template) ? "built " : ""}image and runs the setup itself, which takes longer.`;
 	if (start !== undefined) return `Starts from its snapshot, built ${agoText(start.readyAt ?? start.startedAt, now)}.`;
 	return template.build.ready === undefined
 		? "Nothing built yet: it boots the image and runs the setup itself, which takes longer."
 		: `v${template.version} isn't built yet: it boots the image and runs the setup itself, which takes longer.`;
 }
 
-/** The same, in a few words for the list: "Built 2h ago", "v3 serves while it rebuilds", "Boots fresh until built". */
-export function shortFreshnessText(template: Pick<Template, "version" | "build">, now: number): string {
+/**
+ * The same, in a few words for the list: "Built 2h ago", "v3 serves while it rebuilds", "Boots fresh until built", or a
+ * custom image's "Waits for its image".
+ */
+export function shortFreshnessText(template: Availability, now: number): string {
 	const { build } = template;
 	const ready = build.ready;
 	if (build.state === "ready" && ready !== undefined) return `Built ${agoText(ready.readyAt ?? ready.startedAt, now)}`;
 	const start = startingSnapshot(template);
+	if (start === undefined && waitsForImage(template))
+		return build.state === "failed" ? "Can't start until built" : "Waits for its image";
 	if (start === undefined) return build.state === "failed" ? "Boots fresh" : "Boots fresh until built";
 	if (build.state === "building") return `v${start.version} serves while it rebuilds`;
 	return `v${start.version}'s snapshot serves`;
@@ -286,7 +336,7 @@ export function TemplatesPage({
 		<div className={computePage}>
 			<PageHeader
 				title={<span className="inline-flex items-center gap-2">Templates {experimental}</span>}
-				lede="How a sandbox's machine is made: Kantel's base image, its vCPUs and memory, variables, a setup script that installs what it needs and where it may connect, versioned. Kantel builds each version once and snapshots it, so sandboxes made from it start in about a second."
+				lede="How a sandbox's machine is made: Kantel's base image or a custom one, its vCPUs and memory, variables, a setup script that installs what it needs and where it may connect, versioned. Kantel builds each version once and snapshots it, so sandboxes made from it start in about a second."
 				actions={addButton}
 			/>
 			{state.status === "error" ? (
@@ -316,7 +366,7 @@ export function TemplatesPage({
 									Name
 								</th>
 								<th className={th} scope="col">
-									Base
+									Image
 								</th>
 								<th className={th} scope="col">
 									Size
@@ -351,11 +401,17 @@ export function TemplatesPage({
 										</td>
 										<td className={td}>
 											<span className="block max-w-(--kt-card-width) truncate font-mono text-code">
-												{baseText(template.spec)}
+												{template.spec.image.kind === "image" ? template.spec.image.ref : baseText(template.spec)}
 											</span>
 											{behind === undefined ? (
 												<span className={cellSub}>
-													{template.spec.base.channel === undefined ? "Pinned base" : "Follows its base"}
+													{template.spec.image.kind === "image"
+														? "Image reference"
+														: template.spec.image.kind === "dockerfile"
+															? "Dockerfile on its base"
+															: template.spec.base.channel === undefined
+																? "Pinned base"
+																: "Follows its base"}
 												</span>
 											) : (
 												<span className="block text-xs text-status-approval">{behind}</span>
@@ -464,7 +520,11 @@ export function TemplatePage({
 				{back}
 				<PageHeader
 					title={`Edit ${edited.name}`}
-					lede={`Saving a change to the definition makes v${edited.version + 1}. It builds in the background; until it's ready, new sandboxes boot the image fresh and run its setup.`}
+					lede={`Saving a change to the definition makes v${edited.version + 1}. It builds in the background; until it's ready, ${
+						draft.imageKind !== "kantel-base"
+							? "new sandboxes can't start from it: a Dockerfile or image is built before anything boots it."
+							: "new sandboxes boot the image fresh and run its setup."
+					}`}
 					actions={experimental}
 				/>
 				<TemplateEditor
@@ -603,14 +663,14 @@ export function TemplatePage({
 					</Field>
 					<Field label="New sandboxes">
 						{start === undefined
-							? "Boot the image and run its setup (a fresh boot)"
+							? waitsForImage(template)
+								? "None yet: they wait for its image to build"
+								: "Boot the image and run its setup (a fresh boot)"
 							: `Restore v${start.version}'s snapshot on ${start.hostId ?? "its host"}`}
 					</Field>
 					{start === undefined ? null : (
 						<Field label="Built from">
-							<span className={cellMono}>
-								{`${start.builtFrom.baseImage}${start.builtFrom.channel === undefined ? "" : `:${start.builtFrom.channel}`}@${shortDigest(start.builtFrom.baseDigest)}`}
-							</span>
+							<span className={cellMono}>{builtFromText(start)}</span>
 							<span className="text-muted">
 								{" "}
 								with kernel {start.key.kernel} and Firecracker {start.key.firecracker}
@@ -646,10 +706,20 @@ export function TemplatePage({
 				<SectionHeading id="template-definition" title={`Definition (v${template.version})`} />
 				<Panel>
 					<FieldList>
-						<Field label="Image">{imageText(spec)}</Field>
-						<Field label="Base" extra={<Badge>{spec.base.channel === undefined ? "Pinned" : "Follows channel"}</Badge>}>
-							<span className={cellMono}>{baseText(spec)}</span>
+						<Field
+							label="Image"
+							extra={spec.image.kind === "kantel-base" ? undefined : <Badge>Built in an isolated microVM</Badge>}
+						>
+							{spec.image.kind === "image" ? <span className={cellMono}>{spec.image.ref}</span> : imageText(spec)}
 						</Field>
+						{spec.image.kind === "image" ? null : (
+							<Field
+								label={spec.image.kind === "dockerfile" ? "Base (KANTEL_BASE)" : "Base"}
+								extra={<Badge>{spec.base.channel === undefined ? "Pinned" : "Follows channel"}</Badge>}
+							>
+								<span className={cellMono}>{baseText(spec)}</span>
+							</Field>
+						)}
 						<Field label="Resources">{resourcesText(spec)}</Field>
 						<Field label="Variables">
 							{env.length === 0 ? (
@@ -672,6 +742,9 @@ export function TemplatePage({
 							)}
 						</Field>
 					</FieldList>
+					{spec.image.kind !== "dockerfile" ? null : (
+						<Script title="Dockerfile, built with no build context" code={spec.image.dockerfile} />
+					)}
 					{spec.setup === undefined || spec.setup === "" ? null : (
 						<Script title="Setup script, run once as root" code={spec.setup} />
 					)}
@@ -681,12 +754,17 @@ export function TemplatePage({
 			<section className="flex flex-col gap-3" aria-labelledby="template-snapshots">
 				<SectionHeading id="template-snapshots" title="Snapshot cache" />
 				<p className="m-0 max-w-content text-sm text-muted">
-					A snapshot is rebuilt when the version, the base's digest, the host's kernel or Firecracker, or the size
-					changes. Kantel throws these away at will; your sandboxes' own snapshots are kept apart and never touched.
+					A snapshot is rebuilt when the version, the base's digest, a custom image's built digest, the host's kernel or
+					Firecracker, or the size changes. Kantel throws these away at will; your sandboxes' own snapshots are kept
+					apart and never touched.
 				</p>
 				{live.length === 0 ? (
 					<Panel>
-						<EmptyState title="Nothing built">New sandboxes boot the image fresh until a snapshot is ready.</EmptyState>
+						<EmptyState title="Nothing built">
+							{waitsForImage(template)
+								? "New sandboxes can't start from it until its image is built."
+								: "New sandboxes boot the image fresh until a snapshot is ready."}
+						</EmptyState>
 					</Panel>
 				) : (
 					<SnapshotTable template={template} snapshots={live} now={now} />
@@ -764,7 +842,7 @@ function SnapshotTable({
 							Version
 						</th>
 						<th className={th} scope="col">
-							Base
+							Image
 						</th>
 						<th className={th} scope="col">
 							Kernel, Firecracker
@@ -795,12 +873,7 @@ function SnapshotTable({
 									</span>
 								</td>
 								<td className={`${td} tabular-nums`}>v{entry.version}</td>
-								<td className={td}>
-									<span className={cellMono}>{shortDigest(entry.key.baseDigest)}</span>
-									<span className={cellSub}>
-										{entry.builtFrom.pinned ? "pinned" : `${entry.builtFrom.channel ?? ""} channel`}
-									</span>
-								</td>
+								<td className={td}>{snapshotImageCell(entry)}</td>
 								<td className={td}>
 									<span className={cellMono}>
 										{entry.key.kernel}, {entry.key.firecracker}
@@ -829,6 +902,30 @@ function SnapshotTable({
 	);
 }
 
+/** A cache entry's image: its base's digest and channel, or its custom image's built digest and where it came from. */
+function snapshotImageCell(entry: TemplateSnapshot) {
+	const from = entry.builtFrom;
+	if (from.source === "dockerfile" || from.source === "image") {
+		const digest = entry.key.imageDigest ?? from.imageDigest;
+		return (
+			<>
+				<span className={cellMono}>{digest === undefined ? "Not built yet" : shortDigest(digest)}</span>
+				<span className={`${cellSub} max-w-(--kt-card-width) truncate`}>
+					{from.source === "dockerfile"
+						? `Dockerfile ${shortDigest(from.dockerfileDigest ?? "")}`
+						: (from.imageRef ?? "Image reference")}
+				</span>
+			</>
+		);
+	}
+	return (
+		<>
+			<span className={cellMono}>{shortDigest(entry.key.baseDigest)}</span>
+			<span className={cellSub}>{from.pinned ? "pinned" : `${from.channel ?? ""} channel`}</span>
+		</>
+	);
+}
+
 function VersionTable({ versions, now }: { versions: readonly TemplateVersion[]; now: number }) {
 	return (
 		<TableFrame>
@@ -839,7 +936,7 @@ function VersionTable({ versions, now }: { versions: readonly TemplateVersion[];
 							Version
 						</th>
 						<th className={th} scope="col">
-							Base
+							Image
 						</th>
 						<th className={th} scope="col">
 							Size
@@ -855,8 +952,11 @@ function VersionTable({ versions, now }: { versions: readonly TemplateVersion[];
 							<td className={`${td} tabular-nums`}>v{entry.version}</td>
 							<td className={td}>
 								<span className="block max-w-(--kt-card-width) truncate font-mono text-code">
-									{baseText(entry.spec)}
+									{entry.spec.image.kind === "image" ? entry.spec.image.ref : baseText(entry.spec)}
 								</span>
+								{entry.spec.image.kind === "dockerfile" ? (
+									<span className={cellSub}>Dockerfile on its base</span>
+								) : null}
 							</td>
 							<td className={`${td} tabular-nums`}>{resourcesText(entry.spec)}</td>
 							<td className={td}>
@@ -960,7 +1060,21 @@ function TemplateEditor({
 	const { state: bases } = useLoad(() => source.bases(), [source]);
 	const published: readonly TemplateBaseChannel[] = bases.status === "ready" ? bases.value : [];
 	const choices = templateBaseChoices(draft, published);
-	const { name, description, baseImage, baseMode, digest, vcpus, memory, variables, setup, hosts } = draft;
+	const {
+		name,
+		description,
+		imageKind,
+		dockerfile,
+		imageRef,
+		baseImage,
+		baseMode,
+		digest,
+		vcpus,
+		memory,
+		variables,
+		setup,
+		hosts,
+	} = draft;
 
 	const submit = () => {
 		if (!problems.ready || saving) return;
@@ -1003,71 +1117,117 @@ function TemplateEditor({
 					</FormSection>
 					<FormSection
 						title="Image"
-						description="What its machines boot: one of Kantel's base images, with the guest's tools and patches, as this deployment publishes it. Follow a channel and the template rebuilds whenever it publishes a patched digest; pin a digest from its history only when you must hold it still, and the template shows how far behind it is. Custom images come later: until then, the setup script installs what the template needs."
+						description="What its machines boot: one of Kantel's base images as this deployment publishes it, a Dockerfile built on it, or an image reference. Follow a channel and the template rebuilds whenever it publishes a patched digest; pin a digest from its history only when you must hold it still. A Dockerfile or image is built in an isolated microVM that reaches only the hosts under Network and the registries the host's operator allows, never the host's network."
 					>
 						<SegmentedControl
-							label="Base"
+							label="Source"
 							options={[
-								{ value: "channel", label: "Follow a channel" },
-								{ value: "digest", label: "Pin a digest" },
+								{ value: "kantel-base", label: "Kantel base" },
+								{ value: "dockerfile", label: "Dockerfile" },
+								{ value: "image", label: "Image reference" },
 							]}
-							value={baseMode}
-							onChange={(mode) => onChange((current) => templateBasePicked(current, { mode }, published))}
+							value={imageKind}
+							onChange={(kind) =>
+								onChange((current) => ({
+									...current,
+									imageKind: kind,
+									...(kind === "dockerfile" && current.dockerfile === "" ? { dockerfile: DOCKERFILE_EXAMPLE } : {}),
+								}))
+							}
 						/>
-						<FormGrid columns={2}>
-							<SelectField
-								label="Base image"
-								hint={
-									bases.status === "error"
-										? "Kantel couldn't read the published bases, so only the default is offered."
-										: "Published by this deployment."
-								}
-								value={baseImage}
-								onChange={(event) => {
-									const image = event.currentTarget.value;
-									onChange((current) => templateBasePicked(current, { image }, published));
-								}}
-								options={choices.images.map((image) => ({ value: image, label: image }))}
+						{imageKind !== "dockerfile" ? null : (
+							<TextAreaField
+								label="Dockerfile"
+								hint="Built with no build context, so COPY has nothing to copy: fetch what it needs with RUN, behind the template's egress grants. FROM $KANTEL_BASE (after ARG KANTEL_BASE) starts from the base below; any other FROM image is pulled."
+								rows={8}
+								mono
+								spellCheck={false}
+								value={dockerfile}
+								onChange={(event) => set({ dockerfile: event.currentTarget.value })}
+								placeholder={DOCKERFILE_EXAMPLE}
+								{...(problems.dockerfile === undefined ? {} : { error: problems.dockerfile })}
 							/>
-							<SelectField
-								label="Channel"
-								hint={
-									baseMode === "digest"
-										? "The channel whose digests you pick from."
-										: choices.current === ""
-											? "Not published yet: until it is, each host boots its own sandbox image."
-											: `Publishes ${shortDigest(choices.current)} now.`
-								}
-								value={choices.channel}
-								onChange={(event) => {
-									const picked = event.currentTarget.value;
-									onChange((current) => templateBasePicked(current, { channel: picked }, published));
-								}}
-								options={choices.channels.map((each) => ({ value: each, label: each }))}
+						)}
+						{imageKind !== "image" ? null : (
+							<TextField
+								label="Image reference"
+								hint="Pulled when the template builds, and again on a rebuild; pin @sha256:… to hold it still. Its machines boot with Kantel's guest agent added."
+								value={imageRef}
+								onChange={(event) => set({ imageRef: event.currentTarget.value })}
+								placeholder="python:3.13-slim"
+								mono
+								spellCheck={false}
+								autoComplete="off"
+								{...(problems.imageRef === undefined ? {} : { error: problems.imageRef })}
 							/>
-						</FormGrid>
-						{baseMode === "channel" ? null : (
-							<SelectField
-								label="Digest"
-								value={digest}
-								disabled={choices.digests.length === 0}
-								onChange={(event) => set({ digest: event.currentTarget.value, channel: choices.channel })}
-								{...(choices.digests.length === 0
-									? { error: "This channel hasn't published a digest to pin yet. Follow it instead." }
-									: {})}
-								options={
-									choices.digests.length === 0
-										? [{ value: "", label: "Nothing published yet" }]
-										: choices.digests.map((release) => ({
-												value: release.digest,
-												label: `${shortDigest(release.digest)}${release.digest === choices.current ? " (current)" : ""}, ${
-													release.publishedAt === undefined
-														? `not one ${choices.channel} published`
-														: `published ${agoText(release.publishedAt, now)}`
-												}`,
-											}))
-								}
-							/>
+						)}
+						{imageKind === "image" ? null : (
+							<>
+								<SegmentedControl
+									label={imageKind === "dockerfile" ? "Base (KANTEL_BASE)" : "Base"}
+									options={[
+										{ value: "channel", label: "Follow a channel" },
+										{ value: "digest", label: "Pin a digest" },
+									]}
+									value={baseMode}
+									onChange={(mode) => onChange((current) => templateBasePicked(current, { mode }, published))}
+								/>
+								<FormGrid columns={2}>
+									<SelectField
+										label="Base image"
+										hint={
+											bases.status === "error"
+												? "Kantel couldn't read the published bases, so only the default is offered."
+												: "Published by this deployment."
+										}
+										value={baseImage}
+										onChange={(event) => {
+											const image = event.currentTarget.value;
+											onChange((current) => templateBasePicked(current, { image }, published));
+										}}
+										options={choices.images.map((image) => ({ value: image, label: image }))}
+									/>
+									<SelectField
+										label="Channel"
+										hint={
+											baseMode === "digest"
+												? "The channel whose digests you pick from."
+												: choices.current === ""
+													? "Not published yet: until it is, each host boots its own sandbox image."
+													: `Publishes ${shortDigest(choices.current)} now.`
+										}
+										value={choices.channel}
+										onChange={(event) => {
+											const picked = event.currentTarget.value;
+											onChange((current) => templateBasePicked(current, { channel: picked }, published));
+										}}
+										options={choices.channels.map((each) => ({ value: each, label: each }))}
+									/>
+								</FormGrid>
+								{baseMode === "channel" ? null : (
+									<SelectField
+										label="Digest"
+										value={digest}
+										disabled={choices.digests.length === 0}
+										onChange={(event) => set({ digest: event.currentTarget.value, channel: choices.channel })}
+										{...(choices.digests.length === 0
+											? { error: "This channel hasn't published a digest to pin yet. Follow it instead." }
+											: {})}
+										options={
+											choices.digests.length === 0
+												? [{ value: "", label: "Nothing published yet" }]
+												: choices.digests.map((release) => ({
+														value: release.digest,
+														label: `${shortDigest(release.digest)}${release.digest === choices.current ? " (current)" : ""}, ${
+															release.publishedAt === undefined
+																? `not one ${choices.channel} published`
+																: `published ${agoText(release.publishedAt, now)}`
+														}`,
+													}))
+										}
+									/>
+								)}
+							</>
 						)}
 					</FormSection>
 					<FormSection
@@ -1178,7 +1338,7 @@ function TemplateEditor({
 					</FormSection>
 					<FormSection
 						title="Network"
-						description="Hosts its sandboxes, and its setup script, may reach on top of the account's proxy settings."
+						description="Hosts its sandboxes, its setup script and its image's build may reach on top of the account's proxy settings."
 					>
 						<TextField
 							label="Allowed hosts"

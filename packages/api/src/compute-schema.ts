@@ -699,7 +699,7 @@ export const SandboxTemplate = Type.Object(
 		start: Type.Union([Type.Literal("snapshot"), Type.Literal("boot")], {
 			description:
 				"`snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's " +
-				"image and ran its setup itself.",
+				"image and ran its setup itself (a custom image: the one its build made).",
 		}),
 	},
 	{ title: "SandboxTemplate", description: "The template a sandbox was made from." },
@@ -823,7 +823,8 @@ export const CreateSandboxBody = Type.Object(
 				description:
 					"Make a microVM from this template, a template's ID or name in the account (experimental, " +
 					"`KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running " +
-					"its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with " +
+					"its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` " +
+					"until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with " +
 					"`size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with " +
 					"them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it " +
 					"fresh whatever its snapshot, running the setup with the sandbox's variables.",
@@ -1938,6 +1939,17 @@ export const TEMPLATE_CHANNEL_PATTERN = "^[a-z0-9][a-z0-9._-]{0,62}$";
  */
 export const TEMPLATE_BASE_IMAGE_PATTERN = "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$";
 
+/**
+ * An OCI image reference a template names (`{ kind: "image" }`): `[registry[:port]/]repository[:tag][@sha256:digest]`,
+ * such as `python:3.13-slim`, `ghcr.io/acme/ci:1.8` or one pinned by digest. Only an isolated build microVM ever pulls
+ * it, through the sandbox egress proxy: a registry on a host, private or metadata address is refused there, however it
+ * is named.
+ */
+export const TEMPLATE_IMAGE_REF_PATTERN =
+	"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::[0-9]{1,5})?/)?" +
+	"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*" +
+	"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$";
+
 const imageName = (description: string) =>
 	Type.String({ minLength: 1, maxLength: 255, pattern: TEMPLATE_BASE_IMAGE_PATTERN, description });
 const imageDigest = (description: string) => Type.String({ pattern: IMAGE_DIGEST_PATTERN, description });
@@ -1952,12 +1964,51 @@ export const TemplateImage = Type.Union(
 				description: "The template's `base` itself, as its deployment publishes it; the setup script adds the rest.",
 			},
 		),
+		Type.Object(
+			{
+				kind: Type.Literal("dockerfile"),
+				dockerfile: Type.String({
+					minLength: 1,
+					maxLength: 65_536,
+					description:
+						"A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the " +
+						"template's `base`; any other `FROM` image is pulled.",
+				}),
+			},
+			{
+				title: "TemplateDockerfileImage",
+				description:
+					"Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps " +
+					"and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and " +
+					"never a host, private or metadata address.",
+			},
+		),
+		Type.Object(
+			{
+				kind: Type.Literal("image"),
+				ref: Type.String({
+					minLength: 1,
+					maxLength: 512,
+					pattern: TEMPLATE_IMAGE_REF_PATTERN,
+					description:
+						"An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the " +
+						"template is built, and again on a rebuild.",
+				}),
+			},
+			{
+				title: "TemplateImageRef",
+				description:
+					"Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An " +
+					"image that isn't one of Kantel's boots through the guest agent the host injects.",
+			},
+		),
 	],
 	{
 		title: "TemplateImage",
 		description:
-			"What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup " +
-			"script, which runs in the VM behind the template's egress grants. Default: `kantel-base`.",
+			"What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a " +
+			"`dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build " +
+			"microVM. Default: `kantel-base`.",
 	},
 );
 
@@ -2033,8 +2084,21 @@ export const TemplateBuiltFrom = Type.Object(
 		baseDigest: Type.String({ description: "Empty while the channel has no published digest." }),
 		pinned: Type.Boolean(),
 		imageDigest: Type.Optional(
-			Type.String({ description: "The digest of the image its host booted, as the host reported it." }),
+			Type.String({
+				description:
+					"The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference " +
+					"resolved to; for a `dockerfile`, the built image's ID.",
+			}),
 		),
+		source: Type.Optional(
+			Type.Union([Type.Literal("kantel-base"), Type.Literal("dockerfile"), Type.Literal("image")], {
+				description: "The template image's kind it was built from. Absent: `kantel-base`.",
+			}),
+		),
+		dockerfileDigest: Type.Optional(
+			Type.String({ description: "For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`." }),
+		),
+		imageRef: Type.Optional(Type.String({ description: "For an `image`, the reference pulled." })),
 		kernel: Type.String(),
 		firecracker: Type.String(),
 	},
@@ -2045,6 +2109,20 @@ export const TemplateCacheKey = Type.Object(
 	{
 		templateVersion: Type.String({ description: "`<templateId>@<version>`." }),
 		baseDigest: Type.String(),
+		source: Type.Optional(
+			Type.String({
+				description:
+					"A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for " +
+					"`kantel-base`.",
+			}),
+		),
+		imageDigest: Type.Optional(
+			Type.String({
+				description:
+					"A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, " +
+					"recorded once the build answers. Absent for `kantel-base`.",
+			}),
+		),
 		kernel: Type.String(),
 		firecracker: Type.String(),
 		vcpus: Type.Integer(),
@@ -2125,7 +2203,9 @@ export const TemplateBuildStatus = Type.Object(
 				description:
 					"`none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until " +
 					"its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version " +
-					"starts no sandbox: they boot fresh until the current version's is ready.",
+					"starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or " +
+					"image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that " +
+					"build (`unavailable` until then).",
 			},
 		),
 		ready: Type.Optional(TemplateSnapshot),
