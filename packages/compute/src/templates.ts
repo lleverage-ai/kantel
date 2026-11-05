@@ -1234,10 +1234,20 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		);
 		const [newest] = usable;
 		if (newest?.rootfsKey === undefined) {
-			throw new KantelError(
-				"unavailable",
-				"The template's image isn't built yet on a host this sandbox may use; try again once its build is ready",
+			const message =
+				"The template's image isn't built yet on a host this sandbox may use; try again once its build is ready";
+			// Built, but only on hosts it may not use now: those hosts are the reason. Not built anywhere yet is no placement's.
+			const heldElsewhere = entries.some(
+				(entry) =>
+					(entry.state === "ready" || entry.state === "stale") &&
+					entry.rootfsKey !== undefined &&
+					entry.version === template.version &&
+					entry.hostId !== undefined &&
+					!eligibleHosts.includes(entry.hostId),
 			);
+			throw heldElsewhere
+				? placementError("unavailable", "host_unavailable", message)
+				: new KantelError("unavailable", message);
 		}
 		// The image that entry was built from, on each host holding it: its root filesystem, and the digest the key covers.
 		const same = usable.filter(

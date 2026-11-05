@@ -960,8 +960,9 @@ describe("a template's custom image", () => {
 		await api.service.sweep();
 		const held = await build(0);
 		expect(held.spec.hostId).toBe("hst_two");
-		// Until a build is ready, no host holds the image: a create waits for it.
-		expect((await failure(tom.createSandbox({ template: "rg" }))).code).toBe("unavailable");
+		// Until a build is ready, no host holds the image: a create waits for it, which is no placement's refusal.
+		const building = await failure(tom.createSandbox({ template: "rg" }));
+		expect([building.code, building.reason]).toEqual(["unavailable", undefined]);
 		held.release();
 		await releaseAll(() => api.service.idle());
 		expect(builds).toHaveLength(1);
@@ -994,8 +995,10 @@ describe("a template's custom image", () => {
 			state: "stale",
 			hostId: STUB_HOST_ID,
 		});
-		// Nothing serves it meanwhile: the old host can't, and the new one hasn't the image yet.
-		expect((await failure(tom.createSandbox({ template: "rg" }))).code).toBe("unavailable");
+		// Nothing serves it meanwhile: the old host can't, and the new one hasn't the image yet. Held only where it may
+		// not go, its host is the reason.
+		const elsewhere = await failure(tom.createSandbox({ template: "rg" }));
+		expect([elsewhere.code, elsewhere.reason]).toEqual(["unavailable", "host_unavailable"]);
 		again.release();
 		await api.service.idle();
 		await api.service.sweep();
