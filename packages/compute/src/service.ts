@@ -5146,7 +5146,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									{
 										copies: recordsMachine(snapshot) ? snapshot : current,
 									},
-									body.size === undefined ? {} : { size: body.size },
+									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
+									restoreAsked(
+										{
+											id: snapshot.id,
+											memory: snapshot.memory,
+											...recordedMachine(recordsMachine(snapshot) ? snapshot : current),
+										},
+										body.size === undefined ? {} : { size: body.size },
+										[],
+									),
 									[],
 								);
 				// One for them all, as their egress is read once for them all.
@@ -5930,7 +5939,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: current.type,
 					state: "ready",
 					trigger: "manual",
-					memory: false,
+					memory: taken.memory === true,
 					...recordedMachine(current),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
@@ -5967,6 +5976,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let sizeBytes: number | undefined;
 				// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
 				let base: string | undefined;
+				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
+				let memory = false;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
 				let machine = recordedMachine(current);
 				if (body.snapshotId !== undefined) {
@@ -5975,12 +5986,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(source);
 					sizeBytes = source.sizeBytes;
 					base = source.base;
+					memory = source.memory;
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
 					const taken = await backend.takeSnapshot(current.id);
 					ref = taken.ref;
 					sizeBytes = taken.sizeBytes;
 					base = taken.base;
+					memory = taken.memory === true;
 				} else {
 					const latest =
 						current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
@@ -5988,6 +6001,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(latest);
 					sizeBytes = latest.sizeBytes;
 					base = latest.base;
+					memory = latest.memory;
 					if (recordsMachine(latest)) machine = recordedMachine(latest);
 				}
 				const snapshot: StoredSnapshot = {
@@ -6000,7 +6014,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: current.type,
 					state: "ready",
 					trigger: "save",
-					memory: false,
+					memory,
 					...machine,
 					sizeBytes,
 					createdAt: now(),

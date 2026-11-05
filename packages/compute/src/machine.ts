@@ -156,13 +156,14 @@ export function restoreAsked(
 		snapshot.resources === undefined
 			? named(snapshot.size)
 			: { vcpus: snapshot.resources.vcpus, memoryMb: snapshot.resources.memoryMb };
-	const wanted = asked.shape ?? named(asked.size);
 	if (asked.shape === undefined && asked.size === undefined) return {};
-	const same =
-		own !== undefined && wanted !== undefined
-			? own.vcpus === wanted.vcpus && own.memoryMb === wanted.memoryMb
-			: asked.shape === undefined && asked.size === snapshot.size;
-	if (same) return {};
+	// Its own size by name is its machine, whatever another host means by that name.
+	if (asked.shape === undefined && asked.size === snapshot.size) return {};
+	const wanted = asked.shape ?? named(asked.size);
+	// Another name or shape with its very numbers is its machine too, made under its own name.
+	if (own !== undefined && wanted !== undefined && own.vcpus === wanted.vcpus && own.memoryMb === wanted.memoryMb) {
+		return {};
+	}
 	const machine =
 		own === undefined ? `the ${snapshot.size} size` : `${own.vcpus} vCPU and ${own.memoryMb} MB of memory`;
 	throw new KantelError(

@@ -584,6 +584,30 @@ describe("sandboxes", () => {
 		expect(plain).toMatchObject({ size: "large", state: "running" });
 	});
 
+	it("keeps a pause's memory when it is saved, so a sandbox made from the save is its machine too", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const saved = await tom.saveSnapshot({ name: "paused", sandboxId: vm.id });
+		expect(saved).toMatchObject({ memory: true, size: "large" });
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", from: "paused", resources: { vcpus: 2, memoryMb: 4096 } }),
+		);
+		expect(refused.code).toBe("invalid");
+		expect((await tom.createSandbox({ from: "paused", size: "large", wait: true })).size).toBe("large");
+	});
+
+	it("refuses forks of a pause at another size before storing any", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+		expect((await failure(tom.forkSandbox(vm.id, { size: "small", count: 2 }))).code).toBe("invalid");
+		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
+		const [fork] = (await tom.forkSandbox(vm.id, { size: "large", wait: true })).items;
+		expect(fork?.size).toBe("large");
+	});
+
 	it("resizes a sandbox made from a snapshot of the disk alone", async () => {
 		const { tom } = setup();
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
