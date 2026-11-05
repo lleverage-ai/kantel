@@ -384,14 +384,13 @@ function SavedList({
 										<span className={cellSub}>by {entry.createdBy}</span>
 									</td>
 									<td className={`${td} text-right tabular-nums`}>{entry.uses.toLocaleString("en-GB")}</td>
-									<td className={`${td} w-0 text-right`}>
-										{/* What a saved snapshot is for, in reach on its row; the rest stays in the menu. */}
+									<td className={`${td} w-0 pl-6 text-right`}>
+										{/* What a saved snapshot is for, in reach on its row; the rest stays in the menu. A wider gutter keeps
+										    Start apart from the Uses figure before it. */}
 										<span className="inline-flex items-center gap-1">
 											{onStartFrom === undefined ? null : (
 												<Button
 													size="sm"
-													variant="ghost"
-													icon={<PlusIcon size="sm" />}
 													onClick={() => onStartFrom(entry)}
 													aria-label={`Start a sandbox from ${entry.name}`}
 												>
