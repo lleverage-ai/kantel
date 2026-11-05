@@ -725,6 +725,195 @@ describe("sandboxes", () => {
 		expect(fork?.size).toBe("large");
 	});
 
+	it("gives a fork its source's machine from the moment it is made, a custom shape too, not only once it runs", async () => {
+		const stub = createStubBackend();
+		// Forks are held as a host copying a big machine holds them, so they can be read while they start.
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const backend: SandboxBackend = {
+			...stub,
+			fork: async (source, targets) => {
+				await held;
+				return stub.fork(source, targets);
+			},
+		};
+		const { tom } = setup(backend);
+		const custom = await tom.createSandbox({ type: "microvm", resources: { vcpus: 4, memoryMb: 16_384 }, wait: true });
+		const preset = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		// Stopped before any fork is held: a source's stop waits for its live forks.
+		const cold = await tom.createSandbox({ type: "microvm", resources: { vcpus: 4, memoryMb: 16_384 }, wait: true });
+		await tom.stopSandbox(cold.id, { wait: true });
+		const other = await tom.createSandbox({ type: "microvm", resources: { vcpus: 4, memoryMb: 16_384 }, wait: true });
+		await tom.stopSandbox(other.id, { wait: true });
+		expect(custom.size).toBeUndefined();
+		expect(custom.resources).toMatchObject({ vcpus: 4, memoryMb: 16_384 });
+
+		const forks: { readonly id: string }[] = [];
+		const starting = async (sourceId: string) => {
+			const [fork] = (await tom.forkSandbox(sourceId, {})).items;
+			if (fork === undefined) throw new Error("no fork");
+			return fork;
+		};
+		// Forked live, and from a snapshot of the disk alone that asks for no other size: the source's machine, disk and all,
+		// in the fork's answer, its read and the list while it starts.
+		try {
+			const live = await starting(custom.id);
+			const named = await starting(preset.id);
+			const stopped = await starting(cold.id);
+			const listed = (await tom.listSandboxes({})).items;
+			for (const [fork, source] of [
+				[live, custom],
+				[named, preset],
+				[stopped, cold],
+			] as const) {
+				expect(fork).toMatchObject({ state: "starting", resources: source.resources });
+				expect(fork.size).toBe(source.size);
+				expect(await tom.getSandbox(fork.id)).toMatchObject({ state: "starting", resources: source.resources });
+				expect(listed.find((item) => item.id === fork.id)?.resources).toEqual(source.resources);
+			}
+			// Another size asked for is that size's, which its host says: no resources are guessed for it.
+			const [resized] = (await tom.forkSandbox(other.id, { size: "small" })).items;
+			expect(resized).toMatchObject({ state: "starting", size: "small" });
+			expect(resized?.resources).toBeUndefined();
+			forks.push(live, named, stopped);
+		} finally {
+			release();
+		}
+		const [live, named, stopped] = forks;
+		if (live === undefined || named === undefined || stopped === undefined) throw new Error("no forks");
+		for (const fork of [live, named, stopped]) {
+			await vi.waitFor(async () => expect((await tom.getSandbox(fork.id)).state).toBe("running"));
+		}
+		expect((await tom.getSandbox(live.id)).resources).toEqual(custom.resources);
+		expect((await tom.getSandbox(named.id)).resources).toEqual(preset.resources);
+		expect((await tom.getSandbox(stopped.id)).resources).toEqual(cold.resources);
+	});
+
+	it("gives a fork its source's exposed ports, each public or gated as it was, under the fork's own name", async () => {
+		const backend = createStubBackend();
+		const expose = vi.spyOn(backend, "exposePort");
+		const harness = setup(backend);
+		const { tom } = harness;
+		const source = await tom.createSandbox({ type: "microvm", resources: { vcpus: 4, memoryMb: 16_384 }, wait: true });
+		await tom.exposePort(source.id, { port: 8080, public: true });
+		await tom.exposePort(source.id, { port: 3000 });
+		const before = (await tom.listPorts(source.id)).items;
+
+		const forks = (await tom.forkSandbox(source.id, { count: 2, wait: true })).items;
+		for (const fork of forks) {
+			const ports = [...(await tom.listPorts(fork.id)).items].sort((a, b) => a.port - b.port);
+			expect(ports).toMatchObject([
+				{ port: 3000, public: false, url: `http://3000-${fork.subdomain}.sandbox.localhost` },
+				{ port: 8080, public: true, url: `http://8080-${fork.subdomain}.sandbox.localhost` },
+			]);
+			// Exposed on the fork's own machine, by whoever forked it, each as it was on the source.
+			for (const { port, public: isPublic } of ports) {
+				expect(expose).toHaveBeenCalledWith(
+					fork.id,
+					port,
+					expect.objectContaining({
+						public: isPublic,
+						subdomain: fork.subdomain,
+						grantee: expect.any(String),
+						ifAbsent: true,
+					}),
+				);
+			}
+		}
+		// The source keeps its own.
+		expect((await tom.listPorts(source.id)).items).toEqual(before);
+
+		// A key that may fork but not open ports (no `access`) still forks, and its forks get no ports: copied under it,
+		// they would refuse everyone. One with `access` gets them.
+		const { client } = harness;
+		const lifecycle = client(
+			(await tom.createApiKey({ name: "lifecycle", scopes: ["sandboxes:read", "sandboxes:write"] })).secret,
+		);
+		const [bare] = (await lifecycle.forkSandbox(source.id, { wait: true })).items;
+		expect(bare?.state).toBe("running");
+		expect((await tom.listPorts(bare?.id ?? "")).items).toEqual([]);
+		const opener = client(
+			(await tom.createApiKey({ name: "opener", scopes: ["sandboxes:read", "sandboxes:write", "access"] })).secret,
+		);
+		const [opened] = (await opener.forkSandbox(source.id, { wait: true })).items;
+		expect((await tom.listPorts(opened?.id ?? "")).items.map((port) => port.port).sort()).toEqual([3000, 8080]);
+
+		// A stopped sandbox has no exposed ports (they end when it stops), so a fork of one has none either.
+		await tom.stopSandbox(source.id, { wait: true });
+		const [fromStopped] = (await tom.forkSandbox(source.id, { wait: true })).items;
+		expect((await tom.listPorts(fromStopped?.id ?? "")).items).toEqual([]);
+	});
+
+	it("keeps a port exposed on a fork by hand while its source's ports are copied, whichever lands first", async () => {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		// Two control planes over the same records and machines, as replicas are: a call on one doesn't wait for work queued
+		// on the other. On the second, someone exposes the fork's 3000 gated by hand around the first's copy of it (public):
+		// before its exposure (the copy is then refused) or after it (theirs replaces the copy, and its record stands).
+		let order: "before" | "after" = "before";
+		let byHand: ((sandboxId: string) => Promise<void>) | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			exposePort: async (sandboxId, port, how) => {
+				const race = how.ifAbsent === true && port === 3000 ? byHand : undefined;
+				if (race !== undefined && order === "before") await race(sandboxId);
+				const made = await stub.exposePort(sandboxId, port, how);
+				if (race !== undefined && order === "after") await race(sandboxId);
+				return made;
+			},
+		};
+		const { tom } = setup(backend, { store });
+		const other = setup(stub, { store }).tom;
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.exposePort(source.id, { port: 3000, public: true });
+		for (const each of ["before", "after"] as const) {
+			order = each;
+			let manual: { readonly port: number; readonly public: boolean; readonly createdAt: number } | undefined;
+			byHand = async (sandboxId) => {
+				manual = await other.exposePort(sandboxId, { port: 3000 });
+			};
+			const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
+			byHand = undefined;
+			expect(manual).toMatchObject({ port: 3000, public: false });
+			// The fork's record keeps the port as exposed by hand, gated (the relay's own store keeps its gate and token alike:
+			// @kantel/hosts' ports tests).
+			const ports = (await tom.listPorts(fork?.id ?? "")).items;
+			expect(ports).toEqual([expect.objectContaining({ port: 3000, public: false, createdAt: manual?.createdAt })]);
+		}
+	});
+
+	it("boots every fork in a batch when recording one's copied port fails", async () => {
+		const memory = createMemoryStore();
+		let failNext = false;
+		const store: typeof memory = {
+			...memory,
+			sandboxes: {
+				...memory.sandboxes,
+				// The store fails the first write that adds a port once armed: the first fork's copied port.
+				update: (id, change) =>
+					memory.sandboxes.update(id, (current) => {
+						const next = change(current);
+						if (failNext && next !== undefined && next.ports.length > current.ports.length) {
+							failNext = false;
+							throw new Error("database down");
+						}
+						return next;
+					}),
+			},
+		};
+		const { tom } = setup(createStubBackend(), { store });
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.exposePort(source.id, { port: 3000, public: true });
+		failNext = true;
+		const forks = (await tom.forkSandbox(source.id, { count: 2, wait: true })).items;
+		expect(failNext).toBe(false);
+		expect(forks.map((fork) => fork.state)).toEqual(["running", "running"]);
+		const ports = await Promise.all(forks.map(async (fork) => (await tom.listPorts(fork.id)).items.length));
+		expect(ports).toEqual([0, 1]);
+	});
+
 	it("resizes a sandbox made from a snapshot of the disk alone", async () => {
 		const { tom } = setup();
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });

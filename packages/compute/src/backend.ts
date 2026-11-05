@@ -555,12 +555,19 @@ export interface SandboxBackend {
 	/**
 	 * Gives a port its URL through the host's tunnel. Unless public, the URL carries a token, shown only in this answer.
 	 * `grantee` (in this and the `open*` calls) names who asked, as `encodeGrantee` writes it, so a relay can end the
-	 * access once theirs ends (`ComputeService.stillAllowed`).
+	 * access once theirs ends (`ComputeService.stillAllowed`). `ifAbsent`: only when the port isn't exposed already; one
+	 * that is stays as it is (its access, token and grantee) and the call is refused (`conflict`), as a fork copying its
+	 * source's ports asks, so it never replaces one exposed by hand meanwhile.
 	 */
 	exposePort(
 		sandboxId: string,
 		port: number,
-		options: { readonly public: boolean; readonly subdomain: string; readonly grantee?: string },
+		options: {
+			readonly public: boolean;
+			readonly subdomain: string;
+			readonly grantee?: string;
+			readonly ifAbsent?: boolean;
+		},
 	): Promise<{ readonly url: string }>;
 	hidePort(sandboxId: string, port: number): Promise<void>;
 	openSsh(
