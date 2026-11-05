@@ -291,7 +291,8 @@ function KeyList({
 				{fold === null ? null : (
 					<tbody id={foldId}>
 						<tr>
-							<td className="px-0 pt-3 pb-1" colSpan={6}>
+							{/* Its own row under a hairline, as the phone card's fold is: the last live row drops its own. */}
+							<td className="border-t border-border py-1.5" colSpan={6}>
 								{fold}
 							</td>
 						</tr>
