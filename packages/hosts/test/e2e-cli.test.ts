@@ -40,7 +40,8 @@ async function cli(
 				return true;
 			},
 		});
-		const code = await run([...argv, "--account", account], {
+		// The account goes first, so it is a flag even when the command ends with `-- <words>`.
+		const code = await run(["--account", account, ...argv], {
 			env: { KANTEL_URL: "https://kantel.test", KANTEL_API_KEY: who },
 			fetch,
 			configDir,
@@ -117,7 +118,8 @@ describe("kantel e2e", () => {
 		await s.api.store.sandboxes.put(stored);
 
 		// Bob trusts the genesis he was given and sends his card; until it is added, the host won't let him in.
-		const joinedBob = await bob("e2e", "join", s.org.id, genesis, "--json");
+		// After --, as a genesis may start with "-" or "--" (one with one dash is a test of its own, below).
+		const joinedBob = await bob("e2e", "join", s.org.id, "--json", "--", genesis);
 		expect(joinedBob.stderr).toBe("");
 		expect(joinedBob.code).toBe(0);
 		const { card } = JSON.parse(joinedBob.stdout) as { card: string };
@@ -164,8 +166,9 @@ describe("kantel e2e", () => {
 
 		const root = await cli(s, "root", s.org.id);
 		expect((await root("e2e", "init", "--yes")).code).toBe(0);
-		// A genesis that isn't the gateway's chain's: every read fails rather than trusting what the gateway says.
-		const wrong = "a".repeat(43);
+		// A genesis that isn't the gateway's chain's: every read fails rather than trusting what the gateway says. It
+		// starts with "-", as one in 64 does, and is still taken as the genesis, not a flag.
+		const wrong = `-${"a".repeat(42)}`;
 		expect((await bob("e2e", "join", s.org.id, wrong)).code).toBe(0);
 		const status = await bob("e2e", "status");
 		expect(status.code).not.toBe(0);

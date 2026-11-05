@@ -282,6 +282,8 @@ interface Arg {
 	readonly optional?: boolean;
 	/** It takes the rest of the words. */
 	readonly variadic?: boolean;
+	/** It may start with "-", as a base64url value may: a word such as `-qWbW…` here is it, not an unknown flag. */
+	readonly dash?: boolean;
 }
 
 interface CommandSpec {
@@ -1037,6 +1039,13 @@ const E2E_DETAILS =
 	"the host's key, and the host this device's, against the organisation's signed chain. The chain is trusted from\n" +
 	"its genesis, which this device made (init) or an admin gave it (join), never from the gateway.";
 
+/** A genesis: its entry's hash, base64url(SHA-256), which may start with "-". */
+const GENESIS = /^[A-Za-z0-9_-]{43}$/;
+
+/** The command a member trusts a chain with; a genesis that starts with "-" goes after `--`, so it can't be a flag. */
+const joinCommand = (space: string, genesis: string): string =>
+	`kantel e2e join ${space} ${genesis.startsWith("-") ? "-- " : ""}${genesis}`;
+
 const E2E_COMMANDS: readonly CommandSpec[] = [
 	{
 		name: "console",
@@ -1173,8 +1182,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 				[
 					`Started ${space}'s chain, E2E ${started}. Its genesis is ${chain.state.genesis}.`,
 					...(started === mode ? [] : [`It is E2E ${started}, not ${mode}: kantel e2e mode ${mode} changes it.`]),
-					"Give each member that genesis yourself (not through Kantel) for: kantel e2e join " +
-						`${space} ${chain.state.genesis}`,
+					`Give each member that genesis yourself (not through Kantel) for: ${joinCommand(space, chain.state.genesis)}`,
 					"Then enrol your hosts: kantel e2e host-ticket <name>.",
 				].join("\n"),
 			);
@@ -1183,12 +1191,17 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 	{
 		name: "e2e join",
 		summary: "Trust an organisation's chain from the genesis an admin gave you",
-		args: [{ name: "space" }, { name: "genesis" }],
+		args: [{ name: "space" }, { name: "genesis", dash: true }],
 		flags: {
 			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
 		},
+		details:
+			'A genesis may start with "-". One that starts with "--" goes after --: kantel e2e join <space> -- <genesis>.',
 		async run(ctx) {
 			const [space, genesis] = [ctx.arg(0), ctx.arg(1)];
+			if (!GENESIS.test(genesis)) {
+				throw new UsageError(`"${genesis}" isn't a genesis: 43 characters of base64url, as kantel e2e init prints`);
+			}
 			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
 			await e2e.pinGenesis(ctx.io.configDir, space, genesis).catch((error: unknown) => {
 				throw e2eFailure(error);
@@ -1243,7 +1256,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			emitChain(
 				ctx,
 				chain,
-				`Added ${device.id}. They trust the chain with: kantel e2e join ${chain.state.space} ${chain.state.genesis}`,
+				`Added ${device.id}. They trust the chain with: ${joinCommand(chain.state.space, chain.state.genesis)}`,
 			);
 		},
 	},
@@ -3619,7 +3632,11 @@ function createContext(
 }
 
 async function execute(command: CommandSpec, argv: readonly string[], io: Io): Promise<number> {
-	const parsed = parseArgs(argv, { ...GLOBAL_FLAGS, ...command.flags });
+	const args = command.args ?? [];
+	// An argument such as a genesis may start with "-". Then a word after one dash is taken as an argument, and
+	// refused below, before the command runs, unless it lands on one that may.
+	const dashArguments = args.some((arg) => arg.dash === true);
+	const parsed = parseArgs(argv, { ...GLOBAL_FLAGS, ...command.flags }, { dashArguments });
 	if (booleanFlag(parsed, "help") === true) {
 		io.stdout.write(`${commandHelp(command)}\n`);
 		return 0;
@@ -3628,7 +3645,12 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 	const takesRest = command.rest !== undefined;
 	const positionals =
 		takesRest || parsed.rest === undefined ? parsed.positionals : [...parsed.positionals, ...parsed.rest];
-	const args = command.args ?? [];
+	if (dashArguments) {
+		const last = args.at(-1);
+		const argAt = (index: number): Arg | undefined => args[index] ?? (last?.variadic === true ? last : undefined);
+		const dashed = parsed.positionals.find((token, index) => /^-[^\d-]/.test(token) && argAt(index)?.dash !== true);
+		if (dashed !== undefined) throw new UsageError(`unknown flag ${dashed}`);
+	}
 	const missing = args.slice(positionals.length).filter((arg) => arg.optional !== true);
 	if (missing.length > 0) throw new UsageError(`${command.name} needs ${missing.map(argUsage).join(" ")}`);
 	const variadic = args.at(-1)?.variadic === true;
