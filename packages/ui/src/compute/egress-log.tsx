@@ -110,6 +110,8 @@ export function EgressLog({
 					options={FILTERS.map((option) => ({
 						...option,
 						...(counts[option.value] === undefined ? {} : { count: counts[option.value] }),
+						// Denials are the log's problems: their count in the error colour, as the sandboxes' Error count is.
+						alert: option.value === "denied" && (counts.denied ?? 0) > 0,
 					}))}
 					value={filter}
 					onChange={setFilter}
@@ -191,11 +193,17 @@ export function EgressLog({
 							<th className={th} scope="col">
 								Decision
 							</th>
+							<th className={`${th} text-right`} scope="col">
+								Status
+							</th>
 							<th className={th} scope="col">
 								Swapped
 							</th>
 							<th className={`${th} text-right`} scope="col">
 								Sent, received
+							</th>
+							<th className={`${th} w-0 pl-0`} scope="col">
+								<span className="kt-sr-only">Details</span>
 							</th>
 						</tr>
 					</thead>
@@ -252,12 +260,15 @@ function RequestCell({
 	detailId,
 	onToggle,
 	wrap = false,
+	chevron = true,
 }: {
 	entry: LoggedEntry;
 	open: boolean;
 	detailId: string;
 	onToggle: () => void;
 	wrap?: boolean;
+	/** The wide log draws its chevrons at the row's end instead, in a column of their own. */
+	chevron?: boolean;
 }) {
 	const text = `${entry.method} ${hostText(entry)}${entry.path ?? ""}`;
 	if (!opens(entry)) {
@@ -283,35 +294,29 @@ function RequestCell({
 			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-break-word" : "max-w-(--kt-card-width) truncate"}`}>
 				<RequestText entry={entry} wrap={wrap} />
 			</span>
-			{/* The chevron keeps to the cell's right edge wherever the request ends, so the chevrons make one column. */}
-			<Chevron size="sm" className={`ml-auto flex-none text-faint${wrap ? " mt-0.5 self-start" : ""}`} />
+			{/* On a phone's card the chevron keeps to the card's right edge, wherever the request ends. */}
+			{chevron ? (
+				<Chevron size="sm" className={`ml-auto flex-none text-faint${wrap ? " mt-0.5 self-start" : ""}`} />
+			) : null}
 		</button>
 	);
 }
 
 const statusCode = "text-sm text-muted tabular-nums";
 
-function Decision({ entry, slot = true }: { entry: LoggedEntry; slot?: boolean }) {
+function Decision({ entry, code = true }: { entry: LoggedEntry; code?: boolean }) {
 	return (
 		<span className="flex items-baseline gap-2">
 			{/* The sandbox list's status pattern: a dot and the word, the word quiet for Allowed and red for Denied. */}
-			{/* In the wide log a fixed width, so the codes after it line up down the column. */}
-			<span className={slot ? "inline-block w-18" : undefined}>
-				{entry.decision === "allowed" ? (
-					<StatusLabel status="done" quiet>
-						Allowed
-					</StatusLabel>
-				) : (
-					<StatusLabel status="error">Denied</StatusLabel>
-				)}
-			</span>
-			{/* In the wide log a fixed slot, empty when there's no status, keeps the codes in one column; a phone's meta line
-			    leaves it out rather than leave a hole. */}
-			{slot ? (
-				<span className={`w-8 text-right ${statusCode}`}>{entry.status ?? ""}</span>
-			) : entry.status === undefined ? null : (
-				<span className={statusCode}>{entry.status}</span>
+			{entry.decision === "allowed" ? (
+				<StatusLabel status="done" quiet>
+					Allowed
+				</StatusLabel>
+			) : (
+				<StatusLabel status="error">Denied</StatusLabel>
 			)}
+			{/* A phone's meta line has the server's status beside the decision; the wide log gives it a column. */}
+			{!code || entry.status === undefined ? null : <span className={statusCode}>{entry.status}</span>}
 		</span>
 	);
 }
@@ -335,7 +340,20 @@ function WideEntry({
 	const expanded = open && opens(entry);
 	return (
 		<Fragment>
-			<tr data-egress={entry.id} data-decision={entry.decision} className={expanded ? "bg-hover" : undefined}>
+			{/* A row that opens is one target: a click anywhere on it opens it, as its request button does from the
+			    keyboard, and its chevron sits at the row's end. */}
+			<tr
+				data-egress={entry.id}
+				data-decision={entry.decision}
+				className={`${expanded ? "bg-hover" : ""}${opens(entry) ? " cursor-pointer hover:bg-hover" : ""}`}
+				onClick={
+					opens(entry)
+						? (event) => {
+								if (!(event.target as HTMLElement).closest("button, a")) onToggle();
+							}
+						: undefined
+				}
+			>
 				<td className={td}>
 					<span className="text-muted tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
 						{agoText(entry.at, now)}
@@ -347,10 +365,18 @@ function WideEntry({
 					</td>
 				) : null}
 				<td className={`${td} w-full max-w-0`}>
-					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} />
+					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} chevron={false} />
 				</td>
 				<td className={td}>
-					<Decision entry={entry} />
+					<Decision entry={entry} code={false} />
+				</td>
+				{/* The server's answer, apart from Kantel's decision: a dash where the request never reached it. */}
+				<td className={`${td} text-right`}>
+					{entry.status === undefined ? (
+						<span className="text-faint">–</span>
+					) : (
+						<span className={statusCode}>{entry.status}</span>
+					)}
 				</td>
 				<td className={td}>
 					<Swapped names={entry.swapped} />
@@ -358,12 +384,15 @@ function WideEntry({
 				<td className={`${td} text-right text-muted tabular-nums`}>
 					{sizeText(entry.bytesUp)} / {sizeText(entry.bytesDown)}
 				</td>
+				<td className={`${td} w-0 pl-0 text-faint`} aria-hidden="true">
+					{opens(entry) ? expanded ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" /> : null}
+				</td>
 			</tr>
 			{expanded ? (
 				<tr id={detailId} data-egress-detail={entry.id}>
 					{/* Under the request: the when (and sandbox) columns stay empty, so the reason reads as the row's. */}
 					<td className={td} colSpan={sandboxColumn ? 2 : 1} />
-					<td className={`${td} whitespace-normal`} colSpan={4}>
+					<td className={`${td} whitespace-normal`} colSpan={6}>
 						<Detail entry={entry} fixes={fixes} />
 					</td>
 				</tr>
@@ -399,7 +428,7 @@ function PhoneEntry({
 			    sandbox, what was swapped in and how much moved. */}
 			<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap />
 			<div className="flex min-w-0 items-baseline justify-between gap-3 text-sm text-muted">
-				<Decision entry={entry} slot={false} />
+				<Decision entry={entry} />
 				<span className="flex-none tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
 					{agoText(entry.at, now)}
 				</span>
