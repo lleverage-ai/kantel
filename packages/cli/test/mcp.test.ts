@@ -107,7 +107,22 @@ const ROUTES: {
 	"GET /v1/sandboxes/sbx_gone": () =>
 		Response.json({ error: { code: "not_found", message: "No such sandbox" } }, { status: 404 }),
 	"POST /v1/sandboxes/sbx_stopped/commands": () =>
-		Response.json({ error: { code: "conflict", message: "The sandbox is stopped" } }, { status: 409 }),
+		Response.json(
+			{
+				error: {
+					code: "conflict",
+					message: "The sandbox is stopped (auto-stop); resume it first",
+					details: {
+						code: "sandbox_stopped",
+						sandboxId: "sbx_stopped",
+						state: "stopped",
+						stopReason: "auto-stop",
+						hint: "Resume it with kantel resume sbx_stopped or POST /v1/sandboxes/sbx_stopped/resume, then try again",
+					},
+				},
+			},
+			{ status: 409 },
+		),
 	"POST /v1/sandboxes/sbx_away/resume": () =>
 		Response.json(
 			{
@@ -135,6 +150,22 @@ const ROUTES: {
 			reason: "No host can take a microVM of size default (full)",
 			placementReason: "insufficient_capacity",
 		}),
+	"POST /v1/sandboxes/sbx_starting/commands": () =>
+		Response.json(
+			{
+				error: {
+					code: "conflict",
+					message: "The sandbox is still starting after 60 seconds; send the call again",
+					details: {
+						code: "sandbox_starting",
+						sandboxId: "sbx_starting",
+						state: "starting",
+						hint: "It is still starting: send the call again in a moment",
+					},
+				},
+			},
+			{ status: 409 },
+		),
 };
 
 function fakeKantel() {
@@ -286,6 +317,17 @@ describe("the MCP server", () => {
 		);
 		expect(stopped.isError).toBe(true);
 		expect(stopped.content[0]?.text).toContain("sandbox_resume");
+		expect(stopped.structuredContent).toMatchObject({
+			error: { code: "conflict", details: { code: "sandbox_stopped", state: "stopped", stopReason: "auto-stop" } },
+		});
+		const starting = resultOf(
+			await mcp.handle(
+				request(12, "tools/call", { name: "sandbox_exec", arguments: { sandboxId: "sbx_starting", command: "ls" } }),
+			),
+		);
+		expect(starting.isError).toBe(true);
+		expect(starting.content[0]?.text).toContain("call the tool again in a moment");
+		expect(starting.content[0]?.text).not.toContain("sandbox_resume");
 	});
 
 	it("names why a sandbox can't be placed, with what to do about it", async () => {

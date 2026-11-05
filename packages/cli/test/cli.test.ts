@@ -559,6 +559,57 @@ describe("errors", () => {
 		expect(result.stderr).toBe("kantel: exhausted: The account may run 5 sandboxes at once (reason: account_limit)\n");
 	});
 
+	it("tells the caller how to resume a sandbox that isn't running", async () => {
+		const notRunning = (code: string, state: string, message: string, stopReason?: string) => () =>
+			json(
+				{
+					error: {
+						code: "conflict",
+						message,
+						details: {
+							code,
+							sandboxId: "sbx_test1",
+							state,
+							...(stopReason === undefined ? {} : { stopReason }),
+							hint: "Resume it with kantel resume sbx_test1 or POST /v1/sandboxes/sbx_test1/resume, then try again",
+						},
+					},
+				},
+				409,
+			);
+		const stopped = await kantel(["exec", "sbx_test1", "ls"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": notRunning(
+					"sandbox_stopped",
+					"stopped",
+					"The sandbox is stopped (auto-stop); resume it first",
+					"auto-stop",
+				),
+			},
+		});
+		expect(stopped.code).toBe(1);
+		expect(stopped.stderr).toBe(
+			"kantel: conflict: The sandbox is stopped (auto-stop); resume it first\nResume it with: kantel resume sbx_test1\n",
+		);
+
+		const starting = await kantel(["exec", "sbx_test1", "ls"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": notRunning(
+					"sandbox_starting",
+					"starting",
+					"The sandbox is still starting after 60 seconds; send the call again",
+				),
+			},
+		});
+		expect(starting.stderr).toContain("It is still starting: run the command again in a moment.");
+
+		// A conflict of another kind prints no hint.
+		const other = await kantel(["exec", "sbx_test1", "ls"], {
+			routes: { "POST /v1/sandboxes/sbx_test1/commands": () => kantelError(409, "conflict", "Busy") },
+		});
+		expect(other.stderr).toBe("kantel: conflict: Busy\n");
+	});
+
 	it("tells an unauthenticated caller to log in", async () => {
 		const routes = { "GET /v1/whoami": () => kantelError(401, "unauthenticated", "A bearer is needed") };
 		const result = await kantel(["whoami"], { routes, env: { KANTEL_URL: "https://kantel.test" } });

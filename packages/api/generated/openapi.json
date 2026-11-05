@@ -2550,7 +2550,7 @@
 			"post": {
 				"operationId": "runCommand",
 				"summary": "Run a command",
-				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`.",
+				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -12393,13 +12393,13 @@
 									}
 								},
 								"additionalProperties": true,
-								"description": "More about the error, by code. A sandbox that can't be placed (on create, start, resume or fork) has `reason`."
+								"description": "More about the error, by code. A sandbox that can't be placed (on create, start, resume or fork) has `reason`. A call that needs a running sandbox answers `conflict` with a `SandboxNotRunning` here when it isn't running: its `code` (`sandbox_stopped`, `sandbox_starting`...), `state`, `stopReason` and `hint`."
 							}
 						}
 					}
 				},
 				"title": "ErrorBody",
-				"description": "Every error: the KantelError's code and message."
+				"description": "Every error: the KantelError's `code` and `message`, and for some errors `details`, such as a `SandboxNotRunning`."
 			},
 			"ErrorCode": {
 				"anyOf": [
@@ -13968,7 +13968,7 @@
 					},
 					"reason": {
 						"type": "string",
-						"description": "Why it is in `error` or `degraded`, in words."
+						"description": "Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, or a rule's reason. A stop someone asked for has none."
 					},
 					"placementReason": {
 						"$ref": "#/components/schemas/PlacementReason"
@@ -14272,6 +14272,61 @@
 				},
 				"title": "SandboxMount",
 				"description": "A mount of a sandbox's, and whether its files are in place."
+			},
+			"SandboxNotRunning": {
+				"type": "object",
+				"required": ["code", "sandboxId", "state", "hint"],
+				"properties": {
+					"code": {
+						"$ref": "#/components/schemas/SandboxNotRunningCode"
+					},
+					"sandboxId": {
+						"type": "string"
+					},
+					"state": {
+						"$ref": "#/components/schemas/SandboxState"
+					},
+					"stopReason": {
+						"type": "string",
+						"description": "Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's."
+					},
+					"hint": {
+						"type": "string",
+						"description": "What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again`."
+					}
+				},
+				"title": "SandboxNotRunning",
+				"description": "The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call."
+			},
+			"SandboxNotRunningCode": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "sandbox_starting"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_stopping"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_stopped"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_paused"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_error"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_deleting"
+					}
+				],
+				"title": "SandboxNotRunningCode",
+				"description": "Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted."
 			},
 			"SandboxPage": {
 				"type": "object",

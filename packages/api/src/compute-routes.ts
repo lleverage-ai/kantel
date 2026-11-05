@@ -625,7 +625,8 @@ export const runCommand = defineRoute({
 	description: describe(
 		"Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at",
 		"`timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A",
-		"stopped sandbox is `conflict`: resume it first.",
+		"call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped,",
+		"paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first.",
 		scope("exec"),
 	),
 	params: SandboxPath,

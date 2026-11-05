@@ -8,6 +8,7 @@
  */
 import { setTimeout as delay } from "node:timers/promises";
 import { type Command, KantelApiError, type KantelClient } from "@kantel/api/sdk";
+import { notRunningOf } from "./errors.ts";
 
 /** The protocol revisions this server speaks, newest first. */
 export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
@@ -856,12 +857,22 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 			if (controller.signal.aborted) return undefined;
 			if (error instanceof KantelApiError) {
 				const reason = error.reason;
-				const hint = (reason === undefined ? undefined : PLACEMENT_HINTS[reason]) ?? HINTS[error.code];
+				// A sandbox that isn't running: its stable code, state and why, so the agent can resume it or call again.
+				const notRunning = notRunningOf(error);
+				const hint =
+					notRunning?.code === "sandbox_starting"
+						? "The sandbox is still starting: call the tool again in a moment."
+						: ((reason === undefined ? undefined : PLACEMENT_HINTS[reason]) ?? HINTS[error.code]);
 				const message = `${error.code}${reason === undefined ? "" : ` (${reason})`}: ${error.message}${hint === undefined ? "" : `\n${hint}`}`;
 				return success(
 					id,
 					errorResult(message, {
-						error: { code: error.code, message: error.message, ...(reason === undefined ? {} : { reason }) },
+						error: {
+							code: error.code,
+							message: error.message,
+							...(reason === undefined ? {} : { reason }),
+							...(notRunning === undefined ? {} : { details: notRunning }),
+						},
 					}),
 				);
 			}

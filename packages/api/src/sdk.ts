@@ -156,12 +156,15 @@ export interface SdkSource {
 	readonly runtime: string;
 	/** Who generated it from what, for the header comment. */
 	readonly header: string;
+	/** Named schemas declared though no route answers with them, such as an error's `details` (`SandboxNotRunning`). */
+	readonly extraSchemas?: readonly TSchema[];
 }
 
 /** The SDK's source for `routes`. */
 export function renderSdk(routes: { readonly [id: string]: RouteDefinition }, source: SdkSource): string {
 	const types = new TypeWriter();
 	const methods = Object.values(routes).map((route) => method(route, types));
+	for (const schema of source.extraSchemas ?? []) types.type(plain(schema));
 	const declarations = [...types.named].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text);
 	return [
 		source.header,

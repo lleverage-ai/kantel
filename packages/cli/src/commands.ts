@@ -24,6 +24,7 @@ import {
 	KantelApiError,
 	type KantelClient,
 	type Sandbox,
+	type SandboxNotRunning,
 	type SandboxSizeName,
 	type SandboxType,
 } from "@kantel/api/sdk";
@@ -82,7 +83,7 @@ import {
 	parseGrant,
 	withoutProtectedValues,
 } from "./environments.ts";
-import { CliError, HostAnswerError, UsageError } from "./errors.ts";
+import { CliError, HostAnswerError, notRunningOf, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
@@ -3639,12 +3640,31 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 	return typeof code === "number" ? code : 0;
 }
 
+/** What to do about a sandbox that isn't running, as a command to type. */
+function notRunningHint(details: SandboxNotRunning): string {
+	const resume = `kantel resume ${details.sandboxId}`;
+	switch (details.code) {
+		case "sandbox_starting":
+			return "It is still starting: run the command again in a moment.";
+		case "sandbox_stopping":
+			return `Once it has stopped, resume it with: ${resume}`;
+		case "sandbox_stopped":
+		case "sandbox_paused":
+		case "sandbox_error":
+			return `Resume it with: ${resume}`;
+		default:
+			return details.hint;
+	}
+}
+
 function report(error: unknown, io: Io): number {
 	if (error instanceof KantelApiError) {
 		io.stderr.write(
 			`kantel: ${error.code}: ${error.message}${error.reason === undefined ? "" : ` (reason: ${error.reason})`}\n`,
 		);
 		if (error.code === "unauthenticated") io.stderr.write("Sign in with: kantel login (or set KANTEL_API_KEY)\n");
+		const notRunning = notRunningOf(error);
+		if (notRunning !== undefined) io.stderr.write(`${notRunningHint(notRunning)}\n`);
 		return 1;
 	}
 	if (error instanceof CliError) {

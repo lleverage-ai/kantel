@@ -243,6 +243,53 @@ export const SandboxState = Type.Union(
 	},
 );
 
+export const SandboxNotRunningCode = Type.Union(
+	[
+		Type.Literal("sandbox_starting"),
+		Type.Literal("sandbox_stopping"),
+		Type.Literal("sandbox_stopped"),
+		Type.Literal("sandbox_paused"),
+		Type.Literal("sandbox_error"),
+		Type.Literal("sandbox_deleting"),
+	],
+	{
+		title: "SandboxNotRunningCode",
+		description:
+			"Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's " +
+			"wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, " +
+			"`sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. " +
+			"`sandbox_deleting`: it is being deleted.",
+	},
+);
+
+export const SandboxNotRunning = Type.Object(
+	{
+		code: SandboxNotRunningCode,
+		sandboxId: Type.String(),
+		state: SandboxState,
+		stopReason: Type.Optional(
+			Type.String({
+				description:
+					"Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its " +
+					"auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has " +
+					"none. Not `details.reason`, which is a placement's.",
+			}),
+		),
+		hint: Type.String({
+			description:
+				"What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST " +
+				"/v1/sandboxes/sbx_4kq9x2mt/resume, then try again`.",
+		}),
+	},
+	{
+		title: "SandboxNotRunning",
+		description:
+			"The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, " +
+			"archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 " +
+			"seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call.",
+	},
+);
+
 export const SandboxHealth = Type.Union([Type.Literal("ok"), Type.Literal("degraded")], {
 	title: "SandboxHealth",
 	description: "`degraded`: the machine is up but its host can't fully reach it; it keeps running.",
@@ -731,7 +778,13 @@ export const Sandbox = Type.Object(
 		),
 		state: SandboxState,
 		health: Type.Optional(SandboxHealth),
-		reason: Type.Optional(Type.String({ description: "Why it is in `error` or `degraded`, in words." })),
+		reason: Type.Optional(
+			Type.String({
+				description:
+					"Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its " +
+					"auto-stop time came, or a rule's reason. A stop someone asked for has none.",
+			}),
+		),
 		placementReason: Type.Optional(PlacementReason),
 		visibility: SandboxVisibility,
 		capabilities: SandboxCapabilities,
@@ -2971,6 +3024,8 @@ export type Invite = Static<typeof Invite>;
 export type Caller = Static<typeof Caller>;
 export type SandboxType = Static<typeof SandboxType>;
 export type SandboxState = Static<typeof SandboxState>;
+export type SandboxNotRunningCode = Static<typeof SandboxNotRunningCode>;
+export type SandboxNotRunning = Static<typeof SandboxNotRunning>;
 export type SandboxVisibility = Static<typeof SandboxVisibility>;
 export type SandboxSizeName = Static<typeof SandboxSizeName>;
 export type SandboxShapeInput = Static<typeof SandboxShapeInput>;
