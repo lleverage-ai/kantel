@@ -150,7 +150,8 @@ export interface SandboxShapes {
 		readonly memoryMbPerVcpu: { readonly min: number; readonly max: number };
 		/**
 		 * The disk a microVM may ask for in GB, whatever its vCPUs and memory, its default the default preset's. Absent
-		 * where no host takes a disk off its presets (older hosts): each host gives the disk its shape has. A sandbox made
+		 * where no host takes a disk off its presets (older hosts), or none has the free disk for its least: each host gives
+		 * the disk its shape has. A sandbox made
 		 * from a snapshot keeps the snapshot's disk.
 		 */
 		readonly diskGb?: ShapeRange;
@@ -235,7 +236,7 @@ export function memoryRangeFor(shapes: SandboxShapes, vcpus: number): ShapeRange
 
 /**
  * The disk New sandbox may ask for a microVM: undefined where none may be chosen, as no host takes a disk off its
- * presets, or only the presets may be chosen (then each host gives its preset's disk).
+ * presets or has the free disk for its least, or only the presets may be chosen (then each host gives its preset's disk).
  */
 export function diskRangeFor(shapes: SandboxShapes): ShapeRange | undefined {
 	return customShapes(shapes) ? shapes.microvm.diskGb : undefined;

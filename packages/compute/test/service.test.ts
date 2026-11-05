@@ -715,17 +715,18 @@ describe("sandboxes", () => {
 		// One that says: its limits, the most no more than its free disk; across hosts, the least and the most.
 		const said = { ...custom, disk: { minGb: 15, maxGb: 200 } };
 		expect(microvmShapes([said], sizes)?.diskGb).toEqual({ min: 15, max: 200, step: 1, default: 20 });
+		// One without room for its least offers none, and with no other host, no disk may be chosen.
 		const full = { ...said, id: "full", capacity: { ...host.capacity, diskGb: 5 } };
-		expect(microvmShapes([full], sizes)?.diskGb).toEqual({ min: 15, max: 15, step: 1, default: 15 });
+		expect(microvmShapes([full], sizes)).not.toHaveProperty("diskGb");
 		// The free disk it last reported, not what it had when it started: more or less, and none free as none.
 		expect(microvmShapes([{ ...said, freeDiskGb: 120 }], sizes)?.diskGb).toMatchObject({ max: 120 });
 		expect(microvmShapes([{ ...full, freeDiskGb: 180 }], sizes)?.diskGb).toMatchObject({ max: 180 });
-		expect(microvmShapes([{ ...said, freeDiskGb: 0 }], sizes)?.diskGb).toEqual({
-			min: 15,
-			max: 15,
-			step: 1,
-			default: 15,
-		});
+		expect(microvmShapes([{ ...said, freeDiskGb: 0 }], sizes)).not.toHaveProperty("diskGb");
+		expect(microvmShapes([{ ...said, freeDiskGb: 0 }], sizes)?.custom).toBe(true);
+		// A full host with a big least adds nothing to another's range.
+		const bigFull = { ...said, id: "big", disk: { minGb: 1000, maxGb: 2000 }, freeDiskGb: 0 };
+		const small = { ...said, id: "small", disk: { minGb: 10, maxGb: 100 }, freeDiskGb: 100 };
+		expect(microvmShapes([bigFull, small], sizes)?.diskGb).toEqual({ min: 10, max: 100, step: 1, default: 20 });
 		const roomy = {
 			...said,
 			id: "roomy",
@@ -753,6 +754,10 @@ describe("sandboxes", () => {
 		for (const diskGb of [5, 1500, 4096]) {
 			expect(shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb }, [custom], sizes)).toMatchObject({ diskGb });
 		}
+		// A preset's disk outside the limits, as a custom shape given it by default records it: admitted, as placement does.
+		const high = { ...custom, disk: { minGb: 60, maxGb: 200 } };
+		expect(shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb: 20 }, [high], sizes)).toMatchObject({ diskGb: 20 });
+		expect(() => shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb: 30 }, [high], sizes)).toThrow(/30 GB disk/);
 	});
 
 	it("offers a host's presets, and any shape where it makes them", () => {

@@ -104,6 +104,18 @@ export const makesCustomShapes = (host: HostRecord): boolean =>
 	host.facts?.features?.includes(HOST_FEATURES.customShapes) === true;
 
 /**
+ * Whether a disk asked for is outside what `host` gives a custom shape: its limits (`diskLimitsOn`), unless one of its
+ * named sizes has that disk, as kantel-host's checkDisk admits it. A custom shape given a named size's disk by default
+ * (`diskFor`) records that disk, so a copy of it asking for it again goes to the same host.
+ */
+const diskOutside = (host: HostRecord, diskGiB: number | undefined): boolean => {
+	if (diskGiB === undefined) return false;
+	if (host.facts?.sizes.some((size) => size.diskGiB === diskGiB) === true) return false;
+	const limits = diskLimitsOn(host);
+	return diskGiB < limits.minGiB || diskGiB > limits.maxGiB;
+};
+
+/**
  * What `host` would make for the request: a named size it has (by name, or by a shape matching one exactly), a custom
  * shape it can make, or nothing.
  */
@@ -128,10 +140,7 @@ export function shapeOn(
 	);
 	if (named !== undefined) return { size: named, custom: false };
 	if (!makesCustomShapes(host) || shape.vcpus > facts.cpus || shape.memoryMiB > facts.memoryMiB) return undefined;
-	if (shape.diskGiB !== undefined) {
-		const limits = diskLimitsOn(host);
-		if (shape.diskGiB < limits.minGiB || shape.diskGiB > limits.maxGiB) return undefined;
-	}
+	if (diskOutside(host, shape.diskGiB)) return undefined;
 	const custom = {
 		vcpus: shape.vcpus,
 		memoryMiB: shape.memoryMiB,
@@ -139,13 +148,6 @@ export function shapeOn(
 	};
 	return { size: { name: customSizeName(custom), ...custom }, custom: true };
 }
-
-/** Whether a disk asked for is outside what `host` gives a custom shape. */
-const diskOutside = (host: HostRecord, diskGiB: number | undefined): boolean => {
-	if (diskGiB === undefined) return false;
-	const limits = diskLimitsOn(host);
-	return diskGiB < limits.minGiB || diskGiB > limits.maxGiB;
-};
 
 /** A host's named size, by name: what a sandbox placed before shapes was made as. */
 export function sizeOn(host: HostRecord, tier: SandboxTier, size: string): HostSize | undefined {

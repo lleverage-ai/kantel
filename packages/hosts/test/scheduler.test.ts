@@ -191,6 +191,23 @@ describe("place", () => {
 		expect(isRefusal(full) && full.reason).toMatch(/full/);
 	});
 
+	it("admits a custom shape asking for a named size's disk outside the host's limits, as it gave it one", () => {
+		const made = custom(candidate("h"));
+		const hostFacts = made.host.facts ?? facts;
+		const host = { ...made, host: { ...made.host, facts: { ...hostFacts, disk: { minGiB: 60, maxGiB: 100 } } } };
+		// No disk asked for: the size with at least its memory's, under the host's least.
+		const first = place({ tier: "microvm", shape: { vcpus: 3, memoryMiB: 6144 } }, [host]);
+		if (isRefusal(first)) throw new Error(first.reason);
+		expect(first).toMatchObject({ custom: true, size: { name: "custom-3c-6144m-50g", diskGiB: 50 } });
+		// A copy of it asking for that disk again goes to the same host.
+		const copy = place({ tier: "microvm", shape: { vcpus: 3, memoryMiB: 6144, diskGiB: 50 } }, [host]);
+		if (isRefusal(copy)) throw new Error(copy.reason);
+		expect(copy).toMatchObject({ custom: true, size: { name: "custom-3c-6144m-50g", diskGiB: 50 } });
+		// A disk no named size has still keeps to the limits.
+		const odd = place({ tier: "microvm", shape: { vcpus: 3, memoryMiB: 6144, diskGiB: 40 } }, [host]);
+		expect(isRefusal(odd) && odd.reason).toMatch(/no disk that size/);
+	});
+
 	it("books an isolate's nominal share, whatever memory it asked for", () => {
 		const host = candidate("h", capacity(100));
 		const chosen = place({ tier: "isolate", shape: { vcpus: 0, memoryMiB: 512 } }, [host]);

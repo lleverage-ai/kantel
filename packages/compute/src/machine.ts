@@ -50,7 +50,8 @@ export function diskLimitsOf(
  */
 export function makesShape(host: BackendHost, deploymentSizes: readonly BackendSize[], shape: BackendShape): boolean {
 	if (!host.tiers.includes("microvm")) return false;
-	const named = (host.sizes ?? deploymentSizes).some(
+	const sizes = host.sizes ?? deploymentSizes;
+	const named = sizes.some(
 		(size) =>
 			size.vcpus === shape.vcpus &&
 			size.memoryMb === shape.memoryMb &&
@@ -59,6 +60,9 @@ export function makesShape(host: BackendHost, deploymentSizes: readonly BackendS
 	if (named) return true;
 	if (!makesCustom(host) || shape.vcpus > host.capacity.vcpus || shape.memoryMb > host.capacity.memoryMb) return false;
 	if (shape.diskGb === undefined) return true;
+	// A named size's disk, whatever its limits, as placement and kantel-host admit it: a custom shape given that disk by
+	// default records it, and a copy of it asks for it again.
+	if (sizes.some((size) => size.diskGb === shape.diskGb)) return true;
 	// What the host admits, as placement does: a host from before it said takes what kantel-host took then.
 	const disk = host.disk ?? LEGACY_DISK_LIMITS;
 	return shape.diskGb >= disk.minGb && shape.diskGb <= disk.maxGb;

@@ -1211,7 +1211,7 @@ export interface MemberList {
 /** `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`. */
 export type MemberRole = "member" | "admin" | "owner";
 
-/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets. */
+/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets, or none has the free disk for its least. */
 export interface MicrovmShapes {
 	readonly vcpus: ShapeRange;
 	readonly memoryMb: ShapeRange;
@@ -1626,7 +1626,7 @@ export interface SandboxShapeInput {
 /** What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates. */
 export interface SandboxShapes {
 	readonly isolate: IsolateShapes;
-	/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets. */
+	/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets, or none has the free disk for its least. */
 	readonly microvm?: MicrovmShapes;
 	/** What an hour costs, per vCPU and GB; absent where it is free. */
 	readonly rates?: ShapeRates;

@@ -916,11 +916,13 @@ export function microvmShapes(
 			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
 			const limits = diskLimitsOf(host, deploymentSizes);
 			// No more than it had free when it last reported (none free is none), else when it started, else its own limit: a
-			// create of more waits for room, so the slider doesn't offer it. Never under its least, so the range is never empty.
+			// create of more waits for room, so the slider doesn't offer it. A host without room for its least offers none.
 			const reported = host.freeDiskGb ?? (host.capacity.diskGb > 0 ? host.capacity.diskGb : undefined);
 			const free = reported === undefined ? limits.maxGb : Math.min(limits.maxGb, Math.max(0, reported));
-			minDisk = Math.min(minDisk ?? limits.minGb, limits.minGb);
-			maxDisk = Math.max(maxDisk ?? 0, Math.max(limits.minGb, free));
+			if (free >= limits.minGb) {
+				minDisk = Math.min(minDisk ?? limits.minGb, limits.minGb);
+				maxDisk = Math.max(maxDisk ?? 0, free);
+			}
 		}
 	}
 	const list = [...presets.values()].sort(
