@@ -1100,14 +1100,18 @@ const truncate = (text: string): { text: string; truncated: boolean } =>
 		: { text, truncated: false };
 
 /**
- * A command's stream at its end, from what was recorded while it ran and its end's: the end's where it starts with what
- * was recorded (a real end's does: its backend keeps the start of each stream), else what was recorded, then the end's
- * (an end Kantel made up, such as its result lost, which says why).
+ * A command's stream at its end, from what was recorded while it ran and its end's. A real end's starts with what was
+ * recorded (its backend keeps the start of each stream), and is kept to the cap. Any other is an end Kantel made up,
+ * such as its result lost, which says why: what was recorded is kept whole, and the reason follows it, past the cap if
+ * it must be, so it is never cut off and an attach that has shown what was recorded shows it next.
  */
-function after(recorded: string, final: string): string {
-	if (final.startsWith(recorded)) return final;
-	if (final === "") return recorded;
-	return recorded.endsWith("\n") ? recorded + final : `${recorded}\n${final}`;
+function endStream(recorded: string, final: string): { text: string; truncated: boolean } {
+	if (final.startsWith(recorded)) return truncate(final);
+	if (final === "") return { text: recorded, truncated: false };
+	return {
+		text: recorded === "" || recorded.endsWith("\n") ? recorded + final : `${recorded}\n${final}`,
+		truncated: false,
+	};
 }
 
 // Environments: names, destinations and grants, checked and kept in one form.
@@ -2932,8 +2936,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
 		const at = now();
 		const ended = await settleCommand(commandId, (latest) => {
-			const stdout = truncate(after(latest.stdout, result.stdout));
-			const stderr = truncate(after(latest.stderr, result.stderr));
+			const stdout = endStream(latest.stdout, result.stdout);
+			const stderr = endStream(latest.stderr, result.stderr);
 			return {
 				...latest,
 				state: result.timedOut ? "timed_out" : "exited",

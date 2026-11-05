@@ -544,6 +544,24 @@ describe("commands on kantel-host hosts", () => {
 		expect(ended.stderr).toMatch(/^warning: slow\n.*no longer knows/s);
 	});
 
+	it("keeps recorded output, a full stream's too, when a later gateway finds the command's result lost", async () => {
+		const { api, root, host, sandbox, nextGateway } = await setup(true);
+		const started = await root.runCommand(sandbox.id, { command: "./build.sh", detached: true });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const full = "e".repeat(1024 * 1024);
+		host.output(started.id, "step 1\n", full);
+		await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, started.id)).stderr).toBe(full));
+		await api.close();
+		host.forget(started.id);
+		// Lost once its host hasn't known it for a while: recorded when it started, a minute and more ago.
+		await api.store.commands.update(started.id, (latest) => ({ ...latest, startedAt: latest.startedAt - 61_000 }));
+		const ended = await nextGateway().getCommand(sandbox.id, started.id);
+		expect(ended).toMatchObject({ state: "exited", exitCode: 1, stdout: "step 1\n" });
+		expect(ended.stderr.startsWith(full)).toBe(true);
+		expect(ended.stderr.slice(full.length)).toMatch(/^\nKantel lost this command's result/);
+		// (A real end, which extends what was recorded, is kept as it is: see the #703 takeover above.)
+	});
+
 	it("follows a detached command whose start went unanswered, which the host had started", async () => {
 		const { root, host, sandbox } = await setup(true);
 		vi.useFakeTimers();
