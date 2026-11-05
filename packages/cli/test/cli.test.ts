@@ -574,6 +574,22 @@ describe("exec", () => {
 		expect(result.stderr).toBe(
 			"kantel: Kantel stopped waiting for cmd_1, which may still be running: kantel attach sbx_test1 cmd_1\n",
 		);
+		// In JSON too: the command as it is, and not a success.
+		const json = await kantel(["exec", "sbx_test1", "--json", "--", "pnpm install"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+			},
+		});
+		expect(json.code).toBe(1);
+		expect(JSON.parse(json.stdout)).toMatchObject({ id: "cmd_1", state: "running" });
+		expect(json.stderr).toContain("kantel attach sbx_test1 cmd_1");
+		// A detached start is a success.
+		const started = await kantel(["exec", "sbx_test1", "--json", "-d", "--", "./serve"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+			},
+		});
+		expect(started.code).toBe(0);
 	});
 
 	it("follows on after a connection that drops while an answer's body comes", async () => {

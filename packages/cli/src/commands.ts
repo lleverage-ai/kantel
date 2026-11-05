@@ -750,10 +750,6 @@ function transient(error: unknown): string | undefined {
 		return retry ? `Kantel can't answer for now (${error.message})` : undefined;
 	}
 	if (error instanceof UnreachableError) return error.message;
-	// A look that took too long (FOLLOW_LOOK_MS), its answer or its body.
-	if (error instanceof Error && error.name === "TimeoutError") {
-		return `Kantel didn't answer within ${FOLLOW_LOOK_MS / 1000} s`;
-	}
 	// The connection dropped while an answer's body came (fetch's "terminated", with the socket's error as its cause).
 	if (error instanceof TypeError && (error.message === "terminated" || hasCode(error.cause))) {
 		const cause = error.cause instanceof Error ? error.cause.message : error.message;
@@ -792,10 +788,12 @@ async function follow(
 			const lookFrom = Date.now();
 			const elapsed = () => Math.max(Date.now() - (outageFrom ?? lookFrom), waited);
 			const limit = Math.max(1, Math.min(FOLLOW_LOOK_MS, FOLLOW_RETRY_MS - (outageFrom === undefined ? 0 : elapsed())));
+			const deadline = AbortSignal.timeout(limit);
 			try {
-				return await client.getCommand(sandboxId, commandId, { signal: AbortSignal.timeout(limit) });
+				return await client.getCommand(sandboxId, commandId, { signal: deadline });
 			} catch (error) {
-				const why = transient(error);
+				// This look's own deadline, whatever the error it ended with (before its answer, or in its body).
+				const why = deadline.aborted ? `Kantel didn't answer within ${Math.round(limit / 1000)} s` : transient(error);
 				if (why === undefined) throw error;
 				if (outageFrom === undefined) {
 					outageFrom = lookFrom;
@@ -2032,16 +2030,16 @@ const SECTIONS: readonly Section[] = [
 					};
 					const result = await client.runCommand(sandboxId, body);
 					if (unlimited && result.state === "running") return follow(ctx, client, sandboxId, result.id, result);
+					// A foreground command Kantel stopped waiting for (its gateway restarting), which runs on: not its end.
+					const stopped = !detached && result.state === "running";
+					const why = `Kantel stopped waiting for ${result.id}, which may still be running: kantel attach ${sandboxId} ${result.id}`;
 					if (ctx.json) {
 						ctx.out(JSON.stringify(result, null, 2));
-						return exitCodeOf(result);
+						if (!stopped) return exitCodeOf(result);
+						ctx.note(`kantel: ${why}`);
+						return 1;
 					}
-					// A foreground command Kantel stopped waiting for (its gateway restarting), which runs on: not its end.
-					if (!detached && result.state === "running") {
-						throw new CliError(
-							`Kantel stopped waiting for ${result.id}, which may still be running: kantel attach ${sandboxId} ${result.id}`,
-						);
-					}
+					if (stopped) throw new CliError(why);
 					if (result.state === "running") {
 						ctx.out(result.id);
 						ctx.note(
