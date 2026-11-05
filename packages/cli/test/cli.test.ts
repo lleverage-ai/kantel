@@ -637,24 +637,29 @@ describe("exec", () => {
 		expect(result.stderr).toContain("it may have started: kantel ps sbx_test1 lists it");
 	});
 
-	it("kills a plain exec still running well past its limit, as a deployment from before limits on followed commands leaves it", async () => {
+	it("leaves a plain exec's limit to Kantel, following it however long Kantel reports it running", async () => {
+		// Running long past its limit as far as the CLI can tell (its host out of reach, say, with its end still to come):
+		// never killed from here, which would throw away an end its host may yet report, and its timeout is Kantel's.
+		let looks = 0;
 		let killed = false;
 		const result = await kantel(["exec", "sbx_test1", "--timeout", "10", "--", "sleep 9999"], {
 			routes: {
 				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
 				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () =>
-					killed ? command({ state: "killed", exitCode: 137 }) : command({ state: "running", exitCode: undefined }),
+					++looks < 120
+						? command({ state: "running", exitCode: undefined, stdout: "a" })
+						: command({ state: "timed_out", exitCode: undefined, stdout: "ab" }),
 				"DELETE /v1/sandboxes/sbx_test1/commands/cmd_1": () => {
 					killed = true;
 					return command({ state: "killed", exitCode: 137 });
 				},
 			},
 		});
-		expect(killed).toBe(true);
+		expect(result.slept.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThan(100_000);
+		expect(killed).toBe(false);
 		expect(result.code).toBe(124);
+		expect(result.stdout).toBe("ab");
 		expect(result.stderr).toContain("timed out after 10 s");
-		// Not before its limit and the grace Kantel has to end it itself.
-		expect(result.slept.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(10_000 + 30_000);
 	});
 
 	it("answers a plain exec's command as JSON once it has ended", async () => {

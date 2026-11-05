@@ -1222,7 +1222,7 @@ export const Command = Type.Object(
 		exitCode: Type.Optional(Type.Integer()),
 		stdout: Type.String({
 			description:
-				"Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more.",
+				"Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere.",
 		}),
 		stderr: Type.String(),
 		truncated: Type.Boolean(),

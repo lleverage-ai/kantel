@@ -759,19 +759,17 @@ function killed(ctx: Context, command: Command): number {
 const FOLLOW_RETRY_MS = 120_000;
 /** How long one look at a followed command may take before it counts as Kantel out of reach. */
 const FOLLOW_LOOK_MS = 30_000;
-/** A plain `exec`'s limit when `--timeout` gives none, in seconds: the API's default. */
-const EXEC_DEFAULT_SECONDS = 30;
 /**
- * How long past its limit a followed command may still run before `follow` kills it itself: Kantel ends it at its limit,
- * but a deployment from before limits on detached commands (#683) runs it on.
+ * A plain `exec`'s limit when `--timeout` gives none, in seconds: the API's default. Kantel enforces it, as it does any
+ * detached command's `timeoutMs` (#683).
  */
-const FOLLOW_KILL_GRACE_MS = 30_000;
+const EXEC_DEFAULT_SECONDS = 30;
 
 /** How `follow` follows a command. */
 interface FollowOptions {
 	/** Say at the start how to follow it again (`exec --timeout 0`). */
 	readonly announce?: boolean;
-	/** Its limit in seconds: said when it timed out, and enforced if Kantel lets it run well past it. */
+	/** Its limit in seconds, said when it timed out. */
 	readonly limitSeconds?: number;
 }
 
@@ -814,11 +812,6 @@ async function follow(
 	let shown = { stdout: 0, stderr: 0 };
 	// Soon after its start, so a short command's end comes quickly, then every second.
 	let wait = 100;
-	// How long it has been followed: the time passed, or the waits asked for where a test's sleep returns at once.
-	const begun = Date.now();
-	let waited = 0;
-	const limitMs = options.limitSeconds === undefined ? undefined : options.limitSeconds * 1000;
-	let overdue = false;
 	const again = `kantel attach ${sandboxId} ${commandId}`;
 	const fetch = async (): Promise<Command> => {
 		// An outage's time so far: from the start of its first failed look, each look's time and each wait's. (The waits are
@@ -863,26 +856,19 @@ async function follow(
 			shown = { stdout: command.stdout.length, stderr: command.stderr.length };
 		}
 		if (command.state !== "running") break;
-		if (limitMs !== undefined && !overdue && Math.max(Date.now() - begun, waited) > limitMs + FOLLOW_KILL_GRACE_MS) {
-			// Well past its limit, which Kantel didn't enforce: killed here, once, and followed to its end.
-			overdue = true;
-			await client.killCommand(sandboxId, commandId).catch(() => undefined);
-		}
 		await ctx.io.sleep(wait);
-		waited += wait;
 		wait = Math.min(wait * 2, 1000);
 		command = await fetch();
 	}
-	const timedOut = command.state === "timed_out" || (overdue && command.state === "killed");
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {
 		if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
-		if (timedOut) {
+		if (command.state === "timed_out") {
 			const after = options.limitSeconds === undefined ? "" : ` after ${options.limitSeconds} s`;
 			ctx.note(`kantel: the command timed out${after} and was killed`);
 		} else if (command.state === "killed") ctx.note("kantel: the command was killed");
 	}
-	return timedOut ? 124 : exitCodeOf(command);
+	return exitCodeOf(command);
 }
 
 /** `--host 3000` or `--host 8080:public`. */

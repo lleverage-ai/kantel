@@ -367,7 +367,7 @@ export interface Command {
 	readonly cwd?: string;
 	readonly state: CommandState;
 	readonly exitCode?: number;
-	/** Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. */
+	/** Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere. */
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly truncated: boolean;
