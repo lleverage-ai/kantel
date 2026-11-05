@@ -196,7 +196,7 @@ ok egress certificate: in /etc/ssl/certs/ca-certificates.crt
 ok GH_TOKEN api.github.com: would be swapped
 ```
 
-It comes with the sandbox images from the release after `host-images-20261103.1`. An isolate sandbox has no `kantel-doctor`; `kantel egress <sandbox>` shows what its requests did.
+It comes with the sandbox images from `host-images-20261105` on. An isolate sandbox has no `kantel-doctor`; `kantel egress <sandbox>` shows what its requests did.
 
 For each placeholder it sends a `HEAD` request to a bound host through the proxy, marked with an `X-Kantel-Proxy-Check` header. The proxy completes a real TLS handshake with that host, then answers the check itself, with `ok` or an error code, so the value goes nowhere.
 
