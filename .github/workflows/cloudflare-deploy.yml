@@ -33,6 +33,9 @@ name: Cloudflare deploy
 #            KANTEL_PUBLIC_URL may go without KANTEL_SIGN_IN_FROM, leaving email sign-in off
 #   optional var KANTEL_TEMPLATES: `experimental` turns templates on (microVM profiles built once and restored from a
 #            snapshot); unset or `off`, every template route answers not_supported
+#   optional var KANTEL_HOST_RELEASES: with account hosts, where the latest kantel-host release is read to flag hosts
+#            that are behind it: an https URL answering {"tag_name"} or {"version"}, or `off`; unset, Kantel's latest
+#            GitHub Release
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            KANTEL_VAULT_KEY (without it the vault answers 503), KANTEL_VAULT_MODEL_GATEWAY_TOKEN,
 #            KANTEL_VAULT_EGRESS_GATEWAY_TOKEN, KANTEL_CPA_API_KEY, KANTEL_BRWSR_API_KEY (src/browser.ts: without it
@@ -113,6 +116,8 @@ jobs:
       KANTEL_ACCOUNT_HOSTS: ${{ vars.KANTEL_ACCOUNT_HOSTS }}
       # Optional, experimental: templates.
       KANTEL_TEMPLATES: ${{ vars.KANTEL_TEMPLATES }}
+      # Optional: where account hosts' latest kantel-host release is read (a URL, or off); unset, GitHub's latest.
+      KANTEL_HOST_RELEASES: ${{ vars.KANTEL_HOST_RELEASES }}
     steps:
       - uses: actions/checkout@v4
 
