@@ -56,6 +56,10 @@ const noticeIcon = {
 const noticeClass =
 	"flex min-w-0 items-start gap-2 max-sm:flex-wrap rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.kt-icon]:translate-y-(--kt-on-cap) [&>.kt-icon]:self-baseline";
 
+/** A notice with an action, on a wide screen: the icon, the words and the button on one centre line. */
+const noticeWithAction =
+	"sm:items-center sm:[&>.kt-icon]:self-center sm:[&>.kt-icon]:translate-y-0 sm:[&>.kt-notice-text]:self-center sm:[&>.kt-notice-action]:my-0";
+
 /** Each level's border, words and icon colour. */
 const noticeLevel = {
 	info: "border-border text-muted [&>.kt-icon]:text-faint",
@@ -84,7 +88,8 @@ export function Notice({
 }) {
 	return (
 		<div
-			className={`kt-notice kt-notice-${level} ${noticeClass} ${noticeLevel[level]}`}
+			// With an action, on a wide screen, the icon, the words and the button share one centre line.
+			className={`kt-notice kt-notice-${level} ${noticeClass} ${noticeLevel[level]}${action === undefined ? "" : ` ${noticeWithAction}`}`}
 			role={announce ? (level === "error" ? "alert" : "status") : undefined}
 		>
 			{noticeIcon[level]}
