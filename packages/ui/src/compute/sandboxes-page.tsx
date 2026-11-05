@@ -1600,6 +1600,8 @@ export interface NewSandboxForm {
 	/** Whether the sliders were moved from the template's own vCPUs and memory. */
 	readonly shapeChosen: boolean;
 	readonly from: string;
+	/** Whether the snapshot it starts from holds memory, so the sandbox is that snapshot's machine. */
+	readonly fromMemory?: boolean;
 	readonly environment: string;
 	/** The template a microVM is made from, resolved by `requestedTemplate`. */
 	readonly template?: Template;
@@ -1611,15 +1613,18 @@ export interface NewSandboxForm {
 /**
  * The create New sandbox sends. A microVM from a template whose sliders weren't moved names no shape, so the
  * template's own vCPUs and memory apply; moved, the shape overrides them, and the sandbox boots fresh (a template's
- * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one.
+ * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one. One
+ * from a saved snapshot that holds memory names no shape either: it restores only into the machine it was saved from.
  */
 export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
 	const template = form.kind === "microvm" ? form.template : undefined;
+	const keepsMachine =
+		form.kind === "microvm" && template === undefined && form.from !== "" && form.fromMemory === true;
 	return {
 		accountId: form.accountId,
 		...(form.name === "" ? {} : { name: form.name }),
 		kind: form.kind,
-		...(template !== undefined && !form.shapeChosen ? {} : { shape: form.shape }),
+		...((template !== undefined && !form.shapeChosen) || keepsMachine ? {} : { shape: form.shape }),
 		...(form.from === "" || template !== undefined ? {} : { fromSnapshot: form.from }),
 		...(form.environment === "" ? {} : { environmentId: form.environment }),
 		...(template === undefined ? {} : { templateId: template.id }),
@@ -1760,6 +1765,10 @@ export function NewSandboxDialog({
 	const picked = requested.template;
 	// A template's sandbox gets the template's own vCPUs and memory until a slider moves.
 	const ownShape = picked !== undefined && !shapeChosen;
+	// A saved snapshot that holds memory restores only into the machine it was saved from: no slider can change it.
+	const startFrom =
+		kind === "microvm" && picked === undefined ? fromOptions.find((entry) => entry.id === from) : undefined;
+	const keepsMachine = startFrom?.memory === true;
 	const shape: SandboxShape =
 		kind === "isolate"
 			? { vcpus: 0, memoryMb: isolateMb }
@@ -1770,7 +1779,7 @@ export function NewSandboxDialog({
 	const ready =
 		valid &&
 		shapesRead === "ready" &&
-		(ownShape || shapeCreatable(shapes, kind, shape)) &&
+		(ownShape || keepsMachine || shapeCreatable(shapes, kind, shape)) &&
 		!requested.pending &&
 		requested.problem === undefined;
 	const submit = () => {
@@ -1783,6 +1792,7 @@ export function NewSandboxDialog({
 				shape,
 				shapeChosen,
 				from,
+				fromMemory: keepsMachine,
 				environment,
 				...(picked === undefined ? {} : { template: picked }),
 				autoStop,
@@ -1883,6 +1893,13 @@ export function NewSandboxDialog({
 					>
 						Kantel couldn't read what the hosts offer, so a size can't be chosen yet.
 					</Notice>
+				) : keepsMachine ? (
+					<p className="text-xs text-muted">
+						This snapshot holds its sandbox's memory, so the new sandbox is the machine it was saved from
+						{startFrom?.machine === undefined
+							? "."
+							: `: ${startFrom.machine.vcpus} vCPU, ${memoryText(startFrom.machine.memoryMb)} memory.`}
+					</p>
 				) : (
 					<ShapeFields
 						kind={kind}

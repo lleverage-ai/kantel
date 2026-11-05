@@ -346,6 +346,21 @@ describe("New sandbox", () => {
 		expect("autoStopMinutes" in newSandboxInput({ ...form, autoStop: "never", idleStop: "15" })).toBe(false);
 	});
 
+	it("names no shape from a saved snapshot that holds memory, which restores only into its own machine", () => {
+		const fromMemory = newSandboxInput({ ...form, from: "ssn_dev_stack_warm", fromMemory: true });
+		expect(fromMemory).toEqual({
+			accountId: LLEVERAGE.id,
+			kind: "microvm",
+			fromSnapshot: "ssn_dev_stack_warm",
+			autoStopMinutes: 60,
+		});
+		// A snapshot of the disk alone boots, so it takes the sliders' shape.
+		expect(newSandboxInput({ ...form, from: "ssn_node22_base", fromMemory: false })).toMatchObject({
+			fromSnapshot: "ssn_node22_base",
+			shape: { vcpus: 2, memoryMb: 4096 },
+		});
+	});
+
 	it("keeps a requested template until the list is read, and says so when it can't be had", () => {
 		const microvm = newSandboxType(undefined, true);
 		expect(requestedTemplate("tpl_python", { status: "loading" }, microvm)).toEqual({ pending: true });

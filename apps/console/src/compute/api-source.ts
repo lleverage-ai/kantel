@@ -1117,6 +1117,10 @@ function savedSnapshotOf(snapshot: Snapshot, sandboxName: string): UiSavedSnapsh
 		// The API doesn't count the sandboxes started from a snapshot.
 		uses: 0,
 		...baseFieldOf(snapshot),
+		memory: snapshot.memory,
+		...(snapshot.resources === undefined
+			? {}
+			: { machine: { vcpus: snapshot.resources.vcpus, memoryMb: snapshot.resources.memoryMb } }),
 	};
 }
 

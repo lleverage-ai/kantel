@@ -1691,7 +1691,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 		}
 		if snap.Size != size.Name && snap.Memory {
 			unhold()
-			return sandboxOrigin{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s is of a %s sandbox; a sandbox made from it is that size too", p.From, snap.Size)}
+			return sandboxOrigin{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s holds the memory of a %s sandbox, so a sandbox made from it has to be %s too, not %s", p.From, snap.Size, snap.Size, size.Name)}
 		}
 		sdir := m.snapshotDir(p.From)
 		origin := sandboxOrigin{rootfs: m.snapshotRootfs(snap), disk: filepath.Join(sdir, fc.DiskFile), source: "snapshot", guest: snap.Guest, unhold: unhold}

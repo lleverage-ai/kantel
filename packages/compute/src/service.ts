@@ -71,7 +71,15 @@ import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
-import { makesCustom, makesShape, recordedMachine, recordsMachine, sandboxMachine } from "./machine.ts";
+import {
+	type AskedMachine,
+	makesCustom,
+	makesShape,
+	recordedMachine,
+	recordsMachine,
+	restoreAsked,
+	sandboxMachine,
+} from "./machine.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
 import {
 	backendMounts,
@@ -4892,6 +4900,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const asked =
 					body.resources ?? (template !== undefined && body.size === undefined ? template.spec.resources : undefined);
 				const shape = shapeFor(type, asked, eligible, capabilities.sizes, from === undefined);
+				const presets = eligible.flatMap((host) => host.sizes ?? capabilities.sizes);
+				// From a snapshot that holds memory: its own machine, and nothing else (`restoreAsked`), refused here rather than
+				// by its host once the sandbox is stored.
+				const wanted: AskedMachine = {
+					...(body.size === undefined ? {} : { size: body.size }),
+					...(shape === undefined ? {} : { shape }),
+				};
+				const machineAsked = type === "microvm" && from !== undefined ? restoreAsked(from, wanted, presets) : wanted;
 				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
@@ -4904,8 +4920,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									: from === undefined
 										? undefined
 										: { copies: from },
-								{ ...(body.size === undefined ? {} : { size: body.size }), ...(shape === undefined ? {} : { shape }) },
-								eligible.flatMap((host) => host.sizes ?? capabilities.sizes),
+								machineAsked,
+								presets,
 							);
 				if (type === "microvm" && machine === undefined) {
 					throw placementError(

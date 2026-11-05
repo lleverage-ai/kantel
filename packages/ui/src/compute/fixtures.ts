@@ -550,6 +550,8 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Tom Davies",
 		sizeBytes: 11.8 * 1024 ** 3,
 		uses: 37,
+		memory: true,
+		machine: { vcpus: 16, memoryMb: 32_768 },
 	},
 	{
 		id: "ssn_playwright",

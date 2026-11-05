@@ -556,6 +556,48 @@ describe("sandboxes", () => {
 		expect(plain.resources).toMatchObject({ memoryMb: 256 });
 	});
 
+	it("makes a sandbox from a snapshot holding memory as the snapshot's machine, refusing another before storing it", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [paused] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		expect(paused).toMatchObject({ memory: true, size: "large" });
+		const id = paused?.id ?? "";
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+
+		for (const body of [
+			{ resources: { vcpus: 4, memoryMb: 16_384 } },
+			{ resources: { vcpus: 2, memoryMb: 8192 } },
+			{ size: "small" as const },
+		]) {
+			const refused = await failure(tom.createSandbox({ type: "microvm", from: id, ...body }));
+			expect(refused.code).toBe("invalid");
+			expect(refused.message).toContain("holds its sandbox's memory");
+		}
+		// Nothing is stored for a refused create.
+		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
+
+		// Its own machine, asked by its numbers or not at all, is the snapshot's size.
+		const same = await tom.createSandbox({ from: id, resources: { vcpus: 4, memoryMb: 8192 }, wait: true });
+		expect(same).toMatchObject({ size: "large", state: "running" });
+		const plain = await tom.createSandbox({ from: id, wait: true });
+		expect(plain).toMatchObject({ size: "large", state: "running" });
+	});
+
+	it("resizes a sandbox made from a snapshot of the disk alone", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { wait: true });
+		const [stopped] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		expect(stopped?.memory).toBe(false);
+		const bigger = await tom.createSandbox({
+			from: stopped?.id ?? "",
+			resources: { vcpus: 4, memoryMb: 16_384 },
+			wait: true,
+		});
+		expect(bigger.resources).toMatchObject({ vcpus: 4, memoryMb: 16_384 });
+	});
+
 	it("refuses a shape it can't make", async () => {
 		const { tom } = setup();
 		const refusals = [

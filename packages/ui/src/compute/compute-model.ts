@@ -910,6 +910,13 @@ export interface SavedSnapshot {
 	 * from a sandbox restarted on the latest refreshes it.
 	 */
 	readonly base?: SandboxBase;
+	/**
+	 * Whether it holds its sandbox's memory as well as its disk. A sandbox made from one that does is the machine it was
+	 * saved from, whatever New sandbox's sliders say.
+	 */
+	readonly memory?: boolean;
+	/** The vCPUs and memory of the microVM it was saved from, where the source says. */
+	readonly machine?: { readonly vcpus: number; readonly memoryMb: number };
 }
 
 /** A file or folder in a snapshot. */
