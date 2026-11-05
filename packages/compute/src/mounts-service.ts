@@ -27,7 +27,6 @@ import {
 	type StagedBlob,
 	type StoredBlob,
 } from "./mounts.ts";
-import { sandboxNotRunning } from "./not-running.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	Collection,
@@ -79,6 +78,8 @@ export interface MountsDeps {
 	) => Promise<{ readonly sandbox: StoredSandbox }>;
 	/** The sandbox once its queued work ends, refused (`conflict`) unless it is running. */
 	readonly requireRunning: (principal: Principal, sandboxId: string) => Promise<StoredSandbox>;
+	/** `requireRunning` (a starting sandbox waited for) for a call a signed file URL authorises, with no principal. */
+	readonly requireRunningByToken: (sandboxId: string) => Promise<StoredSandbox>;
 }
 
 /**
@@ -863,9 +864,8 @@ export function createMounts(deps: MountsDeps) {
 			if (wants !== grant.method) {
 				throw new KantelError("invalid", `This file URL is for ${grant.method === "GET" ? "GET (or HEAD)" : "PUT"}`);
 			}
-			const sandbox = await store.sandboxes.get(grant.sandboxId);
-			if (sandbox === undefined || sandbox.state === "deleted") throw new KantelError("not_found", "No such sandbox");
-			if (sandbox.state !== "running") throw sandboxNotRunning(sandbox, deps.apiBasePath);
+			// One that is starting is waited for, as for any call that needs it running; a stopped one stays stopped.
+			const sandbox = await deps.requireRunningByToken(grant.sandboxId);
 			const headers = { "cache-control": "no-store" };
 			if (grant.method === "PUT") {
 				refuseUnderMount(sandbox, grant.path);

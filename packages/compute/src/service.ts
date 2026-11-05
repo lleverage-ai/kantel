@@ -2485,7 +2485,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * `startPollMs` (another gateway's). It moves nothing itself: concurrent callers each wait, and a stopped sandbox
 	 * stays stopped.
 	 */
-	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
+	function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, (id) => settledFor(principal, id));
+	}
+
+	/**
+	 * `requireRunning` for a call a token authorises rather than a principal (a signed file URL): the same wait and the
+	 * same refusals, with no check of who may use the sandbox, which the token already made.
+	 */
+	function requireRunningByToken(sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, async (id) => {
+			await settledOn(id);
+			return mustGetSandbox(id);
+		});
+	}
+
+	/** The wait behind `requireRunning`: `settled` reads the sandbox once its queued work ends. */
+	async function runningOnce(
+		sandboxId: string,
+		settled: (sandboxId: string) => Promise<StoredSandbox>,
+	): Promise<StoredSandbox> {
 		let held = false;
 		const hold = delay(startHoldMs);
 		const holdOver = hold.done.then(() => {
@@ -2496,7 +2515,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const latest = await mustGetSandbox(sandboxId);
 				if (latest.state !== "starting") {
 					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
-					const sandbox = await settledFor(principal, sandboxId);
+					const sandbox = await settled(sandboxId);
 					if (sandbox.state === "running") return sandbox;
 					// Started by what was queued (a start queued behind a stop): waited for as any start.
 					if (sandbox.state === "starting") continue;
@@ -2537,6 +2556,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					apiBasePath,
 					sandboxFor,
 					requireRunning,
+					requireRunningByToken,
 				});
 
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {

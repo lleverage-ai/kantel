@@ -590,9 +590,39 @@ describe("signed file URLs", () => {
 
 		expect((await fetchApi(`${BASE_URL}/file-urls/kfu_nope`)).status).toBe(404);
 		await tom.stopSandbox(sandbox.id, { wait: true });
-		expect((await fetchApi(download.url)).status).toBe(409);
+		const stopped = await fetchApi(download.url);
+		expect(stopped.status).toBe(409);
+		expect(await stopped.json()).toMatchObject({
+			error: { code: "conflict", details: { code: "sandbox_stopped", sandboxId: sandbox.id, state: "stopped" } },
+		});
 		// The stub's files are slow at a megabyte, which the read in parts needs.
 	}, 30_000);
+
+	it("wait for a sandbox that is starting, as any call that needs it running does", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { tom, fetchApi } = setup({
+			backend: (stub) => ({
+				resume: async (sandboxId, options) => {
+					await gate;
+					return stub.resume(sandboxId, options);
+				},
+			}),
+		});
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.writeFile(sandbox.id, { path: "note.txt", content: "kept" });
+		const download = await tom.createDownloadUrl(sandbox.id, { path: "note.txt" });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		expect((await tom.resumeSandbox(sandbox.id, { wait: false })).state).toBe("starting");
+		const held = fetchApi(download.url);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		release();
+		const got = await held;
+		expect(got.status).toBe(200);
+		expect(await got.text()).toBe("kept");
+	});
 
 	it("refuse uploads, writes and archives into a mount", async () => {
 		const { tom } = setup();
