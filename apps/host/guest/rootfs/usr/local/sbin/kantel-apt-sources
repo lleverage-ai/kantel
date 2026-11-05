@@ -1,32 +1,21 @@
 #!/bin/bash
-# kantel-apt-sources [SNAPSHOT]: Ubuntu's apt sources for what a sandbox installs, the snapshot first and the live
-# archive when the snapshot can't give a package.
+# kantel-apt-sources: apt in a sandbox reads Ubuntu's live archive, as any Ubuntu machine does: archive.ubuntu.com and
+# security.ubuntu.com, or ports.ubuntu.com on arm64. The Dockerfile runs it last.
 #
-# The image is built from Ubuntu's archive as it was at SNAPSHOT (APT::Snapshot, /etc/apt/apt.conf.d/50kantel-snapshot;
-# the default is the one there). Inside a sandbox, apt reads both:
-#   - https://snapshot.ubuntu.com/ubuntu/SNAPSHOT/ at the usual priority (500), so a package the snapshot has comes
-#     from it, as the image's own did;
-#   - the live archive (archive.ubuntu.com and security.ubuntu.com, or ports.ubuntu.com on arm64) at priority 100
-#     (/etc/apt/preferences.d/kantel-ubuntu-live), which apt takes a package from only when no source of priority 500
-#     has a version it can install: when snapshot.ubuntu.com is failing (it answered 503 for hours on 5 Nov 2026,
-#     lleverage-ai/kantel#706), and for the packages the image's security refresh already took past the snapshot.
-# Before every update, kantel-apt-snapshot-check (APT::Update::Pre-Invoke, /etc/apt/apt.conf.d/60kantel-snapshot-check)
-# asks the snapshot for its InRelease and, while it doesn't answer, pins it down to 1 under the live archive
-# (/etc/apt/preferences.d/kantel-snapshot-down). That keeps the fallback when apt holds the snapshot's indexes from an
-# earlier update, which it goes on using when it can't fetch them again; the next update that reaches the snapshot
-# lifts the pin.
-# Every source is "Snapshot: disable": the snapshot is named outright, and APT::Snapshot still holds the other
-# archives (Debian's, for Chromium, and any PPA) at SNAPSHOT.
+# The image is built from Ubuntu's archive as it was at a snapshot (APT::Snapshot in
+# /etc/apt/apt.conf.d/50kantel-snapshot, with Debian's archive for Chromium at the same date), so the build is
+# reproducible. A sandbox doesn't keep reading that snapshot: snapshot.ubuntu.com failed for hours on 5 Nov 2026
+# (lleverage-ai/kantel#706), answering 503, 502 and then 401. A fallback to the live archive under the snapshot isn't
+# enough, because a 4xx for a source's InRelease fails `apt-get update` outright ("The repository ... is not signed",
+# exit 100), so `apt-get update && apt-get install` breaks however the sources are pinned. So this writes the live
+# archive alone and moves APT::Snapshot out of apt's settings to /etc/kantel/apt-snapshot.conf, where it records the
+# snapshot the image was built from (kantel-image-info reads it). Debian's Chromium source then reads deb.debian.org,
+# still limited to Chromium's packages by its pin. Every source is checked against Ubuntu's archive key.
 #
 # KANTEL_APT_ROOT writes under another root, and KANTEL_APT_ARCH names the architecture (tests).
 set -euo pipefail
 
 root=${KANTEL_APT_ROOT:-}
-snapshot=${1:-$(sed -n 's/^APT::Snapshot "\(.*\)";/\1/p' "$root/etc/apt/apt.conf.d/50kantel-snapshot" 2>/dev/null || true)}
-if ! [[ $snapshot =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
-	echo "kantel-apt-sources: the snapshot must be an ID such as 20261103T000000Z, not \"$snapshot\"" >&2
-	exit 2
-fi
 arch=${KANTEL_APT_ARCH:-$(dpkg --print-architecture)}
 # shellcheck source=/dev/null
 codename=$(. "$root/etc/os-release" && echo "${VERSION_CODENAME:?}")
@@ -46,20 +35,12 @@ stanza() { # stanza URI SUITES...
 	local uri=$1
 	shift
 	printf '%s\n' 'Types: deb' "URIs: $uri" "Suites: $*" 'Components: main universe restricted multiverse' \
-		'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' 'Snapshot: disable'
-}
-
-host() { # host URI
-	local rest=${1#*://}
-	echo "${rest%%/*}"
+		'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg'
 }
 
 {
-	echo "# Written by kantel-apt-sources: Ubuntu as it was at $snapshot first, the live archive when that can't"
-	echo "# give a package (see /usr/local/sbin/kantel-apt-sources). Run it again with another snapshot ID to move."
-	echo
-	stanza "https://snapshot.ubuntu.com/ubuntu/$snapshot/" "$codename" "$codename-updates" "$codename-backports" \
-		"$codename-security"
+	echo "# Written by kantel-apt-sources: Ubuntu's live archive. The image was built from the snapshot that"
+	echo "# /etc/kantel/apt-snapshot.conf names (see /usr/local/sbin/kantel-apt-sources)."
 	echo
 	if [[ $security == "$live" ]]; then
 		stanza "$live" "$codename" "$codename-updates" "$codename-backports" "$codename-security"
@@ -70,21 +51,8 @@ host() { # host URI
 	fi
 } >"$root/etc/apt/sources.list.d/ubuntu.sources"
 
-hosts=("$(host "$live")")
-[[ $security == "$live" ]] || hosts+=("$(host "$security")")
-mkdir -p "$root/etc/apt/preferences.d"
-{
-	echo "# Written by kantel-apt-sources: the live archive only where the snapshot can't give a package."
-	for h in "${hosts[@]}"; do
-		printf '\nPackage: *\nPin: origin %s\nPin-Priority: 100\n' "$h"
-	done
-} >"$root/etc/apt/preferences.d/kantel-ubuntu-live"
-
-# A pin from another snapshot's outage goes; the next update checks again.
-rm -f "$root/etc/apt/preferences.d/kantel-snapshot-down"
-mkdir -p "$root/etc/apt/apt.conf.d"
-{
-	echo "// Written by kantel-apt-sources: before each update, check snapshot.ubuntu.com and, while it doesn't answer,"
-	echo "// take Ubuntu's packages from the live archive (see /usr/local/sbin/kantel-apt-snapshot-check)."
-	echo 'APT::Update::Pre-Invoke { "[ ! -x /usr/local/sbin/kantel-apt-snapshot-check ] || /usr/local/sbin/kantel-apt-snapshot-check || true"; };'
-} >"$root/etc/apt/apt.conf.d/60kantel-snapshot-check"
+snapshot=$root/etc/apt/apt.conf.d/50kantel-snapshot
+if [[ -e $snapshot ]]; then
+	mkdir -p "$root/etc/kantel"
+	mv -f "$snapshot" "$root/etc/kantel/apt-snapshot.conf"
+fi

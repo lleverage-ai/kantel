@@ -8,19 +8,12 @@ import (
 	"testing"
 )
 
-// aptSources runs guest/rootfs/usr/local/sbin/kantel-apt-sources for arch under a root of its own, and answers its
-// output and the sources and preferences it wrote.
-func aptSources(t *testing.T, arch string, args ...string) (out, sources, prefs string, err error) {
-	t.Helper()
-	root := t.TempDir()
-	raw, err := runAptSources(t, root, arch, args...)
-	s, _ := os.ReadFile(filepath.Join(root, "etc/apt/sources.list.d/ubuntu.sources"))
-	p, _ := os.ReadFile(filepath.Join(root, "etc/apt/preferences.d/kantel-ubuntu-live"))
-	return raw, string(s), string(p), err
-}
+const aptSnapshotConf = "APT::Snapshot \"20261103T000000Z\";\n" +
+	"Acquire::Snapshots::URI::Host::ports.ubuntu.com \"https://snapshot.ubuntu.com/ubuntu/@SNAPSHOTID@/\";\n"
 
-// runAptSources runs kantel-apt-sources for arch under root, set up as a resolute image with the default snapshot.
-func runAptSources(t *testing.T, root, arch string, args ...string) (string, error) {
+// runAptSources runs guest/rootfs/usr/local/sbin/kantel-apt-sources for arch under root, set up as a resolute image
+// built from a snapshot (the Dockerfile's 50kantel-snapshot), and answers its output.
+func runAptSources(t *testing.T, root, arch string) (string, error) {
 	t.Helper()
 	bash, lookErr := exec.LookPath("bash")
 	if lookErr != nil {
@@ -42,8 +35,8 @@ func runAptSources(t *testing.T, root, arch string, args ...string) (string, err
 		}
 	}
 	write("etc/os-release", "NAME=\"Ubuntu\"\nVERSION_CODENAME=resolute\n")
-	write("etc/apt/apt.conf.d/50kantel-snapshot", "APT::Snapshot \"20261103T000000Z\";\n")
-	cmd := exec.Command(bash, append([]string{script}, args...)...)
+	write("etc/apt/apt.conf.d/50kantel-snapshot", aptSnapshotConf)
+	cmd := exec.Command(bash, script)
 	cmd.Env = append(os.Environ(), "KANTEL_APT_ROOT="+root, "KANTEL_APT_ARCH="+arch)
 	raw, err := cmd.CombinedOutput()
 	return string(raw), err
@@ -66,100 +59,80 @@ func stanzas(text string) []string {
 	return out
 }
 
-// A sandbox's apt reads Ubuntu's snapshot first and the live archive under it, on amd64 and arm64 alike
-// (lleverage-ai/kantel#706): every Ubuntu source is "Snapshot: disable" (the snapshot is named outright, and the live
-// archive must stay live), and only the live archive's hosts are pinned down, to 100.
-func TestAptSourcesPutTheSnapshotFirstAndTheLiveArchiveUnderIt(t *testing.T) {
-	const snapshot = "https://snapshot.ubuntu.com/ubuntu/20261103T000000Z/"
-	for arch, want := range map[string]struct {
-		live  []string // each live source: its URI and suites
-		hosts []string
-	}{
+// A sandbox's apt reads Ubuntu's live archive alone, on amd64 (archive and security) and arm64 (ports) alike, every
+// source checked against Ubuntu's archive key (lleverage-ai/kantel#706): snapshot.ubuntu.com fails for hours at a time,
+// and a 4xx from it fails `apt-get update` outright, so the snapshot isn't a source at all, not even under a pin.
+func TestAptSourcesAreTheLiveArchiveAlone(t *testing.T) {
+	for arch, want := range map[string][]string{
 		"amd64": {
-			live: []string{
-				"URIs: http://archive.ubuntu.com/ubuntu/\nSuites: resolute resolute-updates resolute-backports",
-				"URIs: http://security.ubuntu.com/ubuntu/\nSuites: resolute-security",
-			},
-			hosts: []string{"archive.ubuntu.com", "security.ubuntu.com"},
+			"Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: resolute resolute-updates resolute-backports",
+			"Types: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: resolute-security",
 		},
 		"arm64": {
-			live:  []string{"URIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: resolute resolute-updates resolute-backports resolute-security"},
-			hosts: []string{"ports.ubuntu.com"},
+			"Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports/\nSuites: resolute resolute-updates resolute-backports resolute-security",
 		},
 	} {
 		t.Run(arch, func(t *testing.T) {
-			out, sources, prefs, err := aptSources(t, arch)
-			if err != nil {
+			root := t.TempDir()
+			if out, err := runAptSources(t, root, arch); err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
-			got := stanzas(sources)
-			if len(got) != 1+len(want.live) {
+			sources, err := os.ReadFile(filepath.Join(root, "etc/apt/sources.list.d/ubuntu.sources"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := stanzas(string(sources))
+			if len(got) != len(want) {
 				t.Fatalf("%d sources:\n%s", len(got), sources)
 			}
-			if !strings.HasPrefix(got[0], "Types: deb\nURIs: "+snapshot+"\nSuites: resolute resolute-updates resolute-backports resolute-security\n") {
-				t.Errorf("the first source isn't the snapshot's:\n%s", got[0])
-			}
-			for i, live := range want.live {
-				if !strings.HasPrefix(got[i+1], "Types: deb\n"+live+"\n") {
-					t.Errorf("source %d:\n%s\nwant %q", i+1, got[i+1], live)
+			for i, w := range want {
+				if got[i] != w+"\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg" {
+					t.Errorf("source %d:\n%s\nwant it to start %q", i, got[i], w)
 				}
 			}
 			for _, s := range got {
-				if !strings.Contains(s, "\nComponents: main universe restricted multiverse\n") ||
-					!strings.Contains(s, "\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n") ||
-					!strings.HasSuffix(s, "\nSnapshot: disable") {
-					t.Errorf("source:\n%s", s)
+				if strings.Contains(s, "snapshot") || strings.Contains(s, "Snapshot:") {
+					t.Errorf("a source names the snapshot:\n%s", s)
 				}
 			}
-			pins := stanzas(prefs)
-			if len(pins) != len(want.hosts) {
-				t.Fatalf("pins:\n%s", prefs)
-			}
-			for i, host := range want.hosts {
-				if pins[i] != "Package: *\nPin: origin "+host+"\nPin-Priority: 100" {
-					t.Errorf("pin %d:\n%s", i, pins[i])
-				}
+			// No pins either: the live archive is the only Ubuntu source.
+			if entries, _ := os.ReadDir(filepath.Join(root, "etc/apt/preferences.d")); len(entries) != 0 {
+				t.Errorf("preferences: %v", entries)
 			}
 		})
 	}
 }
 
-// kantel-apt-sources hooks kantel-apt-snapshot-check into every update, and drops a pin left from an earlier outage
-// (the next update decides again).
-func TestAptSourcesHookTheSnapshotCheckIntoUpdates(t *testing.T) {
+// APT::Snapshot leaves apt's settings, so no source (Debian's for Chromium included) is read at the snapshot in a
+// sandbox, and is kept in /etc/kantel/apt-snapshot.conf as the record of what the image was built from. Running it
+// again changes nothing.
+func TestAptSourcesMoveAPTSnapshotOutOfAptsSettings(t *testing.T) {
 	root := t.TempDir()
-	pin := filepath.Join(root, "etc/apt/preferences.d/kantel-snapshot-down")
-	if err := os.MkdirAll(filepath.Dir(pin), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(pin, []byte("Package: *\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := runAptSources(t, root, "amd64"); err != nil {
-		t.Fatalf("%v: %s", err, out)
-	}
-	if _, err := os.Stat(pin); !os.IsNotExist(err) {
-		t.Errorf("the old pin is still there: %v", err)
-	}
-	hook, err := os.ReadFile(filepath.Join(root, "etc/apt/apt.conf.d/60kantel-snapshot-check"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = `APT::Update::Pre-Invoke { "[ ! -x /usr/local/sbin/kantel-apt-snapshot-check ] || /usr/local/sbin/kantel-apt-snapshot-check || true"; };`
-	if !strings.Contains(string(hook), "\n"+want+"\n") {
-		t.Errorf("hook:\n%s", hook)
-	}
-}
-
-// The snapshot is the one the image was built from unless one is named, and nothing else is taken for one.
-func TestAptSourcesTakeOnlyASnapshotID(t *testing.T) {
-	if _, sources, _, err := aptSources(t, "amd64", "20261201T120000Z"); err != nil || !strings.Contains(sources, "/ubuntu/20261201T120000Z/") {
-		t.Errorf("a named snapshot: %v\n%s", err, sources)
-	}
-	for _, bad := range []string{"latest", "20261201", "../../x", "20261201T120000Z/../.."} {
-		out, sources, _, err := aptSources(t, "amd64", bad)
-		if err == nil || sources != "" || !strings.Contains(out, "must be an ID") {
-			t.Errorf("%q: %v %q %q", bad, err, out, sources)
+	for run := 1; run <= 2; run++ {
+		if run == 2 {
+			// The second run starts from what the first left: no 50kantel-snapshot to move.
+			bash, _ := exec.LookPath("bash")
+			cmd := exec.Command(bash, "../../guest/rootfs/usr/local/sbin/kantel-apt-sources")
+			cmd.Env = append(os.Environ(), "KANTEL_APT_ROOT="+root, "KANTEL_APT_ARCH=arm64")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("again: %v: %s", err, out)
+			}
+		} else if out, err := runAptSources(t, root, "arm64"); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		if _, err := os.Stat(filepath.Join(root, "etc/apt/apt.conf.d/50kantel-snapshot")); !os.IsNotExist(err) {
+			t.Errorf("run %d: APT::Snapshot is still in apt's settings: %v", run, err)
+		}
+		kept, err := os.ReadFile(filepath.Join(root, "etc/kantel/apt-snapshot.conf"))
+		if err != nil || string(kept) != aptSnapshotConf {
+			t.Errorf("run %d: the record: %v %q", run, err, kept)
+		}
+		entries, _ := os.ReadDir(filepath.Join(root, "etc/apt/apt.conf.d"))
+		for _, e := range entries {
+			conf, _ := os.ReadFile(filepath.Join(root, "etc/apt/apt.conf.d", e.Name()))
+			if strings.Contains(string(conf), "Snapshot") {
+				t.Errorf("run %d: %s still sets a snapshot:\n%s", run, e.Name(), conf)
+			}
 		}
 	}
 }
