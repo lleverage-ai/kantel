@@ -81,7 +81,7 @@ check docker-hello-world runuser -u user -- sh -c "docker run --rm hello-world |
 check desktop wait_for 300 "systemctl is-active kantel-desktop.service && test -e /tmp/.X11-unix/X1"
 check cdp wait_for 600 "curl -fsS -m 5 http://127.0.0.1:9222/json/version | grep -o \"\\\"Browser\\\": *\\\"[^\\\"]*\\\"\""
 check stream wait_for 600 "curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6080/"
-# The browser's own display, with Chromium on it; its stream starts only for a viewer (the guest agent), so here by hand.
+# The display of the browser alone, with Chromium on it; its stream starts only for a viewer (the guest agent), so here by hand.
 check browser-display wait_for 300 "systemctl is-active kantel-browser-display.service && test -e /tmp/.X11-unix/X2 && runuser -u user -- env DISPLAY=:2 xdotool search --onlyvisible --class chromium | head -n 1"
 check browser-stream wait_for 300 "systemctl start kantel-browser-stream.service && curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6081/"
 check kvm sh -c "if [ -e /dev/kvm ]; then echo /dev/kvm present; else echo no /dev/kvm, as expected on arm64; fi"
