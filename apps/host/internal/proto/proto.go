@@ -324,7 +324,10 @@ type GuestCapabilities struct {
 	Init    string       `json:"init"`
 	Desktop GuestFeature `json:"desktop"`
 	Browser GuestFeature `json:"browser"`
-	Docker  GuestDocker  `json:"docker"`
+	// BrowserSurface: the browser alone, on a display of its own with a stream of just that display, apart from the
+	// desktop (absent from an agent too old to say: no such surface).
+	BrowserSurface GuestFeature `json:"browserSurface"`
+	Docker         GuestDocker  `json:"docker"`
 }
 
 // GuestFeature is one thing an image has or lacks: what was found, or why it isn't there.

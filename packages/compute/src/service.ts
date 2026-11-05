@@ -4955,8 +4955,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			requireScreen(current, "browser");
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
+			// The browser alone where the machine runs it on its own surface, as the backend finds it there (not the image's
+			// report, which another boot of it made); else the desktop it runs on.
 			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
-			return { url: access.url, cdpUrl: access.cdpUrl, viewOnly, expiresAt: now() + ttlMinutes * 60_000 };
+			return {
+				url: access.url,
+				embedUrl: access.url,
+				cdpUrl: access.cdpUrl,
+				surface: access.surface ?? "desktop",
+				viewOnly,
+				expiresAt: now() + ttlMinutes * 60_000,
+			};
 		},
 
 		// Snapshots.

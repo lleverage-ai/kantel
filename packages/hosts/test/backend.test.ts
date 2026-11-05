@@ -4,7 +4,7 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHostBackend } from "../src/backend.ts";
+import { BROWSER_DISPLAY_RECORD, BROWSER_SURFACE_MARK, createHostBackend } from "../src/backend.ts";
 import { createPortRouter } from "../src/ports.ts";
 import type { HostFacts, HostGuest, HostMessage, HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
@@ -44,6 +44,8 @@ class FakeHost {
 	images?: string;
 	/** What its images' guest agent reports; absent, a host from before the guest agent said. */
 	guest: HostGuest | undefined;
+	/** Whether its machines run Chromium on its own display now (kantel-browser's record says :2, the display up). */
+	ownBrowserDisplay = false;
 	receive!: (text: string) => void;
 
 	constructor(
@@ -136,10 +138,12 @@ class FakeHost {
 					return answer({ exitCode: 0, stdout: "--kantel-host-key--\nSHA256:injected\n", stderr: "" });
 				}
 				const command = String(p.command);
-				if (command.startsWith("curl") && command.includes("9222/json/version")) {
+				if (command.includes("curl -fsS --max-time 5 http://127.0.0.1:9222/json/version")) {
+					const checked = command.includes(`cat ${BROWSER_DISPLAY_RECORD}`);
+					const mark = checked && this.ownBrowserDisplay ? BROWSER_SURFACE_MARK : "";
 					return answer({
 						exitCode: 0,
-						stdout: JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/abc-123" }),
+						stdout: `${mark}${JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/abc-123" })}`,
 						stderr: "",
 					});
 				}
@@ -364,7 +368,8 @@ describe("the compute API on kantel-host hosts", () => {
 		const { service, root, tickets } = setup();
 		const token = await root.createHostJoinToken({});
 		const { hostId } = await service.register({ token: token.token, facts });
-		new FakeHost(service, hostId).connect();
+		const host = new FakeHost(service, hostId);
+		host.connect();
 		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
 
 		// The desktop is Selkies' page on the gateway, whose stream goes through it with the same ticket.
@@ -390,6 +395,17 @@ describe("the compute API on kantel-host hosts", () => {
 		const browser = await root.openBrowser(sandbox.id, {});
 		expect(browser.cdpUrl).toMatch(new RegExp(`^${prefix}[^/]+/devtools/browser/abc-123$`));
 		expect(browser.url.startsWith(page)).toBe(true);
+		// No guest report of a browser surface, and Chromium on the desktop: its view is the desktop's.
+		expect(browser.surface).toBe("desktop");
+		expect(sandbox.capabilities.browserSurface).toBe(false);
+		expect(await tickets.verify(ticketOf(browser.url), Date.now())).toMatchObject({ port: 6080, desktop: "control" });
+		// The machine is what counts, not a report kept from another boot of its image: once it runs Chromium on its own
+		// display (a cold boot under an upgraded host, say), the browser alone.
+		host.ownBrowserDisplay = true;
+		const alone = await root.openBrowser(sandbox.id, {});
+		expect(alone.surface).toBe("browser");
+		expect(await tickets.verify(ticketOf(alone.url), Date.now())).toMatchObject({ port: 6081, desktop: "control" });
+		host.ownBrowserDisplay = false;
 		// Unless asked, a URL can be opened for 10 minutes; and never for more than an hour.
 		const cdpTicket = browser.cdpUrl.slice(prefix.length).split("/")[0] ?? "";
 		const cdpGrant = await tickets.verify(cdpTicket, Date.now());
@@ -465,6 +481,58 @@ describe("the compute API on kantel-host hosts", () => {
 
 		await root.stopSandbox(sandbox.id, { wait: true });
 		expect((await ports?.fetch(new Request(open.url)))?.status).toBe(404);
+	});
+
+	it("shows the browser alone where the image's guest reports a browser surface, view-only kept in the ticket", async () => {
+		const { service, root, tickets } = setup();
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		const has = (detail: string) => ({ available: true, detail });
+		host.guest = {
+			reportedAt: 1,
+			agent: { version: "1.19.0", injected: false },
+			os: { id: "ubuntu", name: "Ubuntu 26.04 LTS", version: "26.04" },
+			arch: "x86_64",
+			libc: "glibc",
+			shell: "/bin/bash",
+			init: "systemd",
+			desktop: has("Xtigervnc, xfce4-session, Selkies"),
+			browser: has("Chromium"),
+			browserSurface: has("Xtigervnc, Selkies"),
+			docker: { ...has("dockerd"), kvm: false },
+		};
+		host.ownBrowserDisplay = true;
+		host.connect();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		expect(sandbox.capabilities).toMatchObject({ desktop: true, browser: true, browserSurface: true });
+
+		const page = "https://kantel.test/v1/hosts/desktop/";
+		const ticketOf = (url: string) => url.slice(page.length).split("/")[0] ?? "";
+		const browser = await root.openBrowser(sandbox.id, {});
+		expect(browser).toMatchObject({ surface: "browser", viewOnly: false });
+		expect(browser.url).toMatch(new RegExp(`^${page}[^/]+/$`));
+		expect(browser.embedUrl).toBe(browser.url);
+		// Its own stream (6081), with its own ticket: not the desktop's page.
+		expect(await tickets.verify(ticketOf(browser.url), Date.now())).toMatchObject({
+			sandboxId: sandbox.id,
+			port: 6081,
+			desktop: "control",
+		});
+		const watch = await root.openBrowser(sandbox.id, { viewOnly: true });
+		expect(watch.url).toMatch(new RegExp(`^${page}[^/]+/#shared$`));
+		expect(await tickets.verify(ticketOf(watch.url), Date.now())).toMatchObject({ port: 6081, desktop: "view" });
+		// The desktop is still the desktop.
+		const desktop = await root.openDesktop(sandbox.id, {});
+		expect(await tickets.verify(ticketOf(desktop.url), Date.now())).toMatchObject({ port: 6080 });
+
+		// A machine that runs Chromium on the desktop (paused under an older host, or moved there by a template's setup),
+		// whatever its image's report says: the desktop, which shows it.
+		host.ownBrowserDisplay = false;
+		const onDesktop = await root.openBrowser(sandbox.id, {});
+		expect(onDesktop.surface).toBe("desktop");
+		expect(await tickets.verify(ticketOf(onDesktop.url), Date.now())).toMatchObject({ port: 6080, desktop: "control" });
+		expect(onDesktop.cdpUrl).toMatch(/\/devtools\/browser\/abc-123$/);
 	});
 
 	it("gives a microVM what its image's guest agent reports, and refuses the desktop and browser an image lacks", async () => {

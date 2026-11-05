@@ -210,7 +210,9 @@ One build of a base image.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Watch and drive the sandbox's Chromium in a browser. |
+| `url` | string | yes | Watch and drive the sandbox's Chromium in a browser: the browser alone where `surface` is `browser`, else the desktop it runs on. |
+| `embedUrl` | string | yes | The same view, for an `<iframe>` in your own app. |
+| `surface` | `"browser"` or `"desktop"` | yes | Experimental. What `url` shows: `browser`, the browser alone on a display of its own, sized to the viewer and streamed only while someone watches; `desktop`, the sandbox's desktop with Chromium on it (an image without a browser surface). |
 | `cdpUrl` | string | yes | A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. |
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -847,7 +849,7 @@ A short-lived URL for one file of one sandbox, streamed to or from the sandbox's
 
 ### GuestCapabilities
 
-What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker.
+What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -860,6 +862,7 @@ What a microVM's image has, as its guest agent found it when it last started: it
 | `init` | `"systemd"` or `"kantel"` | yes | PID 1: the image's systemd, or Kantel's own init when the image has none. |
 | `desktop` | [GuestFeature](/api/reference/types/#guestfeature) | yes |  |
 | `browser` | [GuestFeature](/api/reference/types/#guestfeature) | yes |  |
+| `browserSurface` | [GuestFeature](/api/reference/types/#guestfeature) | no |  |
 | `docker` | [GuestDocker](/api/reference/types/#guestdocker) | yes |  |
 
 ### GuestDocker
@@ -1255,6 +1258,7 @@ What this sandbox can do, from its type and its host, and for a microVM from wha
 | `ssh` | boolean | yes |  |
 | `desktop` | boolean | yes |  |
 | `browser` | boolean | yes |  |
+| `browserSurface` | boolean | no | Experimental. Whether `openBrowser`'s `url` shows the browser alone rather than the desktop it runs on: the image has a display and a stream for its browser. Absent: false. |
 | `ports` | boolean | yes |  |
 | `docker` | boolean | yes |  |
 | `kvm` | boolean | yes | `/dev/kvm` inside, for nested virtualisation. |

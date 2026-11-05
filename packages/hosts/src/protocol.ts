@@ -329,6 +329,8 @@ export interface HostGuest {
 	readonly init: "systemd" | "kantel";
 	readonly desktop: HostGuestFeature;
 	readonly browser: HostGuestFeature;
+	/** The browser alone, on a display of its own with a stream of it; absent from an agent too old to say. */
+	readonly browserSurface?: HostGuestFeature;
 	readonly docker: HostGuestFeature & { readonly kvm: boolean };
 }
 

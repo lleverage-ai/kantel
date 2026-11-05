@@ -47,6 +47,8 @@ type Server struct {
 	ssh        *SSHServer
 	expectOnce sync.Once
 	expect     []string
+	demandOnce sync.Once
+	demand     *onDemand
 
 	mu       sync.Mutex
 	identity *Identity
@@ -55,6 +57,8 @@ type Server struct {
 }
 
 func (s *Server) Handler() http.Handler {
+	// Read at start, so a service left running with nothing connected (by an agent before this one) is stopped too.
+	s.onDemand()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /capabilities", s.capabilities)
@@ -930,11 +934,15 @@ func (s *Server) port(w http.ResponseWriter, r *http.Request) {
 		s.sshServer().ServeConn(&bufferedConn{Conn: conn, r: buffered.Reader})
 		return
 	}
-	target, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
+	// An on-demand port's service (the browser's stream) is started for its first connection (OnDemandFile).
+	target, done, err := s.onDemand().dial(r.Context(), port, func() (net.Conn, error) {
+		return net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
+	})
 	if err != nil {
 		fail(w, 502, err)
 		return
 	}
+	defer done()
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		target.Close()
@@ -948,6 +956,12 @@ func (s *Server) port(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + PortUpgrade + "\r\n\r\n"))
 	Pipe(conn, buffered, target)
+}
+
+// onDemand is the image's on-demand services (OnDemandFile), read once.
+func (s *Server) onDemand() *onDemand {
+	s.demandOnce.Do(func() { s.demand = loadOnDemand() })
+	return s.demand
 }
 
 // bufferedConn reads what the HTTP server had already buffered before the rest of the connection.

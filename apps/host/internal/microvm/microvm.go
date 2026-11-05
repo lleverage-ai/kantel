@@ -319,6 +319,7 @@ func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32) fc.B
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
 	}
+	cfg.BootArgs += browserSurfaceBootArg
 	if sh.HotplugMiB > 0 {
 		cfg.BootArgs += hotplugBootArgs
 	}
@@ -972,6 +973,13 @@ const balloonStatsSeconds = 1
 // memory.
 const templateDevices = " devices=balloon-stats"
 
+// browserSurfaceBootArg tells the guest image this host forwards its agent's browserSurface report, so the image may
+// run Chromium on a display of its own (kantel-browser-display, whose units have it as their condition) rather than
+// on the desktop. A host from before it boots the same image with Chromium on the desktop, where its browser view (the
+// desktop's page) still shows it: that host would drop the report, and the control plane would never open the
+// browser's own stream. A snapshot keeps the command line it booted with, so it is in the template's fingerprint too.
+const browserSurfaceBootArg = " " + guest.BrowserSurfaceBootArg
+
 const bootArgs = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/usr/sbin/kantel-init quiet loglevel=3 systemd.show_status=false"
 
 // Since is a timer for step timings.
@@ -1021,7 +1029,7 @@ func (m *Manager) templateFingerprint(sh shape) string {
 	if m.cfg.Initrd != "" {
 		images = append(images, m.cfg.Initrd)
 	}
-	return fc.Fingerprint(images...) + templateDevices + m.shapeKey(sh)
+	return fc.Fingerprint(images...) + templateDevices + " boot=" + guest.BrowserSurfaceBootArg + m.shapeKey(sh)
 }
 
 // templateReady says whether the shape's template can be restored now without making it: made for these images, or,
