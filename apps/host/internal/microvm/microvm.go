@@ -579,9 +579,7 @@ func New(cfg Config) (*Manager, error) {
 		m.PrepareTemplates()
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
-	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
-	snapMems, _ := filepath.Glob(filepath.Join(cfg.Root, "snapshots", "*", "mem"))
-	m.spool.adopt(append(vmMems, snapMems...))
+	m.spool.adopt(spoolLinks(cfg.Root))
 	return m, nil
 }
 
@@ -1470,63 +1468,103 @@ func (m *Manager) reapTransientSnapshots() {
 	}
 }
 
-// mappedMem is the link in a fork's vm directory to the spooled memory it was restored from and still maps (Fork):
-// the spool counts it until the fork's machine exits, even across a host restart (adoptMappedMemory).
-const mappedMem = "mem.mapped"
-
 // keepMapped keeps a running fork's spooled memory file, and the spool's charge for it, until its machine exits: its
-// Firecracker maps the file, so the RAM is in use until then whether or not the file is deleted.
+// Firecracker maps the file, so the RAM is in use until then whether or not the file is deleted. After a daemon
+// restart, adoptMappedMemory finds it again in the machine's mappings.
 func (m *Manager) keepMapped(id, spooled string) {
-	s, err := m.get(id)
-	if err != nil {
-		m.spool.cancel(spooled)
-		return
+	var machine *fc.Machine
+	if s, err := m.get(id); err == nil {
+		s.mu.Lock()
+		machine = s.machine
+		s.mu.Unlock()
 	}
-	s.mu.Lock()
-	machine, link := s.machine, filepath.Join(s.vmDir(), mappedMem)
-	s.mu.Unlock()
 	if machine == nil {
 		m.spool.cancel(spooled)
 		return
 	}
-	_ = os.Remove(link)
-	if err := os.Symlink(spooled, link); err != nil {
-		m.log.Warn("linking a fork's spooled memory", "sandbox", id, "error", err)
-	}
-	m.releaseMappedOnExit(machine, link, spooled)
+	m.releaseOnExit(machine, spooled)
 }
 
-// releaseMappedOnExit gives back a fork's spooled memory once its machine has exited, however it ends.
-func (m *Manager) releaseMappedOnExit(machine *fc.Machine, link, spooled string) {
+// releaseOnExit gives back a fork's spooled memory once its machine has exited, however it ends.
+func (m *Manager) releaseOnExit(machine *fc.Machine, spooled string) {
 	go func() {
 		<-machine.Done()
-		if dest, err := os.Readlink(link); err == nil && dest == spooled {
-			_ = os.Remove(link)
-		}
 		m.spool.cancel(spooled)
 	}()
 }
 
-// adoptMappedMemory counts again the spooled memory the forks adopt found running still map, after the daemon restarts,
-// and removes the links (and files) of those that no longer run.
+// spoolLinks are the memory files that may be links to spooled files: the sandboxes' and the snapshots'.
+func spoolLinks(root string) []string {
+	vmMems, _ := filepath.Glob(filepath.Join(root, "sandboxes", "*", "vm", "mem"))
+	snapMems, _ := filepath.Glob(filepath.Join(root, "snapshots", "*", "mem"))
+	return append(vmMems, snapMems...)
+}
+
+// adoptMappedMemory, after the daemon restarts, deals with the spooled files no sandbox or snapshot links to (those that
+// are linked, spool.adopt queues for the disk): one a running machine maps, a live fork's, is counted again until that
+// machine exits; any other, such as an interrupted live fork's, is deleted. A fork's mapping is found in its
+// Firecracker's /proc maps, so nothing about it needs to have been written down before the restart.
 func (m *Manager) adoptMappedMemory() {
-	links, _ := filepath.Glob(filepath.Join(m.cfg.Root, "sandboxes", "*", "vm", mappedMem))
-	for _, link := range links {
-		id := filepath.Base(filepath.Dir(filepath.Dir(link)))
-		spooled, err := os.Readlink(link)
-		var machine *fc.Machine
-		if s := m.sandboxes[id]; s != nil {
-			machine = s.machine
-		}
-		if err == nil && machine != nil && m.spool.adoptMapped(spooled) {
-			m.releaseMappedOnExit(machine, link, spooled)
-			continue
-		}
-		_ = os.Remove(link)
-		if err == nil && m.cfg.SpoolDir != "" && strings.HasPrefix(spooled, filepath.Clean(m.cfg.SpoolDir)+"/") {
-			_ = os.Remove(spooled)
+	if m.cfg.SpoolDir == "" {
+		return
+	}
+	dir := filepath.Clean(m.cfg.SpoolDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	linked := map[string]bool{}
+	for _, link := range spoolLinks(m.cfg.Root) {
+		if dest, err := os.Readlink(link); err == nil {
+			linked[dest] = true
 		}
 	}
+	mapped := map[string]*fc.Machine{}
+	for _, s := range m.sandboxes {
+		if s.machine != nil {
+			for _, path := range mappedFiles(s.machine.Pid(), dir) {
+				mapped[path] = s.machine
+			}
+		}
+	}
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if !strings.HasSuffix(e.Name(), ".mem") || linked[path] {
+			continue
+		}
+		if machine := mapped[path]; machine != nil && m.spool.adoptMapped(path) {
+			m.releaseOnExit(machine, path)
+			m.log.Info("counting a running fork's spooled memory again", "file", path)
+			continue
+		}
+		// Mapped with the spool now off, it is unlinked: the RAM goes when the machine does.
+		if err := os.Remove(path); err == nil {
+			m.log.Info("deleted spooled memory nothing uses", "file", path)
+		}
+	}
+}
+
+// mappedFiles are the files under dir that process pid maps (/proc/<pid>/maps).
+func mappedFiles(pid int, dir string) []string {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		// address perms offset dev inode path, the path last (and possibly with spaces).
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		path := strings.TrimSuffix(strings.Join(fields[5:], " "), " (deleted)")
+		if strings.HasPrefix(path, dir+"/") && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // adoptedSlots are the network slots of the sandboxes adopt found running.
