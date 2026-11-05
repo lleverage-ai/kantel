@@ -142,7 +142,7 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		}
 		const own = new Set((await primary.capabilities()).hosts.map((host) => host.id));
 		const eligibleHosts = spec.eligibleHosts.filter((id) => own.has(id));
-		if (eligibleHosts.length === 0) throw new KantelError("unavailable", HELD_ELSEWHERE);
+		if (eligibleHosts.length === 0) throw placementError("unavailable", "host_unavailable", HELD_ELSEWHERE);
 		return { ...spec, eligibleHosts };
 	}
 

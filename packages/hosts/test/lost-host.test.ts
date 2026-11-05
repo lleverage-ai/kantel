@@ -2,7 +2,7 @@
 // stays placed on it, counted there, until it reconnects and says what it holds; one it refused, or that never left, is
 // gone. A sandbox on a revoked host is written off by its delete, without asking a host that never comes back.
 import { createRoutedBackend, createStubBackend, HELD_ELSEWHERE, STUB_HOST_ID } from "@kantel/compute";
-import { isKantelError } from "@kantel/contracts";
+import { isKantelError, placementReasonOf } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
@@ -57,6 +57,8 @@ describe("a host lost mid-call", () => {
 		expect(isKantelError(error, "unavailable")).toBe(true);
 		expect(unanswered(error)).toBe(true);
 		expect((error as Error).message).toMatch(/whether it made the sandbox is known once it reconnects/);
+		// Not a placement refused: the host may have made it.
+		expect(placementReasonOf(error)).toBeUndefined();
 		// Not claimed gone: still placed, and counted on the host.
 		expect((await store.getPlacement("sbx-held"))?.state).toBe("starting");
 		expect((await service.get(hostId)).allocated).toMatchObject({ sandboxes: 1, memoryMb: 2048 });
@@ -153,6 +155,23 @@ describe("a host lost mid-call", () => {
 		host.connection.closed(1006, "gone");
 		await expect(forking).rejects.toSatisfy(unanswered);
 		expect((await store.getPlacement("sbx-fork"))?.state).toBe("starting");
+	});
+
+	it("says a start whose host went while it waited may have run, and one that never reached its host was refused", async () => {
+		const { service, host } = await setup();
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-start" });
+		await service.sandboxes.call("sbx-start", "sandbox.stop");
+		host.hold = (method) => (method === "sandbox.start" ? never() : undefined);
+		const starting = service.sandboxes.call("sbx-start", "sandbox.start");
+		await tick();
+		host.connection.closed(1006, "gone");
+		const dropped = await starting.catch((caught: unknown) => caught);
+		expect(unanswered(dropped)).toBe(true);
+		expect(placementReasonOf(dropped)).toBeUndefined();
+		// Its host away from the start: never sent, so refused for its host (#679's reason).
+		const refused = await service.sandboxes.call("sbx-start", "sandbox.start").catch((caught: unknown) => caught);
+		expect(unanswered(refused)).toBe(false);
+		expect(placementReasonOf(refused)).toBe("host_unavailable");
 	});
 
 	it("forgets a create the host refused", async () => {

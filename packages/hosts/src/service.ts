@@ -954,7 +954,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			return await hub.call<T>(hostId, method, await trusted(hostId, params, known), callOptions);
 		} catch (error) {
 			const converted = kantelErrorFromHost(error);
-			if (boot && error instanceof HostCallError && error.disconnected && converted instanceof KantelError) {
+			// Only a boot that never reached its host is a placement refused (`host_unavailable`): one sent whose host went
+			// while it waited may have been done there, which isn't known, so it isn't said to have failed (`unplace`).
+			if (
+				boot &&
+				error instanceof HostCallError &&
+				error.disconnected &&
+				!error.unanswered &&
+				converted instanceof KantelError
+			) {
 				throw placementError(converted.code, "host_unavailable", converted.message);
 			}
 			throw converted;

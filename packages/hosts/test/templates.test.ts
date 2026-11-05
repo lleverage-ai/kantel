@@ -9,7 +9,7 @@ import {
 	TEMPLATE_BUILD_LEASE_MS,
 	type TemplateBuildSpec,
 } from "@kantel/compute";
-import { isKantelError } from "@kantel/contracts";
+import { isKantelError, placementReasonOf } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { parseHostFacts } from "../src/facts.ts";
@@ -21,6 +21,7 @@ import {
 	type HostsService,
 	TEMPLATE_BUILD_TIMEOUT_MS,
 	TEMPLATE_IMAGE_BUILD_TIMEOUT_MS,
+	unanswered,
 } from "../src/service.ts";
 import { createMemoryHostStore, type HostStore } from "../src/store.ts";
 import { createTunnelTickets } from "../src/tunnel.ts";
@@ -300,6 +301,31 @@ describe("host backend templates", () => {
 		).toMatchObject({ size: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 });
 	});
 
+	it("keeps a template restore whose host never answered on that host, rather than booting it fresh elsewhere", async () => {
+		const { store, service, backend } = await setup();
+		const other = await addHost(store, service, "host_a");
+		const holder = await addHost(store, service, "host_b");
+		holder.hold = (method) => (method === "sandbox.create" ? new Promise<void>(() => undefined) : undefined);
+		const creating = backend.create({
+			sandboxId: "sbx_lost_restore",
+			accountId: "acc_a",
+			type: "microvm",
+			subdomain: "sbx_lost_restore",
+			env: {},
+			eligibleHosts: ["host_a", "host_b"],
+			template: { baseImage: "kantel/sandbox", baseDigest: "", snapshot: "host_b/tsn_1" },
+			shape: { vcpus: 2, memoryMb: 2048 },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		holder.connection.closed(1006, "gone");
+		const error = await creating.catch((caught: unknown) => caught);
+		// Not known to have failed: no placement reason, still placed on its snapshot's host, and made nowhere else.
+		expect(unanswered(error)).toBe(true);
+		expect(placementReasonOf(error)).toBeUndefined();
+		expect((await store.getPlacement("sbx_lost_restore"))?.hostId).toBe("host_b");
+		expect(other.calls.some((call) => call.method === "sandbox.create")).toBe(false);
+	});
+
 	it("boots the template fresh on another host when its snapshot's host has no room, or on it when it misses the snapshot, but a sandbox's own snapshot waits", async () => {
 		const { store, service, backend } = await setup();
 		const other = await addHost(store, service, "host_a");
@@ -519,10 +545,11 @@ describe("a create from a template", () => {
 		const host = await addHost(store, service, "host_a");
 		host.hold = (method) =>
 			method === "sandbox.create" ? new Promise((resolve) => setTimeout(resolve, 200)) : undefined;
-		await expect(service.sandboxes.create({ tier: "microvm", sandboxId: "sbx_plain" })).rejects.toSatisfy((error) =>
-			isKantelError(error, "unavailable"),
+		await expect(service.sandboxes.create({ tier: "microvm", sandboxId: "sbx_plain" })).rejects.toSatisfy(
+			(error) => isKantelError(error, "unavailable") && unanswered(error),
 		);
-		expect(await service.sandboxes.placement("sbx_plain")).toBeUndefined();
+		// Timed out, not refused: the host may be making it still, so it stays placed there until the host says.
+		expect((await service.sandboxes.placement("sbx_plain"))?.state).toBe("starting");
 		// Booting fresh, it pulls the base image and runs the setup: past the ordinary deadline, and still answered.
 		const placed = await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx_tpl", template: TEMPLATE });
 		expect(placed.sandbox.state).toBe("running");
