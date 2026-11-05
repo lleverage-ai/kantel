@@ -92,6 +92,13 @@ prints `kantel: <code>: <message>` on stderr and exits 1.
 `scp` and `push` use the files API, which moves 1 MiB a call. A bigger file comes out in 1 MiB ranged reads, on any
 sandbox; one going in goes in 768 KiB parts joined by a command in the sandbox, so that needs a microVM.
 
+`push` leaves credentials behind at any depth, naming each on stderr: always `.ssh`, `.gnupg`, `.aws`, `.azure`,
+`.kube`, `.netrc`, `.pypirc` and `.docker/config.json`; `.claude`, `.codex`, `.cursor`, `.npmrc` and `.env` files
+(not `.env.example`) unless git tracks them; and links that resolve outside the directory. `--no-default-excludes`
+sends all but those links. It refuses a directory inside one it leaves out, such as `~/.ssh`, without
+`--no-default-excludes`, and your home directory, or one holding it or Kantel's config directory, without
+`--allow-home`. It never sends Kantel's config directory.
+
 ## Coding agents
 
 Give the agent its own scoped key, which can make and drive sandboxes but not delete them or manage the account, and
