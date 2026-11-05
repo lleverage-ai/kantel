@@ -655,6 +655,42 @@ describe("sandboxes", () => {
 		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
 	});
 
+	it("keeps an older save holding memory when its sandbox is deleted, and its own size when hosts stop naming it", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		let dropLarge = false;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				if (!dropLarge) return read;
+				const offered = <T extends { readonly name: string }>(sizes: readonly T[]) =>
+					sizes.filter((size) => size.name !== "large");
+				return {
+					...read,
+					sizes: offered(read.sizes),
+					hosts: read.hosts.map((host) => ({ ...host, ...(host.sizes ? { sizes: offered(host.sizes) } : {}) })),
+				};
+			},
+		};
+		const { tom } = setup(backend, { store });
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
+		const stored = await store.snapshots.get(saved.id);
+		if (stored === undefined) throw new Error("no saved snapshot");
+		await store.snapshots.put({ ...stored, memory: false });
+		// Deleting the sandbox forgets its pause and detaches the save, which keeps the flag it was just given.
+		await tom.deleteSandbox(vm.id);
+		expect(await store.snapshots.get(saved.id)).toMatchObject({ memory: true });
+		expect((await store.snapshots.get(saved.id))?.sandboxId).toBeUndefined();
+		expect((await tom.getSnapshot(saved.id)).memory).toBe(true);
+		// The hosts stop naming its size: asking for it by name is still its own machine.
+		dropLarge = true;
+		const made = await tom.createSandbox({ type: "microvm", from: "old-save", size: "large", wait: true });
+		expect(made).toMatchObject({ size: "large", state: "running" });
+	});
+
 	it("checks an ask against a memory snapshot's own record, never another host's sizes", () => {
 		const pause = {
 			id: "snap_p",

@@ -474,7 +474,7 @@ describe("hosts service", () => {
 	});
 
 	it("records the size a host made when it isn't the one placement chose, so a restore's disk is its own", async () => {
-		const { service, join } = await setup();
+		const { service, join, store } = await setup();
 		const joined = await join("h");
 		const host = new FakeHost(service, joined.hostId, [HOST_FEATURES.customShapes]);
 		host.freeMemoryMiB = 30_000;
@@ -498,6 +498,16 @@ describe("hosts service", () => {
 		host.madeSize = undefined;
 		const plain = await service.sandboxes.create({ tier: "microvm", shape: { vcpus: 4, memoryMiB: 8192 } });
 		expect(plain.placement).toMatchObject({ size: "default", diskGiB: 20 });
+		// However the report comes: an event (after a create's answer was lost, say) says what the host made too.
+		host.send({
+			type: "event",
+			event: {
+				kind: "sandbox",
+				sandbox: { id: plain.sandbox.id, tier: "microvm", size: "large", state: "running", createdAt: 1 },
+			},
+		});
+		await tick();
+		expect(await store.getPlacement(plain.sandbox.id)).toMatchObject({ size: "large", diskGiB: 50 });
 	});
 
 	it("asks every host for no warm machines, so an older one that keeps some ends them", async () => {

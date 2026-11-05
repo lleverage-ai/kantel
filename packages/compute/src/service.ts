@@ -4898,7 +4898,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.size !== undefined && body.resources !== undefined) {
 					throw new KantelError("invalid", "Give resources or a size, not both");
 				}
-				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
+				// A snapshot's own size is its machine, whatever the hosts name now (`restoreAsked` decides a snapshot's).
+				if (
+					body.size !== undefined &&
+					body.size !== from?.size &&
+					!capabilities.sizes.some((size) => size.name === body.size)
+				) {
 					throw placementError(
 						"not_supported",
 						"no_host_offers_size",
@@ -5485,7 +5490,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								await forgetSnapshot(snapshot);
 								await releaseRef(snapshot.ref);
 							} else {
-								await store.snapshots.put({ ...snapshot, sandboxId: undefined });
+								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
+								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
 							}
 						}
 						const result = await transition(current.id, "deleting", (latest) =>
