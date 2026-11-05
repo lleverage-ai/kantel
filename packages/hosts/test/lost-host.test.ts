@@ -266,6 +266,8 @@ describe("a create made again over two backends", () => {
 		back.connect();
 		await tick();
 		expect((await store.getPlacement("sbx-again"))?.state).toBe("lost");
+		// Not where it is placed now: an earlier attempt its host said it doesn't have.
+		expect(await backend.placedOn?.("sbx-again")).toBeUndefined();
 		const placed = await backend.create(spec("sbx-again", [hostId, STUB_HOST_ID]));
 		expect(placed.hostId).toBe(hostId);
 		expect((await store.getPlacement("sbx-again"))?.state).toBe("running");

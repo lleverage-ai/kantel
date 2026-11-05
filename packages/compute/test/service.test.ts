@@ -1587,6 +1587,55 @@ describe("hosts", () => {
 		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
 	});
 
+	it("runs a first create stranded for a revoked host its boot didn't end up on", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Its placement read as the revoked host (as a template restore's, before it booted fresh elsewhere).
+			placedOn: async () => STUB_HOST_ID,
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return { ...placement, hostId: "host_elsewhere" };
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		expect(sandbox.reason).toBeUndefined();
+	});
+
+	it("doesn't strand a boot whose record moved on after its placement was read", async () => {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		let moveOn: ((sandboxId: string) => Promise<unknown>) | undefined;
+		const { tom, root } = setup(
+			{
+				...stub,
+				// Read as the revoked host; then, before the scan writes, the sandbox moves on (a recovery, say).
+				async placedOn(sandboxId) {
+					await moveOn?.(sandboxId);
+					return STUB_HOST_ID;
+				},
+				async create(spec) {
+					const placement = await stub.create(spec);
+					await revokeMeanwhile?.();
+					return { ...placement, hostId: "host_elsewhere" };
+				},
+			},
+			{ store },
+		);
+		moveOn = (sandboxId) =>
+			store.sandboxes.update(sandboxId, (current) => ({ ...current, lifecycle: (current.lifecycle ?? 0) + 2 }));
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const events = (await tom.listEvents({ sandboxId: sandbox.id })).items.map((event) => event.type);
+		expect(events).not.toContain("sandbox.error");
+	});
+
 	it("keeps a revocation that lands while a drain is in flight", async () => {
 		const stub = createStubBackend();
 		let revokeMeanwhile: (() => Promise<unknown>) | undefined;

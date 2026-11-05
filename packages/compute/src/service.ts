@@ -2436,6 +2436,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			lifecycle: (sandbox.lifecycle ?? 0) + 1,
 			reason: extra.reason,
 			placementReason: extra.placementReason,
+			// Stranded only in the state its stranding wrote (`strandOn`).
+			strandedOn: extra.strandedOn,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
@@ -2812,6 +2814,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// the usual case, in one write.
 		const upToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
 		let result = await transition(sandboxId, "starting", toRunning, upToDate, written);
+		// Stranded for a revoked host it isn't on (its placement there read while this attempt was on its way elsewhere,
+		// as a template's fresh boot after its snapshot's host had no room): made on a host that is there, it runs.
+		const strandedElsewhere = (current: StoredSandbox) =>
+			current.state === "error" &&
+			current.hostId === undefined &&
+			current.strandedOn !== undefined &&
+			current.strandedOn !== placement.hostId;
+		if ("lost" in result && strandedElsewhere(result.lost)) {
+			const stranded = result.lost;
+			// Back to `starting`, then on as any boot, its egress reconciled the same way.
+			const back = await transition(
+				sandboxId,
+				"error",
+				(current) => withState(current, "starting"),
+				(current) => strandedElsewhere(current) && current.lifecycle === stranded.lifecycle,
+			);
+			if ("moved" in back) result = await transition(sandboxId, "starting", toRunning, upToDate);
+		}
 		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
 		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
 		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
@@ -3164,9 +3184,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				STRANDABLE,
 				(current) => {
 					previous = current.state;
-					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
+					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [], strandedOn: hostId });
 				},
-				(current) => current.hostId === undefined || current.hostId === hostId,
+				// Its own record says this host; or it names none yet, and is still the boot attempt whose placement said
+				// so (a recovery since, perhaps onto another host, moves `lifecycle` on).
+				(current) =>
+					current.hostId === hostId ||
+					(current.hostId === undefined && (current.lifecycle ?? 0) === (sandbox.lifecycle ?? 0)),
 			).catch((error: unknown) => {
 				// Gone since it was listed (a delete finished) needs nothing; a write that failed fails the revocation, which
 				// may be made again to finish, its host revoked already.
