@@ -1017,6 +1017,34 @@ A way into an organisation: whoever joins with its code becomes a member.
 | --- | --- | --- | --- |
 | `code` | string | yes | An invite's join code. |
 
+### LiveFrame
+
+One frame of the account's live stream.
+
+One of: [LiveHello](/api/reference/types/#livehello) or [LiveSandboxChange](/api/reference/types/#livesandboxchange).
+
+### LiveHello
+
+The stream is open. Read what you show again after each one: changes made while no stream was open (before the first, between a drop and the reconnection) are not sent.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `"hello"` | yes |  |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+
+### LiveSandboxChange
+
+A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, the API or an SDK, its auto-stop, its host). No `previousState`: it was just made. Read the sandbox for the rest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `"sandbox"` | yes |  |
+| `sandboxId` | string | yes |  |
+| `accountId` | string | yes |  |
+| `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
+| `previousState` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+
 ### Member
 
 | Field | Type | Required | Description |
