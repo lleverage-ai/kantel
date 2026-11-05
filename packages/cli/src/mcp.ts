@@ -22,7 +22,8 @@ export const INSTRUCTIONS =
 	"file_write, file_read and file_list. port_expose gives a server in it a URL; snapshot_save keeps its state to " +
 	"start new sandboxes from. Stop it with sandbox_stop when you are done: a stopped sandbox keeps its disk and costs " +
 	"nothing to run, and sandbox_resume brings it back. If a command may take longer than your MCP client waits " +
-	"for a call, run sandbox_exec with detached, then wait for it with command_get; for now a host still ends it after about 2 minutes on a microVM (30 s on an isolate).";
+	"for a call, run sandbox_exec with detached, then wait for it with command_get; it runs with no time limit unless you " +
+	"give it a timeoutMs (a host whose kantel-host predates exec-control still ends it after about 2 minutes on a microVM).";
 
 /** How often a tool call that waits tells the client it is still working. */
 export const PROGRESS_INTERVAL_MS = 15_000;
@@ -283,8 +284,10 @@ export function commandResult(command: Command): ToolResult {
 			break;
 		case "killed":
 			lines.push(
-				"The command is marked killed, but its process may still run: to be sure, end it with sandbox_exec, such " +
-					"as pkill -f.",
+				command.stderr.includes("may still be running")
+					? "The command is marked killed, but its host couldn't stop it (its stderr says why): to be sure, end it " +
+							"with sandbox_exec, such as pkill -f."
+					: "The command was killed, and the processes it started with it.",
 			);
 			break;
 		default:
@@ -484,7 +487,8 @@ const TOOLS: readonly Tool[] = [
 			"exit code, stdout and stderr, each cut to about 64 KiB. Default timeout 30 s, at most 10 minutes: past it the " +
 			"command is killed. With detached it starts and answers its commandId at once, for when your MCP client " +
 			"gives up on a call sooner than the command takes; then wait for it with command_get. A detached command has " +
-			"no timeoutMs, but for now a host still ends it after about 2 minutes on a microVM (30 s on an isolate).",
+			"no time limit unless you give it a timeoutMs; a host whose kantel-host predates exec-control still ends it after " +
+			"about 2 minutes on a microVM, and an isolate runs a command for at most 30 s unless its timeoutMs says otherwise.",
 		inputSchema: schema(
 			{
 				sandboxId,
@@ -494,12 +498,12 @@ const TOOLS: readonly Tool[] = [
 					type: "integer",
 					minimum: 1,
 					maximum: MAX_WAIT_MS,
-					description: "Kill it after this many milliseconds; default 30000. Not for detached.",
+					description: "Kill it after this many milliseconds; default 30000, and none for a detached command.",
 				},
 				detached: {
 					type: "boolean",
 					description:
-						"Start it and answer its commandId at once; for now a host still ends it after about 2 minutes on a microVM (30 s on an isolate).",
+						"Start it and answer its commandId at once; it runs until it ends, its timeoutMs, or command_kill.",
 				},
 				env: strings("Environment variables for this command."),
 			},
@@ -508,9 +512,6 @@ const TOOLS: readonly Tool[] = [
 		annotations: { title: "Run a command", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 		async call(args, { client, signal }) {
 			const detached = optionalBoolean(args, "detached") === true;
-			if (detached && args.timeoutMs !== undefined) {
-				throw new ArgumentError("a detached command takes no timeoutMs: leave it out");
-			}
 			// One key per tool call, whatever client this is given: a retry of the request runs the command once.
 			const command = await client.runCommand(
 				text(args, "sandboxId"),
@@ -599,8 +600,9 @@ const TOOLS: readonly Tool[] = [
 	{
 		name: "command_kill",
 		description:
-			"Mark a running command killed. For now its process may keep running on a host: to be sure, end it with " +
-			"sandbox_exec too, such as pkill -f. One that has ended is answered as it is.",
+			"Kill a running command and the processes it started. One that has ended is answered as it is. On a host " +
+			"whose kantel-host predates exec-control it is only marked killed and its stderr says so: end it with " +
+			"sandbox_exec too, such as pkill -f.",
 		inputSchema: schema({ sandboxId, commandId }, ["sandboxId", "commandId"]),
 		annotations: { title: "Kill a command", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
 		async call(args, { client, signal }) {

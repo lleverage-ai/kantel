@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { type Command, createKantelClient, type Sandbox } from "@kantel/api/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run } from "../src/commands.ts";
-import { clipOutput, createMcpServer, PROTOCOL_VERSIONS, serveStdio, TOOL_DEFINITIONS } from "../src/mcp.ts";
+import {
+	clipOutput,
+	commandResult,
+	createMcpServer,
+	PROTOCOL_VERSIONS,
+	serveStdio,
+	TOOL_DEFINITIONS,
+} from "../src/mcp.ts";
 
 interface Call {
 	readonly method: string;
@@ -550,7 +557,8 @@ describe("the MCP server", () => {
 		expect(started.structuredContent).toEqual({ commandId: "cmd_long", state: "running" });
 		expect(started.content[0]?.text).toContain("command_get");
 		expect(calls[0]?.body).toEqual({ command: "make", detached: true });
-		const both = resultOf(
+		// A detached command may have a limit of its own.
+		const capped = resultOf(
 			await mcp.handle(
 				request(34, "tools/call", {
 					name: "sandbox_exec",
@@ -558,12 +566,14 @@ describe("the MCP server", () => {
 				}),
 			),
 		);
-		expect(both.isError).toBe(true);
-		expect(both.content[0]?.text).toContain("takes no timeoutMs");
-		// What a host does today: a detached command is still ended, and a kill may not stop its process.
+		expect(capped.isError).toBeUndefined();
+		expect(calls[1]?.body).toEqual({ command: "make", timeoutMs: 1000, detached: true });
+		// No limit and a kill that stops it, but the old limits on a host from before exec-control, said as such.
 		const described = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool.description]));
-		expect(described.get("sandbox_exec")).toContain("about 2 minutes on a microVM (30 s on an isolate)");
-		expect(described.get("command_kill")).toContain("its process may keep running");
+		expect(described.get("sandbox_exec")).toContain("no time limit unless you give it a timeoutMs");
+		expect(described.get("sandbox_exec")).toContain("predates exec-control still ends it after about 2 minutes");
+		expect(described.get("command_kill")).toContain("Kill a running command and the processes it started");
+		expect(described.get("command_kill")).toContain("predates exec-control it is only marked killed");
 	});
 
 	it("gets a command, waiting for it to end with waitMs", async () => {
@@ -643,7 +653,7 @@ describe("the MCP server", () => {
 			),
 		);
 		expect(killed.structuredContent).toMatchObject({ state: "killed" });
-		expect(killed.content[0]?.text).toContain("marked killed, but its process may still run");
+		expect(killed.content[0]?.text).toContain("The command was killed, and the processes it started with it.");
 		expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
 			"GET /v1/sandboxes/sbx_mcp1/commands",
 			"DELETE /v1/sandboxes/sbx_mcp1/commands/cmd_long",
@@ -756,5 +766,29 @@ describe("serving on stdio", () => {
 		expect(answers.find((answer) => answer.id === 2)?.result.structuredContent?.id).toBe("sbx_mcp1");
 		expect(api.calls[0]?.authorization).toBe("Bearer ksk_agent");
 		expect(err.join("")).toBe("");
+	});
+});
+
+describe("a killed command's answer", () => {
+	it("says the process may run on only when its host couldn't stop it", () => {
+		const base: Command = {
+			id: "cmd_k",
+			sandboxId: "sbx_mcp1",
+			command: "./serve",
+			state: "killed",
+			exitCode: 137,
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: 1,
+		};
+		const text = (command: Command) => commandResult(command).content[0]?.text ?? "";
+		expect(text(base)).toContain("The command was killed, and the processes it started with it.");
+		const old = {
+			...base,
+			stderr: "Kantel marked this command killed but couldn't stop it, so it may still be running: upgrade\n",
+		};
+		expect(text(old)).toContain("its host couldn't stop it");
+		expect(text(old)).toContain("pkill -f");
 	});
 });
