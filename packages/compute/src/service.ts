@@ -3102,7 +3102,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
 	/**
 	 * Whether a snapshot's bytes hold memory: its own say, or that of another snapshot of the same bytes (a save made
-	 * before saves kept the flag shares its pause's ref but says no).
+	 * before saves kept the flag shares its pause's ref but says no). Reads report it, so a client sees what a create
+	 * from it will be held to.
 	 */
 	async function holdsMemory(snapshot: StoredSnapshot): Promise<boolean> {
 		if (snapshot.memory) return true;
@@ -5929,7 +5930,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (await canSeeSnapshot(principal, snapshot)) visible.push(snapshot);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
-			return { items: page.items.map(snapshotView), nextCursor: page.nextCursor };
+			const items = await Promise.all(
+				page.items.map(async (snapshot) => snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) })),
+			);
+			return { items, nextCursor: page.nextCursor };
 		},
 
 		takeSnapshot: async (principal, { params, body, idempotencyKey }) => {
@@ -6046,8 +6050,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			});
 		},
 
-		getSnapshot: async (principal, { params }) =>
-			snapshotView(await snapshotFor(principal, params.snapshotId, "snapshots:read")),
+		getSnapshot: async (principal, { params }) => {
+			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
+			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) });
+		},
 
 		listSnapshotFiles: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");

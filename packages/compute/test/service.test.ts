@@ -608,6 +608,14 @@ describe("sandboxes", () => {
 		const stored = await store.snapshots.get(saved.id);
 		if (stored === undefined) throw new Error("no saved snapshot");
 		await store.snapshots.put({ ...stored, memory: false });
+		// Reads say what a create from it is held to; a snapshot of the disk alone still says no.
+		expect((await tom.getSnapshot(saved.id)).memory).toBe(true);
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items.find((item) => item.id === saved.id);
+		expect(listed?.memory).toBe(true);
+		const other = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(other.id, { wait: true });
+		const disk = await tom.saveSnapshot({ name: "disk-only", sandboxId: other.id });
+		expect((await tom.getSnapshot(disk.id)).memory).toBe(false);
 		const refused = await failure(
 			tom.createSandbox({ type: "microvm", from: "old-save", resources: { vcpus: 2, memoryMb: 4096 } }),
 		);
