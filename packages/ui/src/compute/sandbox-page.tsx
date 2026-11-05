@@ -1009,7 +1009,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 					{...(series === undefined ? { slots: cpu.length } : { timed: liveCpu.timed })}
 					tone={sandbox.state === "error" ? "error" : "done"}
 					loading={loading}
-					{...(series === undefined ? {} : { ends: GRAPH_ENDS })}
+					// No time axis of its own: the memory chart under it carries the pair's.
 					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
 				/>
 				{live.status === "off" ? (
