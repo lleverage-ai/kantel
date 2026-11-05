@@ -6,6 +6,10 @@
 export XDG_CURRENT_DESKTOP=Kantel XDG_SESSION_DESKTOP=openbox XDG_SESSION_TYPE=x11
 # No accessibility bus: nothing here uses one, and GTK apps otherwise each wait on it and warn.
 export NO_AT_BRIDGE=1
+# The desktop's apps are dark (Adwaita's dark variant), by the environment rather than ~/.config/gtk-3.0: the
+# sandbox's own Chromium (kantel-browser, on :2) reads that file too, and dark there would change the pages agents see
+# (prefers-color-scheme) and the Browser view.
+export GTK_THEME=Adwaita:dark
 # The background as a root pixmap (hsetroot), which the dock's rounded corners show through without a compositor.
 hsetroot -solid '#15171b' >/dev/null 2>&1 || xsetroot -solid '#15171b'
 xsetroot -cursor_name left_ptr

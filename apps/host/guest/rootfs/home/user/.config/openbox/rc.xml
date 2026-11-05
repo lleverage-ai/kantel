@@ -29,7 +29,7 @@
     <font place="ActiveWindow"><name>DejaVu Sans</name><size>10</size><weight>bold</weight><slant>normal</slant></font>
     <font place="InactiveWindow"><name>DejaVu Sans</name><size>10</size><weight>bold</weight><slant>normal</slant></font>
     <font place="MenuHeader"><name>DejaVu Sans</name><size>10</size><weight>bold</weight><slant>normal</slant></font>
-    <font place="MenuItem"><name>DejaVu Sans</name><size>10</size><weight>normal</weight><slant>normal</slant></font>
+    <font place="MenuItem"><name>DejaVu Sans</name><size>11</size><weight>normal</weight><slant>normal</slant></font>
     <font place="ActiveOnScreenDisplay"><name>DejaVu Sans</name><size>10</size><weight>bold</weight><slant>normal</slant></font>
     <font place="InactiveOnScreenDisplay"><name>DejaVu Sans</name><size>10</size><weight>bold</weight><slant>normal</slant></font>
   </theme>
