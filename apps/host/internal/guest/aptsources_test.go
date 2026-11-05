@@ -12,6 +12,16 @@ import (
 // output and the sources and preferences it wrote.
 func aptSources(t *testing.T, arch string, args ...string) (out, sources, prefs string, err error) {
 	t.Helper()
+	root := t.TempDir()
+	raw, err := runAptSources(t, root, arch, args...)
+	s, _ := os.ReadFile(filepath.Join(root, "etc/apt/sources.list.d/ubuntu.sources"))
+	p, _ := os.ReadFile(filepath.Join(root, "etc/apt/preferences.d/kantel-ubuntu-live"))
+	return raw, string(s), string(p), err
+}
+
+// runAptSources runs kantel-apt-sources for arch under root, set up as a resolute image with the default snapshot.
+func runAptSources(t *testing.T, root, arch string, args ...string) (string, error) {
+	t.Helper()
 	bash, lookErr := exec.LookPath("bash")
 	if lookErr != nil {
 		t.Skip("no bash")
@@ -21,7 +31,6 @@ func aptSources(t *testing.T, arch string, args ...string) (out, sources, prefs 
 	if _, err := os.ReadFile(script); err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
 	for _, dir := range []string{"etc/apt/sources.list.d", "etc/apt/apt.conf.d"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)
@@ -37,9 +46,7 @@ func aptSources(t *testing.T, arch string, args ...string) (out, sources, prefs 
 	cmd := exec.Command(bash, append([]string{script}, args...)...)
 	cmd.Env = append(os.Environ(), "KANTEL_APT_ROOT="+root, "KANTEL_APT_ARCH="+arch)
 	raw, err := cmd.CombinedOutput()
-	s, _ := os.ReadFile(filepath.Join(root, "etc/apt/sources.list.d/ubuntu.sources"))
-	p, _ := os.ReadFile(filepath.Join(root, "etc/apt/preferences.d/kantel-ubuntu-live"))
-	return string(raw), string(s), string(p), err
+	return string(raw), err
 }
 
 // stanzas splits a deb822 file into its paragraphs, comments aside.
@@ -114,6 +121,33 @@ func TestAptSourcesPutTheSnapshotFirstAndTheLiveArchiveUnderIt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// kantel-apt-sources hooks kantel-apt-snapshot-check into every update, and drops a pin left from an earlier outage
+// (the next update decides again).
+func TestAptSourcesHookTheSnapshotCheckIntoUpdates(t *testing.T) {
+	root := t.TempDir()
+	pin := filepath.Join(root, "etc/apt/preferences.d/kantel-snapshot-down")
+	if err := os.MkdirAll(filepath.Dir(pin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pin, []byte("Package: *\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runAptSources(t, root, "amd64"); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if _, err := os.Stat(pin); !os.IsNotExist(err) {
+		t.Errorf("the old pin is still there: %v", err)
+	}
+	hook, err := os.ReadFile(filepath.Join(root, "etc/apt/apt.conf.d/60kantel-snapshot-check"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `APT::Update::Pre-Invoke { "[ ! -x /usr/local/sbin/kantel-apt-snapshot-check ] || /usr/local/sbin/kantel-apt-snapshot-check || true"; };`
+	if !strings.Contains(string(hook), "\n"+want+"\n") {
+		t.Errorf("hook:\n%s", hook)
 	}
 }
 

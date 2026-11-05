@@ -10,6 +10,11 @@
 #     (/etc/apt/preferences.d/kantel-ubuntu-live), which apt takes a package from only when no source of priority 500
 #     has a version it can install: when snapshot.ubuntu.com is failing (it answered 503 for hours on 5 Nov 2026,
 #     lleverage-ai/kantel#706), and for the packages the image's security refresh already took past the snapshot.
+# Before every update, kantel-apt-snapshot-check (APT::Update::Pre-Invoke, /etc/apt/apt.conf.d/60kantel-snapshot-check)
+# asks the snapshot for its InRelease and, while it doesn't answer, pins it down to 1 under the live archive
+# (/etc/apt/preferences.d/kantel-snapshot-down). That keeps the fallback when apt holds the snapshot's indexes from an
+# earlier update, which it goes on using when it can't fetch them again; the next update that reaches the snapshot
+# lifts the pin.
 # Every source is "Snapshot: disable": the snapshot is named outright, and APT::Snapshot still holds the other
 # archives (Debian's, for Chromium, and any PPA) at SNAPSHOT.
 #
@@ -74,3 +79,12 @@ mkdir -p "$root/etc/apt/preferences.d"
 		printf '\nPackage: *\nPin: origin %s\nPin-Priority: 100\n' "$h"
 	done
 } >"$root/etc/apt/preferences.d/kantel-ubuntu-live"
+
+# A pin from another snapshot's outage goes; the next update checks again.
+rm -f "$root/etc/apt/preferences.d/kantel-snapshot-down"
+mkdir -p "$root/etc/apt/apt.conf.d"
+{
+	echo "// Written by kantel-apt-sources: before each update, check snapshot.ubuntu.com and, while it doesn't answer,"
+	echo "// take Ubuntu's packages from the live archive (see /usr/local/sbin/kantel-apt-snapshot-check)."
+	echo 'APT::Update::Pre-Invoke { "[ ! -x /usr/local/sbin/kantel-apt-snapshot-check ] || /usr/local/sbin/kantel-apt-snapshot-check || true"; };'
+} >"$root/etc/apt/apt.conf.d/60kantel-snapshot-check"

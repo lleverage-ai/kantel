@@ -29,7 +29,10 @@ containers and nested VMs without root.
 
 apt in a sandbox takes Ubuntu's packages from the snapshot the image was built from when the snapshot has them, and
 from the live archive (`archive.ubuntu.com` and `security.ubuntu.com`, `ports.ubuntu.com` on arm64, at priority 100)
-when it doesn't, so `apt-get install` keeps working while `snapshot.ubuntu.com` is down (#706). The build itself
+when it doesn't, so `apt-get install` keeps working while `snapshot.ubuntu.com` is down (#706). Before each update,
+`kantel-apt-snapshot-check` asks the snapshot for its `InRelease` and, while it doesn't answer, pins it down to 1 under
+the live archive (`/etc/apt/preferences.d/kantel-snapshot-down`), because apt goes on using the snapshot's indexes from
+an earlier update when it can't fetch them again; the next update that reaches the snapshot lifts the pin. The build itself
 reads the snapshot alone; `kantel-apt-sources` writes the sandbox's sources last (run it again with another snapshot
 ID to move). The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so a plain
 `sudo apt-get update` works too: sudo drops `HTTP_PROXY`, and a sandbox has no other way out.
