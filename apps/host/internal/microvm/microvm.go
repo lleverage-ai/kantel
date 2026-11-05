@@ -1044,6 +1044,21 @@ func copySparse(src, dst string) error {
 	return nil
 }
 
+// unchanged says whether the file at path is as before was taken: no write, truncate or hole punched since, by its
+// modification and change times and size.
+func unchanged(path string, before os.FileInfo) bool {
+	now, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if now.Size() != before.Size() || !now.ModTime().Equal(before.ModTime()) {
+		return false
+	}
+	b, okB := before.Sys().(*syscall.Stat_t)
+	n, okN := now.Sys().(*syscall.Stat_t)
+	return okB && okN && b.Ctim == n.Ctim && b.Ino == n.Ino
+}
+
 // takeFile moves src to dst: a rename, or (another file system) a sparse copy.
 func takeFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
@@ -2488,6 +2503,36 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	}()
 	mem := filepath.Join(sdir, "mem")
 	memWrite, memDone := m.memFile(s.meta.Size, mem)
+	// Memory going to RAM (the spool), the disk is copied beside it, the VM paused for the longer of the two rather than
+	// both. (Memory going to the disk, the two would share it, and side by side took as long as one after the other.)
+	// Paused, the guest asks for no more I/O, so the disk holds still; but a request it queued just before the pause may
+	// still be served while the copy runs, and the memory would then say done what the copy may have missed. So the
+	// disk's stamp is taken before the copy and checked after the memory: any write in between and it is copied again,
+	// after the memory, as it is when the memory goes to the disk.
+	beside := memWrite != mem
+	disk := filepath.Join(s.vmDir(), fc.DiskFile)
+	before, statErr := os.Stat(disk)
+	if statErr != nil {
+		_ = memDone(false)
+		os.RemoveAll(sdir)
+		return "", statErr
+	}
+	captured := time.Now()
+	var diskErr error
+	var diskMs float64
+	diskDone := make(chan struct{})
+	copyDisk := func() {
+		defer close(diskDone)
+		from := time.Now()
+		diskErr = copySparse(disk, filepath.Join(sdir, fc.DiskFile))
+		if diskErr == nil {
+			diskErr = keepDrives(s.vmDir(), sdir, s.meta.BundleSlots)
+		}
+		diskMs = float64(time.Since(from).Microseconds()) / 1000
+	}
+	if beside {
+		go copyDisk()
+	}
 	if transient && memWrite != mem {
 		spooled = memWrite
 		memDone = func(ok bool) error {
@@ -2498,30 +2543,39 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 			return os.Symlink(spooled, mem)
 		}
 	}
-	if err := s.machine.Snapshot(ctx, filepath.Join(sdir, "state"), memWrite); err != nil {
+	memErr := s.machine.Snapshot(ctx, filepath.Join(sdir, "state"), memWrite)
+	if memErr == nil {
+		memErr = memDone(true)
+	} else {
 		_ = memDone(false)
-		os.RemoveAll(sdir)
-		return "", err
 	}
-	fail := func(err error) (string, error) {
+	t["snapshot"] = float64(time.Since(captured).Microseconds()) / 1000
+	if !beside {
+		if memErr == nil {
+			copyDisk()
+		} else {
+			close(diskDone)
+		}
+	}
+	<-diskDone
+	t["disk"] = diskMs
+	if beside && memErr == nil && diskErr == nil && !unchanged(disk, before) {
+		m.log.Info("disk written during a live snapshot; copying it again", "sandbox", s.meta.ID)
+		again := time.Now()
+		diskErr = copySparse(disk, filepath.Join(sdir, fc.DiskFile))
+		t.step("disk.again", &again)
+	}
+	t.step("capture", &start)
+	if err := errors.Join(memErr, diskErr); err != nil {
 		os.RemoveAll(sdir)
 		m.spool.cancel(spooled)
 		return "", err
 	}
-	if err := memDone(true); err != nil {
-		return fail(err)
-	}
-	t.step("snapshot", &start)
-	if err := copySparse(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile)); err != nil {
-		return fail(err)
-	}
-	if err := keepDrives(s.vmDir(), sdir, s.meta.BundleSlots); err != nil {
-		return fail(err)
-	}
-	t.step("disk", &start)
 	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile)) + diskUsage(mem)
 	if err := m.writeSnapshotMeta(s, snap); err != nil {
-		return fail(err)
+		os.RemoveAll(sdir)
+		m.spool.cancel(spooled)
+		return "", err
 	}
 	return spooled, nil
 }
