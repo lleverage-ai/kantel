@@ -73,7 +73,11 @@
 	   soft fills are formulas in tokens.css. */
 	--kt-status-working: hsl(210 55% 62%); /* info */
 	/* The error tint a shade lighter than in light: at 10% on the dark card it reads brown, not red. */
-	--kt-status-error-soft: color-mix(in srgb, var(--kt-status-error) 7%, transparent);
+	--kt-status-error-soft: color-mix(
+		in srgb,
+		var(--kt-status-error) 11%,
+		transparent
+	); /* enough for a failed row to read on the dark card */
 	--kt-status-waiting: hsl(280 32% 72%); /* plum, lifted to pass AA on the panel: waiting on an answer from you */
 	--kt-status-approval: hsl(48 70% 62%); /* warning-text */
 	/* His success, 45% light, is 4.42:1 on a card, under AA as text; his set has no success text shade, so the text is
