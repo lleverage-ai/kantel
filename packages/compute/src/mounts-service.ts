@@ -27,6 +27,7 @@ import {
 	type StagedBlob,
 	type StoredBlob,
 } from "./mounts.ts";
+import { sandboxNotRunning } from "./not-running.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	Collection,
@@ -864,9 +865,7 @@ export function createMounts(deps: MountsDeps) {
 			}
 			const sandbox = await store.sandboxes.get(grant.sandboxId);
 			if (sandbox === undefined || sandbox.state === "deleted") throw new KantelError("not_found", "No such sandbox");
-			if (sandbox.state !== "running") {
-				throw new KantelError("conflict", `The sandbox is ${sandbox.state}; it must be running (resume it first)`);
-			}
+			if (sandbox.state !== "running") throw sandboxNotRunning(sandbox, deps.apiBasePath);
 			const headers = { "cache-control": "no-store" };
 			if (grant.method === "PUT") {
 				refuseUnderMount(sandbox, grant.path);

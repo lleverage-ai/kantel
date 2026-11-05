@@ -2,7 +2,7 @@
  * The compute plane's HTTP API: `@kantel/api`'s `computeRoutes` under `/v1` (by default), over the service in
  * `service.ts`. It signs the caller in (an API key, or the host's person authenticator) only for a request that is for
  * one of its routes, and resolves `undefined` for any other, so a gateway can chain it before its own routes. Errors
- * answer `{ error: { code, message } }` with `STATUS_BY_CODE`'s status, and 401 `unauthenticated` for a missing or
+ * answer `{ error: { code, message, details? } }` with `STATUS_BY_CODE`'s status, and 401 `unauthenticated` for a missing or
  * bad credential.
  *
  * A signed file URL (`/v1/file-urls/{token}`, with mounts) is answered before any of that, with no credential: its
@@ -91,6 +91,10 @@ export interface ComputeApiOptions {
 	readonly mounts?: MountsOptions;
 	/** Emails an invite made for an address, with a link to join (`ComputeServiceOptions.invites`); absent, none. */
 	readonly invites?: InviteMailing;
+	/** How long a call waits for a sandbox that is starting (`ComputeServiceOptions.startHoldMs`). Default 60 s. */
+	readonly startHoldMs?: number;
+	/** How often that call reads the sandbox again (`ComputeServiceOptions.startPollMs`). Default 250 ms. */
+	readonly startPollMs?: number;
 }
 
 export interface ComputeApi {
@@ -111,7 +115,8 @@ const json = (body: unknown, status: number, headers: { readonly [name: string]:
 	});
 
 /**
- * The error response for a failure: a KantelError's code, status and details (a placement's `reason`), 401 for no valid
+ * The error response for a failure: a KantelError's code, status and details (a placement's `reason`, a
+ * `SandboxNotRunning`), 401 for no valid
  * credential, else 500.
  */
 export function computeErrorResponse(error: unknown): Response {
@@ -168,6 +173,8 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.startHoldMs === undefined ? {} : { startHoldMs: options.startHoldMs }),
+		...(options.startPollMs === undefined ? {} : { startPollMs: options.startPollMs }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

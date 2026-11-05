@@ -76,13 +76,20 @@ export const ErrorBody = Type.Object(
 						additionalProperties: true,
 						description:
 							"More about the error, by code. A sandbox that can't be placed (on create, start, resume or fork) " +
-							"has `reason`.",
+							"has `reason`. A call that needs a running sandbox answers `conflict` with a `SandboxNotRunning` here " +
+							"when it isn't running: its `code` (`sandbox_stopped`, `sandbox_starting`...), `state`, `stopReason` and " +
+							"`hint`.",
 					},
 				),
 			),
 		}),
 	},
-	{ title: "ErrorBody", description: "Every error: the KantelError's code and message." },
+	{
+		title: "ErrorBody",
+		description:
+			"Every error: the KantelError's `code` and `message`, and for some errors `details`, such as a " +
+			"`SandboxNotRunning`.",
+	},
 );
 
 export const Project = Type.Object(
