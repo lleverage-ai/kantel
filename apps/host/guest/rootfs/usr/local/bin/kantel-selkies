@@ -1,0 +1,150 @@
+#!/opt/selkies/bin/python3
+"""Selkies (the image's /usr/bin/selkies, the same arguments) with the size a viewer may give its display held to a
+pixel budget.
+
+A stream follows its viewer's size: the page asks for its window times its device pixel ratio, so a HiDPI laptop's
+window asks for 2880x1620 and a 4K screen for 3840x2160, up to Selkies' own 8K. Every one of those pixels is captured
+and encoded on the sandbox's CPU, so past a point a bigger picture only means fewer frames. This holds each request,
+the page's first size (its SETTINGS) and every resize after it (``r,WxH``), to KANTEL_STREAM_MAX_PIXELS: a larger
+one is scaled down to the budget, keeping its shape, and the page draws that picture to fill its window, as it does
+any size the server realizes other than the one asked for.
+
+The page also asks for a DPI to match its pixel ratio (192 at 2), so the desktop's text and controls come out the
+size of the viewer's own. A held size is fewer pixels for the same window, so the DPI is held by the same factor
+(to Selkies' 25% steps, never under 96): a 3200x1800 request held to 2240x1260 gets 144, not 192, and the desktop
+keeps about its size on the viewer's screen rather than growing by half.
+
+Unset, the budget is 2240x1260 (2,822,400 pixels), or 1920x1080 on a sandbox of two vCPUs or fewer: about what each
+encodes in 4:4:4 at 30 frames a second while the whole screen moves (TASK-5160 measured 4 vCPUs at 2560x1440 at 16
+to 23 frames a second and 143 to 299 ms from key press to picture, against 30 and 85 ms at 2240x1260). 0 lifts it.
+kantel-stream and kantel-browser-stream run Selkies through this.
+"""
+
+import math
+import os
+import re
+import sys
+
+DEFAULT_BUDGET = 2240 * 1260
+SMALL_BUDGET = 1920 * 1080
+DPI_STEP = 24
+DPI_MIN = 96
+
+
+def budget() -> int:
+    raw = os.environ.get("KANTEL_STREAM_MAX_PIXELS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            print(f"kantel-selkies: KANTEL_STREAM_MAX_PIXELS={raw!r} isn't a number; using the default", file=sys.stderr)
+    return SMALL_BUDGET if (os.cpu_count() or 1) <= 2 else DEFAULT_BUDGET
+
+
+def fit(width: int, height: int, pixels: int) -> tuple[int, int]:
+    """``width`` x ``height``, or the same shape scaled down to ``pixels`` (to even sizes, as Selkies wants them)."""
+    if pixels <= 0 or width <= 0 or height <= 0 or width * height <= pixels:
+        return width, height
+    scale = math.sqrt(pixels / (width * height))
+    return max(2, int(width * scale) & ~1), max(2, int(height * scale) & ~1)
+
+
+def held_dpi(dpi, factor: float):
+    """The DPI a page asked for, held by the factor its size was (1 leaves it as it is)."""
+    if dpi is None or factor >= 1:
+        return dpi
+    return max(DPI_MIN, int(round(float(dpi) * factor / DPI_STEP)) * DPI_STEP)
+
+
+def hold(pixels: int) -> bool:
+    """Holds the ways a page sizes its display (Selkies 2.2's) to ``pixels``, and its DPI with them, or leaves Selkies
+    as it is (False) where a release has moved them, so an upgrade loses the budget rather than the stream."""
+    from selkies import websockets_mode
+
+    server = getattr(websockets_mode, "DataStreamingServer", None)
+    parse_resize = getattr(websockets_mode, "parse_resize_dims", None)
+    names = ("_parse_settings_payload", "_handle_resize", "_handle_scaling")
+    originals = [getattr(server, n, None) for n in names]
+    if not callable(parse_resize) or not all(callable(o) for o in originals):
+        return False
+    parse_settings, handle_resize, handle_scaling = originals
+
+    # Whatever path a size takes to the display, it isn't past the budget (fitting a held size again changes nothing).
+    def parse_resize_dims(res_str):
+        dims = parse_resize(res_str)
+        return None if dims is None else fit(dims[0], dims[1], pixels)
+
+    websockets_mode.parse_resize_dims = parse_resize_dims
+
+    # Per server: the DPI the page last asked for, the factor its last size was held by, and the DPI that gave.
+    def state(self) -> dict:
+        s = getattr(self, "_kantel_hold", None)
+        if s is None:
+            s = self._kantel_hold = {"dpi": None, "factor": 1.0, "held": None}
+        return s
+
+    # The DPI a page asks for: Selkies tells a page the DPI the desktop has, which the page sends back in its next
+    # SETTINGS, so the held DPI coming back is the one asked for before, not a new one to hold again.
+    def asked(s: dict, dpi):
+        if dpi is not None and s["dpi"] is not None and s["held"] is not None and int(round(float(dpi))) == s["held"]:
+            return s["dpi"]
+        return dpi
+
+    def apply(s: dict) -> int:
+        s["held"] = held_dpi(s["dpi"], s["factor"])
+        return s["held"]
+
+    def parse_settings_payload(self, payload_str):
+        parsed = parse_settings(self, payload_str)
+        factor = None
+        for w, h, sizes in (("initialClientWidth", "initialClientHeight", not parsed.get("manual_resolution")),
+                            ("manual_width", "manual_height", bool(parsed.get("manual_resolution")))):
+            width, height = parsed.get(w), parsed.get(h)
+            if isinstance(width, int) and isinstance(height, int) and width > 0:
+                parsed[w], parsed[h] = fit(width, height, pixels)
+                if sizes:
+                    factor = parsed[w] / width
+        if parsed.get("displayId", "primary") == "primary":
+            s = state(self)
+            if factor is not None:
+                s["factor"] = factor
+            if parsed.get("scaling_dpi") is not None:
+                s["dpi"] = asked(s, parsed["scaling_dpi"])
+                parsed["scaling_dpi"] = apply(s)
+        return parsed
+
+    async def _handle_resize(self, res_str, display_id="primary"):
+        m = re.fullmatch(r"(\d+)x(\d+)", res_str or "")
+        if not m or display_id != "primary":
+            return await handle_resize(self, res_str, display_id)
+        width, height = int(m.group(1)), int(m.group(2))
+        held_w, held_h = fit(width, height, pixels)
+        await handle_resize(self, f"{held_w}x{held_h}", display_id)
+        s = state(self)
+        s["factor"] = held_w / width if width else 1.0
+        # A window resized across the budget changes the factor, and so the DPI the desktop should have.
+        if self.client_settings_received.is_set() and s["dpi"] is not None and held_dpi(s["dpi"], s["factor"]) != s["held"]:
+            await handle_scaling(self, apply(s), display_id)
+
+    async def _handle_scaling(self, dpi_value, display_id="primary"):
+        if display_id != "primary":
+            return await handle_scaling(self, dpi_value, display_id)
+        s = state(self)
+        s["dpi"] = asked(s, dpi_value)
+        return await handle_scaling(self, apply(s), display_id)
+
+    server._parse_settings_payload = parse_settings_payload
+    server._handle_resize = _handle_resize
+    server._handle_scaling = _handle_scaling
+    return True
+
+
+if __name__ == "__main__":
+    # Selkies reads its settings from the command line as it's imported.
+    sys.argv[0] = "selkies"
+    limit = budget()
+    if limit > 0 and not hold(limit):
+        print("kantel-selkies: this Selkies has moved what kantel-selkies holds; no pixel budget", file=sys.stderr)
+    from selkies.__main__ import main
+
+    sys.exit(main())

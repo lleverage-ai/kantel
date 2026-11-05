@@ -12,9 +12,9 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
 - Docker CE and containerd (pinned versions), with Buildx and Compose
 - git, curl, wget, jq, build-essential, pkg-config, Python 3 with pip and venv, Node and Go (pinned releases,
   checked against their SHA-256)
-- a desktop on a TigerVNC X server (display `:1`, 1920x1080): Openbox with a top bar and a dock ("The desktop"
-  below), and Chromium (Debian 13's build, from `snapshot.debian.org` at the same date; Ubuntu's own Chromium is a
-  snap, and Google Chrome can't be redistributed)
+- a desktop on a TigerVNC X server (display `:1`, 1920x1080 until a viewer resizes it): Openbox with a top bar and a
+  dock ("The desktop" below), and Chromium (Debian 13's build, from `snapshot.debian.org` at the same date; Ubuntu's
+  own Chromium is a snap, and Google Chrome can't be redistributed)
 - Selkies, streaming the desktop to a browser
 - OpenSSH, the guest agent (`kantel-guest`) and `kantel-init`
 
@@ -48,8 +48,19 @@ follows the sandbox's current proxy, so a fork or resume never restarts them (no
 
 Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay that carries a TCP stream carries the
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.
-`/etc/kantel/desktop.env` can set `KANTEL_DESKTOP_SIZE`, `KANTEL_STREAM_ENCODER` (`h264enc`, `h264enc-striped`,
-`jpeg`), `KANTEL_STREAM_FPS` and `KANTEL_STREAM_FLAGS`.
+
+Both streams follow the viewer: its window's size times its device pixel ratio becomes the display's, so the picture
+is one stream pixel per screen pixel, sharp on a HiDPI screen, up to a pixel budget (`kantel-selkies`): 2240x1260's
+worth (2,822,400 pixels), or 1920x1080's on a sandbox of two vCPUs or fewer, about what each encodes at 30 frames a
+second. A larger window gets the budget's size in its own shape, drawn to fill it, and a DPI lowered to match, so the
+desktop's text stays the size of the viewer's own. Selkies sets that DPI as `Xft.dpi`, which Chromium reads as it
+starts, and in a settings daemon where the session runs one (xsettingsd, XFCE's); the Openbox session runs none, so
+its panels and GTK apps (the terminal, the file manager) stay at 96 DPI, small but sharp on a HiDPI screen. Selkies encodes only what changes (its Turbo mode off), in 4:4:4
+colour (4:2:0 for a browser that can't decode it), with no overlay of its own.
+`/etc/kantel/desktop.env` can set `KANTEL_DESKTOP_SIZE` (the desktop's size until a viewer resizes it),
+`KANTEL_STREAM_ENCODER` (`h264enc`, `h264enc-striped`, `jpeg`), `KANTEL_STREAM_FPS`, `KANTEL_STREAM_MAX_PIXELS` (`0`
+lifts the budget) and `KANTEL_STREAM_FLAGS`, which comes last and so overrides any of Selkies' settings above, such as
+`--video-fullcolor=false`.
 
 ### The desktop
 
