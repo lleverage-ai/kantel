@@ -33,7 +33,9 @@ import {
 	costText,
 	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
+	diskRangeFor,
 	type Environment,
+	fitDisk,
 	fitMemory,
 	type HostingMode,
 	memoryRangeFor,
@@ -275,7 +277,13 @@ export function SandboxesPage({
 			size: "medium",
 			...(input.shape === undefined
 				? {}
-				: { resources: { vcpus: input.shape.vcpus, memoryGb: input.shape.memoryMb / 1024, diskGb: 0 } }),
+				: {
+						resources: {
+							vcpus: input.shape.vcpus,
+							memoryGb: input.shape.memoryMb / 1024,
+							diskGb: input.shape.diskGb ?? 0,
+						},
+					}),
 			state: "starting",
 			createdAt: Date.now(),
 			createdBy: "",
@@ -1413,26 +1421,32 @@ const readShapes = (source: SandboxesSource, accountId: string): Promise<Sandbox
 	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId);
 
 /**
- * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold; a tick
- * marks each shape the hosts offer by name. An isolate: memory alone, since it shares its account's VM's CPU. Under
- * them, the shape in a line and its price where there is one (hosted). Where no host makes a shape off the presets
- * (older hosts), a microVM is one of the presets, chosen from a list.
+ * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold, then its
+ * disk where the hosts take one off their presets; a tick marks each shape the hosts offer by name. An isolate: memory
+ * alone, since it shares its account's VM's CPU. Under them, the shape in a line and its price where there is one
+ * (hosted). Where no host makes a shape off the presets (older hosts), a microVM is one of the presets, chosen from a
+ * list, with its preset's disk.
  */
 export function ShapeFields({
 	kind,
 	shapes,
 	hosting,
 	shape,
+	diskKept = false,
 	onVcpus,
 	onMemory,
+	onDisk,
 	onPreset,
 }: {
 	kind: SandboxKind;
 	shapes: SandboxShapes;
 	hosting: HostingMode;
 	shape: SandboxShape;
+	/** It starts from a snapshot, which keeps its own disk: no disk may be chosen. */
+	diskKept?: boolean;
 	onVcpus: (vcpus: number) => void;
 	onMemory: (memoryMb: number) => void;
+	onDisk: (diskGb: number) => void;
 	/** A preset chosen whole, where only presets may be. */
 	onPreset: (shape: SandboxShape) => void;
 }) {
@@ -1462,12 +1476,15 @@ export function ShapeFields({
 	const { presets } = shapes.microvm;
 	const cpuRange = vcpuRangeFor(shapes);
 	const memory = memoryRangeFor(shapes, shape.vcpus);
-	// No disk is promised: it is the host's to give (by its sizes, or the snapshot it starts from), and the sandbox shows
-	// the disk it got once it runs.
+	// A disk is chosen only where the hosts take one off their presets and it doesn't start from a snapshot, which keeps
+	// its own. Otherwise it is the host's to give, and the sandbox shows the disk it got once it runs. Disk isn't priced.
+	const diskRange = diskRangeFor(shapes);
+	const disk = diskRange === undefined || diskKept ? undefined : (shape.diskGb ?? onGrid(diskRange, diskRange.default));
 	const summary = (
 		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
 			<span>
 				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory
+				{disk === undefined ? "" : `, ${disk} GB disk`}
 				{price}
 			</span>
 		</p>
@@ -1526,6 +1543,20 @@ export function ShapeFields({
 				marks={presets.filter((entry) => entry.vcpus === shape.vcpus).map((entry) => entry.memoryMb)}
 				onChange={onMemory}
 			/>
+			{diskRange === undefined ? null : disk === undefined ? (
+				<p className="text-xs text-muted">A sandbox made from a snapshot keeps its disk.</p>
+			) : (
+				<SliderField
+					label="Disk"
+					value={disk}
+					min={diskRange.min}
+					max={diskRange.max}
+					step={diskRange.step}
+					format={(value) => `${value} GB`}
+					marks={[...new Set(presets.map((entry) => entry.diskGb))]}
+					onChange={onDisk}
+				/>
+			)}
 			{summary}
 		</div>
 	);
@@ -1590,7 +1621,7 @@ export interface NewSandboxForm {
 	readonly name: string;
 	readonly kind: SandboxKind;
 	readonly shape: SandboxShape;
-	/** Whether the sliders were moved from the template's own vCPUs and memory. */
+	/** Whether the sliders were moved from the template's own vCPUs, memory and disk. */
 	readonly shapeChosen: boolean;
 	readonly from: string;
 	readonly environment: string;
@@ -1602,16 +1633,20 @@ export interface NewSandboxForm {
 /**
  * The create New sandbox sends. A microVM from a template whose sliders weren't moved names no shape, so the
  * template's own vCPUs and memory apply; moved, the shape overrides them, and the sandbox boots fresh (a template's
- * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one.
+ * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one. A disk
+ * goes only with a microVM that doesn't start from a saved snapshot: one that does keeps the snapshot's disk.
  */
 export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
 	const template = form.kind === "microvm" ? form.template : undefined;
+	const from = form.from === "" || template !== undefined ? undefined : form.from;
+	const { diskGb, ...withoutDisk } = form.shape;
+	const shape = diskGb === undefined || form.kind === "isolate" || from !== undefined ? withoutDisk : form.shape;
 	return {
 		accountId: form.accountId,
 		...(form.name === "" ? {} : { name: form.name }),
 		kind: form.kind,
-		...(template !== undefined && !form.shapeChosen ? {} : { shape: form.shape }),
-		...(form.from === "" || template !== undefined ? {} : { fromSnapshot: form.from }),
+		...(template !== undefined && !form.shapeChosen ? {} : { shape }),
+		...(from === undefined ? {} : { fromSnapshot: from }),
 		...(form.environment === "" ? {} : { environmentId: form.environment }),
 		...(template === undefined ? {} : { templateId: template.id }),
 		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
@@ -1693,6 +1728,8 @@ export function NewSandboxDialog({
 	const [shapes, setShapes] = useState<SandboxShapes>(DEFAULT_SANDBOX_SHAPES);
 	const [vcpus, setVcpus] = useState(DEFAULT_SANDBOX_SHAPES.microvm.vcpus.default);
 	const [memoryMb, setMemoryMb] = useState(DEFAULT_SANDBOX_SHAPES.microvm.memoryMb.default);
+	// A microVM's disk, where the hosts take one off their presets.
+	const [diskGb, setDiskGb] = useState(fitDisk(DEFAULT_SANDBOX_SHAPES));
 	const [isolateMb, setIsolateMb] = useState(DEFAULT_SANDBOX_SHAPES.isolate.memoryMb.default);
 	const [autoStop, setAutoStop] = useState("60");
 	const [from, setFrom] = useState("");
@@ -1704,7 +1741,7 @@ export function NewSandboxDialog({
 	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
 	const [templateId, setTemplateId] = useState(initialTemplate ?? "");
 	const tplRead = useTemplatesRead(open, templates, TEMPLATE_POLL_MS);
-	// Whether the sliders were moved from a picked template's own vCPUs and memory.
+	// Whether the sliders were moved from a picked template's own vCPUs, memory and disk.
 	const [shapeChosen, setShapeChosen] = useState(false);
 	const asked = useRef(false);
 	const readShapesNow = useCallback(() => {
@@ -1726,6 +1763,7 @@ export function NewSandboxDialog({
 					setVcpus(start.vcpus);
 					setMemoryMb(start.memoryMb);
 				}
+				setDiskGb(fitDisk(read));
 				setIsolateMb(onGrid(read.isolate.memoryMb, read.isolate.memoryMb.default));
 				setShapesRead("ready");
 			},
@@ -1749,13 +1787,16 @@ export function NewSandboxDialog({
 	const picked = requested.template;
 	// A template's sandbox gets the template's own vCPUs and memory until a slider moves.
 	const ownShape = picked !== undefined && !shapeChosen;
+	// A sandbox from a saved snapshot keeps the snapshot's disk, so none is asked for; a template's takes no saved one.
+	const diskKept = from !== "" && picked === undefined;
+	const disk = diskKept || diskGb === undefined ? {} : { diskGb };
 	const shape: SandboxShape =
 		kind === "isolate"
 			? { vcpus: 0, memoryMb: isolateMb }
 			: ownShape
-				? { vcpus: picked.spec.vcpus, memoryMb: picked.spec.memoryMb }
-				: { vcpus, memoryMb };
-	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
+				? { vcpus: picked.spec.vcpus, memoryMb: picked.spec.memoryMb, ...disk }
+				: { vcpus, memoryMb, ...disk };
+	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds, and any disk in range.
 	const ready =
 		valid &&
 		shapesRead === "ready" &&
@@ -1877,6 +1918,7 @@ export function NewSandboxDialog({
 						shapes={shapes}
 						hosting={hosting}
 						shape={shape}
+						diskKept={diskKept}
 						onVcpus={(next) => {
 							// From what the sliders show: a picked template's own shape until one moves.
 							setShapeChosen(true);
@@ -1891,6 +1933,12 @@ export function NewSandboxDialog({
 							setShapeChosen(true);
 							setVcpus(shape.vcpus);
 							setMemoryMb(next);
+						}}
+						onDisk={(next) => {
+							setShapeChosen(true);
+							setVcpus(shape.vcpus);
+							setMemoryMb(shape.memoryMb);
+							setDiskGb(next);
 						}}
 						onPreset={(next) => {
 							setShapeChosen(true);

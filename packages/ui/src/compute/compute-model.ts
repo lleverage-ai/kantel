@@ -122,6 +122,8 @@ export const SANDBOX_SIZES: readonly SandboxSizeSpec[] = [
 export interface SandboxShape {
 	readonly vcpus: number;
 	readonly memoryMb: number;
+	/** A microVM's disk in GB, chosen apart from its vCPUs and memory. Absent: the disk its host gives the shape. */
+	readonly diskGb?: number;
 }
 
 /** A slider's range: its ends, its step and where it starts. */
@@ -146,6 +148,12 @@ export interface SandboxShapes {
 		readonly memoryMb: ShapeRange;
 		/** Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. */
 		readonly memoryMbPerVcpu: { readonly min: number; readonly max: number };
+		/**
+		 * The disk a microVM may ask for in GB, whatever its vCPUs and memory, its default the default preset's. Absent
+		 * where no host takes a disk off its presets (older hosts): each host gives the disk its shape has. A sandbox made
+		 * from a snapshot keeps the snapshot's disk.
+		 */
+		readonly diskGb?: ShapeRange;
 		readonly presets: readonly ShapePreset[];
 		/**
 		 * Whether some host makes a shape off the presets. False (every host is an older kantel-host): only the presets
@@ -176,6 +184,8 @@ export const DEFAULT_SANDBOX_SHAPES: SandboxShapes = {
 		vcpus: { min: 1, max: 16, step: 1, default: 4 },
 		memoryMb: { min: 512, max: 32768, step: 512, default: 8192 },
 		memoryMbPerVcpu: { min: 512, max: 8192 },
+		// The default (4 vCPU, 8 GB) is the medium preset: its disk is the default.
+		diskGb: { min: 20, max: 500, step: 1, default: 60 },
 		presets: [
 			{ name: "small", vcpus: 2, memoryMb: 4096, diskGb: 40 },
 			{ name: "medium", vcpus: 4, memoryMb: 8192, diskGb: 60 },
@@ -223,8 +233,32 @@ export function memoryRangeFor(shapes: SandboxShapes, vcpus: number): ShapeRange
 	return { min, max, step, default: onGrid({ min, max, step }, memoryMb.default) };
 }
 
-/** Whether New sandbox may ask for a microVM of `shape`: a preset, or (where hosts make them) one in the ranges. */
+/**
+ * The disk New sandbox may ask for a microVM: undefined where none may be chosen, as no host takes a disk off its
+ * presets, or only the presets may be chosen (then each host gives its preset's disk).
+ */
+export function diskRangeFor(shapes: SandboxShapes): ShapeRange | undefined {
+	return customShapes(shapes) ? shapes.microvm.diskGb : undefined;
+}
+
+/**
+ * `diskGb` on the disk slider's grid and within its ends, as it shows it; the range's default where none is given.
+ * Undefined where no disk may be chosen.
+ */
+export function fitDisk(shapes: SandboxShapes, diskGb?: number): number | undefined {
+	const range = diskRangeFor(shapes);
+	return range === undefined ? undefined : onGrid(range, diskGb ?? range.default);
+}
+
+/**
+ * Whether New sandbox may ask for a microVM of `shape`: a preset, or (where hosts make them) one in the ranges. A disk,
+ * where it names one, must be in the disk's range, and there must be one.
+ */
 export function shapeAllowed(shapes: SandboxShapes, shape: SandboxShape): boolean {
+	if (shape.diskGb !== undefined) {
+		const disk = diskRangeFor(shapes);
+		if (disk === undefined || disk.min > disk.max || shape.diskGb < disk.min || shape.diskGb > disk.max) return false;
+	}
 	if (presetOf(shapes, shape) !== undefined) return true;
 	if (!customShapes(shapes)) return false;
 	const cpus = vcpuRangeFor(shapes);
@@ -246,7 +280,7 @@ export function fitMemory(shapes: SandboxShapes, vcpus: number, memoryMb: number
 	return onGrid(memoryRangeFor(shapes, vcpus), memoryMb);
 }
 
-/** The preset a microVM shape is, if it is one. */
+/** The preset a microVM shape is, if it is one: by its vCPUs and memory, whatever disk it asks for. */
 export function presetOf(shapes: SandboxShapes, shape: SandboxShape): ShapePreset | undefined {
 	return shapes.microvm.presets.find((preset) => preset.vcpus === shape.vcpus && preset.memoryMb === shape.memoryMb);
 }
@@ -575,8 +609,8 @@ export interface CreateSandboxInput {
 	readonly name?: string;
 	readonly kind: SandboxKind;
 	/**
-	 * What it gets: vCPUs and memory for a microVM, memory alone for an isolate (it shares its account's VM's CPU).
-	 * Absent: the deployment's default.
+	 * What it gets: vCPUs and memory for a microVM, and a disk where one was chosen; memory alone for an isolate (it
+	 * shares its account's VM's CPU). Absent: the deployment's default.
 	 */
 	readonly shape?: SandboxShape;
 	/** A saved snapshot to start from. */
