@@ -71,6 +71,8 @@ claude mcp add kantel -e KANTEL_URL=http://127.0.0.1:58090 -e KANTEL_API_KEY=$KA
 codex mcp add kantel --env KANTEL_URL=http://127.0.0.1:58090 --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
 ```
 
+Codex gives a tool call 60 seconds unless told otherwise, and a Kantel tool can wait up to 10 minutes, so add `tool_timeout_sec = 660` under `[mcp_servers.kantel]` in `~/.codex/config.toml`. Claude Code waits about 28 hours unless you've set `MCP_TOOL_TIMEOUT` lower; [MCP server](/tools/mcp-server/#claude-code) says what to do if you have.
+
 The agent then has tools such as `sandbox_create`, `sandbox_exec` and `file_write`. [MCP server](/tools/mcp-server/) lists them all and covers Cursor and other clients. With MCP in place you can skip the skill and go to [step 4](#4-add-the-agentsmd-snippet).
 
 ### pi and the kantel command
