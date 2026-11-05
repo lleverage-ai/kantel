@@ -884,6 +884,36 @@ describe("sandboxes", () => {
 		}
 	});
 
+	it("boots every fork in a batch when recording one's copied port fails", async () => {
+		const memory = createMemoryStore();
+		let failNext = false;
+		const store: typeof memory = {
+			...memory,
+			sandboxes: {
+				...memory.sandboxes,
+				// The store fails the first write that adds a port once armed: the first fork's copied port.
+				update: (id, change) =>
+					memory.sandboxes.update(id, (current) => {
+						const next = change(current);
+						if (failNext && next !== undefined && next.ports.length > current.ports.length) {
+							failNext = false;
+							throw new Error("database down");
+						}
+						return next;
+					}),
+			},
+		};
+		const { tom } = setup(createStubBackend(), { store });
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.exposePort(source.id, { port: 3000, public: true });
+		failNext = true;
+		const forks = (await tom.forkSandbox(source.id, { count: 2, wait: true })).items;
+		expect(failNext).toBe(false);
+		expect(forks.map((fork) => fork.state)).toEqual(["running", "running"]);
+		const ports = await Promise.all(forks.map(async (fork) => (await tom.listPorts(fork.id)).items.length));
+		expect(ports).toEqual([0, 1]);
+	});
+
 	it("resizes a sandbox made from a snapshot of the disk alone", async () => {
 		const { tom } = setup();
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });

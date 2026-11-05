@@ -5513,7 +5513,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							undefined,
 							{ egressRevision },
 						);
-						if (booted?.state === "running") await copyPorts(booted, sourcePorts, grantee);
+						// Best effort, as each port is: a failure here (its records' store down, say) leaves this fork running without
+						// them, and never stops the batch's other forks booting.
+						if (booted?.state === "running") await copyPorts(booted, sourcePorts, grantee).catch(() => undefined);
 					}
 				});
 				if (body.wait === true) await work;
