@@ -104,6 +104,10 @@ type failure struct {
 // FailureTTL is how long a failed fetch or build is answered before the next Get tries again.
 const FailureTTL = 30 * time.Second
 
+// maxFailures bounds how many failures are remembered at once: past it, the oldest is forgotten (its next Get tries
+// again), so a burst of distinct bad digests can't grow the map without limit.
+const maxFailures = 1024
+
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // ValidDigest says whether d is sha256: and 64 lower-case hex digits.
@@ -231,10 +235,31 @@ func (c *Cache) run(digest string, fetch Fetch, b *build) {
 	c.bmu.Lock()
 	delete(c.builds, digest)
 	if b.err != nil {
-		c.failed[digest] = failure{err: b.err, at: time.Now()}
+		c.rememberFailure(digest, b.err, time.Now())
 	}
 	c.bmu.Unlock()
 	close(b.done)
+}
+
+// rememberFailure records digest's failure (under bmu), first forgetting every failure past FailureTTL, whatever its
+// digest, and then the oldest while maxFailures are kept: a digest that fails once and is never asked for again
+// doesn't stay for the host's lifetime.
+func (c *Cache) rememberFailure(digest string, err error, now time.Time) {
+	for d, f := range c.failed {
+		if now.Sub(f.at) >= FailureTTL {
+			delete(c.failed, d)
+		}
+	}
+	for len(c.failed) >= maxFailures {
+		oldest, at := "", now
+		for d, f := range c.failed {
+			if oldest == "" || f.at.Before(at) {
+				oldest, at = d, f.at
+			}
+		}
+		delete(c.failed, oldest)
+	}
+	c.failed[digest] = failure{err: err, at: now}
 }
 
 // make fetches a bundle's tar, checks it, builds its image and puts it in the cache.

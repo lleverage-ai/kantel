@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -185,6 +186,37 @@ func TestAFailureIsRememberedBriefly(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("a failed fetch is answered from memory for a while, fetched %d times", calls.Load())
+	}
+}
+
+// A failure is forgotten once it expires even if its digest is never asked for again, and no more than maxFailures
+// are kept at once.
+func TestRememberedFailuresAreBounded(t *testing.T) {
+	c := fakeCache(t, 1<<30, nil)
+	now := time.Now()
+	boom := errors.New("boom")
+	stale := digestOf([]byte("stale"))
+	c.rememberFailure(stale, boom, now.Add(-2*FailureTTL))
+	fresh := digestOf([]byte("fresh"))
+	c.rememberFailure(fresh, boom, now)
+	if _, ok := c.failed[stale]; ok {
+		t.Fatal("an expired failure is forgotten when another is recorded")
+	}
+	if _, ok := c.failed[fresh]; !ok {
+		t.Fatal("the new failure is remembered")
+	}
+	for i := 0; i < maxFailures+10; i++ {
+		c.rememberFailure(digestOf(fmt.Appendf(nil, "bad %d", i)), boom, now.Add(time.Duration(i)*time.Millisecond))
+	}
+	if len(c.failed) > maxFailures {
+		t.Fatalf("at most %d failures are kept, got %d", maxFailures, len(c.failed))
+	}
+	if _, ok := c.failed[fresh]; ok {
+		t.Fatal("the oldest failures go first once the bound is reached")
+	}
+	last := digestOf(fmt.Appendf(nil, "bad %d", maxFailures+9))
+	if _, ok := c.failed[last]; !ok {
+		t.Fatal("the newest failure is kept")
 	}
 }
 
