@@ -1099,6 +1099,17 @@ const truncate = (text: string): { text: string; truncated: boolean } =>
 		? { text: text.slice(0, MAX_OUTPUT_CHARS), truncated: true }
 		: { text, truncated: false };
 
+/**
+ * A command's stream at its end, from what was recorded while it ran and its end's: the end's where it starts with what
+ * was recorded (a real end's does: its backend keeps the start of each stream), else what was recorded, then the end's
+ * (an end Kantel made up, such as its result lost, which says why).
+ */
+function after(recorded: string, final: string): string {
+	if (final.startsWith(recorded)) return final;
+	if (final === "") return recorded;
+	return recorded.endsWith("\n") ? recorded + final : `${recorded}\n${final}`;
+}
+
 // Environments: names, destinations and grants, checked and kept in one form.
 
 const RESERVED_VARIABLES = new Set(["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]);
@@ -2913,21 +2924,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await backend.deleteSnapshot(ref).catch(() => undefined);
 	}
 
-	/** Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. */
+	/**
+	 * Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. Output
+	 * already recorded while it ran is kept: a real end's output starts with it, and an end Kantel made up (its result
+	 * lost, its host gone) adds its reason after it.
+	 */
 	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
-		const stdout = truncate(result.stdout);
-		const stderr = truncate(result.stderr);
 		const at = now();
-		const ended = await settleCommand(commandId, (latest) => ({
-			...latest,
-			state: result.timedOut ? "timed_out" : "exited",
-			exitCode: result.exitCode,
-			stdout: stdout.text,
-			stderr: stderr.text,
-			truncated: stdout.truncated || stderr.truncated,
-			endedAt: at,
-			durationMs: at - latest.startedAt,
-		}));
+		const ended = await settleCommand(commandId, (latest) => {
+			const stdout = truncate(after(latest.stdout, result.stdout));
+			const stderr = truncate(after(latest.stderr, result.stderr));
+			return {
+				...latest,
+				state: result.timedOut ? "timed_out" : "exited",
+				exitCode: result.exitCode,
+				stdout: stdout.text,
+				stderr: stderr.text,
+				// One whose recorded output was cut, and that kept it, still has it cut.
+				truncated:
+					stdout.truncated ||
+					stderr.truncated ||
+					(latest.truncated && !(result.stdout.startsWith(latest.stdout) && result.stderr.startsWith(latest.stderr))),
+				endedAt: at,
+				durationMs: at - latest.startedAt,
+			};
+		});
 		return ended ?? (await store.commands.get(commandId));
 	}
 
@@ -2953,10 +2974,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * replica) is lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
-		if (command.state !== "running" || command.detached !== true || backend.commandResult === undefined) {
-			return command;
-		}
+		if (command.state !== "running" || backend.commandResult === undefined) return command;
 		const followed = runningCommands.has(command.id);
+		// A foreground one a gateway here waits for is answered by that wait; one none here does outlived its gateway (on a
+		// backend that runs commands on past their call) or is another replica's, and is asked for as a detached one is.
+		if (command.detached !== true && followed) return command;
 		let result: ExecResult | CommandProgress | undefined;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
@@ -5339,8 +5361,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				const failed = async (error: unknown): Promise<StoredCommand> => {
 					// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
-					// it runs on, and getCommand fetches its end.
-					if (detached && isDetachedWaitEnded(error)) {
+					// it runs on, and getCommand fetches its end. A foreground one too, on a backend that keeps it past its call.
+					if (isDetachedWaitEnded(error)) {
 						runningCommands.delete(command.id);
 						return (await store.commands.get(command.id)) ?? command;
 					}

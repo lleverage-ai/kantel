@@ -98,6 +98,11 @@ class CommandHost {
 		}
 	}
 
+	/** Forgets a command, as a host or sandbox that restarted has. */
+	forget(commandId: string) {
+		this.commands.delete(commandId);
+	}
+
 	/** A running command's output so far. */
 	output(commandId: string, stdout: string, stderr = "") {
 		const command = this.commands.get(commandId);
@@ -241,7 +246,25 @@ async function setup(controls: boolean, wrapCall?: (call: SandboxCall) => Sandbo
 	closers.push(() => host.stop());
 	await vi.waitFor(() => expect(service.hub.connected(hostId)).toBe(true));
 	const sandbox = await root.createSandbox({ type: "microvm", wait: true, autoStopMinutes: null });
-	return { service, api, root, host, sandbox };
+	/** Another gateway on the same store and hosts, as the next one after a restart is. */
+	const nextGateway = () => {
+		const next = createComputeApi({
+			backend,
+			store: api.store,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+		});
+		closers.push(() => next.close());
+		return createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				next.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+	};
+	return { service, api, root, host, sandbox, nextGateway };
 }
 
 const callsOf = (host: CommandHost, method: string) => host.calls.filter((call) => call.method === method);
@@ -477,6 +500,48 @@ describe("commands on kantel-host hosts", () => {
 		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec.get").length).toBeGreaterThan(0));
 		await api.close();
 		expect((await api.store.commands.get(started.id))?.state).toBe("running");
+	});
+
+	it("leaves a host-kept foreground command running when its gateway closes, and the next gateway records its end", async () => {
+		const { api, root, host, sandbox, nextGateway } = await setup(true);
+		const running = root.runCommand(sandbox.id, { command: "pnpm install", timeoutMs: 600_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const commandId = String(callsOf(host, "sandbox.exec")[0]?.params.commandId);
+		await api.close();
+		// Not recorded as failed: it runs on at its host.
+		expect((await running).state).toBe("running");
+		expect((await api.store.commands.get(commandId))?.state).toBe("running");
+
+		const next = nextGateway();
+		expect((await next.getCommand(sandbox.id, commandId)).state).toBe("running");
+		host.end(commandId, { exitCode: 0, stdout: "Done in 42s\n", stderr: "" });
+		expect(await next.getCommand(sandbox.id, commandId)).toMatchObject({
+			state: "exited",
+			exitCode: 0,
+			stdout: "Done in 42s\n",
+		});
+		// And one still running is killed at its host by the next gateway.
+		const again = root.runCommand(sandbox.id, { command: "sleep 600", timeoutMs: 600_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(2));
+		const againId = String(callsOf(host, "sandbox.exec")[1]?.params.commandId);
+		void again.catch(() => undefined);
+		await expect(next.killCommand(sandbox.id, againId)).resolves.toMatchObject({ state: "killed" });
+		expect(callsOf(host, "sandbox.exec.kill").map((call) => call.params.commandId)).toEqual([againId]);
+	});
+
+	it("keeps a command's output recorded while it ran when its result is lost", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const started = await root.runCommand(sandbox.id, { command: "./build.sh", detached: true });
+		await vi.advanceTimersByTimeAsync(5_000);
+		host.output(started.id, "step 1\nstep 2\n", "warning: slow");
+		expect((await root.getCommand(sandbox.id, started.id)).stdout).toBe("step 1\nstep 2\n");
+		host.forget(started.id);
+		await vi.advanceTimersByTimeAsync(61_000);
+		const ended = await root.getCommand(sandbox.id, started.id);
+		expect(ended).toMatchObject({ state: "exited", exitCode: 1, stdout: "step 1\nstep 2\n" });
+		// What was recorded, then why its end is unknown (the gateway following it was told so by the host).
+		expect(ended.stderr).toMatch(/^warning: slow\n.*no longer knows/s);
 	});
 
 	it("follows a detached command whose start went unanswered, which the host had started", async () => {

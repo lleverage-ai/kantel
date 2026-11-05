@@ -221,9 +221,9 @@ func TestKillStopsAForegroundCommandByItsID(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the killed command wasn't answered")
 	}
-	// A foreground command is forgotten once it ends.
-	if _, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_f"}); err == nil {
-		t.Fatal("an ended foreground command is still known")
+	// A foreground command's end is kept, as killed (137), for a control plane whose answer was lost.
+	if status, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_f"}); err != nil || status.State != proto.ExecEnded || status.Result == nil || status.Result.ExitCode != 137 {
+		t.Fatalf("an ended foreground command reads as %+v, %v", status, err)
 	}
 }
 
@@ -233,7 +233,7 @@ func TestAForegroundCommandRunsOnPastItsConnectionAndKeepsItsResult(t *testing.T
 	tier := newHeldTier()
 	h := hostWith(t, tier)
 	session, endSession := context.WithCancel(context.Background())
-	ctx := withConnection(context.WithoutCancel(session), session.Done())
+	ctx := context.WithoutCancel(session)
 	answered := make(chan error, 1)
 	go func() {
 		_, err := callCmd[proto.ExecResult](t, h, ctx, proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "pnpm install", CommandID: "cmd_c", TimeoutMs: 600_000})
@@ -265,6 +265,27 @@ func TestAForegroundCommandRunsOnPastItsConnectionAndKeepsItsResult(t *testing.T
 	again, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_c"})
 	if err != nil || again.State != proto.ExecEnded {
 		t.Fatalf("kept: %+v, %v", again, err)
+	}
+}
+
+// A foreground command that ends while its connection still looks up keeps its result too: its answer may be lost as
+// it is sent (the connection going just then), and the control plane then asks for it by its ID.
+func TestAForegroundCommandKeepsItsResultWhenItsAnswerIsSent(t *testing.T) {
+	tier := newHeldTier()
+	h := hostWith(t, tier)
+	answered := make(chan proto.ExecResult, 1)
+	go func() {
+		result, _ := callCmd[proto.ExecResult](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "make", CommandID: "cmd_s"})
+		answered <- result
+	}()
+	<-tier.started
+	tier.release <- proto.ExecResult{ExitCode: 3, Stdout: "built\n"}
+	if got := <-answered; got.ExitCode != 3 {
+		t.Fatalf("its answer: %+v", got)
+	}
+	kept, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_s"})
+	if err != nil || kept.State != proto.ExecEnded || kept.Result == nil || kept.Result.ExitCode != 3 || kept.Result.Stdout != "built\n" {
+		t.Fatalf("kept: %+v, %v", kept, err)
 	}
 }
 
@@ -538,7 +559,7 @@ func TestAReleasedReservationIsNeverAnEnd(t *testing.T) {
 	key := runKey("sbx_1", "cmd_d")
 	run := &commandRun{cancel: func() {}, done: make(chan struct{}), detached: true}
 	runs.add(key, run)
-	runs.end(key, run, proto.ExecResult{ExitCode: 4, Stdout: "out"}, nil, false)
+	runs.end(key, run, proto.ExecResult{ExitCode: 4, Stdout: "out"}, nil)
 	if status := runs.status("cmd_d", run); status.State != proto.ExecEnded || status.Result.ExitCode != 4 {
 		t.Fatalf("an ended run read as %+v", status)
 	}

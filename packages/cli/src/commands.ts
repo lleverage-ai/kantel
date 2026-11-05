@@ -732,8 +732,13 @@ function killed(ctx: Context, command: Command): number {
 	return 0;
 }
 
-/** How long `follow` keeps asking again while Kantel can't be reached, before it gives up and says how to follow again. */
+/**
+ * How long `follow` keeps asking again while Kantel can't be reached, from the start of the first look that failed,
+ * before it gives up and says how to follow again.
+ */
 const FOLLOW_RETRY_MS = 120_000;
+/** How long one look at a followed command may take before it counts as Kantel out of reach. */
+const FOLLOW_LOOK_MS = 30_000;
 
 /**
  * A failure to reach Kantel, or Kantel unable to answer for now, that asking again may get past: why, or undefined for
@@ -744,7 +749,21 @@ function transient(error: unknown): string | undefined {
 		const retry = error.status >= 500 || error.status === 429 || error.code === "unavailable";
 		return retry ? `Kantel can't answer for now (${error.message})` : undefined;
 	}
-	return error instanceof UnreachableError ? error.message : undefined;
+	if (error instanceof UnreachableError) return error.message;
+	// A look that took too long (FOLLOW_LOOK_MS), its answer or its body.
+	if (error instanceof Error && error.name === "TimeoutError") {
+		return `Kantel didn't answer within ${FOLLOW_LOOK_MS / 1000} s`;
+	}
+	// The connection dropped while an answer's body came (fetch's "terminated", with the socket's error as its cause).
+	if (error instanceof TypeError && (error.message === "terminated" || hasCode(error.cause))) {
+		const cause = error.cause instanceof Error ? error.cause.message : error.message;
+		return `the connection to Kantel dropped (${cause})`;
+	}
+	return undefined;
+}
+
+function hasCode(value: unknown): boolean {
+	return typeof value === "object" && value !== null && typeof (value as { code?: unknown }).code === "string";
 }
 
 /**
@@ -764,20 +783,29 @@ async function follow(
 	let wait = 250;
 	const again = `kantel attach ${sandboxId} ${commandId}`;
 	const fetch = async (): Promise<Command> => {
+		// An outage's time so far: from the start of its first failed look, each look's time and each wait's. (The waits are
+		// counted too, as asked for, since a test's sleep returns at once.)
+		let outageFrom: number | undefined;
 		let waited = 0;
 		let backoff = 1000;
 		for (;;) {
+			const lookFrom = Date.now();
+			const elapsed = () => Math.max(Date.now() - (outageFrom ?? lookFrom), waited);
+			const limit = Math.max(1, Math.min(FOLLOW_LOOK_MS, FOLLOW_RETRY_MS - (outageFrom === undefined ? 0 : elapsed())));
 			try {
-				return await client.getCommand(sandboxId, commandId);
+				return await client.getCommand(sandboxId, commandId, { signal: AbortSignal.timeout(limit) });
 			} catch (error) {
 				const why = transient(error);
 				if (why === undefined) throw error;
-				if (waited >= FOLLOW_RETRY_MS) {
-					throw new CliError(`${why}; ${commandId} may still be running: ${again}`);
+				if (outageFrom === undefined) {
+					outageFrom = lookFrom;
+					if (!ctx.json) ctx.note(`kantel: ${why}; trying again`);
 				}
-				if (!ctx.json && waited === 0) ctx.note(`kantel: ${why}; trying again`);
-				await ctx.io.sleep(backoff);
-				waited += backoff;
+				const left = FOLLOW_RETRY_MS - elapsed();
+				if (left <= 0) throw new CliError(`${why}; ${commandId} may still be running: ${again}`);
+				const pause = Math.min(backoff, left);
+				await ctx.io.sleep(pause);
+				waited += pause;
 				backoff = Math.min(backoff * 2, 10_000);
 			}
 		}

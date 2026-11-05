@@ -854,6 +854,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					request.timeoutMs === undefined ? 3_600_000 : request.timeoutMs + 10_000,
 				);
 			} catch (error) {
+				// Only the wait ended (the gateway closing, or a kill already recorded): a host that runs commands by ID runs it on
+				// past this call, and its end is fetched by its ID, as a detached one's is.
+				if (request.signal?.aborted && controls && request.commandId !== undefined) throw new DetachedWaitEnded();
 				if (request.signal?.aborted || !isKantelError(error) || !unanswered(error) || error.code !== "unavailable") {
 					throw error;
 				}

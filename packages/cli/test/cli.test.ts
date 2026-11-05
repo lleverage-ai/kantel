@@ -559,9 +559,33 @@ describe("exec", () => {
 		expect(result.stderr).toContain(
 			"Kantel can't answer for now (The gateway is down); cmd_1 may still be running: kantel attach sbx_test1 cmd_1",
 		);
-		// Asked again for two minutes of waits, then no more.
-		expect(result.slept.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(120_000);
+		// Asked again for two minutes of waits, then no more: the last wait is cut to what is left.
+		expect(result.slept.reduce((sum, ms) => sum + ms, 0)).toBe(120_000);
 		expect(result.calls.length).toBeLessThan(30);
+	});
+
+	it("follows on after a connection that drops while an answer's body comes", async () => {
+		const cut = () =>
+			new Response(
+				new ReadableStream({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('{"id":"cmd_1",'));
+						const socket = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+						controller.error(new TypeError("terminated", { cause: socket }));
+					},
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		const views: (() => Command | Response)[] = [
+			cut,
+			() => command({ state: "exited", exitCode: 0, stdout: "Done\n" }),
+		];
+		const result = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: { "GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift()?.() },
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("Done\n");
+		expect(result.stderr).toContain("the connection to Kantel dropped (other side closed); trying again");
 	});
 
 	it("doesn't ask again after an answer that won't change, such as an unknown command", async () => {

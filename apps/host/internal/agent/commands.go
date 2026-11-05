@@ -155,9 +155,10 @@ func (c *commandRuns) get(key string) *commandRun {
 	return c.byKey[key]
 }
 
-// end records a run's result: a killed one's is 137, and a run that failed to run has its error as stderr. A foreground
-// run is forgotten, unless kept (its answer had no connection to go back on); a detached one is kept.
-func (c *commandRuns) end(key string, run *commandRun, result proto.ExecResult, err error, kept bool) (proto.ExecResult, bool) {
+// end records a run's result: a killed one's is 137, and a run that failed to run has its error as stderr. It is kept,
+// a foreground run's as a detached one's (its answer may never reach the control plane: its connection may go as it
+// is sent), the newest maxEndedRuns of them.
+func (c *commandRuns) end(key string, run *commandRun, result proto.ExecResult, err error) (proto.ExecResult, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	killed := run.killed
@@ -169,12 +170,6 @@ func (c *commandRuns) end(key string, run *commandRun, result proto.ExecResult, 
 	}
 	run.result = result
 	close(run.done)
-	if !run.detached && !kept {
-		if c.byKey[key] == run {
-			delete(c.byKey, key)
-		}
-		return result, killed
-	}
 	c.ended = append(c.ended, key)
 	for len(c.ended) > maxEndedRuns {
 		if old := c.byKey[c.ended[0]]; old != nil && !old.reserved && ended(old) {
@@ -275,8 +270,8 @@ func isUnsupported(err error) bool {
 //
 // A foreground one runs on when the connection its call came on goes (a reconnect, a newer connection taking over):
 // its call's context outlives the session (keptExec), so it ends at its own limit, a kill or a claim on its sandbox.
-// When the connection went before it ended, its answer has nowhere to go, so its result is kept, as a detached one's
-// is, for the control plane to fetch by its ID (sandbox.exec.get) on the next connection.
+// Its result is kept, as a detached one's is, for the control plane to fetch by its ID (sandbox.exec.get) on the next
+// connection when its answer had nowhere to go.
 func (h *Host) runCommand(ctx context.Context, t Tier, p proto.ExecParams, onOutput func(stdout, stderr string)) (any, error) {
 	if !validCommandID(p.CommandID) {
 		return nil, invalid("a command's ID is up to %d letters, digits, _, - and .", maxCommandID)
@@ -292,7 +287,7 @@ func (h *Host) runCommand(ctx context.Context, t Tier, p proto.ExecParams, onOut
 		return nil, r.refusal(p.CommandID)
 	}
 	result, err := t.Exec(runCtx, p, onOutput)
-	answer, killed := h.runs.end(key, run, result, err, connectionGone(ctx))
+	answer, killed := h.runs.end(key, run, result, err)
 	if err != nil && !killed {
 		return nil, err
 	}
@@ -368,7 +363,7 @@ func (h *Host) startDetached(ctx context.Context, t Tier, key string, p proto.Ex
 		defer release()
 		defer cancel()
 		result, err := t.Exec(runCtx, p, nil)
-		h.runs.end(key, run, result, err, true)
+		h.runs.end(key, run, result, err)
 	}()
 	return proto.ExecStatus{CommandID: p.CommandID, State: proto.ExecRunning}, nil
 }
@@ -428,29 +423,6 @@ func keptExec(method string, params json.RawMessage) bool {
 		CommandID string `json:"commandId"`
 	}
 	return json.Unmarshal(params, &p) == nil && p.CommandID != ""
-}
-
-// connectionKey carries the Done of the session a call came on (withConnection), past a context that outlives it.
-type connectionKey struct{}
-
-// withConnection marks ctx with the session's done: connectionGone then says whether the session has ended.
-func withConnection(ctx context.Context, done <-chan struct{}) context.Context {
-	return context.WithValue(ctx, connectionKey{}, done)
-}
-
-// connectionGone is whether the session a call came on has ended, so its answer has nowhere to go. A call with none
-// (a test's, an E2E session's) never has.
-func connectionGone(ctx context.Context) bool {
-	done, ok := ctx.Value(connectionKey{}).(<-chan struct{})
-	if !ok {
-		return false
-	}
-	select {
-	case <-done:
-		return true
-	default:
-		return false
-	}
 }
 
 // commandStatus is sandbox.exec.get.
