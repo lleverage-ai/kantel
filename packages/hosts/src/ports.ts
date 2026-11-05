@@ -34,7 +34,7 @@
  * port is exposed.
  */
 import { consoleCookieName, setConsoleCookie } from "@kantel/identity/cookies";
-import type { PortSink, PortStream } from "./hub.ts";
+import { closeReason, type PortSink, type PortStream } from "./hub.ts";
 import { PortHttpError, proxyHttp } from "./port-http.ts";
 import type { ExposureRecord, RelayStore } from "./relay-store.ts";
 import { sameSecret, sha256Hex } from "./tunnel.ts";
@@ -360,7 +360,12 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 				return { ok: false, status: 403, reason: "Whoever exposed this port no longer has access" };
 			}
 			const stopped = await options.notRunning?.(exposure.sandboxId).catch(() => undefined);
-			if (stopped !== undefined) return { ok: false, status: PORT_NOT_RUNNING_STATUS, reason: stopped };
+			// A close frame's reason holds 123 bytes of UTF-8: the page's first sentence (that it's stopped, and why), cut to
+			// fit. An HTTP request gets the whole page.
+			if (stopped !== undefined) {
+				const first = stopped.split(/(?<=\.)\s/)[0] ?? stopped;
+				return { ok: false, status: PORT_NOT_RUNNING_STATUS, reason: closeReason(first) };
+			}
 			url.searchParams.delete(PORT_TOKEN_PARAM);
 			return {
 				ok: true,

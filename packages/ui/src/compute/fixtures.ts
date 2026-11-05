@@ -1694,7 +1694,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 
 	const sandboxes = new Map<string, Sandbox>(
 		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
-			const copy = moved(box, ["createdAt", "stopsAt"]);
+			const copy = moved(box, ["createdAt", "stopsAt", "idleStopsAt"]);
 			const snapshot =
 				box.snapshot?.takenAt === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
 			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot })))];

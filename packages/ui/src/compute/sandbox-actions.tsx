@@ -430,11 +430,29 @@ function RestartOnLatestDialog({
 	);
 }
 
-/** The idle stop's choice for a sandbox now: its own minutes where the list offers them, else the nearest above. */
-function idleChoiceOf(minutes: number | undefined): string {
-	if (minutes === undefined) return "never";
-	const offered = IDLE_STOP_CHOICES.find((choice) => choice.value !== "never" && Number(choice.value) >= minutes);
-	return offered?.value ?? "240";
+/** "1 minute", "45 minutes", "2 hours", "1 day": an idle stop's minutes as its choice reads. */
+function idleStopLabel(minutes: number): string {
+	const [count, unit] =
+		minutes % 1440 === 0 ? [minutes / 1440, "day"] : minutes % 60 === 0 ? [minutes / 60, "hour"] : [minutes, "minute"];
+	return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * The Idle stop dialog's choices and its first one for a sandbox: the presets, and its own minutes among them where it
+ * has a time they don't offer (set by the CLI or API), so saving without a new choice keeps that time, not a preset's.
+ */
+export function idleStopChoices(minutes: number | undefined): {
+	readonly options: readonly { readonly value: string; readonly label: string }[];
+	readonly choice: string;
+} {
+	if (minutes === undefined) return { options: IDLE_STOP_CHOICES, choice: "never" };
+	const choice = String(minutes);
+	if (IDLE_STOP_CHOICES.some((offered) => offered.value === choice)) return { options: IDLE_STOP_CHOICES, choice };
+	const [never, ...presets] = IDLE_STOP_CHOICES;
+	const options = [...presets, { value: choice, label: idleStopLabel(minutes) }].sort(
+		(a, b) => Number(a.value) - Number(b.value),
+	);
+	return { options: [never, ...options], choice };
 }
 
 function IdleStopDialog({
@@ -451,7 +469,8 @@ function IdleStopDialog({
 	const changing = useSyncExternalStore(idleStopChanges.subscribe, idleStopChanges.changing);
 	const elsewhere = !busy && sandbox !== undefined && changing.has(sandbox.id);
 	// What it has now, until another is picked.
-	const shown = choice ?? idleChoiceOf(sandbox?.idleStopMinutes);
+	const offered = idleStopChoices(sandbox?.idleStopMinutes);
+	const shown = choice ?? offered.choice;
 	const close = () => {
 		setFailure(undefined);
 		setChoice(undefined);
@@ -483,7 +502,7 @@ function IdleStopDialog({
 					label="Stop when unused for"
 					value={shown}
 					onChange={(event) => setChoice(event.currentTarget.value)}
-					options={IDLE_STOP_CHOICES}
+					options={offered.options}
 				/>
 				<span className="text-sm text-muted">{IDLE_STOP_HINT} Counts from now; its auto-stop still applies.</span>
 			</div>

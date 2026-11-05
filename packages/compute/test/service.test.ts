@@ -753,10 +753,11 @@ describe("sandboxes", () => {
 });
 
 describe("idle stop", () => {
-	function clocked() {
+	function clocked(store?: ReturnType<typeof createMemoryStore>) {
 		const clock = { at: Date.UTC(2026, 0, 1) };
 		const api = createComputeApi({
 			backend: createStubBackend(),
+			...(store === undefined ? {} : { store }),
 			authenticatePerson: async (request) =>
 				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
 			now: () => clock.at,
@@ -880,6 +881,101 @@ describe("idle stop", () => {
 		const idle = await tom.updateSandbox(sandbox.id, { idleStopMinutes: 15 });
 		const [fork] = (await tom.forkSandbox(idle.id, { wait: true })).items;
 		expect(fork?.idleStopMinutes).toBe(15);
+	});
+
+	it("counts a use whose write is held up or failed, till the store has it, against its idle stop only", async () => {
+		const memory = createMemoryStore();
+		const sandboxes = memory.sandboxes;
+		// Writes of a use alone (only `lastActiveAt` moves) fail, or wait for `release`; every other write goes through.
+		let mode: "ok" | "fail" | "hold" = "ok";
+		let release = () => {};
+		const attempts: number[] = [];
+		const store = {
+			...memory,
+			sandboxes: {
+				...sandboxes,
+				async update(
+					id: string,
+					change: Parameters<typeof sandboxes.update>[1],
+					expected?: Parameters<typeof sandboxes.update>[2],
+				) {
+					const current = await sandboxes.get(id);
+					const next = current === undefined ? undefined : change(current);
+					const useOnly =
+						current !== undefined &&
+						next !== undefined &&
+						next.lastActiveAt !== current.lastActiveAt &&
+						JSON.stringify({ ...next, lastActiveAt: 0 }) === JSON.stringify({ ...current, lastActiveAt: 0 });
+					if (useOnly && next?.lastActiveAt !== undefined) attempts.push(next.lastActiveAt);
+					if (useOnly && mode === "fail") throw new Error("The database is away");
+					if (useOnly && mode === "hold") {
+						await new Promise<void>((resolve) => {
+							release = resolve;
+						});
+					}
+					return sandboxes.update(id, change, expected);
+				},
+			},
+		};
+		const { clock, api, tom, after } = clocked(store);
+		const started = clock.at;
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 1, wait: true });
+
+		// A use whose write fails still counts: past a minute from its start, it runs on.
+		mode = "fail";
+		await after(50_000);
+		const used = clock.at;
+		api.service.noteActivity(sandbox.id);
+		await api.service.idle();
+		await after(20_000);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(started);
+		// It's tried again at the next sweep after its window, and once the store is back it's written.
+		mode = "ok";
+		await after(20_000);
+		expect(attempts.filter((at) => at === used).length).toBeGreaterThanOrEqual(3);
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(used);
+
+		// A use whose write is held up: the sweep doesn't wait for it, and doesn't idle-stop the sandbox meanwhile.
+		mode = "hold";
+		await after(15_000);
+		const held = clock.at;
+		api.service.noteActivity(sandbox.id);
+		clock.at += 30_000;
+		// Stored, its last use is over a minute ago (`used`); seen here, it's half a minute.
+		await tom.getCaller();
+		const during = await tom.getSandbox(sandbox.id);
+		expect(during.state).toBe("running");
+		expect(during.lastActiveAt).toBe(used);
+		mode = "ok";
+		release();
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(held);
+
+		// Once its last use is a minute behind, stored or not, it stops.
+		await after(45_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("idle-stop");
+	});
+
+	it("stops for its auto-stop or a stop it is owed however recently it was used", async () => {
+		const store = createMemoryStore();
+		const { api, tom, after } = clocked(store);
+		const timed = await tom.createSandbox({ autoStopMinutes: 2, idleStopMinutes: 10, wait: true });
+		const owed = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 10, wait: true });
+		for (let i = 0; i < 9; i++) {
+			await after(15_000);
+			api.service.noteActivity(timed.id);
+			api.service.noteActivity(owed.id);
+		}
+		await store.sandboxes.update(owed.id, (current) => ({ ...current, stopFor: "egress-rule" }));
+		api.service.noteActivity(owed.id);
+		await after(1_000);
+		const a = await tom.getSandbox(timed.id);
+		expect([a.state, a.reason]).toEqual(["stopped", "auto-stop"]);
+		const b = await tom.getSandbox(owed.id);
+		expect([b.state, b.reason]).toEqual(["stopped", "egress-rule"]);
 	});
 
 	it("stops for its auto-stop, not idleness, where both are due", async () => {

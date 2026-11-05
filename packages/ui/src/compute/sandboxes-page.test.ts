@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import { idleStopText, type Sandbox, type SandboxState, stoppedByText, type Template } from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
+import { IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
 import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
@@ -310,6 +311,30 @@ describe("New sandbox", () => {
 				autoStopMinutes: 60,
 			},
 		);
+	});
+
+	it("keeps a sandbox's own idle stop in its dialog when no preset matches it, so an untouched Save keeps it", () => {
+		// Below, between and above the presets, as the CLI or API may set them.
+		for (const [minutes, label] of [
+			[1, "1 minute"],
+			[45, "45 minutes"],
+			[120, "2 hours"],
+			[1440, "1 day"],
+			[43_200, "30 days"],
+		] as const) {
+			const { options, choice } = idleStopChoices(minutes);
+			// Saving the first choice sends its own minutes, unchanged.
+			expect(Number(choice)).toBe(minutes);
+			expect(options).toContainEqual({ value: String(minutes), label });
+			// The presets and Never are still there to pick, in order, Never first.
+			for (const preset of IDLE_STOP_CHOICES) expect(options).toContainEqual(preset);
+			expect(options[0]?.value).toBe("never");
+			const values = options.slice(1).map((option) => Number(option.value));
+			expect(values).toEqual([...values].sort((a, b) => a - b));
+		}
+		// A preset or none: the presets alone.
+		expect(idleStopChoices(30)).toEqual({ options: IDLE_STOP_CHOICES, choice: "30" });
+		expect(idleStopChoices(undefined)).toEqual({ options: IDLE_STOP_CHOICES, choice: "never" });
 	});
 
 	it("sends an idle stop only when one is chosen", () => {

@@ -811,11 +811,15 @@ function lastUse(sandbox: StoredSandbox): number | undefined {
 	return sandbox.lastActiveAt ?? sandbox.startedAt;
 }
 
-/** Whether a running sandbox's idle stop is due at `at`: it has one, and has gone that long without use. */
-export function idleStopDue(sandbox: StoredSandbox, at: number): boolean {
+/**
+ * Whether a running sandbox's idle stop is due at `at`: it has one, and has gone that long without use. `seenAt` is a
+ * later use this gateway saw that may not be stored yet (its write held back, in flight or failed): it counts too.
+ */
+export function idleStopDue(sandbox: StoredSandbox, at: number, seenAt?: number): boolean {
 	const minutes = sandbox.idleStopMinutes;
 	if (minutes === undefined || minutes === null) return false;
-	const last = lastUse(sandbox);
+	const stored = lastUse(sandbox);
+	const last = seenAt === undefined ? stored : Math.max(stored ?? seenAt, seenAt);
 	return last !== undefined && last + minutes * 60_000 <= at;
 }
 /**
@@ -1575,13 +1579,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	};
 
 	/**
-	 * Each sandbox's use this gateway has seen (`noteActivity`): when it last wrote it, and the latest use since then that
-	 * it held back, which the sweep writes once `ACTIVITY_WRITE_MS` has passed.
+	 * Each sandbox's use this gateway has seen (`noteActivity`): its latest use, the latest the store has taken, when it
+	 * last tried a write (the throttle's window) and the write on its way. A use stays here until a write of it succeeds,
+	 * so one held back, in flight or failed still counts for the sweep's idle stop, and a failed one is tried again.
 	 */
-	const activity = new Map<string, { written: number; held?: number }>();
+	const activity = new Map<string, { latest: number; persisted: number; tried: number; writing?: Promise<void> }>();
 
-	/** Writes `at` as the sandbox's `lastActiveAt`, while it runs with an idle stop and has no later use recorded. */
-	const writeActivity = (sandboxId: string, at: number) =>
+	/**
+	 * Writes `at` as the sandbox's `lastActiveAt`, while it runs with an idle stop and has no later use recorded: true
+	 * once the store has it (or doesn't need it), false if the write failed.
+	 */
+	const writeActivity = (sandboxId: string, at: number): Promise<boolean> =>
 		store.sandboxes
 			.update(sandboxId, (current) =>
 				current.state !== "running" ||
@@ -1591,31 +1599,56 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? undefined
 					: { ...current, lastActiveAt: at },
 			)
-			.catch(() => undefined);
+			.then(
+				() => true,
+				() => false,
+			);
+
+	/** Writes a sandbox's latest use, marking it taken only once the write succeeds. */
+	function persistActivity(
+		sandboxId: string,
+		seen: { latest: number; persisted: number; tried: number; writing?: Promise<void> },
+	) {
+		const at = seen.latest;
+		seen.tried = now();
+		const writing = writeActivity(sandboxId, at).then((ok) => {
+			if (ok) seen.persisted = Math.max(seen.persisted, at);
+			if (seen.writing === writing) seen.writing = undefined;
+		});
+		seen.writing = writing;
+		return writing;
+	}
 
 	function noteActivity(sandboxId: string): void {
 		const at = now();
-		const seen = activity.get(sandboxId);
-		if (seen !== undefined && at - seen.written < ACTIVITY_WRITE_MS) {
-			seen.held = at;
-			return;
-		}
-		activity.set(sandboxId, { written: at });
-		keepGoing(writeActivity(sandboxId, at));
+		let seen = activity.get(sandboxId);
+		if (seen === undefined) {
+			seen = { latest: at, persisted: Number.NEGATIVE_INFINITY, tried: Number.NEGATIVE_INFINITY };
+			activity.set(sandboxId, seen);
+		} else seen.latest = Math.max(seen.latest, at);
+		// Within the window, or with a write on its way, it's held for the sweep after it.
+		if (seen.writing !== undefined || at - seen.tried < ACTIVITY_WRITE_MS) return;
+		keepGoing(persistActivity(sandboxId, seen));
 	}
 
-	/** Writes the use held back whose window has passed, and forgets sandboxes quiet for a window. */
+	/** The latest use this gateway saw of a sandbox, stored or not, for the sweep's idle stop. */
+	const seenActivity = (sandboxId: string): number | undefined => activity.get(sandboxId)?.latest;
+
+	/**
+	 * Writes the use held back (or whose write failed) once its window has passed, and forgets sandboxes whose latest use
+	 * is stored and that were quiet for a window. A write still on its way is left to finish: the sweep counts its use
+	 * from here meanwhile (`seenActivity`), so a slow store doesn't hold the sweep up.
+	 */
 	async function flushActivity(): Promise<void> {
 		const at = now();
 		const writes: Promise<unknown>[] = [];
 		for (const [sandboxId, seen] of activity) {
-			if (at - seen.written < ACTIVITY_WRITE_MS) continue;
-			if (seen.held === undefined) {
+			if (seen.writing !== undefined || at - seen.tried < ACTIVITY_WRITE_MS) continue;
+			if (seen.latest <= seen.persisted) {
 				activity.delete(sandboxId);
 				continue;
 			}
-			activity.set(sandboxId, { written: at });
-			writes.push(writeActivity(sandboxId, seen.held));
+			writes.push(persistActivity(sandboxId, seen));
 		}
 		await Promise.all(writes);
 	}
@@ -6837,10 +6870,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushEgress([sandbox]);
 				}
 				// Due: past its time, owed a stop (`stopFor`) whatever its time says, or gone its idle stop's time unused. A use
-				// recorded before the stop moves it (`lastActiveAt`) keeps it running: `beginStop` asks again as it moves it.
+				// recorded before the stop moves it (`lastActiveAt`), or seen here and not yet stored, keeps it running:
+				// `beginStop` asks again as it moves it.
 				const timeUp = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
 				const due = (current: StoredSandbox) =>
-					current.stopFor !== undefined || timeUp(current) || idleStopDue(current, at);
+					current.stopFor !== undefined || timeUp(current) || idleStopDue(current, at, seenActivity(current.id));
 				if (!due(sandbox) || pending.has(sandbox.id)) continue;
 				connected ??= await connectedHosts();
 				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;

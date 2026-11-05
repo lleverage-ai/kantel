@@ -11,7 +11,13 @@ const SECRET_COMMAND = "cat /home/user/.env | grep OPENAI_API_KEY";
 const SECRET_OUTPUT = "OPENAI_API_KEY=sk-live-the-secret-value";
 
 /** A host serving the fixture's space, which runs calls on a pretend sandbox `sbx_one`. */
-function host(f: Fixture, channel: ByteChannel, knows: readonly ChainEntry[] = f.entries) {
+function host(
+	f: Fixture,
+	channel: ByteChannel,
+	knows: readonly ChainEntry[] = f.entries,
+	/** Held till it settles: each command runs as long as this. */
+	lasts?: Promise<void>,
+) {
 	let state: SpaceState | undefined;
 	const calls: { device: string; method: string; params: unknown }[] = [];
 	const ready = verifyChain(knows).then((verified) => {
@@ -33,6 +39,7 @@ function host(f: Fixture, channel: ByteChannel, knows: readonly ChainEntry[] = f
 			async rpc(device, _sandbox, method, params, emit) {
 				calls.push({ device: device.id, method, params });
 				if (method !== "sandbox.exec") throw Object.assign(new Error("Not here"), { code: "unsupported" });
+				await lasts;
 				emit({ kind: "exec.output", stdout: btoa(SECRET_OUTPUT) });
 				return { exitCode: 0, stdout: `${SECRET_OUTPUT}\n`, stderr: "" };
 			},
@@ -54,7 +61,14 @@ function host(f: Fixture, channel: ByteChannel, knows: readonly ChainEntry[] = f
 	return { served, calls, state: () => state };
 }
 
-async function rpc(f: Fixture, channel: ByteChannel, device = f.bobLaptop, state = f.state, entries = f.entries) {
+async function rpc(
+	f: Fixture,
+	channel: ByteChannel,
+	device = f.bobLaptop,
+	state = f.state,
+	entries = f.entries,
+	keepaliveMs?: number,
+) {
 	return new SessionClient(
 		await openSession({
 			channel,
@@ -65,8 +79,11 @@ async function rpc(f: Fixture, channel: ByteChannel, device = f.bobLaptop, state
 			sandbox: "sbx_one",
 			op: "rpc",
 		}),
+		keepaliveMs === undefined ? {} : { keepaliveMs },
 	);
 }
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("an E2E session through the relay", () => {
 	it("runs a member's command, and the relay sees only ciphertext either way", async () => {
@@ -103,6 +120,44 @@ describe("an E2E session through the relay", () => {
 		// Not even the device's own keys or name: its static key goes encrypted in IK's first message.
 		expect(contains(seen.toHost, f.bobLaptop.static.publicKey)).toBe(false);
 		expect(contains(seen.toHost, utf8("bob"))).toBe(false);
+	});
+
+	it("sends keepalives while a foreground command is pending, and only then, for the sandbox's idle stop", async () => {
+		const f = await fixture();
+		const relay = recordingRelay();
+		let finish = () => {};
+		const lasts = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		const h = host(f, relay.host, f.entries, lasts);
+		const client = await rpc(f, relay.device, f.bobLaptop, f.state, f.entries, 20);
+		const sent = () => relay.seen().toHost.length;
+
+		// A detached command is followed elsewhere (`sandbox.exec.get`): no keepalive for it, even while its call waits.
+		const detached = client.call("sandbox.exec", { command: "sleep 90", detached: true });
+		await pause(10);
+		const afterDetachedCall = sent();
+		await pause(80);
+		expect(sent()).toBe(afterDetachedCall);
+
+		// A foreground one: bytes go to the host every interval while it runs, though it sends no output.
+		const attached = client.call("sandbox.exec", { command: "sleep 90" });
+		await pause(10);
+		const started = sent();
+		await pause(110);
+		const during = sent();
+		expect(during - started).toBeGreaterThanOrEqual(3);
+		finish();
+		await Promise.all([detached, attached]);
+		// The host read past them: the command's answer came, and it ran once each.
+		expect(h.calls.map((call) => call.method)).toEqual(["sandbox.exec", "sandbox.exec"]);
+
+		// Once it ends, they stop.
+		const ended = sent();
+		await pause(80);
+		expect(sent()).toBe(ended);
+		client.close();
+		await h.served;
 	});
 
 	it("brings a host that is behind up to date, so a device added since it last heard can open a session", async () => {
