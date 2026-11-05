@@ -61,13 +61,30 @@ describe("sandbox shapes", () => {
 	});
 
 	it("counts an isolate with no resources as the default isolate, never a microVM size", () => {
-		// The console's API source gives an isolate made before shapes the size "small".
-		const unshaped = sandboxSpec({ kind: "isolate", size: "small" });
+		const unshaped = sandboxSpec({ kind: "isolate" });
 		expect(unshaped).toEqual({ vcpus: 0, memoryGb: 0.25, diskGb: 0 });
 		expect(sizeText(unshaped)).toBe("Shared CPU, 256 MB");
 		const given = { vcpus: 0, memoryGb: 0.375, diskGb: 0 };
-		expect(sandboxSpec({ kind: "isolate", size: "small", resources: given })).toBe(given);
-		expect(sandboxSpec({ kind: "microvm", size: "small" })).toMatchObject({ vcpus: 2, memoryGb: 4, diskGb: 40 });
+		expect(sandboxSpec({ kind: "isolate", resources: given })).toBe(given);
+		// One that asked for 512 MB reads as that while it starts.
+		expect(sandboxSpec({ kind: "isolate", shape: { vcpus: 0, memoryGb: 0.5 } })).toEqual({
+			vcpus: 0,
+			memoryGb: 0.5,
+			diskGb: 0,
+		});
+	});
+
+	it("shows a microVM's asked shape until its host says, and never a sample size's figures", () => {
+		// A custom 4 vCPU, 16 GB microVM while it starts: its shape, no disk yet.
+		const starting = sandboxSpec({ kind: "microvm", shape: { vcpus: 4, memoryGb: 16 } });
+		expect(starting).toEqual({ vcpus: 4, memoryGb: 16 });
+		expect(sizeText(starting)).toBe("4 vCPU, 16 GB");
+		// Once its host says, what it got.
+		const placed = { vcpus: 4, memoryGb: 16, diskGb: 50 };
+		expect(sandboxSpec({ kind: "microvm", shape: { vcpus: 4, memoryGb: 16 }, resources: placed })).toBe(placed);
+		// Neither (a named size not placed yet, or made before shapes): unknown, not the sample small's 2 vCPU, 4 GB.
+		expect(sandboxSpec({ kind: "microvm" })).toBeUndefined();
+		expect(sizeText(undefined)).toBe("–");
 	});
 });
 

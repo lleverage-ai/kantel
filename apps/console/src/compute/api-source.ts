@@ -561,9 +561,13 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		hostname: `${sandbox.subdomain}.${context.domain()}`,
 		accountId: sandbox.accountId,
 		kind: sandbox.type,
-		// Isolates have no size in the API; the smallest stands in.
-		size: sandbox.size === undefined ? "small" : UI_SIZES[sandbox.size],
-		// What the host gave it, which the backend decides: the page shows this rather than the sample's figures.
+		// Isolates and shapes no size names have none: nothing stands in, since the page shows only the figures below.
+		...(sandbox.size === undefined ? {} : { size: UI_SIZES[sandbox.size] }),
+		// What it asked for, so one that is starting (a custom shape, or a fork) shows that rather than nothing.
+		...(sandbox.shape === undefined
+			? {}
+			: { shape: { vcpus: sandbox.shape.vcpus, memoryGb: sandbox.shape.memoryMb / 1024 } }),
+		// What the host gave it, which the backend decides: the page shows this first.
 		...(sandbox.resources === undefined
 			? {}
 			: {

@@ -187,6 +187,19 @@ const sampleDisk = (memoryMb: number): number => {
 	return (presets.find((preset) => preset.memoryMb >= memoryMb) ?? presets.at(-1))?.diskGb ?? 0;
 };
 
+/**
+ * The sample's figures for one of its sandboxes: what its host said, else its size's in `SANDBOX_SIZES`, which are this
+ * sample's sizes (and no real host's: the console never shows them for a real sandbox).
+ */
+const sampleSpec = (box: Sandbox): { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number } =>
+	box.resources ?? sizeSpec(box.size ?? "medium");
+
+/** A sample microVM's machine, as its host would say: its size's figures. */
+const sampleResources = (size: SandboxSize) => {
+	const { vcpus, memoryGb, diskGb } = sizeSpec(size);
+	return { vcpus, memoryGb, diskGb };
+};
+
 const sandbox = (
 	fields: Omit<Sandbox, "hostname" | "usage" | "createdBy"> &
 		Partial<Pick<Sandbox, "usage" | "createdBy">> & { readonly slug: string },
@@ -195,6 +208,10 @@ const sandbox = (
 	return {
 		createdBy: "Tom Davies",
 		usage: rest.state === "running" ? usageSeries(rest.id.length + rest.name.length) : flat(),
+		// What its host gave it, as a real one says: the page shows only that (or the shape it asked for).
+		...(rest.kind === "microvm" && rest.resources === undefined && rest.size !== undefined
+			? { resources: sampleResources(rest.size) }
+			: {}),
 		...rest,
 		hostname: `${rest.name}.${slug}.kantel.example.com`,
 	};
@@ -669,7 +686,7 @@ function historyFor(box: Sandbox): readonly SandboxSnapshot[] {
 			sandboxId: box.id,
 			takenAt,
 			reason: at === 0 && box.state !== "running" ? "stop" : at === count - 1 && box.forkedFrom ? "fork" : "periodic",
-			sizeBytes: Math.round((sizeSpec(box.size).diskGb * 1024 ** 3 * (0.08 + at * 0.004)) / 1024) * 1024,
+			sizeBytes: Math.round((sampleSpec(box).diskGb * 1024 ** 3 * (0.08 + at * 0.004)) / 1024) * 1024,
 			expiresAt: takenAt + 14 * DAY,
 		});
 	}
@@ -1672,7 +1689,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	/** A sandbox's made-up readings between two times: none while it isn't running, its disk and IO where measured. */
 	const sandboxUsage = (id: string, since: number, to: number, intervalMs?: number, history = false): UsageSeries => {
 		const box = find(sandboxes, id, "sandbox");
-		const spec = box.resources ?? sizeSpec(box.size);
+		const spec = sampleSpec(box);
 		const memLimitBytes = spec.memoryGb * 1024 ** 3;
 		const disk = allMetrics && box.kind === "microvm" ? { diskTotalBytes: spec.diskGb * 1024 ** 3 } : {};
 		// A stopped one has its history up to when it stopped; the live read has nothing for it.
@@ -1909,7 +1926,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			sandboxId: box.id,
 			takenAt: now(),
 			reason,
-			sizeBytes: Math.round(sizeSpec(box.size).diskGb * 1024 ** 3 * 0.09),
+			sizeBytes: Math.round(sampleSpec(box).diskGb * 1024 ** 3 * 0.09),
 			expiresAt: now() + 14 * DAY,
 		};
 		history.set(box.id, [snap, ...(history.get(box.id) ?? [])]);
@@ -2071,7 +2088,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								? "medium"
 								: ((presetOf(DEFAULT_SANDBOX_SHAPES, shape)?.name ?? "medium") as SandboxSize),
 						...(shape === undefined
-							? {}
+							? input.kind === "isolate"
+								? {}
+								: { resources: sampleResources("medium") }
 							: {
 									resources: {
 										vcpus: shape.vcpus,
@@ -2271,7 +2290,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			usageNow: (id) =>
 				gate(() => {
 					const box = find(sandboxes, id, "sandbox");
-					const spec = box.resources ?? sizeSpec(box.size);
+					const spec = sampleSpec(box);
 					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
 				}),
 			// Live on this browser's clock, whatever time the rest is at: the graphs move.
@@ -2358,7 +2377,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						kind: box.kind,
 						createdAt: now(),
 						createdBy: VIEWER.name,
-						sizeBytes: Math.round(sizeSpec(box.size).diskGb * 1024 ** 3 * 0.1),
+						sizeBytes: Math.round(sampleSpec(box).diskGb * 1024 ** 3 * 0.1),
 						uses: 0,
 						// Saved on the base the sandbox is on now.
 						...(box.base === undefined ? {} : { base: box.base }),

@@ -53,6 +53,7 @@ import {
 	type SandboxState,
 	type SavedSnapshot,
 	sandboxActions,
+	sandboxMachineText,
 	sandboxMoving,
 	sandboxScreen,
 	sandboxSpec,
@@ -1172,7 +1173,7 @@ function SandboxRow({
 			</td>
 			<td className={cell}>
 				<Tooltip
-					content={`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(spec)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
+					content={`${sandboxMachineText(sandbox)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
 				>
 					<span className="relative z-1 flex flex-col">
 						<span>{SANDBOX_KIND_LABELS[sandbox.kind]}</span>
@@ -1281,9 +1282,7 @@ function SandboxPhoneRow({
 				<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-					<span>
-						{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandboxSpec(sandbox))}
-					</span>
+					<span>{sandboxMachineText(sandbox)}</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
 					<BaseOutdatedBadge base={sandbox.base} now={now} />

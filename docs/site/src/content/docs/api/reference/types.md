@@ -1241,6 +1241,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `subdomain` | string | yes | Its name under the deployment's sandbox domain, which its public port URLs start with. |
 | `type` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `shape` | [SandboxShape](/api/reference/types/#sandboxshape) | no |  |
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
 | `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
@@ -1412,6 +1413,15 @@ A protected variable as one sandbox has it: never its value.
 | `memUsedBytes` | integer | yes | Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. (minimum 0) |
 | `diskUsedBytes` | integer | no | A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it. (minimum 0) |
 | `ioPressure` | number | no | The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. (minimum 0, maximum 1) |
+
+### SandboxShape
+
+The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes | vCPUs: 0 for an isolate, which shares its account's VM's CPU. |
+| `memoryMb` | integer | yes |  |
 
 ### SandboxShapeInput
 

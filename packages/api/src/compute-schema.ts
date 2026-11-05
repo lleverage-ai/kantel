@@ -432,6 +432,20 @@ export const SandboxResources = Type.Object(
 	{ title: "SandboxResources" },
 );
 
+export const SandboxShape = Type.Object(
+	{
+		vcpus: Type.Integer({ description: "vCPUs: 0 for an isolate, which shares its account's VM's CPU." }),
+		memoryMb: Type.Integer(),
+	},
+	{
+		title: "SandboxShape",
+		description:
+			"The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its " +
+			"host places it, what it runs as. Known from the moment it's made, before its host says what it got " +
+			"(`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes.",
+	},
+);
+
 export const GuestFeature = Type.Object(
 	{
 		available: Type.Boolean(),
@@ -791,6 +805,7 @@ export const Sandbox = Type.Object(
 		}),
 		type: SandboxType,
 		size: Type.Optional(SandboxSizeName),
+		shape: Type.Optional(SandboxShape),
 		resources: Type.Optional(SandboxResources),
 		image: Type.Optional(
 			Type.String({ description: "The base image a microVM was made from, such as `ubuntu-24.04`." }),

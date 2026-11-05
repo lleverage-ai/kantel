@@ -7,6 +7,7 @@ import {
 	idleStopText,
 	type Sandbox,
 	type SandboxState,
+	sandboxMachineText,
 	stoppedByText,
 	type Template,
 } from "./compute-model.ts";
@@ -268,6 +269,26 @@ describe("the sandboxes list", () => {
 		expect(countdownText({ ...running, stopsAt: 59_500 }, 0)).toBe("1:00");
 		expect(countdownText(running, 0)).toBe("Always on");
 		expect(countdownText({ state: "stopped", stopsAt: 5 * MINUTE }, 0)).toBe("–");
+	});
+
+	it("lists a starting sandbox as the machine it asked for, never the sample small's 2 vCPU and 4 GB", () => {
+		const { size: _, ...unnamed } = box("dev", "starting");
+		// A custom 4 vCPU, 16 GB microVM while it starts: no size names it, and its host hasn't said.
+		const custom: Sandbox = { ...unnamed, shape: { vcpus: 4, memoryGb: 16 } };
+		expect(sandboxMachineText(custom)).toBe("MicroVM, 4 vCPU, 16 GB");
+		// A fork of it while it starts: its source's machine, recorded from the moment it was made.
+		const fork: Sandbox = {
+			...custom,
+			id: "sbx_fork",
+			forkedFrom: custom.id,
+			resources: { vcpus: 4, memoryGb: 16, diskGb: 50 },
+		};
+		expect(sandboxMachineText(fork)).toBe("MicroVM, 4 vCPU, 16 GB");
+		// Nothing known yet (a named size its host hasn't placed): unknown, not a size's sample figures.
+		expect(sandboxMachineText(box("named", "starting"))).toBe("MicroVM, –");
+		for (const each of [custom, fork, box("named", "starting"), unnamed]) {
+			expect(sandboxMachineText(each)).not.toContain("2 vCPU, 4 GB");
+		}
 	});
 
 	it("shortens a long ID to its start and end, and leaves a short one whole", () => {

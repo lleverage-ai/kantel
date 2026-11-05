@@ -293,8 +293,14 @@ export interface Sandbox {
 	readonly hostname: string;
 	readonly accountId: string;
 	readonly kind: SandboxKind;
-	readonly size: SandboxSize;
-	/** What its host gave it, where that's known: the page shows this rather than its size's usual figures. */
+	/** The size it was made as, by name. Absent: a shape no size names, or an isolate. Never what the page shows. */
+	readonly size?: SandboxSize;
+	/**
+	 * The vCPUs and memory it asked for (a fork, its source's), known from the moment it's made: the page shows this until
+	 * its host says what it got (`resources`).
+	 */
+	readonly shape?: { readonly vcpus: number; readonly memoryGb: number };
+	/** What its host gave it, where that's known: the page shows this first. */
 	readonly resources?: { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number };
 	readonly state: SandboxState;
 	/**
@@ -1905,24 +1911,45 @@ export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 export const sizeSpec = (size: SandboxSize): SandboxSizeSpec =>
 	SANDBOX_SIZES.find((spec) => spec.size === size) ?? (SANDBOX_SIZES[1] as SandboxSizeSpec);
 
-/**
- * What a sandbox was given: what its host said, else its size's usual figures. An isolate made before shapes says
- * nothing and has no size, so it counts as the default isolate (shared CPU, 256 MB, no disk), as Kantel bills it.
- */
-export const sandboxSpec = (
-	sandbox: Pick<Sandbox, "kind" | "size" | "resources">,
-): { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number } =>
-	sandbox.resources ??
-	(sandbox.kind === "isolate"
-		? { vcpus: 0, memoryGb: ISOLATE_MEMORY.default / 1024, diskGb: 0 }
-		: sizeSpec(sandbox.size));
+/** A sandbox's machine as the page shows it. No `diskGb`: its host hasn't said yet (a disk is the host's to give). */
+export interface SandboxSpecFigures {
+	readonly vcpus: number;
+	readonly memoryGb: number;
+	readonly diskGb?: number;
+}
 
-/** "4 vCPU, 8 GB" ("Shared CPU, 256 MB" for an isolate): a size, or what a sandbox was given, in a line. */
-export const sizeText = (size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number }): string => {
+/**
+ * What a sandbox was given: what its host said, else the shape it asked for (no disk yet). An isolate made before shapes
+ * says nothing, so it counts as the default isolate (shared CPU, 256 MB, no disk), as Kantel bills it. Undefined for a
+ * microVM that says neither, such as one made by a named size that hasn't started yet: never `SANDBOX_SIZES`' sample
+ * figures, which are no host's, so the page shows its size as unknown until its host says.
+ */
+export const sandboxSpec = (sandbox: Pick<Sandbox, "kind" | "shape" | "resources">): SandboxSpecFigures | undefined => {
+	if (sandbox.resources !== undefined) return sandbox.resources;
+	if (sandbox.kind === "isolate") {
+		return sandbox.shape === undefined
+			? { vcpus: 0, memoryGb: ISOLATE_MEMORY.default / 1024, diskGb: 0 }
+			: { vcpus: 0, memoryGb: sandbox.shape.memoryGb, diskGb: 0 };
+	}
+	return sandbox.shape === undefined ? undefined : { vcpus: sandbox.shape.vcpus, memoryGb: sandbox.shape.memoryGb };
+};
+
+/**
+ * "4 vCPU, 8 GB" ("Shared CPU, 256 MB" for an isolate): a size, or what a sandbox was given, in a line. "–" where it isn't
+ * known yet (`sandboxSpec` undefined).
+ */
+export const sizeText = (
+	size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number } | undefined,
+): string => {
+	if (size === undefined) return "–";
 	const spec = typeof size === "string" ? sizeSpec(size) : size;
 	const memory = memoryText(Math.round(spec.memoryGb * 1024));
 	return spec.vcpus === 0 ? `Shared CPU, ${memory}` : `${spec.vcpus} vCPU, ${memory}`;
 };
+
+/** "MicroVM, 4 vCPU, 16 GB": a sandbox's type and machine, as its row in the list says them ("MicroVM, –" until known). */
+export const sandboxMachineText = (sandbox: Pick<Sandbox, "kind" | "shape" | "resources">): string =>
+	`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(sandboxSpec(sandbox))}`;
 
 /** A sandbox is between states, so the page reads it again soon. */
 export const sandboxMoving = (state: SandboxState): boolean => state === "starting" || state === "stopping";

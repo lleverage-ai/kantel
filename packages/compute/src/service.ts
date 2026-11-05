@@ -2064,6 +2064,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			subdomain: sandbox.subdomain,
 			type: sandbox.type,
 			size: sandbox.size,
+			// What it asked for, so a sandbox of a shape no size names reads as that shape while it starts.
+			shape: sandbox.shape === undefined ? undefined : { ...sandbox.shape },
 			resources: sandbox.resources,
 			image: sandbox.image,
 			state: sandbox.state,
