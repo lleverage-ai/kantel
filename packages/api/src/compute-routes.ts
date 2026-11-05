@@ -389,7 +389,7 @@ export const listSandboxes = defineRoute({
 	),
 	query: ListSandboxesQuery,
 	answer: { status: 200, description: "A page of sandboxes.", schema: SandboxPage },
-	errors: ["invalid", "forbidden"],
+	errors: ["invalid", "forbidden", "not_found"],
 });
 
 export const getSandboxShapes = defineRoute({

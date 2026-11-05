@@ -31,7 +31,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 
 - `200`: [SandboxPage](/api/reference/types/#sandboxpage) (`application/json`). A page of sandboxes.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Create a sandbox
 
