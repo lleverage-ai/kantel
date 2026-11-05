@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -188,4 +190,41 @@ func TestReleaseDropsOnlyTheBucketMountsAtThosePaths(t *testing.T) {
 	}
 	var none *Mounts
 	none.Release([]string{"/mnt/data"})
+}
+
+// A snapshot's bucket above or under a bundle's path goes too (Cerbie, fe96543c): one above would otherwise be
+// unmounted later with the bundle inside it, and one under would be hidden by the bundle, its later unmount by path
+// reaching into the bundle. One beside it, even sharing a prefix, stays.
+func TestReleaseDropsTheBucketMountsAboveAndUnderThosePaths(t *testing.T) {
+	ms := &Mounts{byPath: map[string]*bucketMount{}}
+	for _, p := range []string{"/mnt/data", "/workspace/skills/old", "/mnt/database", "/srv/a", "/workspace"} {
+		ms.byPath[p] = &bucketMount{ms: ms, spec: MountSpec{Path: p, Key: "k" + p}}
+	}
+	ms.Release([]string{"/mnt/data/skills", "/workspace/skills"})
+	var left []string
+	for p := range ms.byPath {
+		left = append(left, p)
+	}
+	sort.Strings(left)
+	if want := []string{"/mnt/database", "/srv/a"}; !reflect.DeepEqual(left, want) {
+		t.Fatalf("left %v, want %v", left, want)
+	}
+}
+
+func TestOverlaps(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"/mnt/data", "/mnt/data", true},
+		{"/mnt/data", "/mnt/data/sub", true},
+		{"/mnt/data/sub", "/mnt/data", true},
+		{"/mnt/data", "/mnt/database", false},
+		{"/mnt/database", "/mnt/data", false},
+		{"/mnt/a", "/mnt/b", false},
+	} {
+		if got := overlaps(c.a, c.b); got != c.want {
+			t.Errorf("overlaps(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
 }

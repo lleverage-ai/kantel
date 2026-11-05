@@ -56,8 +56,9 @@ func (s *Server) mountBundles(w http.ResponseWriter, r *http.Request) {
 			delete(state, path)
 		}
 	}
-	// A bucket mount a snapshot left where the sandbox now has a bundle goes before the bundle is mounted there, so the
-	// host's later POST /mounts (which no longer names it) can't unmount the bundle in its place.
+	// A bucket mount a snapshot left where the sandbox now has a bundle (at, above or under its path) goes before the
+	// bundle is mounted there, so the host's later POST /mounts (which no longer names it) can't unmount the bundle in
+	// its place.
 	wanted := make([]string, 0, len(req.Mounts))
 	for _, b := range req.Mounts {
 		wanted = append(wanted, b.Path)
