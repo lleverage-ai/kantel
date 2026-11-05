@@ -14043,6 +14043,9 @@
 						},
 						"description": "Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB."
 					},
+					"diskGb": {
+						"$ref": "#/components/schemas/ShapeRange"
+					},
 					"presets": {
 						"type": "array",
 						"items": {
@@ -14052,11 +14055,11 @@
 					},
 					"custom": {
 						"type": "boolean",
-						"description": "Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got."
+						"description": "Whether a host takes shapes off the presets; when false, only the presets. Unless a create asks for a disk (`diskGb`), its host gives one; the sandbox's `resources` say what it got."
 					}
 				},
 				"title": "MicrovmShapes",
-				"description": "Absent when no host the account may use runs microVMs."
+				"description": "Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A create no host has the free disk for now is refused (`exhausted`). `diskGb` is absent when no host takes a disk off its presets."
 			},
 			"Mount": {
 				"type": "object",
@@ -15069,7 +15072,6 @@
 			},
 			"SandboxShapeInput": {
 				"type": "object",
-				"required": ["memoryMb"],
 				"properties": {
 					"vcpus": {
 						"type": "integer",
@@ -15079,11 +15081,16 @@
 					"memoryMb": {
 						"type": "integer",
 						"minimum": 128,
-						"description": "Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`)."
+						"description": "Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). Needed unless `diskGb` is given alone."
+					},
+					"diskGb": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "A microVM's disk in GB, chosen apart from its vCPUs and memory, within `getSandboxShapes`' `microvm.diskGb`. Alone (with `size` or neither), the vCPUs and memory are that size's or the default's. Default: the disk its host gives the shape. Not for an isolate, or with `from`: a sandbox made from a snapshot keeps the snapshot's disk."
 					}
 				},
 				"title": "SandboxShapeInput",
-				"description": "What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch."
+				"description": "What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch."
 			},
 			"SandboxShapes": {
 				"type": "object",
@@ -15122,7 +15129,7 @@
 					}
 				],
 				"title": "SandboxSizeName",
-				"description": "A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now."
+				"description": "A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`)."
 			},
 			"SandboxSource": {
 				"type": "object",

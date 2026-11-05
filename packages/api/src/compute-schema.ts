@@ -309,7 +309,7 @@ export const SandboxSizeName = Type.Union(
 		title: "SandboxSizeName",
 		description:
 			"A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: " +
-			"a named size is still taken for now.",
+			"a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`).",
 	},
 );
 
@@ -324,19 +324,31 @@ export const SandboxShapeInput = Type.Object(
 				description: "A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU.",
 			}),
 		),
-		memoryMb: Type.Integer({
-			minimum: ISOLATE_MEMORY_MB.min,
-			description:
-				"Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers " +
-				"(`getSandboxShapes`).",
-		}),
+		memoryMb: Type.Optional(
+			Type.Integer({
+				minimum: ISOLATE_MEMORY_MB.min,
+				description:
+					"Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers " +
+					"(`getSandboxShapes`). Needed unless `diskGb` is given alone.",
+			}),
+		),
+		diskGb: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description:
+					"A microVM's disk in GB, chosen apart from its vCPUs and memory, within `getSandboxShapes`' " +
+					"`microvm.diskGb`. Alone (with `size` or neither), the vCPUs and memory are that size's or the default's. " +
+					"Default: the disk its host gives the shape. Not for an isolate, or with `from`: a sandbox made from a " +
+					"snapshot keeps the snapshot's disk.",
+			}),
+		),
 	},
 	{
 		title: "SandboxShapeInput",
 		description:
 			"What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host " +
-			"keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that " +
-			"count's template is made. A host with shared templates turned off keeps one per preset, and a shape off " +
+			"keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once " +
+			"that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off " +
 			"the presets boots from scratch.",
 	},
 );
@@ -381,17 +393,29 @@ export const SandboxShapes = Type.Object(
 						{ min: Type.Integer(), max: Type.Integer() },
 						{ description: "Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB." },
 					),
+					/**
+					 * The disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: described on
+					 * `MicrovmShapes`, since a referenced range carries no description of its own.
+					 */
+					diskGb: Type.Optional(ShapeRange),
 					presets: Type.Array(ShapePreset, {
 						description:
 							"Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry.",
 					}),
 					custom: Type.Boolean({
 						description:
-							"Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its " +
-							"host's to give; the sandbox's `resources` say what it got.",
+							"Whether a host takes shapes off the presets; when false, only the presets. Unless a create asks for a " +
+							"disk (`diskGb`), its host gives one; the sandbox's `resources` say what it got.",
 					}),
 				},
-				{ title: "MicrovmShapes", description: "Absent when no host the account may use runs microVMs." },
+				{
+					title: "MicrovmShapes",
+					description:
+						"Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for " +
+						"(`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last " +
+						"reported, its `default` the default preset's. A create no host has the free disk for now is refused " +
+						"(`exhausted`). `diskGb` is absent when no host takes a disk off its presets.",
+				},
 			),
 		),
 		rates: Type.Optional(
