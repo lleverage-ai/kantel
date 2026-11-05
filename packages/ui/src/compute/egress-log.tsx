@@ -233,11 +233,30 @@ export function EgressLog({
 const opens = (entry: LoggedEntry): boolean =>
 	entry.decision === "denied" && (entry.reason !== undefined || entry.rule !== undefined);
 
+/** The wide log's longest path line before it's shortened in the middle, in characters. */
+const PATH_CHARS = 26;
+
+/**
+ * A long path shortened in the middle, keeping its first segment and its end, which say where it went:
+ * `/repos/lleverage-ai/kantel/branches/old` reads `/repos/…/branches/old`. The whole path is in the row's title.
+ */
+function middlePath(path: string, chars = PATH_CHARS): string {
+	if (path.length <= chars) return path;
+	const parts = path.split("/");
+	const head = parts.slice(0, 2).join("/");
+	for (let keep = parts.length - 2; keep >= 1; keep -= 1) {
+		const tail = parts.slice(parts.length - keep).join("/");
+		const short = `${head}/…/${tail}`;
+		if (short.length <= chars && keep < parts.length - 2) return short;
+	}
+	return `${head}/…/${parts.at(-1) ?? ""}`;
+}
+
 /** `GET api.github.com/user`: the method muted, the host in full strength, the path muted. */
 function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boolean }) {
 	if (!wrap) {
-		// The wide log: the method and host on the first line, the path under the host on a second, so a long path is
-		// read rather than cut at the column's edge.
+		// The wide log: the method and host on the first line, the path under the host on a second, each one line, so
+		// every row is the same height; a long path is shortened in the middle and read whole in the row's title.
 		return (
 			<>
 				<span className="block truncate">
@@ -245,10 +264,7 @@ function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boole
 					<span className="font-medium text-fg">{hostText(entry)}</span>
 				</span>
 				{entry.path === undefined || entry.path === "" ? null : (
-					// The whole path, broken after its slashes where it's longer than the column, never cut off.
-					<span className="block pl-18 whitespace-normal wrap-break-word text-muted">
-						<BreakableCommand command={entry.path} />
-					</span>
+					<span className="block truncate pl-18 text-muted">{middlePath(entry.path)}</span>
 				)}
 			</>
 		);
