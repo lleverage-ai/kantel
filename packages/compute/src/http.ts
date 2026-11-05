@@ -64,6 +64,8 @@ export interface ComputeApiOptions {
 	/** The control plane's public URL, for host join commands. Default each request's origin. */
 	readonly publicUrl?: string;
 	readonly mode?: "selfhosted" | "hosted";
+	/** The domain sandboxes' addresses are under, which `GET /v1/me` names. Absent, none is named. */
+	readonly sandboxDomain?: string;
 	/** The join command shown with a host join token, with `{url}` and `{token}`. */
 	readonly hostJoinCommand?: string;
 	/** Account hosts' routes (`/v1/hosts`, experimental): accounts add hosts of their own. Default off. */
@@ -164,6 +166,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		apiBasePath: basePath,
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
+		...(options.sandboxDomain === undefined ? {} : { sandboxDomain: options.sandboxDomain }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
 		...(options.accountHosts === undefined ? {} : { accountHosts: options.accountHosts }),
 		...(options.templates === undefined ? {} : { templates: options.templates }),

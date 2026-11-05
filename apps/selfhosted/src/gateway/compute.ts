@@ -565,6 +565,8 @@ export async function gatewayCompute(options: {
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
+		// With a ports domain, sandboxes' addresses are under it, and the console names them so.
+		...(hosts?.config.portsDomain === undefined ? {} : { sandboxDomain: hosts.config.portsDomain }),
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.templates === true ? { templates: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),

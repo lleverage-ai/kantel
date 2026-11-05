@@ -537,6 +537,9 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			? {}
 			: { sharedHosts: membersOf(options.identity, deploymentOrganisation, now) }),
 		mode: "hosted",
+		// Sandboxes' addresses and ports are under the ports domain (kantel.run), never the console's own name: the console
+		// names them from this, not from the page it is served on.
+		sandboxDomain: portsDomain,
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		// Join commands name the address hosts dial, as tunnel URLs do, not the caller's origin.

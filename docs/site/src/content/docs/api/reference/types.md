@@ -318,6 +318,7 @@ Who is calling, the accounts they may act in, and the deployment's mode.
 | `accounts` | [Account](/api/reference/types/#account)[] | yes |  |
 | `superAdmin` | boolean | yes | Whether the caller may manage the deployment's hosts. |
 | `mode` | [DeploymentMode](/api/reference/types/#deploymentmode) | yes |  |
+| `sandboxDomain` | string | no | The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. |
 
 ### CallerApiKey
 

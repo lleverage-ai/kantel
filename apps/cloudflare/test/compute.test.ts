@@ -133,6 +133,8 @@ describe("the compute API on the gateway", () => {
 			const exposed = await call("POST", `/v1/sandboxes/${made.body.id}/ports`, { port: 3000 });
 			expect(exposed.status).toBe(201);
 			expect(new URL(String(exposed.body.url)).hostname).toBe(`3000-${made.body.subdomain}.${domain}`);
+			// The caller is told the domain, so the console names sandboxes under it rather than its own host (TASK-5220).
+			expect((await call("GET", "/v1/whoami")).body.sandboxDomain).toBe(domain);
 			await close();
 		}
 	});

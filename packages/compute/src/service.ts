@@ -198,6 +198,11 @@ export interface ComputeServiceOptions {
 	readonly apiBasePath?: string;
 	/** Default `selfhosted`. */
 	readonly mode?: "selfhosted" | "hosted";
+	/**
+	 * The domain sandboxes' addresses are under (`<subdomain>.<domain>`, ports `<port>-<subdomain>.<domain>`), which the
+	 * caller is told so the console names them as the deployment serves them. Absent, none is named.
+	 */
+	readonly sandboxDomain?: string;
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
 	readonly hostJoinCommand?: string;
 	/**
@@ -1437,6 +1442,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
+	const deploymentDomain = options.sandboxDomain === undefined ? {} : { sandboxDomain: options.sandboxDomain };
 	const apiBasePath = (options.apiBasePath ?? "/v1").replace(/\/+$/, "");
 	const startHoldMs = options.startHoldMs ?? START_HOLD_MS;
 	const startPollMs = options.startPollMs ?? START_POLL_MS;
@@ -4240,6 +4246,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					accounts,
 					superAdmin: principal.superAdmin,
 					mode,
+					...deploymentDomain,
 				};
 			}
 			return {
@@ -4248,6 +4255,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				accounts,
 				superAdmin: principal.superAdmin,
 				mode,
+				...deploymentDomain,
 			};
 		},
 
