@@ -10,5 +10,8 @@
 		"aws4fetch": "1.0.20",
 		"just-bash": "3.6.0",
 		"workerd": "1.20261027.1"
+	},
+	"overrides": {
+		"undici": "7.30.1"
 	}
 }
