@@ -759,6 +759,13 @@ export interface SandboxesSource {
 	 */
 	shapes?(accountId: string): Promise<SandboxShapes>;
 	list(accountId: string): Promise<readonly Sandbox[]>;
+	/**
+	 * Follows the account's sandboxes live: `changed` with a sandbox's ID each time one changes state, whoever changed it
+	 * (the CLI, the API, an auto-stop), and `deleted` when it was deleted; with none each time the feed connects or
+	 * reconnects, when anything may have changed meanwhile. The pages read again on each. Answers a function that stops.
+	 * Absent: the pages read again only after their own changes and while a sandbox starts or stops.
+	 */
+	watch?(accountId: string, changed: (sandboxId?: string, deleted?: boolean) => void): () => void;
 	create(input: CreateSandboxInput): Promise<Sandbox>;
 	stop(id: string): Promise<Sandbox>;
 	resume(id: string): Promise<Sandbox>;

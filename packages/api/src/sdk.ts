@@ -133,6 +133,7 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 		...(body === undefined ? [] : [body]),
 		...(raw === undefined ? [] : [raw]),
 		...(binary ? ["binary: true"] : []),
+		...(route.stream?.eventsOnly === true ? ["events: true"] : []),
 	].join(", ");
 	const summary = [
 		route.summary,

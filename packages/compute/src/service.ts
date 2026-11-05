@@ -66,6 +66,7 @@ import type {
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
+import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import { makesCustom, makesShape, recordedMachine, recordsMachine, sandboxMachine } from "./machine.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
 import {
@@ -244,6 +245,11 @@ export interface ComputeServiceOptions {
 	readonly baseImages?: BaseImages;
 	/** Emails an invite made for an address, with a link that joins with its code. Absent, Kantel sends none. */
 	readonly invites?: InviteMailing;
+	/**
+	 * Carries sandboxes' changes between gateways over one database (`live.ts`), so a console watching on one sees what
+	 * another did. Absent, one process alone: its own changes only.
+	 */
+	readonly liveRelay?: LiveRelay;
 }
 
 /** One invite to email: the same message as identity's `InviteMessage`, so its mailers send it as they are. */
@@ -1259,7 +1265,17 @@ const whole = (value: unknown): number =>
 
 /** The compute plane's handlers over a store and a backend. */
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
-	const { store, backend, dispatcher, exporter, now } = options;
+	const { backend, dispatcher, exporter, now } = options;
+	// Every change of a sandbox's state is a write of its record, so the feed publishes from the store itself: whoever moved
+	// it (a call, the sweep's auto-stop, a host's report), the watchers hear of it (`live.ts`).
+	const live = createLiveFeed({
+		read: (sandboxId) => options.store.sandboxes.get(sandboxId),
+		...(options.liveRelay === undefined ? {} : { relay: options.liveRelay }),
+	});
+	const store: ComputeStore = {
+		...options.store,
+		sandboxes: watchSandboxes(options.store.sandboxes, (change) => live.publish(change), now),
+	};
 	const e2eChains = createE2EChains(store.e2eChain, now);
 	/**
 	 * A host's own account's chain; for a shared host, the chain of a space it runs a sandbox of or is enrolled in
@@ -2408,6 +2424,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
+	}
+
+	/**
+	 * A watcher as they are now: a key's current scopes and limits, or a person whose sign-in is still live; undefined once
+	 * the key is revoked or expired, or the sign-in has ended.
+	 */
+	async function watcherNow(principal: Principal): Promise<Principal | undefined> {
+		if (principal.kind === "key") return liveKeyPrincipal(store, principal.keyId, now());
+		if (principal.session !== undefined && options.sessionLive !== undefined) {
+			if (!(await options.sessionLive(principal.session))) return undefined;
+		}
+		return (await store.users.get(principal.userId)) === undefined ? undefined : principal;
 	}
 
 	/** Whether the caller may see a sandbox in an account where they have `role`. */
@@ -5621,6 +5649,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: page.items, nextCursor: page.nextCursor };
 		},
 
+		watchEvents: async (principal, { query }, request) => {
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "sandboxes:read", role);
+			return watchResponse({
+				feed: live,
+				accountId: account.id,
+				now,
+				signal: request.signal,
+				// Each change is checked as `listSandboxes` and `listEvents` check what they answer, against the caller as they
+				// are now: one whose key or sign-in has ended, or who has left the account, watches no more.
+				mayWatch: async (published): Promise<WatchVerdict> => {
+					const current = await watcherNow(principal);
+					if (current === undefined) return "end";
+					const roleNow = await roleIn(store, current, account.id);
+					if (roleNow === undefined) return "end";
+					try {
+						requireScope(current, "sandboxes:read", roleNow);
+					} catch {
+						return "end";
+					}
+					const sandbox = await published.sandbox();
+					const limited = current.kind === "key" && current.limits.sandboxIds !== undefined;
+					// One whose record is gone (a create that failed) stays with the account's admins and unlimited keys.
+					if (sandbox === undefined) return !limited && (roleNow === "owner" || roleNow === "admin") ? "send" : "skip";
+					return (await canSee(current, sandbox, roleNow)) ? "send" : "skip";
+				},
+			});
+		},
+
 		listWebhooks: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:admin", role);
@@ -6192,6 +6249,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async close() {
 			closing = true;
 			for (const controller of runningCommands.values()) controller.abort();
+			await live.close();
 			await idle();
 		},
 

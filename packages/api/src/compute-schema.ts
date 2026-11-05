@@ -2387,6 +2387,38 @@ export const Event = Type.Object(
 
 export const EventPage = Type.Object({ items: Type.Array(Event), nextCursor }, { title: "EventPage" });
 
+export const LiveHello = Type.Object(
+	{ type: Type.Literal("hello"), at: Timestamp },
+	{
+		title: "LiveHello",
+		description:
+			"The stream is open. Read what you show again after each one: changes made while no stream was open (before the " +
+			"first, between a drop and the reconnection) are not sent.",
+	},
+);
+
+export const LiveSandboxChange = Type.Object(
+	{
+		type: Type.Literal("sandbox"),
+		sandboxId: Type.String(),
+		accountId: Type.String(),
+		state: SandboxState,
+		previousState: Type.Optional(SandboxState),
+		at: Timestamp,
+	},
+	{
+		title: "LiveSandboxChange",
+		description:
+			"A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, the API or an SDK, its auto-stop, " +
+			"its host). No `previousState`: it was just made. Read the sandbox for the rest.",
+	},
+);
+
+export const LiveFrame = Type.Union([LiveHello, LiveSandboxChange], {
+	title: "LiveFrame",
+	description: "One frame of the account's live stream.",
+});
+
 export const ListEventsQuery = Type.Object(
 	{
 		account: accountQuery,
@@ -3034,6 +3066,8 @@ export type UpdateTemplateBody = Static<typeof UpdateTemplateBody>;
 export type PublishTemplateBaseBody = Static<typeof PublishTemplateBaseBody>;
 export type EventType = Static<typeof EventType>;
 export type Event = Static<typeof Event>;
+export type LiveFrame = Static<typeof LiveFrame>;
+export type LiveSandboxChange = Static<typeof LiveSandboxChange>;
 export type Webhook = Static<typeof Webhook>;
 export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;

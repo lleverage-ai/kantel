@@ -51,6 +51,7 @@ import {
 	stopsInText,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
+import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
@@ -258,6 +259,8 @@ export function SandboxPage({
 		const timer = setTimeout(reload, wait);
 		return () => clearTimeout(timer);
 	}, [moving, running, pollMs, fixedNow, reload, state]);
+	// And at once when it changes elsewhere: the CLI, the API, its auto-stop.
+	useFollowSandboxes(source, sandbox?.accountId, reload, { id: sandboxId, onDeleted: () => setDeleted(true) });
 
 	const windows = running && sandbox?.kind === "microvm";
 	const { access, read: readAccess, fresh: freshAccess, stale: accessStale } = useAccess(source, sandboxId, windows);

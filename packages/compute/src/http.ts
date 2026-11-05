@@ -22,6 +22,7 @@ import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
 import type { BaseImages } from "./base-status.ts";
+import type { LiveRelay } from "./live.ts";
 import { FILE_URL_PATH, type MountsOptions } from "./mounts.ts";
 import {
 	type ComputeLimits,
@@ -91,6 +92,8 @@ export interface ComputeApiOptions {
 	readonly mounts?: MountsOptions;
 	/** Emails an invite made for an address, with a link to join (`ComputeServiceOptions.invites`); absent, none. */
 	readonly invites?: InviteMailing;
+	/** Sandboxes' changes from the other gateways over one database (`ComputeServiceOptions.liveRelay`); absent, none. */
+	readonly liveRelay?: LiveRelay;
 }
 
 export interface ComputeApi {
@@ -168,6 +171,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.liveRelay === undefined ? {} : { liveRelay: options.liveRelay }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));
