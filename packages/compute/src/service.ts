@@ -9,16 +9,30 @@
  * after another. Every change is an event (`EVENT_TYPES`), stored, queued for the account's webhooks and exported as an
  * OpenTelemetry log record.
  *
- * Cost uses a per-type and per-size rate table; the default, `PLACEHOLDER_RATES`, is a placeholder until real pricing
- * exists. CPU seconds are estimated from the usage readings taken while a sandbox runs.
+ * Cost uses a rate table per vCPU and per GB of memory an hour; the default, `PLACEHOLDER_RATES`, is a placeholder until
+ * real pricing exists. CPU seconds are estimated from the usage readings taken while a sandbox runs.
  *
  * An environment is what a sandbox starts with: plain variables, protected ones, secret files, repositories and egress
  * grants. A protected variable's value is sealed (`secrets.ts`) and never answered: the sandbox gets a placeholder of
  * its own, and only the sandbox's host is given the value (`protectedTable`, over its link), for its egress proxy to
  * swap in on requests to the variable's bindings.
+ *
+ * A template (experimental, `templates.ts`) is a versioned microVM profile whose snapshots are built in the background
+ * and kept as a cache apart from the account's snapshots; a create naming one starts from its newest ready snapshot, or
+ * boots fresh.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
-import { KantelError } from "@kantel/contracts";
+import {
+	INVITE_EMAIL_MAX_LENGTH,
+	KantelError,
+	MOUNTS_OFF,
+	mountCovering,
+	mountsTouching,
+	normaliseEmail,
+	type PlacementReason,
+	placementError,
+	placementReasonOf,
+} from "@kantel/contracts";
 import type { ChainEntry } from "@kantel/e2e/chain";
 import {
 	type Acting,
@@ -41,11 +55,30 @@ import type {
 	BackendEgress,
 	BackendEgressGrant,
 	BackendFileEntry,
+	BackendHost,
+	BackendMountStatus,
+	BackendSize,
 	BootOptions,
 	Placement,
 	SandboxBackend,
+	SandboxTemplateBoot,
 } from "./backend.ts";
+import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
+import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
+import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
+import { makesCustom, makesShape, recordedMachine, recordsMachine, sandboxMachine } from "./machine.ts";
+import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
+import {
+	backendMounts,
+	createMounts,
+	type MountHandlers,
+	mountsAfter,
+	pendingMounts,
+	reportMountStatuses,
+} from "./mounts-service.ts";
+import { isPlaceholderName, personName } from "./names.ts";
+import { delay, START_HOLD_MS, START_POLL_MS, sandboxNotRunning } from "./not-running.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -61,13 +94,26 @@ import type {
 	StoredHost,
 	StoredInvite,
 	StoredProxy,
+	StoredSample,
 	StoredSandbox,
 	StoredSnapshot,
 	StoredTelemetry,
+	StoredUsageClaim,
 	StoredWebhook,
 } from "./store.ts";
-import { UniqueViolation } from "./store.ts";
+import { UniqueViolation, usageClaimId } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
+import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
+import {
+	type BackendUsageReport,
+	createUsageSeries,
+	RAW_WINDOW_MS,
+	type ReportedUsage,
+	ROLLUP_MS,
+	type Rollup,
+	SPARKLINE_POINTS,
+	USAGE_INTERVAL_MS,
+} from "./usage-series.ts";
 import {
 	base64ToBytes,
 	bytesToBase64,
@@ -91,20 +137,43 @@ type EventData = computeSchema.Event["data"];
 /** What decides a sandbox's egress besides its account's proxy settings. */
 type EgressSubject = Pick<StoredSandbox, "environmentId" | "placeholders" | "grants" | "egressRevision">;
 
-/** What an hour of running costs, per type and microVM size. */
+/** What an hour of running costs: a microVM by its vCPUs and memory, an isolate by its memory (its CPU is shared). */
 export interface RateTable {
 	/** ISO 4217. */
 	readonly currency: string;
-	readonly isolate: number;
-	readonly microvm: { readonly [size in computeSchema.SandboxSizeName]: number };
+	readonly microvmPerVcpuHour: number;
+	readonly microvmPerGbHour: number;
+	readonly isolatePerGbHour: number;
 }
 
 /** A placeholder until real pricing exists: rough figures so the console has something to show. */
 export const PLACEHOLDER_RATES: RateTable = {
 	currency: "USD",
-	isolate: 0.01,
-	microvm: { small: 0.03, default: 0.06, large: 0.12, xlarge: 0.24 },
+	microvmPerVcpuHour: 0.0075,
+	microvmPerGbHour: 0.00125,
+	isolatePerGbHour: 0.02,
 };
+
+/** What an hour of a sandbox of `type` with these resources costs at `rates`. */
+export function hourlyRate(
+	rates: RateTable,
+	type: computeSchema.SandboxType,
+	resources: { readonly vcpus: number; readonly memoryMb: number },
+): number {
+	const gb = resources.memoryMb / 1024;
+	const rate =
+		type === "isolate"
+			? gb * rates.isolatePerGbHour
+			: resources.vcpus * rates.microvmPerVcpuHour + gb * rates.microvmPerGbHour;
+	return Math.round(rate * 1e6) / 1e6;
+}
+
+/** A microVM's memory may be this much per vCPU, at least and at most. */
+export const MEMORY_MB_PER_VCPU = { min: 512, max: 8192 } as const;
+/** A microVM's memory moves in steps of this. */
+const MICROVM_MEMORY_STEP_MB = 512;
+/** No host takes more vCPUs than this (Firecracker's limit). */
+const MAX_VCPUS = 32;
 
 /** Limits on every account, where the deployment sets any. */
 export interface ComputeLimits {
@@ -122,6 +191,8 @@ export interface ComputeServiceOptions {
 	readonly now: () => number;
 	/** The control plane's public URL, for host join commands. Default the request's origin. */
 	readonly publicUrl?: string;
+	/** The API's base path, where its routes are served (`createComputeApi`'s `basePath`), for the URLs it mints. Default `/v1`. */
+	readonly apiBasePath?: string;
 	/** Default `selfhosted`. */
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
@@ -132,6 +203,18 @@ export interface ComputeServiceOptions {
 	 * `KANTEL_ACCOUNT_HOSTS=experimental`, and only where sandboxes run on hosts.
 	 */
 	readonly accountHosts?: boolean;
+	/**
+	 * Read-only mounts, bundles, bucket sources, signed file URLs and archive extraction (experimental). Absent, off:
+	 * their routes, and a create naming `mounts`, answer `not_supported`. The gateways turn it on with
+	 * `KANTEL_MOUNTS=experimental`.
+	 */
+	readonly mounts?: MountsOptions;
+	/**
+	 * Templates (experimental, `templates.ts`): versioned microVM profiles and their snapshot cache (`/v1/templates`).
+	 * Off, those routes and a create naming a template answer `not_supported`, as they do with a backend that has no
+	 * templates. Default off; the gateways turn it on with `KANTEL_TEMPLATES=experimental`.
+	 */
+	readonly templates?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
 	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
@@ -154,6 +237,61 @@ export interface ComputeServiceOptions {
 	 * (`not_supported`), and plain variables still work. Not a key: the service refuses to start.
 	 */
 	readonly secretsKey?: string;
+	/**
+	 * Image patching (experimental): Kantel's base image index (`base-status.ts`), which sandboxes' and snapshots' `base`,
+	 * `restartSandboxOnLatest` and the admin's `listBaseImages` read. Absent, the feature is off: no `base` is answered
+	 * and those routes answer `not_supported`. The gateways set it with `KANTEL_IMAGE_PATCHING=experimental`, and cache
+	 * the index themselves.
+	 */
+	readonly baseImages?: BaseImages;
+	/** Emails an invite made for an address, with a link that joins with its code. Absent, Kantel sends none. */
+	readonly invites?: InviteMailing;
+	/**
+	 * Carries sandboxes' changes between gateways over one database (`live.ts`), so a console watching on one sees what
+	 * another did. Absent, one process alone: its own changes only.
+	 */
+	readonly liveRelay?: LiveRelay;
+	/**
+	 * How long a call that needs a running sandbox (a command, a file) waits for one that is starting, before it answers
+	 * `conflict` with `sandbox_starting`. Not counted against a command's own timeout. Default `START_HOLD_MS`, 60 s.
+	 */
+	readonly startHoldMs?: number;
+	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
+	readonly startPollMs?: number;
+}
+
+/** One invite to email: the same message as identity's `InviteMessage`, so its mailers send it as they are. */
+export interface InviteMail {
+	readonly to: string;
+	/** The organisation's name. */
+	readonly organisation: string;
+	/** Who made the invite: their email, or their name without one. */
+	readonly invitedBy: string;
+	/** The console, opened on the join with the invite's code (`inviteLink`). */
+	readonly link: string;
+	readonly expiresAt: number;
+}
+
+/** How a deployment emails invites (`ComputeServiceOptions.invites`). */
+export interface InviteMailing {
+	send(mail: InviteMail): Promise<void>;
+	/**
+	 * Whether `email` can sign in to follow the link. An invite to an address that can't isn't emailed (its code is shown
+	 * to pass on instead), since its link would lead nowhere. Without it, every address can (open sign-up).
+	 */
+	readonly canSignIn?: (email: string) => Promise<boolean>;
+	/** The console's address, which the link opens. Default the address the invite was made at. */
+	readonly consoleUrl?: string;
+	/** A send that failed, for the log: the invite stands, and the console shows its code to pass on instead. */
+	readonly onMailError?: (error: unknown, to: string) => void;
+}
+
+/**
+ * The link in an invite's email: the console, which opens Join with the code. The code goes in the fragment, which a
+ * browser never sends, so it stays out of every request log on the way.
+ */
+export function inviteLink(consoleUrl: string, code: string): string {
+	return `${consoleUrl.replace(/\/+$/, "")}/organisation#join=${encodeURIComponent(code)}`;
 }
 
 /** A destination a protected value may go to, as the host's proxy is given it: every list present, empty for any. */
@@ -204,6 +342,8 @@ export const SHARED_HOSTS_REFUSED =
 export const NEVER_MADE =
 	"This sandbox was never made from its source, and there's no snapshot left to make it from; fork or create it again";
 
+/** A sandbox's reason once its host is revoked (`strandOn`). */
+export const HOST_REVOKED_REASON = "Its host was revoked, so it can't be reached; delete it to write it off";
 /** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
 	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
@@ -212,21 +352,60 @@ export const HOST_NOT_REVOCABLE =
 export const SHARED_KEY_REFUSED =
 	"This key may use the deployment's shared hosts, which you may not, so you can't take its secret; revoke it instead";
 
+/**
+ * What someone joining with an invite made for another email is told: both emails, so they can sign in as the one it
+ * was made for. Whoever holds the code was given it, so naming the invited email tells them nothing new.
+ */
+export function inviteForSomeoneElse(invited: string, signedInAs: string | undefined): string {
+	const as = signedInAs === undefined || signedInAs === "" ? "with no email" : `as ${normaliseEmail(signedInAs)}`;
+	return `This invite is for ${normaliseEmail(invited)}, but you're signed in ${as}. Sign in as ${normaliseEmail(invited)} to join.`;
+}
+
+/** An invite's email as it is kept: trimmed and lower-cased, so it matches the email the person signs in with. */
+function inviteEmail(email: string): string {
+	const normalised = normaliseEmail(email);
+	if (normalised.length > INVITE_EMAIL_MAX_LENGTH || !/^[^\s@]+@[^\s@]+$/.test(normalised)) {
+		throw new KantelError("invalid", "The invite's email is not an email address");
+	}
+	return normalised;
+}
+
 export interface ComputeService {
 	/** A handler for every compute route that signs the caller in, given the signed-in caller. */
 	readonly handlers: RouteHandlers<SignedInComputeRoutes, Principal>;
 	/** A handler for each route that takes no credential (`publicComputeRoutes`), given no caller. */
 	readonly publicHandlers: RouteHandlers<PublicComputeRoutes, undefined>;
-	/** Stops every running sandbox whose `stopsAt` has passed. */
+	/**
+	 * Stops every running sandbox whose `stopsAt` has passed, and with templates on reconciles every template's snapshot
+	 * cache (which notices hosts' runtimes changing).
+	 */
 	sweep(): Promise<void>;
+	/**
+	 * Makes `digest` a template base channel's current one (the image patching pipeline's call, as the super-admin's
+	 * `POST /v1/template-bases` is), and rebuilds the templates following it in the background. `not_supported` while
+	 * templates are off.
+	 */
+	publishTemplateBase(input: computeSchema.PublishTemplateBaseBody): Promise<computeSchema.TemplateBaseChannel>;
 	/**
 	 * Whether `grantee` (`encodeGrantee`) may still open `sandboxId`'s access: the key unrevoked and unexpired, or the
 	 * person's sign-in live, and either still able to see the sandbox with the `access` scope. A relay asks while access
 	 * it carries lasts. No grantee named: true.
 	 */
 	stillAllowed(grantee: string | undefined, sandboxId: string): Promise<boolean>;
-	/** Reads every running sandbox's usage, keeps it, and answers it for the metrics export. */
+	/**
+	 * The running sandboxes' readings since the last call, for the metrics export: what their hosts reported
+	 * (`recordUsage`), and for a host that doesn't report, one read now by running a command in the sandbox.
+	 */
 	sampleUsage(): Promise<TelemetryUsageSample[]>;
+	/**
+	 * Takes a host's usage tick (`HostUsageReport` in @kantel/hosts): its own readings and its sandboxes', kept in
+	 * memory for an hour as they came and as 5-minute means, a sandbox's in its record. Readings for a sandbox not on
+	 * `hostId` are dropped. A host's ticks are taken in the order they came. `shared`: another gateway replica, the one
+	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't. A numbered tick
+	 * (`seq` and `run`) taken already, as one sent again after a reconnect is, resolves without being taken twice. It
+	 * resolves once the tick is in its series: what the host's link acknowledges (`usage.ack`).
+	 */
+	recordUsage(hostId: string, report: ReportedUsage, how?: { readonly shared?: boolean }): Promise<void>;
 	/**
 	 * A sandbox's protected values, opened, for the host that asked over its link (`secrets.fetch`): `undefined` unless
 	 * the sandbox's recorded host is `hostId`, so a host learns only its own sandboxes' values. `unavailable` when a value
@@ -250,11 +429,71 @@ export interface ComputeService {
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
 	 */
 	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
+	/**
+	 * Fills in the bases a host says its sandboxes' disks and its snapshots are on (image patching, experimental: its
+	 * hello, its events and its snapshot list), so what was made before the host versioned its images shows its base
+	 * without another boot. Only a sandbox on `hostId`, or a snapshot whose ref is that host's. A sandbox's report is
+	 * ordered by its `baseAt`, the time the host put it on that base: it fills a missing base, and replaces one only when
+	 * later than the time recorded (a rebase boot whose answer was lost), so one read before a boot never undoes it. A
+	 * snapshot's base never changes, so only a missing one is filled. Only a base that looks like one (a host images
+	 * version or a digest).
+	 */
+	recordBases(hostId: string, reports: BaseReports): Promise<void>;
+	/**
+	 * A bundle's tar, for the host that asked (`GET /v1/hosts/bundles/{digest}`): `undefined` unless `sandboxId` is on
+	 * `hostId` (or still starting, so being placed there) and mounts `digest`. Mounts off: always `undefined`.
+	 */
+	bundleForHost(hostId: string, sandboxId: string, digest: string): Promise<StoredBlob | undefined>;
+	/**
+	 * A bucket source with its credentials opened, for the host that asked over its link (`bucket.fetch`): `undefined`
+	 * unless `sandboxId` is on `hostId` (or still starting) and mounts `bucketSourceId`. `unavailable` when its
+	 * credentials don't open. Mounts off: always `undefined`.
+	 */
+	bucketSourceForHost(
+		hostId: string,
+		sandboxId: string,
+		bucketSourceId: string,
+	): Promise<ResolvedBucketSource | undefined>;
+	/**
+	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
+	 * Dropped unless the sandbox is on `hostId`; a path the sandbox doesn't mount is ignored.
+	 */
+	reportMounts(hostId: string, sandboxId: string, mounts: readonly BackendMountStatus[]): Promise<void>;
+	/**
+	 * Answers a signed file URL (`GET` or `PUT /v1/file-urls/{token}`), which takes no credential: the token is the
+	 * grant. Streams the file out, or the request's body in.
+	 */
+	serveFileUrl(token: string, request: Request): Promise<Response>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
 	idle(): Promise<void>;
 	/** Kills the detached commands and waits for the work under way. */
 	close(): Promise<void>;
 }
+
+/** What a mounts route answers with mounts off. */
+async function mountsOff(): Promise<never> {
+	throw new KantelError("not_supported", MOUNTS_OFF);
+}
+
+/** Refuses a write into one of the sandbox's mounts, which are read-only. */
+function refuseInMount(sandbox: StoredSandbox, path: string): void {
+	const mount = mountCovering(sandbox.mounts, path);
+	if (mount !== undefined) throw new KantelError("conflict", `${path} is in the read-only mount at ${mount.path}`);
+}
+
+const MOUNTS_OFF_HANDLERS: MountHandlers = {
+	createUploadUrl: mountsOff,
+	createDownloadUrl: mountsOff,
+	extractArchive: mountsOff,
+	uploadBundle: mountsOff,
+	listBundles: mountsOff,
+	getBundle: mountsOff,
+	deleteBundle: mountsOff,
+	createBucketSource: mountsOff,
+	listBucketSources: mountsOff,
+	getBucketSource: mountsOff,
+	deleteBucketSource: mountsOff,
+};
 
 /** A port's URL as a sandbox's record keeps it: without its token, which only the answer to exposing it shows. */
 function withoutPortToken(url: string): string {
@@ -287,10 +526,93 @@ export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_OUTPUT_CHARS = 1024 * 1024;
 /** A command's default time limit. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
+/** How many of each base image's versions the admin list answers, newest first. */
+export const BASE_IMAGE_VERSIONS_LISTED = 10;
+/** The routes whose answers carry a sandbox's or snapshot's `base`, which read the base image index first. */
+const BASE_ROUTES = [
+	"listSandboxes",
+	"createSandbox",
+	"getSandbox",
+	"updateSandbox",
+	"startSandbox",
+	"stopSandbox",
+	"resumeSandbox",
+	"forkSandbox",
+	"recoverSandbox",
+	"restartSandboxOnLatest",
+	"deleteSandbox",
+	"listSnapshots",
+	"takeSnapshot",
+	"saveSnapshot",
+	"getSnapshot",
+] as const satisfies readonly (keyof SignedInComputeRoutes)[];
 /** How long an automatic snapshot is kept. */
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
-/** The usage readings kept per sandbox: a day at one every 5 minutes. */
+/** The usage readings kept per sandbox: a day of 5-minute means. */
 export const MAX_SAMPLES = 288;
+/** How far apart readings are taken by running a command in a sandbox, for a host that doesn't send its own. */
+export const FALLBACK_INTERVAL_MS = 60_000;
+/** How often a read may run that command at most, per sandbox. */
+export const FALLBACK_READ_GAP_MS = 15_000;
+/** How often a host's tick also closes the 5-minute means of sandboxes that stopped reporting. */
+const SETTLE_EVERY_MS = 60_000;
+/** How far ahead of the control plane's a host's clock may be before its ticks are stamped on arrival instead. */
+const MAX_CLOCK_SKEW_MS = 30_000;
+/** The most numbered ticks held for a host while they can't be taken: its own backlog's bound (kantel-host's). */
+export const MAX_HELD_USAGE = 120;
+const HOUR_MS = 3_600_000;
+/** The runs of a host's sampler whose taken ticks are kept (`takenSeq`): a restart or two, and a late tick of the last. */
+const MAX_RUNS_KEPT = 4;
+/** Expired usage claims removed at once, and the pause between batches (`sweepUsageClaims`). */
+const CLAIM_SWEEP_BATCH = 50;
+const CLAIM_SWEEP_PAUSE_MS = 50;
+
+/** A tick from a host with acknowledged ticks (`usage-acks`): its `seq` and `run` both there. */
+type NumberedUsage = ReportedUsage & { readonly seq: number; readonly run: string };
+
+/**
+ * A numbered tick on its way in. `shared`: another replica passed it on. `exported`: whether this replica exports it,
+ * once its claim (`claimUsage`) is settled; kept while it is held, so trying it again doesn't claim it again.
+ */
+interface HeldUsage {
+	readonly report: NumberedUsage;
+	readonly shared: boolean;
+	exported?: boolean;
+}
+/** A host is reporting while its last tick came within this, or 3 of its intervals if longer. */
+const REPORTING_WITHIN_MS = 15_000;
+/** How far back the metrics export reaches for a sandbox it hasn't exported before. */
+const EXPORT_LOOKBACK_MS = 5 * 60_000;
+
+/**
+ * The mean CPU and memory over `[from, to)` of a sandbox's kept samples, each weighted by how much of the span it
+ * covers. A 5-minute mean (one with `readings`, what hosts' ticks are kept as) covers its 5 minutes, the one under way
+ * included; a single reading (kept before ticks, a minute apart) counts for a minute when it falls in the span, wherever
+ * it was taken. A response interval that isn't on a 5-minute boundary so gets the means it overlaps.
+ */
+export function spanMean(
+	samples: readonly StoredSample[],
+	from: number,
+	to: number,
+): { cpu: number; memoryMb: number } {
+	let weight = 0;
+	let cpu = 0;
+	let memoryMb = 0;
+	for (const sample of samples) {
+		const covered =
+			sample.readings !== undefined
+				? Math.min(to, sample.at + ROLLUP_MS) - Math.max(from, sample.at)
+				: sample.at >= from && sample.at < to
+					? FALLBACK_INTERVAL_MS
+					: 0;
+		if (covered <= 0) continue;
+		weight += covered;
+		cpu += covered * sample.cpu;
+		memoryMb += covered * sample.memoryMb;
+	}
+	return weight === 0 ? { cpu: 0, memoryMb: 0 } : { cpu: cpu / weight, memoryMb: memoryMb / weight };
+}
+const MIB = 1024 * 1024;
 /** The egress log entries kept per sandbox, newest first. */
 export const MAX_EGRESS_ENTRIES = 1000;
 /** How many of a placeholder's characters the API shows: `kph_` and 4 more, to tell it apart, never to use it. */
@@ -312,6 +634,8 @@ const STOP_LEASE_MS = 5 * 60_000;
 const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
 /** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
 const EGRESS_POLICY_FEATURE = "egress-policy";
+/** What a host reports when it sends its own usage ticks (`HOST_FEATURES.usage` in @kantel/hosts). */
+const USAGE_FEATURE = "usage";
 /**
  * How long an idempotency key's claim lasts without a renewal: a gateway that dies mid-call frees its key within this,
  * and a retry then does the work. The holder renews it every `IDEMPOTENCY_RENEW_MS` while the work runs.
@@ -331,6 +655,131 @@ function article(type: string): string {
 	return /^[aeiou]/i.test(type) ? "an" : "a";
 }
 
+/** What a named size stood for before hosts reported theirs (`kantel-host`'s defaults), to price an old sandbox by. */
+const LEGACY_SIZES: { readonly [size: string]: { readonly vcpus: number; readonly memoryMb: number } } & {
+	readonly default: { readonly vcpus: number; readonly memoryMb: number };
+} = {
+	small: { vcpus: 1, memoryMb: 1024 },
+	default: { vcpus: 4, memoryMb: 2048 },
+	large: { vcpus: 4, memoryMb: 8192 },
+	xlarge: { vcpus: 16, memoryMb: 32768 },
+};
+
+/** `value` down to a multiple of `step`. */
+const floorTo = (value: number, step: number) => Math.floor(value / step) * step;
+
+/**
+ * What a microVM may be on `hosts` (those the account may use that run microVMs): their presets, and, where a host
+ * makes custom shapes, any vCPUs and memory it has. Undefined with no such host.
+ *
+ * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs. No disk is said
+ * for a custom shape: it is the host's to give, and the sandbox's resources say what it got.
+ */
+export function microvmShapes(
+	hosts: readonly BackendHost[],
+	deploymentSizes: readonly BackendSize[],
+): computeSchema.SandboxShapes["microvm"] {
+	if (hosts.length === 0) return undefined;
+	const presets = new Map<string, computeSchema.ShapePreset>();
+	let maxVcpus = 1;
+	let maxMemory = MICROVM_MEMORY_STEP_MB;
+	for (const host of hosts) {
+		const sizes = host.sizes ?? deploymentSizes;
+		for (const size of sizes) {
+			const key = `${size.name}/${size.vcpus}/${size.memoryMb}/${size.diskGb}`;
+			presets.set(key, { name: size.name, vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb });
+			maxVcpus = Math.max(maxVcpus, size.vcpus);
+			maxMemory = Math.max(maxMemory, size.memoryMb);
+		}
+		if (makesCustom(host)) {
+			maxVcpus = Math.max(maxVcpus, Math.min(MAX_VCPUS, host.capacity.vcpus));
+			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
+		}
+	}
+	const list = [...presets.values()].sort(
+		(a, b) => a.vcpus - b.vcpus || a.memoryMb - b.memoryMb || a.diskGb - b.diskGb || a.name.localeCompare(b.name),
+	);
+	const preferred = list.find((preset) => preset.name === "default") ?? list[0];
+	const minMemory = Math.min(MEMORY_MB_PER_VCPU.min, ...list.map((preset) => preset.memoryMb));
+	return {
+		vcpus: { min: 1, max: maxVcpus, step: 1, default: preferred?.vcpus ?? Math.min(2, maxVcpus) },
+		memoryMb: {
+			min: minMemory,
+			max: maxMemory,
+			step: MICROVM_MEMORY_STEP_MB,
+			default: preferred?.memoryMb ?? Math.min(2048, maxMemory),
+		},
+		memoryMbPerVcpu: { ...MEMORY_MB_PER_VCPU },
+		presets: list,
+		custom: hosts.some(makesCustom),
+	};
+}
+
+/**
+ * Checks a create's `resources` for its type: an isolate's memory is 128 to 512 MB in steps of 64 and it has no vCPUs;
+ * a microVM's is whole vCPUs (at most 32) and memory in steps of 512 MB that its vCPUs may hold, unless it is one of
+ * the presets. Whether a host has room is placement's to say.
+ */
+export function checkShape(
+	type: computeSchema.SandboxType,
+	shape: computeSchema.SandboxShapeInput,
+	presets: readonly { readonly vcpus: number; readonly memoryMb: number }[] = [],
+): { readonly vcpus: number; readonly memoryMb: number } {
+	const { memoryMb } = shape;
+	if (type === "isolate") {
+		const range = computeSchema.ISOLATE_MEMORY_MB;
+		if (shape.vcpus !== undefined && shape.vcpus !== 0) {
+			throw new KantelError("invalid", "An isolate has no vCPUs of its own: it shares its account's VM's CPU");
+		}
+		if (memoryMb < range.min || memoryMb > range.max || memoryMb % range.step !== 0) {
+			throw new KantelError("invalid", "An isolate's memory is 128 to 512 MB in steps of 64");
+		}
+		return { vcpus: 0, memoryMb };
+	}
+	const vcpus = shape.vcpus;
+	if (vcpus === undefined) throw new KantelError("invalid", "A microVM's resources need vcpus as well as memoryMb");
+	if (vcpus < 1 || vcpus > MAX_VCPUS) throw new KantelError("invalid", `A microVM has 1 to ${MAX_VCPUS} vCPUs`);
+	if (presets.some((preset) => preset.vcpus === vcpus && preset.memoryMb === memoryMb)) return { vcpus, memoryMb };
+	if (memoryMb % MICROVM_MEMORY_STEP_MB !== 0) {
+		throw new KantelError("invalid", `A microVM's memory is in steps of ${MICROVM_MEMORY_STEP_MB} MB`);
+	}
+	if (memoryMb < vcpus * MEMORY_MB_PER_VCPU.min || memoryMb > vcpus * MEMORY_MB_PER_VCPU.max) {
+		throw new KantelError(
+			"invalid",
+			`A microVM's memory is ${MEMORY_MB_PER_VCPU.min} MB to ${MEMORY_MB_PER_VCPU.max / 1024} GB a vCPU`,
+		);
+	}
+	return { vcpus, memoryMb };
+}
+
+/**
+ * A create's shape, checked: what it asked for, against the hosts it may go to (`hosts`), however full they are now.
+ * An isolate that asks for nothing gets the default 256 MB; a microVM, its deployment's default size (undefined). A
+ * microVM shape none of them can make is `not_supported` before anything is stored, unless `checkHosts` is false (a
+ * create from a snapshot, which goes to the snapshot's host and boots as it was).
+ */
+export function shapeFor(
+	type: computeSchema.SandboxType,
+	resources: computeSchema.SandboxShapeInput | undefined,
+	hosts: readonly BackendHost[],
+	deploymentSizes: readonly BackendSize[],
+	checkHosts = true,
+): { readonly vcpus: number; readonly memoryMb: number } | undefined {
+	if (resources === undefined) {
+		return type === "isolate" ? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default } : undefined;
+	}
+	const presets = hosts.flatMap((host) => host.sizes ?? deploymentSizes);
+	const shape = checkShape(type, resources, presets);
+	if (type === "microvm" && checkHosts && !hosts.some((host) => makesShape(host, deploymentSizes, shape))) {
+		throw placementError(
+			"not_supported",
+			"no_host_offers_size",
+			`No host this sandbox may use can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB; see getSandboxShapes`,
+		);
+	}
+	return shape;
+}
+
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
 	const { lastSeenAt: knownSeen, ...knownRest } = known;
 	const { lastSeenAt: nextSeen, ...nextRest } = next;
@@ -347,6 +796,8 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
 	"error",
 	"deleting",
 ];
+/** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
+const STRANDABLE: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping", "stopped", "paused"];
 /**
  * How long SSH, desktop and browser access can be opened for, unless the call says: a bearer URL that leaks is good for
  * minutes, as boat.dev's are. A connection opened in time stays open; the schema caps a request at an hour.
@@ -826,7 +1277,17 @@ const whole = (value: unknown): number =>
 
 /** The compute plane's handlers over a store and a backend. */
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
-	const { store, backend, dispatcher, exporter, now } = options;
+	const { backend, dispatcher, exporter, now } = options;
+	// Every change of a sandbox's state is a write of its record, so the feed publishes from the store itself: whoever moved
+	// it (a call, the sweep's auto-stop, a host's report), the watchers hear of it (`live.ts`).
+	const live = createLiveFeed({
+		read: (sandboxId) => options.store.sandboxes.get(sandboxId),
+		...(options.liveRelay === undefined ? {} : { relay: options.liveRelay }),
+	});
+	const store: ComputeStore = {
+		...options.store,
+		sandboxes: watchSandboxes(options.store.sandboxes, (change) => live.publish(change), now),
+	};
 	const e2eChains = createE2EChains(store.e2eChain, now);
 	/**
 	 * A host's own account's chain; for a shared host, the chain of a space it runs a sandbox of or is enrolled in
@@ -850,6 +1311,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
+	const apiBasePath = (options.apiBasePath ?? "/v1").replace(/\/+$/, "");
+	const startHoldMs = options.startHoldMs ?? START_HOLD_MS;
+	const startPollMs = options.startPollMs ?? START_POLL_MS;
+	/**
+	 * The base image index as last read (image patching on), for the views, which answer synchronously: the routes that
+	 * answer sandboxes or snapshots read it first (`BASE_ROUTES`). One that fails to read keeps the last one read.
+	 */
+	let baseIndex: BaseImageIndex | undefined;
+	const refreshBase = async (): Promise<void> => {
+		if (options.baseImages === undefined) return;
+		baseIndex = (await options.baseImages.index().catch(() => undefined)) ?? baseIndex;
+	};
+	const requireImagePatching = (): BaseImages => {
+		if (options.baseImages === undefined) {
+			throw new KantelError("not_supported", "Image patching is off on this deployment (KANTEL_IMAGE_PATCHING)");
+		}
+		return options.baseImages;
+	};
+	/** How far behind a recorded base is, while image patching is on and the index knows its image. */
+	const baseView = (base: string | undefined): computeSchema.SandboxBase | undefined =>
+		options.baseImages === undefined || baseIndex === undefined || base === undefined
+			? undefined
+			: baseStatus(baseIndex, baseImageOf(base), base, now());
 	// A key that isn't one throws here, so the deployment fails to start rather than on its first protected value.
 	const sealer: Sealer | undefined =
 		options.secretsKey !== undefined
@@ -873,6 +1357,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const runningCommands = new Map<string, AbortController>();
 	const background = new Set<Promise<unknown>>();
 	const inflight = new Map<string, Promise<unknown>>();
+	/** Each sandbox's readings, and each host's, as they came (`recordUsage`); in this process's memory. */
+	const sandboxSeries = createUsageSeries();
+	const hostSeries = createUsageSeries();
+	/** When each sandbox was last read by running a command in it (the fallback, `readUsage`). */
+	const fallbackReadAt = new Map<string, number>();
+	/** The newest point of each sandbox's series the metrics export has looked at (taking those not passed on). */
+	const exportedUntil = new Map<string, number>();
+	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
+	const tickArrivedAt = new Map<string, number>();
+	/**
+	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in each of its
+	 * sampler's recent runs (`MAX_RUNS_KEPT`, newest last): one sent again after a reconnect, at or before it, is
+	 * acknowledged without being taken twice. By run, so a late tick of a host's old run (passed on from another replica)
+	 * never moves its new run's back. A run's ticks are taken in order (`ingestInTurn`), so every one at or before it is in.
+	 */
+	const takenSeq = new Map<string, Map<string, number>>();
+	/**
+	 * Each host's numbered ticks that couldn't be taken (the store failing), oldest first, with every numbered tick after
+	 * them: taken in order before anything newer (`ingestInTurn`).
+	 */
+	const heldUsage = new Map<string, HeldUsage[]>();
+	/** Up to when the backend's own ticks (the stub's) are in. */
+	let pulledUntil = Number.NEGATIVE_INFINITY;
+	/** The stub's past ticks being taken (`catchUpUsage`), if they are. */
+	let replaying: Promise<void> | undefined;
+	let settledAt = Number.NEGATIVE_INFINITY;
+	/** This process, as the owner of the usage ticks it claims to export (`StoredUsageClaim.owner`). */
+	const usageOwner = crypto.randomUUID();
+	let claimsSweptAt = Number.NEGATIVE_INFINITY;
+	/** Set by `close`: a claim sweep under way stops. */
+	let closing = false;
 
 	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
 	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
@@ -881,6 +1396,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const tracked: Promise<unknown> = work.catch(() => undefined).finally(() => background.delete(tracked));
 		background.add(tracked);
 	};
+
+	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
+	const templates = createTemplateService({
+		store,
+		backend,
+		now,
+		enabled: options.templates === true,
+		keepGoing,
+		buildHosts: async (accountId, userId) => {
+			const shared = options.sharedHosts === undefined || (await options.sharedHosts(userId));
+			try {
+				return requireHosts(await ensureHosts(), accountId, "microvm", {}, false, shared);
+			} catch {
+				return [];
+			}
+		},
+		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants })).egress,
+		normaliseGrants,
+		checkVariableName,
+		checkResources: (resources) => checkShape("microvm", resources),
+		actorOf: (principal) => actorOf(principal),
+	});
 
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
 	function track<T>(ids: readonly string[], work: () => Promise<T>): Promise<T> {
@@ -1022,19 +1559,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine: boolean,
 		shared: boolean,
 	): string[] {
-		const qualifying = hosts
-			.filter((host) => host.state === "online" || (affine && host.state === "draining"))
-			.filter((host) => host.tiers.includes(type))
-			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
+		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none.
+		const up = hosts
+			.filter((host) => host.accountId === accountId || (shared && host.accountId === undefined))
+			.filter((host) => host.state === "online" || (affine && host.state === "draining"));
+		const typed = up.filter((host) => host.tiers.includes(type));
+		const qualifying = typed.filter((host) =>
+			Object.entries(labels).every(([key, value]) => host.labels[key] === value),
+		);
 		const own = qualifying.filter((host) => host.accountId === accountId);
 		const common = shared ? qualifying.filter((host) => host.accountId === undefined) : [];
 		const eligible = (affine ? [...own, ...common] : own.length > 0 ? own : common).map((host) => host.id);
 		if (eligible.length === 0) {
-			throw new KantelError(
+			// Bound to its disk or snapshot, it can go only on that one host, whatever else the fleet has: that host is the
+			// reason, as it is when the boot finds it gone with other hosts up.
+			const reason: PlacementReason = affine
+				? "host_unavailable"
+				: up.length === 0
+					? "no_host"
+					: typed.length === 0
+						? "no_host_for_type"
+						: "no_host_with_labels";
+			const what = `${article(type)} ${type} sandbox${reason === "no_host_with_labels" ? " with those host labels" : ""}`;
+			throw placementError(
 				"unavailable",
+				reason,
 				shared
-					? `No host can run ${article(type)} ${type} sandbox now`
-					: `No host of this account's own can run ${article(type)} ${type} sandbox now. Add one with kantel hosts add, or under Hosts in the console`,
+					? `No host can run ${what} now`
+					: `No host of this account's own can run ${what} now. Add one with kantel hosts add, or under Hosts in the console`,
 			);
 		}
 		return eligible;
@@ -1051,13 +1603,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	// Views: what the API answers for a record.
 
-	const rateOf = (sandbox: StoredSandbox) =>
-		sandbox.type === "isolate" ? rates.isolate : rates.microvm[sandbox.size ?? "default"];
+	/**
+	 * What an hour of it costs: by what its host gave it, else what it asked for, else its named size (an isolate made
+	 * before shapes counts as the default 256 MB).
+	 */
+	const rateOf = (sandbox: StoredSandbox) => {
+		const resources =
+			sandbox.resources ??
+			sandbox.shape ??
+			(sandbox.type === "isolate"
+				? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default }
+				: (LEGACY_SIZES[sandbox.size ?? "default"] ?? LEGACY_SIZES.default));
+		return hourlyRate(rates, sandbox.type, resources);
+	};
 
-	const meanCpu = (sandbox: StoredSandbox) =>
-		sandbox.samples.length === 0
-			? 0
-			: sandbox.samples.reduce((total, sample) => total + sample.cpu, 0) / sandbox.samples.length;
+	/** A sandbox's mean CPU: its kept 5-minute means and the one under way. */
+	const meanCpu = (sandbox: StoredSandbox) => {
+		const samples = withPartial(sandbox);
+		return samples.length === 0 ? 0 : samples.reduce((total, sample) => total + sample.cpu, 0) / samples.length;
+	};
 
 	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
@@ -1074,6 +1638,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			state: sandbox.state,
 			health: sandbox.health,
 			reason: sandbox.reason,
+			placementReason: sandbox.placementReason,
 			visibility: sandbox.visibility,
 			capabilities: sandbox.capabilities,
 			labels: sandbox.labels,
@@ -1082,18 +1647,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			latestSnapshotId: sandbox.latestSnapshotId,
 			source: sandbox.source,
 			environmentId: sandbox.environmentId,
+			template: sandbox.template === undefined ? undefined : { ...sandbox.template },
 			grants: (sandbox.grants ?? []).map(copyGrant),
 			createdBy: sandbox.createdBy,
 			createdAt: sandbox.createdAt,
 			startedAt: sandbox.startedAt,
 			stoppedAt: sandbox.stoppedAt,
+			...(sandbox.mounts === undefined
+				? {}
+				: { mounts: sandbox.mounts.map((mount) => ({ ...mount, source: { ...mount.source } })) }),
 			cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
 			usage: {
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
-				recentCpu: sandbox.samples.slice(-24).map((sample) => sample.cpu),
+				...sparklines(sandbox),
 			},
 			hostId: principal.superAdmin ? sandbox.hostId : undefined,
+			base: baseView(sandbox.base),
 		};
 	}
 
@@ -1108,9 +1678,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		state: snapshot.state,
 		trigger: snapshot.trigger,
 		memory: snapshot.memory,
+		...recordedMachine(snapshot),
 		sizeBytes: snapshot.sizeBytes,
 		createdAt: snapshot.createdAt,
 		expiresAt: snapshot.expiresAt,
+		base: baseView(snapshot.base),
+	});
+
+	/** A version of a base image as the admin list answers it: what the index says of it, its commit left out. */
+	const baseVersionView = (version: BaseImageVersion): computeSchema.BaseImageVersion => ({
+		version: version.version,
+		digest: version.digest,
+		builtAt: version.builtAt,
+		signed: version.signed,
+		...(version.reason === undefined ? {} : { reason: version.reason }),
+		...(version.scan === undefined
+			? {}
+			: {
+					scan: {
+						scanner: version.scan.scanner,
+						scannedAt: version.scan.scannedAt,
+						counts: { ...version.scan.counts },
+						fixable: { ...version.scan.fixable },
+						findings: version.scan.findings.map((finding) => ({
+							id: finding.id,
+							severity: finding.severity,
+							package: finding.package,
+							installed: finding.installed,
+							...(finding.fixed === undefined ? {} : { fixed: finding.fixed }),
+							...(finding.title === undefined ? {} : { title: finding.title }),
+						})),
+					},
+				}),
 	});
 
 	const commandView = (command: StoredCommand): computeSchema.Command => ({
@@ -1262,7 +1861,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<boolean> {
 		const at = now();
 		const due = await patchSandbox(sandboxId, (current) =>
-			current.state === evaluated.state && current.egressRevision === evaluated.egressRevision
+			current.state === evaluated.state &&
+			current.egressRevision === evaluated.egressRevision &&
+			// Its host revoked under its boot (`strandOn`): its boot ends it `error`, not a stop its host can't take.
+			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
 						...current,
 						...(placement === undefined
@@ -1271,6 +1873,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									hostId: placement.hostId,
 									resources: placement.resources ?? current.resources,
 									capabilities: placement.capabilities,
+									...placedBase(placement),
 								}),
 						stopsAt: at,
 						stopFor: reason,
@@ -1614,6 +2217,41 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	/**
+	 * Emails an invite with a link that joins with its code, when the deployment sends mail; whether it went. A send that
+	 * fails leaves the invite standing: the console shows the code to pass on instead.
+	 */
+	const mailInvite = async (
+		principal: Principal,
+		invite: StoredInvite,
+		to: string,
+		code: string,
+		request: Request,
+	): Promise<boolean> => {
+		const mailing = options.invites;
+		if (mailing === undefined) return false;
+		try {
+			if (mailing.canSignIn !== undefined && !(await mailing.canSignIn(to))) return false;
+			const [account, inviter] = await Promise.all([
+				store.accounts.get(invite.accountId),
+				principal.kind === "person" ? principal : store.users.get(principal.userId),
+			]);
+			const consoleUrl = mailing.consoleUrl ?? new URL(request.url).origin;
+			await mailing.send({
+				to,
+				organisation: account?.name ?? "an organisation",
+				// Never a user ID, which a record made before people were named by their names may still have.
+				invitedBy: inviter?.email || (isPlaceholderName(inviter?.name) ? undefined : inviter?.name) || "Someone",
+				link: inviteLink(consoleUrl, code),
+				expiresAt: invite.expiresAt,
+			});
+			return true;
+		} catch (error) {
+			mailing.onMailError?.(error, to);
+			return false;
+		}
+	};
+
 	const inviteView = (invite: StoredInvite, code?: string): computeSchema.Invite => ({
 		id: invite.id,
 		accountId: invite.accountId,
@@ -1623,6 +2261,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		expiresAt: invite.expiresAt,
 		createdAt: invite.createdAt,
 	});
+
+	/**
+	 * A personal account named for its person (`name`) when it was made with their user ID for a name, as gateways named
+	 * people once; any other account as it is.
+	 */
+	const personalNamed = (account: StoredAccount, name: string | undefined): StoredAccount =>
+		account.kind === "personal" && name !== undefined && isPlaceholderName(account.name)
+			? { ...account, name }
+			: account;
 
 	const accountView = (account: StoredAccount, role: MemberRole): computeSchema.Account => ({
 		id: account.id,
@@ -1634,13 +2281,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	});
 
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
+		await catchUpUsage();
+		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
 		const placed = (await store.sandboxes.list({ hostId: host.id })).filter(
 			(sandbox) => sandbox.state === "running" || sandbox.state === "starting" || sandbox.state === "paused",
 		);
+		const machines = placed.filter((sandbox) => sandbox.type !== "isolate");
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
-			placed.reduce((total, sandbox) => total + pickOf(sandbox), 0);
+			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		return {
 			...host,
+			usage: hostSparklines(host.id),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),
@@ -1661,7 +2312,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const actorOf = (principal: Principal): Sandbox["createdBy"] =>
 		principal.kind === "key"
 			? { kind: "api_key", id: principal.keyId, name: principal.keyName }
-			: { kind: "user", id: principal.userId, name: principal.name };
+			: { kind: "user", id: principal.userId, name: personName(principal) };
+
+	/** What a person is called now, by user ID: undefined for someone the store doesn't know. */
+	async function nameOfUser(userId: string): Promise<string | undefined> {
+		const user = await store.users.get(userId);
+		return user === undefined ? undefined : personName({ userId: user.id, name: user.name, email: user.email });
+	}
+
+	/**
+	 * `items` with each person who made one named as they are now when their record names them by a user ID: gateways
+	 * named everyone that way once, and what they made then still says so. Each person is looked up once.
+	 */
+	async function withMakersNamed<T extends { readonly createdBy: Sandbox["createdBy"] }>(
+		items: readonly T[],
+	): Promise<T[]> {
+		const names = new Map<string, Promise<string | undefined>>();
+		return Promise.all(
+			items.map(async (item) => {
+				const maker = item.createdBy;
+				if (maker.kind !== "user" || !isPlaceholderName(maker.name, maker.id)) return item;
+				let name = names.get(maker.id);
+				if (name === undefined) {
+					name = nameOfUser(maker.id);
+					names.set(maker.id, name);
+				}
+				const named = await name;
+				return named === undefined || named === maker.name ? item : { ...item, createdBy: { ...maker, name: named } };
+			}),
+		);
+	}
+
+	const withMakerNamed = async <T extends { readonly createdBy: Sandbox["createdBy"] }>(item: T): Promise<T> =>
+		(await withMakersNamed([item]))[0] ?? item;
 
 	// Events.
 
@@ -1753,10 +2436,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: at + autoStop * 60_000,
 			startedAt: running && !wasRunning ? at : sandbox.startedAt,
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
+			lifecycle: (sandbox.lifecycle ?? 0) + 1,
 			reason: extra.reason,
+			placementReason: extra.placementReason,
+			// Stranded only in the state its stranding wrote (`strandOn`).
+			strandedOn: extra.strandedOn,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
+	}
+
+	/**
+	 * A watcher as they are now: a key's current scopes and limits, or a person whose sign-in is still live; undefined once
+	 * the key is revoked or expired, or the sign-in has ended.
+	 */
+	async function watcherNow(principal: Principal): Promise<Principal | undefined> {
+		if (principal.kind === "key") return liveKeyPrincipal(store, principal.keyId, now());
+		if (principal.session !== undefined && options.sessionLive !== undefined) {
+			if (!(await options.sessionLive(principal.session))) return undefined;
+		}
+		return (await store.users.get(principal.userId)) === undefined ? undefined : principal;
 	}
 
 	/** Whether the caller may see a sandbox in an account where they have `role`. */
@@ -1806,14 +2505,96 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return sandbox;
 	}
 
-	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
-	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
-		const sandbox = await settledFor(principal, sandboxId);
-		if (sandbox.state !== "running") {
-			throw new KantelError("conflict", `The sandbox is ${sandbox.state}; it must be running (resume it first)`);
-		}
-		return sandbox;
+	/** Refuses a desktop or browser the sandbox doesn't have, with its image's reason where it reported one. */
+	function requireScreen(sandbox: StoredSandbox, screen: "desktop" | "browser"): void {
+		if (sandbox.capabilities[screen]) return;
+		throw new KantelError(
+			"not_supported",
+			sandbox.type === "microvm"
+				? (sandbox.capabilities.guest?.[screen].reason ?? `No ${screen} in this image`)
+				: `The ${screen} needs a microVM; this is an isolate`,
+		);
 	}
+
+	/**
+	 * `settledFor`, refused with `conflict` (`sandboxNotRunning`) unless the sandbox is running. One that is starting is
+	 * waited for, up to `startHoldMs`: its start's own work when this gateway carries it out, else read again every
+	 * `startPollMs` (another gateway's). It moves nothing itself: concurrent callers each wait, and a stopped sandbox
+	 * stays stopped.
+	 */
+	function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, (id) => settledFor(principal, id));
+	}
+
+	/**
+	 * `requireRunning` for a call a token authorises rather than a principal (a signed file URL): the same wait and the
+	 * same refusals, with no check of who may use the sandbox, which the token already made.
+	 */
+	function requireRunningByToken(sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, async (id) => {
+			await settledOn(id);
+			return mustGetSandbox(id);
+		});
+	}
+
+	/** The wait behind `requireRunning`: `settled` reads the sandbox once its queued work ends. */
+	async function runningOnce(
+		sandboxId: string,
+		settled: (sandboxId: string) => Promise<StoredSandbox>,
+	): Promise<StoredSandbox> {
+		let held = false;
+		const hold = delay(startHoldMs);
+		const holdOver = hold.done.then(() => {
+			held = true;
+		});
+		try {
+			for (;;) {
+				const latest = await mustGetSandbox(sandboxId);
+				if (latest.state !== "starting") {
+					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
+					const sandbox = await settled(sandboxId);
+					if (sandbox.state === "running") return sandbox;
+					// Started by what was queued (a start queued behind a stop): waited for as any start.
+					if (sandbox.state === "starting") continue;
+					if (sandbox.state === "deleted") throw notFound("sandbox");
+					throw sandboxNotRunning(sandbox, apiBasePath);
+				}
+				if (held) throw sandboxNotRunning(latest, apiBasePath, startHoldMs);
+				// Its start's own work, when this gateway carries it out; never a tight loop on the store when it doesn't.
+				const work = pending.get(sandboxId);
+				const poll = delay(startPollMs);
+				await Promise.race([...(work === undefined ? [] : [work]), poll.done, holdOver]);
+				poll.cancel();
+			}
+		} finally {
+			hold.cancel();
+		}
+	}
+
+	/** Mounts, bundles, bucket sources, file URLs and archives, when the deployment turned them on. */
+	const mounts =
+		options.mounts === undefined
+			? undefined
+			: createMounts({
+					store,
+					backend,
+					options: options.mounts,
+					now,
+					sealer: () => {
+						if (sealer === undefined) {
+							throw new KantelError(
+								"not_supported",
+								"Bucket sources' credentials need the deployment's secrets key: set KANTEL_SECRETS_KEY",
+							);
+						}
+						return sealer;
+					},
+					publicUrl: (request) => (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, ""),
+					apiBasePath,
+					sandboxFor,
+					requireRunning,
+					requireRunningByToken,
+				});
 
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {
 		if (limits.concurrentSandboxes === undefined) return;
@@ -1821,47 +2602,148 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(sandbox) => sandbox.state === "starting" || sandbox.state === "running" || sandbox.state === "stopping",
 		).length;
 		if (active + adding > limits.concurrentSandboxes) {
-			throw new KantelError("exhausted", `The account may run ${limits.concurrentSandboxes} sandboxes at once`);
+			throw placementError(
+				"exhausted",
+				"account_limit",
+				`The account may run ${limits.concurrentSandboxes} sandboxes at once`,
+			);
 		}
 	}
 
 	/**
 	 * The snapshot a start or recovery makes the sandbox from: its newest, or, when it was never placed (its create or
-	 * fork failed), the one it was to be made from. A sandbox made from another that has no such snapshot (a running
-	 * sandbox's fork) can't be made again here, so it is refused rather than started empty under its source's name; the
-	 * same keeps an account's own host's snapshot with the host (routed there, or refused while it is unreachable).
+	 * fork failed), the one it was to be made from (none for a plain create: its image, as its create had). A sandbox
+	 * made from another that has no such snapshot (a running sandbox's fork) can't be made again here, so it is refused
+	 * rather than started empty under its source's name; the same keeps an account's own host's snapshot with the host
+	 * (routed there, or refused while it is unreachable).
 	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
 		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
-		if (!neverPlaced(sandbox)) return undefined;
-		const from = sandbox.source?.snapshotId;
+		if (!neverPlaced(sandbox) || sandbox.source === undefined) return undefined;
+		const from = sandbox.source.snapshotId;
 		const source = from === undefined ? undefined : await store.snapshots.get(from);
 		if (source === undefined) throw new KantelError("conflict", NEVER_MADE);
 		return readyRef(source);
 	}
 
-	/** A sandbox made from another whose making failed: no backend has it, and it has no snapshot of its own. */
+	/**
+	 * A sandbox whose create or fork failed: it was never placed on a host, so no backend has it (a backend lets a failed
+	 * create's placement go), and it has no snapshot of its own. Made from a snapshot or not.
+	 */
 	const neverPlaced = (sandbox: StoredSandbox): boolean =>
-		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined && sandbox.source !== undefined;
+		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined;
+
+	/**
+	 * The hosts a start or recovery may boot the sandbox on: as for its create when it was never placed and isn't made
+	 * from a snapshot (the account's own hosts first, online ones only), else any qualifying host, so a backend that
+	 * holds its disk or snapshot finds its own host among them.
+	 */
+	async function hostsToBoot(principal: Principal, sandbox: StoredSandbox): Promise<string[]> {
+		return requireHosts(
+			await ensureHosts(),
+			sandbox.accountId,
+			sandbox.type,
+			sandbox.hostLabels,
+			!neverPlaced(sandbox) || sandbox.source !== undefined,
+			await mayShare(principal),
+		);
+	}
 
 	/**
 	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
-	 * (`latestRef`), made as its create would make it, from its source's snapshot, since no backend has it to start.
+	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image, or its
+	 * template's base and setup as its create resolved them, booted fresh, at its own size and shape), placed as a create
+	 * is, since no backend has it to start. `sandbox` is the record as the boot moved it (a restart's new size and shape
+	 * included), and `boot` its sizing.
 	 */
-	function bootAgain(
+	async function bootAgain(
 		sandbox: StoredSandbox,
 		boot: BootOptions,
 		booted: (boot: BootOptions) => Promise<Placement>,
 	): Promise<Placement> {
 		if (!neverPlaced(sandbox)) return booted(boot);
-		return backend.create({
+		const stored = sandbox.source === undefined ? sandbox.templateBoot : undefined;
+		let template: Omit<SandboxTemplateBoot, "snapshot"> | undefined;
+		let eligibleHosts = boot.eligibleHosts;
+		if (stored !== undefined) {
+			const { holders, ...fresh } = stored;
+			template = fresh;
+			// A custom image boots only where it was built: on its holders the sandbox may still use.
+			if (holders !== undefined) {
+				eligibleHosts = holders.filter((hostId) => boot.eligibleHosts.includes(hostId));
+				if (eligibleHosts.length === 0) {
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						"No host this sandbox may use holds its template's image now; make a new sandbox from the template once it's built",
+					);
+				}
+			}
+		}
+		const placement = await backend.create({
 			...boot,
+			eligibleHosts,
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
 			type: sandbox.type,
 			subdomain: sandbox.subdomain,
+			...(boot.shape === undefined ? {} : { shape: boot.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
+			...(template === undefined ? {} : { template: { ...template } }),
 		});
+		// Made again from its template's base, its setup run: no longer the snapshot its create was to start from.
+		return template === undefined || sandbox.template?.start !== "snapshot"
+			? placement
+			: { ...placement, bootedFresh: true };
+	}
+
+	/** A template's boot as a sandbox keeps it for a retry of its create (`templateBoot`): its base and setup, no snapshot. */
+	const freshBoot = ({ snapshot: _cached, ...fresh }: SandboxTemplateBoot): Omit<SandboxTemplateBoot, "snapshot"> =>
+		fresh;
+
+	/** A boot's sizing from the record as it moved: its named size and, where it has one, its shape. */
+	const sizingOf = (sandbox: StoredSandbox): Pick<BootOptions, "size" | "shape"> => ({
+		...(sandbox.size === undefined ? {} : { size: sandbox.size }),
+		...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
+	});
+
+	/**
+	 * The environment `bootAgain` provisions a sandbox it makes from its image with (its create failed, so the files and
+	 * repositories its create would have put there never were), checked as its create checks it: only a caller that may
+	 * run commands has repositories cloned. None for a sandbox on a disk of its own or made from a snapshot, which has them.
+	 */
+	async function provisionedAgain(
+		principal: Principal,
+		role: MemberRole,
+		sandbox: StoredSandbox,
+	): Promise<StoredEnvironment | undefined> {
+		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.environmentId === undefined) return undefined;
+		const environment = await store.environments.get(sandbox.environmentId);
+		if (environment === undefined) return undefined;
+		if (environment.repos.length > 0) requireScope(principal, "exec", role);
+		return environment;
+	}
+
+	/**
+	 * Refuses a start, recovery or restart on latest that makes a sandbox again from its template (`bootAgain`), running
+	 * the template's setup with its env, to a caller that may not run commands, as its create does.
+	 */
+	function requireSetupScope(principal: Principal, role: MemberRole, sandbox: StoredSandbox): void {
+		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.templateBoot?.setup === undefined) return;
+		requireScope(principal, "exec", role);
+	}
+
+	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
+	async function bootProvisioned(
+		sandboxId: string,
+		run: () => Promise<Placement>,
+		environment: StoredEnvironment | undefined,
+		sent: { readonly egressRevision: number | undefined },
+	): Promise<StoredSandbox | undefined> {
+		const booted = await boot(sandboxId, run, undefined, sent);
+		if (booted?.state === "running" && environment !== undefined)
+			await provision(booted, environment).catch(() => undefined);
+		return booted;
 	}
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
@@ -1900,12 +2782,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// The revision its backend has: what the boot sent, or what reconciling sent since.
 		let applied = sent?.egressRevision;
+		// Made from a template snapshot whose host had no room, it booted the template fresh elsewhere: so its record says.
+		const bootedFresh = (template: computeSchema.SandboxTemplate): computeSchema.SandboxTemplate => {
+			const { snapshotId: _none, ...rest } = template;
+			return { ...rest, start: "boot" };
+		};
 		const toRunning = (sandbox: StoredSandbox) =>
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
 				resources: placement.resources ?? sandbox.resources,
+				// A microVM's shape is what its machine runs as, where its backend says: a host that can't resize a stopped or
+				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
+				...(sandbox.type === "microvm" && placement.resources !== undefined
+					? { shape: { vcpus: placement.resources.vcpus, memoryMb: placement.resources.memoryMb } }
+					: {}),
+				...(placement.bootedFresh === true && sandbox.template !== undefined
+					? { template: bootedFresh(sandbox.template) }
+					: {}),
+				// Its image is the base it booted, not the one its snapshot (perhaps a release behind) was built from.
+				...(placement.bootedFresh === true && sandbox.templateBoot !== undefined
+					? { image: templateBootImage(sandbox.templateBoot) }
+					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
+				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
+				...placedBase(placement),
+				...(sandbox.mounts === undefined ? {} : { mounts: mountsAfter(sandbox.mounts, placement.mounts) }),
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
 					: { egressApplied: applied }),
@@ -1914,7 +2816,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Running only if its egress is what its backend has (what the boot sent, at first), on every move to running:
 		// the usual case, in one write.
 		const upToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
-		let result = await transition(sandboxId, "starting", toRunning, upToDate, written);
+		// Its host revoked while it booted, by a scan that found it placed there (`strandOn`): its own move from `starting`
+		// is its outcome, `error`, whenever it comes (now, or after its egress is reconciled), and its egress isn't waited
+		// for. A host another attempt was placed on, or this one before it moved, isn't its host and doesn't count.
+		const revokedUnder = (sandbox: StoredSandbox) => sandbox.strandedOn?.includes(placement.hostId) === true;
+		const publish = (sandbox: StoredSandbox) =>
+			revokedUnder(sandbox)
+				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
+				: toRunning(sandbox);
+		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
+		let result = await transition(sandboxId, "starting", publish, ready, written);
 		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
 		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
 		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
@@ -1924,7 +2835,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (round >= BOOT_RECONCILE_ROUNDS) {
 				const reason = "Its egress couldn't be applied to it while it started";
 				if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
-				result = await transition(sandboxId, "starting", toRunning, upToDate);
+				result = await transition(sandboxId, "starting", publish, ready);
 				continue;
 			}
 			try {
@@ -1938,10 +2849,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A call that didn't get through: tried again, a moment on.
 				await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
 			}
-			result = await transition(sandboxId, "starting", toRunning, upToDate);
+			result = await transition(sandboxId, "starting", publish, ready);
 		}
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
+		if (next.state === "error") {
+			await emit("sandbox.error", next.accountId, {
+				sandbox: next,
+				data: { previousState: "starting", reason: HOST_REVOKED_REASON },
+			});
+			return undefined;
+		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
 		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
@@ -1954,12 +2872,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function fail(sandboxId: string, error: unknown, from: SandboxState): Promise<StoredSandbox | undefined> {
 		const reason = messageOf(error);
-		const result = await transition(sandboxId, from, (sandbox) => withState(sandbox, "error", { reason })).catch(
-			() => undefined,
-		);
+		const placementReason = placementReasonOf(error);
+		const result = await transition(sandboxId, from, (sandbox) =>
+			withState(sandbox, "error", { reason, ...(placementReason === undefined ? {} : { placementReason }) }),
+		).catch(() => undefined);
 		if (result === undefined || !("moved" in result)) return undefined;
 		const next = result.moved;
-		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: from, reason } });
+		await emit("sandbox.error", next.accountId, {
+			sandbox: next,
+			data: { previousState: from, reason, ...(placementReason === undefined ? {} : { placementReason }) },
+		});
 		return next;
 	}
 
@@ -1976,7 +2898,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		actor: Principal | undefined,
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
-	): Promise<{ readonly work: Promise<void> }> {
+	): Promise<{ readonly work: Promise<void>; readonly stopping: StoredSandbox }> {
 		const began = await transition(
 			sandbox.id,
 			sandbox.state,
@@ -1998,10 +2920,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					state: "ready",
 					trigger: "stop",
 					memory: keepMemory,
+					...recordedMachine(sandbox),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
+					...(taken.base === undefined ? {} : { base: taken.base }),
 				};
 				await store.snapshots.put(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
@@ -2009,6 +2933,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						latestSnapshotId: snapshot.id,
 						ports: [],
 						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
+						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
+						reason,
 					}),
 				);
 				if (!("moved" in result)) return;
@@ -2041,7 +2967,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw error;
 			}
 		});
-		return { work };
+		return { work, stopping: began.moved };
 	}
 
 	/** The backend's connected hosts now: the stub's always are. */
@@ -2228,7 +3154,53 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("unavailable", HOST_NOT_REVOCABLE);
 		}
 		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
+		await strandOn(host.id);
 		return hostView(revoked ?? { ...host, state: "revoked" });
+	}
+
+	/**
+	 * The sandboxes of a revoked host: it never connects again, so none of them can be reached, run or started there, and
+	 * none is claimed to. Each whose record names the host is `error`, saying so, for its owner to delete, which writes it
+	 * off; one being deleted is left to its delete. A first create or fork under way there doesn't name its host until
+	 * its boot writes `running`: it is found by where its backend placed it (recorded before the host was asked to make
+	 * it), and marked (`strandedOn`) rather than moved, because only its boot knows which host it ends up on. Its boot's
+	 * one move from `starting` is then `error` if that host is marked (`boot`). A boot that writes `running` before the
+	 * scan's write is found here by its host either way.
+	 *
+	 * A lookup or write that fails fails the revocation, which may be made again to finish, its host revoked already.
+	 */
+	async function strandOn(hostId: string): Promise<void> {
+		const unattributed =
+			backend.placedOn === undefined
+				? []
+				: (await store.sandboxes.list({ state: "starting" })).filter((sandbox) => sandbox.hostId === undefined);
+		const placedHere: StoredSandbox[] = [];
+		for (const sandbox of unattributed) {
+			if ((await backend.placedOn?.(sandbox.id)) === hostId) placedHere.push(sandbox);
+		}
+		for (const sandbox of [...(await store.sandboxes.list({ hostId })), ...placedHere]) {
+			// From whatever it is when written, not as listed: a boot or stop that lands in between is still caught.
+			let previous: SandboxState | undefined;
+			await store.sandboxes.update(sandbox.id, (current) => {
+				previous = undefined;
+				if (current.hostId === hostId && STRANDABLE.includes(current.state)) {
+					previous = current.state;
+					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
+				}
+				if (current.hostId === undefined && current.state === "starting") {
+					if (current.strandedOn?.includes(hostId) === true) return undefined;
+					return { ...current, strandedOn: [...(current.strandedOn ?? []), hostId] };
+				}
+				// Moved on since (deleted, being deleted, on another host now): left.
+				return undefined;
+			});
+			const stranded = previous === undefined ? undefined : await store.sandboxes.get(sandbox.id);
+			if (stranded === undefined || previous === undefined) continue;
+			await emit("sandbox.error", stranded.accountId, {
+				sandbox: stranded,
+				data: { previousState: previous, reason: HOST_REVOKED_REASON },
+			});
+		}
 	}
 
 	/**
@@ -2311,32 +3283,401 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
-	async function recordSample(sandboxId: string): Promise<TelemetryUsageSample | undefined> {
-		const sandbox = await store.sandboxes.get(sandboxId);
-		if (sandbox === undefined || sandbox.state !== "running") return undefined;
-		const reading = await backend.usage(sandboxId).catch(() => undefined);
-		if (reading === undefined) return undefined;
-		const at = now();
-		const written = await patchSandbox(sandboxId, (latest) =>
-			latest.state !== "running"
-				? undefined
-				: {
-						...latest,
-						samples: [...latest.samples, { at, cpu: reading.cpu, memoryMb: reading.memoryBytes / (1024 * 1024) }].slice(
-							-MAX_SAMPLES,
-						),
-					},
+	// Usage: what hosts report every tick (`recordUsage`), kept in `sandboxSeries` and `hostSeries` (usage-series.ts).
+	// A sandbox's 5-minute means go into its record's `samples`, which its sparkline and `points` are read from.
+
+	/**
+	 * Keeps a sandbox's closed 5-minute mean in its record, oldest first, at most `MAX_SAMPLES`. Only a replica that took
+	 * some of its readings itself keeps one: one that was only passed them on may have joined part way through. Of two
+	 * for the same 5 minutes (the host moved replica within them, and each kept what it had), the one of more readings.
+	 */
+	async function keepRollup(sandboxId: string, rollup: Rollup): Promise<void> {
+		if (!rollup.local) return;
+		await patchSandbox(sandboxId, (latest) => {
+			if (latest.state === "deleted") return undefined;
+			const sample = { at: rollup.at, cpu: rollup.cpu, memoryMb: rollup.memUsedBytes / MIB, readings: rollup.readings };
+			const index = latest.samples.findIndex((each) => each.at >= rollup.at);
+			if (index === -1) return { ...latest, samples: [...latest.samples, sample].slice(-MAX_SAMPLES) };
+			const there = latest.samples[index];
+			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return undefined;
+			return { ...latest, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
+		});
+	}
+
+	/**
+	 * Keeps the 5-minute means that ended with no point to close them (a sandbox that stopped), once every tick that
+	 * could be in them is: the stub's are taken in first (`catchUpUsage`), and nothing is settled past the time they are
+	 * in to (`settleTaken`), so a 5 minutes is never closed with its later ticks still to come. The one way to settle, but
+	 * for the replay's own once its ticks are in (`replay`).
+	 */
+	async function settleUsage(): Promise<void> {
+		await catchUpUsage();
+		// A replay begun meanwhile settles when it ends.
+		if (replaying !== undefined) return;
+		await settleTaken();
+	}
+
+	/**
+	 * Settles what the series hold, as of the time the backend's own ticks are in to (`pulledUntil`, for a backend that
+	 * makes them; else now), however long taking them in took: a 5 minutes ending after that may have ticks still to
+	 * fetch. Only after the stub's ticks are in (`settleUsage`, `replay`).
+	 */
+	async function settleTaken(): Promise<void> {
+		settledAt = now();
+		const asOf = backend.usageReports === undefined ? now() : Math.min(now(), pulledUntil);
+		hostSeries.settle(asOf);
+		for (const { key, rollup } of sandboxSeries.settle(asOf)) await keepRollup(key, rollup).catch(() => undefined);
+		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
+		// A host's backlog is minutes long: an hour without a tick, none of what it would send again is still to come.
+		for (const hostId of takenSeq.keys()) if (!tickArrivedAt.has(hostId)) takenSeq.delete(hostId);
+		for (const hostId of heldUsage.keys()) if (!tickArrivedAt.has(hostId)) heldUsage.delete(hostId);
+		sweepUsageClaims();
+	}
+
+	/**
+	 * Takes a tick from `hostId`: its own readings, and those of its sandboxes it holds. Every reading goes into its
+	 * series before anything is written, so a slow write can't let the next tick in ahead of this one; `recordUsage`
+	 * takes a host's ticks one at a time. `settle`: close what stopped reporting, now and then (not while replaying the
+	 * stub's past ticks, whose later ones would find their 5 minutes already closed). `shared`: it came from the replica
+	 * holding the host, which exports it, so this one doesn't (`UsagePoint.shared`). `exports`, instead: asked whether this
+	 * replica exports it (`claimUsage`), once nothing else can stop the tick going in. It throws only before any reading
+	 * is in (the lookup of the host's sandboxes, or `exports`), so a tick that failed can be taken again whole.
+	 */
+	async function ingest(
+		hostId: string,
+		report: ReportedUsage,
+		how: {
+			readonly known?: ReadonlySet<string>;
+			readonly settle?: boolean;
+			readonly shared?: boolean;
+			readonly exports?: () => Promise<boolean>;
+		} = {},
+	): Promise<void> {
+		const meta = { intervalMs: report.intervalMs };
+		// The host's own time, unless its clock runs ahead: a reading stamped in the future would hold back every one after
+		// it (a series takes only newer points).
+		const received = now();
+		const at = report.at - received > MAX_CLOCK_SKEW_MS ? received : report.at;
+		// Whether the host is reporting goes by when its ticks arrive, not by its clock.
+		tickArrivedAt.set(hostId, received);
+		// A host reports only its own sandboxes: one statement for all of them, not one per sandbox. Read before any
+		// reading goes in, so a tick it fails for has none in.
+		const held = report.sandboxes.length === 0 ? new Set<string>() : (how.known ?? (await sandboxesOn(hostId)));
+		const shared = how.exports === undefined ? how.shared === true : !(await how.exports());
+		hostSeries.add(
+			hostId,
+			{
+				at,
+				cpu: report.host.cpu,
+				memUsedBytes: report.host.memUsedBytes,
+				diskUsedBytes: report.host.diskUsedBytes,
+			},
+			{ ...meta, memTotalBytes: report.host.memTotalBytes, diskTotalBytes: report.host.diskTotalBytes },
 		);
-		if (written === undefined) return undefined;
+		if (report.sandboxes.length > 0) {
+			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
+			for (const reading of report.sandboxes) {
+				if (!held.has(reading.id)) continue;
+				const rollup = sandboxSeries.add(
+					reading.id,
+					{
+						at,
+						cpu: reading.cpu,
+						memUsedBytes: reading.memUsedBytes,
+						diskUsedBytes: 0,
+						...(shared ? { shared: true } : {}),
+					},
+					{ ...meta, memLimitBytes: reading.memLimitBytes },
+				);
+				if (rollup !== undefined) closed.push({ id: reading.id, rollup });
+			}
+			for (const { id, rollup } of closed) await keepRollup(id, rollup).catch(() => undefined);
+		}
+		// The tick is in: settling that fails is tried again with the next.
+		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage().catch(() => undefined);
+	}
+
+	/** Each host's tick being taken, so the next waits for it (`recordUsage`). */
+	const ingesting = new Map<string, Promise<void>>();
+
+	/**
+	 * Whether a numbered tick is one already taken: its run's, at or before the newest taken. A series takes only newer
+	 * points too, but a tick stamped with this process's clock (its host's ran ahead, `MAX_CLOCK_SKEW_MS`) would get a
+	 * new time each time it came, and this doesn't depend on it.
+	 */
+	const takenAlready = (hostId: string, report: ReportedUsage): boolean => {
+		if (report.seq === undefined || report.run === undefined) return false;
+		const taken = takenSeq.get(hostId)?.get(report.run);
+		return taken !== undefined && report.seq <= taken;
+	};
+
+	/** Notes a numbered tick as taken (`takenSeq`), its run as the host's newest. */
+	const noteTaken = (hostId: string, report: NumberedUsage): void => {
+		const runs = takenSeq.get(hostId) ?? new Map<string, number>();
+		const taken = runs.get(report.run);
+		if (taken !== undefined && taken >= report.seq) return;
+		runs.delete(report.run);
+		runs.set(report.run, report.seq);
+		for (const run of runs.keys()) if (runs.size > MAX_RUNS_KEPT) runs.delete(run);
+		takenSeq.set(hostId, runs);
+	};
+
+	/**
+	 * Claims a numbered tick from its host for this process to export (`StoredUsageClaim`), and answers whether the claim
+	 * is its own: made now, or by this process before (a claim written whose answer was lost, tried again). A claim of
+	 * another's means that replica took the tick and exports it.
+	 */
+	async function claimUsage(hostId: string, report: NumberedUsage): Promise<boolean> {
+		const id = usageClaimId(hostId, report.run, report.seq);
+		// While the host could still send it again: its backlog is MAX_HELD_USAGE ticks; twice that, and an hour at least.
+		const keepUntil = now() + Math.max(HOUR_MS, 2 * MAX_HELD_USAGE * report.intervalMs);
+		const claim: StoredUsageClaim = { id, hostId, owner: usageOwner, keepUntil };
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			if (await store.usageClaims.insert(claim)) return true;
+			const current = await store.usageClaims.get(id);
+			// None any more (removed between the two, long past): claim it afresh.
+			if (current !== undefined) return current.owner === usageOwner;
+		}
+		return false;
+	}
+
+	/**
+	 * Removes the claims to ticks no host can send again, at most once an hour (`settleTaken`): in the background, so no
+	 * tick and no export waits for it, a batch at a time, and stopped by `close`.
+	 */
+	function sweepUsageClaims(): void {
+		if (now() - claimsSweptAt < HOUR_MS) return;
+		claimsSweptAt = now();
+		keepGoing(
+			(async () => {
+				const expired = (await store.usageClaims.list()).filter((claim) => claim.keepUntil < now());
+				for (let from = 0; from < expired.length && !closing; from += CLAIM_SWEEP_BATCH) {
+					const batch = expired.slice(from, from + CLAIM_SWEEP_BATCH);
+					await Promise.all(batch.map((claim) => store.usageClaims.delete(claim.id).catch(() => false)));
+					// Room for the ticks' own statements between batches.
+					await new Promise((resolve) => setTimeout(resolve, CLAIM_SWEEP_PAUSE_MS));
+				}
+			})(),
+		);
+	}
+
+	/**
+	 * Takes a numbered tick unless it is taken already: exported here only if this process claims it (`claimUsage`),
+	 * which it does once nothing else can stop the tick going in, so a claim made is a tick in.
+	 */
+	async function takeNumbered(hostId: string, entry: HeldUsage): Promise<void> {
+		if (takenAlready(hostId, entry.report)) return;
+		const exports = async () => {
+			entry.exported ??= await claimUsage(hostId, entry.report);
+			return entry.exported;
+		};
+		await ingest(hostId, entry.report, entry.shared ? { shared: true } : { exports });
+		noteTaken(hostId, entry.report);
+	}
+
+	/** Takes the host's held ticks, oldest first; one that fails again stays, with every one after it. */
+	async function takeHeld(hostId: string): Promise<void> {
+		const held = heldUsage.get(hostId);
+		while (held !== undefined && held.length > 0) {
+			const [next] = held;
+			if (next !== undefined) await takeNumbered(hostId, next);
+			held.shift();
+		}
+		heldUsage.delete(hostId);
+	}
+
+	/** Holds a numbered tick that couldn't be taken, behind those held already, at most MAX_HELD_USAGE of them. */
+	function hold(hostId: string, entry: HeldUsage): void {
+		const held = heldUsage.get(hostId) ?? [];
+		const { run, seq } = entry.report;
+		if (held.some((each) => each.report.run === run && each.report.seq === seq)) return;
+		held.push(entry);
+		if (held.length > MAX_HELD_USAGE) held.splice(0, held.length - MAX_HELD_USAGE);
+		heldUsage.set(hostId, held);
+	}
+
+	/**
+	 * Takes a host's tick after the one before it from the same host. A numbered tick taken already isn't taken again,
+	 * and one that can't be taken (the store failing) is held, with every numbered tick after it, until they can be, in
+	 * order: so a tick's promise resolves only once it and every numbered tick before it from the host are in, which is
+	 * what makes the hub's cumulative `usage.ack` true, and no later point gets into a series ahead of a held one (which
+	 * the series would then refuse as older). The held ones are tried again before each tick and each export.
+	 */
+	function ingestInTurn(hostId: string, report: ReportedUsage, shared: boolean): Promise<void> {
+		return inTurn(hostId, async () => {
+			if (report.seq === undefined || report.run === undefined) {
+				await ingest(hostId, report, { shared });
+				return;
+			}
+			const entry: HeldUsage = { report: { ...report, seq: report.seq, run: report.run }, shared };
+			try {
+				await takeHeld(hostId);
+				await takeNumbered(hostId, entry);
+			} catch (error) {
+				hold(hostId, entry);
+				throw error;
+			}
+		});
+	}
+
+	/** Tries every host's held ticks again, each in its host's turn (before an export). */
+	async function retryHeldUsage(): Promise<void> {
+		await Promise.all(
+			[...heldUsage.keys()].map((hostId) => inTurn(hostId, () => takeHeld(hostId)).catch(() => undefined)),
+		);
+	}
+
+	/** Runs `work` after the host's tick before it, and before its next. */
+	function inTurn(hostId: string, work: () => Promise<void>): Promise<void> {
+		const before = ingesting.get(hostId) ?? Promise.resolve();
+		const turn = before.then(work);
+		const settled = turn.catch(() => undefined);
+		ingesting.set(hostId, settled);
+		void settled.then(() => {
+			if (ingesting.get(hostId) === settled) ingesting.delete(hostId);
+		});
+		return turn;
+	}
+
+	/**
+	 * Brings in the ticks a backend makes itself (the stub's), since the last time: at most once per tick's interval,
+	 * on reads, so its graphs move with no timer running.
+	 */
+	async function catchUpUsage(): Promise<void> {
+		const reportsOf = backend.usageReports;
+		if (reportsOf === undefined) return;
+		// One at a time: a caller while one is under way waits for it, so none reads (or settles) half a replay.
+		if (replaying !== undefined) return replaying;
+		const until = now();
+		if (until - pulledUntil < USAGE_INTERVAL_MS) return;
+		const since = pulledUntil;
+		pulledUntil = until;
+		const run = replay(() => reportsOf(since, until)).finally(() => {
+			if (replaying === run) replaying = undefined;
+		});
+		replaying = run;
+		return run;
+	}
+
+	/** Takes the stub's past ticks in order, then settles what they left closed. */
+	async function replay(reportsOf: () => Promise<readonly BackendUsageReport[]>): Promise<void> {
+		const reports = await reportsOf().catch(() => []);
+		const held = new Map<string, ReadonlySet<string>>();
+		for (const report of reports) {
+			let known = held.get(report.hostId);
+			if (known === undefined) {
+				known = await sandboxesOn(report.hostId).catch(() => new Set<string>());
+				held.set(report.hostId, known);
+			}
+			await ingest(report.hostId, report, { known, settle: false }).catch(() => undefined);
+		}
+		// Once every past tick is in: only now can a 5 minutes be closed for want of more.
+		if (reports.length > 0 && now() - settledAt >= SETTLE_EVERY_MS) await settleTaken();
+	}
+
+	/** The sandboxes placed on a host and not deleted. */
+	async function sandboxesOn(hostId: string): Promise<ReadonlySet<string>> {
+		return new Set(
+			(await store.sandboxes.list({ hostId }))
+				.filter((sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting")
+				.map((sandbox) => sandbox.id),
+		);
+	}
+
+	/** Whether a sandbox's host sends its readings: then none is read by running a command in the sandbox. */
+	const hostReports = (hostId: string | undefined) => {
+		const arrived = hostId === undefined ? undefined : tickArrivedAt.get(hostId);
+		if (hostId === undefined || arrived === undefined) return false;
+		const intervalMs = hostSeries.meta(hostId)?.intervalMs ?? USAGE_INTERVAL_MS;
+		return now() - arrived <= Math.max(3 * intervalMs, REPORTING_WITHIN_MS);
+	};
+
+	/**
+	 * The hosts the backend names, read once however many sandboxes ask (`readUsage`); `undefined` when they can't be read.
+	 */
+	function hostsOnce(): () => Promise<readonly BackendHost[] | undefined> {
+		let hosts: Promise<readonly BackendHost[] | undefined> | undefined;
+		return () => {
+			hosts ??= backend.capabilities().then(
+				(capabilities) => capabilities.hosts,
+				() => undefined,
+			);
+			return hosts;
+		};
+	}
+
+	/**
+	 * The fallback for a host that doesn't send its readings (an older kantel-host): one reading by running a command in
+	 * the sandbox, at most once per `minGapMs`, added to its series as a host's tick would be. Never for a host that says
+	 * it sends them (`usage`), even while its ticks are late: they wait on the host while it can't reach the control plane
+	 * and come when it can, and a reading here, stamped later than they are, would keep them out of the series (it takes
+	 * only newer points). Nor when the hosts can't be read: the host may well be one that sends them.
+	 */
+	async function readUsage(
+		sandbox: StoredSandbox,
+		minGapMs: number,
+		hosts: () => Promise<readonly BackendHost[] | undefined> = hostsOnce(),
+	): Promise<void> {
+		if (sandbox.state !== "running" || hostReports(sandbox.hostId)) return;
+		const at = now();
+		if (at - (fallbackReadAt.get(sandbox.id) ?? Number.NEGATIVE_INFINITY) < minGapMs) return;
+		fallbackReadAt.set(sandbox.id, at);
+		const known = await hosts();
+		if (known === undefined) return;
+		const host = known.find((each) => each.id === sandbox.hostId);
+		if (host?.features?.includes(USAGE_FEATURE) === true) return;
+		const reading = await backend.usage(sandbox.id).catch(() => undefined);
+		if (reading === undefined) return;
+		const limit = sandbox.resources?.memoryMb === undefined ? {} : { memLimitBytes: sandbox.resources.memoryMb * MIB };
+		const closed = sandboxSeries.add(
+			sandbox.id,
+			{ at, cpu: reading.cpu, memUsedBytes: reading.memoryBytes, diskUsedBytes: 0 },
+			{ intervalMs: FALLBACK_INTERVAL_MS, ...limit },
+		);
+		if (closed !== undefined) await keepRollup(sandbox.id, closed);
+	}
+
+	/**
+	 * A sandbox's sparklines: its kept 5-minute means and the one under way, the newest `SPARKLINE_POINTS`.
+	 */
+	function sparklines(sandbox: StoredSandbox): { recentCpu: number[]; recentMemory: number[] } {
+		const recent = withPartial(sandbox).slice(-SPARKLINE_POINTS);
 		return {
-			accountId: sandbox.accountId,
-			sandboxId,
-			sandboxType: sandbox.type,
-			cpu: reading.cpu,
-			memoryBytes: reading.memoryBytes,
-			runningSeconds: runningMs(sandbox.runs, 0, at) / 1000,
-			at,
-			startedAt: sandbox.startedAt,
+			recentCpu: recent.map((sample) => sample.cpu),
+			recentMemory: recent.map((sample) => Math.round(sample.memoryMb * MIB)),
+		};
+	}
+
+	/** A sandbox's kept 5-minute means, and the one under way in this process's memory, if any. */
+	function withPartial(sandbox: StoredSandbox): readonly StoredSample[] {
+		const partial = sandbox.state === "deleted" ? undefined : sandboxSeries.partial(sandbox.id);
+		const last = sandbox.samples[sandbox.samples.length - 1];
+		if (partial === undefined || (last !== undefined && partial.at <= last.at)) return sandbox.samples;
+		return [
+			...sandbox.samples,
+			{ at: partial.at, cpu: partial.cpu, memoryMb: partial.memUsedBytes / MIB, readings: partial.readings },
+		];
+	}
+
+	function hostSparklines(hostId: string): computeSchema.UsageSparklines {
+		const recent = hostSeries.rollups(hostId, SPARKLINE_POINTS);
+		return { recentCpu: recent.map((point) => point.cpu), recentMemory: recent.map((point) => point.memUsedBytes) };
+	}
+
+	async function hostUsage(hostId: string, since: number | undefined): Promise<computeSchema.HostUsage> {
+		await catchUpUsage();
+		const { meta, points } = hostSeries.read(hostId, since);
+		return {
+			hostId,
+			intervalMs: meta?.intervalMs ?? USAGE_INTERVAL_MS,
+			memTotalBytes: Math.round(meta?.memTotalBytes ?? 0),
+			diskTotalBytes: Math.round(meta?.diskTotalBytes ?? 0),
+			points: points.map((point) => ({
+				at: point.at,
+				cpu: point.cpu,
+				memUsedBytes: point.memUsedBytes,
+				diskUsedBytes: point.diskUsedBytes,
+			})),
 		};
 	}
 
@@ -2371,7 +3712,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const user = await store.users.get(member.userId);
 			members.push({
 				userId: member.userId,
-				name: user?.name ?? member.userId,
+				// A record made while gateways named people by their user ID still has it: their email, then.
+				name: personName({ userId: member.userId, name: user?.name, email: user?.email }),
 				email: user?.email,
 				role: member.role,
 				joinedAt: member.joinedAt,
@@ -2384,12 +3726,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (principal.kind === "key") {
 			const account = await store.accounts.get(principal.accountId);
 			const role = await roleIn(store, principal, principal.accountId);
-			return account === undefined || role === undefined ? [] : [accountView(account, role)];
+			if (account === undefined || role === undefined) return [];
+			const named =
+				account.kind === "personal" && isPlaceholderName(account.name)
+					? personalNamed(account, await nameOfUser(principal.userId))
+					: account;
+			return [accountView(named, role)];
 		}
 		const accounts: computeSchema.Account[] = [];
 		for (const member of await store.members.list({ userId: principal.userId })) {
 			const account = await store.accounts.get(member.accountId);
-			if (account !== undefined) accounts.push(accountView(account, member.role));
+			if (account !== undefined) accounts.push(accountView(personalNamed(account, personName(principal)), member.role));
 		}
 		return accounts.sort((a, b) =>
 			a.id === principal.personalAccountId ? -1 : b.id === principal.personalAccountId ? 1 : a.createdAt - b.createdAt,
@@ -2547,7 +3894,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 			}
 			return {
-				user: { id: principal.userId, name: principal.name, email: principal.email },
+				user: { id: principal.userId, name: personName(principal), email: principal.email },
 				accountId: principal.personalAccountId,
 				accounts,
 				superAdmin: principal.superAdmin,
@@ -2587,8 +3934,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (invite.revokedAt !== undefined || invite.usedAt !== undefined || invite.expiresAt <= now()) {
 				throw new KantelError("expired", "The invite has expired or been used");
 			}
-			if (invite.email !== undefined && invite.email.toLowerCase() !== (person.email ?? "").toLowerCase()) {
-				throw new KantelError("forbidden", "The invite is for someone else");
+			if (invite.email !== undefined && normaliseEmail(invite.email) !== normaliseEmail(person.email ?? "")) {
+				throw new KantelError("forbidden", inviteForSomeoneElse(invite.email, person.email));
 			}
 			const account = await store.accounts.get(invite.accountId);
 			if (account === undefined) throw notFound("organisation");
@@ -2609,7 +3956,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getAccount: async (principal, { params }) => {
 			const { account, role } = await accountById(store, principal, params.accountId);
 			requireScope(principal, "account:read", role);
-			return accountView(account, role);
+			if (account.kind !== "personal" || !isPlaceholderName(account.name)) return accountView(account, role);
+			// Only its person, or a key of theirs, gets here.
+			return accountView(personalNamed(account, await nameOfUser(principal.userId)), role);
 		},
 
 		updateAccount: async (principal, { params, body }) => {
@@ -2640,6 +3989,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (sandboxes.length > 0 || saved.length > 0) {
 				throw new KantelError("conflict", "Delete the organisation's sandboxes and saved snapshots first");
 			}
+			// Its templates first, with their versions and cache: nothing is built for it once it has gone.
+			await templates.retireAccount(account.id);
 			for (const member of await store.members.list({ accountId: account.id })) await store.members.delete(member.id);
 			for (const invite of await store.invites.list({ accountId: account.id })) await store.invites.delete(invite.id);
 			for (const key of await store.apiKeys.list({ accountId: account.id })) {
@@ -2719,7 +4070,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: newestFirst(open).map((invite) => inviteView(invite)) };
 		},
 
-		createInvite: async (principal, { params, body }) => {
+		createInvite: async (principal, { params, body }, request) => {
 			const acting = await accountById(store, principal, params.accountId);
 			requireScope(principal, "account:admin", acting.role);
 			requireOrganisation(acting);
@@ -2727,18 +4078,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (role === "owner" && acting.role !== "owner") {
 				throw new KantelError("forbidden", "Only an owner invites an owner");
 			}
+			const email = body.email === undefined ? undefined : inviteEmail(body.email);
 			const code = randomSecret("kji_", 32);
 			const invite: StoredInvite = {
 				id: randomId("inv"),
 				accountId: params.accountId,
 				role,
-				email: body.email,
+				...(email === undefined ? {} : { email }),
 				codeHash: await sha256Hex(code),
 				expiresAt: now() + (body.expiresInHours ?? 168) * 3_600_000,
 				createdAt: now(),
 			};
 			await store.invites.put(invite);
-			return inviteView(invite, code);
+			const emailed = email === undefined ? false : await mailInvite(principal, invite, email, code, request);
+			return { ...inviteView(invite, code), emailed };
 		},
 
 		revokeInvite: async (principal, { params }) => {
@@ -2753,6 +4106,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Sandboxes.
 
 		listSandboxes: async (principal, { query }) => {
+			await catchUpUsage();
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:read", role);
 			const active: readonly SandboxState[] = ["starting", "running", "stopping"];
@@ -2769,7 +4123,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (await canSee(principal, sandbox, role)) visible.push(sandbox);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
-			return { items: page.items.map((sandbox) => sandboxView(sandbox, principal)), nextCursor: page.nextCursor };
+			return {
+				items: await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				nextCursor: page.nextCursor,
+			};
+		},
+
+		getSandboxShapes: async (principal, { query }) => {
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "sandboxes:read", role);
+			const read = backend.capabilities();
+			const [records, capabilities, shared] = await Promise.all([ensureHosts(read), read, mayShare(principal)]);
+			const byId = new Map(capabilities.hosts.map((host) => [host.id, host]));
+			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones.
+			const running = records.filter((record) => record.state === "online" && record.tiers.includes("microvm"));
+			const own = running.filter((record) => record.accountId === account.id);
+			const usable = own.length > 0 ? own : shared ? running.filter((record) => record.accountId === undefined) : [];
+			const hosts = usable.flatMap((record) => {
+				const host = byId.get(record.id);
+				return host === undefined ? [] : [host];
+			});
+			const microvm = microvmShapes(hosts, capabilities.sizes);
+			return {
+				isolate: { memoryMb: { ...computeSchema.ISOLATE_MEMORY_MB }, enforced: false },
+				...(microvm === undefined ? {} : { microvm }),
+				// Self-hosted, a sandbox costs its operator nothing per hour, so New sandbox shows no price.
+				...(mode === "hosted"
+					? {
+							rates: {
+								currency: rates.currency,
+								microvmPerVcpuHour: rates.microvmPerVcpuHour,
+								microvmPerGbHour: rates.microvmPerGbHour,
+								isolatePerGbHour: rates.isolatePerGbHour,
+							},
+						}
+					: {}),
+			};
 		},
 
 		createSandbox: async (principal, { body, idempotencyKey }) => {
@@ -2777,7 +4166,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			requireScope(principal, "sandboxes:write", role);
 			return once(principal, "createSandbox", idempotencyKey, async () => {
 				const from = body.from === undefined ? undefined : await snapshotFrom(principal, account.id, body.from);
-				const type = body.type ?? from?.sandboxType ?? "isolate";
+				const template =
+					body.template === undefined ? undefined : await templates.templateIn(account.id, body.template);
+				if (template !== undefined) {
+					if (from !== undefined)
+						throw new KantelError("invalid", "Make a sandbox from a template or a snapshot, not both");
+					if (body.image !== undefined)
+						throw new KantelError("invalid", "A template names its own image; leave image out");
+					if (body.type === "isolate") throw new KantelError("invalid", "A template makes microVMs, not isolates");
+					// Its setup runs as root with the env this call chooses (a shell reads functions from it) whenever it boots
+					// fresh, which a host may do whatever snapshot it is given: only a caller that may run commands may have it run.
+					if (template.spec.setup !== undefined) requireScope(principal, "exec", role);
+				}
+				const type = body.type ?? from?.sandboxType ?? (template === undefined ? "isolate" : "microvm");
+				if (body.mounts !== undefined && body.mounts.length > 0 && mounts === undefined) {
+					throw new KantelError("not_supported", MOUNTS_OFF);
+				}
+				const sandboxMounts = await mounts?.checkCreate(account.id, type, body.mounts);
 				const environment =
 					body.environment === undefined ? undefined : await environmentIn(account.id, body.environment);
 				// Its repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
@@ -2793,19 +4198,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				// The sandbox's own placeholder for each protected variable, minted now and never changed (a rotation changes
-				// the value it stands for). Its env: the environment's plain variables, then the placeholders, then its own.
+				// the value it stands for). Its env: its template's variables, the environment's plain variables, then the
+				// placeholders, then its own.
 				const placeholders: { [name: string]: string } = {};
 				for (const name of protectedNames) placeholders[name] = newPlaceholder();
-				const env: { [name: string]: string } = {};
+				const env: { [name: string]: string } = { ...template?.spec.env };
 				for (const variable of environment?.variables ?? []) {
 					if (!variable.protected && variable.value !== undefined) env[variable.name] = variable.value;
 				}
 				Object.assign(env, placeholders, body.env);
 				const egressRevision = now();
+				// Its own grants: its template's, if it has one.
+				const grants = template === undefined ? [] : normaliseGrants(template.spec.network?.grants ?? []);
 				const subject: EgressSubject = {
 					...(environment === undefined ? {} : { environmentId: environment.id }),
 					placeholders,
-					grants: [],
+					grants,
 					egressRevision,
 				};
 				// The backend's hosts and the host records, read at once: one round trip, not one each. The backend's hosts
@@ -2815,10 +4223,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A check below may refuse the call before this is awaited.
 				known.catch(() => undefined);
 				const capabilities = await read;
-				if (!capabilities.types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
+				if (!capabilities.types.includes(type)) {
+					// Why, as `requireHosts` would say it: of the hosts the caller may use, and from a snapshot its own host.
+					let reason: PlacementReason = "no_host_for_type";
+					try {
+						requireHosts(
+							await known,
+							account.id,
+							type,
+							{ ...body.hostLabels },
+							from !== undefined,
+							await mayShare(principal),
+						);
+					} catch (error) {
+						reason = placementReasonOf(error) ?? reason;
+					}
+					throw placementError("unavailable", reason, `No host runs ${type} sandboxes`);
+				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
+				if (body.size !== undefined && body.resources !== undefined) {
+					throw new KantelError("invalid", "Give resources or a size, not both");
+				}
 				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
-					throw new KantelError("not_supported", `This deployment doesn't offer the size ${body.size}`);
+					throw placementError(
+						"not_supported",
+						"no_host_offers_size",
+						`This deployment doesn't offer the size ${body.size}`,
+					);
 				}
 				if (account.kind === "personal" && body.visibility === "organisation") {
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
@@ -2833,6 +4264,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 				);
+				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
+				// its template's resources (unless it names a size), which a template snapshot was built as.
+				const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
+				const asked =
+					body.resources ?? (template !== undefined && body.size === undefined ? template.spec.resources : undefined);
+				const shape = shapeFor(type, asked, eligible, capabilities.sizes, from === undefined);
+				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
+				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
+				// that size's template snapshot rather than booting it.
+				const machine =
+					type !== "microvm"
+						? undefined
+						: sandboxMachine(
+								template !== undefined
+									? { template: template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES }
+									: from === undefined
+										? undefined
+										: { copies: from },
+								{ ...(body.size === undefined ? {} : { size: body.size }), ...(shape === undefined ? {} : { shape }) },
+								eligible.flatMap((host) => host.sizes ?? capabilities.sizes),
+							);
+				if (type === "microvm" && machine === undefined) {
+					throw placementError(
+						"not_supported",
+						"no_host_offers_size",
+						`No host this sandbox may use offers the size ${body.size}`,
+					);
+				}
+				// From the template's newest ready snapshot built as that machine, on its host, or a fresh boot.
+				const start =
+					template === undefined || machine?.shape === undefined
+						? undefined
+						: await templates.startFor(template, { shape: machine.shape, eligibleHosts: hosts });
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -2840,8 +4304,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					name,
 					subdomain: subdomainFor(name),
 					type,
-					size: type === "microvm" ? (body.size ?? "default") : undefined,
-					image: type === "microvm" ? (body.image ?? capabilities.defaultImage) : undefined,
+					size: machine?.size,
+					...(machine?.shape === undefined ? {} : { shape: machine.shape }),
+					// An isolate's memory is what it asked for (its host has no say); a microVM's is what its host gives it.
+					...(type === "isolate" && shape !== undefined
+						? { shape, resources: { vcpus: 0, memoryMb: shape.memoryMb, diskGb: 0 } }
+						: {}),
+					image: type === "microvm" ? (start?.image ?? body.image ?? capabilities.defaultImage) : undefined,
 					state: "starting",
 					visibility: account.kind === "personal" ? "private" : (body.visibility ?? account.defaultVisibility),
 					capabilities: type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
@@ -2853,17 +4322,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ownerUserId: principal.userId,
 					env,
 					...(environment === undefined ? {} : { environmentId: environment.id }),
-					grants: [],
+					...(start === undefined
+						? {}
+						: {
+								template: start.record,
+								templateBoot: {
+									...freshBoot(start.boot),
+									// A custom image's holders, which a retry of the create keeps to.
+									...(start.boot.rootfsKey === undefined ? {} : { holders: [...start.eligibleHosts] }),
+								},
+							}),
+					grants,
 					placeholders,
 					egressRevision,
 					hostLabels,
 					runs: [],
 					samples: [],
 					ports: [],
+					...(sandboxMounts === undefined ? {} : { mounts: sandboxMounts }),
 				};
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
 				await store.sandboxes.put(sandbox);
+				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
+				// refuses the create, which forgets the sandbox before anything else saw it.
+				if (sandboxMounts !== undefined && mounts !== undefined) {
+					await mounts.holdSources(sandbox).catch(async (error: unknown) => {
+						await store.sandboxes.delete(sandbox.id);
+						throw error;
+					});
+				}
 				// Its egress is read once it is stored: a change to its environment or the proxy settings from then on moves its
 				// revision on (and its boot reconciles), which one read before couldn't promise. Read with the event's write.
 				const [egress] = await Promise.all([
@@ -2880,11 +4368,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								type,
 								subdomain: sandbox.subdomain,
 								size: sandbox.size,
+								...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 								image: sandbox.image,
 								env: sandbox.env,
-								eligibleHosts: hosts,
+								eligibleHosts: start?.eligibleHosts ?? hosts,
 								fromSnapshot: from?.ref,
+								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
+								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
 							}),
 						sandbox,
 						{ egressRevision },
@@ -2908,8 +4399,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		getSandbox: async (principal, { params }) => {
+			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			return sandboxView(sandbox, principal);
+			return withMakerNamed(sandboxView(sandbox, principal));
 		},
 
 		updateSandbox: async (principal, { params, body }) => {
@@ -2996,6 +4488,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await mayShare(principal),
 				);
 				const forks: StoredSandbox[] = [];
+				// Their machine, as every create decides it (`sandboxMachine`): from a snapshot, that of the sandbox it was taken
+				// of (the source's now, for one from before snapshots kept it) unless `size` names another. Forked live, the
+				// source's own, whatever `size` says: a host copies the running machine as it is.
+				const machine =
+					current.type !== "microvm"
+						? undefined
+						: snapshot === undefined
+							? sandboxMachine({ copies: current }, {}, [])
+							: sandboxMachine(
+									{
+										copies: recordsMachine(snapshot) ? snapshot : current,
+									},
+									body.size === undefined ? {} : { size: body.size },
+									[],
+								);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
 				for (let index = 0; index < count; index++) {
@@ -3019,7 +4526,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						name,
 						subdomain: subdomainFor(name),
 						type: current.type,
-						size: current.type === "microvm" ? (body.size ?? current.size) : undefined,
+						size: machine?.size,
+						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
+						// An isolate asks for its source's memory.
+						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
+						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
 						image: current.image,
 						state: "starting",
 						visibility: account?.kind === "personal" ? "private" : (body.visibility ?? current.visibility),
@@ -3039,10 +4550,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						runs: [],
 						samples: [],
 						ports: [],
+						// A fork keeps its source's mounts, put in place afresh on its own machine.
+						...(current.mounts === undefined ? {} : { mounts: pendingMounts(current.mounts) }),
 					});
 				}
+				for (const fork of forks) await store.sandboxes.put(fork);
+				// Each fork holds its own reference to the source's mounts' sources: checked once they are all stored, as a
+				// create's are, so the source's delete (and the sources' deletes) can't leave one mounting what is gone.
+				const first = forks[0];
+				if (mounts !== undefined && first?.mounts !== undefined) {
+					try {
+						await mounts.holdSources(first);
+					} catch (error) {
+						for (const fork of forks) await store.sandboxes.delete(fork.id);
+						throw error;
+					}
+				}
 				for (const fork of forks) {
-					await store.sandboxes.put(fork);
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied. The forks' egress is alike:
@@ -3065,10 +4589,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											type: fork.type,
 											subdomain: fork.subdomain,
 											size: fork.size,
+											...(fork.shape === undefined ? {} : { shape: fork.shape }),
 											image: fork.image,
 											env: fork.env,
 											eligibleHosts: hosts,
 											...egress,
+											...(fork.mounts === undefined ? {} : { mounts: backendMounts(fork.mounts) }),
 										},
 									],
 								);
@@ -3089,11 +4615,79 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		recoverSandbox: async (principal, { params }) => {
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			const current = await settledFor(principal, sandbox.id);
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
+			const hosts = await hostsToBoot(principal, current);
+			const fromSnapshot = await latestRef(current);
+			requireSetupScope(principal, role, current);
+			const environment = await provisionedAgain(principal, role, current);
+			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
+			// say, still being retried) never equals it, and loses.
+			const began = await transition(current.id, current.state, (latest) =>
+				withState(latest, "starting", {
+					ports: [],
+					egressRevision: later(latest.egressRevision),
+					...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+				}),
+			);
+			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+			const starting = began.moved;
+			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+			const egress = await egressFor(starting.accountId, starting);
+			keepGoing(
+				track([current.id], () =>
+					bootProvisioned(
+						current.id,
+						() =>
+							bootAgain(
+								starting,
+								{
+									fromSnapshot,
+									env: current.env,
+									eligibleHosts: hosts,
+									...sizingOf(starting),
+									...egress,
+									...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+								},
+								(options) => backend.recover(current.id, options),
+							),
+						environment,
+						{ egressRevision: starting.egressRevision },
+					),
+				),
+			);
+			return sandboxView(starting, principal);
+		},
+
+		restartSandboxOnLatest: async (principal, { params }) => {
+			requireImagePatching();
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			// Mid-lifecycle (another restart's boot, a stop, a delete): refused as it is, rather than waited for and then
+			// restarted again over what that work did.
+			if (sandbox.state === "starting" || sandbox.state === "stopping" || sandbox.state === "deleting") {
+				throw new KantelError("conflict", `The sandbox is ${sandbox.state}`);
+			}
+			let current = await settledFor(principal, sandbox.id);
+			if (
+				current.state !== "running" &&
+				current.state !== "stopped" &&
+				current.state !== "paused" &&
+				current.state !== "error"
+			) {
+				throw new KantelError("conflict", `The sandbox is ${current.state}`);
+			}
+			// One never placed is made again from its template (`bootAgain`), its setup run: checked before anything moves.
+			requireSetupScope(principal, role, current);
+			// Its lifecycle as checked here: the stop and the boot below are claimed only while nothing else (another restart, a
+			// recovery, on any gateway) has moved it since, even if it is back in the state read.
+			const unmoved = (seen: StoredSandbox) => (latest: StoredSandbox) =>
+				(latest.lifecycle ?? 0) === (seen.lifecycle ?? 0);
+			// A running one holds its place already; the hosts are checked before it is stopped, so a sandbox no host can
+			// take now is refused as it is, not left stopped.
+			if (current.state !== "running") await requireCapacity(current.accountId, 1);
 			const hosts = requireHosts(
 				await ensureHosts(),
 				current.accountId,
@@ -3102,25 +4696,71 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				true,
 				await mayShare(principal),
 			);
+			// Where it is to land: the host images version the index's `stable` names, whatever base it reported (none, for
+			// one from before image patching); a container's image (a digest) is its backend's to pick. Checked with the
+			// machine its disk is on before anything stops, so a restart that can't get there (no stable host images in the
+			// index, a host that isn't eligible, doesn't patch images, or hasn't taken that version yet) leaves the sandbox
+			// as it is.
+			await refreshBase();
+			const onHostImages = current.base === undefined || baseImageOf(current.base) === HOST_BASE_IMAGE;
+			const rebaseTo = onHostImages && baseIndex !== undefined ? hostImageChannel(baseIndex)?.version : undefined;
+			const prepared = await backend.prepareRebase?.(current.id, {
+				eligibleHosts: hosts,
+				...(rebaseTo === undefined ? {} : { rebaseTo }),
+			});
+			// One recorded as `error` may still be running on its host (a boot that finished after its call gave up): it is
+			// stopped as a running one is, since the host's start would otherwise find it running and not boot it anew.
+			if (current.state === "running" || (current.state === "error" && prepared?.running === true)) {
+				// Its disk is saved first, as a stop saves it (without its memory, which a new base can't take): the boot below
+				// starts from that snapshot. Waited for, as the boot needs it.
+				const { work, stopping } = await beginStop(current, false, undefined, principal, unmoved(current));
+				await work;
+				current = await mustGetSandbox(current.id);
+				// Stopped by this stop and nothing since: one step on from the `stopping` it wrote.
+				if (current.state !== "stopped" || (current.lifecycle ?? 0) !== (stopping.lifecycle ?? 0) + 1) {
+					throw new KantelError("conflict", `The sandbox is ${current.state}`);
+				}
+			}
 			const fromSnapshot = await latestRef(current);
-			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
-			// say, still being retried) never equals it, and loses.
-			const began = await transition(current.id, current.state, (latest) =>
-				withState(latest, "starting", { ports: [], egressRevision: later(latest.egressRevision) }),
+			// A boot's egress is read afresh, so it gets a revision of its own, as a recovery's does. A paused sandbox's memory
+			// is let go: the machine boots cold on the new base.
+			const began = await transition(
+				current.id,
+				current.state,
+				(latest) =>
+					withState(latest, "starting", {
+						ports: [],
+						pausedSnapshotId: undefined,
+						egressRevision: later(latest.egressRevision),
+						// Its mounts go with it, as a start's do, each pending until the boot says.
+						...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+					}),
+				unmoved(current),
 			);
 			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 			const starting = began.moved;
+			const stopped = current;
 			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 			const egress = await egressFor(starting.accountId, starting);
 			keepGoing(
-				track([current.id], () =>
+				track([stopped.id], () =>
 					boot(
-						current.id,
+						stopped.id,
 						() =>
 							bootAgain(
-								current,
-								{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
-								(options) => backend.recover(current.id, options),
+								stopped,
+								{
+									fromSnapshot,
+									env: stopped.env,
+									eligibleHosts: hosts,
+									// Its size and shape as recorded, as a start keeps them: only its base changes.
+									...sizingOf(stopped),
+									...egress,
+									...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+									rebase: true,
+									...(rebaseTo === undefined ? {} : { rebaseTo }),
+								},
+								(options) => backend.start(stopped.id, options),
 							),
 						undefined,
 						{ egressRevision: starting.egressRevision },
@@ -3170,8 +4810,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getSandboxUsage: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			if (sandbox.state === "running") await recordSample(sandbox.id);
+			await catchUpUsage();
+			await readUsage(sandbox, FALLBACK_READ_GAP_MS);
 			const current = await mustGetSandbox(sandbox.id);
+			const kept = withPartial(current);
 			const at = now();
 			const intervalMs = (query.intervalSeconds ?? 300) * 1000;
 			const since = Math.max(query.since ?? at - DAY_MS, current.createdAt - intervalMs);
@@ -3181,18 +4823,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (let from = start; from < at; from += intervalMs) {
 				const to = Math.min(from + intervalMs, at);
 				const seconds = runningMs(current.runs, from, to) / 1000;
-				const samples = current.samples.filter((sample) => sample.at >= from && sample.at < to);
-				const mean = (values: readonly number[]) =>
-					values.length === 0 ? 0 : values.reduce((total, value) => total + value, 0) / values.length;
+				const mean = spanMean(kept, from, to);
 				points.push({
 					at: from,
-					cpu: Math.min(1, mean(samples.map((sample) => sample.cpu))),
-					memoryMb: round(mean(samples.map((sample) => sample.memoryMb))),
+					cpu: Math.min(1, mean.cpu),
+					memoryMb: round(mean.memoryMb),
 					runningSeconds: round(seconds),
 					cost: round((seconds / 3600) * rate),
 				});
 			}
 			const seconds = runningMs(current.runs, since, at) / 1000;
+			const series = sandboxSeries.read(current.id, query.since);
+			const memLimit =
+				series.meta?.memLimitBytes ??
+				(current.resources?.memoryMb === undefined ? undefined : current.resources.memoryMb * MIB);
 			return {
 				sandboxId: current.id,
 				intervalSeconds: intervalMs / 1000,
@@ -3201,6 +4845,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					runningSeconds: round(seconds),
 					cpuSeconds: round(seconds * meanCpu(current)),
 					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
+				},
+				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
+				series: {
+					intervalMs:
+						series.meta?.intervalMs ?? (hostReports(current.hostId) ? USAGE_INTERVAL_MS : FALLBACK_INTERVAL_MS),
+					points: series.points.map((point) => ({ at: point.at, cpu: point.cpu, memUsedBytes: point.memUsedBytes })),
 				},
 			};
 		},
@@ -3338,6 +4988,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(body.path);
+			refuseInMount(sandbox, path);
 			const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", "A file written here is at most 1 MiB");
 			let mode: number | undefined;
@@ -3351,7 +5002,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			await backend.deleteFile(sandbox.id, resolvePath(query.path));
+			const path = resolvePath(query.path);
+			const touching = mountsTouching(sandbox.mounts, path);
+			if (touching.length > 0) {
+				throw new KantelError("conflict", `${path} is in or over the read-only mount at ${touching[0]?.path}`);
+			}
+			await backend.deleteFile(sandbox.id, path);
 			return undefined;
 		},
 
@@ -3495,10 +5151,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		openDesktop: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
-			if (!sandbox.capabilities.desktop) {
-				throw new KantelError("not_supported", "The desktop needs a microVM; this is an isolate");
-			}
+			requireScreen(sandbox, "desktop");
 			const current = await requireRunning(principal, sandbox.id);
+			// Again once it's placed: a new sandbox's image reports what it has only then.
+			requireScreen(current, "desktop");
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openDesktop(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
@@ -3507,14 +5163,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		openBrowser: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
-			if (!sandbox.capabilities.browser) {
-				throw new KantelError("not_supported", "The browser needs a microVM; this is an isolate");
-			}
+			requireScreen(sandbox, "browser");
 			const current = await requireRunning(principal, sandbox.id);
+			requireScreen(current, "browser");
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
+			// The browser alone where the machine runs it on its own surface, as the backend finds it there (not the image's
+			// report, which another boot of it made); else the desktop it runs on.
 			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
-			return { url: access.url, cdpUrl: access.cdpUrl, viewOnly, expiresAt: now() + ttlMinutes * 60_000 };
+			return {
+				url: access.url,
+				embedUrl: access.url,
+				cdpUrl: access.cdpUrl,
+				surface: access.surface ?? "desktop",
+				viewOnly,
+				expiresAt: now() + ttlMinutes * 60_000,
+			};
 		},
 
 		// Snapshots.
@@ -3548,10 +5212,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				state: "ready",
 				trigger: "manual",
 				memory: false,
+				...recordedMachine(current),
 				sizeBytes: taken.sizeBytes,
 				createdAt: at,
 				expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 				ref: taken.ref,
+				...(taken.base === undefined ? {} : { base: taken.base }),
 			};
 			await store.snapshots.put(snapshot);
 			await patchSandbox(current.id, (latest) => ({ ...latest, latestSnapshotId: snapshot.id }));
@@ -3573,21 +5239,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			let ref: string;
 			let sizeBytes: number | undefined;
+			// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
+			let base: string | undefined;
+			// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
+			let machine = recordedMachine(current);
 			if (body.snapshotId !== undefined) {
 				const source = await store.snapshots.get(body.snapshotId);
 				if (source === undefined || source.sandboxId !== current.id) throw notFound("snapshot of this sandbox");
 				ref = readyRef(source);
 				sizeBytes = source.sizeBytes;
+				base = source.base;
+				if (recordsMachine(source)) machine = recordedMachine(source);
 			} else if (current.state === "running") {
 				const taken = await backend.takeSnapshot(current.id);
 				ref = taken.ref;
 				sizeBytes = taken.sizeBytes;
+				base = taken.base;
 			} else {
 				const latest =
 					current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
 				if (latest === undefined) throw new KantelError("conflict", "The sandbox has no state to save yet");
 				ref = readyRef(latest);
 				sizeBytes = latest.sizeBytes;
+				base = latest.base;
+				if (recordsMachine(latest)) machine = recordedMachine(latest);
 			}
 			const snapshot: StoredSnapshot = {
 				id: randomId("snap"),
@@ -3600,9 +5275,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				state: "ready",
 				trigger: "save",
 				memory: false,
+				...machine,
 				sizeBytes,
 				createdAt: now(),
 				ref,
+				...(base === undefined ? {} : { base }),
 			};
 			await store.snapshots.put(snapshot);
 			if (existing !== undefined) {
@@ -3680,7 +5357,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listApiKeys: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
-			return { items: newestFirst(await store.apiKeys.list({ accountId: account.id })).map(apiKeyView) };
+			return {
+				items: await withMakersNamed(newestFirst(await store.apiKeys.list({ accountId: account.id })).map(apiKeyView)),
+			};
 		},
 
 		createApiKey: async (principal, { body }) => {
@@ -3711,7 +5390,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { key: apiKeyView(key), secret };
 		},
 
-		getApiKey: async (principal, { params }) => apiKeyView(await apiKeyFor(principal, params.apiKeyId, "account:read")),
+		getApiKey: async (principal, { params }) =>
+			withMakerNamed(apiKeyView(await apiKeyFor(principal, params.apiKeyId, "account:read"))),
 
 		rotateApiKey: async (principal, { params }) => {
 			const key = await apiKeyFor(principal, params.apiKeyId, "account:admin");
@@ -4100,6 +5780,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: page.items, nextCursor: page.nextCursor };
 		},
 
+		watchEvents: async (principal, { query }, request) => {
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "sandboxes:read", role);
+			return watchResponse({
+				feed: live,
+				accountId: account.id,
+				now,
+				signal: request.signal,
+				// Each change is checked as `listSandboxes` and `listEvents` check what they answer, against the caller as they
+				// are now: one whose key or sign-in has ended, or who has left the account, watches no more.
+				mayWatch: async (published): Promise<WatchVerdict> => {
+					const current = await watcherNow(principal);
+					if (current === undefined) return "end";
+					const roleNow = await roleIn(store, current, account.id);
+					if (roleNow === undefined) return "end";
+					try {
+						requireScope(current, "sandboxes:read", roleNow);
+					} catch {
+						return "end";
+					}
+					const sandbox = await published.sandbox();
+					const limited = current.kind === "key" && current.limits.sandboxIds !== undefined;
+					// One whose record is gone (a create that failed) stays with the account's admins and unlimited keys.
+					if (sandbox === undefined) return !limited && (roleNow === "owner" || roleNow === "admin") ? "send" : "skip";
+					return (await canSee(current, sandbox, roleNow)) ? "send" : "skip";
+				},
+			});
+		},
+
 		listWebhooks: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:admin", role);
@@ -4247,9 +5956,49 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
+		getHostUsage: async (principal, { params, query }) =>
+			hostUsage((await hostFor(principal, params.hostId)).id, query.since),
+
 		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
 
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
+
+		// Base images (image patching, experimental).
+
+		listBaseImages: async (principal) => {
+			const baseImages = requireImagePatching();
+			requireScope(principal, "hosts:admin");
+			let index: BaseImageIndex | undefined;
+			let error: string | undefined;
+			try {
+				index = await baseImages.index();
+			} catch (failure) {
+				error = messageOf(failure);
+			}
+			return {
+				images: (index?.images ?? []).map((image) => {
+					const head = image.channels.stable;
+					const latest = head === undefined ? undefined : image.versions.find((version) => version.digest === head);
+					return {
+						name: image.name,
+						repository: image.repository,
+						channel: "stable" as const,
+						...(latest === undefined ? {} : { latest: baseVersionView(latest) }),
+						// The index keeps them newest first.
+						versions: image.versions.slice(0, BASE_IMAGE_VERSIONS_LISTED).map(baseVersionView),
+					};
+				}),
+				// Templates and their bases come with the templates feature; none until then.
+				templates: [],
+				indexUrl: baseImages.indexUrl,
+				...(index === undefined ? {} : { generatedAt: index.generatedAt }),
+				...(error === undefined ? {} : { error }),
+			};
+		},
+
+		// Templates (experimental): `templates.ts`.
+
+		...templates.handlers,
 
 		// An account's own hosts.
 
@@ -4275,12 +6024,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getAccountHost: async (principal, { params }) =>
 			hostView((await accountHostFor(principal, params.hostId, "account:read")).host),
 
+		getAccountHostUsage: async (principal, { params, query }) =>
+			hostUsage((await accountHostFor(principal, params.hostId, "account:read")).host.id, query.since),
+
 		updateAccountHost: async (principal, { params, body }) =>
 			changeHost((await accountHostFor(principal, params.hostId, "account:admin")).host, body),
 
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
+
+		...(mounts?.handlers ?? MOUNTS_OFF_HANDLERS),
 	};
+
+	// With image patching on, the routes that answer sandboxes or snapshots read the base image index first, so their
+	// views (which answer synchronously) say how far behind each base is. The gateway caches the index; this only asks.
+	if (options.baseImages !== undefined) {
+		const wrapped = handlers as unknown as { [route: string]: (...args: never[]) => Promise<unknown> };
+		for (const route of BASE_ROUTES) {
+			const handler = wrapped[route];
+			if (handler === undefined) continue;
+			wrapped[route] = async (...args) => {
+				await refreshBase();
+				return handler(...args);
+			};
+		}
+	}
 
 	async function idle(): Promise<void> {
 		for (;;) {
@@ -4292,7 +6060,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	async function personSummary(userId: string) {
 		const user = await store.users.get(userId);
-		return user === undefined ? undefined : { id: user.id, name: user.name, email: user.email };
+		return user === undefined
+			? undefined
+			: { id: user.id, name: personName({ userId: user.id, name: user.name, email: user.email }), email: user.email };
 	}
 
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
@@ -4302,7 +6072,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		body: { readonly size?: computeSchema.SandboxSizeName; readonly wait?: boolean },
 		how: "start" | "resume",
 	): Promise<Sandbox> {
-		const { sandbox } = await sandboxFor(principal, sandboxId, "sandboxes:write");
+		const { sandbox, role } = await sandboxFor(principal, sandboxId, "sandboxes:write");
 		const current = await settledFor(principal, sandbox.id);
 		if (current.state === "running") return sandboxView(current, principal);
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
@@ -4311,19 +6081,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (current.type === "isolate" && body.size !== undefined)
 			throw new KantelError("invalid", "Isolates have no size");
 		await requireCapacity(current.accountId, 1);
-		const hosts = requireHosts(
-			await ensureHosts(),
-			current.accountId,
-			current.type,
-			current.hostLabels,
-			true,
-			await mayShare(principal),
-		);
+		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
+		requireSetupScope(principal, role, current);
+		const environment = await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
+				// A size it names replaces the shape it had; without one it keeps its shape.
+				shape: body.size === undefined ? latest.shape : undefined,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
+				...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
 				egressRevision: later(latest.egressRevision),
@@ -4337,20 +6105,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const starting = began.moved;
 		const bootOptions = {
 			fromSnapshot,
-			size: starting.size,
+			...sizingOf(starting),
 			env: current.env,
 			eligibleHosts: hosts,
 			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 			...(await egressFor(starting.accountId, starting)),
+			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 		};
 		const work = track([current.id], () =>
-			boot(
+			bootProvisioned(
 				current.id,
 				() =>
-					bootAgain(current, bootOptions, (options) =>
+					bootAgain(starting, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					),
-				undefined,
+				environment,
 				{ egressRevision: starting.egressRevision },
 			),
 		);
@@ -4381,7 +6150,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				principal = {
 					kind: "person",
 					userId: user.id,
-					name: user.name,
+					name: personName({ userId: user.id, name: user.name, email: user.email }),
 					superAdmin: user.superAdmin,
 					personalAccountId: user.personalAccountId,
 				};
@@ -4411,6 +6180,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (sandbox.stopFor === undefined || since === undefined || pending.has(sandbox.id)) continue;
 					if (since + STOP_LEASE_MS > at) continue;
 					const marker = (current: StoredSandbox) =>
+						// One whose host was revoked under its boot (`strandOn`) isn't handed back as running.
+						(current.strandedOn ?? []).length === 0 &&
 						current.stopFor === sandbox.stopFor &&
 						(state === "stopping" ? current.stopClaimedAt : current.stopsAt) === since;
 					await transition(
@@ -4451,15 +6222,60 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const began = await beginStop(sandbox, false, reason, undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}
+			// Each template's cache, against the hosts' runtimes as they are now, in the background (one pass at a time).
+			keepGoing(templates.reconcileAll());
 		},
 
+		publishTemplateBase: (input) => templates.publishTemplateBase(input),
+
 		async sampleUsage() {
+			await catchUpUsage();
+			// Ticks held while the store failed go in first, so they are in this export, not left for a tick that may not come.
+			await retryHeldUsage();
 			const samples: TelemetryUsageSample[] = [];
-			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
-				const sample = await recordSample(sandbox.id);
-				if (sample !== undefined) samples.push(sample);
+			const running = await store.sandboxes.list({ state: "running" });
+			// The export's own timer is the fallback's pace: one read per flush for a host that doesn't send its own.
+			const hosts = hostsOnce();
+			for (const sandbox of running) await readUsage(sandbox, 0, hosts);
+			const byId = new Map(running.map((sandbox) => [sandbox.id, sandbox]));
+			// Every reading not yet taken, whatever the sandbox's state now: one that stopped since still sends what it had.
+			for (const id of sandboxSeries.keys()) {
+				// A sandbox the export hasn't taken from yet (this process just began exporting): its last few minutes, not
+				// the hour kept.
+				const from = exportedUntil.get(id) ?? now() - EXPORT_LOOKBACK_MS;
+				const { points } = sandboxSeries.read(id, from);
+				const last = points[points.length - 1];
+				if (last === undefined) continue;
+				exportedUntil.set(id, last.at);
+				// What another replica passed on, the one holding the host exports. A host that moved between replicas leaves
+				// each its own points to send, and a newer passed-on point doesn't skip an older one taken here.
+				const taken = points.filter((point) => point.shared !== true);
+				if (taken.length === 0) continue;
+				const sandbox = byId.get(id) ?? (await store.sandboxes.get(id));
+				if (sandbox === undefined) continue;
+				for (const point of taken) {
+					samples.push({
+						accountId: sandbox.accountId,
+						sandboxId: sandbox.id,
+						sandboxType: sandbox.type,
+						cpu: point.cpu,
+						memoryBytes: point.memUsedBytes,
+						runningSeconds: runningMs(sandbox.runs, 0, point.at) / 1000,
+						at: point.at,
+						startedAt: sandbox.startedAt,
+					});
+				}
 			}
+			await settleUsage();
+			// A cursor lasts as long as its series' points, so a sandbox resumed within the hour doesn't send them again.
+			const kept = new Set(sandboxSeries.keys());
+			for (const id of exportedUntil.keys()) if (!kept.has(id)) exportedUntil.delete(id);
+			for (const id of fallbackReadAt.keys()) if (!byId.has(id)) fallbackReadAt.delete(id);
 			return samples;
+		},
+
+		recordUsage(hostId, report, how) {
+			return ingestInTurn(hostId, report, how?.shared === true);
 		},
 
 		async hostE2EChain(hostId, space) {
@@ -4503,6 +6319,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { version: environment.secretsVersion, entries };
 		},
 
+		async recordBases(hostId, reports) {
+			const valid = (base: unknown): base is string => typeof base === "string" && REPORTED_BASE.test(base);
+			// A report replaces what the record has when the record has no base, or when the host says it put the sandbox on
+			// this base after the time the record has (a boot whose answer was lost); one from before never does.
+			const newer = (current: StoredSandbox, base: string, at: number | undefined) =>
+				current.base === undefined || (at !== undefined && current.base !== base && at > (current.baseAt ?? 0));
+			for (const { sandboxId, base, baseAt } of reports.sandboxes ?? []) {
+				if (typeof sandboxId !== "string" || !valid(base)) continue;
+				const at = typeof baseAt === "number" && Number.isFinite(baseAt) && baseAt > 0 ? baseAt : undefined;
+				const sandbox = await store.sandboxes.get(sandboxId);
+				if (sandbox === undefined || sandbox.hostId !== hostId || !newer(sandbox, base, at)) continue;
+				// Decided again on the record as it is when written (the SQL store's conditional update reruns it): a boot that
+				// recorded a later base meanwhile wins.
+				await store.sandboxes.update(sandboxId, (current) =>
+					current.hostId === hostId &&
+					newer(current, base, at) &&
+					current.state !== "deleted" &&
+					current.state !== "deleting"
+						? { ...current, base, baseAt: at ?? 0 }
+						: undefined,
+				);
+			}
+			// Snapshots by their ref, read in one pass (a host reports every one it has on each connection, and a ref isn't
+			// indexed): only those with no base yet are written.
+			const reported = new Map<string, string>();
+			for (const { ref, base } of reports.snapshots ?? []) {
+				if (typeof ref !== "string" || !ref.startsWith(`${hostId}/`) || !valid(base)) continue;
+				reported.set(ref, base);
+			}
+			if (reported.size === 0) return;
+			for (const snapshot of await store.snapshots.list()) {
+				const base = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
+				if (base === undefined || snapshot.base !== undefined) continue;
+				const { ref } = snapshot;
+				await store.snapshots.update(snapshot.id, (current) =>
+					current.ref === ref && current.base === undefined ? { ...current, base } : undefined,
+				);
+			}
+		},
+
 		async recordEgress(hostId, records) {
 			const bySandbox = new Map<string, ReportedEgress[]>();
 			for (const record of records) {
@@ -4524,13 +6380,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async close() {
+			closing = true;
 			for (const controller of runningCommands.values()) controller.abort();
+			await live.close();
 			await idle();
+		},
+
+		async bundleForHost(hostId, sandboxId, digest) {
+			return mounts?.bundleForHost(hostId, sandboxId, digest);
+		},
+
+		async bucketSourceForHost(hostId, sandboxId, bucketSourceId) {
+			return mounts?.bucketSourceForHost(hostId, sandboxId, bucketSourceId);
+		},
+
+		async reportMounts(hostId, sandboxId, statuses) {
+			// Kept even with mounts off now: a sandbox made while they were on still has them.
+			await reportMountStatuses(store, hostId, sandboxId, statuses);
+		},
+
+		async serveFileUrl(token, request) {
+			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);
 		},
 
 		idle,
 	};
 }
+
+/** A boot's base for the sandbox's record: the base and when it was put on it (0: not said); nothing when not said. */
+function placedBase(placement: Placement): { base?: string; baseAt?: number } {
+	return placement.base === undefined ? {} : { base: placement.base, baseAt: placement.baseAt ?? 0 };
+}
+
+/** What a host says its sandboxes and snapshots are on (`ComputeService.recordBases`). */
+export interface BaseReports {
+	/** `baseAt`: when the host put it on `base` (`HostSandbox.baseAt`), which orders reports; absent from older hosts. */
+	readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string; readonly baseAt?: number }[];
+	/** By the snapshot's ref, `<hostId>/<snapshot ID on the host>`. */
+	readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
+}
+
+/** A base a host may report: a host images version (such as host-images-20261104.812) or an image digest. */
+const REPORTED_BASE = /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,127}|sha256:[0-9a-f]{64})$/;
 
 /** A host's report as a log entry: checked field by field, as a host is trusted with no more than its own sandboxes. */
 function egressEntryFrom(record: ReportedEgress, sandbox: StoredSandbox, at: number): StoredEgressEntry {

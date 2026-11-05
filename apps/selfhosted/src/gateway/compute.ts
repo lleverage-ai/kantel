@@ -22,8 +22,8 @@
  *   KANTEL_COMPUTE_PUBLIC_URL    with `hosts`: where hosts and clients reach this gateway (join commands, desktop,
  *                                browser and SSH tunnels); default KANTEL_PUBLIC_URL, one of which `hosts` needs.
  *                                deploy/compose/compose.yaml sets it to the gateway's local address by default
- *   KANTEL_COMPUTE_POOLS         warm sandboxes per host, as JSON such as {"microvm/default": 2}; default one
- *                                default-size microVM
+ *   KANTEL_COMPUTE_POOLS         no longer read: hosts keep no warm pools (a create restores a snapshot); set, it is
+ *                                ignored with a warning
  *   KANTEL_COMPUTE_JOIN_COMMAND  the join command shown with a token, with {url} and {token}; default the host
  *                                installer from Kantel's latest GitHub Release (DEFAULT_HOST_JOIN_COMMAND)
  *   KANTEL_HOST_VERSION, KANTEL_HOST_UPDATE_URL
@@ -47,6 +47,26 @@
  *                                of their own (`POST /v1/hosts/join-tokens`, `kantel hosts add`), which dial out to
  *                                this gateway like any host and run only that account's sandboxes. Default off: the
  *                                `/v1/hosts` routes for them answer 501 not_supported
+ *   KANTEL_IMAGE_PATCHING        `experimental` turns on image patching: sandboxes and saved snapshots say which base
+ *                                image they are on and how far behind it is (`base`), `POST
+ *                                /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET
+ *                                /v1/admin/hosts/images` lists the base images and their CVE scans, and hosts are
+ *                                told the host images to fetch in their welcome. Default off: no `base`, and those
+ *                                routes answer 501 not_supported
+ *   KANTEL_BASE_IMAGE_INDEX      with image patching: where the base image index CI publishes is read, an http(s) URL;
+ *                                default the `base-images` GitHub Release's index.json (DEFAULT_BASE_IMAGE_INDEX).
+ *                                Read at most every 5 minutes; a failure is kept for a minute and shown in the admin
+ *                                list
+ *   KANTEL_MOUNTS                `experimental` turns on read-only mounts (bundles and bucket prefixes in a sandbox),
+ *                                bundles (`POST /v1/bundles`), bucket sources, signed file URLs (`/v1/file-urls/...`)
+ *                                and archive extraction, with either backend. A bundle's tar is kept once per account under
+ *                                `bundles/` beside the bootstrap file (KANTEL_BOOTSTRAP_FILE, a volume in Compose), or
+ *                                in KANTEL_BUNDLES_DIR, which replicas over one database must share: one whose store
+ *                                isn't the deployment's refuses bundles' bytes (`BundleBlobStore.mark`).
+ *                                Default off: their routes answer 501 not_supported
+ *   KANTEL_TEMPLATES             `experimental` turns on templates: versioned microVM profiles whose snapshots are built
+ *                                in the background (`/v1/templates`, `/v1/template-bases`), on the stub or on hosts
+ *                                that build them. Default off: those routes answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -66,23 +86,41 @@ import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
 import { type Duplex, Readable } from "node:stream";
 import {
+	baseImageIndexReader,
+	baseImageIndexUrl,
 	type ComputeApi,
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
+	hostImageChannel,
+	type InviteMailing,
+	imagePatchingSwitch,
 	joinTokenSpender,
+	type LiveRelay,
 	type PersonIdentity,
+	personName,
 	type SandboxBackend,
 } from "@kantel/compute";
+import { createDirBundleStore, createMemoryBundleStore } from "@kantel/compute/bundles";
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
-import { type Authenticator, callContextFor, type IdentityDirectory, KantelError } from "@kantel/contracts";
+import {
+	type Authenticator,
+	callContextFor,
+	EMAIL_OTP_ISSUER,
+	type IdentityDirectory,
+	KantelError,
+	MOUNTS_SWITCH,
+	normaliseEmail,
+	systemContext,
+} from "@kantel/contracts";
 import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
 import type { HostCluster } from "@kantel/hosts/cluster";
 import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
 import {
 	createHostsApi,
 	DEFAULT_HOST_IMAGES,
+	HOSTS_BUNDLES_PATH,
 	HOSTS_CONNECT_PATH,
 	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
@@ -102,6 +140,7 @@ import type { RelayStore } from "@kantel/hosts/relay-store";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
+import type { InviteMailer } from "@kantel/identity/invites";
 import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import { type WebSocket, WebSocketServer } from "ws";
 import { CLUSTER_PATH, type GatewayCluster } from "./cluster.ts";
@@ -120,7 +159,6 @@ const COMPUTE_SWEEP_MS = 5_000;
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
 	readonly publicUrl: string;
-	readonly pools?: { readonly [pool: string]: number };
 	readonly joinCommand?: string;
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
@@ -135,6 +173,12 @@ export interface ComputeHostsConfig {
 /** The compute plane's settings: `hosts` is set when sandboxes run on joined hosts, not the stub. */
 export interface ComputeConfig {
 	readonly hosts?: ComputeHostsConfig;
+	/** Image patching (KANTEL_IMAGE_PATCHING=experimental), and where the base image index is read. */
+	readonly imagePatching?: { readonly indexUrl: string };
+	/** Mounts, bundles and signed file URLs (KANTEL_MOUNTS=experimental), on either backend. */
+	readonly mounts?: boolean;
+	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. */
+	readonly templates?: boolean;
 }
 
 /**
@@ -144,27 +188,23 @@ export interface ComputeConfig {
 export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	const publicUrl = (env.KANTEL_COMPUTE_PUBLIC_URL?.trim() || env.KANTEL_PUBLIC_URL?.trim()) ?? "";
 	const backend = env.KANTEL_COMPUTE_BACKEND?.trim().toLowerCase() || (publicUrl === "" ? "stub" : "hosts");
-	if (backend === "stub") return {};
+	// Left out when off, so a config without it is as it was.
+	const patching = imagePatchingSwitch(env.KANTEL_IMAGE_PATCHING)
+		? { imagePatching: { indexUrl: baseImageIndexUrl(env.KANTEL_BASE_IMAGE_INDEX) } }
+		: {};
+	// Read whatever the backend, so a typo stops the gateway on the stub too.
+	const mounts = mountsSwitch(env[MOUNTS_SWITCH]);
+	const templates = templatesSwitch(env.KANTEL_TEMPLATES) ? { templates: true } : {};
+	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...templates, ...patching };
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error(
 			"KANTEL_COMPUTE_BACKEND=hosts needs KANTEL_COMPUTE_PUBLIC_URL or KANTEL_PUBLIC_URL: where hosts reach this gateway",
 		);
 	}
-	let pools: { [pool: string]: number } | undefined;
-	const rawPools = env.KANTEL_COMPUTE_POOLS?.trim() ?? "";
-	if (rawPools !== "") {
-		const parsed: unknown = JSON.parse(rawPools);
-		if (
-			typeof parsed !== "object" ||
-			parsed === null ||
-			Object.entries(parsed).some(
-				([key, value]) => !/^(microvm|isolate)\/[a-z0-9-]+$/.test(key) || !Number.isInteger(value) || value < 0,
-			)
-		) {
-			throw new Error('KANTEL_COMPUTE_POOLS is JSON such as {"microvm/default": 2}');
-		}
-		pools = parsed as { [pool: string]: number };
+	if ((env.KANTEL_COMPUTE_POOLS?.trim() ?? "") !== "") {
+		// An install from before warm pools were removed may still set it: it starts, without them.
+		console.warn("[compute] KANTEL_COMPUTE_POOLS is ignored: hosts keep no warm pools, a create restores a snapshot");
 	}
 	const version = env.KANTEL_HOST_VERSION?.trim() ?? "";
 	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() || DEFAULT_HOST_UPDATE_URL;
@@ -187,16 +227,18 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 		}
 	}
 	return {
+		...(mounts ? { mounts } : {}),
+		...templates,
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
 			...(accountHosts ? { accountHosts } : {}),
 			...(portsDomain === "" ? {} : { portsDomain }),
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
-			...(pools === undefined ? {} : { pools }),
 			...(joinCommand === "" ? {} : { joinCommand }),
 			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version, updateUrl }),
 		},
+		...patching,
 	};
 }
 
@@ -211,6 +253,28 @@ export function accountHostsSwitch(raw: string | undefined): boolean {
 	throw new Error("KANTEL_ACCOUNT_HOSTS is `experimental` or `off`");
 }
 
+/**
+ * KANTEL_MOUNTS: `experimental` turns mounts, bundles and signed file URLs on; unset, empty or `off` leaves them off.
+ * Anything else stops the gateway, as for KANTEL_ACCOUNT_HOSTS.
+ */
+export function mountsSwitch(raw: string | undefined): boolean {
+	const value = raw?.trim().toLowerCase() ?? "";
+	if (value === "" || value === "off") return false;
+	if (value === "experimental") return true;
+	throw new Error(`${MOUNTS_SWITCH} is \`experimental\` or \`off\``);
+}
+
+/**
+ * KANTEL_TEMPLATES: `experimental` turns templates on; unset, empty or `off` leaves them off. Anything else is a mistake
+ * worth stopping for, as KANTEL_ACCOUNT_HOSTS's is.
+ */
+export function templatesSwitch(raw: string | undefined): boolean {
+	const value = raw?.trim().toLowerCase() ?? "";
+	if (value === "" || value === "off") return false;
+	if (value === "experimental") return true;
+	throw new Error("KANTEL_TEMPLATES is `experimental` or `off`");
+}
+
 /** The registry of hosts (`@kantel/hosts`) the `hosts` backend places sandboxes on. */
 export function gatewayHosts(
 	config: ComputeHostsConfig,
@@ -222,7 +286,6 @@ export function gatewayHosts(
 		store,
 		...(cluster === undefined ? {} : { cluster }),
 		publicUrl: config.publicUrl,
-		...(config.pools === undefined ? {} : { pools: config.pools }),
 		...(config.joinCommand === undefined ? {} : { joinCommand: config.joinCommand }),
 		...(config.desiredVersion === undefined ? {} : { desiredVersion: config.desiredVersion }),
 		...(config.updateUrl === undefined ? {} : { updateUrl: config.updateUrl }),
@@ -344,11 +407,12 @@ export interface GatewayCompute {
  * The person a gateway sign-in is, or undefined for a key or no sign-in (a `ksk_` key is the compute API's own). A
  * person who is admin across the deployment's organisation is the compute plane's super-admin, who sees and adds
  * hosts. (A person's sign-in carries no role of its own: roles are held per project or organisation, so it asks
- * `identity`.)
+ * `identity`.) Their name and email come from `identity` too, with `getUser`: an invite made for an address is joined
+ * by matching it, so without it no such invite could be, and the members list and "created by" name them so.
  */
 async function personOf(
 	authenticator: Authenticator,
-	identity: Pick<IdentityDirectory, "authorize"> | undefined,
+	identity: PersonDirectory | undefined,
 	request: Request,
 ): Promise<PersonIdentity | undefined> {
 	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
@@ -358,29 +422,79 @@ async function personOf(
 		return undefined;
 	}
 	if (caller.actor.kind !== "human") return undefined;
-	const superAdmin =
+	const ctx = callContextFor(caller);
+	const [superAdmin, user] = await Promise.all([
 		identity === undefined
 			? false
-			: await identity.authorize(callContextFor(caller), "admin").then(
+			: identity.authorize(ctx, "admin").then(
 					() => true,
 					() => false,
-				);
+				),
+		identity?.getUser?.(ctx, caller.actor.userId).catch(() => undefined),
+	]);
+	const email = user?.email === undefined || user.email === "" ? undefined : user.email;
 	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
 	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
 	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
 	return {
 		userId: caller.actor.userId,
-		name: caller.actor.userId,
+		// As they are known everywhere else: their name, else their email, never their user ID while either is known.
+		name: personName({ userId: caller.actor.userId, name: user?.name, email }),
+		...(email === undefined ? {} : { email }),
 		superAdmin,
 		...(session === undefined ? {} : { session }),
 	};
 }
 
+/**
+ * A compute organisation's invites, emailed with the deployment's mailer (the one that sends sign-in codes). The link
+ * opens the console at `publicOrigin` (KANTEL_PUBLIC_URL): the request URL here is always `http:`.
+ *
+ * Sign-in here is invite-only: someone the deployment doesn't know yet can't get a sign-in code, and an organisation's
+ * invite doesn't change that (letting someone into the deployment is its admins' call, with the deployment's own
+ * invites). So with `identity`, an invite is emailed only to an address that can sign in by email code; for anyone
+ * else the console shows the code, and an admin invites them to the deployment first.
+ */
+export function computeInvites(
+	mailer: InviteMailer,
+	publicOrigin: string | undefined,
+	identity?: Pick<IdentityDirectory, "canSignIn">,
+): InviteMailing {
+	return {
+		send: (mail) => mailer.sendInvite(mail),
+		...(identity === undefined
+			? {}
+			: {
+					canSignIn: (email: string) => {
+						const normalised = normaliseEmail(email);
+						return identity.canSignIn(INVITE_MAIL, {
+							issuer: EMAIL_OTP_ISSUER,
+							subject: normalised,
+							email: normalised,
+							emailVerified: true,
+						});
+					},
+				}),
+		...(publicOrigin === undefined ? {} : { consoleUrl: publicOrigin }),
+		onMailError: (error, to) =>
+			console.error(`[gateway] organisation invite mail to ${JSON.stringify(to)} failed:`, error),
+	};
+}
+
+/** The context `computeInvites` asks identity whether an invite's address can sign in under. */
+const INVITE_MAIL = systemContext("gateway.compute-invites");
+
+/** What `personOf` asks identity: whether the person administers the organisation, and their name and email. */
+type PersonDirectory = Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;
+
 /** The compute API over the stub, or over joined hosts with `hosts`, signed in with the gateway's `authenticator`. */
 export async function gatewayCompute(options: {
 	readonly authenticator: Authenticator;
-	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
-	readonly identity?: Pick<IdentityDirectory, "authorize">;
+	/**
+	 * Who holds which role (an organisation admin who signs in is the compute plane's super-admin) and, with `getUser`,
+	 * each person's name and email.
+	 */
+	readonly identity?: PersonDirectory;
 	/** The super-admin key's secret from an earlier start, if any. */
 	readonly superAdminKey?: string;
 	readonly publicUrl?: string;
@@ -395,6 +509,21 @@ export async function gatewayCompute(options: {
 	 * Postgres store refuses them (a memory store seals with a key of its own, lost with the process).
 	 */
 	readonly secretsKey?: string;
+	/** Image patching (KANTEL_IMAGE_PATCHING=experimental), from `computeConfig`; absent, off. */
+	readonly imagePatching?: { readonly indexUrl: string };
+	/** The base image index's fetch, for tests; default the global one. */
+	readonly fetch?: typeof fetch;
+	/**
+	 * Mounts, bundles and signed file URLs (KANTEL_MOUNTS=experimental); absent, off. Bundles' tars are kept in
+	 * `bundlesDir`, or in memory without one (gone with the process, though the API's records may outlast it).
+	 */
+	readonly mounts?: { readonly bundlesDir?: string };
+	/** Emails an organisation's invites, with a link to join, where the deployment has mail (KANTEL_SMTP_URL). */
+	readonly invites?: InviteMailing;
+	/** Templates (KANTEL_TEMPLATES=experimental). Default off. */
+	readonly templates?: boolean;
+	/** Sandboxes' live changes from the other replicas over the database (live-relay.ts); absent, this gateway's only. */
+	readonly liveRelay?: LiveRelay;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -413,6 +542,22 @@ export async function gatewayCompute(options: {
 	// The API mints and keeps join tokens; the registry spends them when a host registers.
 	hosts?.service.useJoinTokens(joinTokenSpender(store));
 	const publicUrl = hosts?.config.publicUrl ?? options.publicUrl;
+	// One cached read of the index for the API and the hosts' welcome alike.
+	const baseImages =
+		options.imagePatching === undefined
+			? undefined
+			: baseImageIndexReader({
+					url: options.imagePatching.indexUrl,
+					...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+					...(options.now === undefined ? {} : { now: options.now }),
+				});
+	const bundlesDir = options.mounts?.bundlesDir;
+	const bundleStore =
+		options.mounts === undefined
+			? undefined
+			: bundlesDir === undefined
+				? createMemoryBundleStore()
+				: createDirBundleStore(bundlesDir);
 	const api = createComputeApi({
 		store,
 		backend,
@@ -421,18 +566,40 @@ export async function gatewayCompute(options: {
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
+		...(options.templates === true ? { templates: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(baseImages === undefined ? {} : { baseImages }),
+		...(bundleStore === undefined ? {} : { mounts: { bundles: bundleStore } }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.liveRelay === undefined ? {} : { liveRelay: options.liveRelay }),
 	});
-	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did, over their link.
+	// Hosts fetch their sandboxes' protected values, bundles and bucket sources, and report what their egress proxies
+	// did, their usage and how their mounts went, over their link. (With mounts off, the service answers nothing for
+	// either source.)
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		recordUsage: (hostId, usage, how) => api.service.recordUsage(hostId, usage, how),
 		e2eChain: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
 		},
+		...(baseImages === undefined
+			? {}
+			: {
+					images: async () => {
+						const index = await baseImages.index();
+						return index === undefined ? undefined : hostImageChannel(index);
+					},
+					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
+				}),
+		bundle: (hostId, sandboxId, digest) => api.service.bundleForHost(hostId, sandboxId, digest),
+		bucketSource: (hostId, sandboxId, id) => api.service.bucketSourceForHost(hostId, sandboxId, id),
+		reportMounts: (hostId, sandboxId, mounts) => api.service.reportMounts(hostId, sandboxId, mounts),
 	});
+	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
+	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
 	api.exporter.start(TELEMETRY_INTERVAL_MS);
@@ -451,8 +618,8 @@ export async function gatewayCompute(options: {
 	sweepCompute.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
-		// Registration and a host's E2E chain (on its credential) only: the API serves the operator's routes, so the
-		// registry's own admin routes refuse everyone.
+		// Registration, and a host's E2E chain and its sandboxes' bundles (on its credential), only: the API serves the
+		// operator's routes, so the registry's own admin routes refuse everyone.
 		const register = createHostsApi({
 			hosts: hosts.service,
 			authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
@@ -467,6 +634,8 @@ export async function gatewayCompute(options: {
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
 			if (path === HOSTS_REGISTER_PATH || path === HOSTS_E2E_CHAIN_PATH) return register.fetch(request);
+			// A bundle's tar for a sandbox the host runs, on the host's credential.
+			if (path.startsWith(`${HOSTS_BUNDLES_PATH}/`)) return register.fetch(request);
 			if (path.startsWith(`${CLUSTER_PATH}/`)) {
 				return (await hosts.cluster?.peerRoutes(request)) ?? new Response("Not found", { status: 404 });
 			}
@@ -481,7 +650,9 @@ export async function gatewayCompute(options: {
 	return {
 		api,
 		superAdminKey,
-		binding: `${records}, ${hosts === undefined ? "stub backend" : "kantel-host hosts"} (experimental)`,
+		binding:
+			`${records}, ${hosts === undefined ? "stub backend" : "kantel-host hosts"} (experimental)` +
+			(bundleStore === undefined ? "" : `, mounts on with bundles in ${bundlesDir ?? "memory"} (experimental)`),
 		...(hostRoutes === undefined ? {} : { hostRoutes }),
 		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {
@@ -568,7 +739,7 @@ export function withHostUpgrades(
 						if (target === undefined || target === "refused") {
 							return refuse(HOST_CLOSE_REVOKED, "The desktop URL is wrong or has expired");
 						}
-						const held = sessionOf(target.grant, "desktop");
+						const held = sessionOf(target.grant, target.surface);
 						return passThrough(target.sandboxId, target.port, target.path, undefined, held, target);
 					},
 					() => refuse(1011, "The gateway could not check the desktop URL"),
@@ -631,10 +802,21 @@ export function withHostUpgrades(
 				(host) => {
 					if (host === undefined) return refuse(HOST_CLOSE_REVOKED, "The host credential is unknown or revoked");
 					sockets.handleUpgrade(incoming, socket, head, (accepted) => {
+						// The bytes of binary frames sent but not yet written out, counted from each send's callback. Not the
+						// socket's own `bufferedAmount`: under Bun, ws's never comes down again, so a file stream waiting on it
+						// would stall for good once it had sent FILE_STREAM_BUFFER_BYTES.
+						let unsent = 0;
 						const held = compute.hub.accept(host.id, {
 							sendText: (text) => accepted.send(text),
-							sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
+							sendBinary: (bytes) => {
+								unsent += bytes.byteLength;
+								accepted.send(bytes, { binary: true }, () => {
+									unsent -= bytes.byteLength;
+								});
+							},
 							close: (code, reason) => accepted.close(code, reason),
+							// How far behind the socket is, so a file stream to the host waits rather than queues without end.
+							bufferedAmount: () => unsent,
 						});
 						// The hub's receive closes a connection whose frame it can't handle; this catch is the last line, so
 						// nothing a host sends (anyone's, with account hosts) escapes into the gateway process.

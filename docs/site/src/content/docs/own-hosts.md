@@ -34,6 +34,8 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 
 It checks the machine, installs `kantel-host` and the sandbox images, registers with the token and starts the service. The token works once. If someone else tries to use it, they get a 403.
 
+To look first, put `--check` after `--` to only run the machine's checks, which exit non-zero unless it can run sandboxes, or add `--dry-run` to the command to print every download, file, unit and command the install would make, changing nothing and leaving the token unused. If the install stops part way, run the same command again: it carries on, and doesn't use the token twice. See [Hosts](/hosts/#check-a-machine).
+
 ## Where sandboxes go
 
 | The account has… | Its new sandboxes go on |

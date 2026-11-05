@@ -86,6 +86,7 @@ centred on their text within 1px, and a story for every required state; `--only`
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu); a page's views with their own address (use `PageTabs`) |
 | `CheckboxField` | One on/off choice that takes effect with its form or decision | A setting that applies at once (use `Switch`) |
 | `Switch` | An on/off setting that applies the moment it changes | A choice that waits for a form's Save (use `CheckboxField`) |
+| `SliderField` | A number chosen along a range, with its value beside the label: a sandbox's vCPUs or memory | A few named choices (use `SegmentedControl` or `SelectField`); an exact figure to type (use `TextField`) |
 | `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a host's join token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Kantel can show again (use `Code` or `FieldList`) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
 | `Kbd` | A key or chord in text | |
@@ -96,7 +97,9 @@ centred on their text within 1px, and a story for every required state; `--only`
 | Icons | 16px line icons in currentColor | Decoration |
 
 The compute console (`ComputeConsole` and its pages: sandboxes, snapshots, keys, the egress proxy, webhooks,
-OpenTelemetry, the organisation, billing, hosts and the device page) is in `src/compute/`. It calls a `ComputeSource`
+OpenTelemetry, the organisation, billing, hosts, base images and the device page) is in `src/compute/`. A sandbox or
+saved snapshot on an outdated base image shows `BaseOutdatedBadge` (`src/compute/base-outdated.tsx`) wherever it's
+listed. It calls a `ComputeSource`
 the host binds; `@kantel/ui/compute/fixtures` serves stories and the console's recorded mode.
 `SignInScreen` and `SignedInAs` are in `src/identity/`; they take the identity client's calls.
 The two themes (the colour tokens, the dark and light palettes, the switch, and how to change a palette) are in

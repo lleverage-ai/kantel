@@ -41,8 +41,10 @@ docker run --rm -v "$OUT:/out" -v "$HERE:/cfg:ro" -e KERNEL_VERSION="$KERNEL_VER
 	[ ! -f "/cfg/kantel-$ARCH.config" ] || extra="$extra /cfg/kantel-$ARCH.config"
 	cat $extra >> .config
 	make ARCH=$KARCH olddefconfig >/dev/null
-	# Every option the Kantel configs turn on has to survive olddefconfig (it drops one whose dependencies are off).
-	for k in CONFIG_OVERLAY_FS CONFIG_VIRTIO_VSOCKETS $(sed -n "s/^\(CONFIG_[A-Z0-9_]*\)=y$/\1/p" $extra); do
+	# Every option the Kantel configs turn on has to survive olddefconfig (it drops one whose dependencies are off), and
+	# what the host relies on from the CI config: vsock for the guest agent, and the balloon driver, whose statistics
+	# are the sandbox memory figures the host reports.
+	for k in CONFIG_OVERLAY_FS CONFIG_VIRTIO_VSOCKETS CONFIG_VIRTIO_BALLOON $(sed -n "s/^\(CONFIG_[A-Z0-9_]*\)=y$/\1/p" $extra); do
 		grep -q "^$k=y" .config || { echo "$k missing after olddefconfig" >&2; exit 1; }
 	done
 	make ARCH=$KARCH -j"$(nproc)" $TARGET >/dev/null

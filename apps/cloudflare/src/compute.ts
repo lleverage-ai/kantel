@@ -20,6 +20,13 @@
  *   (`GET /v1/hosts/tunnel/{ticket}`), a desktop's page and stream (`/v1/hosts/desktop/{ticket}/`, `@kantel/hosts/desktop`,
  *   a view-only ticket's messages filtered), a browser's CDP (`/v1/hosts/tunnel/{ticket}/{path}`), and their exposed
  *   ports at `https://{port}-{subdomain}.{portsDomain}`, pages (`src/port-serving.ts`) and WebSockets alike.
+ * - **Image patching** (experimental, `imagePatching`, off by default): `KANTEL_IMAGE_PATCHING=experimental` reads
+ *   the base image index CI publishes, from `KANTEL_BASE_IMAGE_INDEX` (default the `base-images` GitHub Release's
+ *   index.json, `DEFAULT_BASE_IMAGE_INDEX`), at most every 5 minutes, a failure kept for a minute. Sandboxes and saved
+ *   snapshots then say which base they are on and how far behind it is (`base`; the stub reports none), `POST
+ *   /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET /v1/admin/hosts/images` lists the images
+ *   and their CVE scans, and account hosts are told the host images to fetch in their welcome. Off, there is no `base`
+ *   and those routes answer 501 not_supported.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
  *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
  *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
@@ -33,14 +40,18 @@
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite`.
  */
 import {
+	baseImageIndexReader,
 	type Collection,
 	type ComputeApi,
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
 	createRoutedBackend,
+	hostImageChannel,
+	type InviteMailing,
 	joinTokenSpender,
 	type PersonIdentity,
+	personName,
 	type SandboxBackend,
 	type StoredSandbox,
 } from "@kantel/compute";
@@ -364,8 +375,14 @@ export interface StackComputeOptions {
 	readonly relayLimits?: RelayLimits;
 	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker. Absent, off. */
 	readonly accountHosts?: { readonly publicUrl: string };
+	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
+	readonly templates?: boolean;
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
 	readonly hostSweepMs?: number;
+	/** Image patching (KANTEL_IMAGE_PATCHING=experimental): where the base image index is read. Absent, off. */
+	readonly imagePatching?: { readonly indexUrl: string };
+	/** Emails an organisation's invites, with a link to join, where the deployment has mail. Absent, none. */
+	readonly invites?: InviteMailing;
 }
 
 /**
@@ -392,10 +409,13 @@ export const COMPUTE_MEMBERS_ONLY =
  * refuses every way in, a compute key or a device sign-in included, since only a person can make either. With account
  * hosts on (`accountHosts`) they are let in, never as a super-admin, to add and use hosts of their own: `sharedHosts`
  * (`membersOf`) keeps them, and their keys, off the stub, with account hosts on or off.
+ *
+ * Their name and email come from `identity` too (a sign-in carries neither): an invite made for an address is joined
+ * by matching it, so without it no such invite could be, and the members list and "created by" name them so.
  */
 async function personOf(
 	authenticator: Authenticator,
-	identity: Pick<IdentityDirectory, "authorize">,
+	identity: Pick<IdentityDirectory, "authorize" | "getUser">,
 	request: Request,
 	adminOrganisationId: string | undefined,
 	accountHosts: boolean,
@@ -409,19 +429,25 @@ async function personOf(
 	if (caller.actor.kind !== "human") return undefined;
 	const outside = adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId;
 	if (outside && !accountHosts) throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
-	// Only an admin of the deployment's organisation, never one of a personal space.
-	const superAdmin =
+	const ctx = callContextFor(caller);
+	const [superAdmin, user] = await Promise.all([
+		// Only an admin of the deployment's organisation, never one of a personal space.
 		!outside &&
-		(await identity.authorize(callContextFor(caller), "admin").then(
-			() => true,
-			() => false,
-		));
+			identity.authorize(ctx, "admin").then(
+				() => true,
+				() => false,
+			),
+		identity.getUser(ctx, caller.actor.userId).catch(() => undefined),
+	]);
+	const email = user?.email === undefined || user.email === "" ? undefined : user.email;
 	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
 	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
 	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
 	return {
 		userId: caller.actor.userId,
-		name: caller.actor.userId,
+		// As they are known everywhere else: their name, else their email, never their user ID while either is known.
+		name: personName({ userId: caller.actor.userId, name: user?.name, email }),
+		...(email === undefined ? {} : { email }),
 		superAdmin,
 		...(session === undefined ? {} : { session }),
 	};
@@ -479,6 +505,15 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 					now,
 				);
 	const deploymentOrganisation = options.adminOrganisationId;
+	// One cached read of the index for the API and the hosts' welcome alike; the object keeps it between requests.
+	const baseImages =
+		options.imagePatching === undefined
+			? undefined
+			: baseImageIndexReader({
+					url: options.imagePatching.indexUrl,
+					...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+					now,
+				});
 	const api = createComputeApi({
 		store,
 		backend:
@@ -488,6 +523,9 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						primary: own.backend,
 						fallback: stub,
 						holds: async (sandboxId) => (await own.service.sandboxes.placement(sandboxId)) !== undefined,
+						// The stub's are those it placed. One no host holds and the stub never placed (its create on an account's
+						// host failed) isn't revived on the stub: it is made again where its create would put it.
+						fallbackHolds: async (sandboxId) => (await store.sandboxes.get(sandboxId))?.hostId === STUB_HOST_ID,
 						holdsSnapshot: isHostSnapshotRef,
 					}),
 		authenticatePerson: (request) =>
@@ -503,6 +541,9 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		// Join commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
+		...(baseImages === undefined ? {} : { baseImages }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.templates === true ? { templates: true } : {}),
 	});
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));
@@ -511,10 +552,23 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	own?.service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		recordUsage: (hostId, usage) => {
+			timers.touchUsage();
+			return api.service.recordUsage(hostId, usage);
+		},
 		e2eChain: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
 		},
+		...(baseImages === undefined
+			? {}
+			: {
+					images: async () => {
+						const index = await baseImages.index();
+						return index === undefined ? undefined : hostImageChannel(index);
+					},
+					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
+				}),
 	});
 	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
@@ -718,7 +772,7 @@ async function accountHostsSide(
 						port: target.port,
 						path: target.path,
 						...(target.accept === undefined ? {} : { accept: target.accept }),
-						kind: "desktop",
+						kind: target.surface,
 						...(target.grant.grantee === undefined ? {} : { grantee: target.grant.grantee }),
 					};
 				}
@@ -987,31 +1041,54 @@ function hostImage(request: Request, path: string): Response {
 	return new Response(null, { status: 302, headers: { location: `${DEFAULT_HOST_IMAGES}/${name}` } });
 }
 
-/** Runs the API's timers from a request until `IDLE_MS` after the last one, then sends what telemetry is queued. */
-function whileBusy(api: ComputeApi, now: () => number): { touch(): void; stop(): void } {
-	let last = 0;
+/**
+ * Runs the API's timers from a request until `IDLE_MS` after the last one, then sends what telemetry is queued. A host's
+ * usage tick (`touchUsage`) keeps the telemetry export's timer going too, as the metrics export is fed from the ticks.
+ */
+export function whileBusy(
+	api: Pick<ComputeApi, "dispatcher" | "exporter">,
+	now: () => number,
+): { touch(): void; touchUsage(): void; stop(): void } {
+	let lastRequest = Number.NEGATIVE_INFINITY;
+	let lastUsage = Number.NEGATIVE_INFINITY;
+	let dispatching = false;
 	let check: ReturnType<typeof setTimeout> | undefined;
+	const idle = (since: number) => now() - since >= IDLE_MS;
 	const stop = () => {
 		if (check === undefined) return;
 		clearTimeout(check);
 		check = undefined;
+		dispatching = false;
 		api.dispatcher.stop();
 		api.exporter.stop();
 	};
 	const watch = () => {
 		check = setTimeout(() => {
-			if (now() - last < IDLE_MS) return watch();
+			if (dispatching && idle(lastRequest)) {
+				dispatching = false;
+				api.dispatcher.stop();
+			}
+			if (!idle(lastRequest) || !idle(lastUsage)) return watch();
 			stop();
 			api.exporter.flush().catch(() => undefined);
 		}, IDLE_MS / 5);
 	};
+	const running = () => {
+		api.exporter.start(TELEMETRY_INTERVAL_MS);
+		if (check === undefined) watch();
+	};
 	return {
 		touch() {
-			last = now();
-			if (check !== undefined) return;
-			api.dispatcher.start(WEBHOOK_INTERVAL_MS);
-			api.exporter.start(TELEMETRY_INTERVAL_MS);
-			watch();
+			lastRequest = now();
+			if (!dispatching) {
+				dispatching = true;
+				api.dispatcher.start(WEBHOOK_INTERVAL_MS);
+			}
+			running();
+		},
+		touchUsage() {
+			lastUsage = now();
+			running();
 		},
 		stop,
 	};
@@ -1029,7 +1106,8 @@ const NO_SNAPSHOT = "The stub has no snapshot ";
 
 /**
  * The stub, for a stub whose memory can go while the records stay. A call for a sandbox it has no machine for gives that
- * sandbox a fresh machine (an empty disk, its type, size and environment from the record) and is made again; a boot
+ * sandbox a fresh machine (an empty disk, or its template's setup run on one, its type, size and environment from the
+ * record) and is made again; a boot
  * from a snapshot it no longer holds boots from an empty disk. Anything else, and a sandbox the records don't have,
  * fails as the stub does.
  */
@@ -1047,17 +1125,40 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 	const refuseHostSnapshot = (ref: string | undefined) => {
 		if (ref !== undefined && isHostSnapshotRef(ref)) throw onHost();
 	};
-	const revive = async (sandboxId: string, cause: KantelError): Promise<void> => {
+	/**
+	 * Revivals under way, by sandbox: every call that finds the sandbox's machine gone while one runs waits for it, so a
+	 * sandbox has one creation attempt at a time and no later one replaces a machine already answered. It goes once that
+	 * attempt ends, made or failed, so a failed one (its template's setup, say) can be tried again.
+	 */
+	const reviving = new Map<string, Promise<void>>();
+	const revive = (sandboxId: string, cause: KantelError): Promise<void> => {
+		const under = reviving.get(sandboxId);
+		if (under !== undefined) return under;
+		const attempt = reviveOnce(sandboxId, cause).finally(() => {
+			if (reviving.get(sandboxId) === attempt) reviving.delete(sandboxId);
+		});
+		reviving.set(sandboxId, attempt);
+		return attempt;
+	};
+	const reviveOnce = async (sandboxId: string, cause: KantelError): Promise<void> => {
 		const record = await sandboxes.get(sandboxId);
 		if (record === undefined || record.state === "deleted") throw cause;
 		if (record.hostId !== undefined && record.hostId !== STUB_HOST_ID) throw onHost();
+		// Its custom image's holders are the service's to place by; here there's only the stub.
+		const template =
+			record.templateBoot === undefined ? undefined : (({ holders: _holders, ...boot }) => boot)(record.templateBoot);
 		const made = stub.create({
 			sandboxId,
 			accountId: record.accountId,
 			type: record.type,
 			subdomain: record.subdomain,
 			...(record.size === undefined ? {} : { size: record.size }),
+			// What it asked for, so it revives as the shape it was made.
+			...(record.shape === undefined ? {} : { shape: record.shape }),
 			...(record.image === undefined ? {} : { image: record.image }),
+			// One made from a template is made again from the base and setup its create resolved, booted fresh, as `bootAgain`
+			// makes it: what its template is now, or whether it still is, doesn't matter.
+			...(template === undefined ? {} : { template }),
 			env: record.env,
 			eligibleHosts: [STUB_HOST_ID],
 		});

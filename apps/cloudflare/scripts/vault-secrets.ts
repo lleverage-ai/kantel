@@ -31,7 +31,19 @@ export const VAULT_SECRETS = [
 	// sealed with in R2. Each at least 32 characters.
 	"KANTEL_BROWSER_VIEW_KEY",
 	"KANTEL_BROWSER_SEAL_KEY",
+	// Sign-in with GitHub and Google on the public origin (`@kantel/identity/oauth`, OAUTH_CLIENT_ENV): each provider's
+	// OAuth client, its ID and secret as a pair. A provider is on once both are on the Worker.
+	"KANTEL_GITHUB_CLIENT_ID",
+	"KANTEL_GITHUB_CLIENT_SECRET",
+	"KANTEL_GOOGLE_CLIENT_ID",
+	"KANTEL_GOOGLE_CLIENT_SECRET",
 ] as const;
+
+/** The OAuth clients' ID and secret, which are set together or not at all. */
+export const OAUTH_CLIENT_PAIRS = [
+	["KANTEL_GITHUB_CLIENT_ID", "KANTEL_GITHUB_CLIENT_SECRET"],
+	["KANTEL_GOOGLE_CLIENT_ID", "KANTEL_GOOGLE_CLIENT_SECRET"],
+] as const satisfies readonly (readonly [VaultSecret, VaultSecret])[];
 
 export type VaultSecret = (typeof VAULT_SECRETS)[number];
 
@@ -53,6 +65,12 @@ export function isStrongToken(value: string): boolean {
 export function vaultSecrets(env: Readonly<Record<string, string | undefined>>): Partial<Record<VaultSecret, string>> {
 	const secrets: Partial<Record<VaultSecret, string>> = {};
 	const invalid: string[] = [];
+	// One of a pair without the other would leave the provider half set up on the Worker: refused, naming the missing one.
+	for (const [id, secret] of OAUTH_CLIENT_PAIRS) {
+		const hasId = (env[id] ?? "").trim() !== "";
+		const hasSecret = (env[secret] ?? "").trim() !== "";
+		if (hasId !== hasSecret) invalid.push(`${hasId ? secret : id} must be set with ${hasId ? id : secret}`);
+	}
 	for (const name of VAULT_SECRETS) {
 		const value = (env[name] ?? "").trim();
 		if (value === "") continue;

@@ -9,7 +9,10 @@ type Identity struct {
 	SandboxID string `json:"sandboxId"`
 	Hostname  string `json:"hostname"`
 	// Address is the guest's IPv4 address with its prefix, such as 10.231.0.6/30.
-	Address string   `json:"address"`
+	Address string `json:"address"`
+	// MAC is eth0's address. A restore keeps the snapshot's, the same in every clone of a template, so it is set here.
+	// (An agent from before it ignores it.)
+	MAC     string   `json:"mac,omitempty"`
 	Gateway string   `json:"gateway"`
 	DNS     []string `json:"dns,omitempty"`
 	// ProxyEnv is written to /etc/kantel/proxy.env (HTTP_PROXY, HTTPS_PROXY, NO_PROXY and their lower-case forms),
@@ -101,6 +104,13 @@ type Health struct {
 // wait for them.
 const ReadyFile = "/etc/kantel/ready"
 
+// InjectedBin is where kantel-guest init puts the agent in an image it boots (a tmpfs, so the image's own files and
+// the sandbox's disk are untouched): kantel-guest, and kantel-doctor beside it.
+const InjectedBin = "/.kantel/bin"
+
+// HostKeyPath is the sandbox's SSH host key, which a fresh identity makes (sshd's, or the injected agent's server).
+const HostKeyPath = "/etc/ssh/ssh_host_ed25519_key"
+
 // Service ports on the guest's loopback, which the host reaches over vsock (GET /ports/{port}).
 const (
 	PortSSH     = 22
@@ -113,3 +123,62 @@ const (
 // PortUpgrade is the Upgrade token for GET /ports/{port}: after 101 the connection is a byte stream to that port
 // on the guest's loopback.
 const PortUpgrade = "kantel-tcp"
+
+// MountPort is the host's vsock port for a sandbox's read-only mounts: the guest agent's FUSE file systems fetch
+// their manifests and bytes there (HTTP/1.1, the paths below), from the host's read cache. Firecracker hands the
+// guest's connection to the Unix socket <uds>_1027 in the VM's directory, so the host knows which sandbox asks.
+//
+//	GET /mounts/{index}/manifest[?have=<version>]  the Manifest, or 304 when the guest has that version
+//	GET /mounts/{index}/object?path=<path>&tag=<tag> (Range: bytes=a-b)  an object's bytes
+//	POST /mounts/{index}/refresh  list the prefix again now; answers the Manifest
+const MountPort = 1027
+
+// MountSpec is one read-only mount the host asks the guest for (POST /mounts, all of a sandbox's mounts at once:
+// a mount at a path the list doesn't name is unmounted).
+type MountSpec struct {
+	// Index is the mount's place in the sandbox's list, its name on MountPort.
+	Index int    `json:"index"`
+	Path  string `json:"path"`
+	// Key says what is mounted (the host's digest of the source and prefix): a mount already at Path with the same
+	// Key is kept, with another it is replaced.
+	Key string `json:"key"`
+	// TTLSeconds is how often, while the sandbox uses the mount, the guest asks whether the manifest changed.
+	TTLSeconds int `json:"ttlSeconds"`
+}
+
+// MountResult is how the guest's mount of one MountSpec went.
+type MountResult struct {
+	Path  string `json:"path"`
+	Error string `json:"error,omitempty"`
+	// Version is the manifest version the guest now shows.
+	Version int64 `json:"version,omitempty"`
+}
+
+// Manifest is a bucket mount's whole tree: every directory and object under the prefix, by path relative to it.
+// The guest answers lookups, listings and stat from it alone.
+type Manifest struct {
+	// Version changes whenever the tree does.
+	Version int64           `json:"version"`
+	Entries []ManifestEntry `json:"entries"`
+}
+
+// ManifestEntry is one directory or object. Names are short: a manifest can list many thousands.
+type ManifestEntry struct {
+	// Path is relative to the mount, with no leading slash ("reports/2026/q3.csv").
+	Path string `json:"p"`
+	Dir  bool   `json:"d,omitempty"`
+	Size int64  `json:"s,omitempty"`
+	// MTimeMs is the object's last-modified time.
+	MTimeMs int64 `json:"m,omitempty"`
+	// Tag is the object's version (its generation or ETag): bytes are fetched by path and tag, so a changed object is
+	// a new file to the guest's page cache.
+	Tag string `json:"t,omitempty"`
+	// Proof is the host's signature of this version (with what it needs to read it): sent back with a read, it lets
+	// the host serve a version no longer in its newest manifest, to a file opened before a refresh, however many
+	// refreshes later, without keeping every old listing.
+	Proof string `json:"k,omitempty"`
+}
+
+// RefreshXattr is an extended attribute on a bucket mount's root: reading it (getfattr -n user.kantel.refresh
+// <mount>) lists the prefix again now and answers the new manifest version.
+const RefreshXattr = "user.kantel.refresh"

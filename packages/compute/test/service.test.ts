@@ -2,9 +2,26 @@ import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { SandboxBackend } from "../src/backend.ts";
+import type { BackendCapabilities, SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
-import { isLoopbackUrl, NEVER_MADE, publicOrigin, SHARED_HOSTS_REFUSED, SHARED_KEY_REFUSED } from "../src/service.ts";
+import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
+import {
+	checkShape,
+	HOST_REVOKED_REASON,
+	hourlyRate,
+	type InviteMail,
+	inviteForSomeoneElse,
+	inviteLink,
+	isLoopbackUrl,
+	microvmShapes,
+	NEVER_MADE,
+	PLACEHOLDER_RATES,
+	publicOrigin,
+	SHARED_HOSTS_REFUSED,
+	SHARED_KEY_REFUSED,
+	shapeFor,
+} from "../src/service.ts";
+import { createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -24,7 +41,10 @@ afterEach(async () => {
 
 function setup(
 	backend: SandboxBackend = createStubBackend(),
-	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts"> = {},
+	extra: Pick<
+		Parameters<typeof createComputeApi>[0],
+		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs" | "store"
+	> = {},
 ) {
 	const api = createComputeApi({
 		...extra,
@@ -214,6 +234,192 @@ describe("sandboxes", () => {
 		expect(paused.state).toBe("paused");
 	});
 
+	it("says what shapes may be asked for: an isolate's memory and, on a host that makes them, any microVM", async () => {
+		const { tom } = setup();
+		const shapes = await tom.getSandboxShapes();
+		expect(shapes.isolate).toEqual({ memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false });
+		expect(shapes.microvm).toMatchObject({
+			vcpus: { min: 1, max: 32, step: 1, default: 2 },
+			memoryMb: { min: 512, step: 512, default: 4096 },
+			memoryMbPerVcpu: { min: 512, max: 8192 },
+			custom: true,
+		});
+		expect(shapes.microvm?.presets.map((preset) => preset.name)).toEqual(["small", "default", "large", "xlarge"]);
+		// Hosts keep no warm pools, so no preset says it is warm.
+		expect(shapes.microvm?.presets.some((preset) => "warm" in preset)).toBe(false);
+		// Self-hosted, sandboxes have no price.
+		expect(shapes.rates).toBeUndefined();
+	});
+
+	it("makes a microVM of any shape, matching a preset by its numbers, and an isolate of the memory it asks", async () => {
+		const { tom } = setup();
+		const custom = await tom.createSandbox({ type: "microvm", resources: { vcpus: 3, memoryMb: 6144 }, wait: true });
+		expect(custom.size).toBeUndefined();
+		expect(custom.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+		expect(custom.cost.ratePerHour).toBe(hourlyRate(PLACEHOLDER_RATES, "microvm", { vcpus: 3, memoryMb: 6144 }));
+		// A fork is its source's shape.
+		const [fork] = (await tom.forkSandbox(custom.id, { wait: true })).items;
+		expect(fork?.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+
+		const preset = await tom.createSandbox({ type: "microvm", resources: { vcpus: 4, memoryMb: 8192 }, wait: true });
+		expect(preset.size).toBe("large");
+
+		const isolate = await tom.createSandbox({ resources: { memoryMb: 384 }, wait: true });
+		expect(isolate.resources).toMatchObject({ vcpus: 0, memoryMb: 384 });
+		expect(isolate.cost.ratePerHour).toBe(hourlyRate(PLACEHOLDER_RATES, "isolate", { vcpus: 0, memoryMb: 384 }));
+		const plain = await tom.createSandbox({ wait: true });
+		expect(plain.resources).toMatchObject({ memoryMb: 256 });
+	});
+
+	it("refuses a shape it can't make", async () => {
+		const { tom } = setup();
+		const refusals = [
+			{ resources: { memoryMb: 600 } },
+			{ resources: { memoryMb: 1024 } },
+			{ resources: { vcpus: 2, memoryMb: 256 } },
+			{ type: "microvm", resources: { memoryMb: 2048 } },
+			{ type: "microvm", resources: { vcpus: 1, memoryMb: 16_384 } },
+			{ type: "microvm", resources: { vcpus: 2, memoryMb: 3000 } },
+			{ type: "microvm", resources: { vcpus: 2, memoryMb: 2048 }, size: "small" },
+		] as const;
+		for (const body of refusals) expect((await failure(tom.createSandbox(body))).code).toBe("invalid");
+	});
+
+	it("prices by vCPU and GB an hour", () => {
+		const rates = { currency: "USD", microvmPerVcpuHour: 0.01, microvmPerGbHour: 0.002, isolatePerGbHour: 0.02 };
+		expect(hourlyRate(rates, "microvm", { vcpus: 2, memoryMb: 4096 })).toBe(0.028);
+		expect(hourlyRate(rates, "isolate", { vcpus: 0, memoryMb: 512 })).toBe(0.01);
+		expect(checkShape("microvm", { vcpus: 2, memoryMb: 768 }, [{ vcpus: 2, memoryMb: 768 }])).toEqual({
+			vcpus: 2,
+			memoryMb: 768,
+		});
+	});
+
+	it("offers a host's presets, and any shape where it makes them, promising no disk for one", () => {
+		const host = {
+			id: "h",
+			name: "h",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+		} as const;
+		const sizes = [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }] as const;
+		const named = microvmShapes([host], sizes);
+		expect(named).toMatchObject({ vcpus: { max: 2 }, memoryMb: { max: 2048 }, custom: false });
+		const custom = microvmShapes([{ ...host, features: ["custom-shapes"] }], sizes);
+		expect(custom).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
+		expect(custom?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }]);
+		// A custom shape's disk is its host's to give (and a snapshot's to keep): none is said ahead.
+		expect(custom).not.toHaveProperty("customDisk");
+		expect(microvmShapes([], sizes)).toBeUndefined();
+	});
+
+	it("keeps hosts' different shapes under one name apart", () => {
+		const host = {
+			id: "a",
+			name: "a",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+			features: ["custom-shapes"],
+		} as const;
+		const four = { ...host, sizes: [{ name: "default" as const, vcpus: 4, memoryMb: 2048, diskGb: 20 }] };
+		const two = { ...host, id: "b", sizes: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 40 }] };
+		const shapes = microvmShapes([four, two], []);
+		expect(shapes?.presets).toEqual([
+			{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 40 },
+			{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 },
+		]);
+		// The same shape on both: one entry.
+		const same = microvmShapes([four, { ...four, id: "c" }], []);
+		expect(same?.presets).toEqual([{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 }]);
+	});
+
+	it("checks a shape against the hosts this create may use only, however full they are", () => {
+		const host = {
+			id: "named",
+			name: "named",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+		} as const;
+		const sizes = [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }] as const;
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		// Only named sizes where it may go: another account's upgraded host doesn't count.
+		expect(() => shapeFor("microvm", custom, [host], sizes)).toThrow(/No host this sandbox may use/);
+		expect(shapeFor("microvm", { vcpus: 2, memoryMb: 2048 }, [host], sizes)).toEqual({ vcpus: 2, memoryMb: 2048 });
+		expect(shapeFor("microvm", custom, [{ ...host, features: ["custom-shapes"] }], sizes)).toEqual(custom);
+		// From a snapshot it boots on the snapshot's host as it was.
+		expect(shapeFor("microvm", custom, [host], sizes, false)).toEqual(custom);
+		expect(shapeFor("isolate", undefined, [], sizes)).toEqual({ vcpus: 0, memoryMb: 256 });
+		expect(shapeFor("microvm", undefined, [], sizes)).toBeUndefined();
+	});
+
+	it("refuses a screen the image reports it lacks once placed, even when asked for before then", async () => {
+		const stub = createStubBackend();
+		const reason = "No desktop in this image: it has no Xvfb";
+		let screens = 0;
+		const backend: SandboxBackend = {
+			...stub,
+			// An injected Alpine image: it says what it has when it boots, after the create returned.
+			create: async (spec) => {
+				const placement = await stub.create(spec);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				const unavailable = { available: false, reason };
+				return {
+					...placement,
+					capabilities: {
+						...placement.capabilities,
+						desktop: false,
+						browser: false,
+						guest: {
+							reportedAt: Date.now(),
+							os: { id: "alpine", name: "Alpine Linux v3.22", version: "3.22.0" },
+							arch: "x86_64",
+							libc: "musl",
+							shell: "/bin/sh",
+							init: "kantel",
+							agent: { version: "test", injected: true },
+							desktop: unavailable,
+							browser: { available: false, reason: "No browser in this image" },
+							docker: { available: false, reason: "No Docker in this image", kvm: false },
+						},
+					},
+				};
+			},
+			openDesktop: async (...args) => {
+				screens++;
+				return stub.openDesktop(...args);
+			},
+			openBrowser: async (...args) => {
+				screens++;
+				return stub.openBrowser(...args);
+			},
+		};
+		const { tom } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm" });
+		const desktop = await failure(tom.openDesktop(vm.id, {}));
+		expect(desktop.code).toBe("not_supported");
+		expect(desktop.message).toBe(reason);
+		expect((await failure(tom.openBrowser(vm.id, {}))).code).toBe("not_supported");
+		expect(screens).toBe(0);
+	});
+
 	it("extends a running sandbox's stop time and stops it once that passes", async () => {
 		let clock = Date.UTC(2026, 0, 1);
 		const api = createComputeApi({
@@ -241,6 +447,316 @@ describe("sandboxes", () => {
 		expect(stopped.state).toBe("stopped");
 		expect(stopped.usage.runningSeconds).toBe(31 * 60);
 		expect(stopped.cost.total).toBeGreaterThan(0);
+		expect(stopped.reason).toBe("auto-stop");
+
+		// A command then is refused with why it stopped and how to resume it; nothing resumes it.
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is stopped (auto-stop); resume it first");
+		expect(refused.details).toEqual({
+			code: "sandbox_stopped",
+			sandboxId: sandbox.id,
+			state: "stopped",
+			stopReason: "auto-stop",
+			hint: `Resume it with kantel resume ${sandbox.id} or POST /v1/sandboxes/${sandbox.id}/resume, then try again`,
+		});
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+		// Its reason goes once it runs again.
+		expect((await tom.resumeSandbox(sandbox.id, { wait: true })).reason).toBeUndefined();
+	});
+});
+
+/** A backend whose resumes wait for `release` and then go on, or fail with `failWith`. */
+function gatedResumes() {
+	const stub = createStubBackend();
+	let release: () => void = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const state = { resumes: 0, failWith: undefined as Error | undefined };
+	const backend: SandboxBackend = {
+		...stub,
+		resume: async (sandboxId, options) => {
+			state.resumes++;
+			await gate;
+			if (state.failWith !== undefined) throw state.failWith;
+			return stub.resume(sandboxId, options);
+		},
+	};
+	return { backend, release: () => release(), state };
+}
+
+describe("calls on a sandbox that isn't running", () => {
+	it("refuses a stopped or paused sandbox with a stable code and the resume call, and stops nothing else", async () => {
+		const { tom } = setup();
+		const isolate = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(isolate.id, { wait: true });
+		const stopped = await failure(tom.readFile(isolate.id, { path: "f.txt" }));
+		expect(stopped.status).toBe(409);
+		expect(stopped.code).toBe("conflict");
+		expect(stopped.message).toBe("The sandbox is stopped; resume it first");
+		// A stop someone asked for records no reason.
+		expect(stopped.details).toEqual({
+			code: "sandbox_stopped",
+			sandboxId: isolate.id,
+			state: "stopped",
+			hint: `Resume it with kantel resume ${isolate.id} or POST /v1/sandboxes/${isolate.id}/resume, then try again`,
+		});
+		for (const call of [
+			tom.runCommand(isolate.id, { command: "true" }),
+			tom.writeFile(isolate.id, { path: "f.txt", content: "x" }),
+			tom.listFiles(isolate.id),
+			tom.deleteFile(isolate.id, { path: "f.txt" }),
+		]) {
+			expect((await failure(call)).details).toMatchObject({ code: "sandbox_stopped", state: "stopped" });
+		}
+
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const paused = await failure(tom.runCommand(vm.id, { command: "true" }));
+		expect(paused.code).toBe("conflict");
+		expect(paused.message).toBe("The sandbox is paused; resume it first");
+		expect(paused.details).toMatchObject({ code: "sandbox_paused", sandboxId: vm.id, state: "paused" });
+		expect(paused.details?.hint).toContain(`kantel resume ${vm.id}`);
+		expect((await tom.getSandbox(vm.id)).state).toBe("paused");
+	});
+
+	it("holds a call made while the sandbox starts and runs it once it is running", async () => {
+		const gated = gatedResumes();
+		const { api, tom } = setup(gated.backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const starting = await tom.resumeSandbox(sandbox.id, { wait: false });
+		expect(starting.state).toBe("starting");
+
+		// Two callers wait on the one start; its own timeout starts only once it runs.
+		const first = tom.runCommand(sandbox.id, { command: "echo one", timeoutMs: 50 });
+		const second = tom.writeFile(sandbox.id, { path: "two.txt", content: "two" });
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		gated.release();
+		const command = await first;
+		expect(command).toMatchObject({ state: "exited", exitCode: 0, stdout: "one\n" });
+		expect(await second).toMatchObject({ path: "/home/user/two.txt" });
+		expect(gated.state.resumes).toBe(1);
+		await api.service.idle();
+		const events = await tom.listEvents({ sandboxId: sandbox.id });
+		expect(events.items.filter((event) => event.type === "sandbox.running")).toHaveLength(2);
+	});
+
+	it("holds a call while another gateway starts the sandbox, reading it again until it runs", async () => {
+		const { api, tom } = setup(createStubBackend(), { startPollMs: 10 });
+		const sandbox = await tom.createSandbox({ wait: true });
+		const running = await api.store.sandboxes.get(sandbox.id);
+		if (running === undefined) throw new Error("No record");
+		// As this gateway sees a start another gateway carries out: starting, with no work of its own to wait on.
+		await api.store.sandboxes.put({ ...running, state: "starting" });
+		setTimeout(() => void api.store.sandboxes.put(running), 100);
+		const command = await tom.runCommand(sandbox.id, { command: "echo ran" });
+		expect(command).toMatchObject({ state: "exited", stdout: "ran\n" });
+	});
+
+	it("answers sandbox_starting once the hold runs out, so the caller sends it again", async () => {
+		const gated = gatedResumes();
+		const { api, tom } = setup(gated.backend, { startHoldMs: 100, startPollMs: 10 });
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.resumeSandbox(sandbox.id, { wait: false });
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is still starting after 100 ms; send the call again");
+		expect(refused.details).toEqual({
+			code: "sandbox_starting",
+			sandboxId: sandbox.id,
+			state: "starting",
+			hint: "It is still starting: send the call again in a moment",
+		});
+		// Nothing was run or recorded for it; the start carries on, and the call sent again runs.
+		expect((await tom.listCommands(sandbox.id)).items).toEqual([]);
+		gated.release();
+		await api.service.idle();
+		expect((await tom.runCommand(sandbox.id, { command: "true" })).exitCode).toBe(0);
+	});
+
+	it("refuses a held call with sandbox_error and its reason when the start fails", async () => {
+		const gated = gatedResumes();
+		const { tom } = setup(gated.backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.resumeSandbox(sandbox.id, { wait: false });
+		gated.state.failWith = new Error("The host ran out of disk");
+		const held = failure(tom.runCommand(sandbox.id, { command: "true" }));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		gated.release();
+		const refused = await held;
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is in error (The host ran out of disk); resume it first");
+		expect(refused.details).toMatchObject({
+			code: "sandbox_error",
+			sandboxId: sandbox.id,
+			state: "error",
+			stopReason: "The host ran out of disk",
+		});
+		// Not `details.reason`, which the SDK reads as a placement's.
+		expect(refused.details).not.toHaveProperty("reason");
+		expect(refused.details?.hint).toContain(`kantel resume ${sandbox.id}`);
+	});
+});
+
+describe("placement reasons", () => {
+	/** The stub, its hosts as `hosts` says (the stub's own one, as it reports it, by default). */
+	function placing(
+		hosts: (own: BackendCapabilities) => BackendCapabilities = (own) => own,
+		types?: Parameters<typeof createStubBackend>[0],
+	): SandboxBackend {
+		const stub = createStubBackend(types);
+		return { ...stub, capabilities: async () => hosts(await stub.capabilities()) };
+	}
+	const reasonOf = async (call: Promise<unknown>) => {
+		const error = await failure(call);
+		return { status: error.status, code: error.code, reason: error.reason, details: error.details };
+	};
+
+	it("says no_host when no host is connected, and no_host_for_type when none runs the type", async () => {
+		const { tom } = setup(placing(() => ({ types: [], sizes: [], hosts: [] })));
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toEqual({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host",
+			details: { reason: "no_host" },
+		});
+		const isolates = setup(placing(undefined, { types: ["isolate"] }));
+		expect(await reasonOf(isolates.tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host_for_type",
+		});
+		// The host is there, but offline.
+		const offline = setup(
+			placing((own) => ({ ...own, hosts: own.hosts.map((host) => ({ ...host, connected: false })) })),
+		);
+		expect(await reasonOf(offline.tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			reason: "no_host",
+		});
+	});
+
+	it("says no_host_with_labels and no_host_offers_size, the codes as before", async () => {
+		const { tom } = setup(placing((own) => ({ ...own, sizes: own.sizes.filter((size) => size.name !== "xlarge") })));
+		expect(await reasonOf(tom.createSandbox({ hostLabels: { zone: "ams" } }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host_with_labels",
+		});
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", size: "xlarge" }))).toMatchObject({
+			status: 501,
+			code: "not_supported",
+			reason: "no_host_offers_size",
+		});
+	});
+
+	it("says account_limit when the account runs as many sandboxes as it may", async () => {
+		const { tom } = setup(placing(), { limits: { concurrentSandboxes: 1 } });
+		await tom.createSandbox({ wait: true });
+		expect(await reasonOf(tom.createSandbox({}))).toMatchObject({
+			status: 429,
+			code: "exhausted",
+			reason: "account_limit",
+		});
+	});
+
+	it("says host_unavailable when a stopped sandbox's host can't take it back", async () => {
+		let hostUp = true;
+		let otherHost = false;
+		const backend = placing((own) => {
+			const [stub] = own.hosts;
+			if (stub === undefined) throw new Error("The stub has a host");
+			return {
+				...own,
+				hosts: [
+					{ ...stub, connected: hostUp },
+					...(otherHost ? [{ ...stub, id: "host_other", name: "other", connected: true }] : []),
+				],
+			};
+		});
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		hostUp = false;
+		// No host at all: the start is refused, naming its own host as the trouble.
+		expect(await reasonOf(tom.startSandbox(sandbox.id, { wait: true }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		// So are a fork of it and a sandbox made from its snapshot, bound to that host as it is, whatever the fleet has.
+		expect(await reasonOf(tom.forkSandbox(sandbox.id, {}))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		const snapshotId = (await tom.getSandbox(sandbox.id)).latestSnapshotId;
+		expect(snapshotId).toBeDefined();
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", from: snapshotId }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		// Another host is up, but its disk is on its own: its boot fails, and the sandbox says why.
+		otherHost = true;
+		const started = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ state: "error", placementReason: "host_unavailable" });
+		// Back on its host, it starts, and the reason goes with the error.
+		hostUp = true;
+		const again = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(again.state).toBe("running");
+		expect(again.placementReason).toBeUndefined();
+	});
+
+	it("names a refusal for the type by the hosts the caller may use, and a snapshot's by its host", async () => {
+		let microvmHost = true;
+		let isolatesUp = true;
+		const backend = placing((own) => {
+			const [stub] = own.hosts;
+			if (stub === undefined) throw new Error("The stub has a host");
+			const isolates = {
+				...stub,
+				id: "host_isolates",
+				name: "isolates",
+				tiers: ["isolate" as const],
+				connected: isolatesUp,
+			};
+			return {
+				...own,
+				types: microvmHost ? ["isolate", "microvm"] : ["isolate"],
+				hosts: microvmHost ? [stub, isolates] : [isolates],
+			};
+		});
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const from = (await tom.getSandbox(sandbox.id)).latestSnapshotId;
+		// The microVM host is gone (revoked, say): only an isolate host is left.
+		microvmHost = false;
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", from }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			reason: "no_host_for_type",
+		});
+		// And with that one offline too, none is connected at all.
+		isolatesUp = false;
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toMatchObject({ status: 503, reason: "no_host" });
+	});
+
+	it("carries no reason on other errors", async () => {
+		const { tom } = setup();
+		const error = await failure(tom.getSandbox("sbx_missing"));
+		expect([error.code, error.reason, error.details]).toEqual(["not_found", undefined, undefined]);
 	});
 });
 
@@ -441,6 +957,109 @@ describe("organisations", () => {
 		expect((await failure(ann.listSandboxes({ account: org.id }))).code).toBe("forbidden");
 	});
 
+	it("lets only the person an emailed invite is for join, whatever case either email is in, and says who it's for (#657)", async () => {
+		const { tom, ann, root } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "  Ann@Example.COM ", role: "admin" });
+		expect(invite.email).toBe("ann@example.com");
+		const code = invite.code ?? "";
+
+		const refused = await failure(root.joinOrganisation({ code }));
+		expect(refused.code).toBe("forbidden");
+		expect(refused.message).toBe(
+			"This invite is for ann@example.com, but you're signed in as root@example.com. Sign in as ann@example.com to join.",
+		);
+		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "admin" });
+		expect((await failure(tom.createInvite(org.id, { email: "not an email" }))).code).toBe("invalid");
+	});
+
+	it("emails an invite made for an address, with a link that joins with its code", async () => {
+		const sent: InviteMail[] = [];
+		const { tom, ann } = setup(createStubBackend(), {
+			invites: { send: async (mail) => void sent.push(mail), consoleUrl: "https://kantel.example.com/" },
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "Ann@Example.com", role: "member" });
+		expect(invite.emailed).toBe(true);
+		expect(sent).toEqual([
+			{
+				to: "ann@example.com",
+				organisation: "Acme",
+				invitedBy: "tom@example.com",
+				link: `https://kantel.example.com/organisation#join=${invite.code}`,
+				expiresAt: invite.expiresAt,
+			},
+		]);
+		// The link's code is the invite's: following it joins.
+		const code = decodeURIComponent(new URL(sent[0]?.link ?? "").hash.replace(/^#join=/, ""));
+		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
+
+		// An invite for anyone with the code goes to nobody.
+		expect((await tom.createInvite(org.id, {})).emailed).toBe(false);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("keeps an invite whose email didn't go, and says so; without mail it sends none", async () => {
+		const failed: string[] = [];
+		const { tom, ann } = setup(createStubBackend(), {
+			invites: {
+				send: async () => {
+					throw new Error("mail is down");
+				},
+				onMailError: (_error, to) => void failed.push(to),
+			},
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@example.com" });
+		expect(invite.emailed).toBe(false);
+		expect(failed).toEqual(["ann@example.com"]);
+		expect(await ann.joinOrganisation({ code: invite.code ?? "" })).toMatchObject({ id: org.id });
+
+		const unmailed = setup();
+		const other = await unmailed.tom.createOrganisation({ name: "Beta" });
+		expect((await unmailed.tom.createInvite(other.id, { email: "ann@example.com" })).emailed).toBe(false);
+	});
+
+	it("emails an invite only to an address that can sign in to follow its link, where the deployment says", async () => {
+		const sent: InviteMail[] = [];
+		const asked: string[] = [];
+		const { tom, ann } = setup(createStubBackend(), {
+			invites: {
+				send: async (mail) => void sent.push(mail),
+				canSignIn: async (email) => {
+					asked.push(email);
+					return email === "ann@example.com";
+				},
+			},
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const stranger = await tom.createInvite(org.id, { email: "stranger@example.com" });
+		expect(stranger).toMatchObject({ email: "stranger@example.com", emailed: false });
+		expect(stranger.code).toMatch(/^kji_/);
+		const invite = await tom.createInvite(org.id, { email: "Ann@Example.com" });
+		expect(invite.emailed).toBe(true);
+		expect(asked).toEqual(["stranger@example.com", "ann@example.com"]);
+		expect(sent.map((mail) => mail.to)).toEqual(["ann@example.com"]);
+		expect(await ann.joinOrganisation({ code: invite.code ?? "" })).toMatchObject({ id: org.id });
+	});
+
+	it("links an invite to the console where the call came in, without a console URL", async () => {
+		const sent: InviteMail[] = [];
+		const { tom } = setup(createStubBackend(), { invites: { send: async (mail) => void sent.push(mail) } });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@example.com" });
+		expect(sent[0]?.link).toBe(`http://compute.test/organisation#join=${invite.code}`);
+		expect(inviteLink("https://kantel.example.com//", "kji_a/b")).toBe(
+			"https://kantel.example.com/organisation#join=kji_a%2Fb",
+		);
+	});
+
+	it("tells someone signed in with no email which email an invite is for", () => {
+		expect(inviteForSomeoneElse("Ann@Example.com", undefined)).toBe(
+			"This invite is for ann@example.com, but you're signed in with no email. Sign in as ann@example.com to join.",
+		);
+	});
+
 	it("keeps someone off the shared hosts (sharedHosts) out of a sandbox there, though a member shared its account", async () => {
 		const { tom, ann, root } = setup(createStubBackend(), { sharedHosts: async (userId) => userId === "usr_tom" });
 		const org = await tom.createOrganisation({ name: "Acme" });
@@ -493,6 +1112,168 @@ describe("organisations", () => {
 			expect(await failure(call)).toMatchObject({ code: "conflict", message: NEVER_MADE });
 		}
 		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
+
+		// One of a shape of its own is made again as that shape; a size named on its start replaces it.
+		failing = true;
+		const shaped = await tom.createSandbox({
+			type: "microvm",
+			from: snapshotId,
+			resources: { vcpus: 3, memoryMb: 6144 },
+			wait: true,
+		});
+		const sized = await tom.createSandbox({
+			type: "microvm",
+			from: snapshotId,
+			resources: { vcpus: 3, memoryMb: 6144 },
+			wait: true,
+		});
+		failing = false;
+		const again = await tom.startSandbox(shaped.id, { wait: true });
+		expect(again.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+		const large = await tom.startSandbox(sized.id, { size: "large", wait: true });
+		expect(large).toMatchObject({ size: "large", resources: { vcpus: 4, memoryMb: 8192 } });
+	});
+
+	it("runs a restart that names a size as that size, even the name it had, and one that names none as it was", async () => {
+		const { tom } = setup();
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		const made = await tom.createSandbox({ type: "microvm", resources: custom, wait: true });
+		const name = made.size ?? "default";
+		await tom.stopSandbox(made.id, { wait: true });
+		const kept = await tom.startSandbox(made.id, { wait: true });
+		expect(kept.resources).toMatchObject(custom);
+		// Its own size's name, given: that size, not the custom shape it had.
+		await tom.stopSandbox(made.id, { keepMemory: true, wait: true });
+		const named = await tom.resumeSandbox(made.id, { size: name, wait: true });
+		const size = (await tom.getSandboxShapes()).microvm?.presets.find((preset) => preset.name === name);
+		expect(named.resources).toMatchObject({ vcpus: size?.vcpus, memoryMb: size?.memoryMb });
+		expect(named.cost.ratePerHour).toBe(
+			hourlyRate(PLACEHOLDER_RATES, "microvm", { vcpus: size?.vcpus ?? 0, memoryMb: size?.memoryMb ?? 0 }),
+		);
+		// Another size, then a fork and a plain restart: each the size it now runs as.
+		await tom.stopSandbox(made.id, { wait: true });
+		const large = await tom.startSandbox(made.id, { size: "large", wait: true });
+		expect(large).toMatchObject({ size: "large", resources: { vcpus: 4, memoryMb: 8192 } });
+		const [fork] = (await tom.forkSandbox(made.id, { wait: true })).items;
+		expect(fork?.resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
+		await tom.stopSandbox(made.id, { wait: true });
+		expect((await tom.startSandbox(made.id, { wait: true })).resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
+	});
+
+	it("makes a plain sandbox whose create failed again as its create would, on recover, start or resume", async () => {
+		const stub = createStubBackend();
+		let failing = true;
+		const creates: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push(spec.sandboxId);
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The disk couldn't be made"))
+					: stub.create(spec);
+			},
+		};
+		const { api, tom } = setup(backend);
+		// Made from no snapshot, each create fails: no backend has them, and they have no snapshot of their own.
+		const made = [];
+		for (let i = 0; i < 3; i++) made.push(await tom.createSandbox({ type: "microvm", wait: true }));
+		expect(made.map((sandbox) => sandbox.state)).toEqual(["error", "error", "error"]);
+		failing = false;
+
+		// Each is made again with the backend's create, as its create made it, rather than asked of a backend without it.
+		const [recovered, started, resumed] = made.map((sandbox) => sandbox.id);
+		await tom.recoverSandbox(recovered ?? "");
+		await api.service.idle();
+		expect((await tom.startSandbox(started ?? "", { wait: true })).state).toBe("running");
+		expect((await tom.resumeSandbox(resumed ?? "", { wait: true })).state).toBe("running");
+		for (const sandbox of made) {
+			expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+			expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
+		}
+		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
+	});
+
+	it("makes a plain microVM of its own shape whose create failed again as that shape, on recover, start or resume", async () => {
+		const stub = createStubBackend();
+		let failing = true;
+		const creates: { readonly sandboxId: string; readonly size?: string; readonly shape?: unknown }[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push({ sandboxId: spec.sandboxId, size: spec.size, shape: spec.shape });
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The disk couldn't be made"))
+					: stub.create(spec);
+			},
+		};
+		const { api, tom } = setup(backend);
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		const made = [];
+		for (let i = 0; i < 3; i++) made.push(await tom.createSandbox({ type: "microvm", resources: custom, wait: true }));
+		expect(made.map((sandbox) => sandbox.state)).toEqual(["error", "error", "error"]);
+		failing = false;
+
+		// Each is made again at the shape it asked for: no preset's size in its place.
+		const [recovered, started, resumed] = made.map((sandbox) => sandbox.id);
+		await tom.recoverSandbox(recovered ?? "");
+		await api.service.idle();
+		await tom.startSandbox(started ?? "", { wait: true });
+		await tom.resumeSandbox(resumed ?? "", { wait: true });
+		for (const sandbox of made) {
+			const again = await tom.getSandbox(sandbox.id);
+			expect(again.state).toBe("running");
+			expect(again.resources).toMatchObject(custom);
+			const remade = creates.filter((create) => create.sandboxId === sandbox.id);
+			expect(remade).toHaveLength(2);
+			expect(remade[1]).toMatchObject({ shape: custom });
+			expect(remade[1]?.size).toBeUndefined();
+		}
+	});
+
+	it("sends a sandbox the routed backend's fallback has just made its egress before it runs, and refuses one never made", async () => {
+		const stub = createStubBackend();
+		let release = () => {};
+		const booting = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let failing = false;
+		const fallback: SandboxBackend = {
+			...stub,
+			create: async (spec) => {
+				if (failing) throw new KantelError("unavailable", "The disk couldn't be made");
+				await booting;
+				return stub.create(spec);
+			},
+		};
+		// An account-hosts side with no hosts: everything is the fallback's, as is the records' say of what it holds.
+		const primary: SandboxBackend = {
+			...createStubBackend(),
+			capabilities: async () => ({ types: ["isolate", "microvm"], sizes: [], hosts: [] }),
+		};
+		const records: { api?: ComputeApi } = {};
+		const routed = createRoutedBackend({
+			primary,
+			fallback,
+			holds: async () => false,
+			fallbackHolds: async (id) => (await records.api?.store.sandboxes.get(id))?.hostId === STUB_HOST_ID,
+			holdsSnapshot: () => false,
+		});
+		const { api, tom } = setup(routed);
+		records.api = api;
+
+		// Its grants change while it is made: sent once it is placed, before its record says where, so it runs.
+		const sandbox = await tom.createSandbox({});
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		release();
+		await api.service.idle();
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "running" });
+		expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
+
+		// One whose create failed is the fallback's no more than anyone's.
+		failing = true;
+		const lost = await tom.createSandbox({ wait: true });
+		expect(lost.state).toBe("error");
+		await expect(routed.exec(lost.id, { command: "true" })).rejects.toMatchObject({ message: NOT_HELD });
 	});
 
 	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {
@@ -743,6 +1524,201 @@ describe("hosts", () => {
 		}
 	});
 
+	it("says a revoked host's sandboxes can't be reached, and lets them be deleted", async () => {
+		const { tom, root } = setup();
+		const running = await tom.createSandbox({ wait: true });
+		const stopped = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(stopped.id, { wait: true });
+		await root.revokeHost(STUB_HOST_ID);
+		for (const id of [running.id, stopped.id]) {
+			const after = await tom.getSandbox(id);
+			expect(after).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		}
+		const deleted = await tom.deleteSandbox(running.id);
+		expect(deleted.state).toBe("deleted");
+	});
+
+	it("doesn't run a first create on a host revoked while the host made it", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Where it is placed while it boots, as a host backend records it before asking the host.
+			placedOn: async () => STUB_HOST_ID,
+			// The host makes it, and before its record names the host, the host is revoked and its sandboxes scanned.
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return placement;
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("error");
+	});
+
+	it("fails a revocation whose sandbox write failed, and finishes it when it is made again", async () => {
+		const store = createMemoryStore();
+		const sandboxes = store.sandboxes;
+		let failNext = false;
+		const { tom, root } = setup(createStubBackend(), {
+			store: {
+				...store,
+				sandboxes: {
+					...sandboxes,
+					async update(id, change, expected) {
+						if (failNext) {
+							failNext = false;
+							throw new Error("The database is away");
+						}
+						return sandboxes.update(id, change, expected);
+					},
+				},
+			},
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		failNext = true;
+		await failure(root.revokeHost(STUB_HOST_ID));
+		// Not claimed done: it still says what it was, and the host is revoked.
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await root.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+		await root.revokeHost(STUB_HOST_ID);
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("runs a first create stranded for a revoked host its boot didn't end up on", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Its placement read as the revoked host (as a template restore's, before it booted fresh elsewhere).
+			placedOn: async () => STUB_HOST_ID,
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return { ...placement, hostId: "host_elsewhere" };
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		expect(sandbox.reason).toBeUndefined();
+	});
+
+	/**
+	 * A stub whose first create is read as placed on `placedOn()` by a revocation, and ends on `endsOn`; with `reconcile`,
+	 * its egress changes while it boots, and the revocation lands while that egress is being sent.
+	 */
+	function revokedMidBoot(options: { endsOn: string; reconcile?: boolean; alsoRevoke?: string; refuse?: boolean }) {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		const delivered: (number | undefined)[] = [];
+		let placedNow = STUB_HOST_ID;
+		let revoke: (hostId: string) => Promise<unknown> = async () => undefined;
+		const revokeAll = async () => {
+			await revoke(STUB_HOST_ID);
+			if (options.alsoRevoke !== undefined) {
+				placedNow = options.alsoRevoke;
+				await revoke(options.alsoRevoke);
+			}
+		};
+		const api = setup(
+			{
+				...stub,
+				async capabilities() {
+					const known = await stub.capabilities();
+					const [only] = known.hosts;
+					return only === undefined || options.alsoRevoke === undefined
+						? known
+						: { ...known, hosts: [...known.hosts, { ...only, id: options.alsoRevoke, name: options.alsoRevoke }] };
+				},
+				placedOn: async () => placedNow,
+				async create(spec) {
+					const placement = await stub.create(spec);
+					if (options.reconcile === true) {
+						// Its egress changes while it starts: its boot has it sent before it may run.
+						await store.sandboxes.update(spec.sandboxId, (current) => ({
+							...current,
+							egressRevision: (current.egressRevision ?? 0) + 1,
+						}));
+					} else {
+						await revokeAll();
+					}
+					return { ...placement, hostId: options.endsOn };
+				},
+				async updateEgress(_sandboxId, _egress, revision) {
+					delivered.push(revision);
+					// The revocation's scan lands while this egress is on its way.
+					if (options.reconcile === true && delivered.length === 1) await revokeAll();
+					// Its host then refuses the egress, which would have it stopped.
+					if (options.refuse === true) throw new KantelError("not_supported", "This host can't enforce it");
+				},
+			},
+			{ store },
+		);
+		revoke = (hostId) => api.root.revokeHost(hostId);
+		return { ...api, store, delivered };
+	}
+
+	it("doesn't run a first create whose host is revoked while its egress is being reconciled", async () => {
+		const { tom, delivered } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(delivered.length).toBeGreaterThan(0);
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("runs, with its egress as it is now, a first create whose egress was reconciled on a host that wasn't revoked", async () => {
+		const { tom, store, delivered } = revokedMidBoot({ endsOn: "host_elsewhere", reconcile: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const stored = await store.sandboxes.get(sandbox.id);
+		expect(delivered).toContain(stored?.egressRevision);
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("ends a first create whose host is revoked before its egress is refused in error, not handed back from a stop", async () => {
+		const { tom } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true, refuse: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("doesn't run a first create that moved to another host revoked too", async () => {
+		const { tom } = revokedMidBoot({ endsOn: "host_elsewhere", alsoRevoke: "host_elsewhere" });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("doesn't strand a boot whose record moved on after its placement was read", async () => {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		let moveOn: ((sandboxId: string) => Promise<unknown>) | undefined;
+		const { tom, root } = setup(
+			{
+				...stub,
+				// Read as the revoked host; then, before the scan writes, the sandbox moves on (a recovery, say).
+				async placedOn(sandboxId) {
+					await moveOn?.(sandboxId);
+					return STUB_HOST_ID;
+				},
+				async create(spec) {
+					const placement = await stub.create(spec);
+					await revokeMeanwhile?.();
+					return { ...placement, hostId: "host_elsewhere" };
+				},
+			},
+			{ store },
+		);
+		moveOn = (sandboxId) =>
+			store.sandboxes.update(sandboxId, (current) => ({ ...current, lifecycle: (current.lifecycle ?? 0) + 2 }));
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const events = (await tom.listEvents({ sandboxId: sandbox.id })).items.map((event) => event.type);
+		expect(events).not.toContain("sandbox.error");
+	});
+
 	it("keeps a revocation that lands while a drain is in flight", async () => {
 		const stub = createStubBackend();
 		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
@@ -763,5 +1739,111 @@ describe("hosts", () => {
 		expect(listed.items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
 		// And the next capabilities refresh doesn't bring it back.
 		expect((await ops.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+	});
+});
+
+describe("people's names", () => {
+	it("shows a person whose record has their user ID for a name by their email, without them signing in again", async () => {
+		// Gateways once named everyone by their user ID, and wrote it back on every sign-in.
+		const store = createMemoryStore();
+		const legacy = "usr_4e473b3d-2b96-4bbf-9427-98be4e40ecff";
+		const api = createComputeApi({
+			backend: createStubBackend(),
+			store,
+			authenticatePerson: async (request) => {
+				const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+				return token === undefined ? undefined : PEOPLE[token];
+			},
+			fetch: async () => new Response(null, { status: 204 }),
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await store.accounts.put({
+			id: "acc_alex",
+			kind: "personal",
+			name: legacy,
+			defaultVisibility: "private",
+			createdAt: 1,
+		});
+		await store.users.put({
+			id: legacy,
+			name: legacy,
+			email: "alex@example.com",
+			superAdmin: false,
+			personalAccountId: "acc_alex",
+			createdAt: 1,
+		});
+		await store.members.put({
+			id: `${org.id}:${legacy}`,
+			accountId: org.id,
+			userId: legacy,
+			role: "owner",
+			joinedAt: 2,
+		});
+		await store.apiKeys.put({
+			id: "key_alex",
+			accountId: org.id,
+			name: "alex's",
+			prefix: "ksk_abcd",
+			scopes: ["sandboxes:read"],
+			createdBy: { kind: "user", id: legacy, name: legacy },
+			createdAt: 3,
+			secretHash: "0".repeat(64),
+			ownerUserId: legacy,
+		});
+
+		const members = await tom.listMembers(org.id);
+		expect(members.items.map((member) => [member.userId, member.name])).toEqual(
+			expect.arrayContaining([
+				["usr_tom", "Tom"],
+				[legacy, "alex@example.com"],
+			]),
+		);
+		const keys = await tom.listApiKeys({ account: org.id });
+		expect(keys.items.find((key) => key.id === "key_alex")?.createdBy).toEqual({
+			kind: "user",
+			id: legacy,
+			name: "alex@example.com",
+		});
+		expect((await tom.getApiKey("key_alex")).createdBy.name).toBe("alex@example.com");
+		// What Tom makes says who he is, and so does what he made while his record said only his user ID.
+		const sandbox = await tom.createSandbox({ account: org.id, wait: true });
+		expect(sandbox.createdBy).toEqual({ kind: "user", id: "usr_tom", name: "Tom" });
+		await store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			createdBy: { kind: "user", id: "usr_tom", name: "usr_tom" },
+		}));
+		expect((await tom.getSandbox(sandbox.id)).createdBy.name).toBe("Tom");
+		const listed = await tom.listSandboxes({ account: org.id });
+		expect(listed.items.find((item) => item.id === sandbox.id)?.createdBy.name).toBe("Tom");
+	});
+
+	it("names a personal account made with its person's user ID as they are now", async () => {
+		const store = createMemoryStore();
+		const api = createComputeApi({
+			backend: createStubBackend(),
+			store,
+			authenticatePerson: async () => PEOPLE["ann-token"],
+			fetch: async () => new Response(null, { status: 204 }),
+		});
+		opened.push(api);
+		const ann = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "ann-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const caller = await ann.getCaller();
+		const personal = caller.accounts.find((account) => account.kind === "personal");
+		if (personal === undefined) throw new Error("no personal account");
+		await store.accounts.update(personal.id, (current) => ({ ...current, name: "usr_ann" }));
+		expect((await ann.getCaller()).accounts.find((account) => account.id === personal.id)?.name).toBe("Ann");
+		expect((await ann.getAccount(personal.id)).name).toBe("Ann");
 	});
 });

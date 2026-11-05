@@ -27,7 +27,19 @@ func bench(args []string) error {
 	tiers := fs.String("tiers", "", "tiers to measure (default: every tier the host runs)")
 	size := fs.String("size", "default", "microVM size")
 	out := fs.String("out", "", "also write the results as JSON here")
+	vcpus := fs.Int("vcpus", 0, "a custom shape's vCPUs instead of -size (with -memory and -disk)")
+	memory := fs.Int("memory", 0, "a custom shape's memory, MiB")
+	disk := fs.Int("disk", 0, "a custom shape's disk, GiB")
+	only := fs.String("only", "", "\"create\": measure creates only (no stop, resume or fork)")
+	settle := fs.Duration("settle", 0, "wait this long after the host starts, before measuring")
+	keep := fs.Bool("keep-templates", false, "don't drop the templates first: no cold create, and creates restore the templates already made")
+	owners := fs.String("owners", "", "\"new\": every create is for an account of its own (the isolate tier: an isolate in a just-restored account VM, not one already running)")
 	_ = fs.Parse(args)
+	benchOnly, benchKeep, benchOwners = *only, *keep, *owners
+	benchShape = proto.CreateParams{Size: *size}
+	if *vcpus > 0 {
+		benchShape = proto.CreateParams{VCPUs: *vcpus, MemoryMiB: *memory, DiskGiB: *disk}
+	}
 	cfg, err := agent.LoadConfig(*configPath)
 	if err != nil {
 		return err
@@ -40,6 +52,7 @@ func bench(args []string) error {
 	}
 	defer host.Close()
 	ctx := context.Background()
+	time.Sleep(*settle)
 	want := host.Tiers()
 	if *tiers != "" {
 		want = strings.Split(*tiers, ",")
@@ -47,7 +60,7 @@ func bench(args []string) error {
 	results := []benchResult{}
 	add := func(r benchResult) {
 		results = append(results, r)
-		fmt.Fprintf(os.Stderr, "%-8s %-6s %-7s n=%-3d p50=%8.1fms min=%8.1fms max=%8.1fms  %s\n", r.Tier, r.Temp, r.Op, len(r.Samples), r.P50, r.Min, r.Max, r.Note)
+		fmt.Fprintf(os.Stderr, "%-8s %-6s %-7s n=%-3d p50=%8.1fms p95=%8.1fms min=%8.1fms max=%8.1fms  %s\n", r.Tier, r.Temp, r.Op, len(r.Samples), r.P50, r.P95, r.Min, r.Max, r.Note)
 	}
 	for _, tier := range want {
 		rs, err := benchTier(ctx, host, tier, *size, *runs)
@@ -91,6 +104,7 @@ type benchResult struct {
 	Temp    string               `json:"temp"`
 	Samples []float64            `json:"samplesMs"`
 	P50     float64              `json:"p50Ms"`
+	P95     float64              `json:"p95Ms"`
 	Min     float64              `json:"minMs"`
 	Max     float64              `json:"maxMs"`
 	Note    string               `json:"note,omitempty"`
@@ -103,6 +117,7 @@ func summarise(tier, op, temp, note string, samples []float64, steps []map[strin
 	r := benchResult{Tier: tier, Op: op, Temp: temp, Samples: samples, Note: note, Steps: steps}
 	if len(sorted) > 0 {
 		r.P50 = sorted[len(sorted)/2]
+		r.P95 = sorted[min(len(sorted)-1, int(math.Ceil(float64(len(sorted))*0.95))-1)]
 		r.Min, r.Max = sorted[0], sorted[len(sorted)-1]
 	}
 	for i := range r.Samples {
@@ -151,28 +166,48 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 		}
 		return nil
 	}
-	host.SetPools(map[string]int{})
-	host.ResetTemplates(tier)
-
-	// Cold create: nothing prepared (no template snapshot, no pool): the first sandbox of a fresh host.
+	// The shape every microVM create asks for (-size, or -vcpus/-memory/-disk).
+	params := func(sid, owner string) proto.CreateParams {
+		p := proto.CreateParams{SandboxID: sid, Tier: tier, Size: size, Owner: owner}
+		if tier == "microvm" {
+			p.Size, p.VCPUs, p.MemoryMiB, p.DiskGiB = benchShape.Size, benchShape.VCPUs, benchShape.MemoryMiB, benchShape.DiskGiB
+		}
+		return p
+	}
 	var info proto.SandboxInfo
-	sid := id("cold", 0)
-	t, err := call(proto.MethodCreate, proto.CreateParams{SandboxID: sid, Tier: tier, Size: size}, &info)
-	if err != nil {
-		return out, fmt.Errorf("cold create: %w", err)
-	}
-	created = append(created, sid)
-	if err := exec(sid); err != nil {
-		return out, err
-	}
-	out = append(out, summarise(tier, "create", "cold", "first sandbox on a fresh host: boots the template, then restores it ("+info.Source+")", []float64{t}, []map[string]float64{info.Timings}))
+	if !benchKeep {
+		host.ResetTemplates(tier)
 
-	// Create from the template snapshot, no pool.
+		// Cold create: nothing prepared (no template snapshot): the first sandbox of a fresh host, or of a new vCPU
+		// count with shared templates.
+		sid := id("cold", 0)
+		t, err := call(proto.MethodCreate, params(sid, ""), &info)
+		if err != nil {
+			return out, fmt.Errorf("cold create: %w", err)
+		}
+		created = append(created, sid)
+		if err := exec(sid); err != nil {
+			return out, err
+		}
+		out = append(out, summarise(tier, "create", "cold", "first sandbox with no template made ("+info.Source+")", []float64{t}, []map[string]float64{info.Timings}))
+	}
+	// A shared template is made in the background after the cold create: what the next creates restore.
+	waitStart := time.Now()
+	if err := host.WaitTemplate(ctx, tier, params("", "")); err != nil {
+		return out, fmt.Errorf("template: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "template ready after %.1fs more\n", time.Since(waitStart).Seconds())
+
+	// Create from the template snapshot: how every create after the first is made (hosts keep no warm pools).
 	var samples []float64
 	var steps []map[string]float64
 	for i := 0; i < runs; i++ {
 		sid := id("snap", i)
-		t, err := call(proto.MethodCreate, proto.CreateParams{SandboxID: sid, Tier: tier, Size: size}, &info)
+		owner := ""
+		if benchOwners == "new" {
+			owner = fmt.Sprintf("bench-owner-%d-%d", time.Now().UnixNano(), i)
+		}
+		t, err := call(proto.MethodCreate, params(sid, owner), &info)
 		if err != nil {
 			return out, fmt.Errorf("create from template: %w", err)
 		}
@@ -181,38 +216,19 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 		if err := exec(sid); err != nil {
 			return out, err
 		}
-	}
-	out = append(out, summarise(tier, "create", "snapshot", "no warm pool: restores the template snapshot", samples, steps))
-
-	// Warm: from a pre-warmed pool.
-	pool := tier + "/" + size
-	if tier == "isolate" {
-		pool = tier + "/default"
-	}
-	host.SetPools(map[string]int{pool: runs})
-	deadline := time.Now().Add(5 * time.Minute)
-	for host.Warm()[pool] < runs && time.Now().Before(deadline) {
-		time.Sleep(200 * time.Millisecond)
-	}
-	samples, steps = nil, nil
-	for i := 0; i < runs; i++ {
-		sid := id("warm", i)
-		t, err := call(proto.MethodCreate, proto.CreateParams{SandboxID: sid, Tier: tier, Size: size}, &info)
-		if err != nil {
-			return out, fmt.Errorf("warm create: %w", err)
-		}
-		created = append(created, sid)
-		samples, steps = append(samples, t), append(steps, info.Timings)
-		if err := exec(sid); err != nil {
-			return out, err
-		}
-		// Let the pool refill between runs, as it would between real creates.
-		for host.Warm()[pool] < runs-i-1 && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
+		if i == 0 && tier == "microvm" {
+			// What the guest sees: its vCPUs, memory and disk, as asked (the disk grows just after the create).
+			time.Sleep(2 * time.Second)
+			var res proto.ExecResult
+			if _, err := call(proto.MethodExec, proto.ExecParams{SandboxID: sid, Command: "echo vcpus=$(nproc) $(grep MemTotal /proc/meminfo | tr -s ' ') disk=$(df -BG --output=size /disk | tail -1 | tr -d ' ')"}, &res); err == nil {
+				fmt.Fprintf(os.Stderr, "guest shape: %s", res.Stdout)
+			}
 		}
 	}
-	host.SetPools(map[string]int{})
-	out = append(out, summarise(tier, "create", "warm", "claimed from the pre-warmed pool", samples, steps))
+	out = append(out, summarise(tier, "create", "snapshot", "restores the template snapshot", samples, steps))
+	if benchOnly == "create" {
+		return out, nil
+	}
 
 	// Stop and resume (with memory where the tier keeps it), then stop without memory and start (cold).
 	target := created[1]
@@ -279,3 +295,11 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 }
 
 var _ = io.Discard
+
+// bench's -only, -keep-templates and -owners, and the microVM shape it creates.
+var (
+	benchOnly   string
+	benchKeep   bool
+	benchOwners string
+	benchShape  proto.CreateParams
+)

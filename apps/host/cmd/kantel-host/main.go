@@ -2,6 +2,7 @@
 // interface. It dials out to the control plane, so it needs no inbound port.
 //
 //	kantel-host install --url https://kantel.example.com --token kth_…   install, register and start (as root)
+//	kantel-host install --dry-run --url … --token …                     what install would do, changing nothing
 //	kantel-host doctor                                                  what this machine can run, and what's missing
 //	kantel-host status                                                  the service, the connection and the sandboxes
 //	kantel-host update [--version v]                                    move to another version now
@@ -16,6 +17,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -23,6 +25,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/agent"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
@@ -43,7 +46,9 @@ func main() {
 	case "run":
 		err = run(args)
 	case "install", "join":
-		err = install(args)
+		err = install(args, false)
+	case "plan":
+		err = install(args, true)
 	case "doctor":
 		err = doctor(args)
 	case "status":
@@ -77,7 +82,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `kantel-host `+version+`: runs Kantel sandboxes on this machine.
 
   install --url <kantel> --token <kth_…>   install, register with Kantel and start the service (as root)
-  doctor                                    check what this machine can run
+                                            (--dry-run: print what it would do, and change nothing)
+  plan --url <kantel> --token <kth_…>      what install would do, with install's options: always a dry run
+  doctor                                    check what this machine can run (exits 1 unless the required checks pass)
   status                                    the service, its connection and its sandboxes
   update [--version <v>]                    update now (the service also updates itself when Kantel asks)
   uninstall [--purge]                       stop and remove the service (--purge: sandboxes and images too)
@@ -104,6 +111,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Before the tiers start: with image patching, cosign, the image links and the pinned Firecracker.
+	prepareCtx, cancelPrepare := context.WithTimeout(context.Background(), 10*time.Minute)
+	agent.PrepareImages(prepareCtx, cfg, FirecrackerVersion, log)
+	cancelPrepare()
 	host, err := agent.New(cfg, version, log)
 	if err != nil {
 		return err
@@ -147,31 +158,71 @@ func doctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath, "config file")
 	asJSON := fs.Bool("json", false, "JSON output")
+	root := fs.String("root", "", "where sandboxes will live (default: the config's, or /var/lib/kantel-host)")
+	isolateRuntime := fs.String("isolate-runtime", "", `check for "native" isolates (workerd on the host itself, no KVM) rather than microVMs (default: the config's)`)
 	_ = fs.Parse(args)
 	cfg, _ := agent.LoadConfig(*configPath)
-	checks := hostinfo.Checks(cfg.Root)
-	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(checks)
+	cfg.Defaults() // a config it can't read (not root) still checks the default root
+	if *root != "" {
+		cfg.Root = *root
 	}
+	if *isolateRuntime != "" {
+		cfg.IsolateRuntime = *isolateRuntime
+	}
+	checks := hostinfo.Checks(cfg.Root, cfg.IsolateRuntime == "native")
+	if *asJSON {
+		if err := json.NewEncoder(os.Stdout).Encode(checks); err != nil {
+			return err
+		}
+	} else {
+		printChecks(os.Stdout, checks, cfg.IsolateRuntime == "native")
+	}
+	return checksPassed(checks)
+}
+
+// printChecks shows doctor's checks: FAIL and unknown are required ones that didn't pass, warn is advice.
+func printChecks(w io.Writer, checks []hostinfo.Check, native bool) {
 	microvm := true
 	for _, c := range checks {
-		mark := "ok  "
-		if !c.OK {
+		mark := "ok"
+		switch {
+		case c.State == hostinfo.StateOK:
+		case !c.Required:
+			mark = "warn"
+		case c.State == hostinfo.StateUnknown:
+			mark = "unknown"
+		default:
 			mark = "FAIL"
-			if c.MicroVM {
-				microvm = false
-			}
 		}
-		fmt.Printf("%s  %-22s %s\n", mark, c.Name, c.Detail)
+		if c.MicroVM && c.State != hostinfo.StateOK {
+			microvm = false
+		}
+		fmt.Fprintf(w, "%-7s %-22s %s\n", mark, c.Name, c.Detail)
 	}
-	fmt.Println()
-	if microvm {
-		fmt.Println("This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, inside a microVM).")
-	} else {
-		fmt.Println("This machine can't run microVMs. It can run isolates only with isolateRuntime \"native\" (workerd on the")
-		fmt.Println("host itself, for code you trust). Fix the FAIL lines above for both tiers.")
+	fmt.Fprintln(w)
+	switch {
+	case microvm:
+		fmt.Fprintln(w, "This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, inside a microVM).")
+	case native && hostinfo.Passed(checks):
+		fmt.Fprintln(w, "This machine can run isolates natively (workerd on the host itself, for code you trust), but not microVMs.")
+	default:
+		fmt.Fprintln(w, "This machine can't run microVMs. It can run isolates only with isolateRuntime \"native\" (workerd on the")
+		fmt.Fprintln(w, "host itself, for code you trust): check that with --isolate-runtime native. Fix the FAIL lines above for both tiers.")
 	}
-	return nil
+}
+
+// checksPassed is doctor's exit: an error, so a non-zero exit, unless every required check is ok.
+func checksPassed(checks []hostinfo.Check) error {
+	if hostinfo.Passed(checks) {
+		return nil
+	}
+	var names []string
+	for _, c := range checks {
+		if c.Required && c.State != hostinfo.StateOK {
+			names = append(names, c.Name+" ("+c.State+")")
+		}
+	}
+	return fmt.Errorf("required checks didn't pass: %s", strings.Join(names, ", "))
 }
 
 func status(args []string) error {

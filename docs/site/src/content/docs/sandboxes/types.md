@@ -26,6 +26,8 @@ Every sandbox is one of two types. You choose with `type` when you [create it](/
 | Pause, keeping memory | No | Yes, where its host supports it |
 | Size | None | `small`, `default`, `large` or `xlarge` |
 
+A microVM on Kantel's own image has all of these. One on a [custom image](/sandboxes/custom-images/) has the desktop, browser and Docker only where its image does, and its `capabilities` say so.
+
 An isolate is the default. Choose one for quick scripts and file work an agent does in JavaScript, where you want an answer in milliseconds and many sandboxes at almost no cost. Choose a microVM for anything a normal Linux machine does: installing packages, building and testing a project, running Docker, or using a desktop and browser.
 
 ## Capabilities

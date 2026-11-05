@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -17,9 +18,12 @@ type Config struct {
 	ControlPlane string `json:"controlPlane"`
 	HostID       string `json:"hostId,omitempty"`
 	// Credential is the host's khc_ credential. Kept in this file, readable by root only.
-	Credential string            `json:"credential,omitempty"`
-	Name       string            `json:"name,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
+	Credential string `json:"credential,omitempty"`
+	// TokenSHA256 is the SHA-256 of the kth_ token the host registered with, so running the same join command again
+	// after an interruption carries on rather than trying to use the token a second time. Never the token itself.
+	TokenSHA256 string            `json:"tokenSha256,omitempty"`
+	Name        string            `json:"name,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
 
 	// Root holds sandboxes, snapshots and templates (default /var/lib/kantel-host).
 	Root string `json:"root,omitempty"`
@@ -58,15 +62,79 @@ type Config struct {
 	// ProxyDataPath is the switch for the egress data path: when false (the default), the control plane's egress
 	// settings (upstream, token, allow/deny) are ignored and sandboxes get the host's default egress. Experimental.
 	ProxyDataPath bool `json:"proxyDataPath,omitempty"`
+	// InjectGuestAgent boots microVMs through Kantel's initramfs, which puts the guest agent (GuestAgent, a static
+	// kantel-guest) into the image at boot, so SandboxImage can be any Linux root filesystem: Kantel's, debian, alpine,
+	// busybox. Off (the default), the image must ship kantel-init and the agent itself, as Kantel's does. Experimental.
+	InjectGuestAgent bool `json:"injectGuestAgent,omitempty"`
+	// GuestAgent is the static kantel-guest the initramfs is made from (default Root/images/kantel-guest).
+	GuestAgent string `json:"guestAgent,omitempty"`
 	// SpoolDir is RAM (tmpfs) memory snapshots go to first, so stop and fork don't wait for the disk (default
 	// /dev/shm/kantel-host); SpoolMaxMiB caps it (default an eighth of memory, at most 16 GiB; -1 turns it off).
 	SpoolDir    string `json:"spoolDir,omitempty"`
 	SpoolMaxMiB int64  `json:"spoolMaxMiB,omitempty"`
+	// MountCacheMiB is the host's read cache for sandboxes' bucket mounts, shared by every sandbox on the host
+	// (default 10240; -1 turns bucket mounts off). MountCacheDir is where it is (default Root/mount-cache).
+	MountCacheMiB int64  `json:"mountCacheMiB,omitempty"`
+	MountCacheDir string `json:"mountCacheDir,omitempty"`
 	// AutoUpdate lets the control plane move the host to the version it wants (default true).
 	AutoUpdate *bool `json:"autoUpdate,omitempty"`
+	// TemplateRegistry is the operator's registry templates' Kantel base images are pulled from, by digest, such as
+	// ghcr.io/lleverage-ai (no default). Unset, the host makes templates only from SandboxImage, and refuses a template
+	// whose base is pinned to a digest.
+	TemplateRegistry string `json:"templateRegistry,omitempty"`
+	// TemplateBuilder switches on templates' custom images (a Dockerfile, or an image reference), built in a build
+	// microVM whose only network is the sandbox egress proxy (experimental; needs injectGuestAgent). Unset: off.
+	TemplateBuilder *TemplateBuilderConfig `json:"templateBuilder,omitempty"`
 	// UsageIntervalSeconds is how often the host samples its own and its sandboxes' CPU and memory and pushes them to
 	// the control plane (a "usage" event; default 5, below 0 never).
 	UsageIntervalSeconds int `json:"usageIntervalSeconds,omitempty"`
+	// MicroVM holds the microVM tier's template settings.
+	MicroVM MicroVMConfig `json:"microvm,omitempty"`
+
+	// ImagePatching is the switch for versioned host images (experimental, default off): the host keeps each version
+	// of the kernel and images side by side under ImagesDir, takes new ones from the control plane's image channel,
+	// checks their signatures, and keeps every sandbox on the images it was made on until it is restarted on the
+	// latest. Off, the host behaves as before.
+	ImagePatching bool `json:"imagePatching,omitempty"`
+	// AutoUpdateImages, with image patching on, follows the control plane's image channel (default true).
+	AutoUpdateImages *bool `json:"autoUpdateImages,omitempty"`
+	// ImageSignatures is "require" (default: unsigned or mis-signed images are refused), "warn" (logged, then used)
+	// or "off".
+	ImageSignatures string `json:"imageSignatures,omitempty"`
+	// ImageIdentity (a regexp) and ImageIssuer are the signing certificate's: Kantel's image workflow by default.
+	ImageIdentity string `json:"imageIdentity,omitempty"`
+	ImageIssuer   string `json:"imageIssuer,omitempty"`
+	// ImageKey is a cosign public key to check signatures with instead of the identity (an install that builds and
+	// signs its own images).
+	ImageKey string `json:"imageKey,omitempty"`
+	// Cosign is the cosign binary signatures are checked with (default Root/bin/cosign, fetched at start).
+	Cosign string `json:"cosign,omitempty"`
+	// ImagesDir holds the versioned images (default Root/images).
+	ImagesDir string `json:"imagesDir,omitempty"`
+}
+
+// MicroVMConfig is the microVM tier's template settings.
+type MicroVMConfig struct {
+	// SharedTemplate (default true) makes a template snapshot per vCPU count, on disk, serve every memory and disk
+	// size of that count, named or custom: a sandbox restores in well under a second with no warm pool and no
+	// template of its own to boot first; its memory is plugged with virtio-mem and its disk is grown. The named
+	// sizes' counts are made in the background when the host starts, any other count on its first create (which
+	// cold-boots meanwhile). false keeps a template per named size and cold-boots custom shapes, as before. Package
+	// microvm (shared.go) says how.
+	SharedTemplate *bool `json:"sharedTemplate,omitempty"`
+	// The shared templates' shape. TemplateVCPUs is the most vCPUs a shared template has (default the host's CPUs,
+	// at most 32); TemplateMemoryMiB the memory one boots with (default the least of the named sizes', at least
+	// 1024); TemplateMaxMemoryMiB the most memory one can grow to (default the machine's); TemplateDiskGiB the disk
+	// one is made with (default the smallest of the named sizes'). A shape outside them cold-boots.
+	TemplateVCPUs        int `json:"templateVCPUs,omitempty"`
+	TemplateMemoryMiB    int `json:"templateMemoryMiB,omitempty"`
+	TemplateMaxMemoryMiB int `json:"templateMaxMemoryMiB,omitempty"`
+	TemplateDiskGiB      int `json:"templateDiskGiB,omitempty"`
+}
+
+// SharedTemplates says whether the microVM tier's shared templates are on (the default).
+func (c MicroVMConfig) SharedTemplates() bool {
+	return c.SharedTemplate == nil || *c.SharedTemplate
 }
 
 const DefaultRoot = "/var/lib/kantel-host"
@@ -91,15 +159,16 @@ func (c *Config) Defaults() {
 	if c.Root == "" {
 		c.Root = DefaultRoot
 	}
-	images := filepath.Join(c.Root, "images")
+	imageDir := filepath.Join(c.Root, "images")
 	set := func(p *string, v string) {
 		if *p == "" {
 			*p = v
 		}
 	}
-	set(&c.Kernel, filepath.Join(images, "vmlinux"))
-	set(&c.SandboxImage, filepath.Join(images, "sandbox.ext4"))
-	set(&c.IsolateImage, filepath.Join(images, "isolate.ext4"))
+	set(&c.Kernel, filepath.Join(imageDir, "vmlinux"))
+	set(&c.SandboxImage, filepath.Join(imageDir, "sandbox.ext4"))
+	set(&c.IsolateImage, filepath.Join(imageDir, "isolate.ext4"))
+	set(&c.GuestAgent, filepath.Join(imageDir, "kantel-guest"))
 	set(&c.Firecracker, filepath.Join(c.Root, "bin", "firecracker"))
 	set(&c.Workerd, filepath.Join(c.Root, "bin", "workerd"))
 	set(&c.IsolateBundle, filepath.Join(c.Root, "isolate"))
@@ -116,9 +185,16 @@ func (c *Config) Defaults() {
 	if c.OvercommitMemory == 0 {
 		c.OvercommitMemory = 1.5
 	}
+	set(&c.ImageSignatures, images.PolicyRequire)
+	set(&c.ImageIdentity, images.DefaultIdentity)
+	set(&c.ImageIssuer, images.DefaultIssuer)
+	set(&c.Cosign, filepath.Join(c.Root, "bin", "cosign"))
+	set(&c.ImagesDir, imageDir)
 }
 
 func (c *Config) autoUpdate() bool { return c.AutoUpdate == nil || *c.AutoUpdate }
+
+func (c *Config) autoUpdateImages() bool { return c.AutoUpdateImages == nil || *c.AutoUpdateImages }
 
 // Save writes the config, readable by root only (it holds the host's credential).
 func (c Config) Save(path string) error {

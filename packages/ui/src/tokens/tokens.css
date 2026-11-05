@@ -74,6 +74,11 @@
 
 	/* The Kantel mark's fulcrum: the approved artwork's orange in both themes. Its ink, --kt-brand-ink, is the palette's. */
 	--kt-brand-fulcrum: #ec7523;
+	/* Google's "G" on Sign in with Google, in the four colours its branding guidelines require, in both themes. */
+	--kt-brand-google-blue: #4285f4;
+	--kt-brand-google-green: #34a853;
+	--kt-brand-google-yellow: #fbbc05;
+	--kt-brand-google-red: #ea4335;
 
 	/* Type: the brand's three faces, self-hosted (fonts.css), each falling back to the system's. The same in both themes. */
 	--kt-font-sans: Public Sans Variable, Public Sans, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
@@ -84,6 +89,7 @@
 	--kt-text-sm: 13px;
 	--kt-text-md: 14px;
 	--kt-text-lg: 16px;
+	--kt-text-heading: 20px; /* a page's title, one clear step over everything under it */
 	--kt-text-code: 12.5px;
 	--kt-text-display: 24px; /* binding codes, nothing else */
 	--kt-text-title: 28px; /* a display heading in --kt-font-display: the brand's display face reads small, so a step up */

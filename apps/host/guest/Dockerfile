@@ -1,8 +1,8 @@
 # The microVM sandbox's default image: Ubuntu 26.04 LTS with systemd, SSH, Docker and containerd, git, curl, jq,
-# build tools, Node, Python and Go, an XFCE desktop on a TigerVNC display, Chromium with its DevTools port, and
-# Selkies streaming that desktop to a browser, plus Kantel's guest agent. apps/host/guest/rootfs.sh turns it into a
-# read-only ext4 image that every sandbox on a host shares; each sandbox writes to its own disk through an overlay
-# (kantel-init). apps/host/guest/README.md says what listens where and how custom images layer on top.
+# build tools, Node, Python and Go, an XFCE desktop on a TigerVNC display, Chromium with its DevTools port on a display
+# of its own, and Selkies streaming the desktop and, on demand, the browser alone, plus Kantel's guest agent.
+# apps/host/guest/rootfs.sh turns it into a read-only ext4 image that every sandbox on a host shares; each sandbox
+# writes to its own disk through an overlay (kantel-init). apps/host/guest/README.md says what listens where and how custom images layer on top.
 #
 # Build context: apps/host, with the guest agent already built at dist/kantel-guest-<arch> (rootfs.sh does both).
 #
@@ -97,6 +97,24 @@ RUN case "$TARGETARCH" in \
 	&& apt-get update && apt-get install -y --no-install-recommends "/tmp/$selkies_deb" \
 	&& apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*
 
+# Security updates: the base image is pinned by digest and the packages above by UBUNTU_SNAPSHOT, so a rebuild alone
+# never picks up a fix. The daily build (.github/workflows/sandbox-image.yml, through release.sh and rootfs.sh) passes
+# today's date, which re-runs this layer even with a warm cache. APT::Snapshot would hold this upgrade at the snapshot
+# too, so for this one layer its setting is moved aside: apt reads the live archives the image's sources name (Ubuntu's
+# with its -updates and -security pockets, security.ubuntu.com among them; deb.debian.org's trixie-security for
+# Chromium, still limited to Chromium's packages by the pin above), and the setting comes back for anything installed
+# later. Docker and containerd stay held at their pinned versions. A build with the refresh is reproducible only from
+# its own date; /etc/kantel/image.json and packages.tsv, written below, record what went in.
+ARG KANTEL_SECURITY_REFRESH=unset
+RUN echo "security refresh $KANTEL_SECURITY_REFRESH" \
+	&& mv /etc/apt/apt.conf.d/50kantel-snapshot /tmp/50kantel-snapshot \
+	&& apt-mark hold docker-ce docker-ce-cli containerd.io >/dev/null \
+	&& apt-get update \
+	&& apt-get -y upgrade --no-install-recommends \
+	&& apt-mark unhold docker-ce docker-ce-cli containerd.io >/dev/null \
+	&& mv /tmp/50kantel-snapshot /etc/apt/apt.conf.d/50kantel-snapshot \
+	&& apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # The sandbox user, as on other sandboxes agents know: `user`, uid 1000, passwordless sudo, in the docker group and
 # the kvm group (/dev/kvm, for nested VMs). Ubuntu's images come with an `ubuntu` user at uid 1000; it goes.
 RUN userdel -r ubuntu 2>/dev/null || true; \
@@ -119,8 +137,8 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 # fetch things on a timer, and SSH keys only per sandbox (the guest agent makes them after every create and fork).
 # sshd runs as a plain service rather than Ubuntu's socket activation (see ssh.service.d/kantel.conf).
 RUN systemctl disable ssh.socket && rm -f /etc/systemd/system/ssh.service.requires/ssh.socket \
-	&& systemctl enable kantel-guest.service kantel-desktop.service kantel-browser.service kantel-stream.service \
-		ssh.service docker.service containerd.service \
+	&& systemctl enable kantel-guest.service kantel-desktop.service kantel-browser-display.service kantel-browser.service \
+		kantel-stream.service ssh.service docker.service containerd.service \
 	&& systemctl mask serial-getty@ttyS0.service getty@tty1.service systemd-timesyncd.service apt-daily.timer \
 		apt-daily-upgrade.timer e2scrub_all.timer fstrim.timer man-db.timer motd-news.timer dpkg-db-backup.timer \
 		systemd-networkd-wait-online.service NetworkManager-wait-online.service \

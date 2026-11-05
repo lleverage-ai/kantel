@@ -38,6 +38,7 @@ import { createAuthenticator } from "@kantel/identity/authenticator";
 import type { InviteMailer } from "@kantel/identity/invites";
 import { cloudflareAccessProvider, type SignInProvider } from "@kantel/identity/jwt";
 import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createOAuthSignIn, type OAuthSignIn, type OAuthSignInOptions } from "@kantel/identity/oauth";
 import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider } from "@kantel/identity/otp";
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
@@ -137,6 +138,11 @@ export interface StackOptions {
 	readonly clock?: Clock;
 	/** Used to fetch Access's signing keys. Default the global `fetch`; tests and `wrangler dev` pass a mock issuer's. */
 	readonly accessFetch?: typeof fetch;
+	/**
+	 * GitHub's and Google's endpoints, and the `fetch` their token and identity calls go through. Default the real ones
+	 * and the global `fetch`; tests pass a mock's.
+	 */
+	readonly oauthProviders?: Pick<OAuthSignInOptions, "fetch" | "endpoints">;
 	readonly storage?: StackStorage;
 	/**
 	 * What email-code sign-in sends with (`config.emailSignIn`): the `SIGN_IN_MAIL` binding, where the daily cap is
@@ -159,6 +165,11 @@ export interface StackEmailSignIn {
 	readonly budget: MailBudget;
 	/** Emails invites made on the public origin, within the same cap. */
 	readonly invites: InviteMailer;
+	/**
+	 * Sign-in with GitHub and Google there (`/auth/oauth/…`), with the same open sign-up, when a provider's client is
+	 * set (`config.emailSignIn.oauth`).
+	 */
+	readonly oauth?: OAuthSignIn;
 }
 
 export interface Stack {
@@ -274,6 +285,22 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	});
 	phase("bootstrap");
 
+	// Sign-in codes and invites, both kinds, go through the one mailer and its daily cap.
+	const mail =
+		emailConfig === undefined || options.mail === undefined || otpStores === undefined
+			? undefined
+			: (() => {
+					const budget = dailyMailBudget({
+						cap: emailConfig.dailyCap,
+						counts: options.mail.counts,
+						now: () => clock.now(),
+					});
+					return {
+						budget,
+						mailer: cloudflareMailer({ binding: options.mail.binding, from: emailConfig.from, budget }),
+					};
+				})();
+
 	const compute = await createStackCompute({
 		authenticator,
 		identity,
@@ -287,19 +314,35 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		...(storage.compute === undefined ? {} : { sql: storage.compute }),
 		...(options.config.portsDomain === undefined ? {} : { portsDomain: options.config.portsDomain }),
 		...(options.config.accountHosts === undefined ? {} : { accountHosts: options.config.accountHosts }),
+		...(options.config.imagePatching === undefined ? {} : { imagePatching: options.config.imagePatching }),
+		...(mail === undefined || emailConfig === undefined
+			? {}
+			: {
+					invites: {
+						send: (message) => mail.mailer.sendInvite(message),
+						consoleUrl: emailConfig.publicUrl,
+						onMailError: (error, to) =>
+							console.error(
+								`kantel: organisation invite mail to ${JSON.stringify(to)} failed:`,
+								error instanceof Error ? error.message : error,
+							),
+					},
+				}),
+		...(options.config.templates === true ? { templates: true } : {}),
 		now: () => clock.now(),
 	});
 	phase("compute");
 
 	let emailSignIn: StackEmailSignIn | undefined;
-	if (emailConfig !== undefined && options.mail !== undefined && otpStores !== undefined) {
-		const budget = dailyMailBudget({ cap: emailConfig.dailyCap, counts: options.mail.counts, now: () => clock.now() });
-		const mailer = cloudflareMailer({ binding: options.mail.binding, from: emailConfig.from, budget });
+	if (emailConfig !== undefined && options.mail !== undefined && otpStores !== undefined && mail !== undefined) {
+		const { budget, mailer } = mail;
+		// One open sign-up for email codes and providers alike, so one person's sign-ins provision one space at a time.
+		const signUp = openSignUp(identity, {
+			...(storage.signUps === undefined ? {} : { records: storage.signUps }),
+			onSignUp: (userId, organisationId) => console.log("kantel: signed up", userId, organisationId),
+		});
 		const otp = createEmailOtp({
-			identity: openSignUp(identity, {
-				...(storage.signUps === undefined ? {} : { records: storage.signUps }),
-				onSignUp: (userId, organisationId) => console.log("kantel: signed up", userId, organisationId),
-			}),
+			identity: signUp,
 			codes: otpStores.codes,
 			sessions: otpStores.sessions,
 			mailer,
@@ -313,7 +356,25 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					error instanceof Error ? `${(error as { code?: unknown }).code ?? ""} ${error.message}` : error,
 				),
 		});
-		emailSignIn = { publicUrl: emailConfig.publicUrl, handler: createOtpHandler({ otp }), budget, invites: mailer };
+		const oauth =
+			emailConfig.oauth === undefined
+				? undefined
+				: createOAuthSignIn({
+						clients: emailConfig.oauth,
+						publicUrl: emailConfig.publicUrl,
+						identity: signUp,
+						sessions: otpStores.sessions,
+						audit,
+						clock,
+						...options.oauthProviders,
+					});
+		emailSignIn = {
+			publicUrl: emailConfig.publicUrl,
+			handler: createOtpHandler({ otp }),
+			budget,
+			invites: mailer,
+			...(oauth === undefined || oauth.providers.length === 0 ? {} : { oauth }),
+		};
 	}
 
 	return {

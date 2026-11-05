@@ -12,8 +12,8 @@
 // sandbox costs nothing.
 //
 // Fast acquisition: isolate VMs are restored from a template snapshot taken with workerd up and isolates
-// pre-loaded; spare VMs wait in a pool for an account's first sandbox, and each VM keeps isolates pre-loaded for its
-// account's next ones.
+// pre-loaded, and each VM keeps isolates pre-loaded for its account's next ones. No idle VM waits for an account:
+// an account's first sandbox restores the template.
 package isolate
 
 import (
@@ -89,6 +89,24 @@ type meta struct {
 	Env       map[string]string `json:"env,omitempty"`
 	Egress    *proto.Egress     `json:"egress,omitempty"`
 	Error     string            `json:"error,omitempty"`
+	// MemoryMiB is the memory the sandbox asked for (DefaultMemoryMiB when it asked for none; 0 in a sandbox made
+	// before it was recorded). Requested, not enforced: workerd's WorkerLoader limits take only cpuMs and subRequests,
+	// so the runtime records it; the account VM's memory (Config.MemoryMiB) is the enforced ceiling, shared by the
+	// owner's isolates.
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+}
+
+// An isolate's memory: what a sandbox gets when it asks for none, and the range it may ask for.
+const (
+	DefaultMemoryMiB = 256
+	minMemoryMiB     = 128
+	maxMemoryMiB     = 512
+	stepMemoryMiB    = 64
+)
+
+// validMemory says memoryMiB is a memory an isolate may ask for (0 is none asked).
+func validMemory(memoryMiB int) bool {
+	return memoryMiB == 0 || (memoryMiB >= minMemoryMiB && memoryMiB <= maxMemoryMiB && memoryMiB%stepMemoryMiB == 0)
 }
 
 // Entry is one path in a manifest (the same shape as images/isolate-host/src/sandbox.ts's ManifestEntry).
@@ -132,14 +150,11 @@ type Manager struct {
 	log       *slog.Logger
 	mu        sync.Mutex
 	sandboxes map[string]*sandbox
-	// runtimes by account, and spare ones not yet given to an account.
-	runtimes  map[string]*runtime
-	spare     []*runtime
-	spareWant int
-	filling   bool
-	template  sync.Mutex
-	closed    atomic.Bool
-	stopReap  chan struct{}
+	// runtimes by account.
+	runtimes map[string]*runtime
+	template sync.Mutex
+	closed   atomic.Bool
+	stopReap chan struct{}
 	// usageOwners is the account of each sandbox running at the last usage reading (Shared), under usageMu.
 	usageMu     sync.Mutex
 	usageOwners map[string]string
@@ -713,7 +728,7 @@ func (m *Manager) startVM(ctx context.Context, r *runtime) error {
 	return r.waitWorker(readyCtx)
 }
 
-// runtimeFor is the account's runtime: its own, a spare one, or a new one.
+// runtimeFor is the account's runtime: its own, or a new one.
 func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, string, error) {
 	m.mu.Lock()
 	if r, ok := m.runtimes[account]; ok && r.alive() {
@@ -724,36 +739,21 @@ func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, str
 		delete(m.runtimes, account)
 		go r.close()
 	}
-	var r *runtime
-	for len(m.spare) > 0 && r == nil {
-		r = m.spare[0]
-		m.spare = m.spare[1:]
-		if !r.alive() {
-			go r.close()
-			r = nil
-		}
-	}
 	m.mu.Unlock()
-	source := "spare"
-	if r == nil {
-		var err error
-		r, err = m.start(ctx)
-		if err != nil {
-			return nil, "", err
-		}
-		source = "new"
-	} else {
-		go m.fillSpare()
+	r, err := m.start(ctx)
+	if err != nil {
+		return nil, "", err
 	}
+	source := "new"
 	acct := account
 	r.account.Store(&acct)
 	r.lastUsed.Store(time.Now().UnixMilli())
 	m.mu.Lock()
 	if existing, ok := m.runtimes[account]; ok && existing.alive() {
-		// Another create for the account won the race: use its runtime, keep this one spare.
-		m.spare = append(m.spare, r)
+		// Another create for the account won the race: use its runtime, and end this one.
 		r.account.Store(nil)
 		m.mu.Unlock()
+		r.close()
 		return existing, "account", nil
 	}
 	m.runtimes[account] = r
@@ -761,65 +761,13 @@ func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, str
 	return r, source, nil
 }
 
-// SetPools sets how many spare runtimes to keep ("isolate/default": n).
-func (m *Manager) SetPools(want map[string]int) {
-	m.mu.Lock()
-	m.spareWant = want["default"]
-	m.mu.Unlock()
-	go m.fillSpare()
-}
-
-func (m *Manager) fillSpare() {
-	m.mu.Lock()
-	if m.filling || m.closed.Load() {
-		m.mu.Unlock()
-		return
-	}
-	m.filling = true
-	m.mu.Unlock()
-	defer func() {
-		m.mu.Lock()
-		m.filling = false
-		m.mu.Unlock()
-	}()
-	for !m.closed.Load() {
-		m.mu.Lock()
-		short := len(m.spare) < m.spareWant
-		m.mu.Unlock()
-		if !short {
-			return
-		}
-		r, err := m.start(context.Background())
-		if err != nil {
-			m.log.Error("isolate spare runtime failed", "error", err)
-			time.Sleep(10 * time.Second)
-			continue
-		}
-		m.mu.Lock()
-		m.spare = append(m.spare, r)
-		m.mu.Unlock()
-	}
-}
-
-// Warm is how many spare runtimes are ready.
-func (m *Manager) Warm() map[string]int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return map[string]int{"default": len(m.spare)}
-}
-
 // ResetTemplates forgets the template snapshot and every runtime (a benchmark's cold start).
 func (m *Manager) ResetTemplates() {
 	m.mu.Lock()
 	rts := m.runtimes
 	m.runtimes = map[string]*runtime{}
-	spare := m.spare
-	m.spare = nil
 	m.mu.Unlock()
 	for _, r := range rts {
-		r.close()
-	}
-	for _, r := range spare {
 		r.close()
 	}
 	m.template.Lock()
@@ -879,7 +827,12 @@ func (m *Manager) load(ctx context.Context, s *sandbox, t timings) (string, erro
 	var res struct {
 		Hit any `json:"hit"`
 	}
-	if err := r.call(ctx, "/load", map[string]string{"sandboxId": s.meta.ID}, &res); err != nil {
+	memoryMiB := s.meta.MemoryMiB
+	if memoryMiB == 0 {
+		memoryMiB = DefaultMemoryMiB
+	}
+	// memoryMiB is recorded by the runtime, not enforced (meta.MemoryMiB).
+	if err := r.call(ctx, "/load", map[string]any{"sandboxId": s.meta.ID, "memoryMiB": memoryMiB}, &res); err != nil {
 		return "", err
 	}
 	t.step("isolate", &start)
@@ -896,10 +849,17 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
+	if !validMemory(p.MemoryMiB) {
+		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "an isolate's memory is 128 to 512 MiB in steps of 64"}
+	}
+	memoryMiB := p.MemoryMiB
+	if memoryMiB == 0 {
+		memoryMiB = DefaultMemoryMiB
+	}
 	t := timings{}
 	began := time.Now()
 	dir := filepath.Join(m.cfg.Root, "sandboxes", p.SandboxID)
-	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Owner: p.Owner, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Env: p.Env, Egress: p.Egress}}
+	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Owner: p.Owner, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Env: p.Env, Egress: p.Egress, MemoryMiB: memoryMiB}}
 	m.mu.Lock()
 	if _, ok := m.sandboxes[p.SandboxID]; ok {
 		m.mu.Unlock()
@@ -1030,7 +990,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	}
 	snap := proto.SnapshotInfo{ID: snapID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Tier: Tier}
 	err = m.saveSnapshot(src, &snap)
-	owner, env := src.meta.Owner, src.meta.Env
+	owner, env, memoryMiB := src.meta.Owner, src.meta.Env, src.meta.MemoryMiB
 	if p.Env != nil {
 		// The fork's own: its protected placeholders aren't its source's.
 		env = p.Env
@@ -1044,7 +1004,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		return proto.SandboxInfo{}, err
 	}
 	m.pruneAuto(src.meta.ID)
-	info, err := m.Create(ctx, proto.CreateParams{SandboxID: p.NewID, Tier: Tier, From: snapID, Env: env, Egress: eg, Owner: owner})
+	info, err := m.Create(ctx, proto.CreateParams{SandboxID: p.NewID, Tier: Tier, From: snapID, Env: env, Egress: eg, Owner: owner, MemoryMiB: memoryMiB})
 	if err != nil {
 		return info, err
 	}
@@ -1116,7 +1076,7 @@ func (m *Manager) Usage() (memoryMiB int64, running int, stopped int) {
 			stopped++
 		}
 	}
-	memoryMiB = int64(len(m.runtimes)+len(m.spare)) * int64(m.cfg.MemoryMiB)
+	memoryMiB = int64(len(m.runtimes)) * int64(m.cfg.MemoryMiB)
 	return
 }
 
@@ -1512,13 +1472,9 @@ func (m *Manager) Close() {
 	close(m.stopReap)
 	m.mu.Lock()
 	rts := m.runtimes
-	spare := m.spare
-	m.runtimes, m.spare = map[string]*runtime{}, nil
+	m.runtimes = map[string]*runtime{}
 	m.mu.Unlock()
 	for _, r := range rts {
-		r.close()
-	}
-	for _, r := range spare {
 		r.close()
 	}
 }

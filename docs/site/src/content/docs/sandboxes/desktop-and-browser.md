@@ -95,9 +95,17 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/browser" \
   -d '{}' | jq '{url, cdpUrl}'
 ```
 
-It takes the same `viewOnly` and `ttlMinutes` as the desktop, and its [BrowserAccess](/api/reference/types/#browseraccess) answer has `url`, `cdpUrl`, `viewOnly` and `expiresAt`.
+It takes the same `viewOnly` and `ttlMinutes` as the desktop, and its [BrowserAccess](/api/reference/types/#browseraccess) answer has `url`, `embedUrl`, `cdpUrl`, `surface`, `viewOnly` and `expiresAt`.
 
-On your own hosts Chromium runs on the sandbox's desktop from the start, so `url` is the desktop page, showing that Chromium. `cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chromium is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
+### The browser alone
+
+On your own hosts, Kantel's image runs Chromium on a display of its own, apart from the desktop, with a second Selkies stream of just that display. `url` shows the browser alone, with no desktop around it, and `surface` is `browser`. The page is the same Selkies client as the desktop's at the same path, `/v1/hosts/desktop/<ticket>/`, but its ticket is for the browser's stream (the sandbox's port 6081) rather than the desktop's, so each view has its own URL and ticket and neither opens the other. View-only works as it does for the desktop.
+
+The browser's display takes the size of the window that shows it, and Chromium fills it. Its stream runs only while someone watches: the sandbox starts it when the first viewer connects, which adds a few seconds to that first page load, and stops it once nobody has been connected for five minutes, so a sandbox nobody watches spends nothing on encoding the browser. Chromium itself keeps running for CDP either way.
+
+A sandbox's `capabilities.browserSurface` says whether its image has a browser surface. An image without one, such as an image from before it or one that puts Chromium back on the desktop, or Kantel's image on a host from before it, answers `surface: "desktop"`, and `url` is the desktop page with that Chromium on it. The browser surface is experimental.
+
+`cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chromium is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
 
 ## Drive it with Playwright
 

@@ -100,6 +100,9 @@
 		// host routes, the stub for everyone. The deploy sets it from the repository variable of the same name
 		// (scripts/deploy-config.ts); unset there, a deploy leaves account hosts off.
 		"KANTEL_ACCOUNT_HOSTS": "",
+		// Experimental: `experimental` turns on templates (`/v1/templates`, src/compute.ts). Anything else: off, and their
+		// routes answer not_supported. The deploy sets it from the repository variable of the same name.
+		"KANTEL_TEMPLATES": "",
 		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the KANTEL_CPA_API_KEY secret.
 		"KANTEL_DEFAULT_MODEL": "claude-sonnet-5-5",
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or

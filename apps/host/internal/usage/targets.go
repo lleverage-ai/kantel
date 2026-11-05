@@ -1,9 +1,13 @@
 package usage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Process is a running sandbox that is a process of its own on the host (a microVM's Firecracker): its CPU is that
-// process's, as a share of the CPUs the sandbox was given, and its memory the process's resident memory.
+// process's, as a share of the CPUs the sandbox was given. Its memory is what the guest itself counts as used
+// (ReadGuest), or, where the guest can't say, the process's resident memory.
 type Process struct {
 	SandboxID string
 	// Owner is the sandbox's space (account), read with it, for the E2E filter.
@@ -12,6 +16,9 @@ type Process struct {
 	// CPUs is the sandbox's allocation (its vCPUs); MemLimitBytes the memory its size gives it.
 	CPUs          float64
 	MemLimitBytes int64
+	// ReadGuest, if set, reads the guest's own MemTotal and MemAvailable from outside it (a microVM's balloon
+	// statistics, which Firecracker keeps): nothing runs in the guest to answer it. It fails for a VM without them.
+	ReadGuest func(ctx context.Context) (Memory, error)
 	// Held: the sandbox was mid-operation (its lock taken by a create, snapshot or stop), so it wasn't read this time.
 	// It has no figure in this sample, and its counters are kept for the next.
 	Held bool

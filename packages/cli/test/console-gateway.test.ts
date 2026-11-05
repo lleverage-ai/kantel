@@ -201,3 +201,53 @@ describe("kantel console and a hostile gateway", () => {
 		60_000,
 	);
 });
+
+describe("kantel console and the live feed", () => {
+	it("passes server-sent events on as they come, and ends the gateway's stream when the page leaves", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "kantel-console-"));
+		await writeFile(join(dir, "index.html"), "<!doctype html><title>Kantel</title>");
+		const encoder = new TextEncoder();
+		let send: ((text: string) => void) | undefined;
+		let upstreamAborted = false;
+		const gateway: typeof fetch = async (_input, init) => {
+			init?.signal?.addEventListener("abort", () => {
+				upstreamAborted = true;
+			});
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					send = (text) => controller.enqueue(encoder.encode(text));
+				},
+			});
+			return new Response(body, { headers: { "content-type": "text/event-stream; charset=utf-8" } });
+		};
+		const c = await serveLocalConsole({
+			dir,
+			gateway: "https://kantel.test",
+			apiKey: "the-cli-key",
+			fetch: gateway,
+			info: async () => ({ local: true, spaces: [] }),
+			e2eCall: async () => ({}),
+		});
+		try {
+			const entry = await fetch(c.url, { redirect: "manual" });
+			const cookie = (entry.headers.get("set-cookie") ?? "").split(";")[0] as string;
+			const aborter = new AbortController();
+			const answer = await fetch(`${c.origin}/v1/events/live`, { headers: { cookie }, signal: aborter.signal });
+			expect(answer.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+			const reader = (answer.body as ReadableStream<Uint8Array>).getReader();
+			const decoder = new TextDecoder();
+			// Each event arrives while the gateway's stream is still open: nothing waits for its end.
+			for (const event of ['event: hello\ndata: {"type":"hello","at":1}\n\n', ": keep-alive\n\n"]) {
+				send?.(event);
+				const { value } = await reader.read();
+				expect(decoder.decode(value)).toBe(event);
+			}
+			aborter.abort();
+			for (let i = 0; i < 100 && !upstreamAborted; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(upstreamAborted).toBe(true);
+		} finally {
+			await c.close();
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});

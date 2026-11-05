@@ -16,25 +16,28 @@ export interface FirstRunProps {
 	readonly poll?: boolean;
 }
 
-/** A step's number: filled while it's the one to do, quiet after it. */
+/**
+ * A step's number: filled while it's the one to do, quiet after it. Its title sits beside the number; what the step
+ * holds goes under the title, and on a phone under both, across the whole width.
+ */
 function Step({ n, current, title, children }: { n: number; current: boolean; title: string; children?: ReactNode }) {
 	return (
-		<li className="kt-first-run-step grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-4 border-t border-border py-4">
+		<li className="kt-first-run-step grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-3 border-t border-border py-4">
 			<span
 				className={`grid size-control-xs place-items-center rounded-sm text-xs font-medium tabular-nums ${current ? "bg-primary text-primary-fg" : "bg-active text-muted"}`}
 				aria-hidden="true"
 			>
 				{n}
 			</span>
-			<div className="flex min-w-0 flex-col gap-3">
-				<h3
-					className={`m-0 flex min-h-control-xs items-center text-sm leading-tight ${current ? "font-medium text-fg" : "font-regular text-muted"}`}
-				>
-					<span className="kt-sr-only">{`Step ${n}: `}</span>
-					{title}
-				</h3>
-				{children}
-			</div>
+			<h3
+				className={`m-0 flex min-h-control-xs items-center text-sm leading-tight ${current ? "font-medium text-fg" : "font-regular text-muted"}`}
+			>
+				<span className="kt-sr-only">{`Step ${n}: `}</span>
+				{title}
+			</h3>
+			{children === undefined ? null : (
+				<div className="col-start-2 flex min-w-0 flex-col gap-3 max-sm:col-span-2 max-sm:col-start-1">{children}</div>
+			)}
 		</li>
 	);
 }

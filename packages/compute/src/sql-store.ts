@@ -17,7 +17,15 @@
  * It is `persistent`: the service seals nothing without the deployment's own secrets key.
  */
 import { type SqlDriver, type SqlValue, sqlNumber } from "@kantel/sql";
-import { type Collection, type ComputeStore, matches, UniqueViolation } from "./store.ts";
+import {
+	type Collection,
+	type ComputeStore,
+	matches,
+	type StoredTemplate,
+	type StoredTemplateVersion,
+	type TemplateWrites,
+	UniqueViolation,
+} from "./store.ts";
 
 /** Whether `error` is a unique-constraint violation: Postgres's SQLSTATE 23505, or SQLite's (and D1's) message. */
 function isUniqueViolation(error: unknown): boolean {
@@ -38,13 +46,21 @@ const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 const SELECT_DATA = "SELECT data FROM compute_api_records WHERE kind = ? AND id = ?";
 const SELECT_VERSIONED = "SELECT data, version FROM compute_api_records WHERE kind = ? AND id = ?";
-/** Writes only over the version that was read, and answers a row only when it did. */
+/**
+ * Writes only over the record as it was read, its version and its data both, and answers a row only when it did. The
+ * version alone isn't enough: a record deleted and inserted again starts at version 1 again, so a write that read the
+ * first could land on the second, computed from what the first held (a bundle's deleted generation, say). With its data
+ * too, the record it lands on holds exactly what was read, so the write is the one it would have made reading that.
+ */
 const UPDATE_VERSIONED =
-	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND version = ? RETURNING id";
+	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND version = ? AND data = ? RETURNING id";
 /** Writes only over the record exactly as the caller expected it, and answers a row only when it did. */
 const UPDATE_IF_SAME =
 	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND data = ? RETURNING id";
 const DELETE_ONE = "DELETE FROM compute_api_records WHERE kind = ? AND id = ? RETURNING id";
+/** Deletes only the record as it was read, its version and its data both (`UPDATE_VERSIONED`), and answers a row only when it did. */
+const DELETE_VERSIONED =
+	"DELETE FROM compute_api_records WHERE kind = ? AND id = ? AND version = ? AND data = ? RETURNING id";
 
 /** The store's table, sequence and index. Every statement is `IF NOT EXISTS`, so migrating again is harmless. */
 export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
@@ -75,6 +91,10 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'environments'"
 			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'environments'",
+		// No two templates of an account share a name (`templateNameKey`), in the database as environments' names.
+		dialect === "postgres"
+			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_template_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'templates'"
+			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_template_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'templates'",
 	];
 }
 
@@ -88,6 +108,12 @@ export async function migrateComputeStore(driver: SqlDriver): Promise<void> {
 }
 
 const parse = <T>(row: { readonly [column: string]: unknown }): T => JSON.parse(String(row.data)) as T;
+
+/** Whether `error` is a unique-constraint violation, answered as `UniqueViolation`; else it is thrown as it is. */
+function uniqueOf(kind: string, error: unknown): never {
+	if (isUniqueViolation(error)) throw new UniqueViolation(kind);
+	throw error;
+}
 
 /**
  * One kind of record in `compute_api_records`. Postgres numbers `seq` from a sequence; SQLite takes one more than the
@@ -122,8 +148,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		try {
 			return await driver.query(sql, params);
 		} catch (error) {
-			if (isUniqueViolation(error)) throw new UniqueViolation(kind);
-			throw error;
+			uniqueOf(kind, error);
 		}
 	};
 	return {
@@ -157,7 +182,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 				const next = change(parse<T>(row));
 				if (next === undefined) return undefined;
 				const data = JSON.stringify(next);
-				const written = await write(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version)]);
+				const written = await write(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version), String(row.data)]);
 				// Answered as a later `get` would read it.
 				if (written.length > 0) return JSON.parse(data) as T;
 			}
@@ -166,6 +191,15 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		async delete(id) {
 			const rows = await driver.query(DELETE_ONE, [kind, id]);
 			return rows.length > 0;
+		},
+		async deleteIf(id, should) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const [row] = await driver.query(SELECT_VERSIONED, [kind, id]);
+				if (row === undefined || !should(parse<T>(row))) return false;
+				const deleted = await driver.query(DELETE_VERSIONED, [kind, id, sqlNumber(row.version), String(row.data)]);
+				if (deleted.length > 0) return true;
+			}
+			throw new Error(`The ${kind} record kept changing while it was deleted; gave up after ${UPDATE_ATTEMPTS} tries`);
 		},
 		async list(where) {
 			// String fields narrow the rows in SQL; the rest (booleans, numbers) only in the check below, which every row
@@ -187,6 +221,89 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 					? await select(clauses, params)
 					: await select(clauses, params).catch(() => select(clauses.slice(0, 1), params.slice(0, 1)));
 			return rows.map((row) => parse<T>(row)).filter((record) => matches(record, where));
+		},
+	};
+}
+
+/** The kinds `sqlTemplateWrites` writes, as `createSqlComputeStore` names their collections. */
+const TEMPLATES = "templates";
+const TEMPLATE_VERSIONS = "templateVersions";
+
+/**
+ * `TemplateWrites` in SQL: each a batch (one transaction) of the template's write and its version's insert, which
+ * inserts only when the template's row then holds exactly the template written, so a template write that didn't happen
+ * (another writer's came first) records no version either. Whether the batch wrote is read back from the version, which
+ * is never changed, rather than the template, which another writer may already have changed again: by the version's
+ * `writeId`, each attempt's own, never by what the version says, which another writer's may say too (the same spec
+ * with another name or description, say).
+ */
+function sqlTemplateWrites(driver: SqlDriver): TemplateWrites {
+	const postgres = driver.dialect === "postgres";
+	const seq = postgres
+		? "nextval('compute_api_records_seq')"
+		: "(SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?)";
+	const seqParams = (kind: string): SqlValue[] => (postgres ? [] : [kind]);
+	const insertTemplate = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		VALUES (?, ?, ${seq}, 1, ?) ON CONFLICT (kind, id) DO NOTHING`;
+	const insertVersion = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		SELECT ?, ?, ${seq}, 1, ?
+		WHERE EXISTS (SELECT 1 FROM compute_api_records WHERE kind = ? AND id = ? AND data = ?)
+		ON CONFLICT (kind, id) DO NOTHING`;
+	const versionStatement = (version: StoredTemplateVersion, templateData: string, writeId: string) => ({
+		sql: insertVersion,
+		params: [
+			TEMPLATE_VERSIONS,
+			version.id,
+			...seqParams(TEMPLATE_VERSIONS),
+			JSON.stringify({ ...version, writeId } satisfies StoredTemplateVersion),
+			TEMPLATES,
+			version.templateId,
+			templateData,
+		],
+	});
+	const batch = async (statements: Parameters<SqlDriver["batch"]>[0]) => {
+		try {
+			await driver.batch(statements);
+		} catch (error) {
+			uniqueOf(TEMPLATES, error);
+		}
+	};
+	/** Whether the version `id` is recorded by the write `writeId`. */
+	const recordedBy = async (id: string, writeId: string): Promise<boolean> => {
+		const [row] = await driver.query(SELECT_DATA, [TEMPLATE_VERSIONS, id]);
+		return row !== undefined && parse<StoredTemplateVersion>(row).writeId === writeId;
+	};
+	return {
+		async insert(template, version) {
+			const data = JSON.stringify(template);
+			const writeId = crypto.randomUUID();
+			await batch([
+				{ sql: insertTemplate, params: [TEMPLATES, template.id, ...seqParams(TEMPLATES), data] },
+				versionStatement(version, data, writeId),
+			]);
+			return recordedBy(version.id, writeId);
+		},
+		async update(id, change) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const [row] = await driver.query(SELECT_VERSIONED, [TEMPLATES, id]);
+				if (row === undefined) return undefined;
+				const next = change(parse<StoredTemplate>(row));
+				if (next === undefined) return undefined;
+				const data = JSON.stringify(next.template);
+				const params = [data, TEMPLATES, id, sqlNumber(row.version), String(row.data)];
+				if (next.version === undefined) {
+					try {
+						if ((await driver.query(UPDATE_VERSIONED, params)).length > 0) return JSON.parse(data) as StoredTemplate;
+					} catch (error) {
+						uniqueOf(TEMPLATES, error);
+					}
+					continue;
+				}
+				const writeId = crypto.randomUUID();
+				await batch([{ sql: UPDATE_VERSIONED, params }, versionStatement(next.version, data, writeId)]);
+				if (await recordedBy(next.version.id, writeId)) return JSON.parse(data) as StoredTemplate;
+			}
+			throw new Error(`The template ${id} kept changing while it was updated; gave up after ${UPDATE_ATTEMPTS} tries`);
 		},
 	};
 }
@@ -215,6 +332,15 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		environments: sqlCollection(driver, "environments"),
 		egress: sqlCollection(driver, "egress"),
 		e2eChain: sqlCollection(driver, "e2eChain"),
+		bundles: sqlCollection(driver, "bundles"),
+		bucketSources: sqlCollection(driver, "bucketSources"),
+		fileUrls: sqlCollection(driver, "fileUrls"),
 		settings: sqlCollection(driver, "settings"),
+		usageClaims: sqlCollection(driver, "usageClaims"),
+		templates: sqlCollection(driver, TEMPLATES),
+		templateVersions: sqlCollection(driver, TEMPLATE_VERSIONS),
+		templateWrites: sqlTemplateWrites(driver),
+		templateSnapshots: sqlCollection(driver, "templateSnapshots"),
+		templateBases: sqlCollection(driver, "templateBases"),
 	};
 }

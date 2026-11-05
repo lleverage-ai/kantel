@@ -6,6 +6,7 @@ import type {
 	Actor as ContractActor,
 	CreateProjectRequest as ContractCreateProjectRequest,
 	ErrorCode as ContractErrorCode,
+	PlacementReason as ContractPlacementReason,
 	Project as ContractProject,
 } from "@kantel/contracts";
 import { PROJECT_NAME_MAX_LENGTH } from "@kantel/contracts";
@@ -13,7 +14,7 @@ import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
 import type * as Envs from "../src/environments-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
-import type { Actor, CreateProjectBody, ErrorCode, Project } from "../src/schema.ts";
+import type { Actor, CreateProjectBody, ErrorCode, PlacementReason, Project } from "../src/schema.ts";
 
 /** Read-only all the way down, as the contracts are; the router returns contract values as `DeepReadonly`. */
 type Wire<S extends TSchema> = DeepReadonly<Static<S>>;
@@ -29,6 +30,7 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Actor>, ContractActor>(true),
 			same<Wire<typeof ErrorCode>, ContractErrorCode | "unauthenticated">(true),
 			same<Wire<typeof Project>, ContractProject>(true),
+			same<Wire<typeof PlacementReason>, ContractPlacementReason>(true),
 			same<Wire<typeof CreateProjectBody>, ContractCreateProjectRequest>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);

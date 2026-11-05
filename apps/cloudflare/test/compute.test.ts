@@ -70,7 +70,7 @@ async function start(db?: DatabaseSync, vars: { readonly KANTEL_COMPUTE_PORTS_DO
 		);
 		return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 	};
-	return { stack, call, close: () => stack.compute.close() };
+	return { stack, gateway, headers, call, close: () => stack.compute.close() };
 }
 
 describe("the compute API on the gateway", () => {
@@ -188,6 +188,35 @@ describe("the compute API on the gateway", () => {
 		expect((await again.call("POST", `/v1/sandboxes/${sandboxId}/stop`, { wait: true })).body.state).toBe("stopped");
 		expect((await again.call("POST", `/v1/sandboxes/${sandboxId}/start`, { wait: true })).body.state).toBe("running");
 		await again.compute.close();
+	});
+
+	it("streams the account's sandbox changes live, as server-sent events, through the gateway", async () => {
+		// Over the stack object's SQLite, as deployed.
+		const { gateway, headers, call, close } = await start(new DatabaseSync(":memory:"));
+		const aborter = new AbortController();
+		const live = await gateway.fetch(new Request(`${BASE}/v1/events/live`, { headers, signal: aborter.signal }));
+		expect(live.status).toBe(200);
+		expect(live.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+		const reader = (live.body as ReadableStream<Uint8Array>).getReader();
+		const decoder = new TextDecoder();
+		let text = "";
+		const until = async (done: () => boolean) => {
+			while (!done()) {
+				const { done: ended, value } = await reader.read();
+				if (ended) throw new Error(`The stream ended: ${text}`);
+				text += decoder.decode(value, { stream: true });
+			}
+		};
+		await until(() => text.includes("event: hello"));
+
+		const made = await call("POST", "/v1/sandboxes", { wait: true });
+		const id = made.body.id as string;
+		await call("POST", `/v1/sandboxes/${id}/stop`, {});
+		await until(() => text.includes(`"sandboxId":"${id}","accountId":"${made.body.accountId}","state":"stopped"`));
+		const states = [...text.matchAll(/"state":"(\w+)"/g)].map((match) => match[1]);
+		expect(states).toEqual(["starting", "running", "stopping", "stopped"]);
+		aborter.abort();
+		await close();
 	});
 
 	it("leaves every other API path to identity, audit or a 404", async () => {

@@ -54,6 +54,8 @@ else
 		for kind in sandbox isolate; do
 			KANTEL_HOST_VERSION=$TAG "$HERE/rootfs.sh" "$OUT" "$kind" "$arch"
 		done
+		# The static agent rootfs.sh built, on its own too: a host with injectGuestAgent boots any image with it.
+		cp "$MODULE/dist/kantel-guest-$arch" "$OUT/kantel-guest-$arch"
 	done
 	# The GPL sources come from the images as built, so they're read before the images are gzipped.
 	set --
@@ -73,7 +75,7 @@ fi
 set -- manifest.json THIRD-PARTY-NOTICES.md SOURCES.md SOURCES.sha256
 for arch in $ARCHES; do
 	case "$arch" in amd64) karch=x86_64 ;; arm64) karch=aarch64 ;; esac
-	set -- "$@" "vmlinux-$karch" "vmlinux-$karch.config" "sandbox-$arch.ext4.gz" "isolate-$arch.ext4.gz"
+	set -- "$@" "vmlinux-$karch" "vmlinux-$karch.config" "sandbox-$arch.ext4.gz" "isolate-$arch.ext4.gz" "kantel-guest-$arch"
 done
 for f in "$OUT"/source-*.tar.gz; do set -- "$@" "$(basename "$f")"; done
 limit=$((2 * 1024 * 1024 * 1024))

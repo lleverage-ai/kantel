@@ -19,6 +19,8 @@ function Scenario({
 	e2e,
 	filesAt,
 	unavailable,
+	usage = "live",
+	unshaped = false,
 }: {
 	sandboxId?: string;
 	/** Where the Files tab opens, as the address would say. */
@@ -34,12 +36,32 @@ function Scenario({
 	e2e?: boolean | "pending";
 	/** Why Desktop and Browser can't open, as the console says it. */
 	unavailable?: string;
+	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
+	usage?: "live" | "loading" | "none";
+	/** Made before shapes: the API says nothing of what it was given. */
+	unshaped?: boolean;
 }) {
-	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
+	const [source] = useState(() => {
+		const made = createComputeFixtures({ hosting, ...options });
+		if (usage === "live") return made;
+		const { usageSeries: _, ...rest } = made.sandboxes;
+		return {
+			...made,
+			sandboxes: usage === "none" ? rest : { ...rest, usageSeries: () => new Promise<never>(() => {}) },
+		};
+	});
 	const [sandboxes] = useState(() => {
-		if (local !== true && e2e === undefined && unavailable === undefined) return source.sandboxes;
+		if (local !== true && e2e === undefined && unavailable === undefined && !unshaped) return source.sandboxes;
 		return {
 			...source.sandboxes,
+			...(unshaped
+				? {
+						get: async (id: string) => {
+							const { resources: _, ...rest } = await source.sandboxes.get(id);
+							return rest;
+						},
+					}
+				: {}),
 			...(unavailable === undefined
 				? {}
 				: {
@@ -76,8 +98,26 @@ function Scenario({
 	);
 }
 
-/** A running microVM: previews of its desktop and browser, SSH, ports, CPU and details. */
+/**
+ * A running microVM: previews of its desktop and browser, SSH, ports, live CPU and memory, details and its read-only
+ * mounts.
+ */
 export const Overview: Story = () => <Scenario />;
+
+/** Its CPU and memory while their first readings load. */
+export const UsageLoading: Story = () => <Scenario usage="loading" />;
+
+/** Where the source has no live usage: its recent CPU as listed, and memory as a meter. */
+export const NoLiveUsage: Story = () => <Scenario usage="none" />;
+
+/** The same, for its mounts: a bundle and a bucket in place, and a bundle its host couldn't mount, with why. */
+export const Mounts: Story = () => <Scenario />;
+
+/** Another's mounts while one is still pending. */
+export const MountsPending: Story = () => <Scenario sandboxId="sbx_4d8n1x7pe2" />;
+
+/** Where the deployment hasn't turned mounts on: no Mounts at all. */
+export const MountsOff: Story = () => <Scenario options={{ noMounts: true }} />;
 
 /** Served by `kantel console`, which can't frame them: Browser, Desktop and the previews open each in a tab. */
 export const LocalConsole: Story = () => <Scenario local />;
@@ -100,8 +140,17 @@ export const NotEndToEndFiles: Story = () => <Scenario e2e={false} view="files" 
 /** The same on hosted Kantel, with its cost. */
 export const Hosted: Story = () => <Scenario hosting="hosted" />;
 
-/** ⋯ open: Fork, Save snapshot, Auto-stop and Delete. */
+/** ⋯ open: Fork, Save snapshot, Auto-stop, Restart on latest base and Delete. */
 export const Menu: Story = () => <Scenario menuOpen />;
+
+/**
+ * On an outdated base with security fixes waiting: the notice with Restart on latest, and the base in Details. Restart
+ * asks first, then the sandbox starts again on the latest.
+ */
+export const BaseOutdated: Story = () => <Scenario />;
+
+/** A stopped one on an outdated base, with no security fixes waiting: amber. */
+export const BaseOutdatedStopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;
 
 /** Logs: commands and what happened to it, newest first, the failed build open. */
 export const Logs: Story = () => <Scenario view="logs" />;
@@ -120,6 +169,18 @@ export const Desktop: Story = () => <Scenario view="desktop" />;
 
 /** Its browser, full size in the console. */
 export const Browser: Story = () => <Scenario view="browser" />;
+
+/** Plain Alpine with Kantel's agent put in: no desktop or browser to offer, so none is; its Image section says so. */
+export const NoDesktopImage: Story = () => <Scenario sandboxId="sbx_7c4x1n8ka2" />;
+
+/** Debian with Docker and no desktop: Docker there, the screens not. */
+export const DockerNoDesktopImage: Story = () => <Scenario sandboxId="sbx_2m6v9r3kd4" />;
+
+/** The same on a phone. */
+export const NoDesktopImagePhone: Story = () => <Scenario sandboxId="sbx_7c4x1n8ka2" narrow />;
+
+/** Its address asks for a desktop the image doesn't have: Overview, never a frame onto an error. */
+export const NoDesktopImageAskedForDesktop: Story = () => <Scenario sandboxId="sbx_7c4x1n8ka2" view="desktop" />;
 
 /** Where Desktop and Browser can't open yet: disabled, with why, and no frame onto an error. */
 export const ScreensUnavailable: Story = () => <Scenario unavailable="Not available here yet" />;
@@ -141,6 +202,9 @@ export const Failed: Story = () => <Scenario sandboxId="sbx_1o9p4a7se6" />;
 
 /** An isolate: no desktop, browser or SSH. */
 export const Isolate: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" />;
+
+/** An isolate made before shapes, which the API gives no resources: shared CPU and the default memory, no disk. */
+export const IsolateUnshaped: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" unshaped usage="none" />;
 
 /** An isolate's Files: its /workspace, its only files, where the crumbs start and Up stops. */
 export const IsolateFiles: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" view="files" />;
@@ -165,7 +229,7 @@ export const Loading: Story = () => <Scenario options={{ hang: true }} />;
 /** When Kantel can't be reached. */
 export const Unreachable: Story = () => <Scenario options={{ fail: true }} />;
 
-/** On a phone: no previews, Stop in ⋯, the sections stacked. */
+/** On a phone: no previews, Stop in ⋯, the sections stacked, its mounts last. */
 export const Mobile: Story = () => <Scenario narrow />;
 Mobile.meta = { width: 390 };
 

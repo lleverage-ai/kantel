@@ -36,6 +36,11 @@ export interface RouteDefinition {
 	readonly query?: TObject;
 	/** A JSON object body. A route with a body still takes an empty one when every property is optional. */
 	readonly body?: TObject;
+	/**
+	 * The body is bytes of one of these media types rather than JSON, such as a tar, of any size: the router leaves it
+	 * unread for the handler to stream from the request. The SDK's method takes a `RawBody`. Not with `body`.
+	 */
+	readonly rawBody?: { readonly media: readonly string[]; readonly description: string };
 	readonly answer: RouteAnswer;
 	/**
 	 * Other successful answers, each with its own status, such as a result route's 202 while the run is still going. The
@@ -58,7 +63,14 @@ export interface RouteDefinition {
 	 * a JSON array of frames, and as server-sent events otherwise, one frame per event. The handler returns the
 	 * `Response` itself, and the SDK's method opens the WebSocket.
 	 */
-	readonly stream?: { readonly frame: TSchema };
+	readonly stream?: {
+		readonly frame: TSchema;
+		/**
+		 * Served as server-sent events only, never upgraded to a WebSocket. The SDK's method reads it over `fetch`, so it
+		 * carries the client's headers as every other call does (a browser can't put a header on a WebSocket).
+		 */
+		readonly eventsOnly?: true;
+	};
 	/** The error codes the route documents, besides `unauthenticated` (401), which every route can answer. */
 	readonly errors: readonly ErrorCode[];
 }

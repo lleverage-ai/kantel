@@ -4,7 +4,7 @@
 // CreateOrganisationDialog and JoinOrganisationDialog are what its
 // last two rows open; the host opens them, so a page can open them too. On a phone it is in the top bar, the same row.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { initials } from "../identity/signed-in-as.tsx";
 import { Button } from "../primitives/button.tsx";
 import { TextField } from "../primitives/controls.tsx";
@@ -219,19 +219,31 @@ export function CreateOrganisationDialog({
 	);
 }
 
-/** Joins an organisation with the code from an invite. What goes wrong shows in the dialog. */
+/**
+ * Joins an organisation with the code from an invite. What goes wrong shows in the dialog; an invite made for another
+ * email (refused as `forbidden`, naming both emails) offers Sign out, to sign in as the one it was made for.
+ */
 export function JoinOrganisationDialog({
 	open,
 	onClose,
 	onJoin,
+	onSignOut,
+	initialCode,
 }: {
 	open: boolean;
 	onClose: () => void;
 	onJoin: (code: string) => Promise<unknown>;
+	/** Signs the person out; offered when the invite is for someone else. */
+	onSignOut?: () => void;
+	/** The code it opens with: an invite email's link's. */
+	initialCode?: string;
 }) {
 	const [code, setCode] = useState("");
+	useEffect(() => {
+		if (open && initialCode !== undefined) setCode(initialCode);
+	}, [open, initialCode]);
 	const [busy, setBusy] = useState(false);
-	const [failure, setFailure] = useState<string>();
+	const [failure, setFailure] = useState<{ readonly text: string; readonly otherPerson: boolean }>();
 	const close = () => {
 		setCode("");
 		setFailure(undefined);
@@ -248,7 +260,10 @@ export function JoinOrganisationDialog({
 			},
 			(caught: unknown) => {
 				setBusy(false);
-				setFailure(messageOf(caught, "Kantel couldn't join with that code. Try again."));
+				setFailure({
+					text: messageOf(caught, "Kantel couldn't join with that code. Try again."),
+					otherPerson: (caught as { readonly code?: unknown } | null)?.code === "forbidden",
+				});
 			},
 		);
 	};
@@ -276,13 +291,20 @@ export function JoinOrganisationDialog({
 						setCode(event.currentTarget.value);
 						setFailure(undefined);
 					}}
-					placeholder="kt-inv-4f8a2c91"
+					placeholder="kji_4f8a2c91"
 					autoComplete="off"
 					spellCheck={false}
 					mono
 				/>
 			</div>
-			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure.text}</p>}
+			{failure?.otherPerson === true && onSignOut !== undefined ? (
+				<div className="pt-2">
+					<Button size="sm" onClick={onSignOut}>
+						Sign out
+					</Button>
+				</div>
+			) : null}
 		</Dialog>
 	);
 }

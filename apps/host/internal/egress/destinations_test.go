@@ -136,3 +136,45 @@ func TestUpstreamOnAPrivateAddressNeedsTheOperator(t *testing.T) {
 		t.Fatal("the upstream on loopback was reached")
 	}
 }
+
+// A template's build (PublicOnly rules) never takes the operator's private ranges, for its destination or its
+// upstream, while an ordinary sandbox does.
+func TestPublicOnlyRulesIgnoreTheOperatorsPrivateRanges(t *testing.T) {
+	d := Destinations{Allow: []netip.Prefix{netip.MustParsePrefix("192.168.10.0/24"), netip.MustParsePrefix("127.0.0.0/8")}}
+	if err := d.Check(netip.MustParseAddr("192.168.10.42")); err != nil {
+		t.Fatalf("an allowed private range refused: %v", err)
+	}
+	if err := d.PublicOnly().Check(netip.MustParseAddr("192.168.10.42")); !errors.Is(err, ErrDestination) {
+		t.Fatalf("public-only took an allowed private range: %v", err)
+	}
+	if err := d.PublicOnly().Check(netip.MustParseAddr("1.1.1.1")); err != nil {
+		t.Fatalf("public-only refused a public address: %v", err)
+	}
+
+	up := newUpstream(t)
+	for _, public := range []bool{false, true} {
+		p := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+		p.Destinations = d
+		p.Resolve = func(a netip.Addr) (Rules, bool) {
+			return Rules{SandboxID: "sbx_1", Mode: "proxy", Upstream: "http://" + up.l.Addr().String(), PublicOnly: public}, true
+		}
+		if err := p.Listen("127.0.0.1:0"); err != nil {
+			t.Fatal(err)
+		}
+		before := up.count()
+		conn, r := dial(t, p)
+		fmt.Fprint(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+		res, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
+		p.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reached := up.count() > before
+		if public && (res.StatusCode != http.StatusForbidden || reached) {
+			t.Fatalf("a public-only CONNECT through an upstream on an allowed private range: %d, reached %v", res.StatusCode, reached)
+		}
+		if !public && !reached {
+			t.Fatalf("an ordinary sandbox's upstream on an allowed range wasn't reached (%d)", res.StatusCode)
+		}
+	}
+}

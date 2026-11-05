@@ -151,16 +151,20 @@ func e2eRefusal(space string) error {
 // gatewayMayCall refuses a call from the control plane that would reach the content of a sandbox in an E2E space.
 func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	var p struct {
-		SandboxID         string            `json:"sandboxId"`
-		NewID             string            `json:"newId"`
-		SnapshotID        string            `json:"snapshotId"`
-		Port              int               `json:"port"`
-		From              string            `json:"from"`
-		Owner             string            `json:"owner"`
-		Tier              string            `json:"tier"`
-		Env               map[string]string `json:"env"`
-		SSHAuthorizedKeys []string          `json:"sshAuthorizedKeys"`
-		Egress            *proto.Egress     `json:"egress"`
+		SandboxID         string              `json:"sandboxId"`
+		NewID             string              `json:"newId"`
+		SnapshotID        string              `json:"snapshotId"`
+		Port              int                 `json:"port"`
+		From              string              `json:"from"`
+		Owner             string              `json:"owner"`
+		Tier              string              `json:"tier"`
+		Env               map[string]string   `json:"env"`
+		SSHAuthorizedKeys []string            `json:"sshAuthorizedKeys"`
+		Egress            *proto.Egress       `json:"egress"`
+		Template          *proto.TemplateBoot `json:"template"`
+		// Mounts are only counted: a mount is files the gateway chooses (a bucket it names, answering bucket.fetch), so
+		// an E2E space's sandbox takes none.
+		Mounts []json.RawMessage `json:"mounts"`
 	}
 	_ = json.Unmarshal(params, &p)
 	// A create or fork reads its space's E2E epoch once, before any check (egress included): if E2E comes on while the
@@ -214,7 +218,9 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	}
 	space := ""
 	switch {
-	case slices.Contains(contentMethods, method):
+	case slices.Contains(contentMethods, method), method == proto.MethodFileOpen, method == proto.MethodFileExtract:
+		// A file stream (or an archive's extraction) reads or writes what the file calls do, so it is refused exactly when
+		// they are.
 		space = h.ownerOf(p.SandboxID)
 	case method == proto.MethodPortOpen && p.Port != proto.PortE2E:
 		space = h.ownerOf(p.SandboxID)
@@ -241,6 +247,15 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		if h.e2eMode(p.Owner) != e2e.ModeOff && (len(p.Env) > 0 || len(p.SSHAuthorizedKeys) > 0) {
 			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes take no environment variables or SSH keys from the gateway", p.Owner)}
 		}
+		// Nor a template: its image and setup are the gateway's, and would run in every command a device runs.
+		if h.e2eMode(p.Owner) != e2e.ModeOff && p.Template != nil {
+			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes aren't made from templates", p.Owner)}
+		}
+		// Nor mounts: the gateway picks the bucket and answers bucket.fetch, so it would choose what a mount holds, such
+		// as a .bash_profile at /home/user that every command a device runs (bash -lc) sources.
+		if h.e2eMode(p.Owner) != e2e.ModeOff && len(p.Mounts) > 0 {
+			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes take no mounts from the gateway", p.Owner)}
+		}
 		if p.From != "" {
 			// A sandbox made from an E2E sandbox's snapshot stays in that space, or its content would be plaintext; and the
 			// gateway can't give it environment variables or SSH keys of its own. The snapshot is the one in the tier the
@@ -261,8 +276,8 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 				if !known || owner != p.Owner {
 					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("a sandbox made from a snapshot in %s, which is end-to-end encrypted, must be in that space", s)}
 				}
-				if len(p.Env) > 0 || len(p.SSHAuthorizedKeys) > 0 {
-					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a sandbox made from its snapshot takes no environment variables or SSH keys from the gateway", s)}
+				if len(p.Env) > 0 || len(p.SSHAuthorizedKeys) > 0 || len(p.Mounts) > 0 {
+					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a sandbox made from its snapshot takes no environment variables, SSH keys or mounts from the gateway", s)}
 				}
 			}
 		}
@@ -273,8 +288,8 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	case method == proto.MethodFork:
 		owner := h.ownerOf(p.SandboxID)
 		if h.e2eMode(owner) != e2e.ModeOff {
-			if len(p.Env) > 0 {
-				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a fork takes no environment variables from the gateway", owner)}
+			if len(p.Env) > 0 || len(p.Mounts) > 0 {
+				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a fork takes no environment variables or mounts from the gateway", owner)}
 			}
 			// A fork copies its source's disk: one of a sandbox made while E2E was off would carry what the gateway left.
 			if since == "" || !h.bornUnder(p.SandboxID, owner, since) {
@@ -563,7 +578,7 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 	slices.Sort(uses)
 	uses = slices.DeleteFunc(slices.Compact(uses), func(k string) bool { return slices.Contains(claims, k) })
 	cancellable := slices.Contains(contentMethods, method) || method == proto.MethodPortOpen ||
-		method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree
+		method == proto.MethodFileOpen || method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree
 	ctx, leave, ok := h.gate.use(ctx, uses, cancellable)
 	if !ok {
 		release()

@@ -7,6 +7,7 @@
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
+		"./bundles": "./src/bundles.ts",
 		"./stub": "./src/stub-backend.ts",
 		"./serve": "./src/serve.ts",
 		"./sql": "./src/sql-store.ts",

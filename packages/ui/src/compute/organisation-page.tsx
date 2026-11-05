@@ -329,11 +329,19 @@ function General({
 			<NameField account={account} {...(rename === undefined ? {} : { rename })} />
 			{invited?.code === undefined ? null : (
 				<OneTimeSecret
-					title={`Send ${invited.email} this code now`}
+					title={
+						invited.emailed === true
+							? `Kantel emailed ${invited.email} a link to join`
+							: `Send ${invited.email} this code now`
+					}
 					secret={invited.code}
 					secretLabel="Join code"
 					copyLabel="Copy code"
-					warning={`Kantel sends no email and shows this code only once. It works once, from the account menu's Join.`}
+					warning={
+						invited.emailed === true
+							? `If it doesn't arrive, send them this code. It's shown only once. They join with it from the account menu, signed in as ${invited.email}.`
+							: `Kantel shows this code only once. They join with it from the account menu, signed in as ${invited.email}.`
+					}
 					acknowledgeLabel="Done"
 					onAcknowledge={() => setInvited(undefined)}
 				/>
@@ -616,7 +624,7 @@ function People({
 								{member.name}
 								{you ? <span className="font-regular text-muted"> you</span> : null}
 							</span>
-							{member.email === "" ? null : <span className="truncate text-xs text-muted">{member.email}</span>}
+							{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
 						</span>
 						<span className={status} />
 						<span className="flex flex-none justify-end">

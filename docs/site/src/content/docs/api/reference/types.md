@@ -97,7 +97,7 @@ One of: `"read-only"` or `"agent"` or `"ci"` or `"admin"`.
 
 ### ApiKeyScope
 
-What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only.
+What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments, templates and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments, templates and sandboxes' grants. `hosts:admin`: the deployment's hosts and template bases, for a super-admin's key only.
 
 One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"exec"` or `"files"` or `"access"` or `"snapshots:read"` or `"snapshots:write"` or `"account:read"` or `"account:admin"` or `"hosts:admin"`.
 
@@ -111,14 +111,200 @@ The key the device gets, in the approver's personal account unless `account` nam
 | `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
 | `expiresInDays` | integer | no | Default 90. The key stops working after it. (minimum 1, maximum 3650) |
 
+### BaseImage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | `sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images. |
+| `repository` | string | yes | Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's. |
+| `channel` | `"stable"` | yes | The channel `latest` is of. |
+| `latest` | [BaseImageVersion](/api/reference/types/#baseimageversion) | no |  |
+| `versions` | [BaseImageVersion](/api/reference/types/#baseimageversion)[] | yes | Its newest versions, newest first, at most 10. |
+
+### BaseImageFinding
+
+One vulnerability a scan found in an image.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | `CVE-2026-1234`, or the scanner's own ID where there is no CVE. |
+| `severity` | [ScanSeverity](/api/reference/types/#scanseverity) | yes |  |
+| `package` | string | yes | The package it is in, such as `openssl`. |
+| `installed` | string | yes | The package's version in the image. |
+| `fixed` | string | no | The version that fixes it, where one is out. |
+| `title` | string | no |  |
+
+### BaseImageList
+
+Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what their CVE scans found.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `images` | [BaseImage](/api/reference/types/#baseimage)[] | yes |  |
+| `templates` | [BaseImageTemplate](/api/reference/types/#baseimagetemplate)[] | yes | Templates and their bases; empty until templates exist. |
+| `indexUrl` | string | yes | Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`). |
+| `generatedAt` | string | no | When the index was last written, ISO 8601. |
+| `error` | string | no | Why the index couldn't be read; `images` is empty then. It is tried again soon. |
+
+### BaseImageScan
+
+What the newest CVE scan of a version found.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scanner` | string | yes | What scanned it, such as `trivy 0.68.1`. |
+| `scannedAt` | string | yes | When, ISO 8601. |
+| `counts` | [BaseImageScanCounts](/api/reference/types/#baseimagescancounts) | yes |  |
+| `fixable` | [BaseImageScanFixable](/api/reference/types/#baseimagescanfixable) | yes |  |
+| `findings` | [BaseImageFinding](/api/reference/types/#baseimagefinding)[] | yes | The Critical and High findings, most severe first, at most 50. |
+
+### BaseImageScanCounts
+
+Every finding, by severity.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `critical` | integer | yes | Critical findings. (minimum 0) |
+| `high` | integer | yes | High findings. (minimum 0) |
+| `medium` | integer | yes | Medium findings. (minimum 0) |
+| `low` | integer | yes | Low findings. (minimum 0) |
+| `unknown` | integer | yes | Findings of no known severity. (minimum 0) |
+
+### BaseImageScanFixable
+
+Critical and High findings with a fix out: what makes Kantel rebuild the image at once.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `critical` | integer | yes | Critical findings with a fix out. (minimum 0) |
+| `high` | integer | yes | High findings with a fix out. (minimum 0) |
+
+### BaseImageTemplate
+
+A template and the base it is built on.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `image` | string | yes | The base image it is built on. |
+| `channel` | string | no | The channel it follows, such as `stable`. |
+| `pinned` | string | no | The digest it is pinned to, when it doesn't follow a channel. |
+| `base` | [SandboxBase](/api/reference/types/#sandboxbase) | yes |  |
+| `rebuilding` | boolean | yes | Whether it is being rebuilt on the latest base now. |
+
+### BaseImageVersion
+
+One build of a base image.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | yes | Its tag, such as `2026.11.04.1`. |
+| `digest` | string | yes | `sha256:…`: the digest it is pulled by. A version's digest never changes. |
+| `builtAt` | string | yes | When it was built, ISO 8601. |
+| `signed` | boolean | yes | Signed with cosign, keyless, by Kantel's build. |
+| `reason` | `"daily"` or `"cve"` or `"manual"` or `"push"` | no | Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change. |
+| `scan` | [BaseImageScan](/api/reference/types/#baseimagescan) | no |  |
+
 ### BrowserAccess
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Watch and drive the sandbox's Chromium in a browser. |
+| `url` | string | yes | Watch and drive the sandbox's Chromium in a browser: the browser alone where `surface` is `browser`, else the desktop it runs on. |
+| `embedUrl` | string | yes | The same view, for an `<iframe>` in your own app. |
+| `surface` | `"browser"` or `"desktop"` | yes | Experimental. What `url` shows: `browser`, the browser alone on a display of its own, sized to the viewer and streamed only while someone watches; `desktop`, the sandbox's desktop with Chromium on it (an image without a browser surface). |
 | `cdpUrl` | string | yes | A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. |
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### BucketAccessKey
+
+An S3 access key, or a GCS HMAC key.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accessKeyId` | string | yes |  (at most 256 characters) |
+| `secretAccessKey` | string | yes |  (at most 1024 characters) |
+| `sessionToken` | string | no |  (at most 8192 characters) |
+
+### BucketCredentials
+
+Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered.
+
+One of: [BucketAccessKey](/api/reference/types/#bucketaccesskey) or [BucketServiceAccountKey](/api/reference/types/#bucketserviceaccountkey).
+
+### BucketMountSource
+
+An object-store prefix, through a bucket source the account holds. The host reads objects as they are opened; the bucket source's credentials stay on the host, never in the sandbox.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"bucket"` | yes |  |
+| `bucketSourceId` | string | yes | A bucket source of the sandbox's account, such as `bks_4kq9x2mt`. |
+| `prefix` | string | yes | The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket. (at most 1024 characters) |
+| `refreshTtlSeconds` | integer | no | How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's. (minimum 0, maximum 86400) |
+
+### BucketProvider
+
+`s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage.
+
+One of: `"s3"` or `"gcs"`.
+
+### BucketServiceAccountKey
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `serviceAccountKey` | string | yes | A GCS service account's JSON key, as Google gives it. (at least 2 characters, at most 16384 characters) |
+
+### BucketSource
+
+A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The bucket source's ID, such as `bks_4kq9x2mt`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes | A name for people, such as `org files`. (at most 100 characters) |
+| `provider` | [BucketProvider](/api/reference/types/#bucketprovider) | yes |  |
+| `bucket` | string | yes | The bucket's name. (at most 255 characters) |
+| `endpoint` | string | no | An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`. (at most 2048 characters) |
+| `region` | string | no | Such as `eu-west-1`. (at most 64 characters) |
+| `hasCredentials` | boolean | yes | Whether it was given credentials; they are never answered. |
+| `mountedBy` | integer | yes | How many of the account's sandboxes that still exist mount it. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### BucketSourceList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [BucketSource](/api/reference/types/#bucketsource)[] | yes |  |
+
+### Bundle
+
+A tar of files uploaded to an account once, named by its digest, which sandboxes mount read-only. It never changes: other files are another bundle.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `digest` | string | yes | `sha256:` and the hex SHA-256 of the tar: the bundle's name and its ID. |
+| `accountId` | string | yes |  |
+| `sizeBytes` | integer | yes | The tar's size. |
+| `mountedBy` | integer | yes | How many of the account's sandboxes that still exist mount it. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### BundleList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Bundle](/api/reference/types/#bundle)[] | yes |  |
+
+### BundleMountSource
+
+A bundle's files: the tar the account uploaded (`POST /bundles`), unpacked read-only at the mount's path.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"bundle"` | yes |  |
+| `digest` | string | yes | A bundle uploaded to the sandbox's account, by its digest: `sha256:` and 64 hex digits. |
 
 ### Caller
 
@@ -211,6 +397,18 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `sandboxIds` | string[] | no |  |
 | `expiresInDays` | integer | no | Absent: it never expires. (minimum 1, maximum 3650) |
 
+### CreateBucketSourceBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes | A name for people, such as `org files`. (at most 100 characters) |
+| `provider` | [BucketProvider](/api/reference/types/#bucketprovider) | yes |  |
+| `bucket` | string | yes | The bucket's name. (at most 255 characters) |
+| `endpoint` | string | no | An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`. (at most 2048 characters) |
+| `region` | string | no | Such as `eu-west-1`. (at most 64 characters) |
+| `credentials` | [BucketCredentials](/api/reference/types/#bucketcredentials) | no |  |
+
 ### CreatedBy
 
 | Field | Type | Required | Description |
@@ -260,6 +458,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `name` | string | no | Default: a generated name, such as `brave-otter`. (at most 63 characters) |
 | `type` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxShapeInput](/api/reference/types/#sandboxshapeinput) | no |  |
 | `image` | string | no | A microVM's base image. Default: the deployment's. |
 | `from` | string | no | Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account. |
 | `autoStopMinutes` | integer or null | no | Default 60. `null`: never stop by itself. |
@@ -267,8 +466,19 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
 | `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
+| `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
+| `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
+
+### CreateTemplateBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes | Unique in the account: lower-case letters, digits and dashes, at most 63. |
+| `description` | string | no |  (at most 500 characters) |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | yes |  |
 
 ### CreateWebhookBody
 
@@ -481,7 +691,7 @@ A repository every new sandbox starts with, cloned through the egress proxy once
 
 ### ErrorBody
 
-Every error: the KantelError's code and message.
+Every error: the KantelError's `code` and `message`, and for some errors `details`, such as a `SandboxNotRunning`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -513,6 +723,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
 | `previousState` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
 | `reason` | string | no |  |
+| `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 
 ### EventPage
@@ -550,6 +761,16 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 | `port` | integer | yes |  (minimum 1, maximum 65535) |
 | `public` | boolean | no | Anyone with the URL may open it, with no token. Default false. |
 
+### ExtractedArchive
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The absolute directory it was extracted into. |
+| `files` | integer | yes | Files written. |
+| `directories` | integer | yes | Directories made. |
+| `symlinks` | integer | yes | Symbolic links made. |
+| `bytes` | integer | yes | Bytes of the files written. |
+
 ### FileContent
 
 A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.
@@ -584,6 +805,24 @@ One of: `"utf8"` or `"base64"`.
 | `items` | [FileEntry](/api/reference/types/#fileentry)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
+### FileUrl
+
+A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any size moves without base64.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | The signed URL. Send the request straight to it, with no `Authorization` header. Treat it as a secret until it expires. |
+| `method` | `"GET"` or `"PUT"` | yes | `GET` downloads the file. `PUT` uploads the request's raw body as the file. |
+| `path` | string | yes | The absolute path the URL is bound to. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### FileUrlBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | An absolute path, or one relative to the user's home. (at most 4096 characters) |
+| `ttlSeconds` | integer | no | How long the URL may be used: default 900 (15 minutes), at most 3600. (minimum 1, maximum 3600) |
+
 ### ForkedSandboxes
 
 | Field | Type | Required | Description |
@@ -601,6 +840,58 @@ One of: `"utf8"` or `"base64"`.
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `wait` | boolean | no |  |
+
+### GuestAgent
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | yes |  |
+| `injected` | boolean | yes | Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it. |
+
+### GuestCapabilities
+
+What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reportedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `agent` | [GuestAgent](/api/reference/types/#guestagent) | yes |  |
+| `os` | [GuestOs](/api/reference/types/#guestos) | yes |  |
+| `arch` | string | yes | The machine, as `uname -m` says it: `x86_64` or `aarch64`. |
+| `libc` | `"glibc"` or `"musl"` or `"none"` | yes | The image's C library; `none` for a static userland such as busybox's. |
+| `shell` | string | no | The shell a `command` runs in, such as `/bin/bash`; absent: `argv` only. |
+| `init` | `"systemd"` or `"kantel"` | yes | PID 1: the image's systemd, or Kantel's own init when the image has none. |
+| `desktop` | [GuestFeature](/api/reference/types/#guestfeature) | yes |  |
+| `browser` | [GuestFeature](/api/reference/types/#guestfeature) | yes |  |
+| `browserSurface` | [GuestFeature](/api/reference/types/#guestfeature) | no |  |
+| `docker` | [GuestDocker](/api/reference/types/#guestdocker) | yes |  |
+
+### GuestDocker
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `available` | boolean | yes |  |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
+| `kvm` | boolean | yes | `/dev/kvm` opens inside, so containers and VMs in it can nest. |
+
+### GuestFeature
+
+One thing a microVM's image has or lacks.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `available` | boolean | yes |  |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
+
+### GuestOs
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | `/etc/os-release`'s `ID`, such as `debian`, `alpine` or `ubuntu`. |
+| `name` | string | yes | Its pretty name, such as `Debian GNU/Linux 13 (trixie)`. |
+| `version` | string | no | `VERSION_ID`, such as `13` or `3.22.2`. |
 
 ### Host
 
@@ -624,6 +915,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
+| `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 
 ### HostAllocated
 
@@ -663,6 +955,27 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 
 One of: `"online"` or `"unreachable"` or `"draining"` or `"revoked"`.
 
+### HostUsage
+
+A host's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes |  |
+| `intervalMs` | integer | yes | How far apart the points are: 5000 from a current host. (minimum 1) |
+| `memTotalBytes` | integer | yes | 0 until the host has sent a reading. (minimum 0) |
+| `diskTotalBytes` | integer | yes | 0 until the host has sent a reading. (minimum 0) |
+| `points` | [HostUsagePoint](/api/reference/types/#hostusagepoint)[] | yes | Oldest first, at most the last hour; with `since`, only those after it. Empty for a host that doesn't send its readings yet (an older kantel-host). |
+
+### HostUsagePoint
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `cpu` | number | yes | CPU utilisation over the interval ending at `at`, 0 to 1 of all the host's CPUs. (minimum 0, maximum 1) |
+| `memUsedBytes` | integer | yes |  (minimum 0) |
+| `diskUsedBytes` | integer | yes |  (minimum 0) |
+
 ### Invite
 
 A way into an organisation: whoever joins with its code becomes a member.
@@ -674,6 +987,7 @@ A way into an organisation: whoever joins with its code becomes a member.
 | `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
 | `email` | string | no |  |
 | `code` | string | no | The join code, such as `kji_…`. Shown once, when the invite is made. |
+| `emailed` | boolean | no | Only when the invite is made: whether Kantel emailed it, with a link that joins with its code. False without an email, where the deployment sends no mail, or when the send failed. |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
@@ -682,6 +996,13 @@ A way into an organisation: whoever joins with its code becomes a member.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `items` | [Invite](/api/reference/types/#invite)[] | yes |  |
+
+### IsolateShapes
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `enforced` | boolean | yes | Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. |
 
 ### IssuedApiKey
 
@@ -695,6 +1016,34 @@ A way into an organisation: whoever joins with its code becomes a member.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `code` | string | yes | An invite's join code. |
+
+### LiveFrame
+
+One frame of the account's live stream.
+
+One of: [LiveHello](/api/reference/types/#livehello) or [LiveSandboxChange](/api/reference/types/#livesandboxchange).
+
+### LiveHello
+
+The stream is open. Read what you show again after each one: changes made while no stream was open (before the first, between a drop and the reconnection) are not sent.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `"hello"` | yes |  |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+
+### LiveSandboxChange
+
+A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, the API or an SDK, its auto-stop, its host). No `previousState`: it was just made. Read the sandbox for the rest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `"sandbox"` | yes |  |
+| `sandboxId` | string | yes |  |
+| `accountId` | string | yes |  |
+| `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
+| `previousState` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
 
 ### Member
 
@@ -717,6 +1066,43 @@ A way into an organisation: whoever joins with its code becomes a member.
 `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`.
 
 One of: `"member"` or `"admin"` or `"owner"`.
+
+### MicrovmShapes
+
+Absent when no host the account may use runs microVMs.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `memoryMbPerVcpu` | object | yes | Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. |
+| `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes | Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. |
+| `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. |
+
+### Mount
+
+Files from outside the sandbox, read-only inside it: nothing in the sandbox can change them.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Where it appears in the sandbox: absolute and normalised, not `/`, not at or under a system directory (`/proc`, `/sys`, `/dev`, `/etc`, `/usr`, `/bin`, `/lib` and the like), and not overlapping another mount. (at least 2 characters, at most 1024 characters) |
+| `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
+
+### MountSource
+
+One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketMountSource](/api/reference/types/#bucketmountsource).
+
+### MountStatus
+
+`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it.
+
+One of: `"pending"` or `"ready"` or `"failed"`.
+
+### PlacementReason
+
+Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may.
+
+One of: `"no_host"` or `"no_host_for_type"` or `"no_host_with_labels"` or `"no_host_offers_size"` or `"no_host_enforces_egress"` or `"no_host_for_template"` or `"insufficient_capacity"` or `"host_unavailable"` or `"account_limit"`.
 
 ### PollDeviceLoginBody
 
@@ -767,6 +1153,14 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `source` | `"console"` or `"deployment"` | yes | `console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at). |
 | `deploymentUrl` | string | yes | The deployment's own, which `publicUrl` goes back to when cleared. |
 | `loopback` | boolean | yes | `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. |
+
+### PublishTemplateBaseBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image, such as `kantel/sandbox`. (at most 255 characters) |
+| `channel` | string | yes | A channel, such as `stable`. |
+| `digest` | string | yes | The digest the channel publishes from now. |
 
 ### PutEgressGrantsBody
 
@@ -836,7 +1230,8 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
 | `health` | [SandboxHealth](/api/reference/types/#sandboxhealth) | no |  |
-| `reason` | string | no | Why it is in `error` or `degraded`, in words. |
+| `reason` | string | no | Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, or a rule's reason. A stop someone asked for has none. |
+| `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `capabilities` | [SandboxCapabilities](/api/reference/types/#sandboxcapabilities) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes | The caller's own labels. |
@@ -845,7 +1240,9 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
 | `environmentId` | string | no | The environment it was made from. |
+| `template` | [SandboxTemplate](/api/reference/types/#sandboxtemplate) | no |  |
 | `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environment's. |
+| `mounts` | [SandboxMount](/api/reference/types/#sandboxmount)[] | no | Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `startedAt` | integer | no | Epoch milliseconds, UTC. |
@@ -853,10 +1250,42 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `cost` | [Cost](/api/reference/types/#cost) | yes |  |
 | `usage` | [UsageSummary](/api/reference/types/#usagesummary) | yes |  |
 | `hostId` | string | no | The host it runs on; only a super-admin is shown it. |
+| `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+
+### SandboxBase
+
+The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: kernel and root file system), `sandbox` for the container tier. |
+| `version` | string | no | The version of the base it is on, such as `host-images-20261104.812`. |
+| `outdated` | boolean | yes | Its base isn't the version its channel (`stable`) names now. |
+| `latest` | [SandboxBaseLatest](/api/reference/types/#sandboxbaselatest) | no |  |
+| `behind` | [SandboxBaseBehind](/api/reference/types/#sandboxbasebehind) | no |  |
+| `security` | boolean | no | A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest. |
+
+### SandboxBaseBehind
+
+How far behind its channel it is, while outdated.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `days` | integer | yes | Whole days since the version after its own was built: how long it has been superseded. (minimum 0) |
+| `versions` | integer | yes | How many versions are newer. (minimum 0) |
+
+### SandboxBaseLatest
+
+The version its channel names now.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | yes |  |
+| `builtAt` | string | yes | When it was built, ISO 8601. |
 
 ### SandboxCapabilities
 
-What this sandbox can do, from its type and its host.
+What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -865,10 +1294,12 @@ What this sandbox can do, from its type and its host.
 | `ssh` | boolean | yes |  |
 | `desktop` | boolean | yes |  |
 | `browser` | boolean | yes |  |
+| `browserSurface` | boolean | no | Experimental. Whether `openBrowser`'s `url` shows the browser alone rather than the desktop it runs on: the image has a display and a stream for its browser. Absent: false. |
 | `ports` | boolean | yes |  |
 | `docker` | boolean | yes |  |
 | `kvm` | boolean | yes | `/dev/kvm` inside, for nested virtualisation. |
 | `pause` | boolean | yes | Whether it can be paused with its memory kept. |
+| `guest` | [GuestCapabilities](/api/reference/types/#guestcapabilities) | no |  |
 
 ### SandboxEgress
 
@@ -898,6 +1329,35 @@ A sandbox's egress: what it was made with, its own grants and its log.
 
 One of: `"ok"` or `"degraded"`.
 
+### SandboxMount
+
+A mount of a sandbox's, and whether its files are in place.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes |  |
+| `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
+| `status` | [MountStatus](/api/reference/types/#mountstatus) | yes |  |
+| `error` | string | no | Why it is `failed`, in words. |
+
+### SandboxNotRunning
+
+The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | [SandboxNotRunningCode](/api/reference/types/#sandboxnotrunningcode) | yes |  |
+| `sandboxId` | string | yes |  |
+| `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
+| `stopReason` | string | no | Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. |
+| `hint` | string | yes | What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again`. |
+
+### SandboxNotRunningCode
+
+Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted.
+
+One of: `"sandbox_starting"` or `"sandbox_stopping"` or `"sandbox_stopped"` or `"sandbox_paused"` or `"sandbox_error"` or `"sandbox_deleting"`.
+
 ### SandboxPage
 
 | Field | Type | Required | Description |
@@ -923,9 +1383,36 @@ A protected variable as one sandbox has it: never its value.
 | `memoryMb` | integer | yes |  |
 | `diskGb` | integer | yes |  |
 
+### SandboxSeriesPoint
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `cpu` | number | yes | CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs. (minimum 0, maximum 1) |
+| `memUsedBytes` | integer | yes | Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. (minimum 0) |
+
+### SandboxShapeInput
+
+What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | no | A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. (minimum 1) |
+| `memoryMb` | integer | yes | Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). (minimum 128) |
+
+### SandboxShapes
+
+What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `isolate` | [IsolateShapes](/api/reference/types/#isolateshapes) | yes |  |
+| `microvm` | [MicrovmShapes](/api/reference/types/#microvmshapes) | no |  |
+| `rates` | [ShapeRates](/api/reference/types/#shaperates) | no |  |
+
 ### SandboxSizeName
 
-A microVM's size; a deployment may offer fewer. Isolates have none.
+A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now.
 
 One of: `"small"` or `"default"` or `"large"` or `"xlarge"`.
 
@@ -944,6 +1431,18 @@ What it was made from.
 
 One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"error"` or `"deleting"` or `"deleted"`.
 
+### SandboxTemplate
+
+The template a sandbox was made from.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The template's ID, `tpl_…`. |
+| `name` | string | yes |  |
+| `version` | integer | yes | The template's version it was made from. |
+| `snapshotId` | string | no | The template snapshot it started from, `tsn_…`; absent for a fresh boot. |
+| `start` | `"snapshot"` or `"boot"` | yes | `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself (a custom image: the one its build made). |
+
 ### SandboxType
 
 `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
@@ -958,6 +1457,8 @@ One of: `"isolate"` or `"microvm"`.
 | `intervalSeconds` | integer | yes |  |
 | `points` | [SandboxUsagePoint](/api/reference/types/#sandboxusagepoint)[] | yes |  |
 | `totals` | object | yes |  |
+| `memLimitBytes` | integer | no | The memory it may use, when its host reports it or its size sets it. (minimum 0) |
+| `series` | [SandboxUsageSeries](/api/reference/types/#sandboxusageseries) | yes |  |
 
 ### SandboxUsagePoint
 
@@ -968,6 +1469,15 @@ One of: `"isolate"` or `"microvm"`.
 | `memoryMb` | number | yes |  |
 | `runningSeconds` | number | yes |  |
 | `cost` | number | yes |  |
+
+### SandboxUsageSeries
+
+The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `intervalMs` | integer | yes | How far apart the points are: 5000 from a host that sends its readings, longer from one that doesn't yet. (minimum 1) |
+| `points` | [SandboxSeriesPoint](/api/reference/types/#sandboxseriespoint)[] | yes | Oldest first, at most the last hour; with `since`, only those after it. |
 
 ### SandboxVisibility
 
@@ -984,6 +1494,10 @@ One of: `"private"` or `"organisation"`.
 | `snapshotId` | string | no | Save this snapshot of the sandbox's history. Default: its state now. |
 | `description` | string | no |  (at most 500 characters) |
 | `replace` | boolean | no | Replace a saved snapshot of the same name. |
+
+### ScanSeverity
+
+One of: `"critical"` or `"high"` or `"medium"` or `"low"` or `"unknown"`.
 
 ### SetEnvironmentFileBody
 
@@ -1010,6 +1524,35 @@ One of: `"private"` or `"organisation"`.
 | --- | --- | --- | --- |
 | `publicUrl` | string or null | yes | An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. |
 
+### ShapePreset
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | yes |  |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes |  |
+| `diskGb` | integer | yes | The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk. |
+
+### ShapeRange
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `min` | integer | yes |  |
+| `max` | integer | yes |  |
+| `step` | integer | yes |  |
+| `default` | integer | yes |  |
+
+### ShapeRates
+
+What an hour costs, per vCPU and GB; absent where it is free.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `currency` | string | yes |  |
+| `microvmPerVcpuHour` | number | yes |  |
+| `microvmPerGbHour` | number | yes |  |
+| `isolatePerGbHour` | number | yes |  |
+
 ### Snapshot
 
 | Field | Type | Required | Description |
@@ -1024,9 +1567,12 @@ One of: `"private"` or `"organisation"`.
 | `state` | [SnapshotState](/api/reference/types/#snapshotstate) | yes |  |
 | `trigger` | `"periodic"` or `"stop"` or `"manual"` or `"save"` | no | What took it. |
 | `memory` | boolean | yes | Whether it holds the sandbox's memory as well as its disk (a pause). |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
 | `sizeBytes` | integer | no |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
+| `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 
 ### SnapshotKind
 
@@ -1086,7 +1632,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 
 ### TelemetryExport
 
-Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.running`, `kantel.sandbox.cpu.seconds`, `kantel.sandbox.cost`, …) every 60 seconds, and each lifecycle event as an OTLP log record when it happens.
+Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.cpu`, `kantel.sandbox.memory_bytes` and `kantel.sandbox.running_seconds`) every 60 seconds, and each lifecycle event as an OTLP log record when it happens.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1122,6 +1668,239 @@ What the collector answered to an empty export sent on save.
 | `ok` | boolean | yes |  |
 | `status` | integer | no |  |
 | `error` | string | no |  |
+
+### Template
+
+A microVM profile: image, base, resources, variables, setup and egress, versioned.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The template's ID, such as `tpl_4kq9x2mt`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `description` | string | no |  |
+| `version` | integer | yes | Its current version; a new spec makes the next. |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | yes |  |
+| `build` | [TemplateBuildStatus](/api/reference/types/#templatebuildstatus) | yes |  |
+| `sandboxCount` | integer | yes | How many sandboxes were made from it and still exist. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
+
+### TemplateBase
+
+The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image.
+
+One of: [TemplateBaseChannelRef](/api/reference/types/#templatebasechannelref) or [TemplateBasePinned](/api/reference/types/#templatebasepinned).
+
+### TemplateBaseChannel
+
+A base image's channel and the digests it has published.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes |  |
+| `channel` | string | yes |  |
+| `digest` | string | yes | The digest it publishes now. |
+| `publishedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `history` | [TemplateBaseRelease](/api/reference/types/#templatebaserelease)[] | yes | Every digest it has published, newest first. |
+
+### TemplateBaseChannelRef
+
+Follow a channel: rebuilt when it publishes a new digest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image, such as `kantel/sandbox`. (at most 255 characters) |
+| `channel` | string | yes | A channel, such as `stable`. |
+
+### TemplateBaseList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [TemplateBaseChannel](/api/reference/types/#templatebasechannel)[] | yes |  |
+
+### TemplateBasePinned
+
+Pin an exact digest, one its channels published: never rebuilt for a new release.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image, such as `kantel/sandbox`. (at most 255 characters) |
+| `digest` | string | yes | The digest pinned. |
+
+### TemplateBaseRelease
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `digest` | string | yes |  |
+| `publishedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### TemplateBehind
+
+How far a pinned base is behind its channel.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `releases` | integer | yes | How many digests the base's channel has published since the pinned one. |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+| `latestDigest` | string | yes |  |
+
+### TemplateBuildStatus
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | `"none"` or `"building"` or `"ready"` or `"stale"` or `"failed"` | yes | `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that build (`unavailable` until then). |
+| `ready` | [TemplateSnapshot](/api/reference/types/#templatesnapshot) | no |  |
+| `building` | [TemplateSnapshot](/api/reference/types/#templatesnapshot) | no |  |
+| `error` | string | no |  |
+| `behind` | [TemplateBehind](/api/reference/types/#templatebehind) | no |  |
+
+### TemplateBuiltFrom
+
+What a template snapshot was built from.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `baseImage` | string | yes |  |
+| `channel` | string | no | The channel it followed; absent when pinned. |
+| `baseDigest` | string | yes | Empty while the channel has no published digest. |
+| `pinned` | boolean | yes |  |
+| `imageDigest` | string | no | The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference resolved to; for a `dockerfile`, the built image's ID. |
+| `source` | `"kantel-base"` or `"dockerfile"` or `"image"` | no | The template image's kind it was built from. Absent: `kantel-base`. |
+| `dockerfileDigest` | string | no | For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`. |
+| `imageRef` | string | no | For an `image`, the reference pulled. |
+| `kernel` | string | yes |  |
+| `firecracker` | string | yes |  |
+
+### TemplateCacheKey
+
+What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `templateVersion` | string | yes | `<templateId>@<version>`. |
+| `baseDigest` | string | yes |  |
+| `source` | string | no | A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`. |
+| `imageDigest` | string | no | A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, recorded once the build answers. Absent for `kantel-base`. |
+| `kernel` | string | yes |  |
+| `firecracker` | string | yes |  |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes | With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. |
+
+### TemplateDockerfileImage
+
+Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"dockerfile"` | yes |  |
+| `dockerfile` | string | yes | A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the template's `base`; any other `FROM` image is pulled. (at most 65536 characters) |
+
+### TemplateImage
+
+What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`.
+
+One of: [TemplateKantelBaseImage](/api/reference/types/#templatekantelbaseimage) or [TemplateDockerfileImage](/api/reference/types/#templatedockerfileimage) or [TemplateImageRef](/api/reference/types/#templateimageref).
+
+### TemplateImageRef
+
+Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An image that isn't one of Kantel's boots through the guest agent the host injects.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"image"` | yes |  |
+| `ref` | string | yes | An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the template is built, and again on a rebuild. (at most 512 characters) |
+
+### TemplateKantelBaseImage
+
+The template's `base` itself, as its deployment publishes it; the setup script adds the rest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"kantel-base"` | yes |  |
+
+### TemplateList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Template](/api/reference/types/#template)[] | yes |  |
+
+### TemplateNetwork
+
+Egress grants for its sandboxes and for its build's boot.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `grants` | [EgressGrantInput](/api/reference/types/#egressgrantinput)[] | yes |  (at most 200 items) |
+
+### TemplateResources
+
+Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes |  (minimum 1, maximum 64) |
+| `memoryMb` | integer | yes |  (minimum 128, maximum 262144) |
+
+### TemplateSnapshot
+
+A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The template snapshot's ID, `tsn_…`. |
+| `templateId` | string | yes |  |
+| `version` | integer | yes |  |
+| `key` | [TemplateCacheKey](/api/reference/types/#templatecachekey) | yes |  |
+| `keyHash` | string | yes | The SHA-256 hex of the key's canonical JSON. |
+| `state` | [TemplateSnapshotState](/api/reference/types/#templatesnapshotstate) | yes |  |
+| `hostId` | string | no | The host it was built on, which holds it. |
+| `builtFrom` | [TemplateBuiltFrom](/api/reference/types/#templatebuiltfrom) | yes |  |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `readyAt` | integer | no | Epoch milliseconds, UTC. |
+| `error` | string | no | Why the build failed. |
+| `sizeBytes` | integer | no |  |
+
+### TemplateSnapshotList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [TemplateSnapshot](/api/reference/types/#templatesnapshot)[] | yes | Newest first. |
+
+### TemplateSnapshotState
+
+`stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away.
+
+One of: `"queued"` or `"building"` or `"ready"` or `"stale"` or `"failed"` or `"discarded"`.
+
+### TemplateSpec
+
+A template version's definition, never changed once made. Answered with every default filled in.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | [TemplateImage](/api/reference/types/#templateimage) | no |  |
+| `base` | [TemplateBase](/api/reference/types/#templatebase) | no |  |
+| `resources` | [TemplateResources](/api/reference/types/#templateresources) | no |  |
+| `env` | Record&lt;string, string&gt; | no | Plain variables, not secrets: under the environment's and the create's own. |
+| `setup` | string | no | A shell script run once, as root, when the snapshot is built (or at a fresh boot). (at most 65536 characters) |
+| `network` | [TemplateNetwork](/api/reference/types/#templatenetwork) | no |  |
+
+### TemplateVersion
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | integer | yes |  |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
+
+### TemplateVersionList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [TemplateVersion](/api/reference/types/#templateversion)[] | yes | Newest first. |
 
 ### UpdateAccountBody
 
@@ -1161,6 +1940,16 @@ What the collector answered to an empty export sent on save.
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |
 
+### UpdateTemplateBody
+
+A `spec` that differs from the current one makes a new version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  |
+| `description` | string | no | Empty clears it. (at most 500 characters) |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | no |  |
+
 ### UpdateWebhookBody
 
 | Field | Type | Required | Description |
@@ -1170,13 +1959,23 @@ What the collector answered to an empty export sent on save.
 | `events` | [EventType](/api/reference/types/#eventtype)[] | no |  |
 | `enabled` | boolean | no |  |
 
+### UsageSparklines
+
+A host's recent CPU and memory, for sparklines.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first. The last may be the interval under way. |
+| `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
+
 ### UsageSummary
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `runningSeconds` | number | yes |  |
 | `cpuSeconds` | number | yes |  |
-| `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. |
+| `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way. |
+| `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
 
 ### ViewAccessBody
 

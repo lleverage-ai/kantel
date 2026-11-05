@@ -38,6 +38,7 @@ nothing in the guest listens on the sandbox's network except SSH.
 | 5901 | VNC (RFB) of display `:1` | `kantel-desktop.service` | `desktop` |
 | 9222 | Chromium's DevTools (CDP) | `kantel-browser.service` | `browser` |
 | 6080 | Selkies: its web client and the WebSocket stream (H.264 on the CPU) | `kantel-stream.service` | `stream` |
+| 6081 | Selkies on the browser's own display: the browser alone, started on demand | `kantel-browser-stream.service` | |
 | (socket) | Docker | `docker.service` | `docker` |
 | 3128 | The guest agent's forwarder to the host's egress proxy (Chromium's and dockerd's proxy) | `kantel-guest.service` | |
 
@@ -49,6 +50,41 @@ Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay th
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.
 `/etc/kantel/desktop.env` can set `KANTEL_DESKTOP_SIZE`, `KANTEL_STREAM_ENCODER` (`h264enc`, `h264enc-striped`,
 `jpeg`), `KANTEL_STREAM_FPS` and `KANTEL_STREAM_FLAGS`.
+
+### The browser alone
+
+Chromium runs on a display of its own, TigerVNC's `:2` (`kantel-browser-display.service`), with no window manager and
+nothing else on it; the desktop (`:1`) doesn't show it. A second Selkies (`kantel-browser-stream`, port 6081) streams
+that display, so `openBrowser`'s page is the browser alone while `openDesktop`'s is the desktop, each with its own
+ticket. The viewer sizes it: Selkies resizes `:2` to the viewer's window and the display keeps Chromium's window at
+the screen's size.
+
+The browser's stream isn't enabled and isn't in `ready`: the guest agent starts its unit when the host first opens
+port 6081 and stops it once no connection has been open for five minutes, so a sandbox nobody watches spends nothing
+on encoding. `/etc/kantel/on-demand` lists such services (port, unit, idle time); the first page load waits for
+Selkies to start, a few seconds. The guest agent reports the surface (`browserSurface` in the sandbox's capabilities)
+when the image has the display, the stream and their units, so the console can offer a Browser view only where there
+is one.
+
+The host asks for this by booting the guest with `kantel.browser=surface` on its kernel command line, which every
+`kantel-host` from this change on does (and the display's and stream's units have as their condition). A host from
+before it would drop the guest agent's report of the surface, so the control plane would open the desktop's page for
+the browser: booted without the argument, the image keeps Chromium on the desktop, where that page shows it. Any image
+works on any host; the browser alone needs both to be new.
+
+The guest agent's `browserSurface` report is a prediction, made at boot before services start, and the control plane
+keeps it by image version. What a machine shows is decided from the machine itself: `kantel-browser` writes the display
+it started Chromium on to `/run/kantel-browser/display` (its unit's runtime directory: removed when the unit stops and
+on a cold boot, kept in memory snapshots), and `openBrowser` reads it in the same command that asks Chromium for its
+DevTools target. `:2` with the display up gives the browser alone (6081); anything else, including an image from
+before this record, a sandbox paused under an older host or a setup that moved Chromium back, gives the desktop's page.
+
+`KANTEL_BROWSER_DISPLAY=:1` in `desktop.env` (its last assignment) puts Chromium back on the desktop, as before (no
+other value moves it):
+the guest agent then reports
+no browser surface and `openBrowser` answers the desktop's page. `KANTEL_BROWSER_SIZE` sets `:2`'s size until a viewer
+resizes it (1280x800), and `KANTEL_BROWSER_STREAM_FLAGS` adds Selkies flags. Another streaming stack would take the
+place of `kantel-browser-stream` on the same port, behind the same relay route.
 
 ## Templates and readiness
 
@@ -65,7 +101,8 @@ A custom image is a Dockerfile that starts from the default one and adds to it:
 FROM kantel-guest-sandbox:amd64
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && rm -rf /var/lib/apt/lists/*
 # No desktop? Stop its units and say so, or the template waits for them:
-# RUN systemctl disable kantel-desktop kantel-browser kantel-stream && printf 'docker\n' > /etc/kantel/ready
+# RUN systemctl disable kantel-desktop kantel-browser-display kantel-browser kantel-stream \
+#     && rm /etc/kantel/on-demand && printf 'docker\n' > /etc/kantel/ready
 RUN kantel-image-info > /etc/kantel/image.json
 ```
 
@@ -79,6 +116,26 @@ KANTEL_GUEST_DOCKERFILE=path/to/Dockerfile apps/host/guest/rootfs.sh out sandbox
 Point a host's `sandboxImage` at the result (or publish it, below). Keep `kantel-init`, the guest agent's unit and
 the `user` account: the host relies on them. The host fingerprints Firecracker, the kernel and the image, and
 rebuilds its templates when any of them changes.
+
+## Bucket mounts
+
+A bucket mount (experimental) is a read-only FUSE file system the guest agent serves at the mount's path, mounted
+with `MS_RDONLY`, so every write fails with `EROFS`. The host lists the bucket prefix once (the manifest: each
+object's path, size, modification time and ETag) and the guest answers `ls`, `stat` and `find` from it with no
+call to anyone; an object's bytes come from the host when they are first read, over vsock port 1027, which reaches
+only that sandbox's own mounts on the host. The host keeps what it read in a shared on-disk cache (8 MiB chunks, by
+object and ETag), so a second sandbox on the host reading the same object never reaches the store. The bucket
+source's credentials stay on the host.
+
+- The view changes only when the manifest does: after `refreshTtlSeconds` (default 60; 0 never), on the control
+  plane's `sandbox.mounts.refresh`, or from inside with `getfattr -n user.kantel.refresh <mount>` (or Python's
+  `os.getxattr`). The host lists at most once every 5 seconds a mount, however often it is asked.
+- An object rewritten in the bucket after it was listed and never read on the host fails with `ESTALE` until a
+  refresh, rather than answer bytes that don't match its listed size and ETag. One read before, from any sandbox on
+  the host, is served from the cache.
+- Files are mode `0444`: object stores keep no execute bit, so run scripts with their interpreter (`sh x.sh`).
+- Mounts are restored by the guest agent after a restart (`/run/kantel/mounts.json`), and kept across stop and
+  resume; a cold start mounts them again.
 
 ## Snapshots on top
 
@@ -94,7 +151,12 @@ old images for them.
 `kernel/kantel.config` is a Firecracker guest config with what Docker needs (overlayfs, cgroups v2, namespaces,
 netfilter and nftables, bridge, veth, VXLAN, IPVS) and KVM, so a sandbox runs its own VMs: on a host whose KVM has
 nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm` is there in every sandbox.
-`kernel/kantel-<arch>.config` adds what only one architecture has (x86_64's Intel and AMD KVM).
+`kernel/kantel-<arch>.config` adds what only one architecture has (x86_64's Intel and AMD KVM). FUSE (bucket mounts)
+is in Firecracker's config already; `kantel.config` names it so the build fails if it ever isn't.
+
+The host also relies on two drivers the Firecracker config already has built in, and `build.sh` fails if either is
+missing: vsock, for the guest agent, and `virtio_balloon`. Every microVM gets a balloon that never takes memory and only
+reports the guest's own memory figures, which the host reads from Firecracker as the sandbox's memory.
 
 ## arm64
 

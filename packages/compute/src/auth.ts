@@ -8,6 +8,7 @@
  */
 import type { computeSchema } from "@kantel/api";
 import { API_KEY_LAST_USED_PRECISION_MS, KantelError } from "@kantel/contracts";
+import { isPlaceholderName, personName } from "./names.ts";
 import type { ComputeStore, StoredAccount, StoredApiKey, StoredUser } from "./store.ts";
 import { randomId, randomSecret, sha256Hex } from "./util.ts";
 
@@ -15,6 +16,7 @@ import { randomId, randomSecret, sha256Hex } from "./util.ts";
 export interface PersonIdentity {
 	readonly userId: string;
 	readonly email?: string;
+	/** Their name as sign-in has it. Empty or their user ID when it has none: they are then called by their email. */
 	readonly name: string;
 	readonly superAdmin?: boolean;
 	/**
@@ -141,19 +143,47 @@ export function bearerOf(request: Request): string | undefined {
 /** A membership's ID. */
 export const memberId = (accountId: string, userId: string): string => `${accountId}:${userId}`;
 
-/** The person's user record, made with their personal account the first time they are seen, and kept up to date. */
+/**
+ * The name a person's record should have: the one sign-in gives, else the real one stored (a sign-in that carries no
+ * name never wipes it), else their email, else their user ID. A stored name that was only their email stands in for a
+ * name, so a later sign-in's email replaces it.
+ */
+function nameFor(identity: PersonIdentity, existing: StoredUser | undefined): string {
+	if (!isPlaceholderName(identity.name, identity.userId)) return identity.name.trim();
+	const email = identity.email ?? existing?.email;
+	if (existing !== undefined && !isPlaceholderName(existing.name, existing.id) && existing.name !== existing.email) {
+		return existing.name;
+	}
+	return personName({ userId: identity.userId, email });
+}
+
+/**
+ * The person's user record, made with their personal account the first time they are seen, and kept up to date. Their
+ * personal account is named as they are, and renamed with them unless they renamed it (one made while gateways named
+ * people by their user ID is).
+ */
 export async function ensurePerson(store: ComputeStore, identity: PersonIdentity, now: number): Promise<StoredUser> {
 	const existing = await store.users.get(identity.userId);
 	const superAdmin = identity.superAdmin === true;
+	const name = nameFor(identity, existing);
 	if (existing !== undefined) {
-		if (existing.name !== identity.name || existing.email !== identity.email || existing.superAdmin !== superAdmin) {
+		const email = identity.email ?? existing.email;
+		if (existing.name !== name || existing.email !== email || existing.superAdmin !== superAdmin) {
 			const updated: StoredUser = {
 				...existing,
-				name: identity.name,
+				name,
 				superAdmin,
-				...(identity.email === undefined ? {} : { email: identity.email }),
+				...(email === undefined ? {} : { email }),
 			};
 			await store.users.put(updated);
+			if (existing.name !== name) {
+				// Unless they renamed it themselves, as the account is when the write lands: a name saved meanwhile stays.
+				await store.accounts.update(existing.personalAccountId, (personal) =>
+					personal.name !== name && (personal.name === existing.name || isPlaceholderName(personal.name, existing.id))
+						? { ...personal, name }
+						: undefined,
+				);
+			}
 			return updated;
 		}
 		return existing;
@@ -161,13 +191,13 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 	const account: StoredAccount = {
 		id: randomId("acc"),
 		kind: "personal",
-		name: identity.name,
+		name,
 		defaultVisibility: "private",
 		createdAt: now,
 	};
 	const user: StoredUser = {
 		id: identity.userId,
-		name: identity.name,
+		name,
 		superAdmin,
 		personalAccountId: account.id,
 		createdAt: now,
@@ -247,7 +277,7 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	return {
 		kind: "person",
 		userId: user.id,
-		name: user.name,
+		name: personName({ userId: user.id, name: user.name, email: user.email }),
 		superAdmin: user.superAdmin,
 		personalAccountId: user.personalAccountId,
 		...(user.email === undefined ? {} : { email: user.email }),

@@ -11,7 +11,7 @@ sidebar:
 These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
-The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). Running commands needs a key with `exec`, and files need `files`. The sandbox must be running: a call to a stopped one answers `409` with `conflict`, so resume it first.
+The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). Running commands needs a key with `exec`, and files need `files`. The sandbox must be running: a call made while it starts waits for it, and a call to a stopped one answers `409`, so resume it first. See [When the sandbox isn't running](#when-the-sandbox-isnt-running).
 
 ## Run a command
 
@@ -160,4 +160,55 @@ It answers `204` with no body.
 
 The file routes need a running sandbox. To read files from a stopped one without resuming it, read them from its newest snapshot: see [Browse a snapshot's files](/snapshots/history/#browse-a-snapshots-files).
 
-<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:509-620, packages/api/src/compute-schema.ts:506-613 -->
+## When the sandbox isn't running
+
+Commands, files, ports, file URLs and archives need a running sandbox.
+
+A call made while the sandbox is `starting`, such as a command sent straight after `resumeSandbox` with `"wait": false`, waits for it to run, then goes on as usual. The wait is up to 60 seconds and doesn't count against the command's `timeoutMs`. If the start fails, the call answers as for a sandbox in `error`. If the sandbox is still starting after 60 seconds, the call answers `409` with `sandbox_starting`: send it again.
+
+Kantel never resumes a sandbox for such a call. Auto-stop is a lifetime from the sandbox's start, not idleness, so a call that resumed it would undo the stop you set. A call to a sandbox that is `stopped`, `paused`, `stopping` or in `error` answers `409` `conflict`. Its `details` are a [SandboxNotRunning](/api/reference/types/#sandboxnotrunning): a stable `code`, the sandbox's `state`, the `stopReason` where Kantel recorded why it stopped, and a `hint`:
+
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "The sandbox is stopped (auto-stop); resume it first",
+    "details": {
+      "code": "sandbox_stopped",
+      "sandboxId": "sbx_4kq9x2mt",
+      "state": "stopped",
+      "stopReason": "auto-stop",
+      "hint": "Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again"
+    }
+  }
+}
+```
+
+| `details.code` | The sandbox is | What to do |
+| --- | --- | --- |
+| `sandbox_starting` | still starting after the call waited 60 seconds | Send the call again |
+| `sandbox_stopping` | stopping | Once it has stopped, resume it |
+| `sandbox_stopped` | stopped | Resume it |
+| `sandbox_paused` | paused | Resume it |
+| `sandbox_error` | in `error`: its start or its last operation failed | Resume it, or recover it |
+| `sandbox_deleting` | being deleted | Use another sandbox |
+
+`stopReason` is `auto-stop` when the sandbox reached its stop time, the rule's reason when Kantel stopped it, such as egress it couldn't apply, or what failed for a sandbox in `error`. A stop someone asked for has no `stopReason`. It is the sandbox's own `reason`, and not `details.reason`, which only a sandbox that can't be placed has. To resume, call `POST /v1/sandboxes/{sandboxId}/resume` (`resumeSandbox`) or run `kantel resume <id>`, then send the call again. In the SDK, the error is a `KantelApiError` with the details in `error.details`:
+
+```ts
+import { KantelApiError, type SandboxNotRunning } from "@kantel/api/sdk";
+
+try {
+  await kantel.runCommand("sbx_4kq9x2mt", { command: "npm test" });
+} catch (error) {
+  const details = error instanceof KantelApiError ? (error.details as SandboxNotRunning | undefined) : undefined;
+  if (details?.code === "sandbox_stopped" || details?.code === "sandbox_paused") {
+    await kantel.resumeSandbox("sbx_4kq9x2mt", { wait: true });
+    await kantel.runCommand("sbx_4kq9x2mt", { command: "npm test" });
+  } else throw error;
+}
+```
+
+`kantel exec` and the other CLI commands print the error and, on the next line, what to run, such as `Resume it with: kantel resume sbx_4kq9x2mt`.
+
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:509-620, packages/api/src/compute-schema.ts:506-613; not-running calls: packages/compute/src/not-running.ts, packages/compute/src/service.ts requireRunning -->

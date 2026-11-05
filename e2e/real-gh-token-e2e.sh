@@ -367,7 +367,7 @@ else
 		printf 'KANTEL_SECRETS_KEY=%s\n' "$(openssl rand -base64 32)" >"$TMP/gw.env"
 		docker run -d --name "$GW" --network "$NET" -p "127.0.0.1:$PORT:8080" --env-file "$TMP/gw.env" \
 			-e KANTEL_COMPUTE_PUBLIC_URL="http://$GW:8080" -e KANTEL_COMPUTE_BACKEND=hosts \
-			-e KANTEL_BOOTSTRAP_FILE=/var/lib/harbour/bootstrap.json -e KANTEL_COMPUTE_POOLS='{}' \
+			-e KANTEL_BOOTSTRAP_FILE=/var/lib/harbour/bootstrap.json \
 			--label kantel-rte=1 "$GW_IMAGE" >/dev/null
 		rm -f "$TMP/gw.env"
 		info "gateway $GW started (records in memory)"

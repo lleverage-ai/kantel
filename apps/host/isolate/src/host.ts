@@ -73,6 +73,21 @@ const pool = new Pool({
 	onRefillError: (error) => console.error("isolate pool refill failed:", error),
 });
 
+/**
+ * The memory each sandbox asked for, by its isolate's slot, as kantel-host sends it with /load. Recorded, not
+ * enforced: workerd 1.20261027.1's WorkerLoaderWorkerCode.limits has only cpuMs and subRequests, so there is no
+ * per-isolate memory limit to set. The isolate VM's memory is the ceiling its account's isolates share.
+ */
+const requestedMemory = new Map<string, { sandboxId: string; memoryMiB: number }>();
+
+function recordMemory(slot: string, sandboxId: string, memoryMiB: number): void {
+	// Forget the slots whose sandbox has gone idle and given them up, so the map is no bigger than the pool's.
+	for (const [kept, record] of requestedMemory) {
+		if (pool.owner(kept) !== record.sandboxId) requestedMemory.delete(kept);
+	}
+	requestedMemory.set(slot, { sandboxId, memoryMiB });
+}
+
 /** A sandbox's egress: names the sandbox to the host's proxy. The sandbox never sees this. */
 export class Egress extends WorkerEntrypoint<Env, { slot: string }> {
 	async fetch(request: Request): Promise<Response> {
@@ -122,6 +137,14 @@ export default {
 			}
 			const sandboxId = body.sandboxId;
 			if (typeof sandboxId !== "string" || sandboxId === "") return json({ error: "sandboxId required" }, 400);
+			// Optional: the memory the sandbox asked for (requestedMemory).
+			const memoryMiB = body.memoryMiB;
+			if (
+				url.pathname === "/load" &&
+				memoryMiB !== undefined &&
+				(typeof memoryMiB !== "number" || !Number.isInteger(memoryMiB) || memoryMiB <= 0)
+			)
+				return json({ error: "memoryMiB must be a positive integer" }, 400);
 			const started = performance.now();
 			pool.begin();
 			const { assignment, hit } = pool.assign(sandboxId);
@@ -130,9 +153,15 @@ export default {
 			try {
 				const sandbox = isolate(env, ctx, assignment.slot);
 				if (url.pathname === "/load") {
+					if (typeof memoryMiB === "number") recordMemory(assignment.slot, sandboxId, memoryMiB);
 					// Make sure the isolate is loaded (a miss loads one now).
 					await sandbox.list({}, scope);
-					return json({ ok: true, hit: hit ?? "assigned", ms: performance.now() - started });
+					return json({
+						ok: true,
+						hit: hit ?? "assigned",
+						ms: performance.now() - started,
+						memoryMiB: requestedMemory.get(assignment.slot)?.memoryMiB,
+					});
 				}
 				if (url.pathname === "/exec") {
 					const result = await sandbox.exec(

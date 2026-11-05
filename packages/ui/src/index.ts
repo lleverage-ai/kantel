@@ -28,6 +28,11 @@ export {
 export type {
 	AccountsSource,
 	ApiKeysSource,
+	BaseImage,
+	BaseImagesOverview,
+	BaseImagesSource,
+	BaseImageTemplate,
+	BaseImageVersion,
 	BillingSource,
 	BrowserDeviceSource,
 	BrowserStanding,
@@ -49,20 +54,36 @@ export type {
 	FileRange,
 	HostingMode,
 	HostsSource,
+	ImageBuildReason,
+	ImageFinding,
+	ImageScan,
+	ImageSeverity,
 	ProxySource,
 	PublicUrlSource,
+	SandboxBase,
 	SandboxEgress,
 	SandboxesSource,
+	SandboxImage,
+	SandboxShape,
+	SandboxShapes,
 	SandboxSshKey,
+	ShapePreset,
 	SnapshotsSource,
 	SshTarget,
 	TelemetrySource,
+	Template,
+	TemplateBaseChannel,
+	TemplateSnapshot,
+	TemplateSpec,
+	TemplatesSource,
+	TemplateVersion,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
 export {
 	CLI_INSTALL_COMMAND,
 	cliLoginCommand,
 	cliSshCommand,
+	DEFAULT_SANDBOX_SHAPES,
 	DeviceSetupError,
 	FilesRefusedError,
 	FileTooLargeError,
@@ -75,6 +96,7 @@ export {
 	codeDigits,
 	createSignInFlow,
 	initialSignIn,
+	type ProviderSignInProblem,
 	SIGN_IN_CODE_DIGITS,
 	SIGN_IN_CODE_TTL_MS,
 	SIGN_IN_MAX_CODES,
@@ -83,6 +105,7 @@ export {
 	type SignInFlow,
 	type SignInFlowOptions,
 	type SignInProblem,
+	type SignInProviderLink,
 	type SignInState,
 	signInProblem,
 } from "./identity/sign-in-model.ts";
@@ -141,6 +164,7 @@ export {
 	type SidebarToggleProps,
 	useSidebarCollapsed,
 } from "./primitives/sidebar.tsx";
+export { onStep, SliderField, type SliderFieldProps, sliderPercent } from "./primitives/slider.tsx";
 export { Kbd, Skeleton, Spinner } from "./primitives/spinner.tsx";
 export { SplitButton, type SplitButtonProps } from "./primitives/split-button.tsx";
 export {

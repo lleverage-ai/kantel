@@ -6,7 +6,9 @@ import { useEffect, useState } from "react";
 import { navigate, searchWithout, useHash, usePathname, useSearch } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
+import { createJoinLink } from "./join-link.ts";
 import { localBridge } from "./local.ts";
+import { HOSTING_KEY, safeSession, tabQueryOf } from "./tab-query.ts";
 
 // The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
 // Sandboxes).
@@ -30,7 +32,8 @@ export function legacyComputePath(pathname: string): string | undefined {
 	return pathname.slice(LEGACY_BASE.length) || "/";
 }
 
-const HOSTING_KEY = "kantel.compute.hosting";
+/** An invite email's link's code, waiting for Join through a sign-in (join-link.ts). */
+export const joinLink = createJoinLink(() => sessionStorage);
 
 function hostingMode(): HostingMode {
 	const asked = new URLSearchParams(location.search).get("hosting");
@@ -143,8 +146,22 @@ export function ComputeApp({
 	const search = useSearch();
 	const hash = useHash();
 	const narrow = useMedia(NARROW_QUERY);
+	// An invite link's code, waiting for Join (`keepJoinLink`).
+	const [joinCode, setJoinCode] = useState(joinLink.pending);
+	// One opened in a tab already showing the console (pasted into its address bar) changes only the fragment.
+	useEffect(() => {
+		if (!joinLink.take(hash)) return;
+		history.replaceState(null, "", `${location.pathname}${location.search}`);
+		setJoinCode(joinLink.pending());
+	}, [hash]);
+	const joinCodeDone = () => {
+		joinLink.forget();
+		setJoinCode(undefined);
+	};
 	// One source for the tab's life: what a person does on one page (a new sandbox, a revoked key) shows on the next.
 	const [sourced, setSourced] = useState<Sourced>();
+	// What a new tab (a screen's page) needs to show the same, read when the tab opened.
+	const [tabQuery] = useState(() => tabQueryOf(location.search, safeSession()));
 	// biome-ignore lint/correctness/useExhaustiveDependencies: chosen once; who is signed in doesn't change under it.
 	useEffect(() => {
 		let live = true;
@@ -197,6 +214,8 @@ export function ComputeApp({
 			{...(signedInAs === undefined ? {} : { signedInAs })}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
 			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+			{...(joinCode === undefined ? {} : { joinCode, onJoinCodeDone: joinCodeDone })}
+			{...(tabQuery === "" ? {} : { tabQuery })}
 		/>
 	);
 }
