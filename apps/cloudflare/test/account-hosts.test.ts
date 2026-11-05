@@ -976,7 +976,8 @@ describe("Account hosts on the Worker", () => {
 	it("seals protected values with KANTEL_SECRETS_KEY and gives them only to the sandbox's own host, as self-hosted", async () => {
 		const db = new DatabaseSync(":memory:");
 		const KEY = Buffer.alloc(32, 7).toString("base64");
-		const SECRET = "ghp_hostedValueThatNeverEntersTheSandbox";
+		// Not shaped like any real credential: only a value to look for where it must never be.
+		const SECRET = "hosted-protected-value-that-never-enters-the-sandbox";
 		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE, KANTEL_SECRETS_KEY: KEY };
 		const { stack, call } = await start(db, on);
 		const hosts = stack.compute.hosts;
@@ -1048,7 +1049,7 @@ describe("Account hosts on the Worker", () => {
 			const env = await call("POST", "/v1/environments", { name: "work" });
 			const refused = await call("PUT", `/v1/environments/${env.body.id as string}/variables/GH_TOKEN`, {
 				protected: true,
-				value: "ghp_x",
+				value: "not-a-real-token",
 				bindings: [{ host: "api.github.com" }],
 			});
 			expect(refused.status).toBe(501);

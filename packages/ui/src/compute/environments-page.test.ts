@@ -4,12 +4,15 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { EnvironmentVariable } from "./compute-model.ts";
 import {
+	dialogProtection,
 	EnvironmentsPage,
 	FilesSection,
 	NO_PROTECTED_VALUES_TEXT,
 	VariableDialog,
 	VariablesSection,
+	variableMenu,
 } from "./environments-page.tsx";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 
@@ -77,6 +80,64 @@ describe("Environments on a deployment that keeps no protected values", () => {
 		const offered = buttons(await sections(false));
 		expect(offered).toContain("Add protected variable");
 		expect(offered).toContain("Add file");
+	});
+
+	it("never turn a protected variable kept from before plain: it can only be removed", () => {
+		const kept: EnvironmentVariable = {
+			name: "GH_TOKEN",
+			protected: true,
+			bindings: [{ host: "api.github.com", pathPrefixes: [], methods: [] }],
+			updatedAt: FIXTURE_NOW,
+		};
+		const plain: EnvironmentVariable = {
+			name: "LOG_LEVEL",
+			protected: false,
+			value: "debug",
+			bindings: [],
+			updatedAt: 0,
+		};
+		const actions = { edit: noop, rotate: noop, remove: noop };
+		const ids = (variable: EnvironmentVariable, canProtect: boolean) =>
+			variableMenu(variable, canProtect, actions)
+				.filter((entry) => entry.kind === "item")
+				.map((entry) => entry.id);
+		// Without the key: no edit or rotation that would be refused, or save it plain; removing it still works.
+		expect(ids(kept, false)).toEqual(["remove"]);
+		expect(ids(plain, false)).toEqual(["edit", "remove"]);
+		expect(ids(kept, true)).toEqual(["edit", "rotate", "remove"]);
+		expect(ids(plain, true)).toEqual(["edit", "remove"]);
+
+		// Should its dialog open anyway, it stays protected, with its Protected switch.
+		expect(dialogProtection(kept, undefined, false)).toEqual({ protect: true, canProtect: true });
+		expect(dialogProtection(kept, undefined, true)).toEqual({ protect: true, canProtect: true });
+		// A new variable is plain without the key, whatever was asked; with it, as asked.
+		expect(dialogProtection(undefined, true, false)).toEqual({ protect: false, canProtect: false });
+		expect(dialogProtection(undefined, true, true)).toEqual({ protect: true, canProtect: true });
+		expect(dialogProtection(plain, undefined, false)).toEqual({ protect: false, canProtect: false });
+		const editing = renderToStaticMarkup(
+			createElement(VariableDialog, {
+				variable: kept,
+				...dialogProtection(kept, undefined, false),
+				taken: [],
+				onClose: noop,
+				onSave: async () => {},
+			}),
+		);
+		expect(editing).toContain("Protected");
+		expect(editing).toContain("kph_ placeholder");
+	});
+
+	it("offer only removal for a secret file kept from before", async () => {
+		const source = createComputeFixtures();
+		const env = await source.environments.get("env_backend");
+		expect(env.files.length).toBeGreaterThan(0);
+		const html = (canAdd: boolean) =>
+			renderToStaticMarkup(
+				createElement(FilesSection, { env, now: FIXTURE_NOW, canAdd, onAdd: noop, onReplace: noop, onRemove: noop }),
+			);
+		// The files are still listed either way.
+		expect(html(false)).toContain(env.files[0]?.path ?? "");
+		expect(buttons(html(false))).not.toContain("Add file");
 	});
 
 	it("leave the Protected switch out of Add variable", () => {

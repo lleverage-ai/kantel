@@ -518,8 +518,7 @@ export function EnvironmentPage({
 			{editing?.kind === "variable" ? (
 				<VariableDialog
 					{...(editing.variable === undefined ? {} : { variable: editing.variable })}
-					protect={canProtect && (editing.protect ?? editing.variable?.protected ?? false)}
-					canProtect={canProtect}
+					{...dialogProtection(editing.variable, editing.protect, canProtect)}
 					taken={env.variables.map((variable) => variable.name)}
 					onClose={() => setEditing(undefined)}
 					onSave={async (input) => {
@@ -615,6 +614,66 @@ function Bindings({ bindings }: { bindings: readonly DestinationBinding[] }) {
 	);
 }
 
+/**
+ * A variable's actions. A protected variable kept from when the deployment had its secrets key can only be removed
+ * without it: an edit or a rotation would be refused, and its dialog must never save it plain instead.
+ */
+export function variableMenu(
+	variable: EnvironmentVariable,
+	canProtect: boolean,
+	actions: { readonly [action in "edit" | "rotate" | "remove"]: (variable: EnvironmentVariable) => void },
+): MenuEntry[] {
+	const editable = canProtect || !variable.protected;
+	return [
+		...(editable
+			? [
+					{
+						kind: "item" as const,
+						id: "edit",
+						label: variable.protected ? "Edit bindings" : "Edit",
+						icon: <PencilIcon size="sm" />,
+						onSelect: () => actions.edit(variable),
+					},
+				]
+			: []),
+		...(variable.protected && canProtect
+			? [
+					{
+						kind: "item" as const,
+						id: "rotate",
+						label: "Rotate value",
+						icon: <ReconnectIcon />,
+						onSelect: () => actions.rotate(variable),
+					},
+				]
+			: []),
+		...(editable ? [{ kind: "separator" as const, id: "sep-remove" }] : []),
+		{
+			kind: "item",
+			id: "remove",
+			label: "Remove",
+			icon: <TrashIcon />,
+			danger: true,
+			onSelect: () => actions.remove(variable),
+		},
+	];
+}
+
+/**
+ * The variable dialog's protection: an existing variable keeps its own, whatever the deployment offers now, so a
+ * protected one is never saved plain because the key is missing. Only a new one is plain without it.
+ */
+export function dialogProtection(
+	variable: EnvironmentVariable | undefined,
+	askedProtected: boolean | undefined,
+	canProtect: boolean,
+): { readonly protect: boolean; readonly canProtect: boolean } {
+	return {
+		protect: variable?.protected ?? (canProtect && (askedProtected ?? false)),
+		canProtect: canProtect || variable?.protected === true,
+	};
+}
+
 /** Exported for the tests, which render it alone: the page reads its environment before it shows it. */
 export function VariablesSection({
 	env,
@@ -682,35 +741,11 @@ export function VariablesSection({
 						</thead>
 						<tbody>
 							{env.variables.map((variable) => {
-								const entries: MenuEntry[] = [
-									{
-										kind: "item",
-										id: "edit",
-										label: variable.protected ? "Edit bindings" : "Edit",
-										icon: <PencilIcon size="sm" />,
-										onSelect: () => onEdit(variable),
-									},
-									...(variable.protected
-										? [
-												{
-													kind: "item" as const,
-													id: "rotate",
-													label: "Rotate value",
-													icon: <ReconnectIcon />,
-													onSelect: () => onRotate(variable),
-												},
-											]
-										: []),
-									{ kind: "separator", id: "sep-remove" },
-									{
-										kind: "item",
-										id: "remove",
-										label: "Remove",
-										icon: <TrashIcon />,
-										danger: true,
-										onSelect: () => onRemove(variable),
-									},
-								];
+								const entries = variableMenu(variable, canProtect, {
+									edit: onEdit,
+									rotate: onRotate,
+									remove: onRemove,
+								});
 								return (
 									<tr key={variable.name} data-variable={variable.name}>
 										<td className={td}>
@@ -1141,14 +1176,19 @@ export function FilesSection({
 											icon={<EllipsisIcon />}
 											align="end"
 											entries={[
-												{
-													kind: "item",
-													id: "replace",
-													label: "Replace",
-													icon: <PencilIcon size="sm" />,
-													onSelect: () => onReplace(file),
-												},
-												{ kind: "separator", id: "sep-remove" },
+												// Without a secrets key new contents would be refused: the file can only be removed.
+												...(canAdd
+													? [
+															{
+																kind: "item" as const,
+																id: "replace",
+																label: "Replace",
+																icon: <PencilIcon size="sm" />,
+																onSelect: () => onReplace(file),
+															},
+															{ kind: "separator" as const, id: "sep-remove" },
+														]
+													: []),
 												{
 													kind: "item",
 													id: "remove",
