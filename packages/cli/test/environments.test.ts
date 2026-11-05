@@ -580,6 +580,37 @@ describe("sandboxes", () => {
 		expect(two.calls).toEqual([]);
 	});
 
+	it("sizes a microVM's disk with --disk, beside its size, and says what disk it got", async () => {
+		const routes = {
+			"POST /v1/sandboxes": () => ({
+				...SANDBOX,
+				type: "microvm",
+				size: "large",
+				resources: { vcpus: 4, memoryMb: 8192, diskGb: 60 },
+			}),
+		};
+		const created = await kantel(["new", "--type", "microvm", "--size", "large", "--disk", "60"], { routes });
+		expect(created.code).toBe(0);
+		expect(created.calls[0]?.body).toEqual({
+			type: "microvm",
+			size: "large",
+			resources: { diskGb: 60 },
+			wait: true,
+		});
+		expect(created.stdout).toContain("microvm large, 60 GB disk, running");
+		for (const args of [
+			["new", "--disk", "60"],
+			["new", "--type", "isolate", "--disk", "60"],
+			["new", "--type", "microvm", "--disk", "0"],
+			["new", "--type", "microvm", "--disk", "6.5"],
+			["new", "--type", "microvm", "--disk", "60", "--from", "base"],
+		]) {
+			const refused = await kantel(args, { routes });
+			expect(refused.code).toBe(2);
+			expect(refused.calls).toEqual([]);
+		}
+	});
+
 	it("adds and removes a sandbox's own grants", async () => {
 		const routes = {
 			"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, grants: [{ id: "grt_5", action: "allow", host: "*" }] }),

@@ -7,6 +7,7 @@
 import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
+	HostDiskLimits,
 	HostFacts,
 	HostImages,
 	HostMemorySource,
@@ -94,6 +95,20 @@ function images(value: unknown): HostImages | undefined {
 	}
 }
 
+/**
+ * The disk a host gives a custom shape (`HostDiskLimits`), or undefined where it says none or none shaped as kantel-host
+ * sends it (whole GiB, at least 1, the least no more than the most): a host from before it said is taken to give what
+ * the compute plane's `diskLimitsOf` says, so a malformed report is dropped rather than refused.
+ */
+function disk(value: unknown): HostDiskLimits | undefined {
+	if (!isObject(value)) return undefined;
+	const { minGiB, maxGiB } = value;
+	if (!Number.isSafeInteger(minGiB) || !Number.isSafeInteger(maxGiB)) return undefined;
+	const min = minGiB as number;
+	const max = maxGiB as number;
+	return min >= 1 && min <= max ? { minGiB: min, maxGiB: max } : undefined;
+}
+
 /** A string a host may leave out (Go's `omitempty`): absent when it does, or when it is empty. */
 function optionalText<K extends string>(value: Record<string, unknown>, field: K): { [key in K]?: string } {
 	const found = value[field];
@@ -107,6 +122,7 @@ function facts(value: unknown): HostFacts {
 	const features = list(value.features, "features").map((feature, at) => text(feature, `features[${at}]`));
 	const kept = labels(value.labels);
 	const hostImages = images(value.images);
+	const hostDisk = disk(value.disk);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -122,6 +138,7 @@ function facts(value: unknown): HostFacts {
 		// A tier a newer host offers that this control plane doesn't know is left out, not refused.
 		tiers: tiers.filter((tier): tier is SandboxTier => TIERS.has(tier)),
 		sizes: list(value.sizes, "sizes").map(size),
+		...(hostDisk === undefined ? {} : { disk: hostDisk }),
 		...(Object.keys(kept).length === 0 ? {} : { labels: kept }),
 		egress: text(value.egress, "egress"),
 		...(features.length === 0 ? {} : { features }),

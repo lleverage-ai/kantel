@@ -443,6 +443,21 @@ describe("hosts service", () => {
 		expect(named.hostId).toBe(old.hostId);
 		expect(hostOld.calls.find((call) => call.method === "sandbox.create")?.params).toMatchObject({ size: "default" });
 		expect(hostOld.calls.find((call) => call.method === "sandbox.create")?.params).not.toHaveProperty("vcpus");
+		// A named size's vCPUs and memory with a disk of its own: a custom shape, with that disk.
+		const disk = await service.sandboxes.create({ tier: "microvm", shape: { vcpus: 2, memoryMiB: 2048, diskGiB: 64 } });
+		expect(disk.hostId).toBe(fresh.hostId);
+		expect(hostNew.calls.filter((call) => call.method === "sandbox.create").at(-1)?.params).toMatchObject({
+			size: "",
+			vcpus: 2,
+			memoryMiB: 2048,
+			diskGiB: 64,
+		});
+		await expect(
+			service.sandboxes.create({ tier: "microvm", shape: { vcpus: 2, memoryMiB: 2048, diskGiB: 0.5 } }),
+		).rejects.toThrow(/whole GiB/);
+		await expect(
+			service.sandboxes.create({ tier: "isolate", shape: { vcpus: 0, memoryMiB: 256, diskGiB: 10 } }),
+		).rejects.toThrow(/no disk/);
 		// An isolate's memory reaches a host that records it, as what it asked for.
 		const isolate = await service.sandboxes.create({
 			tier: "isolate",

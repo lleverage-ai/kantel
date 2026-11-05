@@ -1207,7 +1207,7 @@ export interface MemberList {
 /** `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`. */
 export type MemberRole = "member" | "admin" | "owner";
 
-/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A create no host has the free disk for now is refused (`exhausted`). `diskGb` is absent when no host takes a disk off its presets. */
+/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets. */
 export interface MicrovmShapes {
 	readonly vcpus: ShapeRange;
 	readonly memoryMb: ShapeRange;
@@ -1616,7 +1616,7 @@ export interface SandboxShapeInput {
 /** What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates. */
 export interface SandboxShapes {
 	readonly isolate: IsolateShapes;
-	/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A create no host has the free disk for now is refused (`exhausted`). `diskGb` is absent when no host takes a disk off its presets. */
+	/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets. */
 	readonly microvm?: MicrovmShapes;
 	/** What an hour costs, per vCPU and GB; absent where it is free. */
 	readonly rates?: ShapeRates;
@@ -2673,7 +2673,7 @@ export interface KantelClient {
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
 	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
 	getSandboxShapes(query?: AccountScopedQuery, options?: CallOptions): Promise<SandboxShapes>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;

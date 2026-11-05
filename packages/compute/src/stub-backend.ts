@@ -315,14 +315,16 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const placement = (machine: Machine): Placement => {
 		const named = SIZES.find((entry) => entry.name === (machine.size ?? "default"));
 		const shape = machine.shape;
-		// A shape off the sizes gets the disk of the smallest size with at least its memory, as kantel-host's do.
+		// A shape off the sizes gets the disk it asks for, else that of the smallest size with at least its memory, as
+		// kantel-host's do.
 		const shaped =
 			shape === undefined
 				? named
 				: {
 						vcpus: shape.vcpus,
 						memoryMb: shape.memoryMb,
-						diskGb: (SIZES.find((entry) => entry.memoryMb >= shape.memoryMb) ?? SIZES.at(-1))?.diskGb ?? 20,
+						diskGb:
+							shape.diskGb ?? (SIZES.find((entry) => entry.memoryMb >= shape.memoryMb) ?? SIZES.at(-1))?.diskGb ?? 20,
 					};
 		const size = machine.type === "microvm" ? shaped : undefined;
 		return {

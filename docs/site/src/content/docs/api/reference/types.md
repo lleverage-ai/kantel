@@ -1070,15 +1070,16 @@ One of: `"member"` or `"admin"` or `"owner"`.
 
 ### MicrovmShapes
 
-Absent when no host the account may use runs microVMs.
+Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `vcpus` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
 | `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
 | `memoryMbPerVcpu` | object | yes | Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. |
+| `diskGb` | [ShapeRange](/api/reference/types/#shaperange) | no |  |
 | `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes | Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. |
-| `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. |
+| `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. Unless a create asks for a disk (`diskGb`), its host gives one; the sandbox's `resources` say what it got. |
 
 ### Mount
 
@@ -1397,12 +1398,13 @@ A protected variable as one sandbox has it: never its value.
 
 ### SandboxShapeInput
 
-What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch.
+What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `vcpus` | integer | no | A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. (minimum 1) |
-| `memoryMb` | integer | yes | Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). (minimum 128) |
+| `memoryMb` | integer | no | Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). Needed unless `diskGb` is given alone. (minimum 128) |
+| `diskGb` | integer | no | A microVM's disk in GB, chosen apart from its vCPUs and memory, within `getSandboxShapes`' `microvm.diskGb`. Alone (with `size` or neither), the vCPUs and memory are that size's or the default's. Default: the disk its host gives the shape. Not for an isolate, or with `from`: a sandbox made from a snapshot keeps the snapshot's disk. (minimum 1) |
 
 ### SandboxShapes
 
@@ -1416,7 +1418,7 @@ What a new sandbox in the account may be: the ranges its hosts offer, their pres
 
 ### SandboxSizeName
 
-A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now.
+A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`).
 
 One of: `"small"` or `"default"` or `"large"` or `"xlarge"`.
 

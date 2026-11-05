@@ -414,8 +414,8 @@ export const createSandbox = defineRoute({
 	summary: "Create a sandbox",
 	description: describe(
 		"Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one.",
-		"`resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still",
-		"works for now.",
+		"`resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size`",
+		"(`getSandboxShapes` says what may be asked); `size`, a named size, still works for now.",
 		"Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no",
 		"host able to run the type is `unavailable`.",
 		"`mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate",

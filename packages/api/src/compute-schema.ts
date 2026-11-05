@@ -413,8 +413,8 @@ export const SandboxShapes = Type.Object(
 					description:
 						"Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for " +
 						"(`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last " +
-						"reported, its `default` the default preset's. A create no host has the free disk for now is refused " +
-						"(`exhausted`). `diskGb` is absent when no host takes a disk off its presets.",
+						"reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` " +
+						"with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets.",
 				},
 			),
 		),

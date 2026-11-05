@@ -592,7 +592,16 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
 				// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
 				// custom shape; a template's snapshot is restored only where it was built as that shape.
-				...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
+				...(spec.shape === undefined
+					? {}
+					: {
+							shape: {
+								vcpus: spec.shape.vcpus,
+								memoryMiB: spec.shape.memoryMb,
+								// A microVM's disk, where one was chosen or kept: else its host gives the shape's.
+								...(spec.type === "microvm" && spec.shape.diskGb !== undefined ? { diskGiB: spec.shape.diskGb } : {}),
+							},
+						}),
 				owner: spec.accountId,
 				env: spec.env,
 				hostIds,
@@ -655,6 +664,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					features: [...host.features],
 					capacity: { ...host.capacity },
 					sizes: own,
+					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
