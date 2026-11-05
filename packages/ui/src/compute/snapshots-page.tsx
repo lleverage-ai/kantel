@@ -362,7 +362,7 @@ function SavedList({
 								},
 							];
 							return (
-								<tr key={entry.id} className={rowHover} data-snapshot={entry.id}>
+								<tr key={entry.id} className={`${rowHover} [&>td]:align-baseline`} data-snapshot={entry.id}>
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
 									</td>
