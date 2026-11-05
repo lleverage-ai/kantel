@@ -226,6 +226,30 @@ func (sp *spool) adopt(paths []string) {
 	}
 }
 
+// adoptMapped counts again, after the daemon restarts, a spooled file a running fork still maps (Manager.keepMapped):
+// what it takes in RAM, until it is cancelled when the fork's machine exits. It is never queued for the disk. False when
+// path isn't a file of this spool.
+func (sp *spool) adoptMapped(path string) bool {
+	if sp == nil || !strings.HasPrefix(path, sp.dir+"/") {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	n := info.Size()
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		n = st.Blocks * 512
+	}
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if _, known := sp.charged[path]; !known {
+		sp.charged[path] = n
+		sp.used += n
+	}
+	return true
+}
+
 // tmpfs reports whether dir is on a RAM file system.
 func tmpfs(dir string) bool {
 	var st syscall.Statfs_t
