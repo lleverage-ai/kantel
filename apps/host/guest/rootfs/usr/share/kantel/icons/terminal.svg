@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <title>Terminal</title>
   <rect x="2" y="2" width="44" height="44" rx="11" fill="#14161a" stroke="#3a3f4b" stroke-width="1.5"/>
   <path d="M13 17 l7 7 l-7 7" fill="none" stroke="#7ee787" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M23 32 h12" fill="none" stroke="#e6e8ec" stroke-width="3.2" stroke-linecap="round"/>

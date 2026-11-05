@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <title>Editor</title>
   <rect x="2" y="2" width="44" height="44" rx="11" fill="#7c5cd6"/>
   <g fill="none" stroke="#f3efff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M17 16 l-7 8 l7 8"/>
