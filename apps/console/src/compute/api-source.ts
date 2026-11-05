@@ -584,6 +584,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.state === "deleted" ? { deleted: true } : {}),
 		createdAt: sandbox.createdAt,
 		createdBy: actorName(sandbox.createdBy),
+		creator: { kind: sandbox.createdBy.kind, id: sandbox.createdBy.id },
 		...(sandbox.stopsAt === undefined ? {} : { stopsAt: sandbox.stopsAt }),
 		...(sandbox.idleStopMinutes === undefined || sandbox.idleStopMinutes === null
 			? {}

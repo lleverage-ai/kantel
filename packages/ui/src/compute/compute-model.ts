@@ -320,6 +320,12 @@ export interface SnapshotRef {
 	readonly takenAt?: number;
 }
 
+/** Who made a sandbox: a person's ID, or an API key's. */
+export interface SandboxCreator {
+	readonly kind: "user" | "api_key";
+	readonly id: string;
+}
+
 export interface Sandbox {
 	readonly id: string;
 	/** The name people gave it, also its subdomain. */
@@ -344,8 +350,13 @@ export interface Sandbox {
 	 */
 	readonly deleted?: boolean;
 	readonly createdAt: number;
-	/** Who made it. */
+	/** Who made it, by name. */
 	readonly createdBy: string;
+	/**
+	 * Who made it, by ID: a person, or an API key. With the viewer's ID the list says which are theirs and filters by who
+	 * made them. Absent where the source doesn't say.
+	 */
+	readonly creator?: SandboxCreator;
 	/** When auto-stop stops it; absent when it's always on or not running. */
 	readonly stopsAt?: number;
 	/**

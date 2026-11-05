@@ -62,6 +62,7 @@ export type {
 	ProxySource,
 	PublicUrlSource,
 	SandboxBase,
+	SandboxCreator,
 	SandboxEgress,
 	SandboxesSource,
 	SandboxImage,
