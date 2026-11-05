@@ -794,7 +794,8 @@ describe("sandboxes", () => {
 	it("gives a fork its source's exposed ports, each public or gated as it was, under the fork's own name", async () => {
 		const backend = createStubBackend();
 		const expose = vi.spyOn(backend, "exposePort");
-		const { tom } = setup(backend);
+		const harness = setup(backend);
+		const { tom } = harness;
 		const source = await tom.createSandbox({ type: "microvm", resources: { vcpus: 4, memoryMb: 16_384 }, wait: true });
 		await tom.exposePort(source.id, { port: 8080, public: true });
 		await tom.exposePort(source.id, { port: 3000 });
@@ -812,17 +813,75 @@ describe("sandboxes", () => {
 				expect(expose).toHaveBeenCalledWith(
 					fork.id,
 					port,
-					expect.objectContaining({ public: isPublic, subdomain: fork.subdomain, grantee: expect.any(String) }),
+					expect.objectContaining({
+						public: isPublic,
+						subdomain: fork.subdomain,
+						grantee: expect.any(String),
+						ifAbsent: true,
+					}),
 				);
 			}
 		}
 		// The source keeps its own.
 		expect((await tom.listPorts(source.id)).items).toEqual(before);
 
+		// A key that may fork but not open ports (no `access`) still forks, and its forks get no ports: copied under it,
+		// they would refuse everyone. One with `access` gets them.
+		const { client } = harness;
+		const lifecycle = client(
+			(await tom.createApiKey({ name: "lifecycle", scopes: ["sandboxes:read", "sandboxes:write"] })).secret,
+		);
+		const [bare] = (await lifecycle.forkSandbox(source.id, { wait: true })).items;
+		expect(bare?.state).toBe("running");
+		expect((await tom.listPorts(bare?.id ?? "")).items).toEqual([]);
+		const opener = client(
+			(await tom.createApiKey({ name: "opener", scopes: ["sandboxes:read", "sandboxes:write", "access"] })).secret,
+		);
+		const [opened] = (await opener.forkSandbox(source.id, { wait: true })).items;
+		expect((await tom.listPorts(opened?.id ?? "")).items.map((port) => port.port).sort()).toEqual([3000, 8080]);
+
 		// A stopped sandbox has no exposed ports (they end when it stops), so a fork of one has none either.
 		await tom.stopSandbox(source.id, { wait: true });
 		const [fromStopped] = (await tom.forkSandbox(source.id, { wait: true })).items;
 		expect((await tom.listPorts(fromStopped?.id ?? "")).items).toEqual([]);
+	});
+
+	it("keeps a port exposed on a fork by hand while its source's ports are copied, whichever lands first", async () => {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		// Two control planes over the same records and machines, as replicas are: a call on one doesn't wait for work queued
+		// on the other. On the second, someone exposes the fork's 3000 gated by hand around the first's copy of it (public):
+		// before its exposure (the copy is then refused) or after it (theirs replaces the copy, and its record stands).
+		let order: "before" | "after" = "before";
+		let byHand: ((sandboxId: string) => Promise<void>) | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			exposePort: async (sandboxId, port, how) => {
+				const race = how.ifAbsent === true && port === 3000 ? byHand : undefined;
+				if (race !== undefined && order === "before") await race(sandboxId);
+				const made = await stub.exposePort(sandboxId, port, how);
+				if (race !== undefined && order === "after") await race(sandboxId);
+				return made;
+			},
+		};
+		const { tom } = setup(backend, { store });
+		const other = setup(stub, { store }).tom;
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.exposePort(source.id, { port: 3000, public: true });
+		for (const each of ["before", "after"] as const) {
+			order = each;
+			let manual: { readonly port: number; readonly public: boolean; readonly createdAt: number } | undefined;
+			byHand = async (sandboxId) => {
+				manual = await other.exposePort(sandboxId, { port: 3000 });
+			};
+			const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
+			byHand = undefined;
+			expect(manual).toMatchObject({ port: 3000, public: false });
+			// The fork's record keeps the port as exposed by hand, gated (the relay's own store keeps its gate and token alike:
+			// @kantel/hosts' ports tests).
+			const ports = (await tom.listPorts(fork?.id ?? "")).items;
+			expect(ports).toEqual([expect.objectContaining({ port: 3000, public: false, createdAt: manual?.createdAt })]);
+		}
 	});
 
 	it("resizes a sandbox made from a snapshot of the disk alone", async () => {

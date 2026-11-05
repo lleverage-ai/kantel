@@ -1150,7 +1150,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : parseRef(bytes.ref);
 			await hosts.templates.delete(hostId, id);
 		},
-		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee }) {
+		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee, ifAbsent }) {
 			const { tier } = await tierOf(sandboxId);
 			if (options.ports === undefined || tier !== "microvm") {
 				throw new KantelError("not_supported", "This control plane has no name for exposed ports");
@@ -1159,6 +1159,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				public: isPublic,
 				subdomain,
 				...(grantee === undefined ? {} : { grantee }),
+				...(ifAbsent === true ? { ifAbsent } : {}),
 			});
 		},
 		async hidePort(sandboxId, port) {

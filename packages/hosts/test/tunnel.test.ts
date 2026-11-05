@@ -15,6 +15,31 @@ afterEach(async () => {
 });
 
 function behaves(open: () => Promise<RelayStore>) {
+	it("replace an exposure by its label, or with ifAbsent only add one where none is, leaving one there as it is", async () => {
+		const store = await open();
+		const manual = {
+			label: "3000-brave-otter-ab12cd",
+			sandboxId: "sbx_4kq9x2mt",
+			port: 3000,
+			tokenHash: "a".repeat(64),
+			createdAt: now,
+			grantee: JSON.stringify({ kind: "person", userId: "usr_ann" }),
+		};
+		// A copy as a fork makes it: public, by someone else.
+		const { tokenHash: _gate, ...ungated } = manual;
+		const copied = { ...ungated, createdAt: now + 1, grantee: "{}" };
+		expect(await store.putExposure(manual)).toBe(true);
+		expect(await store.putExposure(copied, { ifAbsent: true })).toBe(false);
+		expect(await store.getExposure(manual.label)).toEqual(manual);
+		// Where none is, it is added; a plain put still replaces it.
+		const publicOther = { ...copied, label: "8080-brave-otter-ab12cd", port: 8080 };
+		const other = publicOther;
+		expect(await store.putExposure(publicOther, { ifAbsent: true })).toBe(true);
+		expect(await store.getExposure(other.label)).toEqual(publicOther);
+		expect(await store.putExposure({ ...publicOther, tokenHash: "b".repeat(64) })).toBe(true);
+		expect((await store.getExposure(other.label))?.tokenHash).toBe("b".repeat(64));
+	});
+
 	it("carry their grant until it expires", async () => {
 		const tickets = createTunnelTickets(await open(), () => now);
 		const ticket = await tickets.issue(grant);

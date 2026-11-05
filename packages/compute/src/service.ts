@@ -2860,6 +2860,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return { lost: seen };
 	}
 
+	/** Whether `principal` may make calls that need `scope` where they have `role` (`requireScope`), without refusing. */
+	const mayUse = (principal: Principal, scope: computeSchema.ApiKeyScope, role: MemberRole): boolean => {
+		try {
+			requireScope(principal, scope, role);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
 	/** Changes a sandbox's fields other than its state with `update`, so it never writes over a newer state. */
 	const patchSandbox = (sandboxId: string, change: (current: StoredSandbox) => StoredSandbox | undefined) =>
 		store.sandboxes.update(sandboxId, change);
@@ -2869,7 +2879,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * as it was there: the same port, public or behind a token. Each gets its own URL under the fork's subdomain, exposed
 	 * as `grantee` (whoever forked it), so it ends when their access does, as a port they exposed would. A gated port's
 	 * token is shown to no one, as nobody asked for it: exposing the port again gives a new one, as it always does. A port
-	 * that can't be exposed is left off (the fork runs all the same), and one exposed on the fork meanwhile is kept.
+	 * that can't be exposed is left off (the fork runs all the same).
+	 *
+	 * A port exposed on the fork by hand meanwhile wins, whichever lands first: each copy is made only where the port
+	 * isn't exposed at all (`ifAbsent`, one step in the relay's store, shared by every replica), so it never replaces an
+	 * exposure (its access, token and grantee), and its record is added only where the fork's record has none for it.
 	 */
 	async function copyPorts(
 		fork: StoredSandbox,
@@ -2887,8 +2901,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					public: port.public,
 					subdomain: fork.subdomain,
 					grantee,
+					ifAbsent: true,
 				}));
 			} catch {
+				// Exposed by hand meanwhile (`conflict`), or it couldn't be: left as it is.
 				continue;
 			}
 			const exposed: computeSchema.ExposedPort = {
@@ -5331,7 +5347,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		resumeSandbox: async (principal, { params, body }) => restart(principal, params.sandboxId, body, "resume"),
 
 		forkSandbox: async (principal, { params, body, idempotencyKey }) => {
-			const { sandbox: source } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			const { sandbox: source, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			return once(principal, "forkSandbox", { params, body, idempotencyKey }, async () => {
 				const current = await settledFor(principal, source.id);
 				const count = body.count ?? 1;
@@ -5385,7 +5401,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// reads as having no machine (shown as the smallest size) while it starts. Their placements then say what they got.
 				const resources = current.type === "microvm" ? copiedResources(copies, machine) : undefined;
 				// The source's exposed ports, as they are now: each fork gets them once it runs (`copyPorts`).
-				const sourcePorts = current.capabilities.ports ? current.ports.map((port) => ({ ...port })) : [];
+				// Only for a caller who may open them (`access`): a port is exposed as its caller, and stops working once they
+				// may not (`stillAllowed`), so one copied for a key without the scope would be listed but refuse everyone. Such a
+				// key still forks; its forks get no ports.
+				const sourcePorts =
+					current.capabilities.ports && mayUse(principal, "access", role)
+						? current.ports.map((port) => ({ ...port }))
+						: [];
 				const grantee = encodeGrantee(principal);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();

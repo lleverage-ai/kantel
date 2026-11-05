@@ -226,6 +226,32 @@ describe("an exposed port's name", () => {
 		expect(await router.fetch(new Request("https://evilkantel-ports.test/"))).toBeUndefined();
 	});
 
+	it("never lets an ifAbsent exposure (a fork's copy) replace one made by hand, in either order", async () => {
+		const subdomain = "brave-otter-ab12cd";
+		const bare = `https://3000-${subdomain}.kantel-ports.test/`;
+		// By hand first, gated: the copy, public, is refused, and the gate and its token stand, for every gateway.
+		const { router, store } = setup();
+		const other = setup(undefined, { store });
+		const manual = (await router.expose("sbx_1", 3000, { public: false, subdomain })).url;
+		const refused = await other.router
+			.expose("sbx_1", 3000, { public: true, subdomain, grantee: "{}", ifAbsent: true })
+			.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+		expect(refused).toMatchObject({ code: "conflict" });
+		expect((await other.router.fetch(new Request(bare)))?.status).toBe(401);
+		expect((await other.router.fetch(new Request(manual)))?.status).toBe(303);
+
+		// The copy first: exposing by hand replaces it, as it always replaces, so its gate and token hold.
+		const second = setup();
+		await second.router.expose("sbx_1", 3000, { public: true, subdomain, ifAbsent: true });
+		expect((await second.router.fetch(new Request(bare)))?.status).toBe(200);
+		const gated = (await second.router.expose("sbx_1", 3000, { public: false, subdomain })).url;
+		expect((await second.router.fetch(new Request(bare)))?.status).toBe(401);
+		expect((await second.router.fetch(new Request(gated)))?.status).toBe(303);
+	});
+
 	it("ends a token when the port is exposed again or hidden", async () => {
 		const { router } = setup();
 		const first = (await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" })).url;

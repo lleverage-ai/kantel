@@ -252,7 +252,7 @@ await Promise.all(forks.items.map((fork) => kantel.runCommand(fork.id, { command
 
 A microVM fork is its source's machine: the same vCPUs, memory and disk, a custom shape included, unless you name another `size` (only from a snapshot of the disk alone). Its `resources` say so from the moment it's made, while it is still `starting`.
 
-A fork also gets the ports its source has exposed when it's forked, once the fork runs: each the same port, public or behind a token as it was, at the fork's own URL (`https://<port>-<fork's subdomain>.<domain>`). A token-gated port's token is new and isn't shown; expose the port again on the fork to get its URL with a token. A stopped source has no exposed ports, so a fork of one has none.
+A fork also gets the ports its source has exposed when it's forked, once the fork runs: each the same port, public or behind a token as it was, at the fork's own URL (`https://<port>-<fork's subdomain>.<domain>`). A token-gated port's token is new and isn't shown; expose the port again on the fork to get its URL with a token. The ports are exposed as whoever forked, so they work only while that person or key may open the fork's ports: an API key without the `access` scope still forks, but its forks get no ports. A port someone exposes on the fork by hand while they are being copied is kept as they exposed it. A stopped source has no exposed ports, so a fork of one has none.
 
 ## Recover
 
