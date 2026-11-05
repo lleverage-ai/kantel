@@ -142,7 +142,10 @@ type Config struct {
 	DNS []string
 	// AutoSnapshots is how many automatic snapshots each sandbox keeps (default 5).
 	AutoSnapshots int
-	Log           *slog.Logger
+	// KeepForkSnapshots keeps a live fork's snapshot (its disk copied into the fork) rather than giving the fork its
+	// disk and deleting it (Fork).
+	KeepForkSnapshots bool
+	Log               *slog.Logger
 	// Events receives state changes.
 	Events func(proto.SandboxInfo)
 	// Attach tells the host's egress proxy which sandbox (and account, and egress) a network slot is now; Detach that
@@ -1041,6 +1044,14 @@ func copySparse(src, dst string) error {
 	return nil
 }
 
+// takeFile moves src to dst: a rename, or (another file system) a sparse copy.
+func takeFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	return copySparse(src, dst)
+}
+
 // newDisk makes an empty sparse ext4 disk of the size.
 func newDisk(path string, gib int) error {
 	f, err := os.Create(path)
@@ -1674,6 +1685,9 @@ type sandboxOrigin struct {
 	snapshotDir  string
 	bundleDrives int
 	bundleSlots  []string
+	// takeDisk moves the snapshot's disk into the new sandbox rather than copying it: a live fork's own snapshot, which
+	// nothing else uses and which is deleted once the fork has started (Fork).
+	takeDisk bool
 }
 
 // startOf is a new sandbox's origin as a machine of size: p.From, a snapshot; p.Template, a template's snapshot or its
@@ -1745,6 +1759,12 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 // template and a custom shape cold-boots unless it is made from a snapshot or from a template snapshot built as that
 // shape.
 func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
+	return m.create(ctx, p, false)
+}
+
+// create is Create; takeDisk (a live fork's) moves p.From's disk into the sandbox instead of copying it, which leaves
+// that snapshot without one: the caller deletes it.
+func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk bool) (proto.SandboxInfo, error) {
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
@@ -1783,6 +1803,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		return proto.SandboxInfo{}, err
 	}
 	origin, err := m.startSandbox(ctx, p, size, func(origin sandboxOrigin) error {
+		origin.takeDisk = takeDisk && p.From != ""
 		return m.startMachine(ctx, s, origin, size, p.Egress, t)
 	})
 	if err != nil {
@@ -2053,9 +2074,12 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 		return nil
 	}
 	start := time.Now()
-	if origin.disk == "" {
+	switch {
+	case origin.disk == "":
 		err = newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB)
-	} else {
+	case origin.takeDisk:
+		err = takeFile(origin.disk, filepath.Join(vm, fc.DiskFile))
+	default:
 		err = copySparse(origin.disk, filepath.Join(vm, fc.DiskFile))
 	}
 	if err != nil {
@@ -2355,6 +2379,11 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 
 // Fork makes a new sandbox from the source's current state: a running source is snapshotted live (paused for the
 // snapshot only), a stopped one forks from its newest snapshot.
+//
+// A live fork's snapshot is the fork's alone: the control plane is never told its ID, so nothing restores it again.
+// Unless KeepForkSnapshots is set, the fork takes its disk (a rename, not a second copy of a disk that can be tens of
+// gigabytes) and the snapshot is deleted once the fork has started, so it neither takes the source's disk space nor
+// counts among its automatic snapshots (pruneAuto would drop the memory of the one before it).
 func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxInfo, error) {
 	src, err := m.get(p.SandboxID)
 	if err != nil {
@@ -2364,6 +2393,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	start := time.Now()
 	began := start
 	var snapID string
+	live := false
 	src.mu.Lock()
 	switch src.meta.State {
 	case proto.StateRunning:
@@ -2376,7 +2406,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 			src.mu.Unlock()
 			return proto.SandboxInfo{}, err
 		}
-		snapID = snap.ID
+		snapID, live = snap.ID, true
 	case proto.StateStopped:
 		latest := m.latestSnapshot(src.meta.ID)
 		if latest == "" {
@@ -2398,9 +2428,19 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		params.Egress = src.meta.Egress
 	}
 	src.mu.Unlock()
-	m.pruneAuto(src.meta.ID)
-	t.step("prune", &start)
-	info, err := m.Create(ctx, params)
+	start = time.Now()
+	takeDisk := live && !m.cfg.KeepForkSnapshots
+	if !takeDisk {
+		m.pruneAuto(src.meta.ID)
+		t.step("prune", &start)
+	}
+	info, err := m.create(ctx, params, takeDisk)
+	if takeDisk {
+		// Started or not, it has no disk now. The fork's machine has the memory file open (and mapped), so it keeps it.
+		if derr := m.DeleteSnapshot(snapID); derr != nil {
+			m.log.Warn("deleting a live fork's snapshot", "snapshot", snapID, "error", derr)
+		}
+	}
 	if err != nil {
 		return info, err
 	}

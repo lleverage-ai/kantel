@@ -72,6 +72,10 @@ type Config struct {
 	// /dev/shm/kantel-host); SpoolMaxMiB caps it (default an eighth of memory, at most 16 GiB; -1 turns it off).
 	SpoolDir    string `json:"spoolDir,omitempty"`
 	SpoolMaxMiB int64  `json:"spoolMaxMiB,omitempty"`
+	// KeepForkSnapshots keeps a live fork's snapshot as an automatic snapshot of its source, its disk copied into the
+	// fork, as hosts did before. Off (the default), the fork takes the snapshot's disk, one copy of the disk fewer, and
+	// the snapshot, which nothing restores again, is deleted once the fork has started.
+	KeepForkSnapshots bool `json:"keepForkSnapshots,omitempty"`
 	// MountCacheMiB is the host's read cache for sandboxes' bucket mounts, shared by every sandbox on the host
 	// (default 10240; -1 turns bucket mounts off). MountCacheDir is where it is (default Root/mount-cache).
 	MountCacheMiB int64  `json:"mountCacheMiB,omitempty"`

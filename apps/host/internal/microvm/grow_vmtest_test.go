@@ -121,6 +121,10 @@ func TestDeferredDiskGrowth(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Delete(context.Background(), "sbx_grow_fork") })
 	grown(m, "sbx_grow_fork")
+	// The fork took its snapshot's disk: the snapshot, which nothing restores again, is gone.
+	if _, err := m.readSnapshot("snap_grow_fork"); err == nil {
+		t.Fatal("a live fork's snapshot is still on the host")
+	}
 
 	// A host restart before the growth: the next run adopts the sandbox and grows it.
 	m.holdGrowth.Store(true)
