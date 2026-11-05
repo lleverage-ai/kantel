@@ -374,8 +374,12 @@ function SavedList({
 									</td>
 									{/* Plain words, as the sandboxes list gives a type: a tag here would outweigh the name. On a phone the
 									    type, size and uses carry their column's name before them, as a key card's facts do. */}
-									<td className={td}>{SANDBOX_KIND_LABELS[entry.kind]}</td>
-									<td className={`${td} text-right tabular-nums`}>{bytesText(entry.sizeBytes)}</td>
+									<td className={td} data-phone="pair">
+										{SANDBOX_KIND_LABELS[entry.kind]}
+									</td>
+									<td className={`${td} text-right tabular-nums`} data-phone="pair">
+										{bytesText(entry.sizeBytes)}
+									</td>
 									{/* On a phone, when and by whom on the card's last line, after what it is, its size and its uses. */}
 									<td className={`${td} whitespace-nowrap`} data-phone="bare line last">
 										<span className="text-fg" title={new Date(entry.createdAt).toLocaleString("en-GB")}>
@@ -383,7 +387,9 @@ function SavedList({
 										</span>
 										<span className={cellSub}>by {entry.createdBy}</span>
 									</td>
-									<td className={`${td} text-right tabular-nums`}>{entry.uses.toLocaleString("en-GB")}</td>
+									<td className={`${td} text-right tabular-nums`} data-phone="pair">
+										{entry.uses.toLocaleString("en-GB")}
+									</td>
 									<td className={`${td} w-0 pl-6 text-right`}>
 										{/* What a saved snapshot is for, in reach on its row; the rest stays in the menu. A wider gutter keeps
 										    Start apart from the Uses figure before it. */}

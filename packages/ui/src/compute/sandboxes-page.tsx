@@ -764,7 +764,7 @@ function Cpu({
 			? `No CPU readings for ${sandbox.name} yet`
 			: `CPU ${series === undefined ? "lately" : "over the last 2 minutes"} for ${sandbox.name}, peak ${peak}%`;
 	return (
-		<span className="inline-flex items-center gap-2">
+		<span className="inline-flex items-baseline gap-2">
 			<Sparkline
 				size={compact ? "xs" : "sm"}
 				values={values}

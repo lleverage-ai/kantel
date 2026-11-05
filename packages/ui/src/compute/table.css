@@ -155,6 +155,11 @@
 		font-size: var(--kt-text-xs);
 	}
 
+	/* Facts that share a line in equal columns (`data-phone="pair"`), so each sits in the same place on every card. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="pair"] {
+		flex: 1 1 0%;
+	}
+
 	/* A value for the card's last line (`data-phone="last"`), after the cells that follow it in the table. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="last"] {
 		order: 5;
