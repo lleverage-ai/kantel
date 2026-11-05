@@ -279,8 +279,8 @@ export const SandboxNotRunning = Type.Object(
 			Type.String({
 				description:
 					"Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its " +
-					"auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has " +
-					"none. Not `details.reason`, which is a placement's.",
+					"auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, a rule's reason when Kantel " +
+					"stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's.",
 			}),
 		),
 		hint: Type.String({
@@ -790,7 +790,8 @@ export const Sandbox = Type.Object(
 			Type.String({
 				description:
 					"Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its " +
-					"auto-stop time came, or a rule's reason. A stop someone asked for has none.",
+					"auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop " +
+					"someone asked for has none.",
 			}),
 		),
 		placementReason: Type.Optional(PlacementReason),
@@ -802,6 +803,27 @@ export const Sandbox = Type.Object(
 		}),
 		stopsAt: Type.Optional(
 			Type.Integer({ description: "When it will stop by itself, while running; the console's stops-in." }),
+		),
+		idleStopMinutes: Type.Optional(
+			Type.Union([Type.Integer({ minimum: 1 }), Type.Null()], {
+				description:
+					"How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or " +
+					"absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, " +
+					"and its hosted ports. Stopping keeps its disk, as any stop does.",
+			}),
+		),
+		lastActiveAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds.",
+			}),
+		),
+		idleStopsAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` " +
+					"plus `idleStopMinutes`.",
+			}),
 		),
 		latestSnapshotId: Type.Optional(Type.String({ description: "The snapshot a resume or fork would use." })),
 		latestSnapshotAt: Type.Optional(
@@ -879,6 +901,14 @@ export const CreateSandboxBody = Type.Object(
 				description: "Default 60. `null`: never stop by itself.",
 			}),
 		),
+		idleStopMinutes: Type.Optional(
+			Type.Union([Type.Integer({ minimum: 1, maximum: 43200 }), Type.Null()], {
+				description:
+					"Stop it once it has gone this long without use (`idle-stop`), whatever its auto-stop says; with " +
+					"`autoStopMinutes: null`, it runs while it is used. Default `null`: no idle stop. See the sandbox's " +
+					"`idleStopMinutes` for what counts as use.",
+			}),
+		),
 		visibility: Type.Optional(SandboxVisibility),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		env: Type.Optional(
@@ -937,6 +967,11 @@ export const UpdateSandboxBody = Type.Object(
 	{
 		name: Type.Optional(Type.String({ maxLength: 63 })),
 		autoStopMinutes: Type.Optional(Type.Union([Type.Integer({ minimum: 1, maximum: 43200 }), Type.Null()])),
+		idleStopMinutes: Type.Optional(
+			Type.Union([Type.Integer({ minimum: 1, maximum: 43200 }), Type.Null()], {
+				description: "Its idle stop; `null` turns it off. A running sandbox's idle time counts from now.",
+			}),
+		),
 		extendMinutes: Type.Optional(
 			Type.Integer({ minimum: 1, maximum: 43200, description: "Move `stopsAt` to this long from now." }),
 		),
@@ -2480,7 +2515,7 @@ export const EventType = Type.Union(
 		title: "EventType",
 		description:
 			"`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork " +
-			"or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. " +
+			"or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. " +
 			"`sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; " +
 			"`sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason " +
 			"says which), which leaves it running. " +

@@ -1,5 +1,5 @@
-// What a sandbox's ⋯ menu does, on its page and on its row in the list: Fork, Save snapshot, Auto-stop, Restart on
-// latest base (for one on an outdated base) and Delete, and the dialogs they open. The ways in (Browser, Desktop,
+// What a sandbox's ⋯ menu does, on its page and on its row in the list: Fork, Save snapshot, Auto-stop, Idle stop,
+// Restart on latest base (for one on an outdated base) and Delete, and the dialogs they open. The ways in (Browser, Desktop,
 // SSH), its logs, egress and snapshots are on its page, not here.
 
 import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
@@ -10,7 +10,7 @@ import { ClockIcon, ForkIcon } from "../primitives/icons.tsx";
 import { ReplayIcon, SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
 import type { MenuEntry } from "../primitives/menu.tsx";
 import { type Sandbox, type SandboxesSource, type SavedSnapshot, sandboxActions } from "./compute-model.ts";
-import { autoStopChanges } from "./one-change.ts";
+import { autoStopChanges, idleStopChanges } from "./one-change.ts";
 import { messageOf } from "./parts.tsx";
 
 export type SandboxNotice = { readonly level: "info" | "error"; readonly text: string };
@@ -23,6 +23,19 @@ export const AUTO_STOP_CHOICES = [
 	{ value: "1440", label: "1 day" },
 	{ value: "never", label: "Never" },
 ] as const;
+
+/** How long a sandbox may go unused before its idle stop stops it, as New sandbox and Idle stop offer it. */
+export const IDLE_STOP_CHOICES = [
+	{ value: "never", label: "Never" },
+	{ value: "15", label: "15 minutes" },
+	{ value: "30", label: "30 minutes" },
+	{ value: "60", label: "1 hour" },
+	{ value: "240", label: "4 hours" },
+] as const;
+
+/** What counts as use, for the idle stop's fields. */
+export const IDLE_STOP_HINT =
+	"Unused means no commands, SSH, desktop or browser, and no traffic to its hosted ports. It keeps its disk.";
 
 export interface SandboxMenuCalls {
 	readonly source: SandboxesSource;
@@ -53,6 +66,17 @@ export async function setAutoStop(
 	if (changed !== undefined) onChange(changed, changed.id, since);
 }
 
+/** Sets a sandbox's idle stop, one change at a time to each sandbox's, as `setAutoStop` does its auto-stop. */
+export async function setIdleStop(
+	{ source, onChange, asked }: Pick<SandboxMenuCalls, "source" | "onChange" | "asked">,
+	id: string,
+	minutes: number | undefined,
+): Promise<void> {
+	const since = asked?.(id);
+	const changed = await idleStopChanges.run(id, async () => source.setIdleStop?.(id, minutes));
+	if (changed !== undefined) onChange(changed, changed.id, since);
+}
+
 /** Whether a sandbox can be restarted on the latest base now: it's on an outdated one, and running, stopped or failed. */
 export const canRestartOnLatest = (sandbox: Pick<Sandbox, "state" | "base">): boolean =>
 	sandbox.base?.outdated === true &&
@@ -69,7 +93,7 @@ export function useSandboxMenu(
 	calls: SandboxMenuCalls,
 ): { entries: readonly MenuEntry[]; dialogs: ReactNode; restartOnLatest?: () => void } {
 	const { source, save, onChange, asked, onNotice } = calls;
-	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "restart">();
+	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "idle-stop" | "restart">();
 	const close = () => setOpen(undefined);
 	const can = sandboxActions(sandbox?.state ?? "stopped");
 	const running = sandbox?.state === "running" || sandbox?.state === "starting";
@@ -124,6 +148,18 @@ export function useSandboxMenu(
 									onSelect: () => setOpen("auto-stop"),
 								},
 							]),
+					...(source.setIdleStop === undefined
+						? []
+						: [
+								{
+									kind: "item" as const,
+									id: "idle-stop",
+									label: "Idle stop",
+									icon: <ClockIcon size="sm" />,
+									disabled: !running,
+									onSelect: () => setOpen("idle-stop"),
+								},
+							]),
 					...(restartable
 						? [
 								{
@@ -173,6 +209,13 @@ export function useSandboxMenu(
 					sandbox={open === "auto-stop" ? sandbox : undefined}
 					onClose={close}
 					onSet={(box, minutes) => setAutoStop(calls, box.id, minutes)}
+				/>
+			)}
+			{source.setIdleStop === undefined ? null : (
+				<IdleStopDialog
+					sandbox={open === "idle-stop" ? sandbox : undefined}
+					onClose={close}
+					onSet={(box, minutes) => setIdleStop(calls, box.id, minutes)}
 				/>
 			)}
 			{restartOnLatest === undefined ? null : (
@@ -382,6 +425,68 @@ function RestartOnLatestDialog({
 				{latest === undefined ? "the latest base" : <strong className="font-mono">{latest}</strong>}. Running processes
 				and memory are lost; files on its disk stay. Nothing is patched while it runs.
 			</p>
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+		</Dialog>
+	);
+}
+
+/** The idle stop's choice for a sandbox now: its own minutes where the list offers them, else the nearest above. */
+function idleChoiceOf(minutes: number | undefined): string {
+	if (minutes === undefined) return "never";
+	const offered = IDLE_STOP_CHOICES.find((choice) => choice.value !== "never" && Number(choice.value) >= minutes);
+	return offered?.value ?? "240";
+}
+
+function IdleStopDialog({
+	sandbox,
+	onClose,
+	onSet,
+}: {
+	sandbox: Sandbox | undefined;
+	onClose: () => void;
+	onSet: (box: Sandbox, minutes: number | undefined) => Promise<void>;
+}) {
+	const [choice, setChoice] = useState<string>();
+	const { busy, failure, setFailure, run } = useAttempt(onClose);
+	const changing = useSyncExternalStore(idleStopChanges.subscribe, idleStopChanges.changing);
+	const elsewhere = !busy && sandbox !== undefined && changing.has(sandbox.id);
+	// What it has now, until another is picked.
+	const shown = choice ?? idleChoiceOf(sandbox?.idleStopMinutes);
+	const close = () => {
+		setFailure(undefined);
+		setChoice(undefined);
+		onClose();
+	};
+	return (
+		<Dialog
+			open={sandbox !== undefined}
+			title="Idle stop"
+			onClose={close}
+			onSubmit={() => {
+				if (sandbox === undefined) return;
+				run(async () => {
+					await onSet(sandbox, shown === "never" ? undefined : Number(shown));
+					setChoice(undefined);
+				}, "Kantel couldn't change it. Try again.");
+			}}
+			actions={
+				<>
+					<Button onClick={close}>Cancel</Button>
+					<Button type="submit" variant="primary" busy={busy || elsewhere}>
+						Save
+					</Button>
+				</>
+			}
+		>
+			<div className="flex w-(--kt-card-width) max-w-full flex-col gap-2 pt-2">
+				<SelectField
+					label="Stop when unused for"
+					value={shown}
+					onChange={(event) => setChoice(event.currentTarget.value)}
+					options={IDLE_STOP_CHOICES}
+				/>
+				<span className="text-sm text-muted">{IDLE_STOP_HINT} Counts from now; its auto-stop still applies.</span>
+			</div>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
 	);

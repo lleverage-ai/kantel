@@ -517,6 +517,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
 		mayUse(hostId, how.eligibleHosts);
+		// Its ports' exposures outlast its stop, so a request to one is told it is stopped (`PortRouter.fetch`), and end as
+		// it boots again: the compute API cleared its recorded ports at the stop, and a URL the API no longer lists, and
+		// can't hide, must not reach the new machine.
+		await options.ports?.forget(sandboxId);
 		const revision = how.egressRevision ?? how.egress?.revision;
 		// Mounted again on the new machine, those its host can do; the host is read only when there are some.
 		const wanted = mountsOf(how.mounts);
@@ -700,12 +704,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return images.state === undefined ? {} : { running: images.state === "running" };
 		},
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
-		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
-		// no longer lists, and can't hide, must not still reach the machine.
-		recover: async (sandboxId, how) => {
-			await options.ports?.forget(sandboxId);
-			return boot(sandboxId, "sandbox.start", how);
-		},
+		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them, as with every
+		// boot (`boot`).
+		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		async updateEgress(sandboxId, egress, revision) {
 			await call(sandboxId, "sandbox.egress", {
 				egress: hostEgress(egress, options.attributionKey) ?? null,
@@ -720,8 +721,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
-			// A stopped sandbox's ports end with it (the compute API forgets them when it starts again).
-			await options.ports?.forget(sandboxId);
+			// A stopped sandbox's ports stay exposed while it is stopped, so a request to one is told so and why (its idle
+			// stop, say) rather than that nothing is there; nothing reaches a stopped machine. They end when it boots again.
 			const snap = await call<HostSnapshot>(sandboxId, "sandbox.stop", {
 				snapshotId: snapshotId(),
 				memory: keepMemory,

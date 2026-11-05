@@ -560,6 +560,42 @@ describe("sandboxes", () => {
 		expect(wrong.calls).toEqual([]);
 	});
 
+	it("sets an idle stop with --idle-stop on new and extend, apart from the auto-stop", async () => {
+		const idle = { ...SANDBOX, idleStopMinutes: 30, idleStopsAt: Date.now() + 30 * 60_000 };
+		const routes = {
+			"POST /v1/sandboxes": () => idle,
+			"PATCH /v1/sandboxes/sbx_test1": () => idle,
+			"GET /v1/sandboxes/sbx_test1": () => idle,
+		};
+		const created = await kantel(["new", "--auto-stop", "never", "--idle-stop", "30"], { routes });
+		expect(created.code).toBe(0);
+		expect(created.calls[0]?.body).toEqual({ autoStopMinutes: null, idleStopMinutes: 30, wait: true });
+
+		const set = await kantel(["extend", "sbx_test1", "--idle-stop", "30"], { routes });
+		expect(set.code).toBe(0);
+		expect(set.calls[0]?.body).toEqual({ idleStopMinutes: 30 });
+		expect(set.stdout).toMatch(/idle stop: after 30 min unused \(stops in \d+m unless used\)/);
+		const off = await kantel(["extend", "sbx_test1", "--idle-stop", "never"], { routes });
+		expect(off.calls[0]?.body).toEqual({ idleStopMinutes: null });
+		const both = await kantel(["extend", "sbx_test1", "60", "--idle-stop", "15"], { routes });
+		expect(both.calls[0]?.body).toEqual({ extendMinutes: 60, idleStopMinutes: 15 });
+		// Plain extend is as before.
+		const plain = await kantel(["extend", "sbx_test1", "60"], { routes });
+		expect(plain.calls[0]?.body).toEqual({ extendMinutes: 60 });
+
+		for (const args of [
+			["extend", "sbx_test1"],
+			["extend", "sbx_test1", "--idle-stop", "0"],
+			["new", "--idle-stop", "x"],
+		]) {
+			const refused = await kantel(args, { routes });
+			expect(refused.code).toBe(2);
+			expect(refused.calls).toEqual([]);
+		}
+		const shown = await kantel(["sandbox", "get", "sbx_test1"], { routes });
+		expect(shown.stdout).toMatch(/idle stop\s+after 30 min unused/);
+	});
+
 	it("prints Kantel's answer as it is with --json, and compact text without", async () => {
 		const page: SandboxPage = { items: [SANDBOX], nextCursor: "c2" };
 		const routes = { "GET /v1/sandboxes": () => page };

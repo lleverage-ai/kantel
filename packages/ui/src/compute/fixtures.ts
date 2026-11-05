@@ -385,6 +385,9 @@ export const DEBIAN_CI = sandbox({
 	state: "running",
 	createdAt: FIXTURE_NOW - 2 * HOUR,
 	stopsAt: FIXTURE_NOW + 30 * MINUTE,
+	// Stops sooner if nobody uses it: its idle stop.
+	idleStopMinutes: 30,
+	idleStopsAt: FIXTURE_NOW + 24 * MINUTE,
 	snapshot: { id: "snp_ci_1", takenAt: FIXTURE_NOW - 5 * MINUTE },
 	costCents: 8,
 	usage: usageSeries(6, 0.5),
@@ -420,6 +423,9 @@ export const RENDER = sandbox({
 	size: "large",
 	state: "stopped",
 	createdAt: FIXTURE_NOW - 4 * DAY,
+	// Its idle stop stopped it, with its disk kept.
+	idleStopMinutes: 60,
+	stopReason: "idle-stop",
 	snapshot: { id: "snp_render_1", takenAt: FIXTURE_NOW - 20 * HOUR },
 	costCents: 412,
 	hostId: "hst_hetzner_2",
@@ -2035,6 +2041,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						createdAt: now(),
 						createdBy: VIEWER.name,
 						...(input.autoStopMinutes === undefined ? {} : { stopsAt: now() + input.autoStopMinutes * MINUTE }),
+						...(input.idleStopMinutes === undefined
+							? {}
+							: { idleStopMinutes: input.idleStopMinutes, idleStopsAt: now() + input.idleStopMinutes * MINUTE }),
 						usage: flat(),
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
 						hostId: input.kind === "isolate" ? "hst_home" : "hst_hetzner_1",
@@ -2200,6 +2209,13 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				gate(() => {
 					const { stopsAt: _, ...box } = find(sandboxes, id, "sandbox");
 					return put(minutes === undefined ? box : { ...box, stopsAt: now() + minutes * MINUTE });
+				}),
+			setIdleStop: (id, minutes) =>
+				gate(() => {
+					const { idleStopMinutes: _, idleStopsAt: __, ...box } = find(sandboxes, id, "sandbox");
+					return put(
+						minutes === undefined ? box : { ...box, idleStopMinutes: minutes, idleStopsAt: now() + minutes * MINUTE },
+					);
 				}),
 			usageNow: (id) =>
 				gate(() => {

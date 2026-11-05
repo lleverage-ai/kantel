@@ -752,6 +752,146 @@ describe("sandboxes", () => {
 	});
 });
 
+describe("idle stop", () => {
+	function clocked() {
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const api = createComputeApi({
+			backend: createStubBackend(),
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+			now: () => clock.at,
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		/** Moves the clock on, then lets a request sweep and waits for what it began. */
+		const after = async (ms: number) => {
+			clock.at += ms;
+			await tom.getCaller();
+			await api.service.idle();
+		};
+		return { clock, api, tom, after };
+	}
+
+	it("stops a sandbox once it goes unused for its idle stop, apart from its auto-stop, and keeps its disk", async () => {
+		const { clock, api, tom, after } = clocked();
+		const started = clock.at;
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 10, wait: true });
+		expect(sandbox.idleStopMinutes).toBe(10);
+		expect(sandbox.stopsAt).toBeUndefined();
+		expect(sandbox.lastActiveAt).toBe(started);
+		expect(sandbox.idleStopsAt).toBe(started + 10 * 60_000);
+
+		// A command is a use: the idle time counts from it.
+		await after(6 * 60_000);
+		await tom.runCommand(sandbox.id, { command: "true" });
+		await api.service.idle();
+		const used = clock.at;
+		const after6 = await tom.getSandbox(sandbox.id);
+		expect(after6.lastActiveAt).toBe(used);
+		expect(after6.idleStopsAt).toBe(used + 10 * 60_000);
+
+		// Reading it isn't a use; nine minutes on it still runs, and past ten it stops.
+		await after(9 * 60_000);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		await after(2 * 60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("idle-stop");
+		expect(stopped.idleStopMinutes).toBe(10);
+		expect(stopped.idleStopsAt).toBeUndefined();
+		expect(stopped.latestSnapshotId).toBeDefined();
+
+		// Nothing resumes it: a command is refused with why it stopped, and a hosted port's request is told so.
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.details).toMatchObject({ code: "sandbox_stopped", stopReason: "idle-stop" });
+		const page = await api.service.portNotRunning(sandbox.id);
+		expect(page).toContain("went 10 minutes without use (its idle stop)");
+		expect(page).toContain("Its disk is kept");
+		expect(page).toContain(`kantel resume ${sandbox.id}`);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+
+		// Resumed, its idle time counts from the start.
+		const resumed = await tom.resumeSandbox(sandbox.id, { wait: true });
+		expect(resumed.reason).toBeUndefined();
+		expect(resumed.lastActiveAt).toBe(clock.at);
+		expect(await api.service.portNotRunning(sandbox.id)).toBeUndefined();
+	});
+
+	it("counts relayed traffic, writing it at most once a window and the rest at the sweep", async () => {
+		const { clock, api, tom, after } = clocked();
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 5, wait: true });
+		await after(60_000);
+		const first = clock.at;
+		api.service.noteActivity(sandbox.id);
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(first);
+
+		// More traffic within the window is held, not written.
+		clock.at += 5_000;
+		const held = clock.at;
+		api.service.noteActivity(sandbox.id);
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(first);
+		// The sweep after the window writes it.
+		await after(15_000);
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(held);
+
+		// Traffic keeps it running past its idle time from the start; once it stops, it stops.
+		for (let minute = 0; minute < 8; minute++) {
+			await after(60_000);
+			api.service.noteActivity(sandbox.id);
+		}
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		await after(6 * 60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("idle-stop");
+	});
+
+	it("is set, changed and turned off by an update, counting from it, and validated", async () => {
+		const { clock, tom, after } = clocked();
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.idleStopMinutes).toBeNull();
+		expect(sandbox.idleStopsAt).toBeUndefined();
+		await after(3 * 60_000);
+		const set = await tom.updateSandbox(sandbox.id, { idleStopMinutes: 20 });
+		expect(set.idleStopMinutes).toBe(20);
+		expect(set.idleStopsAt).toBe(clock.at + 20 * 60_000);
+		// Its auto-stop is untouched.
+		expect(set.stopsAt).toBe(sandbox.stopsAt);
+		const off = await tom.updateSandbox(sandbox.id, { idleStopMinutes: null });
+		expect(off.idleStopMinutes).toBeNull();
+		expect(off.idleStopsAt).toBeUndefined();
+
+		for (const minutes of [0, 43_201, 1.5]) {
+			const refused = await failure(tom.updateSandbox(sandbox.id, { idleStopMinutes: minutes }));
+			expect(refused.status).toBe(400);
+			const made = await failure(tom.createSandbox({ idleStopMinutes: minutes }));
+			expect(made.status).toBe(400);
+		}
+		// A fork keeps it.
+		const idle = await tom.updateSandbox(sandbox.id, { idleStopMinutes: 15 });
+		const [fork] = (await tom.forkSandbox(idle.id, { wait: true })).items;
+		expect(fork?.idleStopMinutes).toBe(15);
+	});
+
+	it("stops for its auto-stop, not idleness, where both are due", async () => {
+		const { tom, after } = clocked();
+		const sandbox = await tom.createSandbox({ autoStopMinutes: 5, idleStopMinutes: 5, wait: true });
+		await after(6 * 60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("auto-stop");
+	});
+});
+
 /** A backend whose resumes wait for `release` and then go on, or fail with `failWith`. */
 function gatedResumes() {
 	const stub = createStubBackend();

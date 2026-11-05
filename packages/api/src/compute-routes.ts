@@ -449,7 +449,7 @@ export const updateSandbox = defineRoute({
 	tag: "sandboxes",
 	summary: "Change a sandbox",
 	description: describe(
-		"Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or",
+		"Renames it, changes its auto-stop or idle stop or moves its stop time (`extendMinutes`), shares it with its organisation or",
 		"makes it private again, or replaces its labels.",
 		scope("sandboxes:write"),
 	),

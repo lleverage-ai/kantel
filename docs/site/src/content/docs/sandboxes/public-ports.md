@@ -76,6 +76,10 @@ curl -s -X DELETE "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/ports/3000" \
 await kantel.hidePort("sbx_4kq9x2mt", "3000");
 ```
 
+## When the sandbox stops
+
+A request to a hosted port of a sandbox that has stopped, by its auto-stop, its [idle stop](/sandboxes/lifecycle/#idle-stop) or a call, gets `503` with a page saying the sandbox is stopped, why, and how to resume it, once the port's token lets it in. A WebSocket to it is closed with `4503`. The request doesn't wake the sandbox: whoever runs it resumes it. Its ports' URLs end once it starts again, so expose the port again after a resume.
+
 ## Dev servers that check the host name
 
 Some dev servers refuse a request whose `Host` header isn't one they know, and show an error such as "host not allowed" at the URL. Tell the server to accept the sandbox's domain, or any host. With Vite, set `server.allowedHosts` in `vite.config.ts`:

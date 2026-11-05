@@ -345,8 +345,14 @@ export interface GatewayHostsBackend {
 	readonly access: RelayAccess;
 	/** This gateway among its replicas, with a database: it serves their calls for hosts connected here. */
 	readonly cluster?: GatewayCluster;
-	/** Points the access check at the compute API, once there is one. */
-	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
+	/**
+	 * Points the access check at the compute API, once there is one, and with `notRunning` what a request to a stopped
+	 * sandbox's port is told (`ComputeService.portNotRunning`).
+	 */
+	bind(
+		stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>,
+		notRunning?: (sandboxId: string) => Promise<string | undefined>,
+	): void;
 }
 
 /** The `hosts` backend's relay over `store`: tickets, exposed ports (with a ports domain) and the access check. */
@@ -357,6 +363,7 @@ export function gatewayRelay(
 	options: { readonly intervalMs?: number; readonly now?: () => number; readonly cluster?: GatewayCluster } = {},
 ): GatewayHostsBackend {
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
+	let stopped: ((sandboxId: string) => Promise<string | undefined>) | undefined;
 	const access = createRelayAccess({
 		// Nothing is let through before the compute API can answer.
 		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
@@ -372,6 +379,7 @@ export function gatewayRelay(
 					openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
 					store,
 					stillAllowed: (grantee, sandboxId) => access.allowed(grantee, sandboxId),
+					notRunning: (sandboxId) => stopped?.(sandboxId) ?? Promise.resolve(undefined),
 					...(options.now === undefined ? {} : { now: options.now }),
 				});
 	return {
@@ -381,8 +389,9 @@ export function gatewayRelay(
 		...(ports === undefined ? {} : { ports }),
 		...(options.cluster === undefined ? {} : { cluster: options.cluster }),
 		access,
-		bind(stillAllowed) {
+		bind(stillAllowed, notRunning) {
 			check = stillAllowed;
+			stopped = notRunning;
 		},
 	};
 }
@@ -597,6 +606,8 @@ export async function gatewayCompute(options: {
 					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
 				}),
 		bundle: (hostId, sandboxId, digest) => api.service.bundleForHost(hostId, sandboxId, digest),
+		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
+		activity: (sandboxId) => api.service.noteActivity(sandboxId),
 		bucketSource: (hostId, sandboxId, id) => api.service.bucketSourceForHost(hostId, sandboxId, id),
 		reportMounts: (hostId, sandboxId, mounts, mountsAt) =>
 			api.service.reportMounts(hostId, sandboxId, mounts, mountsAt),
@@ -607,7 +618,10 @@ export async function gatewayCompute(options: {
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
 	api.exporter.start(TELEMETRY_INTERVAL_MS);
 	if (hosts !== undefined) {
-		hosts.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
+		hosts.bind(
+			(grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId),
+			(sandboxId) => api.service.portNotRunning(sandboxId),
+		);
 		hosts.access.start();
 	}
 	const sweepTickets = setInterval(

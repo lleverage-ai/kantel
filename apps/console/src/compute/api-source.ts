@@ -578,6 +578,13 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		createdAt: sandbox.createdAt,
 		createdBy: actorName(sandbox.createdBy),
 		...(sandbox.stopsAt === undefined ? {} : { stopsAt: sandbox.stopsAt }),
+		...(sandbox.idleStopMinutes === undefined || sandbox.idleStopMinutes === null
+			? {}
+			: { idleStopMinutes: sandbox.idleStopMinutes }),
+		...(sandbox.idleStopsAt === undefined ? {} : { idleStopsAt: sandbox.idleStopsAt }),
+		...((sandbox.state === "stopped" || sandbox.state === "paused") && sandbox.reason !== undefined
+			? { stopReason: sandbox.reason }
+			: {}),
 		...(sandbox.latestSnapshotId === undefined
 			? {}
 			: {
@@ -688,6 +695,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(input.templateId === undefined || input.templateId === "" ? {} : { template: input.templateId }),
 				// The UI's absent auto-stop is always on, the API's `null`.
 				autoStopMinutes: input.autoStopMinutes ?? null,
+				...(input.idleStopMinutes === undefined ? {} : { idleStopMinutes: input.idleStopMinutes }),
 			});
 			await learnEnvironmentNames(context, made.accountId, [made]);
 			return view(made);
@@ -808,6 +816,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 		},
 		// The API's `null` is always on.
 		setAutoStop: async (id, minutes) => view(await api.updateSandbox(id, { autoStopMinutes: minutes ?? null })),
+		setIdleStop: async (id, minutes) => view(await api.updateSandbox(id, { idleStopMinutes: minutes ?? null })),
 		usageNow: async (id) => {
 			// The latest point's memory, and its disk where its host sends it (a microVM's guest).
 			const latest = (await api.getSandboxUsage(id)).points.at(-1);

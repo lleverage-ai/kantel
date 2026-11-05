@@ -32,6 +32,7 @@ import {
 	costText,
 	type EgressSource,
 	type HostingMode,
+	idleStopText,
 	imageLacks,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_STATE_LABELS,
@@ -48,6 +49,7 @@ import {
 	sandboxSpec,
 	screenUnavailable,
 	sizeText,
+	stoppedByText,
 	stopsInText,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
@@ -528,6 +530,8 @@ export function SandboxPage({
 		</>
 	);
 	const stops = stopsInText(sandbox, now);
+	const idle = idleStopText(sandbox, now);
+	const stoppedBy = stoppedByText(sandbox);
 	const tabCount = (tab: SandboxTab): number | undefined => {
 		if (counts.state.status !== "ready") return undefined;
 		const count =
@@ -599,6 +603,16 @@ export function SandboxPage({
 							{/^\d/.test(stops) ? `Stops in ${stops}` : stops === "Now" ? "Stopping now" : stops}
 						</span>
 					)}
+					{idle === undefined ? null : (
+						<span
+							className="inline-flex items-center gap-1.5"
+							title="Stops sooner if nobody uses it: no commands, SSH, desktop, browser or port traffic"
+						>
+							<ClockIcon size="sm" />
+							{idle}
+						</span>
+					)}
+					{stoppedBy === undefined ? null : <span>{stoppedBy}</span>}
 				</div>
 			</header>
 			{sandbox.state === "error" && sandbox.error !== undefined ? <Notice level="error">{sandbox.error}</Notice> : null}

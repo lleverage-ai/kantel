@@ -45,3 +45,8 @@ export function oneChangeEach<K>(busy: (key: K) => string): Changes<K> {
 export const autoStopChanges: Changes<string> = oneChangeEach(
 	() => "Its auto-stop is still changing. Try again in a moment.",
 );
+
+/** Each sandbox's idle stop, for as long as the console runs: its page's menu and its row's share it. */
+export const idleStopChanges: Changes<string> = oneChangeEach(
+	() => "Its idle stop is still changing. Try again in a moment.",
+);

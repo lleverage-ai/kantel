@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
-import type { Sandbox, SandboxState, Template } from "./compute-model.ts";
+import { idleStopText, type Sandbox, type SandboxState, stoppedByText, type Template } from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
@@ -89,6 +89,21 @@ describe("a sandbox's logs", () => {
 
 describe("a sandbox's page", () => {
 	const tabs: readonly SandboxTab[] = ["overview", "logs", "snapshots", "files"];
+
+	it("says when its idle stop comes while it runs, and that it stopped it once it has", () => {
+		const running = { state: "running" as const, idleStopMinutes: 30, idleStopsAt: FIXTURE_NOW + 24 * MINUTE };
+		expect(idleStopText(running, FIXTURE_NOW)).toBe("Idle stop in 24m");
+		expect(idleStopText(running, FIXTURE_NOW + HOUR)).toBe("Idle stop now");
+		expect(idleStopText({ state: "running" }, FIXTURE_NOW)).toBeUndefined();
+		expect(idleStopText({ ...running, state: "stopped" }, FIXTURE_NOW)).toBeUndefined();
+		expect(stoppedByText({ state: "stopped", stopReason: "idle-stop", idleStopMinutes: 30 })).toBe(
+			"Stopped after 30m unused",
+		);
+		expect(stoppedByText({ state: "stopped", stopReason: "auto-stop" })).toBe("Stopped by its auto-stop");
+		// Someone stopped it: nothing to say.
+		expect(stoppedByText({ state: "stopped" })).toBeUndefined();
+		expect(stoppedByText({ state: "running", stopReason: "idle-stop" })).toBeUndefined();
+	});
 
 	it("shows Browser and Desktop in the console, and on Overview where they open in a tab of their own", () => {
 		const running = { inTab: false, windows: true, known: true, tabs };
@@ -295,6 +310,15 @@ describe("New sandbox", () => {
 				autoStopMinutes: 60,
 			},
 		);
+	});
+
+	it("sends an idle stop only when one is chosen", () => {
+		expect(newSandboxInput({ ...form, idleStop: "30" }).idleStopMinutes).toBe(30);
+		expect("idleStopMinutes" in newSandboxInput({ ...form, idleStop: "never" })).toBe(false);
+		expect("idleStopMinutes" in newSandboxInput(form)).toBe(false);
+		// Beside auto-stop, which stays as chosen.
+		expect(newSandboxInput({ ...form, autoStop: "never", idleStop: "15" })).toMatchObject({ idleStopMinutes: 15 });
+		expect("autoStopMinutes" in newSandboxInput({ ...form, autoStop: "never", idleStop: "15" })).toBe(false);
 	});
 
 	it("keeps a requested template until the list is read, and says so when it can't be had", () => {
