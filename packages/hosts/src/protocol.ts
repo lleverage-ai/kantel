@@ -181,7 +181,10 @@ export const HOST_FEATURES = {
 	/**
 	 * Commands by Kantel's ID (`HostExecParams.commandId`): `sandbox.exec.kill` stops one that is running, with its whole
 	 * process group, and a `detached` one is answered at once and runs past any call (and the host's connection),
-	 * with no limit but its own `timeoutMs`, its result kept for `sandbox.exec.get`. Without it Kantel can't stop a
+	 * with no limit but its own `timeoutMs`, its result kept for `sandbox.exec.get`. A later kantel-host also keeps a
+	 * foreground one running when its connection goes, to its own limit, with its result for `sandbox.exec.get` (an
+	 * earlier one ends it with the connection, and then doesn't know it), and answers a running one's get with its output
+	 * so far where its sandbox keeps it (`HostExecStatus.stdout`). Without it Kantel can't stop a
 	 * host's command, and a detached one runs as a foreground one, to the guest's default limit (120 s; an isolate's
 	 * 30 s).
 	 */
@@ -234,6 +237,14 @@ export interface HostExecStatus {
 	readonly pid?: number;
 	/** Once it has ended. */
 	readonly result?: HostExecResult;
+	/**
+	 * While it runs, from a host whose sandbox keeps it (the guest's start of each stream, to its cap): its output so far.
+	 * Only ever more of the same. Absent from an older host, or one that keeps no output until a command ends.
+	 */
+	readonly stdout?: string;
+	readonly stderr?: string;
+	/** With `stdout`: the cap cut a stream. */
+	readonly truncated?: boolean;
 	/**
 	 * On a detached start: the sandbox didn't answer it, so whether the command started is unknown. Kantel follows it by
 	 * its ID as any; `sandbox.exec.get`'s `not_found` then means it never started.

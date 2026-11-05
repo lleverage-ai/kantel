@@ -383,6 +383,22 @@ export interface ExecResult {
 	readonly timedOut: boolean;
 }
 
+/**
+ * A running command's output so far, as its backend keeps it: `commandResult`'s answer while it runs, from a backend
+ * that keeps it. Only ever more of the same output: what it keeps is the start of each stream, up to its cap.
+ */
+export interface CommandProgress {
+	readonly running: true;
+	readonly stdout: string;
+	readonly stderr: string;
+	/** The backend's cap cut a stream. */
+	readonly truncated?: boolean;
+}
+
+export function isCommandProgress(answer: ExecResult | CommandProgress): answer is CommandProgress {
+	return (answer as CommandProgress).running === true;
+}
+
 /** A file being read as a stream: its size, when known up front, and its bytes. */
 export interface FileStream {
 	readonly size?: number;
@@ -513,10 +529,11 @@ export interface SandboxBackend {
 	 */
 	killCommand?(sandboxId: string, commandId: string): Promise<void>;
 	/**
-	 * A detached command's result once it has ended, `undefined` while it runs; `not_found` once the backend no longer
-	 * knows it. Absent, or `not_supported`, a detached command's result is only what its `exec` answers.
+	 * A detached command's result once it has ended; while it runs, its output so far (`CommandProgress`) where the
+	 * backend keeps it, else `undefined`; `not_found` once the backend no longer knows it. Absent, or `not_supported`, a
+	 * detached command's result is only what its `exec` answers.
 	 */
-	commandResult?(sandboxId: string, commandId: string): Promise<ExecResult | undefined>;
+	commandResult?(sandboxId: string, commandId: string): Promise<ExecResult | CommandProgress | undefined>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
 	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */

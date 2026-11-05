@@ -272,11 +272,12 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error
-	// A detached command the host runs itself holds its guard until it ends (startDetached): past the call, and past this
-	// session, so its guard isn't ended by the connection going.
+	// A command with Kantel's ID runs past this session: a detached one the host runs itself holds its guard until it ends
+	// (startDetached), and a foreground one runs on to its own end, its result kept when this session has gone by then
+	// (runCommand). So neither's guard is ended by the connection going.
 	guarded := ctx
-	if detachedExec(m.Method, m.Params) {
-		guarded = context.WithoutCancel(ctx)
+	if keptExec(m.Method, m.Params) {
+		guarded = withConnection(context.WithoutCancel(ctx), ctx.Done())
 	}
 	callCtx, done, err := s.host.gatewayGuard(guarded, m.Method, m.Params)
 	if err != nil {

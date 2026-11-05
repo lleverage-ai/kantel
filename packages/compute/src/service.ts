@@ -59,7 +59,9 @@ import {
 	type BackendMountStatus,
 	type BackendSize,
 	type BootOptions,
+	type CommandProgress,
 	type ExecResult,
+	isCommandProgress,
 	isDetachedWaitEnded,
 	type Placement,
 	type SandboxBackend,
@@ -2946,24 +2948,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A detached command no gateway here is waiting for (the one that started it closed, or is another replica), as its
-	 * backend has it now: ended once the backend says so, and lost once it no longer knows it.
+	 * A running detached command as its backend has it now: its output so far (what `attach` shows while it runs), and
+	 * ended once the backend says so. One no gateway here is waiting for (the one that started it closed, or is another
+	 * replica) is lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
-		if (
-			command.state !== "running" ||
-			command.detached !== true ||
-			runningCommands.has(command.id) ||
-			backend.commandResult === undefined
-		) {
+		if (command.state !== "running" || command.detached !== true || backend.commandResult === undefined) {
 			return command;
 		}
-		let result: ExecResult | undefined;
+		const followed = runningCommands.has(command.id);
+		let result: ExecResult | CommandProgress | undefined;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
 		} catch (error) {
 			// Not just started (a start the backend hasn't recorded yet reads as unknown too).
 			if (
+				followed ||
 				!(error instanceof KantelError && error.code === "not_found") ||
 				now() - command.startedAt < LOST_COMMAND_MS
 			) {
@@ -2978,7 +2978,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 		}
 		if (result === undefined) return command;
+		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
 		return (await endCommand(command.id, result)) ?? command;
+	}
+
+	/**
+	 * A running command's output so far, written while it is still running and only when it has more than is recorded
+	 * (its backend keeps the start of each stream, so it only grows).
+	 */
+	async function recordProgress(commandId: string, progress: CommandProgress): Promise<StoredCommand | undefined> {
+		const stdout = truncate(progress.stdout);
+		const stderr = truncate(progress.stderr);
+		return store.commands
+			.update(commandId, (latest) => {
+				if (latest.state !== "running") return undefined;
+				if (stdout.text.length <= latest.stdout.length && stderr.text.length <= latest.stderr.length) return undefined;
+				return {
+					...latest,
+					stdout: stdout.text.length > latest.stdout.length ? stdout.text : latest.stdout,
+					stderr: stderr.text.length > latest.stderr.length ? stderr.text : latest.stderr,
+					truncated: latest.truncated || stdout.truncated || stderr.truncated || progress.truncated === true,
+				};
+			})
+			.then(async (written) => written ?? (await store.commands.get(commandId)));
 	}
 
 	/**

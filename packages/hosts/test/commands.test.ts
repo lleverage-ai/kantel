@@ -34,6 +34,8 @@ const OLD_GUEST_LIMIT_MS = 120_000;
 interface Running {
 	readonly params: { [key: string]: unknown };
 	ended?: { exitCode: number; stdout: string; stderr: string; timedOut?: boolean };
+	/** What it has written so far, as a host that reports a running command's output answers a get with it. */
+	output?: { stdout: string; stderr: string };
 	/** Answers waiting for its end: a foreground call's, or held gets. */
 	readonly waiting: ((ended: NonNullable<Running["ended"]>) => void)[];
 }
@@ -80,6 +82,27 @@ class CommandHost {
 	}
 
 	private beat?: ReturnType<typeof setInterval>;
+
+	/**
+	 * The host dials again while its old connection is still held, as a host that took its link for dead does: the hub
+	 * shuts the old one ("A newer connection for the host took over"), and calls waiting on it go unanswered. A host with
+	 * `exec-control` keeps its commands running; one from before ends them with the old connection.
+	 */
+	takeOver(sandboxes: { id: string; tier: string; size: string; state: string; createdAt: number }[]) {
+		this.connect(sandboxes);
+		// Its answers go to the old connection, which is gone.
+		if (!this.controls) {
+			for (const [id, command] of this.commands) {
+				if (command.ended === undefined) this.end(id, { exitCode: 137, stdout: "", stderr: "" });
+			}
+		}
+	}
+
+	/** A running command's output so far. */
+	output(commandId: string, stdout: string, stderr = "") {
+		const command = this.commands.get(commandId);
+		if (command !== undefined) command.output = { stdout, stderr };
+	}
 
 	/** The connection drops, as a network blip or a gateway restart would. */
 	drop() {
@@ -140,7 +163,7 @@ class CommandHost {
 				if (command === undefined) return fail("not_found", "no such command");
 				const status = (ended: Running["ended"]) =>
 					ended === undefined
-						? { commandId: p.commandId, state: "running" }
+						? { commandId: p.commandId, state: "running", ...(command.output ?? {}) }
 						: { commandId: p.commandId, state: "exited", result: ended };
 				if (command.ended !== undefined || typeof p.waitMs !== "number") return answer(status(command.ended));
 				// Held for its wait, as a host holds it.
@@ -313,6 +336,84 @@ describe("commands on kantel-host hosts", () => {
 			exitCode: 3,
 			stderr: "crashed\n",
 		});
+	});
+
+	const RUNNING = (id: string) => [{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }];
+
+	it("leaves a detached command running when a newer connection for its host takes over, its output so far shown (#703)", async () => {
+		const { service, root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const started = await root.runCommand(sandbox.id, {
+			command: "apt-get install -y build-essential",
+			detached: true,
+		});
+		await vi.advanceTimersByTimeAsync(5_000);
+		host.output(started.id, "Reading package lists...\n");
+		// What it has written so far, while it runs: what attach shows first.
+		expect(await root.getCommand(sandbox.id, started.id)).toMatchObject({
+			state: "running",
+			stdout: "Reading package lists...\n",
+		});
+
+		host.takeOver(RUNNING(sandbox.id));
+		await vi.advanceTimersByTimeAsync(10);
+		expect(service.hub.connected(host.hostId)).toBe(true);
+		host.output(started.id, "Reading package lists...\nSetting up gcc\n", "debconf: delaying\n");
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(await root.getCommand(sandbox.id, started.id)).toMatchObject({
+			state: "running",
+			stdout: "Reading package lists...\nSetting up gcc\n",
+			stderr: "debconf: delaying\n",
+		});
+
+		const out = "Reading package lists...\nSetting up gcc\nDone\n";
+		host.end(started.id, { exitCode: 0, stdout: out, stderr: "debconf: delaying\n" });
+		await vi.advanceTimersByTimeAsync(31_000);
+		expect(await root.getCommand(sandbox.id, started.id)).toMatchObject({ state: "exited", exitCode: 0, stdout: out });
+		// Started once, never again.
+		expect(callsOf(host, "sandbox.exec")).toHaveLength(1);
+	});
+
+	it("keeps a foreground command when a newer connection for its host takes over, and answers with its end", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const running = root.runCommand(sandbox.id, { command: "pnpm install", timeoutMs: 600_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const commandId = String(callsOf(host, "sandbox.exec")[0]?.params.commandId);
+		host.takeOver(RUNNING(sandbox.id));
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect((await root.getCommand(sandbox.id, commandId)).state).toBe("running");
+		host.end(commandId, { exitCode: 0, stdout: "Done in 42s\n", stderr: "" });
+		await vi.advanceTimersByTimeAsync(31_000);
+		expect(await running).toMatchObject({ id: commandId, state: "exited", exitCode: 0, stdout: "Done in 42s\n" });
+		expect(callsOf(host, "sandbox.exec")).toHaveLength(1);
+	});
+
+	it("gives up on a foreground command whose host doesn't come back by its limit, saying so", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const running = root.runCommand(sandbox.id, { command: "make", timeoutMs: 30_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		host.drop();
+		await vi.advanceTimersByTimeAsync(30_000 + 120_000);
+		const ended = await running;
+		expect(ended).toMatchObject({ state: "exited", exitCode: 1 });
+		expect(ended.stderr).toMatch(/disconnected.*didn't come back/s);
+	});
+
+	it("says why a host from before exec-control loses a command when a newer connection takes over", async () => {
+		const { root, host, sandbox } = await setup(false);
+		const started = await root.runCommand(sandbox.id, {
+			command: "apt-get install -y build-essential",
+			detached: true,
+		});
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		host.takeOver(RUNNING(sandbox.id));
+		await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, started.id)).state).toBe("exited"));
+		const ended = await root.getCommand(sandbox.id, started.id);
+		expect(ended.exitCode).toBe(1);
+		expect(ended.stderr).toContain("A newer connection for the host took over");
+		expect(ended.stderr).toMatch(/kantel-host from before .* upgrade its kantel-host/);
 	});
 
 	it("sends a kill to the host, which stops a detached command", async () => {

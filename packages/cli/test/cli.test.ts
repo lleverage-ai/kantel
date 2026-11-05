@@ -518,6 +518,50 @@ describe("exec", () => {
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("built\n");
 		expect(result.calls[0]?.body).toEqual({ command: "make", detached: true });
+		// Its ID, and how to follow it again, from the start.
+		expect(result.stderr).toContain("kantel attach sbx_test1 cmd_1 follows it again");
+	});
+
+	it("follows a command on while Kantel is out of reach for a moment, printing each part of its output once", async () => {
+		const views: (Command | Response)[] = [
+			command({ state: "running", exitCode: undefined, stdout: "Reading package lists...\n" }),
+			kantelError(503, "unavailable", "The gateway is restarting"),
+			kantelError(502, "bad_gateway", "Bad gateway"),
+			command({ state: "running", exitCode: undefined, stdout: "Reading package lists...\nSetting up gcc\n" }),
+			command({ state: "exited", exitCode: 0, stdout: "Reading package lists...\nSetting up gcc\nDone\n" }),
+		];
+		const result = await kantel(["exec", "sbx_test1", "--timeout", "0", "--", "apt-get install -y gcc"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift(),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("Reading package lists...\nSetting up gcc\nDone\n");
+		expect(result.stderr).toContain("couldn't reach Kantel (The gateway is restarting); trying again");
+	});
+
+	it("gives up following once Kantel has been out of reach for a while, saying the command may still run and how to attach", async () => {
+		const result = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => kantelError(503, "unavailable", "The gateway is down"),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("cmd_1 may still be running: kantel attach sbx_test1 cmd_1");
+		// Asked again for two minutes of waits, then no more.
+		expect(result.slept.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(120_000);
+		expect(result.calls.length).toBeLessThan(30);
+	});
+
+	it("doesn't ask again after an answer that won't change, such as an unknown command", async () => {
+		const result = await kantel(["attach", "sbx_test1", "cmd_9"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_9": () => kantelError(404, "not_found", "No such command"),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.calls).toHaveLength(1);
 	});
 
 	it("lists a sandbox's commands and kills one", async () => {

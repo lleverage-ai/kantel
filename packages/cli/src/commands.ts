@@ -732,9 +732,23 @@ function killed(ctx: Context, command: Command): number {
 	return 0;
 }
 
+/** How long `follow` keeps asking again while Kantel can't be reached, before it gives up and says how to follow again. */
+const FOLLOW_RETRY_MS = 120_000;
+
+/** A failure to reach Kantel, or Kantel unable to answer for now, that asking again may get past. */
+function transient(error: unknown): boolean {
+	if (error instanceof KantelApiError) {
+		return error.status >= 500 || error.status === 429 || error.code === "unavailable";
+	}
+	// fetch's own failures (a refused or dropped connection) are TypeErrors.
+	return error instanceof TypeError;
+}
+
 /**
  * Follows a detached command: prints what it has written since the last look, every second or so, until it ends, and
- * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show.
+ * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show. Kantel out of
+ * reach for a while (a gateway restarting, a network blip) is asked again; given up on, it says the command may still
+ * be running and how to follow it again.
  */
 async function follow(
 	ctx: Context,
@@ -745,8 +759,30 @@ async function follow(
 ): Promise<number> {
 	let shown = { stdout: 0, stderr: 0 };
 	let wait = 250;
-	let command = first ?? (await client.getCommand(sandboxId, commandId));
-	if (!ctx.json && first !== undefined) ctx.note(`kantel: started ${command.id}; Ctrl-C leaves it running`);
+	const again = `kantel attach ${sandboxId} ${commandId}`;
+	const fetch = async (): Promise<Command> => {
+		let waited = 0;
+		let backoff = 1000;
+		for (;;) {
+			try {
+				return await client.getCommand(sandboxId, commandId);
+			} catch (error) {
+				if (!transient(error)) throw error;
+				const why = error instanceof Error ? error.message : String(error);
+				if (waited >= FOLLOW_RETRY_MS) {
+					throw new CliError(`couldn't reach Kantel (${why}); ${commandId} may still be running: ${again}`);
+				}
+				if (!ctx.json && waited === 0) ctx.note(`kantel: couldn't reach Kantel (${why}); trying again`);
+				await ctx.io.sleep(backoff);
+				waited += backoff;
+				backoff = Math.min(backoff * 2, 10_000);
+			}
+		}
+	};
+	let command = first ?? (await fetch());
+	if (!ctx.json && first !== undefined) {
+		ctx.note(`kantel: started ${command.id}; Ctrl-C leaves it running, and ${again} follows it again`);
+	}
 	for (;;) {
 		if (!ctx.json) {
 			const out = command.stdout.slice(shown.stdout);
@@ -758,7 +794,7 @@ async function follow(
 		if (command.state !== "running") break;
 		await ctx.io.sleep(wait);
 		wait = Math.min(wait * 2, 1000);
-		command = await client.getCommand(sandboxId, commandId);
+		command = await fetch();
 	}
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {

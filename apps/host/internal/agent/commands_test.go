@@ -227,6 +227,47 @@ func TestKillStopsAForegroundCommandByItsID(t *testing.T) {
 	}
 }
 
+// A foreground command whose connection goes while it runs runs on (its call's context outlives the session), and its
+// result, with nowhere to go, is kept for a get; a get with a wait waits for it to end.
+func TestAForegroundCommandRunsOnPastItsConnectionAndKeepsItsResult(t *testing.T) {
+	tier := newHeldTier()
+	h := hostWith(t, tier)
+	session, endSession := context.WithCancel(context.Background())
+	ctx := withConnection(context.WithoutCancel(session), session.Done())
+	answered := make(chan error, 1)
+	go func() {
+		_, err := callCmd[proto.ExecResult](t, h, ctx, proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "pnpm install", CommandID: "cmd_c", TimeoutMs: 600_000})
+		answered <- err
+	}()
+	<-tier.started
+	endSession()
+	now, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_c"})
+	if err != nil || now.State != proto.ExecRunning {
+		t.Fatalf("after its connection went: %+v, %v", now, err)
+	}
+	got := make(chan proto.ExecStatus, 1)
+	go func() {
+		status, _ := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_c", WaitMs: 5000})
+		got <- status
+	}()
+	tier.release <- proto.ExecResult{ExitCode: 0, Stdout: "Done in 42s\n"}
+	if err := <-answered; err != nil {
+		t.Fatalf("its call: %v", err)
+	}
+	select {
+	case ended := <-got:
+		if ended.State != proto.ExecEnded || ended.Result == nil || ended.Result.Stdout != "Done in 42s\n" {
+			t.Fatalf("the held get: %+v", ended)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the held get wasn't answered at its end")
+	}
+	again, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_c"})
+	if err != nil || again.State != proto.ExecEnded {
+		t.Fatalf("kept: %+v, %v", again, err)
+	}
+}
+
 func TestDetachedCommandRunsInAGuestThatKeepsCommands(t *testing.T) {
 	tier := &runnerTier{heldTier: newHeldTier()}
 	h := hostWith(t, tier)
@@ -332,8 +373,11 @@ func TestAForegroundCallKeepsItsOwnGuard(t *testing.T) {
 	if !released {
 		t.Fatal("a foreground call's guard wasn't released with it")
 	}
-	if !detachedExec(proto.MethodExec, []byte(`{"detached":true,"commandId":"cmd_x"}`)) || detachedExec(proto.MethodExec, []byte(`{"detached":true}`)) {
-		t.Fatal("detachedExec")
+	if !keptExec(proto.MethodExec, []byte(`{"detached":true,"commandId":"cmd_x"}`)) ||
+		!keptExec(proto.MethodExec, []byte(`{"commandId":"cmd_x"}`)) ||
+		keptExec(proto.MethodExec, []byte(`{"detached":true}`)) ||
+		keptExec(proto.MethodExecGet, []byte(`{"commandId":"cmd_x"}`)) {
+		t.Fatal("keptExec")
 	}
 }
 
@@ -494,7 +538,7 @@ func TestAReleasedReservationIsNeverAnEnd(t *testing.T) {
 	key := runKey("sbx_1", "cmd_d")
 	run := &commandRun{cancel: func() {}, done: make(chan struct{}), detached: true}
 	runs.add(key, run)
-	runs.end(key, run, proto.ExecResult{ExitCode: 4, Stdout: "out"}, nil)
+	runs.end(key, run, proto.ExecResult{ExitCode: 4, Stdout: "out"}, nil, false)
 	if status := runs.status("cmd_d", run); status.State != proto.ExecEnded || status.Result.ExitCode != 4 {
 		t.Fatalf("an ended run read as %+v", status)
 	}
