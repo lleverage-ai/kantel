@@ -12,6 +12,11 @@
 # Every option goes on to `kantel-host install` (`kantel-host install -h` lists them), except these, which come first:
 #   --version V   install release V (such as 0.1.0) rather than this script's own
 #   --no-join     only put the binary in /usr/local/bin (KANTEL_BIN_DIR), without installing the service
+#   --check       only check this machine: run the downloaded binary's `doctor` from a temporary directory, and exit
+#                 with its status (0 only when every required check passes). Nothing is installed
+# --dry-run, anywhere in the options, downloads and checks the binary into a temporary directory and runs its `plan`
+# (install with its options, only ever a dry run), which prints every download, file, directory, unit, command and
+# registration the install would make, and changes nothing (the token isn't used).
 # KANTEL_RELEASE_URL downloads from elsewhere: a directory URL holding the release's files, for a mirror or a test.
 #
 # tools/release/pack.sh stamps the release's version below. The whole script is read before anything runs (see the
@@ -40,6 +45,8 @@ sha256() {
 main() {
 	version=$KANTEL_RELEASE_VERSION
 	join=1
+	check=0
+	dry_run=0
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--version)
@@ -56,7 +63,21 @@ main() {
 			join=0
 			shift
 			;;
+		--check)
+			check=1
+			shift
+			;;
 		*) break ;;
+		esac
+	done
+	# --dry-run can come anywhere, and stays in the options passed to `kantel-host plan`. Any value but a false
+	# one counts (Go's flags take 1, t, true and more), so a spelling this doesn't know installs nothing.
+	for arg in "$@"; do
+		case "$arg" in
+		--dry-run=0 | -dry-run=0 | --dry-run=[fF] | -dry-run=[fF] | --dry-run=false | -dry-run=false | --dry-run=FALSE | \
+			-dry-run=FALSE | --dry-run=False | -dry-run=False) ;;
+		--dry-run | -dry-run | --dry-run=* | -dry-run=*) dry_run=1 ;;
+		--check) check=1 ;;
 		esac
 	done
 
@@ -79,7 +100,13 @@ main() {
 	fi
 	asset="kantel-host-linux-$arch"
 
+	if [ "$check" = 1 ] && [ "$(id -u)" != 0 ]; then
+		die "--check runs kantel-host doctor, which checks this machine as the service will run, as root, so it needs root: put sudo before sh, as in: curl -fsSL $base/install.sh | sudo sh -s -- --check"
+	fi
 	if [ "$join" = 1 ] && [ "$(id -u)" != 0 ]; then
+		if [ "$dry_run" = 1 ]; then
+			die "--dry-run reads this machine as the install would, as root, so it needs root too (it changes nothing): put sudo before sh, as in: curl -fsSL $base/install.sh | sudo sh -s -- --dry-run --url ... --token ..."
+		fi
 		die "joining installs a system service, so it needs root: put sudo before sh, as in: curl -fsSL $base/install.sh | sudo sh -s -- --url ... --token ..."
 	fi
 
@@ -95,10 +122,56 @@ main() {
 	got=$(sha256 "$work/$asset")
 	[ "$got" = "$want" ] || die "$asset's SHA-256 is $got, but SHA256SUMS says $want; not installing it"
 	say "Checked $asset against SHA256SUMS"
+	dir=${KANTEL_BIN_DIR:-/usr/local/bin}
+
+	# --check and --dry-run change nothing: they run the binary from the temporary directory.
+	if [ "$check" = 1 ] || [ "$dry_run" = 1 ]; then
+		chmod 0755 "$work/$asset"
+		if [ "$check" = 1 ] || [ "$join" = 1 ]; then
+			"$work/$asset" version >/dev/null 2>&1 ||
+				die "couldn't run $asset from $work: if its filesystem is mounted noexec, set TMPDIR to a directory on another one"
+		fi
+	fi
+	if [ "$check" = 1 ]; then
+		# doctor takes the install options that change what's checked: --root, --config and --isolate-runtime.
+		n=$#
+		while [ "$n" -gt 0 ]; do
+			arg=$1
+			shift
+			n=$((n - 1))
+			case "$arg" in
+			--root | --config | --isolate-runtime)
+				if [ "$n" -gt 0 ]; then
+					set -- "$@" "$arg" "$1"
+					shift
+					n=$((n - 1))
+				fi
+				;;
+			--root=* | --config=* | --isolate-runtime=* | --json) set -- "$@" "$arg" ;;
+			esac
+		done
+		status=0
+		"$work/$asset" doctor "$@" || status=$?
+		exit "$status"
+	fi
+	if [ "$dry_run" = 1 ]; then
+		echo "==> Download kantel-host"
+		echo "  get    $base/$asset (sha256 $want, from $base/SHA256SUMS): downloaded and checked now, into a temporary directory"
+		if [ "$join" = 0 ]; then
+			echo "  write  $dir/kantel-host (mode 0755)"
+			echo
+			echo "Dry run: nothing has been changed. Run the same command without --dry-run to install."
+			return 0
+		fi
+		# Its plan has the rest, from putting the binary in place to starting the service. `plan` is install that only
+		# ever prints its plan, so an option that takes "--dry-run" as its value (--name --dry-run) can't make this an
+		# install. A release from before `plan` refuses it as an unknown command, which installs nothing either.
+		"$work/$asset" plan "$@"
+		return
+	fi
 
 	# Into place first, and run from there: /tmp may be mounted noexec. A rename, so a running kantel-host keeps its
 	# file; `kantel-host install` doesn't copy a binary that is already at /usr/local/bin/kantel-host.
-	dir=${KANTEL_BIN_DIR:-/usr/local/bin}
 	mkdir -p "$dir"
 	cp "$work/$asset" "$dir/kantel-host.new"
 	chmod 0755 "$dir/kantel-host.new"

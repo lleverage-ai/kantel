@@ -71,7 +71,7 @@ Check that the machine can run sandboxes:
 sudo kantel-host doctor
 ```
 
-The `kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` lines must say `ok`. On a machine that has never been a host, the `disk` line reads 0 GiB because `/var/lib/kantel-host` doesn't exist yet: check the free space with `df -h /var/lib` instead. [Hosts](/hosts/#check-a-machine) explains each line.
+The `kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` lines must say `ok`, and `doctor` exits non-zero until they do. [Hosts](/hosts/#check-a-machine) explains each line.
 
 ## 5. Join the host
 
