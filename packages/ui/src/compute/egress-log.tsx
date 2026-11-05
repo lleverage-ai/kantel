@@ -357,8 +357,8 @@ function WideEntry({
 			<tr
 				data-egress={entry.id}
 				data-decision={entry.decision}
-				// Every cell on the request's first line, so a row with a path under its host still reads straight across.
-				className={`[&>td]:align-top ${expanded ? "bg-hover" : ""} ${opens(entry) ? "cursor-pointer hover:bg-hover" : ""}`}
+				// Every cell on the first line of text of the request, by baseline, so a row with a path under its host reads straight across.
+				className={`[&>td]:align-baseline ${expanded ? "bg-hover" : ""} ${opens(entry) ? "cursor-pointer hover:bg-hover" : ""}`}
 				onClick={
 					opens(entry)
 						? (event) => {
