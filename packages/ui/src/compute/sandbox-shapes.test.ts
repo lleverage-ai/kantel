@@ -21,7 +21,7 @@ import {
 	sizeText,
 	vcpuRangeFor,
 } from "./compute-model.ts";
-import { NewSandboxDialog, newSandboxInput, ShapeFields } from "./sandboxes-page.tsx";
+import { NewSandboxDialog, type NewSandboxForm, newSandboxInput, ShapeFields } from "./sandboxes-page.tsx";
 
 describe("sandbox shapes", () => {
 	it("isolates take 128 to 512 MB in 64 MB steps, 256 by default", () => {
@@ -92,6 +92,7 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		shapes: SandboxShapes,
 		shape: { vcpus: number; memoryMb: number; diskGb?: number },
 		diskKept = false,
+		diskInherited = false,
 	) =>
 		renderToStaticMarkup(
 			createElement(ShapeFields, {
@@ -100,6 +101,7 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 				hosting: "self-hosted",
 				shape,
 				diskKept,
+				diskInherited,
 				onVcpus: () => {},
 				onMemory: () => {},
 				onDisk: () => {},
@@ -118,6 +120,12 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		expect(kept).not.toMatch(/GB disk/);
 		expect(kept.match(/type="range"/g)).toHaveLength(2);
 		expect(kept).toContain("A sandbox made from a snapshot keeps its disk.");
+		// A template's own machine: its host gives the disk, so none shows as chosen until one is.
+		const inherited = fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 2, memoryMb: 4096 }, false, true);
+		expect(inherited).not.toMatch(/GB disk/);
+		expect(inherited.match(/type="range"/g)).toHaveLength(2);
+		expect(inherited).toContain("Disk: the template&#x27;s own, as its host gives it.");
+		expect(inherited).toContain("Choose a disk");
 		// Hosts that take no disk off their presets: none is offered, whether they make other shapes or only presets.
 		const custom = fields({ ...DEFAULT_SANDBOX_SHAPES, microvm: noDisk }, { vcpus: 3, memoryMb: 6144 });
 		expect(custom).not.toMatch(/GB disk|>Disk</);
@@ -171,6 +179,18 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		const isolate = newSandboxInput({ ...form, kind: "isolate", shape: { vcpus: 0, memoryMb: 256, diskGb: 80 } });
 		expect(isolate.shape).toEqual({ vcpus: 0, memoryMb: 256 });
 		expect(newSandboxInput({ ...form, shape: { vcpus: 4, memoryMb: 8192 } }).shape).not.toHaveProperty("diskGb");
+		// A template's own machine sends no shape, so no disk; one chosen goes with the shape.
+		const template = { id: "tpl_1", spec: { vcpus: 2, memoryMb: 4096 } } as NonNullable<NewSandboxForm["template"]>;
+		const own = newSandboxInput({ ...form, shape: { vcpus: 2, memoryMb: 4096 }, template });
+		expect(own).not.toHaveProperty("shape");
+		expect(own.templateId).toBe("tpl_1");
+		const chosen = newSandboxInput({
+			...form,
+			shape: { vcpus: 2, memoryMb: 4096, diskGb: 90 },
+			template,
+			shapeChosen: true,
+		});
+		expect(chosen.shape).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 90 });
 	});
 
 	it("keeps memory on the slider's grid, so what is sent is what is shown", () => {

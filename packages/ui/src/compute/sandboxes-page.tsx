@@ -1433,6 +1433,7 @@ export function ShapeFields({
 	hosting,
 	shape,
 	diskKept = false,
+	diskInherited = false,
 	onVcpus,
 	onMemory,
 	onDisk,
@@ -1444,6 +1445,11 @@ export function ShapeFields({
 	shape: SandboxShape;
 	/** It starts from a snapshot, which keeps its own disk: no disk may be chosen. */
 	diskKept?: boolean;
+	/**
+	 * It is a template's own machine, whose disk its host gives, until a disk is chosen (`onDisk`): no disk is shown as
+	 * chosen, since none is asked for.
+	 */
+	diskInherited?: boolean;
 	onVcpus: (vcpus: number) => void;
 	onMemory: (memoryMb: number) => void;
 	onDisk: (diskGb: number) => void;
@@ -1479,7 +1485,10 @@ export function ShapeFields({
 	// A disk is chosen only where the hosts take one off their presets and it doesn't start from a snapshot, which keeps
 	// its own. Otherwise it is the host's to give, and the sandbox shows the disk it got once it runs. Disk isn't priced.
 	const diskRange = diskRangeFor(shapes);
-	const disk = diskRange === undefined || diskKept ? undefined : (shape.diskGb ?? onGrid(diskRange, diskRange.default));
+	const disk =
+		diskRange === undefined || diskKept || diskInherited
+			? undefined
+			: (shape.diskGb ?? onGrid(diskRange, diskRange.default));
 	const summary = (
 		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
 			<span>
@@ -1543,8 +1552,15 @@ export function ShapeFields({
 				marks={presets.filter((entry) => entry.vcpus === shape.vcpus).map((entry) => entry.memoryMb)}
 				onChange={onMemory}
 			/>
-			{diskRange === undefined ? null : disk === undefined ? (
+			{diskRange === undefined ? null : diskKept ? (
 				<p className="text-xs text-muted">A sandbox made from a snapshot keeps its disk.</p>
+			) : disk === undefined ? (
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<p className="text-xs text-muted">Disk: the template's own, as its host gives it.</p>
+					<Button size="xs" variant="ghost" onClick={() => onDisk(onGrid(diskRange, diskRange.default))}>
+						Choose a disk
+					</Button>
+				</div>
 			) : (
 				<SliderField
 					label="Disk"
@@ -1794,7 +1810,8 @@ export function NewSandboxDialog({
 		kind === "isolate"
 			? { vcpus: 0, memoryMb: isolateMb }
 			: ownShape
-				? { vcpus: picked.spec.vcpus, memoryMb: picked.spec.memoryMb, ...disk }
+				? // Its host gives the template's machine its disk: none is chosen until one is (`diskInherited`).
+					{ vcpus: picked.spec.vcpus, memoryMb: picked.spec.memoryMb }
 				: { vcpus, memoryMb, ...disk };
 	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds, and any disk in range.
 	const ready =
@@ -1919,6 +1936,7 @@ export function NewSandboxDialog({
 						hosting={hosting}
 						shape={shape}
 						diskKept={diskKept}
+						diskInherited={ownShape}
 						onVcpus={(next) => {
 							// From what the sliders show: a picked template's own shape until one moves.
 							setShapeChosen(true);
