@@ -113,6 +113,11 @@ export interface BackendMountStatus {
 	readonly path: string;
 	readonly status: computeSchema.MountStatus;
 	readonly error?: string;
+	/**
+	 * The backend answered this one itself: its host can't do that kind of mount, so was never sent it and will never
+	 * report it. Kept however the host's own statuses are ordered (`mountsAfter`).
+	 */
+	readonly unsent?: true;
 }
 
 /**

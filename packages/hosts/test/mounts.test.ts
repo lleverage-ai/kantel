@@ -607,9 +607,10 @@ describe("the backend's mounts", () => {
 		const { host, hostId, backend, connect } = await setup();
 		await connect();
 		const placement = await backend.create(spec("sbx_one", hostId, [BUNDLE, BUCKET]));
+		// Unsent: the backend's own word, which the compute plane keeps however the host's reports are ordered.
 		expect(placement.mounts).toEqual([
-			{ path: "/mnt/skills", status: "failed", error: "This host can't mount bundles yet" },
-			{ path: "/mnt/data", status: "failed", error: "This host can't mount buckets yet" },
+			{ path: "/mnt/skills", status: "failed", error: "This host can't mount bundles yet", unsent: true },
+			{ path: "/mnt/data", status: "failed", error: "This host can't mount buckets yet", unsent: true },
 		]);
 		expect(host.calls.find((call) => call.method === "sandbox.create")?.params.mounts).toBeUndefined();
 		// No mounts: none in the placement either.
@@ -625,7 +626,7 @@ describe("the backend's mounts", () => {
 		]);
 		expect(placement.mounts).toEqual([
 			{ path: "/mnt/skills", status: "pending" },
-			{ path: "/mnt/data", status: "failed", error: "This host can't mount buckets yet" },
+			{ path: "/mnt/data", status: "failed", error: "This host can't mount buckets yet", unsent: true },
 		]);
 	});
 

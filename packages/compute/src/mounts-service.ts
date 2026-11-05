@@ -141,9 +141,10 @@ export const unanswered = (mount: computeSchema.Mount): string =>
  * it answered none, so a backend that predates mounts never leaves one looking mounted. Every boot sets its mounts
  * `pending` first (and forgets `mountsAt`), so one already `ready` or `failed` here was settled by its host's report
  * (`reportMountStatuses`) during this boot, which can land before the boot's own answer is written. When both say
- * when the host set them (`at`), the later wins: an answer set before the report keeps none of its statuses, even a
- * `failed` the host has since retried. Otherwise (a host too old to say) an answer of `pending` doesn't undo a
- * settled status.
+ * when the host set them (`at`), the later wins: an answer set before the report keeps none of its host's statuses,
+ * even a `failed` the host has since retried. Otherwise (a host too old to say) an answer of `pending` doesn't undo a
+ * settled status. A status the backend gave itself (`unsent`: the host can't do that kind, so was never sent it and
+ * will never report it) is kept whatever the order.
  */
 export function mountsAfter(
 	mounts: readonly computeSchema.SandboxMount[] | undefined,
@@ -152,11 +153,12 @@ export function mountsAfter(
 ): computeSchema.SandboxMount[] | undefined {
 	if (mounts === undefined || mounts.length === 0) return undefined;
 	const ordered = at.stored !== undefined && at.reported !== undefined;
-	if (ordered && (at.reported ?? 0) < (at.stored ?? 0)) return mounts.map((mount) => ({ ...mount }));
+	const older = ordered && (at.reported ?? 0) < (at.stored ?? 0);
 	const byPath = new Map((reported ?? []).map((status) => [status.path, status]));
 	return mounts.map((mount) => {
 		const status = byPath.get(mount.path);
 		const { error: _old, ...rest } = mount;
+		if (older && status?.unsent !== true) return { ...mount };
 		if (status === undefined) return { ...rest, status: "failed", error: unanswered(mount) };
 		if (!ordered && status.status === "pending" && (mount.status === "ready" || mount.status === "failed")) {
 			return { ...mount };

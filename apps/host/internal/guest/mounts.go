@@ -120,6 +120,28 @@ func (ms *Mounts) Apply(ctx context.Context, specs []MountSpec) []MountResult {
 	return results
 }
 
+// Release unmounts the bucket mounts at paths, if there are any there: a sandbox made from a snapshot may have one
+// where it now has a bundle, which goes before the bundle is mounted, so its unmount can never take the bundle
+// instead (POST /bundles).
+func (ms *Mounts) Release(paths []string) {
+	if ms == nil {
+		return
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	gone := false
+	for _, p := range paths {
+		if m, ok := ms.byPath[p]; ok {
+			m.unmount()
+			delete(ms.byPath, p)
+			gone = true
+		}
+	}
+	if gone {
+		ms.save()
+	}
+}
+
 func (ms *Mounts) save() {
 	if ms.StateFile == "" {
 		return
@@ -222,6 +244,11 @@ func (ms *Mounts) mount(ctx context.Context, s MountSpec) (*bucketMount, error) 
 	}
 	m.tree.Store(newTree(*man))
 	m.checked.Store(time.Now().UnixNano())
+	// A bundle still mounted here (a snapshot's, which POST /bundles couldn't unmount: something in the sandbox uses
+	// it) stays, as a bundle replaced by another does: never detached under its users, so its drive stays held.
+	if _, ok := readBundleState()[s.Path]; ok {
+		return nil, fmt.Errorf("the bundle mounted at %s before is still in use in the sandbox", s.Path)
+	}
 	// Something left at the path (a mount of a previous run of the agent, its server gone) goes first.
 	_ = syscall.Unmount(s.Path, syscall.MNT_DETACH)
 	if err := os.MkdirAll(s.Path, 0o755); err != nil {

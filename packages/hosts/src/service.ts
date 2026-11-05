@@ -68,11 +68,17 @@ export interface MountHandoff {
 	/** The mounts the host can do, for the call's `mounts` (sent only when there are some). */
 	readonly send: readonly HostMount[];
 	/**
-	 * Every mount's status once the host answered with `sandbox`, in the order given: `failed` for one it can't do, else
-	 * what it reported for that path, or `pending`. Undefined when there were no mounts.
+	 * Every mount's status once the host answered with `sandbox`, in the order given: `failed` (and `unsent`) for one it
+	 * can't do, else what it reported for that path, or `pending`. Undefined when there were no mounts.
 	 */
-	status(sandbox: HostSandbox | undefined): HostMountStatus[] | undefined;
+	status(sandbox: HostSandbox | undefined): HandoffMountStatus[] | undefined;
 }
+
+/**
+ * A mount's status after a hand-off. `unsent`: the host was never sent it (it can't do that kind), so this `failed` is
+ * the only word it will get, whatever the order of the host's own reports.
+ */
+export type HandoffMountStatus = HostMountStatus & { readonly unsent?: true };
 
 /**
  * Splits `mounts` by what a host with `features` can mount. A host that predates mounts would ignore the field and
@@ -89,8 +95,10 @@ export function mountHandoff(
 		status(sandbox) {
 			if (all.length === 0) return undefined;
 			const reported = new Map((parseMountStatuses(sandbox?.mounts) ?? []).map((status) => [status.path, status]));
-			return all.map((mount): HostMountStatus => {
-				if (!can(mount)) return { path: mount.path, status: "failed", error: MOUNT_KINDS[mount.kind].refusal };
+			return all.map((mount): HandoffMountStatus => {
+				if (!can(mount)) {
+					return { path: mount.path, status: "failed", error: MOUNT_KINDS[mount.kind].refusal, unsent: true };
+				}
 				return reported.get(mount.path) ?? { path: mount.path, status: "pending" };
 			});
 		},

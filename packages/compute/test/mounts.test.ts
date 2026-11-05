@@ -664,6 +664,50 @@ describe("a host's report that lands before its boot's answer is written", () =>
 		expect(await statuses(first.id)).toEqual(["failed", "ready"]);
 	});
 
+	it("keeps the backend's own failure of a mount its host can't do, even when the host's answer is older", async () => {
+		// A bundle and a bucket on a host that does only bundles: the bucket is never sent, so the hand-off's failure is the
+		// only word it gets. The bundle's ready report (t=101) lands before the answer (t=100) is written.
+		let service: { reportMounts: ComputeApi["service"]["reportMounts"] } | undefined;
+		const answer = {
+			mounts: [
+				{ path: "/mnt/skills", status: "pending" as const },
+				{
+					path: "/mnt/data",
+					status: "failed" as const,
+					error: "This host can't mount buckets yet",
+					unsent: true as const,
+				},
+			],
+			mountsAt: 100,
+		};
+		const { api, tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => {
+					const placed = await stub.create(spec);
+					await service?.reportMounts(STUB_HOST_ID, spec.sandboxId, [{ path: "/mnt/skills", status: "ready" }], 101);
+					return { ...placed, ...answer };
+				},
+			}),
+		});
+		service = api.service;
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const source = await tom.createBucketSource({ name: "org", provider: "s3", bucket: "org" });
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [
+				{ path: "/mnt/skills", source: { kind: "bundle", digest: bundle.digest } },
+				{ path: "/mnt/data", source: { kind: "bucket", bucketSourceId: source.id, prefix: "org/" } },
+			],
+			wait: true,
+		});
+		const got = (await tom.getSandbox(sandbox.id)).mounts;
+		expect(got?.map((mount) => [mount.path, mount.status, mount.error])).toEqual([
+			["/mnt/skills", "ready", undefined],
+			["/mnt/data", "failed", "This host can't mount buckets yet"],
+		]);
+		expect(got?.some((mount) => "unsent" in mount)).toBe(false);
+	});
+
 	it("leaves a mount pending when no report came, and a boot sets a settled one pending again", async () => {
 		const { tom } = setup({
 			backend: (stub) => ({

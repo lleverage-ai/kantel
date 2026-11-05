@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -160,4 +161,31 @@ func TestMetadataChangeIsANewInode(t *testing.T) {
 	if ino(e) == ino(resized) {
 		t.Error("a new size kept the inode")
 	}
+}
+
+// Release drops the bucket mounts at the paths it is given (a snapshot's, where the sandbox now has bundles), and
+// only those, saving what is left; a guest without bucket mounts (nil) has nothing to release.
+func TestReleaseDropsOnlyTheBucketMountsAtThosePaths(t *testing.T) {
+	state := t.TempDir() + "/mounts.json"
+	ms := &Mounts{StateFile: state, byPath: map[string]*bucketMount{}}
+	for _, p := range []string{"/mnt/data", "/mnt/keep"} {
+		ms.byPath[p] = &bucketMount{ms: ms, spec: MountSpec{Path: p, Key: "k" + p}}
+	}
+	ms.Release([]string{"/mnt/data", "/workspace/skills"})
+	if _, ok := ms.byPath["/mnt/data"]; ok {
+		t.Fatal("the bucket mount where a bundle goes is released")
+	}
+	if _, ok := ms.byPath["/mnt/keep"]; !ok {
+		t.Fatal("another bucket mount stays")
+	}
+	raw, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved []MountSpec
+	if err := json.Unmarshal(raw, &saved); err != nil || len(saved) != 1 || saved[0].Path != "/mnt/keep" {
+		t.Fatalf("what is left is saved: %s %v", raw, err)
+	}
+	var none *Mounts
+	none.Release([]string{"/mnt/data"})
 }

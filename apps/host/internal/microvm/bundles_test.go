@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -117,7 +118,12 @@ func TestBundleDriveFiles(t *testing.T) {
 func TestCreateLetsGoOfTheBaseLockWhenDrivesFail(t *testing.T) {
 	for _, memory := range []bool{true, false} {
 		root := t.TempDir()
-		m := &Manager{cfg: Config{Root: root, Sizes: DefaultSizes, BundleDrives: 2}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		// A real root filesystem to link, so the create gets past it to the drives.
+		rootfs := filepath.Join(root, "sandbox.ext4")
+		if err := os.WriteFile(rootfs, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m := &Manager{cfg: Config{Root: root, Rootfs: rootfs, Sizes: DefaultSizes, BundleDrives: 2}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		sdir := m.snapshotDir("snap-1")
 		if err := os.MkdirAll(sdir, 0o700); err != nil {
 			t.Fatal(err)
@@ -138,8 +144,10 @@ func TestCreateLetsGoOfTheBaseLockWhenDrivesFail(t *testing.T) {
 		if err := os.Link(image, filepath.Join(vm, "bundle0.erofs")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.Create(context.Background(), proto.CreateParams{SandboxID: "sbx_1", Tier: Tier, Size: "default", From: "snap-1"}); err == nil {
-			t.Fatalf("memory %v: the create fails", memory)
+		// It fails at the drive the leftover is in the way of, not before.
+		_, err := m.Create(context.Background(), proto.CreateParams{SandboxID: "sbx_1", Tier: Tier, Size: "default", From: "snap-1"})
+		if !errors.Is(err, fs.ErrExist) || !strings.Contains(err.Error(), "a bundle drive") {
+			t.Fatalf("memory %v: the create fails setting up its bundle drives: %v", memory, err)
 		}
 		if raw, err := os.ReadFile(image); err != nil || string(raw) != "erofs image" {
 			t.Fatalf("memory %v: the image keeps its bytes: %q %v", memory, raw, err)

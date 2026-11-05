@@ -10,13 +10,24 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
+)
+
+// What one extraction may make besides its files' bytes, so a small tar can't make the host hold too much: entries
+// (each tar entry, and each parent directory one implies), and the bytes of the directory names kept until the end
+// to set their modes.
+var (
+	maxExtractEntries  = 1 << 20
+	maxExtractDirBytes = 64 << 20
 )
 
 // Extract unpacks the tar at tarPath into root, for a mkfs.erofs without --tar. It keeps every file's mode (execute
 // bits too) and modification time, regular files, directories, symbolic links (as they are: they resolve inside the
 // sandbox) and hard links, and skips devices and FIFOs. Nothing it writes is outside root: a name with `..` is
 // refused, and so is one under a symbolic link the tar made. maxBytes bounds the files' bytes, so a sparse entry can't
-// fill the disk.
+// fill the disk; maxExtractEntries the entries it reads and the directories it makes, implied ones too, so empty
+// files under deep paths can't fill the host's inodes; and a directory's mode and time are kept as no more than its
+// path (once per directory, within maxExtractDirBytes), never the entry's other headers.
 func Extract(tarPath, root string, maxBytes int64) error {
 	f, err := os.Open(tarPath)
 	if err != nil {
@@ -28,11 +39,20 @@ func Extract(tarPath, root string, maxBytes int64) error {
 	}
 	tr := tar.NewReader(bufio.NewReaderSize(f, 1<<20))
 	type dirMode struct {
-		path string
-		hdr  *tar.Header
+		path  string
+		mode  os.FileMode
+		mtime time.Time
 	}
 	var dirs []dirMode
+	dirAt := map[string]int{}
 	var written int64
+	entries, dirBytes := 0, 0
+	count := func() error {
+		if entries++; entries > maxExtractEntries {
+			return fmt.Errorf("the bundle has more than %d entries", maxExtractEntries)
+		}
+		return nil
+	}
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -40,6 +60,9 @@ func Extract(tarPath, root string, maxBytes int64) error {
 		}
 		if err != nil {
 			return fmt.Errorf("the bundle isn't a tar: %w", err)
+		}
+		if err := count(); err != nil {
+			return err
 		}
 		name, err := entryName(hdr.Name)
 		if err != nil {
@@ -49,10 +72,8 @@ func Extract(tarPath, root string, maxBytes int64) error {
 		if err != nil {
 			return err
 		}
-		if name != "" {
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
+		if err := mkdirParents(root, name, count); err != nil {
+			return fmt.Errorf("the bundle's entry %q: %w", hdr.Name, err)
 		}
 		mode := os.FileMode(hdr.Mode) & os.ModePerm
 		switch hdr.Typeflag {
@@ -62,8 +83,18 @@ func Extract(tarPath, root string, maxBytes int64) error {
 			if err := mkdirAt(target); err != nil {
 				return fmt.Errorf("the bundle's directory %q: %w", hdr.Name, err)
 			}
-			// Their modes last: a directory without write permission still takes its entries first.
-			dirs = append(dirs, dirMode{target, hdr})
+			// Their modes last: a directory without write permission still takes its entries first. A directory named
+			// again takes the later entry's, as with tar itself.
+			d := dirMode{target, os.FileMode(hdr.Mode) & os.ModePerm, hdr.ModTime}
+			if i, ok := dirAt[target]; ok {
+				dirs[i] = d
+				break
+			}
+			if dirBytes += len(target); dirBytes > maxExtractDirBytes {
+				return fmt.Errorf("the bundle's directory names are more than %d bytes", maxExtractDirBytes)
+			}
+			dirAt[target] = len(dirs)
+			dirs = append(dirs, d)
 		case tar.TypeReg, tar.TypeGNUSparse:
 			// Against what is left, so a huge size (a sparse file's is its logical one) can't overflow the sum.
 			if hdr.Size < 0 || hdr.Size > maxBytes-written {
@@ -121,8 +152,38 @@ func Extract(tarPath, root string, maxBytes int64) error {
 		if info, err := os.Lstat(d.path); err != nil || !info.IsDir() {
 			continue
 		}
-		_ = os.Chmod(d.path, os.FileMode(d.hdr.Mode)&os.ModePerm)
-		_ = os.Chtimes(d.path, d.hdr.ModTime, d.hdr.ModTime)
+		_ = os.Chmod(d.path, d.mode)
+		_ = os.Chtimes(d.path, d.mtime, d.mtime)
+	}
+	return nil
+}
+
+// mkdirParents makes the directories above name under root that aren't there yet, each one counted (count refuses
+// once there are too many). One already there must be a directory: within has refused a symbolic link above name.
+func mkdirParents(root, name string, count func() error) error {
+	if name == "" {
+		return nil
+	}
+	parts := strings.Split(name, "/")
+	at := root
+	for _, part := range parts[:len(parts)-1] {
+		at = filepath.Join(at, part)
+		info, err := os.Lstat(at)
+		if err == nil {
+			if !info.IsDir() {
+				return errors.New("is under a file the bundle made")
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := count(); err != nil {
+			return err
+		}
+		if err := os.Mkdir(at, 0o755); err != nil {
+			return err
+		}
 	}
 	return nil
 }
