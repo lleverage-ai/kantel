@@ -737,8 +737,13 @@ export interface UsagePoint {
 	/** CPU use over it, 0 to 1 of what it has: a sandbox's vCPUs, a host's. The unit of `Sandbox.usage`. */
 	readonly cpu: number;
 	readonly memUsedBytes: number;
-	/** A host's disk in use; a sandbox's points leave it out. */
+	/** Its disk in use, where its host says: a host's always, a sandbox's where its host reads its filesystem. */
 	readonly diskUsedBytes?: number;
+	/**
+	 * How much of the interval its work waited on disk IO, 0 to 1 (Linux's IO pressure, `some`): a sandbox's where its
+	 * host reads it. Absent: not measured, not none.
+	 */
+	readonly ioPressure?: number;
 }
 
 /** Usage points at a steady interval, oldest first, with what they're measured against. */
@@ -746,9 +751,23 @@ export interface UsageSeries {
 	readonly intervalMs: number;
 	/** The most memory there is: a sandbox's limit, a host's total. */
 	readonly memLimitBytes?: number;
-	/** A host's disk. */
+	/** Its disk: a host's, or a sandbox's where its host reads its filesystem. */
 	readonly diskTotalBytes?: number;
 	readonly points: readonly UsagePoint[];
+}
+
+/** How far back a sandbox's metrics look: the last hour, day or week. */
+export type UsageRange = "1h" | "24h" | "1w";
+
+/** One of the busiest processes in a running sandbox, as `ps` says. */
+export interface SandboxProcess {
+	readonly pid: number;
+	/** Its command line, whole. */
+	readonly command: string;
+	/** Its CPU, as a share of one vCPU in percent: 150 is one and a half. */
+	readonly cpuPercent: number;
+	/** Its resident memory, in bytes. */
+	readonly memoryBytes: number;
 }
 
 /**
@@ -800,6 +819,15 @@ export interface SandboxesSource {
 	usageNow?(id: string): Promise<SandboxUsageNow>;
 	/** Its CPU and memory every few seconds, for the live graphs. Absent: they draw `usage` and don't move. */
 	readonly usageSeries?: UsageRead;
+	/**
+	 * Its metrics over the last hour, day or week, for its metrics dialog: points at an interval that suits the range.
+	 * Absent: the dialog draws what the live read has.
+	 */
+	usageHistory?(id: string, range: UsageRange): Promise<UsageSeries>;
+	/** A running sandbox's busiest processes, by CPU, most first. Absent: the dialog says it can't list them. */
+	processes?(id: string): Promise<readonly SandboxProcess[]>;
+	/** Gives it a new name, which is its subdomain too. Absent: the list offers no rename. */
+	rename?(id: string, name: string): Promise<Sandbox>;
 	/** Its ports with a URL. Absent where the host can't list them: the page has no Ports. */
 	ports?(id: string): Promise<readonly SandboxPort[]>;
 	/** Gives a port a URL, or changes whether it's public. A private port's answer has its token in the URL, once. */

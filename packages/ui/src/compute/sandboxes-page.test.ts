@@ -1,11 +1,14 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import type { Sandbox, SandboxState, Template } from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
+import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
 import {
+	countdownText,
 	newSandboxInput,
 	newSandboxType,
 	QUICK_SANDBOX,
@@ -13,6 +16,7 @@ import {
 	SandboxesPage,
 	sandboxesShown,
 	screenLink,
+	shortId,
 	showsCpu,
 } from "./sandboxes-page.tsx";
 import { SettingsFrame } from "./settings-nav.tsx";
@@ -162,7 +166,7 @@ describe("a sandbox's page", () => {
 });
 
 describe("the sandboxes list", () => {
-	it("draws CPU while a sandbox runs or has just failed, isolates and new ones too, never for a stopped one", () => {
+	it("reads usage live while a sandbox runs or has just failed, isolates and new ones too, never for a stopped one", () => {
 		expect(showsCpu({ state: "running" })).toBe(true);
 		expect(showsCpu({ state: "stopping" })).toBe(true);
 		expect(showsCpu({ state: "error" })).toBe(true);
@@ -181,12 +185,61 @@ describe("the sandboxes list", () => {
 			box("web", "stopped"),
 		];
 		const names = (list: readonly Sandbox[]) => list.map((each) => each.name);
-		expect(names(sandboxesShown(all, "all", ""))).toEqual(["api-server", "API-worker", "eval", "web"]);
-		expect(names(sandboxesShown(all, "all", "  api "))).toEqual(["api-server", "API-worker"]);
+		const shown = (state: SandboxFilters["state"], search: string) =>
+			names(sandboxesShown(all, { ...NO_FILTERS, state, search }, 0));
+		expect(shown("all", "")).toEqual(["api-server", "API-worker", "eval", "web"]);
+		expect(shown("all", "  api ")).toEqual(["api-server", "API-worker"]);
 		// Paused counts as stopped; a failed one only under Error.
-		expect(names(sandboxesShown(all, "stopped", ""))).toEqual(["API-worker", "web"]);
-		expect(names(sandboxesShown(all, "error", ""))).toEqual(["eval"]);
-		expect(names(sandboxesShown(all, "running", "api"))).toEqual(["api-server"]);
+		expect(shown("stopped", "")).toEqual(["API-worker", "web"]);
+		expect(shown("error", "")).toEqual(["eval"]);
+		expect(shown("running", "api")).toEqual(["api-server"]);
+	});
+
+	it("searches a sandbox's address and ID as well as its name", () => {
+		const all = [
+			{ ...box("api", "running"), id: "sbx_9f2k7d1q", hostname: "api.acme.kantel.dev" },
+			{ ...box("web", "running"), id: "sbx_33aa", hostname: "web.acme.kantel.dev" },
+		];
+		const names = (search: string) => sandboxesShown(all, { ...NO_FILTERS, search }, 0).map((each) => each.name);
+		expect(names("9F2K")).toEqual(["api"]);
+		expect(names("acme.kantel")).toEqual(["api", "web"]);
+		expect(names("web.acme")).toEqual(["web"]);
+	});
+
+	it("filters by the latest snapshot's age and by type, and counts each option with the others as they are", () => {
+		const now = 10 * DAY;
+		const all: Sandbox[] = [
+			{ ...box("fresh", "running"), snapshot: { id: "snp_1", takenAt: now - HOUR } },
+			{ ...box("old", "stopped"), snapshot: { id: "snp_2", takenAt: now - 3 * DAY } },
+			{ ...box("never", "running"), kind: "isolate" },
+		];
+		const names = (filters: Partial<SandboxFilters>) =>
+			sandboxesShown(all, { ...NO_FILTERS, ...filters }, now).map((each) => each.name);
+		expect(names({ snapshot: "day" })).toEqual(["fresh"]);
+		expect(names({ snapshot: "older" })).toEqual(["old"]);
+		expect(names({ snapshot: "none" })).toEqual(["never"]);
+		expect(names({ type: "isolate" })).toEqual(["never"]);
+		expect(names({ type: "microvm", state: "running" })).toEqual(["fresh"]);
+		const counts = filterCounts(all, { ...NO_FILTERS, state: "running" }, "type", TYPE_FILTERS, now);
+		expect([...counts]).toEqual([
+			["all", 2],
+			["microvm", 1],
+			["isolate", 1],
+		]);
+	});
+
+	it("counts down to auto-stop in minutes, and in minutes and seconds for its last 10", () => {
+		const running = { state: "running" as const };
+		expect(countdownText({ ...running, stopsAt: 52 * MINUTE }, 0)).toBe("52m");
+		expect(countdownText({ ...running, stopsAt: 4 * MINUTE + 7_000 }, 0)).toBe("4:07");
+		expect(countdownText({ ...running, stopsAt: 59_500 }, 0)).toBe("1:00");
+		expect(countdownText(running, 0)).toBe("Always on");
+		expect(countdownText({ state: "stopped", stopsAt: 5 * MINUTE }, 0)).toBe("–");
+	});
+
+	it("shortens a long ID to its start and end, and leaves a short one whole", () => {
+		expect(shortId("sbx_9f2k7d1qzz4m")).toBe("sbx_9f2k…zz4m");
+		expect(shortId("sbx_33aa")).toBe("sbx_33aa");
 	});
 });
 

@@ -46,10 +46,13 @@ import type {
 	SandboxImage,
 	SandboxKind,
 	SandboxPort,
+	SandboxProcess,
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
 	TelemetrySettings,
+	UsageRange,
+	UsageSeries,
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
@@ -61,6 +64,7 @@ import {
 	presetOf,
 	type SandboxSize,
 	sameProxySettings,
+	sandboxScreen,
 	sizeSpec,
 	sshWithoutCliCommand,
 	startingSnapshot,
@@ -126,6 +130,56 @@ export function usageSeries(seed: number, busy = 0.5, points = 30): readonly num
 }
 
 const flat = (points = 30): readonly number[] => Array.from({ length: points }, () => 0);
+
+/** What a sandbox's history range spans, and the interval its points are at, as the API keeps them. */
+const HISTORY: Readonly<Record<UsageRange, { readonly spanMs: number; readonly intervalMs: number }>> = {
+	"1h": { spanMs: HOUR, intervalMs: 5_000 },
+	"24h": { spanMs: DAY, intervalMs: 5 * MINUTE },
+	"1w": { spanMs: 7 * DAY, intervalMs: HOUR },
+};
+
+/** A running sandbox's busiest processes, as `ps` would list them: a desktop's for one with a screen, else a server's. */
+function sampleProcesses(box: Sandbox): readonly SandboxProcess[] {
+	const mb = 1024 ** 2;
+	// They move a little on each read, as a live list does.
+	const wobble = (base: number, at: number) =>
+		Math.max(0, Math.round((base + Math.sin(Date.now() / 7_000 + at) * base * 0.15) * 10) / 10);
+	const desktop: readonly [string, number, number][] = [
+		[
+			"/opt/google/chrome/chrome --type=gpu-process --disable-dev-shm-usage --use-gl=angle --use-angle=swiftshader-webgl --field-trial-handle=3,i,1738263561934",
+			38.4,
+			269,
+		],
+		["/usr/bin/sunshine /etc/kantel/sunshine.conf", 11.8, 268],
+		[
+			"/opt/google/chrome/chrome --type=renderer --disable-dev-shm-usage --lang=en-GB --num-raster-threads=2 --enable-main-frame-before-activation",
+			6.1,
+			204,
+		],
+		["/usr/lib/xorg/Xorg -core :0 -seat seat0 -auth /var/run/lightdm/root/:0 -nolisten tcp vt7 -novtswitch", 0.8, 50],
+		["node /home/kantel/app/node_modules/.bin/next dev --port 3000", 0.6, 302],
+		["/usr/local/bin/kantel-guest serve --vsock 1024", 0.3, 18],
+		["/usr/sbin/sshd -D -e", 0, 7],
+	];
+	const server: readonly [string, number, number][] = [
+		["node --enable-source-maps dist/server.js --port 8080", 24.6, 412],
+		["postgres: kantel app 127.0.0.1(51422) SELECT", 7.2, 96],
+		["/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock", 1.4, 88],
+		["/usr/bin/containerd", 0.7, 41],
+		["redis-server *:6379", 0.4, 12],
+		["/usr/local/bin/kantel-guest serve --vsock 1024", 0.3, 18],
+		["/usr/sbin/sshd -D -e", 0, 7],
+	];
+	const rows = sandboxScreen(box) === "desktop" ? desktop : server;
+	return rows
+		.map(([command, cpu, memory], at) => ({
+			pid: 412 + at * 37,
+			command,
+			cpuPercent: wobble(cpu, at),
+			memoryBytes: Math.round(wobble(memory, at + 3) * mb),
+		}))
+		.sort((a, b) => b.cpuPercent - a.cpuPercent);
+}
 
 /** The sample hosts' disk for a microVM of `memoryMb`: the first preset's with at least that memory, else the last's. */
 const sampleDisk = (memoryMb: number): number => {
@@ -1556,6 +1610,11 @@ export interface ComputeFixtureOptions {
 	readonly publicUrl?: string;
 	/** The deployment has templates turned on (experimental): Templates in the sidebar and a picker in New sandbox. */
 	readonly templates?: boolean;
+	/**
+	 * What a sandbox's host measures: `all` (default) CPU, memory, disk and IO; `cpu-memory` an older host's CPU and
+	 * memory alone, with no history beyond the live hour and no process list.
+	 */
+	readonly metrics?: "all" | "cpu-memory";
 }
 
 let counter = 0;
@@ -1578,6 +1637,26 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const at = (time: number): number => time + shift;
 	const now = (): number => (options.now === undefined ? base : Date.now());
 	const settleMs = options.settleMs ?? 1200;
+	const allMetrics = (options.metrics ?? "all") === "all";
+	/** A sandbox's made-up readings between two times: none while it isn't running, its disk and IO where measured. */
+	const sandboxUsage = (id: string, since: number, to: number, intervalMs?: number, history = false): UsageSeries => {
+		const box = find(sandboxes, id, "sandbox");
+		const spec = box.resources ?? sizeSpec(box.size);
+		const memLimitBytes = spec.memoryGb * 1024 ** 3;
+		const disk = allMetrics && box.kind === "microvm" ? { diskTotalBytes: spec.diskGb * 1024 ** 3 } : {};
+		// A stopped one has its history up to when it stopped; the live read has nothing for it.
+		if (box.state !== "running" && !history) return { intervalMs: 5_000, memLimitBytes, ...disk, points: [] };
+		const stopped = box.state === "running" ? to : Math.min(to, box.snapshot?.takenAt ?? box.createdAt);
+		return stubUsage(id, {
+			since: Math.max(since, box.createdAt),
+			now: stopped,
+			memLimitBytes,
+			...disk,
+			...(allMetrics && box.kind === "microvm" ? { io: true } : {}),
+			...(intervalMs === undefined ? {} : { intervalMs }),
+			...(box.kind === "isolate" ? { busy: 0.04 + (id.length % 5) / 50 } : {}),
+		});
+	};
 	const empty = options.empty === true;
 	const mountsOn = options.noMounts !== true;
 
@@ -2129,18 +2208,39 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
 				}),
 			// Live on this browser's clock, whatever time the rest is at: the graphs move.
-			usageSeries: (id, since) =>
+			usageSeries: (id, since) => gate(() => sandboxUsage(id, since, Date.now())),
+			...(allMetrics
+				? {
+						// Every 5 seconds over the last hour, 5-minute means over a day, hourly over a week, as the API keeps them.
+						usageHistory: (id: string, range: UsageRange) =>
+							gate(() => {
+								// On this browser's clock, as the live read is.
+								const to = Date.now();
+								const { spanMs, intervalMs } = HISTORY[range];
+								return sandboxUsage(id, to - spanMs, to, intervalMs, true);
+							}),
+						processes: (id: string) =>
+							gate(() => {
+								const box = find(sandboxes, id, "sandbox");
+								return box.state === "running" ? sampleProcesses(box) : [];
+							}),
+					}
+				: {}),
+			rename: (id, name) =>
 				gate(() => {
 					const box = find(sandboxes, id, "sandbox");
-					const spec = box.resources ?? sizeSpec(box.size);
-					const memLimitBytes = spec.memoryGb * 1024 ** 3;
-					if (box.state !== "running") return { intervalMs: 5_000, memLimitBytes, points: [] };
-					return stubUsage(id, {
-						since,
-						now: Date.now(),
-						memLimitBytes,
-						...(box.kind === "isolate" ? { busy: 0.04 + (id.length % 5) / 50 } : {}),
-					});
+					if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name))
+						throw new Error(
+							"A name is lowercase letters, digits and dashes, and starts and ends with a letter or digit.",
+						);
+					if (
+						[...sandboxes.values()].some(
+							(other) => other.id !== id && other.accountId === box.accountId && other.name === name,
+						)
+					)
+						throw new Error(`This account already has a sandbox called ${name}.`);
+					const [, ...domain] = box.hostname.split(".");
+					return put({ ...box, name, hostname: [name, ...domain].join(".") });
 				}),
 			ports: (id) => gate(() => [...(ports.get(id) ?? [])].sort((a, b) => a.port - b.port)),
 			exposePort: (id, port, isPublic) =>
