@@ -51,6 +51,7 @@ import {
 	needsEgressPolicy,
 	type SandboxTier,
 } from "./protocol.ts";
+import { DEFAULT_HOST_UPDATE_URL, type HostReleases, needsUpdate, plainVersion } from "./releases.ts";
 import { type Candidate, isRefusal, makesCustomShapes, place, type Shape, shapeOn, sizeOn } from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
 
@@ -133,7 +134,10 @@ export interface HostView {
 	readonly name: string;
 	readonly state: "online" | "unreachable" | "draining" | "revoked";
 	readonly version?: string;
+	/** The version hosts should run: the operator's (`desiredVersion`), else Kantel's latest release, once read. */
 	readonly latestVersion?: string;
+	/** It runs an older version than `latestVersion` (any other, when the operator set it), so it can be updated. */
+	readonly updateAvailable?: boolean;
 	readonly os?: string;
 	readonly arch?: "x86_64" | "aarch64";
 	readonly tiers: readonly SandboxTier[];
@@ -335,9 +339,17 @@ export interface HostsServiceOptions {
 	 * `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}`.
 	 */
 	readonly joinCommand?: string;
-	/** The version hosts should run, and where they get it (`{version}`, `{os}`, `{arch}`). */
+	/**
+	 * The version hosts should run, and where they get it (`{version}`, `{os}`, `{arch}`; default
+	 * `DEFAULT_HOST_UPDATE_URL`). With `desiredVersion`, every connected host is told to move to it.
+	 */
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
+	/**
+	 * Kantel's latest release, without `desiredVersion`: hosts older than it are said to be out of date
+	 * (`HostView.updateAvailable`), and `updateAgent` moves one to it. Nothing moves a host on its own.
+	 */
+	readonly releases?: HostReleases;
 	readonly heartbeatSeconds?: number;
 	readonly callTimeoutMs?: number;
 	readonly log?: (message: string) => void;
@@ -415,6 +427,14 @@ export interface HostsService {
 		},
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
+	/**
+	 * Asks a connected host to update its kantel-host to `latestVersion`: it fetches the binary, checks it against the
+	 * release's SHA256SUMS and restarts into it, its sandboxes running on. Answers once the binary is in place, with the
+	 * version it is moving to; the host connects again on it a few seconds later. `conflict` when it's revoked or already
+	 * on that version (or a newer one), `unavailable` when it isn't connected or no version is known, and `not_supported`
+	 * when the host refuses (one in an E2E space is updated on the machine).
+	 */
+	updateAgent(hostId: string): Promise<{ readonly version: string }>;
 	readonly sandboxes: {
 		create(input: CreateSandboxInput): Promise<SandboxPlacement>;
 		fork(
@@ -478,6 +498,8 @@ const DEFAULT_JOIN_COMMAND =
 const LABEL_KEY = /^[a-z0-9][a-z0-9._/-]{0,62}$/i;
 /** States that hold the sandbox's vCPUs and memory on its host; a stopped one holds only its disk. */
 const LIVE = new Set(["starting", "running", "stopping"]);
+/** How long a host has to fetch and check a new kantel-host before an update is given up on: 5 minutes. */
+const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 /** How often a connected host is told again which images Kantel wants it on (image patching): 15 minutes. */
 export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
 
@@ -885,6 +907,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	});
 	const hub = cluster === undefined ? local : cluster.route(local);
 
+	// Read the latest release now, so the first list after a start has it rather than starting the read itself.
+	options.releases?.known();
+
+	/** The version hosts should run now, and whether the operator set it; undefined until a release is known. */
+	const target = (latest: string | undefined): { readonly version: string; readonly pinned: boolean } | undefined =>
+		options.desiredVersion !== undefined
+			? { version: options.desiredVersion, pinned: true }
+			: latest === undefined
+				? undefined
+				: { version: latest, pinned: false };
+
 	const view = async (host: HostRecord, allocations = true): Promise<HostView> => {
 		const placements = allocations ? await store.placementsOn(host.id) : [];
 		const live = placements.filter((placement) => LIVE.has(placement.state));
@@ -903,12 +936,21 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				: host.draining
 					? "draining"
 					: "online";
+		// What's kept: a list never waits on reading the release, which only starts here when it's stale.
+		const versionView = (version: string | undefined) => {
+			const wanted = target(options.releases?.known());
+			if (wanted === undefined) return {};
+			return {
+				latestVersion: wanted.version,
+				...(needsUpdate(version, wanted.version, wanted.pinned) ? { updateAvailable: true } : {}),
+			};
+		};
 		return {
 			id: host.id,
 			name: host.name,
 			state,
 			...(facts === undefined ? {} : { version: facts.version, os: facts.os }),
-			...(options.desiredVersion === undefined ? {} : { latestVersion: options.desiredVersion }),
+			...versionView(facts?.version),
 			...(arch === undefined ? {} : { arch }),
 			tiers: facts?.tiers ?? [],
 			sizes: facts?.sizes ?? [],
@@ -1238,6 +1280,42 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const redrained = change.draining !== undefined && change.draining !== host.draining;
 			if (redrained) hub.rewelcome(hostId, await welcomeFor(next));
 			return view(next);
+		},
+		async updateAgent(hostId) {
+			const host = await hostOf(hostId);
+			if (host.revoked) throw new KantelError("conflict", "The host is revoked");
+			if (!hub.connected(hostId)) {
+				throw new KantelError("unavailable", `${host.name} isn't connected: it can be updated once it's back`);
+			}
+			const wanted = target(await options.releases?.latest());
+			if (wanted === undefined) {
+				throw options.releases === undefined
+					? new KantelError("not_supported", "This control plane names no kantel-host version for hosts to run")
+					: new KantelError("unavailable", "Kantel couldn't read the latest kantel-host release. Try again later");
+			}
+			const version = storedFacts(host.facts)?.version;
+			if (!needsUpdate(version, wanted.version, wanted.pinned)) {
+				throw new KantelError("conflict", `${host.name} already runs kantel-host ${version ?? wanted.version}`);
+			}
+			const to = plainVersion(wanted.version);
+			try {
+				// The host answers once it has the binary in place: a download of tens of MB, so longer than a call's wait.
+				await hub.call(
+					hostId,
+					HostMethods.hostUpdate,
+					{ version: to, url: options.updateUrl ?? DEFAULT_HOST_UPDATE_URL },
+					{ timeoutMs: UPDATE_TIMEOUT_MS },
+				);
+			} catch (error) {
+				const converted = kantelErrorFromHost(error);
+				// Sent and never answered (it timed out, or its link dropped): the host may still finish the download and
+				// restart, so it's taken to be updating rather than refused, and the caller's record of it lapses if it doesn't.
+				if (!unanswered(converted)) throw converted;
+				log(`[hosts] ${host.name} (${hostId}) didn't answer its update to ${to}; it may still be updating`);
+				return { version: to };
+			}
+			log(`[hosts] ${host.name} (${hostId}) is updating kantel-host from ${version ?? "unknown"} to ${to}`);
+			return { version: to };
 		},
 		async revoke(hostId) {
 			const host = await hostOf(hostId);

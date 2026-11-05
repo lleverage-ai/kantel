@@ -1794,9 +1794,13 @@ function hostOf(host: Host): UiHost {
 		arch: host.arch ?? "x86_64",
 		os: host.os ?? "",
 		version: host.version ?? "",
-		...(host.latestVersion !== undefined && host.latestVersion !== host.version
+		// The control plane says which hosts are behind: a host on a newer build than the latest release isn't.
+		...(host.updateAvailable === true && host.latestVersion !== undefined
 			? { updateAvailable: host.latestVersion }
 			: {}),
+		...(host.updating === undefined
+			? {}
+			: { updating: { version: host.updating.version, since: host.updating.requestedAt } }),
 		vcpus: host.capacity.vcpus,
 		memoryGb: host.capacity.memoryMb / 1024,
 		diskGb: host.capacity.diskGb,
@@ -1832,6 +1836,7 @@ function hostsSource({ api }: Context): HostsSource {
 		remove: async (id) => {
 			await api.revokeHost(id);
 		},
+		update: async (id) => hostOf(await api.updateHostAgent(id)),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
 			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
@@ -1927,6 +1932,7 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 		remove: async (id) => {
 			await api.removeAccountHost(id);
 		},
+		update: async (id) => hostOf(await api.updateAccountHostAgent(id)),
 	};
 }
 

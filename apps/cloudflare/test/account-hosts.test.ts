@@ -2,6 +2,7 @@
 // to their personal account, the host registers with no sign-in and connects its WebSocket to the stack object (here,
 // straight to the hub the object hands sockets to), and the account's sandboxes run on it while an organisation with no
 // host of its own keeps the stub. Off, none of it is served and the Worker is as it was.
+
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { createMemoryStore, HOST_NOT_REVOCABLE, PROTECTED_VALUES_UNSUPPORTED } from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
@@ -9,6 +10,7 @@ import type { Authenticator } from "@kantel/contracts";
 import { ORGANISATION_HEADER } from "@kantel/contracts/identity";
 import type { HostSocket } from "@kantel/hosts/hub";
 import { decodeStreamFrame, encodeStreamFrame, type HostMessage } from "@kantel/hosts/protocol";
+import { DEFAULT_HOST_RELEASES_URL } from "@kantel/hosts/releases";
 import { createMockAccess } from "@kantel/identity/testing";
 import type { SqlValue } from "@kantel/sql";
 import { syncSqliteDriver } from "@kantel/sql/sqlite";
@@ -752,13 +754,13 @@ describe("Account hosts on the Worker", () => {
 		);
 		expect(
 			gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: `${BASE}/` }).accountHosts,
-		).toEqual({ publicUrl: BASE });
+		).toEqual({ publicUrl: BASE, releasesUrl: DEFAULT_HOST_RELEASES_URL });
 	});
 
 	it("shares KANTEL_PUBLIC_URL with email sign-in: alone it is the hosts', and sign-in stays off", () => {
 		const access = { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD };
 		const alone = gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
-		expect(alone.accountHosts).toEqual({ publicUrl: BASE });
+		expect(alone.accountHosts).toEqual({ publicUrl: BASE, releasesUrl: DEFAULT_HOST_RELEASES_URL });
 		expect(alone.emailSignIn).toBeUndefined();
 		// Turned off, the same configuration stays valid, with neither account hosts nor sign-in.
 		const off = gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off", KANTEL_PUBLIC_URL: BASE });
@@ -778,7 +780,7 @@ describe("Account hosts on the Worker", () => {
 			KANTEL_PUBLIC_URL: BASE,
 			KANTEL_SIGN_IN_FROM: "sign-in@example.com",
 		});
-		expect(both.accountHosts).toEqual({ publicUrl: BASE });
+		expect(both.accountHosts).toEqual({ publicUrl: BASE, releasesUrl: DEFAULT_HOST_RELEASES_URL });
 		expect(both.emailSignIn).toMatchObject({ publicUrl: BASE, from: "sign-in@example.com" });
 	});
 

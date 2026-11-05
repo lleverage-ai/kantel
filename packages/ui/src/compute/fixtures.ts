@@ -1609,6 +1609,8 @@ export interface ComputeFixtureOptions {
 	readonly notSuperAdmin?: boolean;
 	/** A new install's first run: no hosts, so no sandboxes either, with the rest as usual. */
 	readonly noHosts?: boolean;
+	/** Changes to sample hosts by ID, for a story of a state the sample doesn't have (one updating). */
+	readonly hostOverrides?: Readonly<Record<string, Partial<Host>>>;
 	/**
 	 * Where hosts reach the control plane, as the deployment set it. Default a default install's loopback address
 	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
@@ -1754,8 +1756,13 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		Object.entries(DELIVERIES).map(([id, list]) => [id, list.map((entry) => moved(entry, ["at"]))]),
 	);
 	const hosts = new Map<string, Host>(
-		(empty || options.noHosts === true ? [] : HOSTS).map((host) => [host.id, moved(host, ["lastSeenAt", "joinedAt"])]),
+		(empty || options.noHosts === true ? [] : HOSTS).map((host) => [
+			host.id,
+			{ ...moved(host, ["lastSeenAt", "joinedAt"]), ...options.hostOverrides?.[host.id] },
+		]),
 	);
+	/** When each host updating comes back on its new version (wall-clock, so a story sees it finish). */
+	const updateDone = new Map<string, number>();
 	const deploymentUrl =
 		options.publicUrl ?? (hosting === "hosted" ? "https://kantel.example.com" : "http://127.0.0.1:58090");
 	let publicUrlSet: string | undefined;
@@ -2682,7 +2689,29 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			? {}
 			: {
 					hosts: {
-						list: () => gate(() => [...hosts.values()]),
+						// An update finishes a few seconds after it's asked for, as a host's restart does.
+						list: () =>
+							gate(() => {
+								for (const [id, host] of hosts) {
+									const done = updateDone.get(id);
+									if (host.updating === undefined || done === undefined || Date.now() < done) continue;
+									const { updating, updateAvailable: _, ...rest } = host;
+									hosts.set(id, { ...rest, version: updating.version });
+									updateDone.delete(id);
+								}
+								return [...hosts.values()];
+							}),
+						update: (id) =>
+							gate(() => {
+								const host = find(hosts, id, "host");
+								if (host.updateAvailable === undefined) throw new Error(`${host.name} is up to date.`);
+								if (host.state === "offline")
+									throw new Error(`${host.name} isn't connected: update it once it's back.`);
+								const next = { ...host, updating: { version: host.updateAvailable, since: now() } };
+								hosts.set(id, next);
+								updateDone.set(id, Date.now() + 8_000);
+								return next;
+							}),
 						usage: (id, since) =>
 							gate(() => {
 								const host = find(hosts, id, "host");

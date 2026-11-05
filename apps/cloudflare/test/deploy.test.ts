@@ -252,6 +252,27 @@ describe("deploy config", () => {
 		);
 	});
 
+	it("passes where account hosts' latest kantel-host is read on, a URL or off, and leaves the default unset", () => {
+		const vars = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;
+		expect(vars({}).KANTEL_HOST_RELEASES).toBe("");
+		expect(vars({ KANTEL_HOST_RELEASES: "off" }).KANTEL_HOST_RELEASES).toBe("off");
+		expect(vars({ KANTEL_HOST_RELEASES: "OFF" }).KANTEL_HOST_RELEASES).toBe("off");
+		expect(vars({ KANTEL_HOST_RELEASES: "https://dl.example/latest.json" }).KANTEL_HOST_RELEASES).toBe(
+			"https://dl.example/latest.json",
+		);
+		expect(() => deployValues({ ...configured, KANTEL_HOST_RELEASES: "latest.json" }, "deploy")).toThrow(
+			"KANTEL_HOST_RELEASES must be an https:// URL, or off",
+		);
+		// What the Worker then reads: the mirror, or none.
+		const hosts = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: "https://hosts.example.com" };
+		const releasesUrl = (value: string) =>
+			gatewayConfig({ ...hosts, KANTEL_HOST_RELEASES: vars({ KANTEL_HOST_RELEASES: value }).KANTEL_HOST_RELEASES })
+				.accountHosts?.releasesUrl;
+		expect(releasesUrl("https://dl.example/latest.json")).toBe("https://dl.example/latest.json");
+		expect(releasesUrl("off")).toBeUndefined();
+	});
+
 	it("passes the templates switch on as it is, refusing anything but experimental or off", () => {
 		const vars = (env: Record<string, string>) =>
 			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;

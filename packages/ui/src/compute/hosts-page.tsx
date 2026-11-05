@@ -1,8 +1,10 @@
 // The Hosts page (compute console, experimental): for a super-admin the deployment's hosts, in Admin, and for anyone
 // else, where the deployment allows it, the account's own (`owner`), in Settings, which run only its sandboxes. The
 // machines that run sandboxes, each with its state, platform, live CPU and memory, disk in use, the sandboxes on it and
-// its host agent's version; opening a row shows its CPU, memory and disk as graphs over the last 10 minutes. A host can be drained, so no new sandboxes land on it, or removed, which revokes its
-// credential. Add host makes a one-time join command to run on the new machine and waits for it to join; the host
+// its host agent's version, flagged when it's out of date; opening a row shows its CPU, memory and disk as graphs over
+// the last 10 minutes. A host can be drained, so no new sandboxes land on it, updated to the version it should run
+// (where the source offers it; the page reads again every few seconds until it's back on it), or removed, which
+// revokes its credential. Add host makes a one-time join command to run on the new machine and waits for it to join; the host
 // agent dials out, so a host needs no inbound ports. Every call goes through the `HostsSource` the host binds; stories
 // bind it to fixtures.
 
@@ -13,9 +15,9 @@ import { Dialog } from "../primitives/dialog.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
-import { EllipsisIcon, PauseIcon, PlayIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { DownloadIcon, EllipsisIcon, PauseIcon, PlayIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
-import { Skeleton } from "../primitives/spinner.tsx";
+import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { Badge, StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import {
@@ -46,6 +48,8 @@ export interface HostsPageProps {
 	readonly poll?: boolean;
 	/** The host whose graphs show at first, for a story. */
 	readonly opened?: string;
+	/** The host whose Update dialog is open at first, for a story. */
+	readonly confirmUpdate?: string;
 }
 
 type NoticeState = { level: "info" | "error"; text: string };
@@ -79,6 +83,10 @@ export function parseLabels(text: string): { readonly labels: Record<string, str
 	return { labels };
 }
 
+/** How long after a read the page reads the hosts again while one is updating, and otherwise. */
+const UPDATE_POLL_MS = 5000;
+const REFRESH_MS = 60_000;
+
 const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 /** An opened row's cell: its graphs under it carry the hairline. */
@@ -93,12 +101,15 @@ export function HostsPage({
 	narrow = false,
 	poll = true,
 	opened,
+	confirmUpdate,
 }: HostsPageProps) {
-	const { state, reload } = useLoad(() => source.list(), [source]);
+	const { state, reload, pending } = useLoad(() => source.list(), [source]);
 	// Hosts changed here, ahead of the next read: a drain shows at once; null is a removed host.
 	const [local, setLocal] = useState<ReadonlyMap<string, Host | null>>(new Map());
 	const [addOpen, setAddOpen] = useState(adding);
 	const [removing, setRemoving] = useState<Host>();
+	// By ID, so the dialog shows the host as last read.
+	const [updatingId, setUpdatingId] = useState(confirmUpdate);
 	const [notice, setNotice] = useState<NoticeState>();
 	const now = fixedNow ?? Date.now();
 
@@ -112,6 +123,16 @@ export function HostsPage({
 		}
 		return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 	}, [listed, local]);
+
+	// Read again a while after each read settles: every few seconds while a host is updating, so it shows its new version
+	// once it's back, and otherwise every minute, so a host that falls out of date (or a release the control plane read
+	// after this page's first read) shows without a reload. Never while a read is under way, so a slow one isn't dropped.
+	const awaiting = hosts?.some((host) => host.updating !== undefined) ?? false;
+	useEffect(() => {
+		if (!poll || pending || state.status !== "ready") return;
+		const timer = setTimeout(reload, awaiting ? UPDATE_POLL_MS : REFRESH_MS);
+		return () => clearTimeout(timer);
+	}, [awaiting, poll, pending, reload, state]);
 
 	// Once a read has what this page changed, the page forgets its own copy.
 	useEffect(() => {
@@ -155,6 +176,7 @@ export function HostsPage({
 		now,
 		onDrain: (on: boolean) => void drain(host, on),
 		onRemove: () => setRemoving(host),
+		...(source.update === undefined ? {} : { onUpdate: () => setUpdatingId(host.id) }),
 		opened: host.id === opened,
 	});
 
@@ -276,6 +298,19 @@ export function HostsPage({
 					reload();
 				}}
 			/>
+			<UpdateDialog
+				host={hosts?.find((host) => host.id === updatingId)}
+				onClose={() => setUpdatingId(undefined)}
+				onUpdate={async (host) => {
+					if (source.update === undefined) return;
+					const updated = await source.update(host.id);
+					change(host.id, updated);
+					setNotice({
+						level: "info",
+						text: `Updating ${host.name} to ${updated.updating?.version ?? host.updateAvailable}. It's back in a few seconds; its sandboxes keep running.`,
+					});
+				}}
+			/>
 			<RemoveDialog
 				host={removing}
 				onClose={() => setRemoving(undefined)}
@@ -299,9 +334,10 @@ function HostsSkeleton() {
 	);
 }
 
-/** Hosts online, vCPU in use of the total, and sandboxes running, in a line over the table. */
+/** Hosts online, vCPU in use of the total, sandboxes running, and any out of date, in a line over the table. */
 function HostsSummary({ hosts }: { hosts: readonly Host[] }) {
 	const online = hosts.filter((host) => host.state === "online").length;
+	const behind = hosts.filter((host) => host.updateAvailable !== undefined && host.updating === undefined).length;
 	const vcpus = hosts.reduce((sum, host) => sum + host.vcpus, 0);
 	const used = hosts.reduce((sum, host) => sum + host.used.vcpus, 0);
 	const sandboxes = hosts.reduce((sum, host) => sum + running(host), 0);
@@ -309,6 +345,7 @@ function HostsSummary({ hosts }: { hosts: readonly Host[] }) {
 		{ value: `${online} of ${hosts.length}`, label: "online" },
 		{ value: `${number(used)} of ${number(vcpus)}`, label: "vCPU in use" },
 		{ value: number(sandboxes), label: sandboxes === 1 ? "sandbox running" : "sandboxes running" },
+		...(behind === 0 ? [] : [{ value: number(behind), label: "out of date" }]),
 	];
 	return (
 		<dl className="kt-host-summary m-0 flex min-w-0 flex-wrap gap-x-5 gap-y-1 text-sm">
@@ -337,9 +374,24 @@ function HostState({ host, now }: { host: Host; now: number }) {
 	);
 }
 
-/** Drain or undrain, then Remove: a host's ⋯. */
-function hostMenu(host: Host, onDrain: (on: boolean) => void, onRemove: () => void) {
+/** Update when it's out of date, drain or undrain, then Remove: a host's ⋯. */
+function hostMenu(host: Host, onDrain: (on: boolean) => void, onRemove: () => void, onUpdate?: () => void) {
+	const update: MenuEntry[] =
+		onUpdate === undefined || host.updateAvailable === undefined || host.updating !== undefined
+			? []
+			: [
+					{
+						kind: "item",
+						id: "update",
+						label: `Update to ${host.updateAvailable}`,
+						icon: <DownloadIcon />,
+						// It updates over its connection: an offline host is updated once it's back.
+						disabled: host.state === "offline" || host.state === "joining",
+						onSelect: onUpdate,
+					},
+				];
 	const entries: MenuEntry[] = [
+		...update,
 		host.state === "draining"
 			? { kind: "item", id: "undrain", label: "Undrain", icon: <PlayIcon />, onSelect: () => onDrain(false) }
 			: {
@@ -372,14 +424,19 @@ function Capacity({ used, total }: { used: number; total: number }) {
 	);
 }
 
-/** The host agent's version, and Update when a newer one is out. */
+/** The host agent's version, and under it whether it's updating or out of date, so the column stays narrow. */
 function Agent({ host }: { host: Host }) {
 	return (
-		<span className="flex items-center gap-1.5">
+		<span className="flex flex-col items-start gap-1">
 			<span className="font-mono text-code text-muted">{host.version}</span>
-			{host.updateAvailable === undefined ? null : (
-				<span title={`Version ${host.updateAvailable} is out`}>
-					<Badge tone="approval">Update</Badge>
+			{host.updating !== undefined ? (
+				<span className="flex items-center gap-1 text-sm text-muted">
+					<Spinner size="sm" />
+					Updating to {host.updating.version}
+				</span>
+			) : host.updateAvailable === undefined ? null : (
+				<span title={`It should run ${host.updateAvailable}`}>
+					<Badge tone="approval">Out of date</Badge>
 				</span>
 			)}
 		</span>
@@ -404,6 +461,8 @@ type RowProps = {
 	now: number;
 	onDrain: (on: boolean) => void;
 	onRemove: () => void;
+	/** Absent: hosts aren't updated from here. */
+	onUpdate?: () => void;
 	/** Its graphs show at first. */
 	opened: boolean;
 };
@@ -418,7 +477,7 @@ const Chevron = ({ open }: { open: boolean }) => (
 	</span>
 );
 
-function HostRow({ host, source, now, onDrain, onRemove, opened }: RowProps) {
+function HostRow({ host, source, now, onDrain, onRemove, onUpdate, opened }: RowProps) {
 	const labels = Object.entries(host.labels);
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
@@ -473,7 +532,7 @@ function HostRow({ host, source, now, onDrain, onRemove, opened }: RowProps) {
 				<td className={open ? cellOpen : cell}>
 					<Agent host={host} />
 				</td>
-				<td className={`${open ? cellOpen : cell} w-0 text-right`}>{hostMenu(host, onDrain, onRemove)}</td>
+				<td className={`${open ? cellOpen : cell} w-0 text-right`}>{hostMenu(host, onDrain, onRemove, onUpdate)}</td>
 			</tr>
 			{open ? (
 				<tr className="kt-host-graphs bg-hover" id={graphsId}>
@@ -490,7 +549,7 @@ function HostRow({ host, source, now, onDrain, onRemove, opened }: RowProps) {
  * A phone's row: the name with its CPU line and state beside it, then the machine, its vCPU and sandboxes, and ⋯.
  * Tapping it opens its graphs under it.
  */
-function HostPhoneRow({ host, source, now, onDrain, onRemove, opened }: RowProps) {
+function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, opened }: RowProps) {
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
 	const graphsId = `host-graphs-${host.id}`;
@@ -523,10 +582,14 @@ function HostPhoneRow({ host, source, now, onDrain, onRemove, opened }: RowProps
 							{number(host.used.vcpus)} of {number(host.vcpus)} vCPU
 						</span>
 						<span>{count(running(host), "sandbox", "sandboxes")}</span>
-						{host.updateAvailable === undefined ? null : <span className="text-status-approval">Update</span>}
+						{host.updating !== undefined ? (
+							<span>Updating to {host.updating.version}</span>
+						) : host.updateAvailable === undefined ? null : (
+							<span className="text-status-approval">Out of date</span>
+						)}
 					</span>
 				</button>
-				{hostMenu(host, onDrain, onRemove)}
+				{hostMenu(host, onDrain, onRemove, onUpdate)}
 			</div>
 			{open ? (
 				<div id={graphsId}>
@@ -626,6 +689,62 @@ function AddHostBody({
 				</div>
 			</Disclosure>
 		</div>
+	);
+}
+
+function UpdateDialog({
+	host,
+	onClose,
+	onUpdate,
+}: {
+	host: Host | undefined;
+	onClose: () => void;
+	onUpdate: (host: Host) => Promise<void>;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [failure, setFailure] = useState<string>();
+	const close = () => {
+		setFailure(undefined);
+		onClose();
+	};
+	return (
+		<Dialog
+			open={host !== undefined}
+			title="Update this host?"
+			onClose={close}
+			actions={
+				<>
+					<Button onClick={close}>Cancel</Button>
+					<Button
+						variant="primary"
+						busy={busy}
+						onClick={() => {
+							if (host === undefined) return;
+							setBusy(true);
+							onUpdate(host).then(
+								() => {
+									setBusy(false);
+									close();
+								},
+								(caught: unknown) => {
+									setBusy(false);
+									setFailure(messageOf(caught, "Kantel couldn't update it. Try again."));
+								},
+							);
+						}}
+					>
+						Update
+					</Button>
+				</>
+			}
+		>
+			<p>
+				<strong>{host?.name}</strong> fetches kantel-host {host?.updateAvailable}, checks it against the release's
+				checksums and restarts on it. Its sandboxes keep running, but SSH sessions, terminals and port connections to
+				them drop for the few seconds it takes to reconnect.
+			</p>
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+		</Dialog>
 	);
 }
 

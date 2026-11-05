@@ -23,6 +23,8 @@
  * - optionally, accounts' own hosts (`KANTEL_ACCOUNT_HOSTS=experimental`, experimental), which dial out to
  *   KANTEL_PUBLIC_URL, as a var of the same name.
  * - optionally, templates (`KANTEL_TEMPLATES=experimental`, experimental), as a var of the same name.
+ * - optionally, where account hosts' latest kantel-host release is read (`KANTEL_HOST_RELEASES`: an https URL, or
+ *   `off`), as a var of the same name; unset, Kantel's latest GitHub Release.
  *
  * `--mode deploy` needs every variable and refuses to write a config without them. `--mode dry-run` fills a missing
  * one with a placeholder, so `wrangler deploy --dry-run` still checks the whole config's shape before the account is
@@ -92,6 +94,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// Experimental: `experimental` turns on templates, versioned microVM profiles whose snapshots are built in the
 	// background (`/v1/templates`). Unset or `off`, it stays off.
 	"KANTEL_TEMPLATES",
+	// With account hosts: where the latest kantel-host release is read, to flag hosts behind it. An https URL answering
+	// `{"tag_name"}` or `{"version"}`, or `off`. Unset: Kantel's latest GitHub Release.
+	"KANTEL_HOST_RELEASES",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -167,6 +172,10 @@ const OPTIONAL_CHECKS: Readonly<
 	KANTEL_SIGN_IN_DAILY_CAP: { test: (v) => /^\d{1,6}$/.test(v), expect: "a whole number" },
 	KANTEL_ACCOUNT_HOSTS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 	KANTEL_TEMPLATES: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
+	KANTEL_HOST_RELEASES: {
+		test: (v) => v.toLowerCase() === "off" || /^https:\/\/[^/\s]+/i.test(v),
+		expect: "an https:// URL, or off",
+	},
 };
 
 /**
@@ -323,6 +332,8 @@ export interface DeployValues {
 	readonly accountHosts?: "experimental" | "off";
 	/** The templates switch, when set (`KANTEL_TEMPLATES`). */
 	readonly templates?: "experimental" | "off";
+	/** Where account hosts' latest kantel-host release is read, when set (`KANTEL_HOST_RELEASES`): a URL, or `off`. */
+	readonly hostReleases?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -392,6 +403,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 	if (invalid.length > 0) throw new Error(invalid.join("; "));
 	const r2Bucket = optional("KANTEL_R2_BUCKET");
 	const templatesSwitch = optional("KANTEL_TEMPLATES");
+	const hostReleases = optional("KANTEL_HOST_RELEASES");
 	const hint = optional("KANTEL_LOCATION_HINT");
 
 	const value = (name: Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">): string =>
@@ -427,6 +439,9 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 			? { accountHosts: accountHostsSwitch }
 			: {}),
 		...(templatesSwitch === "experimental" || templatesSwitch === "off" ? { templates: templatesSwitch } : {}),
+		...(hostReleases === undefined
+			? {}
+			: { hostReleases: hostReleases.toLowerCase() === "off" ? "off" : hostReleases }),
 		placeholders: missing,
 	};
 }
@@ -529,6 +544,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 					}),
 			...(values.accountHosts === undefined ? {} : { KANTEL_ACCOUNT_HOSTS: values.accountHosts }),
 			...(values.templates === undefined ? {} : { KANTEL_TEMPLATES: values.templates }),
+			...(values.hostReleases === undefined ? {} : { KANTEL_HOST_RELEASES: values.hostReleases }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

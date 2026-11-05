@@ -204,6 +204,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_SECRETS_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`) that environments' [protected values and secret files](/sandboxes/environments/) are encrypted with. Without it, an install with a database refuses them. Losing it loses them, and changing it isn't supported yet |
 | `KANTEL_REPLICA_URL` | With several gateways, where the others reach this one on your private network, such as `http://10.0.3.7:8080` |
 | `KANTEL_HOST_VERSION`, `KANTEL_HOST_UPDATE_URL` | The `kantel-host` version hosts should run, and where they get it. See [Update a host](/hosts/#update-a-host) |
+| `KANTEL_HOST_RELEASES` | Where the latest `kantel-host` release is read, to mark out-of-date hosts in the console. Default Kantel's latest GitHub Release; `off` reads none. See [Update a host](/hosts/#update-a-host) |
 
 For example:
 

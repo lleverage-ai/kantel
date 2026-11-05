@@ -1,9 +1,11 @@
 // The gateway over the in-memory stack, in Node: who gets in (Access tokens for the team domain and AUD, API keys),
 // that the identity and audit APIs are mounted where the console and host apps call them, and that the agent plane's
 // routes are gone.
+
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isKantelError } from "@kantel/contracts";
+import { DEFAULT_HOST_RELEASES_URL } from "@kantel/hosts/releases";
 import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 import { createMockAccess } from "@kantel/identity/testing";
 import { describe, expect, it } from "vitest";
@@ -75,7 +77,17 @@ describe("gateway config", () => {
 		).toThrow(/ports domain/);
 		expect(gatewayConfig({ ...hosts, KANTEL_PUBLIC_URL: "https://app.kantel.dev" }).accountHosts).toEqual({
 			publicUrl: "https://app.kantel.dev",
+			releasesUrl: DEFAULT_HOST_RELEASES_URL,
 		});
+		// Where the latest kantel-host is read, to flag hosts that are behind it: a mirror, or off.
+		const on = { ...hosts, KANTEL_PUBLIC_URL: "https://app.kantel.dev" };
+		expect(gatewayConfig({ ...on, KANTEL_HOST_RELEASES: "off" }).accountHosts).toEqual({
+			publicUrl: "https://app.kantel.dev",
+		});
+		expect(
+			gatewayConfig({ ...on, KANTEL_HOST_RELEASES: "https://dl.example/latest.json" }).accountHosts?.releasesUrl,
+		).toBe("https://dl.example/latest.json");
+		expect(() => gatewayConfig({ ...on, KANTEL_HOST_RELEASES: "latest" })).toThrow(/KANTEL_HOST_RELEASES/);
 	});
 
 	it("refuses an admin email that is not one", () => {

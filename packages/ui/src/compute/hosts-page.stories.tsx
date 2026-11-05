@@ -14,7 +14,9 @@ function Scenario({
 	owner,
 	narrow = false,
 	opened,
+	confirmUpdate,
 	usage = "live",
+	updateFails = false,
 }: {
 	hosting?: HostingMode;
 	options?: ComputeFixtureOptions;
@@ -22,11 +24,24 @@ function Scenario({
 	owner?: { readonly name: string; readonly kind: "personal" | "organisation" };
 	narrow?: boolean;
 	opened?: string;
+	confirmUpdate?: string;
 	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
 	usage?: "live" | "loading" | "none";
+	/** Update is refused, as a host in an E2E space refuses it. */
+	updateFails?: boolean;
 }) {
 	const [source] = useState(() => {
-		const { usage: live, ...hosts } = createComputeFixtures({ hosting, ...options }).hosts as HostsSource;
+		const { usage: live, ...fixture } = createComputeFixtures({ hosting, ...options }).hosts as HostsSource;
+		const hosts: HostsSource = updateFails
+			? {
+					...fixture,
+					update: async () => {
+						throw new Error(
+							"This host has joined an E2E space, so it is updated on the machine: run sudo kantel-host update there.",
+						);
+					},
+				}
+			: fixture;
 		if (usage === "none" || live === undefined) return hosts;
 		return { ...hosts, usage: usage === "loading" ? () => new Promise<never>(() => {}) : live };
 	});
@@ -38,6 +53,7 @@ function Scenario({
 			adding={adding}
 			narrow={narrow}
 			{...(opened === undefined ? {} : { opened })}
+			{...(confirmUpdate === undefined ? {} : { confirmUpdate })}
 			{...(owner === undefined ? {} : { owner })}
 		/>
 	);
@@ -57,6 +73,21 @@ export const OpenedLoading: Story = () => <Scenario opened={FIRST} usage="loadin
 
 /** An offline host opened: no readings while it's down. */
 export const OpenedOffline: Story = () => <Scenario opened="hst_mac" />;
+
+/** A host out of date, its Update dialog open. Update shows it updating, and back on 0.4.2 a few seconds later. */
+export const ConfirmUpdate: Story = () => <Scenario confirmUpdate="hst_hetzner_2" />;
+
+/** Update refused by the host: one in an E2E space is updated on the machine. */
+export const UpdateRefused: Story = () => <Scenario confirmUpdate="hst_hetzner_2" updateFails />;
+
+/** A host part way through an update: its agent column says so until it's back on the new version. */
+export const Updating: Story = () => (
+	<Scenario
+		options={{
+			hostOverrides: { hst_hetzner_2: { updating: { version: "0.4.2", since: FIXTURE_NOW - 4_000 } } },
+		}}
+	/>
+);
 
 /** Where the source has no live usage: what's allocated on each, as bars. */
 export const NoLiveUsage: Story = () => <Scenario usage="none" />;
@@ -93,6 +124,17 @@ Mobile.meta = { width: 390 };
 /** A host opened on a phone: its graphs one under another. */
 export const MobileOpened: Story = () => <Scenario narrow opened={FIRST} />;
 MobileOpened.meta = { width: 390 };
+
+/** A phone with a host updating and one out of date. */
+export const MobileUpdating: Story = () => (
+	<Scenario
+		narrow
+		options={{
+			hostOverrides: { hst_hetzner_2: { updating: { version: "0.4.2", since: FIXTURE_NOW - 4_000 } } },
+		}}
+	/>
+);
+MobileUpdating.meta = { width: 390 };
 
 /** Add host on a phone. */
 export const MobileAdding: Story = () => <Scenario narrow adding />;

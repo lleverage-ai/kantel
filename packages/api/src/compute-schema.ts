@@ -2777,7 +2777,34 @@ export const Host = Type.Object(
 		name: Type.String(),
 		state: HostState,
 		version: Type.Optional(Type.String({ description: "Its host agent's version." })),
-		latestVersion: Type.Optional(Type.String({ description: "The newest version the control plane offers." })),
+		latestVersion: Type.Optional(
+			Type.String({
+				description:
+					"The version hosts should run: the deployment's `KANTEL_HOST_VERSION` when it sets one, otherwise Kantel's " +
+					"latest release. Absent when neither is known.",
+			}),
+		),
+		updateAvailable: Type.Optional(
+			Type.Boolean({
+				description:
+					"True when it runs an older version than `latestVersion` (any other, when the deployment sets " +
+					"`KANTEL_HOST_VERSION`), so it can be updated. Absent otherwise.",
+			}),
+		),
+		updating: Type.Optional(
+			Type.Object(
+				{
+					version: Type.String({ description: "The version it's moving to." }),
+					requestedAt: Timestamp,
+				},
+				{
+					title: "HostUpdate",
+					description:
+						"An update asked for in the last 10 minutes that the host hasn't connected on yet. Absent once it " +
+						"has, or after 10 minutes, when it didn't take.",
+				},
+			),
+		),
 		os: Type.Optional(Type.String()),
 		arch: Type.Optional(Type.Union([Type.Literal("x86_64"), Type.Literal("aarch64")])),
 		tiers: Type.Array(SandboxType, { description: "The sandbox types it runs." }),

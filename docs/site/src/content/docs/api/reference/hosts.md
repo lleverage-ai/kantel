@@ -133,6 +133,24 @@ Its CPU, memory and disk as it reported them, every 5 seconds over the last hour
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Update a host's agent
+
+`POST /v1/admin/hosts/{hostId}/update` (SDK method `updateHostAgent`)
+
+Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Answers**
+
+- `200`: [Host](/api/reference/types/#host) (`application/json`). The host, updating.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Get the public URL
 
 `GET /v1/admin/public-url` (SDK method `getPublicUrl`)

@@ -1053,6 +1053,17 @@ export function requireMaker(
 	);
 }
 
+/** How long an update asked for is shown as under way before it's taken not to have happened: 10 minutes. */
+const HOST_UPDATE_WINDOW_MS = 10 * 60 * 1000;
+
+/** The version a host should run, as its backend says, and whether it's behind it. */
+function hostVersions(host: BackendHost): Pick<StoredHost, "latestVersion" | "updateAvailable"> {
+	return {
+		...(host.latestVersion === undefined ? {} : { latestVersion: host.latestVersion }),
+		...(host.updateAvailable === true ? { updateAvailable: true } : {}),
+	};
+}
+
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
 	const { lastSeenAt: knownSeen, ...knownRest } = known;
 	const { lastSeenAt: nextSeen, ...nextRest } = next;
@@ -1822,10 +1833,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const refresh = (current: StoredHost): StoredHost => {
 					const held = current.state === "revoked" || current.state === "draining";
 					const owner = current.accountId ?? accountId;
+					// The version to run is the backend's now; an update under way ends once the host is on it, or isn't
+					// after `HOST_UPDATE_WINDOW_MS` (the host couldn't, and says so in its log).
+					const { latestVersion: _latest, updateAvailable: _available, updating, ...rest } = current;
+					const pending =
+						updating !== undefined &&
+						updating.version !== host.version &&
+						now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 					return {
-						...current,
+						...rest,
 						...(owner === undefined ? {} : { accountId: owner }),
 						state: held ? current.state : reachable ? "online" : "unreachable",
+						...hostVersions(host),
+						...(pending ? { updating } : {}),
 						version: host.version,
 						os: host.os,
 						arch: host.arch,
@@ -1850,7 +1870,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					name: host.name,
 					state: reachable ? "online" : "unreachable",
 					version: host.version,
-					latestVersion: host.version,
+					...hostVersions(host),
 					os: host.os,
 					arch: host.arch,
 					tiers: [...host.tiers],
@@ -2662,8 +2682,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const machines = placed.filter((sandbox) => sandbox.type !== "isolate");
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
+		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
+		const { updating, ...rest } = host;
+		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
-			...host,
+			...rest,
+			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
 			allocated: {
 				sandboxes: placed.length,
@@ -3704,6 +3728,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (revoked) throw new KantelError("conflict", "The host is revoked");
 		if (updated === undefined) throw new KantelError("not_found", "No such host");
 		return hostView(updated);
+	}
+
+	/**
+	 * Asks the backend to move a host to the version it should run, and records that it's on its way (`updating`) until
+	 * the host connects on it.
+	 */
+	async function updateHostAgentOf(host: StoredHost): Promise<computeSchema.Host> {
+		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+		if (backend.updateHostAgent === undefined) {
+			throw new KantelError("not_supported", "This deployment's hosts aren't updated from the control plane");
+		}
+		const { version } = await backend.updateHostAgent(host.id);
+		const updating = { version, requestedAt: now() };
+		const updated = await store.hosts.update(host.id, (current) => ({ ...current, updating }));
+		return hostView(updated ?? { ...host, updating });
 	}
 
 	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
@@ -6790,6 +6829,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
 
+		updateHostAgent: async (principal, { params }) => updateHostAgentOf(await hostFor(principal, params.hostId)),
+
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
 
 		// Base images (image patching, experimental).
@@ -6866,6 +6907,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		updateAccountHost: async (principal, { params, body }) =>
 			changeHost((await accountHostFor(principal, params.hostId, "account:admin")).host, body),
+
+		updateAccountHostAgent: async (principal, { params }) =>
+			updateHostAgentOf((await accountHostFor(principal, params.hostId, "account:admin")).host),
 
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),

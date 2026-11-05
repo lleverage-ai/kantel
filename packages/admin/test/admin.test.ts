@@ -63,6 +63,7 @@ const HOST: Host = {
 	state: "online",
 	version: "0.4.0",
 	latestVersion: "0.5.0",
+	updateAvailable: true,
 	os: "linux",
 	arch: "x86_64",
 	tiers: ["microvm", "isolate"],

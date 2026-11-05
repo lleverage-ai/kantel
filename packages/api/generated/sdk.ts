@@ -992,8 +992,12 @@ export interface Host {
 	readonly state: HostState;
 	/** Its host agent's version. */
 	readonly version?: string;
-	/** The newest version the control plane offers. */
+	/** The version hosts should run: the deployment's `KANTEL_HOST_VERSION` when it sets one, otherwise Kantel's latest release. Absent when neither is known. */
 	readonly latestVersion?: string;
+	/** True when it runs an older version than `latestVersion` (any other, when the deployment sets `KANTEL_HOST_VERSION`), so it can be updated. Absent otherwise. */
+	readonly updateAvailable?: boolean;
+	/** An update asked for in the last 10 minutes that the host hasn't connected on yet. Absent once it has, or after 10 minutes, when it didn't take. */
+	readonly updating?: HostUpdate;
 	readonly os?: string;
 	readonly arch?: "x86_64" | "aarch64";
 	/** The sandbox types it runs. */
@@ -1045,6 +1049,14 @@ export interface HostList {
 
 /** `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked. */
 export type HostState = "online" | "unreachable" | "draining" | "revoked";
+
+/** An update asked for in the last 10 minutes that the host hasn't connected on yet. Absent once it has, or after 10 minutes, when it didn't take. */
+export interface HostUpdate {
+	/** The version it's moving to. */
+	readonly version: string;
+	/** Epoch milliseconds, UTC. */
+	readonly requestedAt: number;
+}
 
 /** A host's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
 export interface HostUsage {
@@ -2895,6 +2907,8 @@ export interface KantelClient {
 	getHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
 	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
+	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
+	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get the public URL. Where hosts reach this control plane: the address join commands give them, and whether only a host on the same machine could use it. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/public-url` */
@@ -2911,6 +2925,8 @@ export interface KantelClient {
 	getAccountHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
 	/** Change one of an account's hosts. Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
+	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
+	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Upload a bundle. Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bundles` */
@@ -3303,6 +3319,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: `/admin/hosts/${encodeURIComponent(hostId)}/usage`, query }, callOptions),
 		updateHost: (hostId, body = {}, callOptions) =>
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
+		updateHostAgent: (hostId, callOptions) =>
+			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
 		revokeHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
@@ -3316,6 +3334,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: `/hosts/${encodeURIComponent(hostId)}/usage`, query }, callOptions),
 		updateAccountHost: (hostId, body = {}, callOptions) =>
 			send(options, { method: "PATCH", path: `/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
+		updateAccountHostAgent: (hostId, callOptions) =>
+			send(options, { method: "POST", path: `/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
 		removeAccountHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		uploadBundle: (body, query, callOptions) =>
