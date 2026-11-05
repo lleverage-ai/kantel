@@ -56,9 +56,12 @@ const noticeIcon = {
 const noticeClass =
 	"flex min-w-0 items-start gap-2 max-sm:flex-wrap rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.kt-icon]:translate-y-(--kt-on-cap) [&>.kt-icon]:self-baseline";
 
-/** A notice with an action, on a wide screen: the icon, the words and the button on one centre line. */
-const noticeWithAction =
-	"sm:items-center sm:[&>.kt-icon]:self-center sm:[&>.kt-icon]:translate-y-0 sm:[&>.kt-notice-text]:self-center sm:[&>.kt-notice-action]:my-0";
+/**
+ * A notice with an action, on a wide screen: one line of words is as tall as the button and centred in it, so the
+ * words, the icon on their first line and the button share a centre line; longer words wrap and the icon stays on
+ * their first line.
+ */
+const noticeWithAction = "sm:[&>.kt-notice-text]:min-h-control-xs sm:[&>.kt-notice-text]:content-center";
 
 /** Each level's border, words and icon colour. */
 const noticeLevel = {
