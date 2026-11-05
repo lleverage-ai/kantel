@@ -83,8 +83,10 @@ def hold(pixels: int) -> bool:
             s = self._kantel_hold = {"dpi": None, "factor": 1.0, "held": None}
         return s
 
-    # The DPI a page asks for: Selkies tells a page the DPI the desktop has, which the page sends back in its next
-    # SETTINGS, so the held DPI coming back is the one asked for before, not a new one to hold again.
+    # The DPI a page's SETTINGS asks for: Selkies tells a page the DPI the desktop has, which the page sends back in
+    # every SETTINGS after, so the held DPI coming back is the one asked for before, not a new one to hold again. (A
+    # page that really asks for exactly the held DPI reads the same and keeps the earlier request; its next resize
+    # or scale message corrects it.) The scale message (``s,<dpi>``) is never an echo.
     def asked(s: dict, dpi):
         if dpi is not None and s["dpi"] is not None and s["held"] is not None and int(round(float(dpi))) == s["held"]:
             return s["dpi"]
@@ -130,7 +132,7 @@ def hold(pixels: int) -> bool:
         if display_id != "primary":
             return await handle_scaling(self, dpi_value, display_id)
         s = state(self)
-        s["dpi"] = asked(s, dpi_value)
+        s["dpi"] = dpi_value
         return await handle_scaling(self, apply(s), display_id)
 
     server._parse_settings_payload = parse_settings_payload

@@ -97,6 +97,16 @@ async def run():
     await s._handle_scaling(96.0)  # the page moved to a DPR 1 screen
     check("dpr 1", calls, [("dpi", 96, "primary")])
     calls.clear()
+    # A scale message asking for exactly the DPI last held (120 here, for 192) is a new request, not an echo: a
+    # resize under the budget afterwards gives the page 120, not the 192 asked for before.
+    await s._handle_resize("3840x2160")
+    await s._handle_scaling(192.0)
+    calls.clear()
+    await s._handle_scaling(120.0)
+    await s._handle_resize("2000x1200")
+    check("scale to the held DPI", calls, [("dpi", 96, "primary"), ("resize", (2000, 1200), "primary"),
+                                         ("dpi", 120, "primary")])
+    calls.clear()
     await s._handle_resize("1900x1000x")
     check("odd string passes through", calls, [("resize", None, "primary")])
     calls.clear()
