@@ -180,9 +180,11 @@ describe("hosts service", () => {
 		});
 		hostB.send({
 			type: "heartbeat",
-			heartbeat: { capacity: { freeMemoryMiB: 5_000, freeDiskGiB: 400, running: 1, stopped: 0, load1: 0, warm: {} } },
+			heartbeat: { capacity: { freeMemoryMiB: 5_000, freeDiskGiB: 120, running: 1, stopped: 0, load1: 0, warm: {} } },
 		});
 		await tick();
+		// Its view says the free disk it last reported, apart from what it had when it started.
+		expect(await service.get(b.hostId)).toMatchObject({ freeDiskGb: 120 });
 		await service.update(a.hostId, { draining: true });
 		expect(hostA.sent.filter((message) => message.type === "welcome").at(-1)?.welcome).toMatchObject({
 			draining: true,

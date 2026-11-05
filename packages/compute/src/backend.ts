@@ -51,6 +51,11 @@ export interface BackendHost {
 	 */
 	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	/**
+	 * The disk it had free when it last reported, which placement admits a create against (`capacity.diskGb` is what it
+	 * had free when it started). Absent: it hasn't reported, or the backend doesn't say (the stub).
+	 */
+	readonly freeDiskGb?: number;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**

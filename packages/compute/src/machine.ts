@@ -23,6 +23,13 @@ export const makesCustom = (host: BackendHost): boolean => host.features?.includ
 export const LEGACY_MAX_DISK_GB = 1024;
 
 /**
+ * The disk a host from before hosts said their limits makes a microVM off its presets with: what kantel-host took then
+ * (`@kantel/hosts`'s `LEGACY_DISK_LIMITS`), which placement admits it to. `diskLimitsOf`'s narrower range is only what
+ * New sandbox offers.
+ */
+export const LEGACY_DISK_LIMITS = { minGb: 1, maxGb: 4096 } as const;
+
+/**
  * The disk `host` gives a microVM off its presets: what it says (`BackendHost.disk`), else, for a host from before it
  * said, at least its smallest preset's (the disk its shared templates are made with, so anything smaller cold-boots)
  * and at most `LEGACY_MAX_DISK_GB`.
@@ -52,7 +59,8 @@ export function makesShape(host: BackendHost, deploymentSizes: readonly BackendS
 	if (named) return true;
 	if (!makesCustom(host) || shape.vcpus > host.capacity.vcpus || shape.memoryMb > host.capacity.memoryMb) return false;
 	if (shape.diskGb === undefined) return true;
-	const disk = diskLimitsOf(host, deploymentSizes);
+	// What the host admits, as placement does: a host from before it said takes what kantel-host took then.
+	const disk = host.disk ?? LEGACY_DISK_LIMITS;
 	return shape.diskGb >= disk.minGb && shape.diskGb <= disk.maxGb;
 }
 
@@ -113,6 +121,41 @@ const copyShape = (shape: BackendShape, diskGb = shape.diskGb): BackendShape => 
 	...(diskGb === undefined || diskGb <= 0 ? {} : { diskGb }),
 });
 
+/**
+ * The disk a host gives `shape` when it asks for none (`@kantel/hosts`'s `diskFor`): its preset's, else the smallest
+ * preset's with at least its memory, else the largest's. Undefined without presets.
+ */
+function presetDiskOf(presets: readonly BackendSize[], shape: BackendShape): number | undefined {
+	const exact = presets.find((size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb);
+	if (exact !== undefined) return exact.diskGb;
+	const byMemory = [...presets].sort((a, b) => a.memoryMb - b.memoryMb || a.diskGb - b.diskGb);
+	return (byMemory.find((size) => size.memoryMb >= shape.memoryMb) ?? byMemory.at(-1))?.diskGb;
+}
+
+/**
+ * `machine` keeping a copied disk of `diskGb`: a host copies the snapshot's disk and grows it to the machine's, never
+ * shrinking it, so where the machine's own disk is smaller (or unknown) its shape asks for the copied one. Unchanged
+ * where the machine's own disk is at least as big, so a named size stays one, and where the copied disk is a preset's:
+ * only a host that makes custom shapes made one of another, and a host that makes only presets still takes a fork of a
+ * preset's disk to a smaller preset, as it did before disks were chosen.
+ */
+function keepingDisk(
+	machine: SandboxMachine,
+	diskGb: number | undefined,
+	presets: readonly BackendSize[],
+): SandboxMachine {
+	if (diskGb === undefined || diskGb <= 0 || presets.some((each) => each.diskGb === diskGb)) return machine;
+	const base = machine.shape ?? presets.find((each) => each.name === machine.size);
+	if (base === undefined) return machine;
+	const own =
+		machine.shape?.diskGb ??
+		(machine.shape === undefined
+			? presets.find((each) => each.name === machine.size)?.diskGb
+			: presetDiskOf(presets, machine.shape));
+	if (own !== undefined && own >= diskGb) return machine;
+	return { ...(machine.size === undefined ? {} : { size: machine.size }), shape: copyShape(base, diskGb) };
+}
+
 /** The preset among `presets` with exactly `shape`'s vCPUs and memory, by name. */
 export const presetOf = (
 	presets: readonly BackendSize[],
@@ -127,7 +170,8 @@ export const presetOf = (
  *   as that shape);
  * - a template: as a size asked for, that size's shape (undefined when no preset has the name); else its resources;
  * - a snapshot, or a source forked live: that sandbox's machine, its disk too, unless `asked.size` names another size,
- *   which it then is; a live fork asks for none, so it is always its source's;
+ *   which it then is; a live fork asks for none, so it is always its source's. Whatever shape or size it is then, it
+ *   keeps the copied disk where that is bigger than the machine's own (`keepingDisk`), as its host copies it;
  * - else the size asked for, `default` when none is.
  *
  * A disk asked for alone (`asked.diskGb`) then replaces that machine's: its shape is its size's vCPUs and memory with
@@ -159,8 +203,8 @@ function machineOf(
 			shape: copyShape(shape),
 		};
 	};
-	if (asked.shape !== undefined) return shaped(asked.shape);
 	if (source !== undefined && "template" in source) {
+		if (asked.shape !== undefined) return shaped(asked.shape);
 		if (asked.size === undefined) return shaped(source.template);
 		const named = presets.find((each) => each.name === asked.size);
 		return named === undefined
@@ -174,8 +218,10 @@ function machineOf(
 		(copied?.resources === undefined
 			? undefined
 			: { vcpus: copied.resources.vcpus, memoryMb: copied.resources.memoryMb });
-	const copiedShape =
-		copiedBase === undefined ? undefined : copyShape(copiedBase, copied?.resources?.diskGb ?? copiedBase.diskGb);
+	const copiedDisk = copied?.resources?.diskGb ?? copiedBase?.diskGb;
+	const copiedShape = copiedBase === undefined ? undefined : copyShape(copiedBase, copiedDisk);
+	// Another shape or size than the copied machine's: that one, with the copied disk where it is bigger than its own.
+	if (asked.shape !== undefined) return keepingDisk(shaped(asked.shape), copiedDisk, presets);
 	if (copied !== undefined && (copied.size !== undefined || copiedShape !== undefined)) {
 		if (asked.size === undefined || asked.size === copied.size) {
 			return {
@@ -184,5 +230,5 @@ function machineOf(
 			};
 		}
 	}
-	return { size: asked.size ?? "default" };
+	return keepingDisk({ size: asked.size ?? "default" }, copiedDisk, presets);
 }

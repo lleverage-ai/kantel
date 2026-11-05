@@ -663,6 +663,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					nestedVirtualisation: host.nestedVirtualisation,
 					features: [...host.features],
 					capacity: { ...host.capacity },
+					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },

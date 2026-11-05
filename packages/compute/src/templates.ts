@@ -337,11 +337,17 @@ export interface TemplateService {
 	 * How a sandbox made from `template` asking for `shape` (`sandboxMachine`: the template's resources, else the
 	 * create's own) starts: from the newest ready (or stale) snapshot for its version, that shape's vCPUs and memory and a
 	 * runtime one of `eligibleHosts` has, on that host (a fresh boot on another of them when it has no room); else a
-	 * fresh boot on any of them.
+	 * fresh boot on any of them. A shape with a disk restores a snapshot only on `restoreOn`, where given: the hosts that
+	 * grow a snapshot's disk to the one asked for, or boot fresh where it is bigger (a host from before disks were chosen
+	 * would copy the snapshot's disk as it is).
 	 */
 	startFor(
 		template: StoredTemplate,
-		options: { readonly shape: BackendShape; readonly eligibleHosts: readonly string[] },
+		options: {
+			readonly shape: BackendShape;
+			readonly eligibleHosts: readonly string[];
+			readonly restoreOn?: readonly string[];
+		},
 	): Promise<TemplateStart>;
 	/**
 	 * Reconciles every template's cache: what the sweep runs, which notices hosts' runtimes changing, and tries again the
@@ -1129,10 +1135,17 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 
 	async function startFor(
 		template: StoredTemplate,
-		start: { readonly shape: BackendShape; readonly eligibleHosts: readonly string[] },
+		start: {
+			readonly shape: BackendShape;
+			readonly eligibleHosts: readonly string[];
+			readonly restoreOn?: readonly string[];
+		},
 	): Promise<TemplateStart> {
 		const { spec } = template;
 		const { shape } = start;
+		// Where its snapshots may be restored: with a disk asked for, only on a host that gives it that disk from one.
+		const restores = (hostId: string): boolean =>
+			shape.diskGb === undefined || start.restoreOn === undefined || start.restoreOn.includes(hostId);
 		const [base, allRuntimes, entries] = await Promise.all([
 			resolveBase(spec),
 			runtimes(),
@@ -1153,7 +1166,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					: "No host this sandbox may use can boot templates; upgrade its kantel-host",
 			);
 		}
-		if (custom) return startCustom(template, start.shape, base, hostRuntimes, entries, eligible);
+		if (custom) return startCustom(template, start.shape, base, hostRuntimes, entries, eligible, restores);
 		// A snapshot is the machine it was built as: only one built as this sandbox's shape will do, so a restore and a
 		// fresh boot give it the same machine.
 		const [snapshot] = newestFirst(
@@ -1166,6 +1179,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					entry.key.memoryMb === shape.memoryMb &&
 					entry.hostId !== undefined &&
 					eligible.includes(entry.hostId) &&
+					restores(entry.hostId) &&
 					hostRuntimes.some(
 						(runtime) =>
 							runtime.hostId === entry.hostId &&
@@ -1215,6 +1229,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		hostRuntimes: readonly TemplateRuntime[],
 		entries: readonly StoredTemplateSnapshot[],
 		eligibleHosts: readonly string[],
+		restores: (hostId: string) => boolean,
 	): Promise<TemplateStart> {
 		const { spec } = template;
 		const image = spec.image as CustomSource["image"];
@@ -1260,7 +1275,13 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		const same = usable.filter(
 			(entry) => entry.rootfsKey === newest.rootfsKey && entry.key.imageDigest === newest.key.imageDigest,
 		);
-		const snapshot = same.find((entry) => entry.key.vcpus === shape.vcpus && entry.key.memoryMb === shape.memoryMb);
+		const snapshot = same.find(
+			(entry) =>
+				entry.key.vcpus === shape.vcpus &&
+				entry.key.memoryMb === shape.memoryMb &&
+				entry.hostId !== undefined &&
+				restores(entry.hostId),
+		);
 		const holding = [...new Set(same.map((entry) => entry.hostId as string))];
 		// The snapshot's host first, then the others holding the image.
 		const eligible =

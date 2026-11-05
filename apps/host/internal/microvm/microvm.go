@@ -1680,7 +1680,9 @@ type sandboxOrigin struct {
 	// templateSnapshot is the template snapshot it restores, if any; release gives back its share of the snapshot's
 	// lock once the files are copied and loaded.
 	templateSnapshot string
-	release          func()
+	// templateDiskGiB is that template snapshot's disk, which a sandbox of a bigger one is grown from once it runs.
+	templateDiskGiB int
+	release         func()
 	// unhold releases the base lock, held to read (holdBases) from reading where rootfs comes from until it is linked
 	// (startMachine), so a prune finds the base in one or the other; nil when it isn't held.
 	unhold func()
@@ -1867,6 +1869,9 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		}
 	} else if p.From != "" {
 		// The snapshot's may be from before its sandbox's disk was grown (or of another size, made without memory).
+		s.meta.GrowDisk = true
+	} else if origin.templateSnapshot != "" && size.DiskGiB > origin.templateDiskGiB {
+		// A template's snapshot built with a smaller disk than the one it was asked for (restorableTemplateSnapshot).
 		s.meta.GrowDisk = true
 	}
 	if setup != "" {

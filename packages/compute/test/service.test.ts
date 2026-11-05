@@ -612,6 +612,28 @@ describe("sandboxes", () => {
 		const saved = await tom.saveSnapshot({ name: "disk", sandboxId: custom.id });
 		const fromSaved = await tom.createSandbox({ type: "microvm", from: saved.id, wait: true });
 		expect(fromSaved.resources).toMatchObject({ diskGb: 64 });
+		// Another vCPU count and memory, as the console sends them, or another size: still the snapshot's disk, where it
+		// is bigger than theirs.
+		const reshaped = await tom.createSandbox({
+			type: "microvm",
+			from: saved.id,
+			resources: { vcpus: 2, memoryMb: 4096 },
+			wait: true,
+		});
+		expect(reshaped.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 64 });
+		const larger = await tom.createSandbox({
+			type: "microvm",
+			from: saved.id,
+			resources: { vcpus: 4, memoryMb: 8192 },
+			wait: true,
+		});
+		expect(larger.resources).toEqual({ vcpus: 4, memoryMb: 8192, diskGb: 64 });
+		const [sizedFork] = (await tom.forkSandbox(custom.id, { snapshotId: saved.id, size: "large", wait: true })).items;
+		expect(sizedFork?.resources).toEqual({ vcpus: 4, memoryMb: 8192, diskGb: 64 });
+		// A size whose own disk is bigger: that size, whole.
+		const [xlarge] = (await tom.forkSandbox(custom.id, { snapshotId: saved.id, size: "xlarge", wait: true })).items;
+		expect(xlarge?.resources).toEqual({ vcpus: 8, memoryMb: 16384, diskGb: 80 });
+		expect(xlarge?.size).toBe("xlarge");
 		// One from a snapshot keeps the snapshot's disk: none may be asked for.
 		const refused = await failure(
 			tom.createSandbox({ type: "microvm", from: saved.id, resources: { diskGb: 200 }, wait: true }),
@@ -667,6 +689,15 @@ describe("sandboxes", () => {
 		expect(microvmShapes([said], sizes)?.diskGb).toEqual({ min: 15, max: 200, step: 1, default: 20 });
 		const full = { ...said, id: "full", capacity: { ...host.capacity, diskGb: 5 } };
 		expect(microvmShapes([full], sizes)?.diskGb).toEqual({ min: 15, max: 15, step: 1, default: 15 });
+		// The free disk it last reported, not what it had when it started: more or less, and none free as none.
+		expect(microvmShapes([{ ...said, freeDiskGb: 120 }], sizes)?.diskGb).toMatchObject({ max: 120 });
+		expect(microvmShapes([{ ...full, freeDiskGb: 180 }], sizes)?.diskGb).toMatchObject({ max: 180 });
+		expect(microvmShapes([{ ...said, freeDiskGb: 0 }], sizes)?.diskGb).toEqual({
+			min: 15,
+			max: 15,
+			step: 1,
+			default: 15,
+		});
 		const roomy = {
 			...said,
 			id: "roomy",
@@ -689,6 +720,11 @@ describe("sandboxes", () => {
 		);
 		// A disk alone is the default size's (`sandboxMachine`).
 		expect(shapeFor("microvm", { diskGb: 40 }, [said], sizes)).toBeUndefined();
+		// A host from before it said its limits is admitted as placement admits it, 1 to 4096 GB, whatever the slider
+		// offers.
+		for (const diskGb of [5, 1500, 4096]) {
+			expect(shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb }, [custom], sizes)).toMatchObject({ diskGb });
+		}
 	});
 
 	it("offers a host's presets, and any shape where it makes them", () => {

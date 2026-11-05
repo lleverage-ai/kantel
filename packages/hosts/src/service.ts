@@ -146,6 +146,11 @@ export interface HostView {
 	/** What it does beyond protocol 1 as first released (`HOST_FEATURES`). */
 	readonly features: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	/**
+	 * The disk it had free when it last reported (its hello or a heartbeat), what placement admits a create against;
+	 * `capacity.diskGb` is what it had free when it started. Absent until it has reported.
+	 */
+	readonly freeDiskGb?: number;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -878,6 +883,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const placements = allocations ? await store.placementsOn(host.id) : [];
 		const live = placements.filter((placement) => LIVE.has(placement.state));
 		const facts = storedFacts(host.facts);
+		const reported = storedCapacity(host.capacity);
 		const arch =
 			facts?.arch === "amd64" || facts?.arch === "x86_64"
 				? "x86_64"
@@ -905,6 +911,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			nestedVirtualisation: facts?.nested ?? false,
 			features: [...(facts?.features ?? [])],
 			capacity: { vcpus: facts?.cpus ?? 0, memoryMb: facts?.memoryMiB ?? 0, diskGb: facts?.diskGiB ?? 0 },
+			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),

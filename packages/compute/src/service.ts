@@ -841,9 +841,10 @@ export function microvmShapes(
 			maxVcpus = Math.max(maxVcpus, Math.min(MAX_VCPUS, host.capacity.vcpus));
 			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
 			const limits = diskLimitsOf(host, deploymentSizes);
-			// No more than it had free when it last said (its own limit where it didn't say): a create of more waits for
-			// room, so the slider doesn't offer it. Never under its least, so the range is never empty.
-			const free = host.capacity.diskGb > 0 ? Math.min(limits.maxGb, host.capacity.diskGb) : limits.maxGb;
+			// No more than it had free when it last reported (none free is none), else when it started, else its own limit: a
+			// create of more waits for room, so the slider doesn't offer it. Never under its least, so the range is never empty.
+			const reported = host.freeDiskGb ?? (host.capacity.diskGb > 0 ? host.capacity.diskGb : undefined);
+			const free = reported === undefined ? limits.maxGb : Math.min(limits.maxGb, Math.max(0, reported));
 			minDisk = Math.min(minDisk ?? limits.minGb, limits.minGb);
 			maxDisk = Math.max(maxDisk ?? 0, Math.max(limits.minGb, free));
 		}
@@ -4772,7 +4773,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const start =
 					template === undefined || machine?.shape === undefined
 						? undefined
-						: await templates.startFor(template, { shape: machine.shape, eligibleHosts: hosts });
+						: await templates.startFor(template, {
+								shape: machine.shape,
+								eligibleHosts: hosts,
+								// A disk asked for is given from a template snapshot only by hosts that say their disk limits (this
+								// kantel-host and later), which grow the snapshot's disk to it or boot fresh where it is bigger.
+								restoreOn: eligible.filter((host) => host.disk !== undefined).map((host) => host.id),
+							});
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -4981,7 +4988,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 										copies: recordsMachine(snapshot) ? snapshot : current,
 									},
 									body.size === undefined ? {} : { size: body.size },
-									[],
+									// The presets of the hosts it may go to: one of another size keeps a copied disk bigger than its own.
+									await backend
+										.capabilities()
+										.then((capabilities) =>
+											capabilities.hosts
+												.filter((host) => hosts.includes(host.id))
+												.flatMap((host) => host.sizes ?? capabilities.sizes),
+										),
 								);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();

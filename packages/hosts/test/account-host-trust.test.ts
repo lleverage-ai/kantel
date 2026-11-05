@@ -169,6 +169,8 @@ describe("an account's own host", () => {
 
 		const capabilities = await backend.capabilities();
 		expect(capabilities.hosts.map((host) => host.id).sort()).toEqual([own.hostId, shared.hostId].sort());
+		// A malformed report says no free disk at all, rather than a wrong one.
+		expect(capabilities.hosts.find((host) => host.id === own.hostId)).not.toHaveProperty("freeDiskGb");
 		// Another account still gets a sandbox; the bad host counts as offering nothing.
 		const placed = await backend.create(spec("sbx_b", "acc_b", [shared.hostId, own.hostId]));
 		expect(placed.hostId).toBe(shared.hostId);
