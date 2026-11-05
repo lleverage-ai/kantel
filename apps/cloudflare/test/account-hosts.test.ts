@@ -3,7 +3,7 @@
 // straight to the hub the object hands sockets to), and the account's sandboxes run on it while an organisation with no
 // host of its own keeps the stub. Off, none of it is served and the Worker is as it was.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { createMemoryStore, HOST_NOT_REVOCABLE } from "@kantel/compute";
+import { createMemoryStore, HOST_NOT_REVOCABLE, PROTECTED_VALUES_UNSUPPORTED } from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import type { Authenticator } from "@kantel/contracts";
 import { ORGANISATION_HEADER } from "@kantel/contracts/identity";
@@ -12,7 +12,7 @@ import { decodeStreamFrame, encodeStreamFrame, type HostMessage } from "@kantel/
 import { createMockAccess } from "@kantel/identity/testing";
 import type { SqlValue } from "@kantel/sql";
 import { syncSqliteDriver } from "@kantel/sql/sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type ObjectSqlLike, objectSqlDriver } from "../src/audit-outbox.ts";
 import {
 	COMPUTE_MEMBERS_ONLY,
@@ -69,7 +69,10 @@ afterEach(async () => {
 	for (const close of closers.splice(0).reverse()) await close();
 });
 
-async function start(db: DatabaseSync, vars: { KANTEL_ACCOUNT_HOSTS?: string; KANTEL_PUBLIC_URL?: string } = {}) {
+async function start(
+	db: DatabaseSync,
+	vars: { KANTEL_ACCOUNT_HOSTS?: string; KANTEL_PUBLIC_URL?: string; KANTEL_SECRETS_KEY?: string } = {},
+) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -106,7 +109,9 @@ async function start(db: DatabaseSync, vars: { KANTEL_ACCOUNT_HOSTS?: string; KA
  * echoes what comes in, uppercased (an SSH server stands in), or with `http`, answers one HTTP request with a page
  * naming the request line and the Host it was asked for, then ends the stream (a web server stands in).
  */
-function fakeHost(options: { readonly http?: boolean; failCreates?: number } = {}) {
+function fakeHost(
+	options: { readonly http?: boolean; failCreates?: number; readonly features?: readonly string[] } = {},
+) {
 	const requests = new Map<number, string>();
 	/** Streams that upgraded to a WebSocket: what the server has of their frames so far. */
 	const sockets = new Map<number, Uint8Array>();
@@ -117,13 +122,19 @@ function fakeHost(options: { readonly http?: boolean; failCreates?: number } = {
 	const lines = new Map<number, string>();
 	const sandboxes = new Set<string>();
 	const calls: string[] = [];
+	/** Each call's params, as Kantel sent them, by method. */
+	const sentParams = new Map<string, unknown[]>();
+	/** Kantel's answers to the host's own calls (`ask`). */
+	const answers = new Map<string, HostMessage>();
 	let closed: { code: number; reason: string } | undefined;
 	let receive: (frame: string | Uint8Array) => void = () => undefined;
 	const socket: HostSocket = {
 		sendText(text) {
 			const message = JSON.parse(text) as HostMessage;
+			if (message.type === "result" && typeof message.id === "string") answers.set(message.id, message);
 			if (message.type !== "call") return;
 			calls.push(message.method ?? "");
+			sentParams.set(message.method ?? "", [...(sentParams.get(message.method ?? "") ?? []), message.params]);
 			const params = message.params as { sandboxId: string; command?: string; snapshotId?: string };
 			const answer = (result: unknown) => receive(JSON.stringify({ type: "result", id: message.id, result }));
 			if (message.method === "sandbox.create") {
@@ -244,15 +255,26 @@ function fakeHost(options: { readonly http?: boolean; failCreates?: number } = {
 					tiers: ["microvm"],
 					sizes: [{ name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 }],
 					egress: "open",
+					...(options.features === undefined ? {} : { features: options.features }),
 				},
 				sandboxes: [],
 				capacity: { freeMemoryMiB: 14_000, freeDiskGiB: 180, running: 0, stopped: 0, load1: 0, warm: {} },
 			},
 		});
+	let asked = 0;
 	return {
 		socket,
 		sandboxes,
 		calls,
+		params: sentParams,
+		/** Calls Kantel as kantel-host does (`secrets.fetch`, `bucket.fetch`), and waits for its answer. */
+		async ask(method: string, callParams: unknown): Promise<HostMessage> {
+			asked += 1;
+			const id = `h${asked}`;
+			receive(JSON.stringify({ type: "call", id, method, params: callParams }));
+			await expect.poll(() => answers.has(id)).toBe(true);
+			return answers.get(id) as HostMessage;
+		},
 		heard,
 		handshakes,
 		closed: () => closed,
@@ -949,6 +971,109 @@ describe("Account hosts on the Worker", () => {
 		const again = await start(db, on);
 		const kept = await again.stack.compute.hosts?.service.get(hostId);
 		expect(kept).toMatchObject({ id: hostId, accountId: personal, state: "revoked" });
+	});
+
+	it("seals protected values with KANTEL_SECRETS_KEY and gives them only to the sandbox's own host, as self-hosted", async () => {
+		const db = new DatabaseSync(":memory:");
+		const KEY = Buffer.alloc(32, 7).toString("base64");
+		const SECRET = "ghp_hostedValueThatNeverEntersTheSandbox";
+		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE, KANTEL_SECRETS_KEY: KEY };
+		const { stack, call } = await start(db, on);
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const whoami = await call("GET", "/v1/whoami");
+		expect(whoami.body.protectedValues).toBe(true);
+
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { name: "toms-box" });
+		const registered = await call("POST", "/v1/hosts/register", { token: joinToken.body.token }, {});
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		// kantel-host as released: its egress proxy enforces grants and swaps protected values (HOST_FEATURES.egressPolicy).
+		const host = fakeHost({ features: ["egress-policy"] });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		const env = await call("POST", "/v1/environments", { name: "work" });
+		expect(env.status).toBe(201);
+		const envId = env.body.id as string;
+		const set = await call("PUT", `/v1/environments/${envId}/variables/GH_TOKEN`, {
+			protected: true,
+			value: SECRET,
+			bindings: [{ host: "api.github.com" }],
+		});
+		expect(set.status).toBe(200);
+		expect(JSON.stringify(set.body)).not.toContain(SECRET);
+		// Sealed in the object's SQLite, never kept as it was given.
+		const stored = db.prepare("SELECT * FROM compute_api_records").all();
+		expect(JSON.stringify(stored)).not.toContain(SECRET);
+
+		// The sandbox goes on the person's own host: its create names the hosts to intercept, never the value.
+		const sandbox = await call("POST", "/v1/sandboxes", { type: "microvm", environment: envId, wait: true });
+		expect(sandbox.status).toBe(201);
+		const sandboxId = sandbox.body.id as string;
+		expect(host.sandboxes.has(sandboxId)).toBe(true);
+		const created = JSON.stringify(host.params.get("sandbox.create"));
+		expect(created).not.toContain(SECRET);
+		expect(host.params.get("sandbox.create")?.[0]).toMatchObject({
+			egress: { protected: { intercept: ["api.github.com"] } },
+		});
+		const placeholder = /GH_TOKEN\\?":\\?"(kph_[A-Za-z0-9_]+)/.exec(created)?.[1];
+		if (placeholder === undefined) throw new Error(`No placeholder in the create: ${created}`);
+
+		// kantel-host's egress proxy asks for the sandbox's values over its connection, and gets them to swap in.
+		const fetched = await host.ask("secrets.fetch", { sandboxId });
+		expect(fetched.error).toBeUndefined();
+		expect(fetched.result).toMatchObject({
+			entries: [{ placeholder, name: "GH_TOKEN", value: SECRET, bindings: [{ host: "api.github.com" }] }],
+		});
+		// Another sandbox's, or one that isn't on this host, is answered with nothing.
+		expect((await host.ask("secrets.fetch", { sandboxId: "sbx_elsewhere" })).error?.code).toBe("not_found");
+
+		// The values outlast the object, with the same key.
+		await stack.compute.close();
+		const again = await start(db, on);
+		const table = await again.stack.compute.api.service.protectedTable(hostId, sandboxId);
+		expect(table?.entries).toMatchObject([{ placeholder, value: SECRET }]);
+	});
+
+	it("without KANTEL_SECRETS_KEY says it keeps no protected values, refuses them for users, and tells the operator", async () => {
+		const db = new DatabaseSync(":memory:");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const { call } = await start(db, { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
+			expect(warn.mock.calls.flat().join("\n")).toContain("wrangler secret put KANTEL_SECRETS_KEY");
+			const whoami = await call("GET", "/v1/whoami");
+			expect(whoami.body.protectedValues).toBe(false);
+			const env = await call("POST", "/v1/environments", { name: "work" });
+			const refused = await call("PUT", `/v1/environments/${env.body.id as string}/variables/GH_TOKEN`, {
+				protected: true,
+				value: "ghp_x",
+				bindings: [{ host: "api.github.com" }],
+			});
+			expect(refused.status).toBe(501);
+			const error = refused.body.error as { code: string; message: string };
+			expect(error.code).toBe("not_supported");
+			expect(error.message).toBe(PROTECTED_VALUES_UNSUPPORTED);
+			expect(error.message).not.toContain("KANTEL_SECRETS_KEY");
+			const plain = await call("PUT", `/v1/environments/${env.body.id as string}/variables/LOG_LEVEL`, {
+				value: "debug",
+			});
+			expect(plain.status).toBe(200);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("refuses a KANTEL_SECRETS_KEY that isn't 32 bytes of base64, never naming its value", () => {
+		const bad = "not-a-key-at-all";
+		const refuse = () => gatewayConfig({ KANTEL_SECRETS_KEY: bad });
+		expect(refuse).toThrow(/KANTEL_SECRETS_KEY must be 32 bytes in base64/);
+		expect(refuse).not.toThrow(new RegExp(bad));
+		expect(() => gatewayConfig({ KANTEL_SECRETS_KEY: Buffer.alloc(16).toString("base64") })).toThrow(/32 bytes/);
+		const key = Buffer.alloc(32, 1).toString("base64");
+		expect(gatewayConfig({ KANTEL_SECRETS_KEY: ` ${key}\n` }).secretsKey).toBe(key);
+		expect(gatewayConfig({ KANTEL_SECRETS_KEY: "" }).secretsKey).toBeUndefined();
 	});
 
 	it("makes a microVM whose create failed on the account's host again there on recover or start, never on the stub", async () => {

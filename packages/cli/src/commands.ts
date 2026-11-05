@@ -938,6 +938,25 @@ function fileIn(answer: unknown, path: string): { readonly mode: number; readonl
 	return found === undefined ? undefined : { mode: found.mode, sizeBytes: found.sizeBytes };
 }
 
+/** What the CLI says, before it changes anything, on a deployment that keeps no protected values (`protectedValues`). */
+export const NO_PROTECTED_VALUES =
+	"this deployment doesn't support protected variables or secret files; plain variables, repos and grants still work";
+
+/**
+ * Whether the deployment keeps protected variables and secret files, as `GET /v1/whoami` says: `false` only when it says
+ * so. An older deployment that doesn't say, or a failed read, is `undefined`, and the write it was asked for is tried.
+ */
+async function protectedValuesOffered(client: {
+	getCaller(): Promise<{ readonly protectedValues?: boolean }>;
+}): Promise<boolean | undefined> {
+	return (await client.getCaller().catch(() => undefined))?.protectedValues;
+}
+
+/** Refuses, before anything is written, a protected value the deployment would refuse. */
+async function requireProtectedValues(client: Parameters<typeof protectedValuesOffered>[0]): Promise<void> {
+	if ((await protectedValuesOffered(client)) === false) throw new CliError(NO_PROTECTED_VALUES);
+}
+
 // The commands.
 
 // End-to-end encryption (e2e.ts).
@@ -2570,16 +2589,22 @@ const SECTIONS: readonly Section[] = [
 				async run(ctx) {
 					const config = await ctx.config();
 					const description = ctx.string("description");
-					const environment = await (await ctx.client()).createEnvironment({
-						...(config.account === undefined ? {} : { account: config.account }),
-						name: ctx.arg(0),
-						...(description === undefined ? {} : { description }),
-					});
+					const client = await ctx.client();
+					// Asked alongside, so whoever makes one for a protected value hears before setting it that it can't be.
+					const [environment, offered] = await Promise.all([
+						client.createEnvironment({
+							...(config.account === undefined ? {} : { account: config.account }),
+							name: ctx.arg(0),
+							...(description === undefined ? {} : { description }),
+						}),
+						protectedValuesOffered(client),
+					]);
 					ctx.emit(withoutProtectedValues(environment), () =>
 						[
 							`Created ${environment.id} (${environment.name}).`,
 							`  Add a variable:  kantel env set ${environment.name} NAME=value`,
 							`  Use it:          kantel new --env ${environment.name}`,
+							...(offered === false ? [`Note: ${NO_PROTECTED_VALUES}.`] : []),
 						].join("\n"),
 					);
 				},
@@ -2686,6 +2711,8 @@ const SECTIONS: readonly Section[] = [
 					}
 					const value = fromStdin ? await valueFromStdin(ctx) : inline;
 					const client = await ctx.client();
+					// Asked for a protected value: refused here, on a deployment that keeps none, before anything is written.
+					if (asked || keep || bindings.length > 0) await requireProtectedValues(client);
 					const environment = await loadEnvironment(ctx, client, ref);
 					const existing = environment.variables.find((variable) => variable.name === name);
 					const wasProtected = existing?.protected === true;
@@ -2754,13 +2781,15 @@ const SECTIONS: readonly Section[] = [
 					const path = ctx.arg(1);
 					const mode = modeOf(ctx.string("mode"));
 					const from = ctx.string("from");
-					let content: Uint8Array;
-					if (from === undefined) {
-						const stdin = ctx.io.stdin();
-						if (stdin.isTTY === true) throw new UsageError("give the content with --from <file>, or pipe it in");
-						content = await readAll(stdin);
-					} else content = await readFile(resolve(ctx.io.cwd, from));
+					const stdin = ctx.io.stdin();
+					if (from === undefined && stdin.isTTY === true) {
+						throw new UsageError("give the content with --from <file>, or pipe it in");
+					}
 					const client = await ctx.client();
+					// Before the content is read: a deployment that keeps no secret files would refuse it anyway.
+					await requireProtectedValues(client);
+					const content: Uint8Array =
+						from === undefined ? await readAll(stdin) : await readFile(resolve(ctx.io.cwd, from));
 					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
 					const answer: unknown = await client.setEnvironmentFile(environmentId, {
 						path,

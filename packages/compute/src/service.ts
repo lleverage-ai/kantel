@@ -739,6 +739,20 @@ const USAGE_FEATURE = "usage";
  */
 export const IDEMPOTENCY_CLAIM_MS = 60_000;
 export const IDEMPOTENCY_RENEW_MS = 20_000;
+/**
+ * What a user is told when the deployment has no secrets key (`ComputeApiOptions.secretsKey`) and a persistent store:
+ * nothing they can do about it, so no operator advice. The gateways log that (`secretsKeyMissing`), and the caller says
+ * it up front (`Caller.protectedValues`).
+ */
+export const PROTECTED_VALUES_UNSUPPORTED =
+	"This deployment doesn't support protected variables or secret files; plain variables still work";
+export const BUCKET_CREDENTIALS_UNSUPPORTED = "This deployment doesn't support bucket sources with credentials";
+/**
+ * What a gateway logs at start for its operator when it has a persistent store and no secrets key: what is refused,
+ * and the setting that turns it on. Never shown to a user.
+ */
+export const secretsKeyMissing = (how: string): string =>
+	`kantel: KANTEL_SECRETS_KEY is not set, so protected variables, secret files and bucket sources' credentials are refused. ${how}`;
 /** A retry of a call whose answer held a secret the deployment had no key to seal, so didn't keep. */
 export const ANSWER_WITHHELD =
 	"The call with this Idempotency-Key was done, and its answer held a secret this deployment keeps no copy of without " +
@@ -1482,12 +1496,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? undefined
 				: createEphemeralSealer();
 	const requireSealer = (): Sealer => {
-		if (sealer === undefined) {
-			throw new KantelError(
-				"not_supported",
-				"Protected variables and secret files need the deployment's secrets key: set KANTEL_SECRETS_KEY",
-			);
-		}
+		if (sealer === undefined) throw new KantelError("not_supported", PROTECTED_VALUES_UNSUPPORTED);
 		return sealer;
 	};
 
@@ -2738,12 +2747,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					options: options.mounts,
 					now,
 					sealer: () => {
-						if (sealer === undefined) {
-							throw new KantelError(
-								"not_supported",
-								"Bucket sources' credentials need the deployment's secrets key: set KANTEL_SECRETS_KEY",
-							);
-						}
+						if (sealer === undefined) throw new KantelError("not_supported", BUCKET_CREDENTIALS_UNSUPPORTED);
 						return sealer;
 					},
 					publicUrl: (request) => (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, ""),
@@ -4263,6 +4267,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					superAdmin: principal.superAdmin,
 					mode,
 					...deploymentDomain,
+					protectedValues: sealer !== undefined,
 				};
 			}
 			return {
@@ -4272,6 +4277,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				superAdmin: principal.superAdmin,
 				mode,
 				...deploymentDomain,
+				protectedValues: sealer !== undefined,
 			};
 		},
 

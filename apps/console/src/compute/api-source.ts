@@ -1518,6 +1518,8 @@ function environmentsSource(context: Context): EnvironmentsSource {
 		return environmentOf(environment);
 	};
 	return {
+		// As the deployment says on the caller: one with no secrets key refuses protected values, so the page offers none.
+		...(context.caller.protectedValues === false ? { protectedValues: false } : {}),
 		list: async (accountId) => (await api.listEnvironments({ account: accountId })).items.map(view),
 		get: async (id) => view(await api.getEnvironment(id)),
 		create: async (input) =>

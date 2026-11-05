@@ -328,7 +328,7 @@ export interface BundleMountSource {
 	readonly digest: string;
 }
 
-/** Who is calling, the accounts they may act in, and the deployment's mode. */
+/** Who is calling, the accounts they may act in, and the deployment's mode and what it supports. */
 export interface Caller {
 	readonly user?: CallerUser;
 	/** The key the call was signed in with, when it was a key. */
@@ -342,6 +342,8 @@ export interface Caller {
 	readonly mode: DeploymentMode;
 	/** The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. */
 	readonly sandboxDomain?: string;
+	/** Whether the deployment keeps environments' protected variables and secret files (and bucket sources' credentials). `false`: setting one is refused with `not_supported`, and plain variables still work. Absent from a deployment older than this field: try, and read the error. */
+	readonly protectedValues?: boolean;
 }
 
 /** The key the call was signed in with, when it was a key. */
@@ -2638,7 +2640,7 @@ export interface KantelClient {
 	): Promise<BrowserEmbed>;
 	/** Create a project. Creates a project in the caller's organisation, which the `kantel-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
-	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it. `GET /whoami` */
+	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), the deployment's mode, and whether it keeps protected variables and secret files (`protectedValues`), so a client can check before it makes an environment that needs them. Any key may call it. `GET /whoami` */
 	getCaller(options?: CallOptions): Promise<Caller>;
 	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. `GET /accounts` */
 	listAccounts(options?: CallOptions): Promise<AccountList>;

@@ -23,12 +23,14 @@ function One({
 	environmentId = "env_backend",
 	addingProtected,
 	accountId = LLEVERAGE.id,
+	options,
 }: {
 	environmentId?: string;
 	addingProtected?: boolean;
 	accountId?: string;
+	options?: ComputeFixtureOptions;
 }) {
-	const [source] = useState(() => createComputeFixtures());
+	const [source] = useState(() => createComputeFixtures(options));
 	return (
 		<EnvironmentPage
 			source={source.environments}
@@ -64,6 +66,12 @@ export const AddProtected: Story = () => <One addingProtected />;
 
 /** An environment of another account than the one selected (Back after switching): nothing to change. */
 export const AnotherAccount: Story = () => <One accountId={PERSONAL.id} />;
+
+/** A deployment with no secrets key: the list says protected values and secret files aren't supported here. */
+export const NoProtectedValuesList: Story = () => <List options={{ noProtectedValues: true }} />;
+
+/** The same deployment's environment: plain variables, repositories and grants, with no protected variable or file to add. */
+export const NoProtectedValues: Story = () => <One options={{ noProtectedValues: true }} />;
 
 /** On a phone: the tables scroll sideways. */
 export const Mobile: Story = () => <One />;

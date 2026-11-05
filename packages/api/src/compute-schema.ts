@@ -136,8 +136,19 @@ export const Caller = Type.Object(
 					"deployment names none.",
 			}),
 		),
+		protectedValues: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether the deployment keeps environments' protected variables and secret files (and bucket sources' " +
+					"credentials). `false`: setting one is refused with `not_supported`, and plain variables still work. Absent " +
+					"from a deployment older than this field: try, and read the error.",
+			}),
+		),
 	},
-	{ title: "Caller", description: "Who is calling, the accounts they may act in, and the deployment's mode." },
+	{
+		title: "Caller",
+		description: "Who is calling, the accounts they may act in, and the deployment's mode and what it supports.",
+	},
 );
 
 export const CreateOrganisationBody = Type.Object(
