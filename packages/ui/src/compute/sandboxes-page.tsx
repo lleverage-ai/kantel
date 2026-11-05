@@ -1331,6 +1331,8 @@ function SandboxPhoneRow({
 }) {
 	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
+	// Who made it, on a failed one's row too, where its error takes the machine's line.
+	const made = creator === undefined || creator === "" ? undefined : creator === "You" ? "Yours" : `By ${creator}`;
 	const body = (
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
@@ -1338,14 +1340,15 @@ function SandboxPhoneRow({
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (
-				<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
+				<>
+					<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
+					{made === undefined ? null : <span className="text-sm text-muted">{made}</span>}
+				</>
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>{sandboxMachineText(sandbox)}</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
-					{creator === undefined || creator === "" ? null : (
-						<span>{creator === "You" ? "Yours" : `By ${creator}`}</span>
-					)}
+					{made === undefined ? null : <span>{made}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
 					<BaseOutdatedBadge base={sandbox.base} now={now} />
 				</span>
