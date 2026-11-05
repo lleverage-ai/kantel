@@ -765,12 +765,6 @@ function Cpu({
 			: `CPU ${series === undefined ? "lately" : "over the last 2 minutes"} for ${sandbox.name}, peak ${peak}%`;
 	return (
 		<span className="inline-flex items-center gap-2">
-			{compact ? (
-				// Named under a phone row's state, as the table's column head names it on a wide screen.
-				<span className="text-muted" aria-hidden="true">
-					CPU
-				</span>
-			) : null}
 			<Sparkline
 				size={compact ? "xs" : "sm"}
 				values={values}
