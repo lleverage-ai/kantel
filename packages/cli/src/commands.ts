@@ -2036,6 +2036,12 @@ const SECTIONS: readonly Section[] = [
 						ctx.out(JSON.stringify(result, null, 2));
 						return exitCodeOf(result);
 					}
+					// A foreground command Kantel stopped waiting for (its gateway restarting), which runs on: not its end.
+					if (!detached && result.state === "running") {
+						throw new CliError(
+							`Kantel stopped waiting for ${result.id}, which may still be running: kantel attach ${sandboxId} ${result.id}`,
+						);
+					}
 					if (result.state === "running") {
 						ctx.out(result.id);
 						ctx.note(

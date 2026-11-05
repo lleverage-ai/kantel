@@ -564,6 +564,18 @@ describe("exec", () => {
 		expect(result.calls.length).toBeLessThan(30);
 	});
 
+	it("says a foreground command Kantel stopped waiting for may still run, and how to attach", async () => {
+		const result = await kantel(["exec", "sbx_test1", "--", "pnpm install"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toBe(
+			"kantel: Kantel stopped waiting for cmd_1, which may still be running: kantel attach sbx_test1 cmd_1\n",
+		);
+	});
+
 	it("follows on after a connection that drops while an answer's body comes", async () => {
 		const cut = () =>
 			new Response(
