@@ -60,7 +60,9 @@ import {
 	type BackendShape,
 	type BackendSize,
 	type BootOptions,
+	type CommandProgress,
 	type ExecResult,
+	isCommandProgress,
 	isDetachedWaitEnded,
 	type Placement,
 	type SandboxBackend,
@@ -90,7 +92,7 @@ import {
 	reportMountStatuses,
 } from "./mounts-service.ts";
 import { isPlaceholderName, personName } from "./names.ts";
-import { delay, START_HOLD_MS, START_POLL_MS, sandboxNotRunning } from "./not-running.ts";
+import { delay, portNotRunningText, START_HOLD_MS, START_POLL_MS, sandboxNotRunning } from "./not-running.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -400,6 +402,19 @@ export interface ComputeService {
 	 * cache (which notices hosts' runtimes changing).
 	 */
 	sweep(): Promise<void>;
+	/**
+	 * Counts a use of a sandbox toward its idle stop (`idleStopMinutes`): a relayed port stream opened or carrying bytes
+	 * (SSH, the desktop or browser, a hosted port's request or WebSocket). Cheap enough for every frame: it is kept in
+	 * memory, and written as the sandbox's `lastActiveAt` at most once each `ACTIVITY_WRITE_MS` (the sweep writes what
+	 * was held). Calls that need a running sandbox (commands, files, ports) count by themselves.
+	 */
+	noteActivity(sandboxId: string): void;
+	/**
+	 * What a request to a hosted port of a sandbox that isn't running is told, in words: that it is stopped (or paused,
+	 * starting, in error) and why, and how it is resumed. Undefined while it runs, or when it is gone. Nothing resumes it:
+	 * Kantel never resumes a sandbox for a call, as for a command (`not-running.ts`).
+	 */
+	portNotRunning(sandboxId: string): Promise<string | undefined>;
 	/**
 	 * Makes `digest` a template base channel's current one (the image patching pipeline's call, as the super-admin's
 	 * `POST /v1/template-bases` is), and rebuilds the templates following it in the background. `not_supported` while
@@ -750,6 +765,20 @@ const USAGE_FEATURE = "usage";
  */
 export const IDEMPOTENCY_CLAIM_MS = 60_000;
 export const IDEMPOTENCY_RENEW_MS = 20_000;
+/**
+ * What a user is told when the deployment has no secrets key (`ComputeApiOptions.secretsKey`) and a persistent store:
+ * nothing they can do about it, so no operator advice. The gateways log that (`secretsKeyMissing`), and the caller says
+ * it up front (`Caller.protectedValues`).
+ */
+export const PROTECTED_VALUES_UNSUPPORTED =
+	"This deployment doesn't support protected variables or secret files; plain variables still work";
+export const BUCKET_CREDENTIALS_UNSUPPORTED = "This deployment doesn't support bucket sources with credentials";
+/**
+ * What a gateway logs at start for its operator when it has a persistent store and no secrets key: what is refused,
+ * and the setting that turns it on. Never shown to a user.
+ */
+export const secretsKeyMissing = (how: string): string =>
+	`kantel: KANTEL_SECRETS_KEY is not set, so protected variables, secret files and bucket sources' credentials are refused. ${how}`;
 /** A retry of a call whose answer held a secret the deployment had no key to seal, so didn't keep. */
 export const ANSWER_WITHHELD =
 	"The call with this Idempotency-Key was done, and its answer held a secret this deployment keeps no copy of without " +
@@ -793,6 +822,43 @@ export function canonicalJson(value: unknown): string {
 	return `{${entries.map(([key, each]) => `${JSON.stringify(key)}:${canonicalJson(each)}`).join(",")}}`;
 }
 const DEFAULT_AUTO_STOP_MINUTES = 60;
+/** The `reason` of a stop for a sandbox's idle stop (`idleStopMinutes`), kept apart from its auto-stop's `auto-stop`. */
+export const IDLE_STOP_REASON = "idle-stop";
+/** The `reason` of a stop for a sandbox's auto-stop time. */
+export const AUTO_STOP_REASON = "auto-stop";
+/**
+ * How often a gateway writes a sandbox's `lastActiveAt` while it is used: at once for the first use after a quiet spell,
+ * then at most once in this long, the rest held until the sweep after it. So a sandbox's recorded use is at most about
+ * this (and a sweep) behind, and a busy port costs a write per sandbox per window, not one per request or frame.
+ */
+export const ACTIVITY_WRITE_MS = 15_000;
+
+/**
+ * How long past its idle time a sandbox's idle stop waits before it is due: longer than any gateway takes to store a use
+ * it saw (held for up to `ACTIVITY_WRITE_MS`, then written at its next sweep, every 5 s on a self-hosted gateway). So a
+ * use seen only by another gateway, whose record of it is held back or on its way, has landed before this gateway's
+ * sweep can claim the stop; its own unstored use counts directly (`idleStopDue`'s `seenAt`). It delays only the idle
+ * stop, never an auto-stop or a stop a sandbox is owed.
+ */
+export const IDLE_STOP_GRACE_MS = 2 * ACTIVITY_WRITE_MS;
+
+/** When a running sandbox was last used, for its idle stop: its latest recorded use, else its start. */
+function lastUse(sandbox: StoredSandbox): number | undefined {
+	return sandbox.lastActiveAt ?? sandbox.startedAt;
+}
+
+/**
+ * Whether a running sandbox's idle stop is due at `at`: it has one, and has gone that long without use, and
+ * `IDLE_STOP_GRACE_MS` more for other gateways' use to land. `seenAt` is a later use this gateway saw that may not be
+ * stored yet (its write held back, in flight or failed): it counts too.
+ */
+export function idleStopDue(sandbox: StoredSandbox, at: number, seenAt?: number): boolean {
+	const minutes = sandbox.idleStopMinutes;
+	if (minutes === undefined || minutes === null) return false;
+	const stored = lastUse(sandbox);
+	const last = seenAt === undefined ? stored : Math.max(stored ?? seenAt, seenAt);
+	return last !== undefined && last + minutes * 60_000 + IDLE_STOP_GRACE_MS <= at;
+}
 /**
  * How stale a host record's `lastSeenAt` may get before it is written again: it moves on every heartbeat, and the host
  * list answers it fresh from the backend anyway, so the record needn't be written on every create.
@@ -1162,6 +1228,21 @@ const truncate = (text: string): { text: string; truncated: boolean } =>
 	text.length > MAX_OUTPUT_CHARS
 		? { text: text.slice(0, MAX_OUTPUT_CHARS), truncated: true }
 		: { text, truncated: false };
+
+/**
+ * A command's stream at its end, from what was recorded while it ran and its end's. A real end's starts with what was
+ * recorded (its backend keeps the start of each stream), and is kept to the cap. Any other is an end Kantel made up,
+ * such as its result lost, which says why: what was recorded is kept whole, and the reason follows it, past the cap if
+ * it must be, so it is never cut off and an attach that has shown what was recorded shows it next.
+ */
+function endStream(recorded: string, final: string): { text: string; truncated: boolean } {
+	if (final.startsWith(recorded)) return truncate(final);
+	if (final === "") return { text: recorded, truncated: false };
+	return {
+		text: recorded === "" || recorded.endsWith("\n") ? recorded + final : `${recorded}\n${final}`,
+		truncated: false,
+	};
+}
 
 // Environments: names, destinations and grants, checked and kept in one form.
 
@@ -1548,12 +1629,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? undefined
 				: createEphemeralSealer();
 	const requireSealer = (): Sealer => {
-		if (sealer === undefined) {
-			throw new KantelError(
-				"not_supported",
-				"Protected variables and secret files need the deployment's secrets key: set KANTEL_SECRETS_KEY",
-			);
-		}
+		if (sealer === undefined) throw new KantelError("not_supported", PROTECTED_VALUES_UNSUPPORTED);
 		return sealer;
 	};
 
@@ -1603,6 +1679,81 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const tracked: Promise<unknown> = work.catch(() => undefined).finally(() => background.delete(tracked));
 		background.add(tracked);
 	};
+
+	/**
+	 * Each sandbox's use this gateway has seen (`noteActivity`): its latest use, the latest the store has taken, when it
+	 * last tried a write (the throttle's window) and the write on its way. A use stays here until a write of it succeeds,
+	 * so one held back, in flight or failed still counts for the sweep's idle stop, and a failed one is tried again.
+	 */
+	const activity = new Map<string, { latest: number; persisted: number; tried: number; writing?: Promise<void> }>();
+
+	/**
+	 * Writes `at` as the sandbox's `lastActiveAt`, while it runs with an idle stop and has no later use recorded: true
+	 * once the store has it (or doesn't need it), false if the write failed.
+	 */
+	const writeActivity = (sandboxId: string, at: number): Promise<boolean> =>
+		store.sandboxes
+			.update(sandboxId, (current) =>
+				current.state !== "running" ||
+				current.idleStopMinutes === undefined ||
+				current.idleStopMinutes === null ||
+				(current.lastActiveAt ?? Number.NEGATIVE_INFINITY) >= at
+					? undefined
+					: { ...current, lastActiveAt: at },
+			)
+			.then(
+				() => true,
+				() => false,
+			);
+
+	/** Writes a sandbox's latest use, marking it taken only once the write succeeds. */
+	function persistActivity(
+		sandboxId: string,
+		seen: { latest: number; persisted: number; tried: number; writing?: Promise<void> },
+	) {
+		const at = seen.latest;
+		seen.tried = now();
+		const writing = writeActivity(sandboxId, at).then((ok) => {
+			if (ok) seen.persisted = Math.max(seen.persisted, at);
+			if (seen.writing === writing) seen.writing = undefined;
+		});
+		seen.writing = writing;
+		return writing;
+	}
+
+	function noteActivity(sandboxId: string): void {
+		const at = now();
+		let seen = activity.get(sandboxId);
+		if (seen === undefined) {
+			seen = { latest: at, persisted: Number.NEGATIVE_INFINITY, tried: Number.NEGATIVE_INFINITY };
+			activity.set(sandboxId, seen);
+		} else seen.latest = Math.max(seen.latest, at);
+		// Within the window, or with a write on its way, it's held for the sweep after it.
+		if (seen.writing !== undefined || at - seen.tried < ACTIVITY_WRITE_MS) return;
+		keepGoing(persistActivity(sandboxId, seen));
+	}
+
+	/** The latest use this gateway saw of a sandbox, stored or not, for the sweep's idle stop. */
+	const seenActivity = (sandboxId: string): number | undefined => activity.get(sandboxId)?.latest;
+
+	/**
+	 * Writes the use held back (or whose write failed) once its window has passed, and forgets sandboxes whose latest use
+	 * is stored and that were quiet for a window. A write still on its way is left to finish: the sweep counts its use
+	 * from here meanwhile (`seenActivity`), so a slow store doesn't hold the sweep up.
+	 */
+	async function flushActivity(): Promise<void> {
+		const at = now();
+		const writes: Promise<unknown>[] = [];
+		for (const [sandboxId, seen] of activity) {
+			if (seen.writing !== undefined || at - seen.tried < ACTIVITY_WRITE_MS) continue;
+			if (seen.latest <= seen.persisted) {
+				activity.delete(sandboxId);
+				continue;
+			}
+			writes.push(persistActivity(sandboxId, seen));
+		}
+		await Promise.all(writes);
+	}
 
 	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
 	const templates = createTemplateService({
@@ -1831,6 +1982,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	const meanCpu = (sandbox: StoredSandbox, from = 0, to = now()) => spanMean(withPartial(sandbox), from, to).cpu;
 
+	/** Its idle stop, and while it runs with one, its last use and when the stop comes if nothing uses it first. */
+	function idleView(sandbox: StoredSandbox): Pick<Sandbox, "idleStopMinutes" | "lastActiveAt" | "idleStopsAt"> {
+		const minutes = sandbox.idleStopMinutes ?? null;
+		if (minutes === null || sandbox.state !== "running") return { idleStopMinutes: minutes };
+		const last = lastUse(sandbox);
+		return last === undefined
+			? { idleStopMinutes: minutes }
+			: { idleStopMinutes: minutes, lastActiveAt: last, idleStopsAt: last + minutes * 60_000 };
+	}
+
 	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
 		const rate = rateOf(sandbox);
@@ -1852,6 +2013,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			labels: sandbox.labels,
 			autoStopMinutes: sandbox.autoStopMinutes,
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
+			...idleView(sandbox),
 			latestSnapshotId: sandbox.latestSnapshotId,
 			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
@@ -2650,6 +2812,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...extra,
 			state,
 			runs,
+			// Its idle time counts from each start: what it was used for before it stopped doesn't carry over.
+			lastActiveAt: running && !wasRunning ? at : sandbox.lastActiveAt,
 			stopsAt: !running
 				? undefined
 				: wasRunning
@@ -2776,7 +2940,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (latest.state !== "starting") {
 					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
 					const sandbox = await settled(sandboxId);
-					if (sandbox.state === "running") return sandbox;
+					if (sandbox.state === "running") {
+						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
+						noteActivity(sandbox.id);
+						return sandbox;
+					}
 					// Started by what was queued (a start queued behind a stop): waited for as any start.
 					if (sandbox.state === "starting") continue;
 					if (sandbox.state === "deleted") throw notFound("sandbox");
@@ -2804,12 +2972,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					options: options.mounts,
 					now,
 					sealer: () => {
-						if (sealer === undefined) {
-							throw new KantelError(
-								"not_supported",
-								"Bucket sources' credentials need the deployment's secrets key: set KANTEL_SECRETS_KEY",
-							);
-						}
+						if (sealer === undefined) throw new KantelError("not_supported", BUCKET_CREDENTIALS_UNSUPPORTED);
 						return sealer;
 					},
 					publicUrl: (request) => (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, ""),
@@ -2977,21 +3140,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await backend.deleteSnapshot(ref).catch(() => undefined);
 	}
 
-	/** Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. */
+	/**
+	 * Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. Output
+	 * already recorded while it ran is kept: a real end's output starts with it, and an end Kantel made up (its result
+	 * lost, its host gone) adds its reason after it.
+	 */
 	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
-		const stdout = truncate(result.stdout);
-		const stderr = truncate(result.stderr);
 		const at = now();
-		const ended = await settleCommand(commandId, (latest) => ({
-			...latest,
-			state: result.timedOut ? "timed_out" : "exited",
-			exitCode: result.exitCode,
-			stdout: stdout.text,
-			stderr: stderr.text,
-			truncated: stdout.truncated || stderr.truncated,
-			endedAt: at,
-			durationMs: at - latest.startedAt,
-		}));
+		const ended = await settleCommand(commandId, (latest) => {
+			const stdout = endStream(latest.stdout, result.stdout);
+			const stderr = endStream(latest.stderr, result.stderr);
+			return {
+				...latest,
+				state: result.timedOut ? "timed_out" : "exited",
+				exitCode: result.exitCode,
+				stdout: stdout.text,
+				stderr: stderr.text,
+				// One whose recorded output was cut, and that kept it, still has it cut.
+				truncated:
+					stdout.truncated ||
+					stderr.truncated ||
+					(latest.truncated && !(result.stdout.startsWith(latest.stdout) && result.stderr.startsWith(latest.stderr))),
+				endedAt: at,
+				durationMs: at - latest.startedAt,
+			};
+		});
 		return ended ?? (await store.commands.get(commandId));
 	}
 
@@ -3012,24 +3185,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A detached command no gateway here is waiting for (the one that started it closed, or is another replica), as its
-	 * backend has it now: ended once the backend says so, and lost once it no longer knows it.
+	 * A running detached command as its backend has it now: its output so far (what `attach` shows while it runs), and
+	 * ended once the backend says so. One no gateway here is waiting for (the one that started it closed, or is another
+	 * replica) is lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
-		if (
-			command.state !== "running" ||
-			command.detached !== true ||
-			runningCommands.has(command.id) ||
-			backend.commandResult === undefined
-		) {
-			return command;
-		}
-		let result: ExecResult | undefined;
+		if (command.state !== "running" || backend.commandResult === undefined) return command;
+		const followed = runningCommands.has(command.id);
+		// A foreground one a gateway here waits for is answered by that wait; one none here does outlived its gateway (on a
+		// backend that runs commands on past their call) or is another replica's, and is asked for as a detached one is.
+		if (command.detached !== true && followed) return command;
+		let result: ExecResult | CommandProgress | undefined;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
 		} catch (error) {
 			// Not just started (a start the backend hasn't recorded yet reads as unknown too).
 			if (
+				followed ||
 				!(error instanceof KantelError && error.code === "not_found") ||
 				now() - command.startedAt < LOST_COMMAND_MS
 			) {
@@ -3044,7 +3216,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 		}
 		if (result === undefined) return command;
+		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
 		return (await endCommand(command.id, result)) ?? command;
+	}
+
+	/**
+	 * A running command's output so far, written while it is still running and only when it has more than is recorded
+	 * (its backend keeps the start of each stream, so it only grows).
+	 */
+	async function recordProgress(commandId: string, progress: CommandProgress): Promise<StoredCommand | undefined> {
+		const stdout = truncate(progress.stdout);
+		const stderr = truncate(progress.stderr);
+		return store.commands
+			.update(commandId, (latest) => {
+				if (latest.state !== "running") return undefined;
+				if (stdout.text.length <= latest.stdout.length && stderr.text.length <= latest.stderr.length) return undefined;
+				return {
+					...latest,
+					stdout: stdout.text.length > latest.stdout.length ? stdout.text : latest.stdout,
+					stderr: stderr.text.length > latest.stderr.length ? stderr.text : latest.stderr,
+					truncated: latest.truncated || stdout.truncated || stderr.truncated || progress.truncated === true,
+				};
+			})
+			.then(async (written) => written ?? (await store.commands.get(commandId)));
 	}
 
 	/**
@@ -4336,6 +4530,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					superAdmin: principal.superAdmin,
 					mode,
 					...deploymentDomain,
+					protectedValues: sealer !== undefined,
 				};
 			}
 			return {
@@ -4345,6 +4540,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				superAdmin: principal.superAdmin,
 				mode,
 				...deploymentDomain,
+				protectedValues: sealer !== undefined,
 			};
 		},
 
@@ -4816,6 +5012,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					capabilities: type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
 					labels: { ...body.labels },
 					autoStopMinutes: body.autoStopMinutes === undefined ? DEFAULT_AUTO_STOP_MINUTES : body.autoStopMinutes,
+					idleStopMinutes: body.idleStopMinutes ?? null,
 					source: from === undefined ? undefined : { snapshotId: from.id },
 					createdBy: actorOf(principal),
 					createdAt: now(),
@@ -4927,6 +5124,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...latest,
 						name: body.name ?? latest.name,
 						autoStopMinutes: body.autoStopMinutes === undefined ? latest.autoStopMinutes : body.autoStopMinutes,
+						idleStopMinutes: body.idleStopMinutes === undefined ? latest.idleStopMinutes : body.idleStopMinutes,
+						// A running sandbox's idle time counts from the change, as its auto-stop's does.
+						...(body.idleStopMinutes !== undefined && latest.state === "running" ? { lastActiveAt: now() } : {}),
 						visibility: body.visibility ?? latest.visibility,
 						labels: body.labels === undefined ? latest.labels : { ...body.labels },
 						stopsAt,
@@ -5049,6 +5249,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						capabilities: current.capabilities,
 						labels: body.labels === undefined ? { ...current.labels } : { ...body.labels },
 						autoStopMinutes: current.autoStopMinutes,
+						idleStopMinutes: current.idleStopMinutes ?? null,
 						source: { sandboxId: current.id, snapshotId: snapshot?.id },
 						createdBy: actorOf(principal),
 						createdAt: now(),
@@ -5432,14 +5633,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await store.commands.put(command);
 				const controller = new AbortController();
 				runningCommands.set(command.id, controller);
+				// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a
+				// long build isn't stopped under them. A detached one counts only while it is followed (`getCommand`).
+				const using: ReturnType<typeof setInterval> | undefined = detached
+					? undefined
+					: setInterval(() => noteActivity(current.id), ACTIVITY_WRITE_MS);
+				(using as { unref?: () => void } | undefined)?.unref?.();
+				const stopUsing = (): void => {
+					if (using !== undefined) clearInterval(using);
+				};
 				const finish = async (result: ExecResult): Promise<StoredCommand> => {
+					stopUsing();
 					runningCommands.delete(command.id);
 					return (await endCommand(command.id, result)) ?? command;
 				};
 				const failed = async (error: unknown): Promise<StoredCommand> => {
 					// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
-					// it runs on, and getCommand fetches its end.
-					if (detached && isDetachedWaitEnded(error)) {
+					// it runs on, and getCommand fetches its end. A foreground one too, on a backend that keeps it past its call.
+					// This gateway's wait is over either way, so its use ends; following the command counts on its own.
+					if (isDetachedWaitEnded(error)) {
+						stopUsing();
 						runningCommands.delete(command.id);
 						return (await store.commands.get(command.id)) ?? command;
 					}
@@ -5485,7 +5698,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const command = await store.commands.get(params.commandId);
 			if (command === undefined || command.sandboxId !== sandbox.id) throw notFound("command");
-			return commandView(await fetchedCommand(command));
+			const fetched = await fetchedCommand(command);
+			// Following a command that still runs (`kantel exec --attach`, an MCP client's `command_get`) is a use.
+			if (fetched.state === "running") noteActivity(sandbox.id);
+			return commandView(fetched);
 		},
 
 		killCommand: async (principal, { params }) => {
@@ -5499,6 +5715,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// One that ended where no gateway here saw it is answered with its end, not killed.
 			const command = await fetchedCommand(stored);
 			if (command.state !== "running") return commandView(command);
+			noteActivity(sandbox.id);
 			const at = now();
 			// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
 			// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
@@ -6782,6 +6999,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 		},
 
+		noteActivity,
+
+		async portNotRunning(sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			if (sandbox === undefined || sandbox.state === "running" || sandbox.state === "deleted") return undefined;
+			return portNotRunningText(sandbox, apiBasePath);
+		},
+
 		async sweep() {
 			const at = now();
 			// The sweep alone stops a sandbox past its time, and only where its host is connected: one on a host that is
@@ -6816,6 +7041,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					).catch(() => undefined);
 				}
 			}
+			// The use this gateway held back goes in first, so its own sweep never stops a sandbox that it saw used.
+			await flushActivity();
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				// An egress update that didn't get through (its host away, a call that failed) is sent again, as it is now,
 				// once its host is there: a later revision the host has taken already makes this one moot.
@@ -6828,15 +7055,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					connected ??= await connectedHosts();
 					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushEgress([sandbox]);
 				}
-				// Due: past its time, or owed a stop (`stopFor`), whatever its time says.
+				// Due: past its time, owed a stop (`stopFor`) whatever its time says, or gone its idle stop's time unused. A use
+				// recorded before the stop moves it (`lastActiveAt`), or seen here and not yet stored, keeps it running:
+				// `beginStop` asks again as it moves it.
+				const timeUp = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
 				const due = (current: StoredSandbox) =>
-					current.stopFor !== undefined || (current.stopsAt !== undefined && current.stopsAt <= at);
+					current.stopFor !== undefined || timeUp(current) || idleStopDue(current, at, seenActivity(current.id));
 				if (!due(sandbox) || pending.has(sandbox.id)) continue;
 				connected ??= await connectedHosts();
 				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;
 				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
-				// rest skip it.
-				const reason = sandbox.stopFor ?? "auto-stop";
+				// rest skip it. Its auto-stop's reason where both are due: a later resume for idleness alone may not undo it.
+				const reason = sandbox.stopFor ?? (timeUp(sandbox) ? AUTO_STOP_REASON : IDLE_STOP_REASON);
 				const began = await beginStop(sandbox, false, reason, undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}

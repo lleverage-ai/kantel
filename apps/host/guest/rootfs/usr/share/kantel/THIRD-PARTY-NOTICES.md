@@ -34,8 +34,8 @@ Ubuntu 26.04 LTS packages, from the `main` and `universe` components only (none 
 taken from https://snapshot.ubuntu.com/ at the date in `/etc/kantel/image.json` (`aptSnapshot`). Their licences
 (mostly GPL, LGPL, BSD, MIT, Apache-2.0 and similar) are in each package's `/usr/share/doc/<package>/copyright`.
 Their source packages, at the same versions, are in the same snapshot:
-`https://snapshot.ubuntu.com/ubuntu/<aptSnapshot>/pool/` (or `apt-get source <package>` inside a sandbox, which
-uses the image's snapshot). The Ubuntu name and logo are Canonical's trademarks; this image is not endorsed by
+`https://snapshot.ubuntu.com/ubuntu/<aptSnapshot>/pool/` (apt inside a sandbox reads Ubuntu's live archive, which
+may have moved past them). The Ubuntu name and logo are Canonical's trademarks; this image is not endorsed by
 Canonical.
 
 ## Chromium

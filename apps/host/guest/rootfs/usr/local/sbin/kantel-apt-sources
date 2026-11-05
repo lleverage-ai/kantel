@@ -1,0 +1,58 @@
+#!/bin/bash
+# kantel-apt-sources: apt in a sandbox reads Ubuntu's live archive, as any Ubuntu machine does: archive.ubuntu.com and
+# security.ubuntu.com, or ports.ubuntu.com on arm64. The Dockerfile runs it last.
+#
+# The image is built from Ubuntu's archive as it was at a snapshot (APT::Snapshot in
+# /etc/apt/apt.conf.d/50kantel-snapshot, with Debian's archive for Chromium at the same date), so the build is
+# reproducible. A sandbox doesn't keep reading that snapshot: snapshot.ubuntu.com failed for hours on 5 Nov 2026
+# (lleverage-ai/kantel#706), answering 503, 502 and then 401. A fallback to the live archive under the snapshot isn't
+# enough, because a 4xx for a source's InRelease fails `apt-get update` outright ("The repository ... is not signed",
+# exit 100), so `apt-get update && apt-get install` breaks however the sources are pinned. So this writes the live
+# archive alone and moves APT::Snapshot out of apt's settings to /etc/kantel/apt-snapshot.conf, where it records the
+# snapshot the image was built from (kantel-image-info reads it). Debian's Chromium source then reads deb.debian.org,
+# still limited to Chromium's packages by its pin. Every source is checked against Ubuntu's archive key.
+#
+# KANTEL_APT_ROOT writes under another root, and KANTEL_APT_ARCH names the architecture (tests).
+set -euo pipefail
+
+root=${KANTEL_APT_ROOT:-}
+arch=${KANTEL_APT_ARCH:-$(dpkg --print-architecture)}
+# shellcheck source=/dev/null
+codename=$(. "$root/etc/os-release" && echo "${VERSION_CODENAME:?}")
+
+case $arch in
+amd64 | i386)
+	live=http://archive.ubuntu.com/ubuntu/
+	security=http://security.ubuntu.com/ubuntu/
+	;;
+*)
+	live=http://ports.ubuntu.com/ubuntu-ports/
+	security=$live
+	;;
+esac
+
+stanza() { # stanza URI SUITES...
+	local uri=$1
+	shift
+	printf '%s\n' 'Types: deb' "URIs: $uri" "Suites: $*" 'Components: main universe restricted multiverse' \
+		'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg'
+}
+
+{
+	echo "# Written by kantel-apt-sources: Ubuntu's live archive. The image was built from the snapshot that"
+	echo "# /etc/kantel/apt-snapshot.conf names (see /usr/local/sbin/kantel-apt-sources)."
+	echo
+	if [[ $security == "$live" ]]; then
+		stanza "$live" "$codename" "$codename-updates" "$codename-backports" "$codename-security"
+	else
+		stanza "$live" "$codename" "$codename-updates" "$codename-backports"
+		echo
+		stanza "$security" "$codename-security"
+	fi
+} >"$root/etc/apt/sources.list.d/ubuntu.sources"
+
+snapshot=$root/etc/apt/apt.conf.d/50kantel-snapshot
+if [[ -e $snapshot ]]; then
+	mkdir -p "$root/etc/kantel"
+	mv -f "$snapshot" "$root/etc/kantel/apt-snapshot.conf"
+fi

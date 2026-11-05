@@ -117,13 +117,23 @@ describe("gateway replicas", () => {
 		);
 		expect(result).toMatchObject({ exitCode: 0, stdout: "hi\n" });
 		expect(events).toEqual(["exec.output"]);
+		// The stream, and its bytes either way, are uses of the sandbox for its idle stop, where the stream came in.
+		const used: string[] = [];
+		b.service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			activity: (sandboxId) => used.push(sandboxId),
+		});
 		const received: string[] = [];
 		const stream = await b.service.sandboxes.openPort("sbx-far", 22, {
 			data: (bytes) => received.push(new TextDecoder().decode(bytes)),
 			end: () => undefined,
 		});
+		expect(used).toEqual(["sbx-far"]);
 		stream.write(new TextEncoder().encode("SSH-2.0-test"));
 		expect(received).toEqual(["echo:SSH-2.0-test"]);
+		// Written, and echoed back.
+		expect(used).toEqual(["sbx-far", "sbx-far", "sbx-far"]);
 		expect(forwarded).toEqual(["rep_a sandbox.create", "rep_a sandbox.exec", "rep_a port 22"]);
 		// A serves its own host itself.
 		await a.service.sandboxes.call<HostSandbox>("sbx-far", "sandbox.stop");

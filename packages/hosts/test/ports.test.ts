@@ -43,15 +43,21 @@ const OK =
 describe("an exposed port's name", () => {
 	const setup = (
 		reply: (request: string) => string = () => OK,
-		options: { store?: RelayStore; stillAllowed?: (grantee: string | undefined) => Promise<boolean> } = {},
+		options: {
+			store?: RelayStore;
+			stillAllowed?: (grantee: string | undefined) => Promise<boolean>;
+			notRunning?: (sandboxId: string) => Promise<string | undefined>;
+			openPort?: (sandboxId: string, port: number, sink: PortSink) => Promise<PortStream>;
+		} = {},
 	) => {
 		const port = fakePort(reply);
 		const store = options.store ?? createMemoryRelayStore();
 		const router = createPortRouter({
 			domain: "kantel-ports.test",
-			openPort: port.openPort,
+			openPort: options.openPort ?? port.openPort,
 			store,
 			...(options.stillAllowed === undefined ? {} : { stillAllowed: options.stillAllowed }),
+			...(options.notRunning === undefined ? {} : { notRunning: options.notRunning }),
 		});
 		return { router, store, ...port };
 	};
@@ -94,6 +100,58 @@ describe("an exposed port's name", () => {
 		});
 		expect(opened).toHaveLength(1);
 		expect(seen).toEqual([grantee, grantee, grantee]);
+	});
+
+	it("tells a request to a stopped sandbox's port that it is stopped and why, after the gate, without waking it", async () => {
+		const first = "This port's sandbox, web (sbx_1), is stopped: it went 30 minutes without use (its idle stop).";
+		const page = `${first} Its disk is kept. Whoever runs it can resume it (kantel resume sbx_1, Resume on its page in the Kantel console, or POST /v1/sandboxes/sbx_1/resume), then expose this port again.`;
+		let stopped = false;
+		const asked: string[] = [];
+		const { router } = setup(undefined, {
+			notRunning: async (sandboxId) => {
+				asked.push(sandboxId);
+				return stopped ? page : undefined;
+			},
+			// As the hosts' service answers a port of a sandbox with no machine.
+			openPort: async () => {
+				throw new Error("The sandbox isn't running");
+			},
+		});
+		const { url } = await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
+		// Running, a port that doesn't answer is the port's fault.
+		expect((await router.fetch(new Request(url)))?.status).toBe(502);
+		stopped = true;
+		const answer = await router.fetch(new Request(url));
+		expect(answer?.status).toBe(503);
+		expect(await answer?.text()).toBe(`${page}\n`);
+		// A WebSocket's close frame gets the first sentence: a close reason holds 123 bytes.
+		expect(await router.upgrade("3000-brave-otter-ab12cd.kantel-ports.test", "/", undefined, {})).toEqual({
+			ok: false,
+			status: 503,
+			reason: first,
+		});
+		expect(asked.every((id) => id === "sbx_1")).toBe(true);
+
+		// A gated port says nothing about its sandbox without its token.
+		const gated = await router.expose("sbx_1", 3001, { public: false, subdomain: "brave-otter-ab12cd" });
+		const before = asked.length;
+		expect((await router.fetch(new Request(new URL("/", gated.url))))?.status).toBe(401);
+		expect(asked).toHaveLength(before);
+	});
+
+	it("cuts a stopped port's WebSocket refusal to fit a close frame, whatever its sandbox's name", async () => {
+		const name = "レンダーファーム-東京-夜間ビルド-第二";
+		const page = `This port's sandbox, ${name} (sbx_1), is stopped: it went 30 minutes without use (its idle stop). Its disk is kept.`;
+		const { router } = setup(undefined, { notRunning: async () => page });
+		await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
+		const refused = await router.upgrade("3000-brave-otter-ab12cd.kantel-ports.test", "/", undefined, {});
+		expect(refused).toMatchObject({ ok: false, status: 503 });
+		const reason = refused?.ok === false ? refused.reason : "";
+		expect(new TextEncoder().encode(reason).byteLength).toBeLessThanOrEqual(123);
+		expect(reason.startsWith(`This port's sandbox, ${name.slice(0, 4)}`)).toBe(true);
+		// Cut at a character, not inside one.
+		expect(reason).not.toContain("\uFFFD");
+		expect(page.startsWith(reason)).toBe(true);
 	});
 
 	it("is token-gated by default: no token or a wrong one never reaches the sandbox", async () => {

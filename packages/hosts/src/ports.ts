@@ -34,7 +34,7 @@
  * port is exposed.
  */
 import { consoleCookieName, setConsoleCookie } from "@kantel/identity/cookies";
-import type { PortSink, PortStream } from "./hub.ts";
+import { closeReason, type PortSink, type PortStream } from "./hub.ts";
 import { PortHttpError, proxyHttp } from "./port-http.ts";
 import type { ExposureRecord, RelayStore } from "./relay-store.ts";
 import { sameSecret, sha256Hex } from "./tunnel.ts";
@@ -73,7 +73,19 @@ export interface PortRouterOptions {
 	 * every request and upgrade; absent, everyone may.
 	 */
 	stillAllowed?(grantee: string | undefined, sandboxId: string): Promise<boolean>;
+	/**
+	 * What a request is told when the sandbox isn't running (`ComputeService.portNotRunning`): stopped, by its idle stop
+	 * or otherwise, and how it is resumed. Undefined while it runs. Asked only once the gate let the request in: for a
+	 * request, when its port didn't answer; for an upgrade, first. Absent: a stopped sandbox's port answers 502.
+	 */
+	notRunning?(sandboxId: string): Promise<string | undefined>;
 }
+
+/**
+ * The status of a request to a port of a sandbox that isn't running. Kantel doesn't resume a sandbox for a request: its
+ * owner resumes it, as for a command (see `@kantel/compute`'s not-running.ts).
+ */
+export const PORT_NOT_RUNNING_STATUS = 503;
 
 /** Where an upgrade on a port's name may go, or why not. */
 export type PortUpgrade =
@@ -322,6 +334,9 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 				}
 				return answer;
 			} catch (error) {
+				// Its sandbox stopped (its idle stop, its auto-stop, a call): the page says so, and how it is resumed.
+				const stopped = await options.notRunning?.(exposure.sandboxId).catch(() => undefined);
+				if (stopped !== undefined) return text(PORT_NOT_RUNNING_STATUS, stopped);
 				if (error instanceof PortHttpError) return text(error.status, error.message);
 				return text(502, "The sandbox's port didn't answer.");
 			}
@@ -343,6 +358,13 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 			}
 			if (options.stillAllowed !== undefined && !(await options.stillAllowed(exposure.grantee, exposure.sandboxId))) {
 				return { ok: false, status: 403, reason: "Whoever exposed this port no longer has access" };
+			}
+			const stopped = await options.notRunning?.(exposure.sandboxId).catch(() => undefined);
+			// A close frame's reason holds 123 bytes of UTF-8: the page's first sentence (that it's stopped, and why), cut to
+			// fit. An HTTP request gets the whole page.
+			if (stopped !== undefined) {
+				const first = stopped.split(/(?<=\.)\s/)[0] ?? stopped;
+				return { ok: false, status: PORT_NOT_RUNNING_STATUS, reason: closeReason(first) };
 			}
 			url.searchParams.delete(PORT_TOKEN_PARAM);
 			return {

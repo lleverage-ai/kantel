@@ -328,7 +328,7 @@ export interface BundleMountSource {
 	readonly digest: string;
 }
 
-/** Who is calling, the accounts they may act in, and the deployment's mode. */
+/** Who is calling, the accounts they may act in, and the deployment's mode and what it supports. */
 export interface Caller {
 	readonly user?: CallerUser;
 	/** The key the call was signed in with, when it was a key. */
@@ -342,6 +342,8 @@ export interface Caller {
 	readonly mode: DeploymentMode;
 	/** The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. */
 	readonly sandboxDomain?: string;
+	/** Whether the deployment keeps environments' protected variables and secret files (and bucket sources' credentials). `false`: setting one is refused with `not_supported`, and plain variables still work. Absent from a deployment older than this field: try, and read the error. */
+	readonly protectedValues?: boolean;
 }
 
 /** The key the call was signed in with, when it was a key. */
@@ -506,6 +508,8 @@ export interface CreateSandboxBody {
 	readonly from?: string;
 	/** Default 60. `null`: never stop by itself. */
 	readonly autoStopMinutes?: number | null;
+	/** Stop it once it has gone this long without use (`idle-stop`), whatever its auto-stop says; with `autoStopMinutes: null`, it runs while it is used. Default `null`: no idle stop. See the sandbox's `idleStopMinutes` for what counts as use. */
+	readonly idleStopMinutes?: number | null;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
 	readonly visibility?: SandboxVisibility;
 	readonly labels?: {
@@ -770,7 +774,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -798,7 +802,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -1113,7 +1117,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -1414,7 +1418,7 @@ export interface Sandbox {
 	readonly state: SandboxState;
 	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
 	readonly health?: SandboxHealth;
-	/** Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, or a rule's reason. A stop someone asked for has none. */
+	/** Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none. */
 	readonly reason?: string;
 	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
 	readonly placementReason?: PlacementReason;
@@ -1430,6 +1434,12 @@ export interface Sandbox {
 	readonly autoStopMinutes: number | null;
 	/** When it will stop by itself, while running; the console's stops-in. */
 	readonly stopsAt?: number;
+	/** How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, and its hosted ports. Stopping keeps its disk, as any stop does. */
+	readonly idleStopMinutes?: number | null;
+	/** When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds. */
+	readonly lastActiveAt?: number;
+	/** When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. */
+	readonly idleStopsAt?: number;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
 	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
@@ -1555,7 +1565,7 @@ export interface SandboxNotRunning {
 	readonly sandboxId: string;
 	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
-	/** Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. */
+	/** Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. */
 	readonly stopReason?: string;
 	/** What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again`. */
 	readonly hint: string;
@@ -2142,6 +2152,8 @@ export interface UpdateMemberBody {
 export interface UpdateSandboxBody {
 	readonly name?: string;
 	readonly autoStopMinutes?: number | null;
+	/** Its idle stop; `null` turns it off. A running sandbox's idle time counts from now. */
+	readonly idleStopMinutes?: number | null;
 	/** Move `stopsAt` to this long from now. */
 	readonly extendMinutes?: number;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
@@ -2225,7 +2237,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -2641,7 +2653,7 @@ export interface KantelClient {
 	): Promise<BrowserEmbed>;
 	/** Create a project. Creates a project in the caller's organisation, which the `kantel-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
-	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it. `GET /whoami` */
+	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), the deployment's mode, and whether it keeps protected variables and secret files (`protectedValues`), so a client can check before it makes an environment that needs them. Any key may call it. `GET /whoami` */
 	getCaller(options?: CallOptions): Promise<Caller>;
 	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. `GET /accounts` */
 	listAccounts(options?: CallOptions): Promise<AccountList>;
@@ -2677,7 +2689,7 @@ export interface KantelClient {
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Change a sandbox. Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `PATCH /sandboxes/{sandboxId}` */
+	/** Change a sandbox. Renames it, changes its auto-stop or idle stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `PATCH /sandboxes/{sandboxId}` */
 	updateSandbox(sandboxId: string, body?: UpdateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Start a sandbox. Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/start` */
 	startSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;

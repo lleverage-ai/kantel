@@ -147,7 +147,9 @@ const FeatureUsageAcks = "usage-acks"
 
 // FeatureExecControl: sandbox.exec takes a CommandID, and with Detached runs the command in the background past any
 // call's end (sandbox.exec.get answers it), and sandbox.exec.kill stops a command by its ID, its whole process group.
-// Without it a control plane can't stop a host's command, and a detached one runs as a foreground one does.
+// Without it a control plane can't stop a host's command, and a detached one runs as a foreground one does. A
+// foreground command with a CommandID runs on past its connection to the control plane going too, to its own limit,
+// and its result is then kept for sandbox.exec.get (a host from before ended it with the connection).
 const FeatureExecControl = "exec-control"
 
 // FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
@@ -774,6 +776,11 @@ type ExecStatus struct {
 	State     string      `json:"state"`
 	Pid       int         `json:"pid,omitempty"`
 	Result    *ExecResult `json:"result,omitempty"`
+	// Stdout, Stderr and Truncated, while it runs in a sandbox that keeps it (the guest's detached commands): its output
+	// so far, the start of each stream to its cap, only ever more of the same. Left out where the host has none.
+	Stdout    string `json:"stdout,omitempty"`
+	Stderr    string `json:"stderr,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 	// Unconfirmed, on a detached start: the sandbox didn't answer it, so whether the command started is unknown.
 	// Kantel follows it by its ID as any; sandbox.exec.get's not_found then means it never started.
 	Unconfirmed bool `json:"unconfirmed,omitempty"`

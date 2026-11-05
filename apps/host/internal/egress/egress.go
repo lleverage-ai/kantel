@@ -119,6 +119,10 @@ type Secrets interface {
 
 // The headers a refusal carries, and the proxy check's.
 const (
+	// EgressHeader is on every answer the proxy gives itself rather than passing on: "denied" for a refusal (4xx),
+	// "error" for a failure on the way out (5xx), and "upstream-proxy" on an account's upstream proxy's refusal of a
+	// tunnel, which goes back as the upstream sent it. An answer without it came from the destination.
+	EgressHeader   = "X-Kantel-Egress"
 	ErrorHeader    = "X-Kantel-Proxy-Error"
 	RuleHeader     = "X-Kantel-Proxy-Rule"
 	VariableHeader = "X-Kantel-Proxy-Variable"
@@ -351,8 +355,12 @@ type refusal struct {
 
 func (f refusal) write(w io.Writer) error {
 	body := "kantel egress: " + sentence(f.message) + "\n"
+	kind := "denied"
+	if f.status >= 500 {
+		kind = "error"
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "HTTP/1.1 %d %s\r\nContent-Type: text/plain; charset=utf-8\r\nX-Kantel-Egress: denied\r\n", f.status, http.StatusText(f.status))
+	fmt.Fprintf(&b, "HTTP/1.1 %d %s\r\nContent-Type: text/plain; charset=utf-8\r\n%s: %s\r\n", f.status, f.reasonPhrase(), EgressHeader, kind)
 	if f.code != "" {
 		fmt.Fprintf(&b, "%s: %s\r\n", ErrorHeader, f.code)
 		if f.check {
@@ -370,6 +378,21 @@ func (f refusal) write(w io.Writer) error {
 	return err
 }
 
+// maxReasonPhrase bounds the proxy's words in a status line.
+const maxReasonPhrase = 160
+
+// reasonPhrase is the status line's text: the status's own, then that the proxy answered and why, as in
+// "503 Service Unavailable (kantel egress: …)". Many clients show only the status line (apt prints it as
+// "Failed to fetch … 502  Bad Gateway (kantel egress: can't connect to …)"), so it alone tells the proxy's answer
+// from a destination's. Clients go by the code, never this text (RFC 9110, section 15).
+func (f refusal) reasonPhrase() string {
+	why := strings.TrimSuffix(sentence(f.message), ".")
+	if len(why) > maxReasonPhrase {
+		why = strings.ToValidUTF8(why[:maxReasonPhrase], "") + "…"
+	}
+	return http.StatusText(f.status) + " (kantel egress: " + why + ")"
+}
+
 // sentence makes a reason one sentence.
 func sentence(s string) string {
 	s = headerSafe(strings.TrimSpace(s))
@@ -382,8 +405,8 @@ func sentence(s string) string {
 	return s
 }
 
-// refuse answers a refusal whose code follows from its status: 403 is the proxy's settings, 5xx the way out.
-func refuse(w io.Writer, status int, reason string) {
+// refusalFor is a refusal whose code follows from its status: 403 is the proxy's settings, 5xx the way out.
+func refusalFor(status int, reason string) refusal {
 	code := ""
 	switch {
 	case status == http.StatusForbidden:
@@ -391,7 +414,37 @@ func refuse(w io.Writer, status int, reason string) {
 	case status >= 500:
 		code = CodeUpstream
 	}
-	_ = refusal{status: status, code: code, message: reason}.write(w)
+	return refusal{status: status, code: code, message: reason}
+}
+
+// refuse answers refusalFor(status, reason).
+func refuse(w io.Writer, status int, reason string) {
+	_ = refusalFor(status, reason).write(w)
+}
+
+// answeredError is a request the proxy couldn't pass on and answered itself (with f), for finish to record as the
+// sandbox saw it: its code, status and reason.
+type answeredError struct {
+	f   refusal
+	err error
+}
+
+// Error is the proxy's own words only, as safeError's: the wrapped error's text may carry a URL with a value in it.
+func (e *answeredError) Error() string { return e.f.message }
+func (e *answeredError) Unwrap() error { return e.err }
+
+// answer writes the refusal for status and reason, and answers err wrapped so that finish records it.
+func answer(w io.Writer, status int, reason string, err error) error {
+	return answerWith(w, refusalFor(status, reason), err)
+}
+
+// answerWith writes f, and answers err wrapped so that finish records it.
+func answerWith(w io.Writer, f refusal, err error) error {
+	_ = f.write(w)
+	if err == nil {
+		err = errors.New(f.message)
+	}
+	return &answeredError{f: f, err: err}
 }
 
 // refuseRecord records a refused request and answers it; it answers false, as a refused connection goes no further.
@@ -717,7 +770,18 @@ func (p *Proxy) finish(rec Record, up, down int64, err error) {
 	if err != nil {
 		rec.Reason = safeError(err)
 		var ref *protect.Refusal
-		if errors.As(err, &ref) {
+		var answered *answeredError
+		var upstream *upstreamProxyError
+		switch {
+		case errors.As(err, &answered):
+			// The proxy answered the sandbox itself (it couldn't connect, say): recorded as it was answered, so the egress
+			// log says the failure was the proxy's, and why, rather than an allowed request with no status.
+			rec.Allowed = answered.f.code == CodeUpstream
+			rec.Code, rec.Reason, rec.Status = answered.f.code, answered.f.message, answered.f.status
+		case errors.As(err, &upstream) && upstream.status != 0:
+			// The account's upstream proxy refused the tunnel; its answer went back as it was.
+			rec.Code, rec.Status = CodeUpstream, upstream.status
+		case errors.As(err, &ref):
 			// Recorded as refuseRecord records a refusal found before forwarding: refused, with the status of the
 			// refusal sent (unless the destination's answer had begun, whose status it keeps).
 			f := rewriteRefusal(ref)
@@ -757,21 +821,17 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 	if rules.Upstream != "" {
 		u, perr := url.Parse(rules.Upstream)
 		if perr != nil || u.Host == "" {
-			refuse(conn, http.StatusBadGateway, "the upstream proxy's URL is invalid")
-			return 0, 0, &upstreamProxyError{}
+			return 0, 0, answer(conn, http.StatusBadGateway, "the upstream proxy's URL is invalid", &upstreamProxyError{})
 		}
 		upstream, err = p.dialFor(rules)("tcp", u.Host)
 		if errors.Is(err, ErrDestination) && rules.PublicOnly {
-			refuse(conn, http.StatusForbidden, "the upstream proxy's address isn't on the public internet, and a template's image build reaches only public addresses")
-			return 0, 0, err
+			return 0, 0, answer(conn, http.StatusForbidden, "the upstream proxy's address isn't on the public internet, and a template's image build reaches only public addresses", err)
 		}
 		if errors.Is(err, ErrDestination) {
-			refuse(conn, http.StatusForbidden, "the upstream proxy's address isn't one this host may reach (its egressAllowCIDRs)")
-			return 0, 0, err
+			return 0, 0, answer(conn, http.StatusForbidden, "the upstream proxy's address isn't one this host may reach (its egressAllowCIDRs)", err)
 		}
 		if err != nil {
-			refuse(conn, http.StatusBadGateway, "the upstream proxy can't be reached")
-			return 0, 0, err
+			return 0, 0, answer(conn, http.StatusBadGateway, "the upstream proxy can't be reached: "+safeError(err), err)
 		}
 		defer upstream.Close()
 		if req.Method == http.MethodConnect {
@@ -786,17 +846,17 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 			}
 			b.WriteString("\r\n")
 			if _, err := io.WriteString(upstream, b.String()); err != nil {
-				refuse(conn, http.StatusBadGateway, "the upstream proxy dropped the connection")
-				return 0, 0, err
+				return 0, 0, answer(conn, http.StatusBadGateway, "the upstream proxy dropped the connection", err)
 			}
 			upReader := bufio.NewReader(upstream)
 			res, err := http.ReadResponse(upReader, &http.Request{Method: http.MethodConnect})
 			if err != nil {
-				refuse(conn, http.StatusBadGateway, "the upstream proxy dropped the connection")
-				return 0, 0, err
+				return 0, 0, answer(conn, http.StatusBadGateway, "the upstream proxy dropped the connection", err)
 			}
 			if res.StatusCode != http.StatusOK {
-				// Pass the upstream's refusal on as it is: its reason is the useful part.
+				// Pass the upstream's refusal on as it is: its reason is the useful part. EgressHeader says whose it is, as
+				// the sandbox's client would otherwise take it for the destination's or this proxy's.
+				res.Header.Set(EgressHeader, "upstream-proxy")
 				res.Close = true
 				_ = res.Write(conn)
 				return 0, 0, &upstreamProxyError{status: res.StatusCode}
@@ -821,8 +881,7 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 		}
 		res, err := http.ReadResponse(bufio.NewReader(upstream), req)
 		if err != nil {
-			refuse(conn, http.StatusBadGateway, "the upstream proxy dropped the connection")
-			return counted.n, 0, err
+			return counted.n, 0, answer(conn, http.StatusBadGateway, "the upstream proxy dropped the connection", err)
 		}
 		defer res.Body.Close()
 		if entries != nil {
@@ -845,12 +904,12 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 	}
 	upstream, err = p.dialFor(rules)("tcp", target)
 	if errors.Is(err, ErrDestination) {
-		refuse(conn, http.StatusForbidden, target+" isn't on the public internet")
-		return 0, 0, err
+		return 0, 0, answer(conn, http.StatusForbidden, target+" isn't on the public internet", err)
 	}
 	if err != nil {
-		refuse(conn, http.StatusBadGateway, "can't connect to "+target)
-		return 0, 0, err
+		// The proxy's own failure, and why ("can't connect to example.com:443: timed out"). Once the tunnel is open the
+		// proxy passes bytes only: any HTTP status inside it (a 503, say) is the destination's.
+		return 0, 0, answer(conn, http.StatusBadGateway, "can't connect to "+target+": "+safeError(err), err)
 	}
 	defer upstream.Close()
 	io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n")
@@ -873,16 +932,7 @@ func (p *Proxy) roundTrip(conn net.Conn, req *http.Request, tr http.RoundTripper
 	}
 	res, err := tr.RoundTrip(req)
 	if err != nil {
-		var ref *protect.Refusal
-		switch {
-		case errors.As(err, &ref):
-			_ = rewriteRefusal(ref).write(conn)
-		case errors.Is(err, ErrDestination):
-			refuse(conn, http.StatusForbidden, req.URL.Host+" isn't on the public internet")
-		default:
-			refuse(conn, http.StatusBadGateway, "can't reach "+req.URL.Host+": "+safeError(err))
-		}
-		return up, 0, err
+		return up, 0, answerWith(conn, upstreamRefusal(req.URL.Host, err), err)
 	}
 	defer res.Body.Close()
 	if entries != nil {

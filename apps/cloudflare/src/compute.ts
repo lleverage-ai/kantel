@@ -27,6 +27,11 @@
  *   /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET /v1/admin/hosts/images` lists the images
  *   and their CVE scans, and account hosts are told the host images to fetch in their welcome. Off, there is no `base`
  *   and those routes answer 501 not_supported.
+ * - **Protected values:** with `secretsKey` (the KANTEL_SECRETS_KEY Worker secret), environments' protected variables
+ *   and secret files are sealed with it in the object's SQLite, by the same sealer as self-hosted
+ *   (`@kantel/compute/secrets`), and an account host fetches its sandboxes' protected values over its connection for its
+ *   egress proxy to swap in (`protectedTable`), as a self-hosted gateway's hosts do. Without it they are refused with
+ *   `not_supported`, `GET /v1/whoami` says `protectedValues: false`, and the object logs why at start.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
  *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
  *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
@@ -54,6 +59,7 @@ import {
 	personName,
 	type SandboxBackend,
 	type StoredSandbox,
+	secretsKeyMissing,
 } from "@kantel/compute";
 import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
@@ -377,6 +383,11 @@ export interface StackComputeOptions {
 	readonly accountHosts?: { readonly publicUrl: string };
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
 	readonly templates?: boolean;
+	/**
+	 * KANTEL_SECRETS_KEY: 32 bytes, base64, sealing environments' protected values and secret files. Absent, the stack
+	 * object's SQLite store refuses them (`not_supported`); the memory store (tests) seals with a key of its own.
+	 */
+	readonly secretsKey?: string;
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
 	readonly hostSweepMs?: number;
 	/** Image patching (KANTEL_IMAGE_PATCHING=experimental): where the base image index is read. Absent, off. */
@@ -547,14 +558,22 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
 		...(options.templates === true ? { templates: true } : {}),
+		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
+	// The operator's advice goes to the log, never to a user: they are told only that the deployment doesn't support it.
+	if (options.secretsKey === undefined && store.persistent === true) {
+		console.warn(secretsKeyMissing("Set it as a Worker secret: wrangler secret put KANTEL_SECRETS_KEY"));
+	}
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));
-	// Hosts report what their egress proxies did. Protected values stay off here (no secrets key, so no environment holds
-	// one): a host asking for a sandbox's is answered that there are none.
+	// Hosts fetch their sandboxes' protected values over their link, for their egress proxies to swap in, and report what
+	// those proxies did: as the self-hosted gateway's hosts do. Without a secrets key no environment holds a protected
+	// value, so a host asking is answered that there are none.
 	own?.service.useCompute({
-		secrets: async () => undefined,
+		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
+		activity: (sandboxId) => api.service.noteActivity(sandboxId),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);
@@ -573,7 +592,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
 				}),
 	});
-	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
+	own?.bind(
+		(grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId),
+		(sandboxId) => api.service.portNotRunning(sandboxId),
+	);
 	const timers = whileBusy(api, now);
 	// The dispatcher runs only while compute requests come (`whileBusy`), so the sweep sends what it queued itself: a
 	// stop's `sandbox.stopped`, on the tick after, and any delivery whose retry has come due.
@@ -638,7 +660,10 @@ async function accountHostsSide(
 	publicUrl: string;
 	hosts: StackHosts;
 	access: ReturnType<typeof createRelayAccess>;
-	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
+	bind(
+		stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>,
+		notRunning?: (sandboxId: string) => Promise<string | undefined>,
+	): void;
 	/** The sandboxes placed on a host of the registry as microVMs, now. */
 	microvms(): Promise<string[]>;
 }> {
@@ -651,6 +676,7 @@ async function accountHostsSide(
 	const relay = sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql);
 	const tickets = sweptAsUsed(createTunnelTickets(relay, now), now);
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
+	let stopped: ((sandboxId: string) => Promise<string | undefined>) | undefined;
 	// Its timer runs only while a session is held, so it never keeps the object awake on its own.
 	const access = createRelayAccess({
 		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
@@ -664,6 +690,8 @@ async function accountHostsSide(
 		store: relay,
 		// Whoever exposed a port must still be able to open its sandbox, asked as a tunnel's holder is.
 		stillAllowed: (grantee, sandboxId) => access.allowed(grantee, sandboxId),
+		// A stopped sandbox's port says so, and how it is resumed.
+		notRunning: (sandboxId) => stopped?.(sandboxId) ?? Promise.resolve(undefined),
 		now,
 	});
 	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, ports, now });
@@ -709,8 +737,9 @@ async function accountHostsSide(
 		backend,
 		access,
 		publicUrl: config.publicUrl,
-		bind(stillAllowed) {
+		bind(stillAllowed, notRunning) {
 			check = stillAllowed;
+			stopped = notRunning;
 		},
 		async microvms() {
 			const placed = await Promise.all((await hostStore.listHosts()).map((host) => hostStore.placementsOn(host.id)));

@@ -120,28 +120,33 @@ HTTPS to every other host stays a tunnel the proxy passes on without reading. A 
 
 ## What a refusal looks like
 
-The proxy answers a refused request itself, with a status, an `X-Kantel-Egress: denied` header and the reason in the body:
+The proxy answers a refused request itself, with a status line that says it's the proxy's and why, an `X-Kantel-Egress` header (`denied` for a refusal, `error` for a failure on the way out), an `X-Kantel-Proxy-Error` code, and the reason in the body:
 
 ```text
-HTTP/1.1 403 Forbidden
+HTTP/1.1 403 Forbidden (kantel egress: denied by the proxy settings (example.com))
 Content-Type: text/plain
 X-Kantel-Egress: denied
+X-Kantel-Proxy-Error: denied
 
-kantel egress: denied by the proxy settings (example.com)
+kantel egress: denied by the proxy settings (example.com).
 ```
 
-For an HTTPS request the refusal comes before TLS starts, so `curl` shows only `CONNECT tunnel failed, response 403`. Fetch the plain `http://` address to see the reason.
+Clients that show only the status line show the proxy's words too: apt prints `502  Bad Gateway (kantel egress: can't connect to example.com:443: timed out) [IP: 10.231.0.9 3129]`. For an HTTPS request the refusal comes before TLS starts, so `curl` shows only `CONNECT tunnel failed, response 403`. Fetch the plain `http://` address, or run `curl -v`, to see the reason.
+
+An answer without `X-Kantel-Egress` came from the site. Once the proxy has opened a tunnel (`HTTP/1.1 200 Connection established`), it passes bytes on and never answers inside it, so an HTTP error over HTTPS through a tunnel, such as `503 Service Unavailable`, is always the site's own, even though the client names the proxy's address (apt's `[IP: 10.231.0.9 3129]` is the address it connected to, which is always the proxy).
 
 | Status | Reason | Why |
 | --- | --- | --- |
 | 403 | `denied by the proxy settings (example.com)` | A deny rule matched |
 | 403 | `not on the proxy settings' allow list` | `defaultAction` is `deny`, and no allow rule matched |
 | 403 | `10.0.0.1 isn't on the public internet` | The address is private, loopback or link-local, and not in the host's `egressAllowCIDRs` |
-| 502 | `can't connect to example.com:443` | The site didn't answer (`can't reach …` for plain HTTP) |
-| 502 | `the upstream proxy can't be reached` | The upstream's address doesn't answer, or its URL has no port |
+| 502 | `can't connect to example.com:443: timed out` | The site didn't answer, and why: `timed out`, `connection refused`, `its name doesn't resolve` and so on (`can't reach …` for plain HTTP) |
+| 502 | `the upstream proxy can't be reached: connection refused` | The upstream's address doesn't answer, or its URL has no port |
 | 403 | `the upstream proxy's address isn't one this host may reach (its egressAllowCIDRs)` | The upstream is on a private address the host doesn't allow |
 
-A refusal from your own upstream proxy reaches the sandbox as the upstream sent it.
+A refusal from your own upstream proxy reaches the sandbox as the upstream sent it, with `X-Kantel-Egress: upstream-proxy` added to say whose it is.
+
+The egress log records each of the proxy's own failures as the sandbox saw it: allowed, with its status and the `upstream-failed` code, and the reason, so `kantel egress <sandbox>` shows `allowed 502  upstream-failed: can't connect to example.com:443: timed out`. A tunnel's entry has no status, because the proxy never reads inside it.
 
 The host logs every decision, allowed or refused, in its journal (`journalctl -u kantel-host`):
 

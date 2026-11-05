@@ -148,7 +148,7 @@ export interface HostView {
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported (its hello or a heartbeat), what placement admits a create against;
-	 * `capacity.diskGb` is what it had free when it started. Absent until it has reported.
+	 * `capacity.diskGb` is the same, else what it had free when it started. Absent until it has reported.
 	 */
 	readonly freeDiskGb?: number;
 	readonly allocated: {
@@ -286,6 +286,12 @@ export interface HostComputeLink {
 	 * (`ComputeService.bundleForHost`).
 	 */
 	bundle?(hostId: string, sandboxId: string, digest: string): Promise<HostBundle | undefined>;
+	/**
+	 * A use of a sandbox through the relay (`ComputeService.noteActivity`, for its idle stop): a port stream opened to it
+	 * (`sandboxes.openPort`: SSH, the desktop or browser, a hosted port's request or WebSocket), and each frame either
+	 * way. Called for every frame, so it must be cheap. Absent: nothing counts.
+	 */
+	activity?(sandboxId: string): void;
 	/**
 	 * Keeps a host's usage tick, checked (`parseHostUsage`). `shared`: it came from the replica holding the host's
 	 * connection, not from the host (`recordSharedUsage`). Absent: ticks are dropped.
@@ -910,7 +916,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			kvm: facts?.kvm ?? false,
 			nestedVirtualisation: facts?.nested ?? false,
 			features: [...(facts?.features ?? [])],
-			capacity: { vcpus: facts?.cpus ?? 0, memoryMb: facts?.memoryMiB ?? 0, diskGb: facts?.diskGiB ?? 0 },
+			// Disk is free space, which changes as the host runs: the latest heartbeat's, else the hello's.
+			capacity: {
+				vcpus: facts?.cpus ?? 0,
+				memoryMb: facts?.memoryMiB ?? 0,
+				diskGb: reported?.freeDiskGiB ?? facts?.diskGiB ?? 0,
+			},
 			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
@@ -1463,11 +1474,30 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					throw new KantelError("invalid", "Not a port");
 				}
 				const placement = await placementOf(sandboxId);
+				// Every relayed stream is someone using the sandbox: its opening, and its bytes either way, count toward its
+				// idle stop. An open stream that carries nothing (an SSH session left alone) doesn't.
+				const used = () => compute?.activity?.(sandboxId);
+				let stream: PortStream;
 				try {
-					return await hub.openPort(placement.hostId, sandboxId, port, sink);
+					stream = await hub.openPort(placement.hostId, sandboxId, port, {
+						data(bytes) {
+							used();
+							sink.data(bytes);
+						},
+						end: (reason) => sink.end(reason),
+					});
 				} catch (error) {
 					throw kantelErrorFromHost(error);
 				}
+				used();
+				return {
+					stream: stream.stream,
+					write(bytes) {
+						used();
+						stream.write(bytes);
+					},
+					close: () => stream.close(),
+				};
 			},
 			async openFile(sandboxId, params, sink) {
 				if (params.op !== "read" && params.op !== "write") throw new KantelError("invalid", "op is read or write");

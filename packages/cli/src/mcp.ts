@@ -367,6 +367,13 @@ const TOOLS: readonly Tool[] = [
 				minimum: 1,
 				description: "Stop by itself this many minutes after starting; default 60.",
 			},
+			idleStopMinutes: {
+				type: "integer",
+				minimum: 1,
+				description:
+					"Also stop by itself once it has gone this many minutes without use: no command, SSH, desktop, browser or " +
+					"hosted-port traffic. Default: no idle stop.",
+			},
 			labels: strings("Labels to find it by, such as { task: 'PROJ-12' }."),
 			env: strings("Environment variables every command sees. Not for secrets: anyone who may exec sees them."),
 		}),
@@ -381,6 +388,7 @@ const TOOLS: readonly Tool[] = [
 					from: optionalText(args, "from"),
 					image: optionalText(args, "image"),
 					autoStopMinutes: optionalNumber(args, "autoStopMinutes"),
+					idleStopMinutes: optionalNumber(args, "idleStopMinutes"),
 					labels: optionalStrings(args, "labels"),
 					env: optionalStrings(args, "env"),
 					wait: true,

@@ -83,7 +83,11 @@ const ENVIRONMENT = {
 };
 
 /** The routes that find `work` by name and answer it. */
+/** Who the key is, on a deployment that keeps protected values (`protectedValues`). */
+const CALLER = { kind: "user", id: "usr_1", name: "tom@kantel.test", protectedValues: true };
+
 const ENVIRONMENT_ROUTES = {
+	"GET /v1/whoami": () => CALLER,
 	"GET /v1/environments": () => ({ items: [ENVIRONMENT] }),
 	"GET /v1/environments/env_work1": () => ENVIRONMENT,
 };
@@ -226,11 +230,12 @@ describe("env set", () => {
 		);
 		expect(result.code).toBe(0);
 		expect(result.calls.map(routeOf)).toEqual([
+			"GET /v1/whoami",
 			"GET /v1/environments",
 			"GET /v1/environments/env_work1",
 			"PUT /v1/environments/env_work1/variables/OPENAI_API_KEY",
 		]);
-		expect(result.calls[2]?.body).toEqual({
+		expect(result.calls.at(-1)?.body).toEqual({
 			protected: true,
 			value: SECRET,
 			bindings: [{ host: "api.openai.com", pathPrefixes: ["/v1/", "/v2/"], methods: ["POST", "GET"] }],
@@ -246,6 +251,7 @@ describe("env set", () => {
 		);
 		expect(result.code).toBe(0);
 		expect(result.calls.map(routeOf)).toEqual([
+			"GET /v1/whoami",
 			"GET /v1/environments/env_work1",
 			"PUT /v1/environments/env_work1/variables/OPENAI_API_KEY",
 		]);
@@ -269,7 +275,7 @@ describe("env set", () => {
 			{ routes: setRoutes(leaky), stdin: input(`${SECRET}\n`) },
 		);
 		expect(result.code).toBe(0);
-		expect(result.calls[2]?.body).toEqual({
+		expect(result.calls.at(-1)?.body).toEqual({
 			protected: true,
 			value: SECRET,
 			bindings: [{ host: "api.openai.com", pathPrefixes: ["/v1/"], methods: ["POST"] }],
@@ -329,7 +335,7 @@ describe("env set", () => {
 			{ routes: setRoutes(leaky) },
 		);
 		expect(result.code).toBe(0);
-		expect(result.calls[2]?.body).toEqual({
+		expect(result.calls.at(-1)?.body).toEqual({
 			protected: true,
 			bindings: [{ host: "api.github.com", pathPrefixes: ["/repos/"], methods: ["GET"] }],
 		});
@@ -338,6 +344,50 @@ describe("env set", () => {
 		});
 		expect(plain.code).toBe(1);
 		expect(plain.stderr).toContain("NODE_ENV isn't protected in work");
+	});
+
+	it("refuses a protected value or secret file before writing anything where the deployment keeps none", async () => {
+		const routes = {
+			...setRoutes(leaky),
+			"GET /v1/whoami": () => ({ ...CALLER, protectedValues: false }),
+			"PUT /v1/environments/env_work1/files": () => ENVIRONMENT,
+			"POST /v1/environments": () => ({ ...ENVIRONMENT, id: "env_new1", name: "new" }),
+		};
+		for (const argv of [
+			["env", "set", "work", `OPENAI_API_KEY=${SECRET}`, "--protected", "--bind", "api.openai.com"],
+			["env", "set", "work", "GH_TOKEN", "--keep-value", "--bind", "api.github.com"],
+		]) {
+			const refused = await kantel(argv, { routes });
+			expect(refused.code).toBe(1);
+			expect(refused.stderr).toContain("this deployment doesn't support protected variables or secret files");
+			expect(refused.stderr).not.toContain("KANTEL_SECRETS_KEY");
+			expect(refused.calls.map(routeOf)).toEqual(["GET /v1/whoami"]);
+		}
+		const file = await kantel(["env", "file", "work", "/etc/key"], { routes, stdin: input(SECRET) });
+		expect(file.code).toBe(1);
+		expect(file.calls.map(routeOf)).toEqual(["GET /v1/whoami"]);
+
+		// Plain variables need no check, and making an environment says up front that protected values can't go in it.
+		const plain = await kantel(["env", "set", "work", "NODE_ENV=test"], { routes });
+		expect(plain.code).toBe(0);
+		expect(plain.calls.map(routeOf)).not.toContain("GET /v1/whoami");
+		const created = await kantel(["env", "create", "new"], { routes });
+		expect(created.code).toBe(0);
+		expect(created.stdout).toContain("Note: this deployment doesn't support protected variables or secret files");
+		const offered = await kantel(["env", "create", "new"], {
+			routes: { ...routes, "GET /v1/whoami": () => CALLER },
+		});
+		expect(offered.stdout).not.toContain("Note:");
+	});
+
+	it("tries the write on an older deployment that doesn't say whether it keeps protected values", async () => {
+		const { protectedValues: _, ...older } = CALLER;
+		const result = await kantel(
+			["env", "set", "work", `OPENAI_API_KEY=${SECRET}`, "--protected", "--bind", "api.openai.com"],
+			{ routes: { ...setRoutes(leaky), "GET /v1/whoami": () => older } },
+		);
+		expect(result.code).toBe(0);
+		expect(routeOf(result.calls.at(-1) as Call)).toBe("PUT /v1/environments/env_work1/variables/OPENAI_API_KEY");
 	});
 
 	it("sets a plain variable, and --plain makes a protected one plain", async () => {

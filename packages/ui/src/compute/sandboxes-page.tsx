@@ -67,7 +67,14 @@ import {
 import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf } from "./parts.tsx";
-import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
+import {
+	AUTO_STOP_CHOICES,
+	DeleteDialog,
+	IDLE_STOP_CHOICES,
+	IDLE_STOP_HINT,
+	type SandboxNotice,
+	useSandboxMenu,
+} from "./sandbox-actions.tsx";
 import {
 	filterCounts,
 	filtered,
@@ -1644,6 +1651,8 @@ export interface NewSandboxForm {
 	/** The template a microVM is made from, resolved by `requestedTemplate`. */
 	readonly template?: Template;
 	readonly autoStop: string;
+	/** Minutes unused before its idle stop, or `never`; absent: none. */
+	readonly idleStop?: string;
 }
 
 /**
@@ -1666,6 +1675,7 @@ export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
 		...(form.environment === "" ? {} : { environmentId: form.environment }),
 		...(template === undefined ? {} : { templateId: template.id }),
 		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
+		...(form.idleStop === undefined || form.idleStop === "never" ? {} : { idleStopMinutes: Number(form.idleStop) }),
 	};
 }
 
@@ -1748,6 +1758,7 @@ export function NewSandboxDialog({
 	const [diskGb, setDiskGb] = useState(fitDisk(DEFAULT_SANDBOX_SHAPES));
 	const [isolateMb, setIsolateMb] = useState(DEFAULT_SANDBOX_SHAPES.isolate.memoryMb.default);
 	const [autoStop, setAutoStop] = useState("60");
+	const [idleStop, setIdleStop] = useState("never");
 	const [from, setFrom] = useState("");
 	const [environment, setEnvironment] = useState("");
 	const [saved, setSaved] = useState<readonly SavedSnapshot[]>([]);
@@ -1833,6 +1844,7 @@ export function NewSandboxDialog({
 				environment,
 				...(picked === undefined ? {} : { template: picked }),
 				autoStop,
+				idleStop,
 			}),
 		);
 		setName("");
@@ -1978,6 +1990,13 @@ export function NewSandboxDialog({
 					value={autoStop}
 					onChange={(event) => setAutoStop(event.currentTarget.value)}
 					options={AUTO_STOP_CHOICES}
+				/>
+				<SelectField
+					label="Stop when unused for"
+					value={idleStop}
+					onChange={(event) => setIdleStop(event.currentTarget.value)}
+					options={IDLE_STOP_CHOICES}
+					hint={IDLE_STOP_HINT}
 				/>
 				{savedSnapshots === undefined || picked !== undefined ? null : (
 					<SelectField

@@ -308,7 +308,7 @@ A bundle's files: the tar the account uploaded (`POST /bundles`), unpacked read-
 
 ### Caller
 
-Who is calling, the accounts they may act in, and the deployment's mode.
+Who is calling, the accounts they may act in, and the deployment's mode and what it supports.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -319,6 +319,7 @@ Who is calling, the accounts they may act in, and the deployment's mode.
 | `superAdmin` | boolean | yes | Whether the caller may manage the deployment's hosts. |
 | `mode` | [DeploymentMode](/api/reference/types/#deploymentmode) | yes |  |
 | `sandboxDomain` | string | no | The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. |
+| `protectedValues` | boolean | no | Whether the deployment keeps environments' protected variables and secret files (and bucket sources' credentials). `false`: setting one is refused with `not_supported`, and plain variables still work. Absent from a deployment older than this field: try, and read the error. |
 
 ### CallerApiKey
 
@@ -463,6 +464,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `image` | string | no | A microVM's base image. Default: the deployment's. |
 | `from` | string | no | Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account. |
 | `autoStopMinutes` | integer or null | no | Default 60. `null`: never stop by itself. |
+| `idleStopMinutes` | integer or null | no | Stop it once it has gone this long without use (`idle-stop`), whatever its auto-stop says; with `autoStopMinutes: null`, it runs while it is used. Default `null`: no idle stop. See the sandbox's `idleStopMinutes` for what counts as use. |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
@@ -736,7 +738,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
 One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
@@ -1232,13 +1234,16 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
 | `health` | [SandboxHealth](/api/reference/types/#sandboxhealth) | no |  |
-| `reason` | string | no | Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, or a rule's reason. A stop someone asked for has none. |
+| `reason` | string | no | Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none. |
 | `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `capabilities` | [SandboxCapabilities](/api/reference/types/#sandboxcapabilities) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes | The caller's own labels. |
 | `autoStopMinutes` | integer or null | yes | How long after a start or resume it stops by itself; `null` never. |
 | `stopsAt` | integer | no | When it will stop by itself, while running; the console's stops-in. |
+| `idleStopMinutes` | integer or null | no | How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, and its hosted ports. Stopping keeps its disk, as any stop does. |
+| `lastActiveAt` | integer | no | When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds. |
+| `idleStopsAt` | integer | no | When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
@@ -1352,7 +1357,7 @@ The `details` of the `conflict` (409) a call that needs a running sandbox (comma
 | `code` | [SandboxNotRunningCode](/api/reference/types/#sandboxnotrunningcode) | yes |  |
 | `sandboxId` | string | yes |  |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
-| `stopReason` | string | no | Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. |
+| `stopReason` | string | no | Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. |
 | `hint` | string | yes | What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again`. |
 
 ### SandboxNotRunningCode
@@ -1948,6 +1953,7 @@ A template version's definition, never changed once made. Answered with every de
 | --- | --- | --- | --- |
 | `name` | string | no |  (at most 63 characters) |
 | `autoStopMinutes` | integer or null | no |  |
+| `idleStopMinutes` | integer or null | no | Its idle stop; `null` turns it off. A running sandbox's idle time counts from now. |
 | `extendMinutes` | integer | no | Move `stopsAt` to this long from now. (minimum 1, maximum 43200) |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |

@@ -95,6 +95,7 @@ The fields you can set when you create one:
 | `from` | Start from a snapshot instead: a snapshot's ID, or the name of a [saved snapshot](/snapshots/saved/) |
 | `name` | Up to 63 characters. Without it, a generated name such as `brave-otter` |
 | `autoStopMinutes` | Minutes after each start before it stops by itself. Default 60, at most 43,200 (30 days); `null` never |
+| `idleStopMinutes` | Also stop it once it has gone this many minutes without use. Default `null`: no idle stop. See [Idle stop](#idle-stop) |
 | `labels` | Your own key-value pairs, to find it again |
 | `env` | Environment variables every command in it sees. Anyone who can run commands in it can read them, so don't put secrets here |
 | `visibility` | In an organisation, `private` or `organisation`. See [Accounts and organisations](/accounts/organisations/) |
@@ -210,6 +211,26 @@ curl -s -X PATCH "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt" \
 Set `"autoStopMinutes": null` to turn auto-stop off, so it runs until you stop it. The same call renames a sandbox, replaces its `labels` (send them all: the ones you leave out go) and changes its `visibility`.
 
 `extendMinutes` and `autoStopMinutes` count from when the call arrives, so a retry a minute later moves the stop time a minute on. Send an `Idempotency-Key` to have a retry keep the first call's `stopsAt`.
+
+## Idle stop
+
+Auto-stop is a lifetime: it stops a sandbox that's still in use. An idle stop stops one that nobody is using. Set `idleStopMinutes` and the sandbox stops once it has gone that long without use, whichever comes first of the two. For a shared test environment that people sign in to now and then, turn auto-stop off and give it an idle stop, so it runs while it's used and stops half an hour after:
+
+```sh
+curl -s -X PATCH "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"autoStopMinutes": null, "idleStopMinutes": 30}'
+```
+
+With the CLI, that's `kantel new --auto-stop never --idle-stop 30`, or `kantel extend <id> --idle-stop 30` for one that's running. `--idle-stop never` (`null`) turns it off.
+
+These count as use, and each one starts the idle time again:
+
+- A call that needs the sandbox running: a command, its files, exposing a port, opening SSH, the desktop or the browser. A command you wait on counts for as long as it runs, through the API or an [end-to-end encrypted](/e2e/) session (which sends a keepalive while it waits); a detached one counts while you follow it (`getCommand`, `kantel exec --attach`).
+- Traffic through Kantel's relay: bytes either way over SSH, the desktop or browser, and requests and WebSocket messages to its hosted ports. An SSH session left open with nothing going over it isn't use.
+
+While it runs, the sandbox's `lastActiveAt` says when it was last used (to within about 20 seconds) and `idleStopsAt` when the idle stop comes if nobody uses it first. It stops within about half a minute after that, so use that another gateway saw has reached the record before any gateway stops it. An idle stop is like any other: its disk is kept, and it starts again when you resume it. Its `reason` is `idle-stop`, where an auto-stop's is `auto-stop`, and the `sandbox.stopped` event says so too. Nothing resumes it by itself: a command to it answers `409` (see [When the sandbox isn't running](/sandboxes/commands-and-files/#when-the-sandbox-isnt-running)), and a request to one of its hosted ports gets a page saying it is stopped and why (see [Public ports](/sandboxes/public-ports/#when-the-sandbox-stops)).
 
 ## Fork
 

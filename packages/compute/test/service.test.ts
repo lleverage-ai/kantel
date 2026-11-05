@@ -925,6 +925,297 @@ describe("sandboxes", () => {
 	});
 });
 
+describe("idle stop", () => {
+	function clocked(store?: ReturnType<typeof createMemoryStore>) {
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const api = createComputeApi({
+			backend: createStubBackend(),
+			...(store === undefined ? {} : { store }),
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+			now: () => clock.at,
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		/** Moves the clock on, then lets a request sweep and waits for what it began. */
+		const after = async (ms: number) => {
+			clock.at += ms;
+			await tom.getCaller();
+			await api.service.idle();
+		};
+		return { clock, api, tom, after };
+	}
+
+	it("stops a sandbox once it goes unused for its idle stop, apart from its auto-stop, and keeps its disk", async () => {
+		const { clock, api, tom, after } = clocked();
+		const started = clock.at;
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 10, wait: true });
+		expect(sandbox.idleStopMinutes).toBe(10);
+		expect(sandbox.stopsAt).toBeUndefined();
+		expect(sandbox.lastActiveAt).toBe(started);
+		expect(sandbox.idleStopsAt).toBe(started + 10 * 60_000);
+
+		// A command is a use: the idle time counts from it.
+		await after(6 * 60_000);
+		await tom.runCommand(sandbox.id, { command: "true" });
+		await api.service.idle();
+		const used = clock.at;
+		const after6 = await tom.getSandbox(sandbox.id);
+		expect(after6.lastActiveAt).toBe(used);
+		expect(after6.idleStopsAt).toBe(used + 10 * 60_000);
+
+		// Reading it isn't a use; nine minutes on it still runs, and past ten it stops.
+		await after(9 * 60_000);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		await after(2 * 60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("idle-stop");
+		expect(stopped.idleStopMinutes).toBe(10);
+		expect(stopped.idleStopsAt).toBeUndefined();
+		expect(stopped.latestSnapshotId).toBeDefined();
+
+		// Nothing resumes it: a command is refused with why it stopped, and a hosted port's request is told so.
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.details).toMatchObject({ code: "sandbox_stopped", stopReason: "idle-stop" });
+		const page = await api.service.portNotRunning(sandbox.id);
+		expect(page).toContain("went 10 minutes without use (its idle stop)");
+		expect(page).toContain("Its disk is kept");
+		expect(page).toContain(`kantel resume ${sandbox.id}`);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+
+		// Resumed, its idle time counts from the start.
+		const resumed = await tom.resumeSandbox(sandbox.id, { wait: true });
+		expect(resumed.reason).toBeUndefined();
+		expect(resumed.lastActiveAt).toBe(clock.at);
+		expect(await api.service.portNotRunning(sandbox.id)).toBeUndefined();
+	});
+
+	it("counts relayed traffic, writing it at most once a window and the rest at the sweep", async () => {
+		const { clock, api, tom, after } = clocked();
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 5, wait: true });
+		await after(60_000);
+		const first = clock.at;
+		api.service.noteActivity(sandbox.id);
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(first);
+
+		// More traffic within the window is held, not written.
+		clock.at += 5_000;
+		const held = clock.at;
+		api.service.noteActivity(sandbox.id);
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(first);
+		// The sweep after the window writes it.
+		await after(15_000);
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(held);
+
+		// Traffic keeps it running past its idle time from the start; once it stops, it stops.
+		for (let minute = 0; minute < 8; minute++) {
+			await after(60_000);
+			api.service.noteActivity(sandbox.id);
+		}
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		await after(6 * 60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("idle-stop");
+	});
+
+	it("is set, changed and turned off by an update, counting from it, and validated", async () => {
+		const { clock, tom, after } = clocked();
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.idleStopMinutes).toBeNull();
+		expect(sandbox.idleStopsAt).toBeUndefined();
+		await after(3 * 60_000);
+		const set = await tom.updateSandbox(sandbox.id, { idleStopMinutes: 20 });
+		expect(set.idleStopMinutes).toBe(20);
+		expect(set.idleStopsAt).toBe(clock.at + 20 * 60_000);
+		// Its auto-stop is untouched.
+		expect(set.stopsAt).toBe(sandbox.stopsAt);
+		const off = await tom.updateSandbox(sandbox.id, { idleStopMinutes: null });
+		expect(off.idleStopMinutes).toBeNull();
+		expect(off.idleStopsAt).toBeUndefined();
+
+		for (const minutes of [0, 43_201, 1.5]) {
+			const refused = await failure(tom.updateSandbox(sandbox.id, { idleStopMinutes: minutes }));
+			expect(refused.status).toBe(400);
+			const made = await failure(tom.createSandbox({ idleStopMinutes: minutes }));
+			expect(made.status).toBe(400);
+		}
+		// A fork keeps it.
+		const idle = await tom.updateSandbox(sandbox.id, { idleStopMinutes: 15 });
+		const [fork] = (await tom.forkSandbox(idle.id, { wait: true })).items;
+		expect(fork?.idleStopMinutes).toBe(15);
+	});
+
+	it("counts a use whose write is held up or failed, till the store has it, against its idle stop only", async () => {
+		const memory = createMemoryStore();
+		const sandboxes = memory.sandboxes;
+		// Writes of a use alone (only `lastActiveAt` moves) fail, or wait for `release`; every other write goes through.
+		let mode: "ok" | "fail" | "hold" = "ok";
+		let release = () => {};
+		const attempts: number[] = [];
+		const store = {
+			...memory,
+			sandboxes: {
+				...sandboxes,
+				async update(
+					id: string,
+					change: Parameters<typeof sandboxes.update>[1],
+					expected?: Parameters<typeof sandboxes.update>[2],
+				) {
+					const current = await sandboxes.get(id);
+					const next = current === undefined ? undefined : change(current);
+					const useOnly =
+						current !== undefined &&
+						next !== undefined &&
+						next.lastActiveAt !== current.lastActiveAt &&
+						JSON.stringify({ ...next, lastActiveAt: 0 }) === JSON.stringify({ ...current, lastActiveAt: 0 });
+					if (useOnly && next?.lastActiveAt !== undefined) attempts.push(next.lastActiveAt);
+					if (useOnly && mode === "fail") throw new Error("The database is away");
+					if (useOnly && mode === "hold") {
+						await new Promise<void>((resolve) => {
+							release = resolve;
+						});
+					}
+					return sandboxes.update(id, change, expected);
+				},
+			},
+		};
+		const { clock, api, tom, after } = clocked(store);
+		const started = clock.at;
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 1, wait: true });
+
+		// A use whose write fails still counts: past a minute and its grace from its start, it runs on.
+		mode = "fail";
+		await after(50_000);
+		const used = clock.at;
+		api.service.noteActivity(sandbox.id);
+		await api.service.idle();
+		await after(50_000);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(started);
+		// It's tried again at the next sweep after its window, and once the store is back it's written.
+		mode = "ok";
+		await after(20_000);
+		expect(attempts.filter((at) => at === used).length).toBeGreaterThanOrEqual(3);
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(used);
+
+		// A use whose write is held up: the sweep doesn't wait for it, and doesn't idle-stop the sandbox meanwhile.
+		mode = "hold";
+		await after(15_000);
+		const held = clock.at;
+		api.service.noteActivity(sandbox.id);
+		clock.at += 50_000;
+		// Stored, its last use is over 90 s ago (`used`); seen here, it's 50 s.
+		await tom.getCaller();
+		const during = await tom.getSandbox(sandbox.id);
+		expect(during.state).toBe("running");
+		expect(during.lastActiveAt).toBe(used);
+		mode = "ok";
+		release();
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(held);
+
+		// Once its last use is a minute and its grace behind, it stops.
+		await after(100_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("idle-stop");
+	});
+
+	it("waits out its grace, so a use another gateway holds back lands before this one's sweep can stop it", async () => {
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const store = createMemoryStore();
+		const backend = createStubBackend();
+		const gateway = () => {
+			const api = createComputeApi({
+				backend,
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+			});
+			opened.push(api);
+			const tom = createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+			/** Its sweep, now: a request lets it sweep, and it waits for what it began. */
+			const sweep = async () => {
+				await tom.getCaller();
+				await api.service.idle();
+			};
+			return { api, tom, sweep };
+		};
+		const a = gateway();
+		const b = gateway();
+		const sandbox = await a.tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 1, wait: true });
+		const started = clock.at;
+
+		// Gateway A writes a use at once, then holds the next one back for its window.
+		clock.at = started + 50_000;
+		a.api.service.noteActivity(sandbox.id);
+		await a.api.service.idle();
+		clock.at = started + 64_000;
+		a.api.service.noteActivity(sandbox.id);
+		// Past a minute from the use A stored, B sweeps before A has written the one it held: within its grace, it runs on.
+		clock.at = started + 111_000;
+		await b.sweep();
+		expect((await b.tom.getSandbox(sandbox.id)).state).toBe("running");
+		// A's sweep writes it; past a minute from the stored use but not its grace, B leaves it running.
+		clock.at = started + 112_000;
+		await a.sweep();
+		expect((await b.tom.getSandbox(sandbox.id)).lastActiveAt).toBe(started + 64_000);
+		clock.at = started + 141_000;
+		await b.sweep();
+		expect((await b.tom.getSandbox(sandbox.id)).state).toBe("running");
+		// Unused a minute and its grace, B stops it.
+		clock.at = started + 64_000 + 60_000 + 30_000;
+		await b.sweep();
+		const stopped = await b.tom.getSandbox(sandbox.id);
+		expect([stopped.state, stopped.reason]).toEqual(["stopped", "idle-stop"]);
+	});
+
+	it("stops for its auto-stop or a stop it is owed however recently it was used", async () => {
+		const store = createMemoryStore();
+		const { api, tom, after } = clocked(store);
+		const timed = await tom.createSandbox({ autoStopMinutes: 2, idleStopMinutes: 10, wait: true });
+		const owed = await tom.createSandbox({ autoStopMinutes: null, idleStopMinutes: 10, wait: true });
+		for (let i = 0; i < 9; i++) {
+			await after(15_000);
+			api.service.noteActivity(timed.id);
+			api.service.noteActivity(owed.id);
+		}
+		await store.sandboxes.update(owed.id, (current) => ({ ...current, stopFor: "egress-rule" }));
+		api.service.noteActivity(owed.id);
+		await after(1_000);
+		const a = await tom.getSandbox(timed.id);
+		expect([a.state, a.reason]).toEqual(["stopped", "auto-stop"]);
+		const b = await tom.getSandbox(owed.id);
+		expect([b.state, b.reason]).toEqual(["stopped", "egress-rule"]);
+	});
+
+	it("stops for its auto-stop, not idleness, where both are due", async () => {
+		const { tom, after } = clocked();
+		const sandbox = await tom.createSandbox({ autoStopMinutes: 5, idleStopMinutes: 5, wait: true });
+		await after(6 * 60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe("auto-stop");
+	});
+});
+
 /** A backend whose resumes wait for `release` and then go on, or fail with `failWith`. */
 function gatedResumes() {
 	const stub = createStubBackend();

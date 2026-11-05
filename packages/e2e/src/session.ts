@@ -402,16 +402,33 @@ interface Waiting {
 	onEvent?: (event: unknown) => void;
 }
 
+/**
+ * How often a session sends a keepalive while a foreground `sandbox.exec` is pending: well inside the shortest idle stop
+ * (a minute), so the relay sees the sandbox in use for as long as someone waits on its command, even one with no output.
+ */
+export const EXEC_KEEPALIVE_MS = 15_000;
+
+/**
+ * The keepalive: a control message with no `id` or `method`, which a host reads past without answering (older hosts
+ * too). It's encrypted like the rest, so the relay sees only that bytes crossed.
+ */
+export const KEEPALIVE_MESSAGE = { type: "keepalive" } as const;
+
 /** RPC over an `rpc` session: host methods, run by the host for this device alone. */
 export class SessionClient {
 	readonly #control: ControlStream;
 	readonly #stream: SecureStream;
 	readonly #waiting = new Map<number, Waiting>();
 	#next = 0;
+	/** The foreground `sandbox.exec` calls still pending, and the keepalive that runs while there are any. */
+	#foreground = 0;
+	#keepalive: ReturnType<typeof setInterval> | undefined;
+	readonly #keepaliveMs: number;
 
-	constructor(session: OpenedSession) {
+	constructor(session: OpenedSession, options: { keepaliveMs?: number } = {}) {
 		this.#control = session.control;
 		this.#stream = session.stream;
+		this.#keepaliveMs = options.keepaliveMs ?? EXEC_KEEPALIVE_MS;
 		this.#control.onMessage((message) => {
 			if (!isObject(message) || typeof message.id !== "number") return;
 			const waiting = this.#waiting.get(message.id);
@@ -427,6 +444,7 @@ export class SessionClient {
 			} else waiting.resolve(message.result);
 		});
 		this.#stream.onClose((reason) => {
+			this.#stopKeepalive();
 			for (const [id, waiting] of this.#waiting) {
 				this.#waiting.delete(id);
 				waiting.reject(new SessionError("unavailable", `The session closed: ${reason}`));
@@ -437,7 +455,7 @@ export class SessionClient {
 	call<T = unknown>(method: string, params: object, onEvent?: (event: unknown) => void): Promise<T> {
 		this.#next += 1;
 		const id = this.#next;
-		return new Promise<T>((resolve, reject) => {
+		const called = new Promise<T>((resolve, reject) => {
 			this.#waiting.set(id, {
 				resolve: resolve as (value: unknown) => void,
 				reject,
@@ -448,9 +466,33 @@ export class SessionClient {
 				reject(error instanceof Error ? error : new Error(String(error)));
 			});
 		});
+		// Someone waits on a foreground command for as long as it runs: keep the sandbox in use (its idle stop) till it ends.
+		if (method !== "sandbox.exec" || (params as { detached?: unknown }).detached === true) return called;
+		this.#startKeepalive();
+		return called.finally(() => this.#endForeground());
+	}
+
+	#startKeepalive(): void {
+		this.#foreground += 1;
+		if (this.#keepalive !== undefined) return;
+		this.#keepalive = setInterval(() => {
+			this.#control.send(KEEPALIVE_MESSAGE).catch(() => undefined);
+		}, this.#keepaliveMs);
+		(this.#keepalive as { unref?: () => void }).unref?.();
+	}
+
+	#endForeground(): void {
+		this.#foreground = Math.max(0, this.#foreground - 1);
+		if (this.#foreground === 0) this.#stopKeepalive();
+	}
+
+	#stopKeepalive(): void {
+		if (this.#keepalive !== undefined) clearInterval(this.#keepalive);
+		this.#keepalive = undefined;
 	}
 
 	close(): void {
+		this.#stopKeepalive();
 		this.#stream.close("closed by the device");
 	}
 }

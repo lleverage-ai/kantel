@@ -23,9 +23,12 @@ import {
 	type BackendSize,
 	type BootOptions,
 	type BuiltTemplate,
+	type CommandProgress,
 	DetachedWaitEnded,
+	type ExecRequest,
 	type ExecResult,
 	type FileStream,
+	isDetachedWaitEnded,
 	type Placement,
 	type SandboxBackend,
 	type SandboxSpec,
@@ -98,6 +101,19 @@ export const OLD_HOST_DETACHED =
 /** A detached command whose start its sandbox never confirmed, and which its host then didn't know: it never ran. */
 const UNCONFIRMED_START =
 	"The sandbox didn't confirm this command's start, and its host doesn't know it, so it never ran: run it again";
+/**
+ * Added to the error a command ends with when its host's connection went while it ran (a reconnect, or a newer
+ * connection taking over) on a host that can't keep it running past that: its command ended with the connection.
+ */
+export const OLD_HOST_RECONNECT =
+	"this sandbox's host runs a kantel-host from before commands kept by ID, which ends a command when its connection to Kantel goes, so the command was stopped; upgrade its kantel-host to keep commands running across reconnects";
+/**
+ * How long past a foreground command's own limit Kantel waits for a host whose connection went while it ran to come
+ * back and say how it ended.
+ */
+export const FOREGROUND_RECONNECT_GRACE_MS = 120_000;
+/** A foreground command's limit when it gave none: the guest's default. */
+const GUEST_DEFAULT_LIMIT_MS = 120_000;
 /** Why a kill can't reach the process on a host from before kills. */
 export const OLD_HOST_KILL =
 	"this sandbox's host runs a kantel-host from before kills, which can't stop a command; upgrade its kantel-host";
@@ -478,6 +494,41 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
+	 * A foreground command's end after its host's connection went while it ran (`lost`, that call's error): followed by
+	 * its ID as a detached one is, until its own limit and `FOREGROUND_RECONNECT_GRACE_MS` more have passed. A host that
+	 * doesn't come back by then, or no longer knows the command (one from before keeping a foreground command past its
+	 * connection), ends it with `lost`, said so.
+	 */
+	async function foregroundEnd(
+		sandboxId: string,
+		commandId: string,
+		request: ExecRequest,
+		lost: KantelError,
+	): Promise<ExecResult> {
+		const deadline = new AbortController();
+		const timer = setTimeout(
+			() => deadline.abort(),
+			(request.timeoutMs ?? GUEST_DEFAULT_LIMIT_MS) + FOREGROUND_RECONNECT_GRACE_MS,
+		);
+		const signal = request.signal === undefined ? deadline.signal : AbortSignal.any([request.signal, deadline.signal]);
+		try {
+			return await commandEnd(sandboxId, commandId, signal, lost);
+		} catch (error) {
+			// Stopped waiting by the caller (a kill, the gateway closing): as any aborted call.
+			if (request.signal?.aborted) throw error;
+			if (isDetachedWaitEnded(error)) {
+				throw new KantelError(
+					"unavailable",
+					`${lost.message}, and didn't come back to say how the command ended before its time limit was up`,
+				);
+			}
+			throw error;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	/**
 	 * Refuses a file stream with `not_supported` unless the sandbox's host can stream files, so the compute service falls
 	 * back to `readFile` and `writeFile`.
 	 */
@@ -517,6 +568,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
 		mayUse(hostId, how.eligibleHosts);
+		// Its ports' exposures outlast its stop, so a request to one is told it is stopped (`PortRouter.fetch`), and end as
+		// it boots again: the compute API cleared its recorded ports at the stop, and a URL the API no longer lists, and
+		// can't hide, must not reach the new machine.
+		await options.ports?.forget(sandboxId);
 		const revision = how.egressRevision ?? how.egress?.revision;
 		// Mounted again on the new machine, those its host can do; the host is read only when there are some.
 		const wanted = mountsOf(how.mounts);
@@ -711,12 +766,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return images.state === undefined ? {} : { running: images.state === "running" };
 		},
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
-		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
-		// no longer lists, and can't hide, must not still reach the machine.
-		recover: async (sandboxId, how) => {
-			await options.ports?.forget(sandboxId);
-			return boot(sandboxId, "sandbox.start", how);
-		},
+		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them, as with every
+		// boot (`boot`).
+		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		async updateEgress(sandboxId, egress, revision) {
 			await call(sandboxId, "sandbox.egress", {
 				egress: hostEgress(egress, options.attributionKey) ?? null,
@@ -731,8 +783,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
-			// A stopped sandbox's ports end with it (the compute API forgets them when it starts again).
-			await options.ports?.forget(sandboxId);
+			// A stopped sandbox's ports stay exposed while it is stopped, so a request to one is told so and why (its idle
+			// stop, say) rather than that nothing is there; nothing reaches a stopped machine. They end when it boots again.
 			const snap = await call<HostSnapshot>(sandboxId, "sandbox.stop", {
 				snapshotId: snapshotId(),
 				memory: keepMemory,
@@ -803,14 +855,30 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					started?.unconfirmed === true ? new KantelError("unavailable", UNCONFIRMED_START) : undefined;
 				return commandEnd(sandboxId, request.commandId, request.signal, unconfirmed);
 			}
-			const result = await call<HostExecResult>(
-				sandboxId,
-				HostMethods.exec,
-				params,
-				request.signal,
-				// The command's own limit, and some for the answer to come back; with none, an hour.
-				request.timeoutMs === undefined ? 3_600_000 : request.timeoutMs + 10_000,
-			);
+			let result: HostExecResult;
+			try {
+				result = await call<HostExecResult>(
+					sandboxId,
+					HostMethods.exec,
+					params,
+					request.signal,
+					// The command's own limit, and some for the answer to come back; with none, an hour.
+					request.timeoutMs === undefined ? 3_600_000 : request.timeoutMs + 10_000,
+				);
+			} catch (error) {
+				// Only the wait ended (the gateway closing, or a kill already recorded): a host that runs commands by ID runs it on
+				// past this call, and its end is fetched by its ID, as a detached one's is.
+				if (request.signal?.aborted && controls && request.commandId !== undefined) throw new DetachedWaitEnded();
+				if (request.signal?.aborted || !isKantelError(error) || !unanswered(error) || error.code !== "unavailable") {
+					throw error;
+				}
+				// Its host's connection went while it ran (a reconnect, a newer connection taking over, the replica holding the
+				// host losing it). A host that runs commands by ID keeps it running past that, and keeps its end: followed by
+				// its ID until then, to its own limit and some. One from before ended it with the connection.
+				if (!controls) throw new KantelError("unavailable", `${error.message}; ${OLD_HOST_RECONNECT}`);
+				if (request.commandId === undefined) throw error;
+				return foregroundEnd(sandboxId, request.commandId, request, error);
+			}
 			const ended = execResult(result);
 			// A host from before detached commands ran this one as a foreground one, which its guest stops at its default.
 			if (request.detached === true && !controls && ended.timedOut) {
@@ -827,7 +895,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				throw new KantelError("not_supported", "This sandbox's host keeps no command results");
 			}
 			const status = await call<HostExecStatus>(sandboxId, HostMethods.execGet, { commandId } satisfies HostExecRef);
-			return status.state === "exited" && status.result !== undefined ? execResult(status.result) : undefined;
+			if (status.state === "exited" && status.result !== undefined) return execResult(status.result);
+			// A host that reports a running command's output so far (`HostExecStatus.stdout`): what attach shows.
+			if (status.stdout === undefined && status.stderr === undefined) return undefined;
+			return {
+				running: true,
+				stdout: status.stdout ?? "",
+				stderr: status.stderr ?? "",
+				...(status.truncated === true ? { truncated: true } : {}),
+			} satisfies CommandProgress;
 		},
 		async readFile(sandboxId, path, range) {
 			const answer = await call<{ data: string; fileSize?: number }>(

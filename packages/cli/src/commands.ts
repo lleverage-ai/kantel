@@ -84,7 +84,7 @@ import {
 	parseGrant,
 	withoutProtectedValues,
 } from "./environments.ts";
-import { CliError, HostAnswerError, notRunningOf, UsageError } from "./errors.ts";
+import { CliError, HostAnswerError, notRunningOf, UnreachableError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
@@ -385,6 +385,17 @@ function pairs(values: readonly string[], what: string): { [key: string]: string
 const autoStopOf = (value: string | undefined): number | null | undefined =>
 	value === "never" ? null : whole(value, "--auto-stop");
 
+/** `--idle-stop`'s minutes, or `null` for `never` (no idle stop). */
+const idleStopOf = (value: string | undefined): number | null | undefined =>
+	value === "never" ? null : whole(value, "--idle-stop");
+
+/** The flag for a sandbox's idle stop, on `new` and `extend`. */
+const idleStopFlag = {
+	type: "string",
+	value: "<minutes|never>",
+	description: "Also stop once it goes this long unused: no command, SSH, desktop, browser or port traffic",
+} as const;
+
 /** One word for a POSIX shell, quoted only when it needs to be. */
 export function shellQuote(word: string): string {
 	if (/^[\w@%+=:,./-]+$/.test(word)) return word;
@@ -485,6 +496,14 @@ function sandboxTable(sandboxes: readonly Sandbox[]): string {
 	);
 }
 
+/** "after 30 min unused (stops in 28 min unless used)", or undefined with no idle stop. */
+function idleStopText(sandbox: Sandbox): string | undefined {
+	const minutes = sandbox.idleStopMinutes;
+	if (minutes === undefined || minutes === null) return undefined;
+	const idle = `after ${minutes} min unused`;
+	return sandbox.idleStopsAt === undefined ? idle : `${idle} (stops ${until(sandbox.idleStopsAt)} unless used)`;
+}
+
 function describeSandbox(sandbox: Sandbox): string {
 	const resources = sandbox.resources;
 	const machine = [
@@ -505,6 +524,7 @@ function describeSandbox(sandbox: Sandbox): string {
 		["visibility", sandbox.visibility],
 		["labels", labels.join(", ")],
 		["auto-stop", sandbox.stopsAt === undefined ? autoStop : `${autoStop} (stops ${until(sandbox.stopsAt)})`],
+		["idle stop", idleStopText(sandbox)],
 		["snapshot", sandbox.latestSnapshotId],
 		["created", `${timestamp(sandbox.createdAt)} (${ago(sandbox.createdAt)})`],
 		["running", duration(sandbox.usage.runningSeconds)],
@@ -616,7 +636,7 @@ function makeClient(io: Io, config: ResolvedConfig): KantelClient {
 			if (error instanceof Error && error.name === "AbortError") throw error;
 			const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
 			const reason = cause instanceof Error ? cause.message : String(cause);
-			throw new CliError(`couldn't reach Kantel at ${originOf(config.url)}: ${reason}`);
+			throw new UnreachableError(`couldn't reach Kantel at ${originOf(config.url)}: ${reason}`);
 		}
 	};
 	const guarded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -739,8 +759,40 @@ function killed(ctx: Context, command: Command): number {
 }
 
 /**
+ * How long `follow` keeps asking again while Kantel can't be reached, from the start of the first look that failed,
+ * before it gives up and says how to follow again.
+ */
+const FOLLOW_RETRY_MS = 120_000;
+/** How long one look at a followed command may take before it counts as Kantel out of reach. */
+const FOLLOW_LOOK_MS = 30_000;
+
+/**
+ * A failure to reach Kantel, or Kantel unable to answer for now, that asking again may get past: why, or undefined for
+ * an answer that won't change.
+ */
+function transient(error: unknown): string | undefined {
+	if (error instanceof KantelApiError) {
+		const retry = error.status >= 500 || error.status === 429 || error.code === "unavailable";
+		return retry ? `Kantel can't answer for now (${error.message})` : undefined;
+	}
+	if (error instanceof UnreachableError) return error.message;
+	// The connection dropped while an answer's body came (fetch's "terminated", with the socket's error as its cause).
+	if (error instanceof TypeError && (error.message === "terminated" || hasCode(error.cause))) {
+		const cause = error.cause instanceof Error ? error.cause.message : error.message;
+		return `the connection to Kantel dropped (${cause})`;
+	}
+	return undefined;
+}
+
+function hasCode(value: unknown): boolean {
+	return typeof value === "object" && value !== null && typeof (value as { code?: unknown }).code === "string";
+}
+
+/**
  * Follows a detached command: prints what it has written since the last look, every second or so, until it ends, and
- * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show.
+ * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show. Kantel out of
+ * reach for a while (a gateway restarting, a network blip) is asked again; given up on, it says the command may still
+ * be running and how to follow it again.
  */
 async function follow(
 	ctx: Context,
@@ -751,8 +803,41 @@ async function follow(
 ): Promise<number> {
 	let shown = { stdout: 0, stderr: 0 };
 	let wait = 250;
-	let command = first ?? (await client.getCommand(sandboxId, commandId));
-	if (!ctx.json && first !== undefined) ctx.note(`kantel: started ${command.id}; Ctrl-C leaves it running`);
+	const again = `kantel attach ${sandboxId} ${commandId}`;
+	const fetch = async (): Promise<Command> => {
+		// An outage's time so far: from the start of its first failed look, each look's time and each wait's. (The waits are
+		// counted too, as asked for, since a test's sleep returns at once.)
+		let outageFrom: number | undefined;
+		let waited = 0;
+		let backoff = 1000;
+		for (;;) {
+			const lookFrom = Date.now();
+			const elapsed = () => Math.max(Date.now() - (outageFrom ?? lookFrom), waited);
+			const limit = Math.max(1, Math.min(FOLLOW_LOOK_MS, FOLLOW_RETRY_MS - (outageFrom === undefined ? 0 : elapsed())));
+			const deadline = AbortSignal.timeout(limit);
+			try {
+				return await client.getCommand(sandboxId, commandId, { signal: deadline });
+			} catch (error) {
+				// This look's own deadline, whatever the error it ended with (before its answer, or in its body).
+				const why = deadline.aborted ? `Kantel didn't answer within ${Math.round(limit / 1000)} s` : transient(error);
+				if (why === undefined) throw error;
+				if (outageFrom === undefined) {
+					outageFrom = lookFrom;
+					if (!ctx.json) ctx.note(`kantel: ${why}; trying again`);
+				}
+				const left = FOLLOW_RETRY_MS - elapsed();
+				if (left <= 0) throw new CliError(`${why}; ${commandId} may still be running: ${again}`);
+				const pause = Math.min(backoff, left);
+				await ctx.io.sleep(pause);
+				waited += pause;
+				backoff = Math.min(backoff * 2, 10_000);
+			}
+		}
+	};
+	let command = first ?? (await fetch());
+	if (!ctx.json && first !== undefined) {
+		ctx.note(`kantel: started ${command.id}; Ctrl-C leaves it running, and ${again} follows it again`);
+	}
 	for (;;) {
 		if (!ctx.json) {
 			const out = command.stdout.slice(shown.stdout);
@@ -764,7 +849,7 @@ async function follow(
 		if (command.state !== "running") break;
 		await ctx.io.sleep(wait);
 		wait = Math.min(wait * 2, 1000);
-		command = await client.getCommand(sandboxId, commandId);
+		command = await fetch();
 	}
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {
@@ -942,6 +1027,25 @@ function fileIn(answer: unknown, path: string): { readonly mode: number; readonl
 			typeof file.sizeBytes === "number",
 	);
 	return found === undefined ? undefined : { mode: found.mode, sizeBytes: found.sizeBytes };
+}
+
+/** What the CLI says, before it changes anything, on a deployment that keeps no protected values (`protectedValues`). */
+export const NO_PROTECTED_VALUES =
+	"this deployment doesn't support protected variables or secret files; plain variables, repos and grants still work";
+
+/**
+ * Whether the deployment keeps protected variables and secret files, as `GET /v1/whoami` says: `false` only when it says
+ * so. An older deployment that doesn't say, or a failed read, is `undefined`, and the write it was asked for is tried.
+ */
+async function protectedValuesOffered(client: {
+	getCaller(): Promise<{ readonly protectedValues?: boolean }>;
+}): Promise<boolean | undefined> {
+	return (await client.getCaller().catch(() => undefined))?.protectedValues;
+}
+
+/** Refuses, before anything is written, a protected value the deployment would refuse. */
+async function requireProtectedValues(client: Parameters<typeof protectedValuesOffered>[0]): Promise<void> {
+	if ((await protectedValuesOffered(client)) === false) throw new CliError(NO_PROTECTED_VALUES);
 }
 
 // The commands.
@@ -1722,6 +1826,7 @@ const SECTIONS: readonly Section[] = [
 						value: "<minutes|never>",
 						description: "Stop by itself this long after it starts (default 60)",
 					},
+					"idle-stop": { ...idleStopFlag, description: `${idleStopFlag.description} (default never)` },
 					label: { type: "string", multiple: true, value: "<k=v>", description: "A label; repeat for more" },
 					env: {
 						type: "string",
@@ -1742,9 +1847,13 @@ const SECTIONS: readonly Section[] = [
 				details:
 					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
-					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n" +
+					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
 					"--disk sizes a microVM's disk apart from its vCPUs and memory (kantel new --type microvm --size large\n" +
-					"--disk 60). A sandbox made from a snapshot keeps the snapshot's disk.",
+					"--disk 60). A sandbox made from a snapshot keeps the snapshot's disk.\n\n" +
+					"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
+					"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
+					"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
+					"page saying it is stopped and why: it doesn't wake it.",
 				async run(ctx) {
 					const hosts = ctx.list("host").map(hostedPort);
 					const type = choice(ctx.string("type"), SANDBOX_TYPES, "--type");
@@ -1772,6 +1881,7 @@ const SECTIONS: readonly Section[] = [
 						image: ctx.string("image"),
 						from: ctx.string("from"),
 						autoStopMinutes: autoStopOf(ctx.string("auto-stop")),
+						idleStopMinutes: idleStopOf(ctx.string("idle-stop")),
 						labels: pairs(ctx.list("label"), "--label"),
 						env: pairs(
 							envs.filter((item) => item.includes("=")),
@@ -1906,14 +2016,29 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "extend",
-				summary: "Move a sandbox's auto-stop to this many minutes from now",
-				args: [{ name: "id" }, { name: "minutes" }],
+				summary: "Move a sandbox's auto-stop to this many minutes from now, or change its idle stop",
+				args: [{ name: "id" }, { name: "minutes", optional: true }],
+				flags: { "idle-stop": idleStopFlag },
+				details:
+					"kantel extend <id> 120 moves its stop to two hours from now. kantel extend <id> --idle-stop 30 stops it\n" +
+					"once it goes 30 minutes unused, counting from now; --idle-stop never turns that off. Both may be given.",
 				async run(ctx) {
-					const minutes = whole(ctx.arg(1), "minutes") ?? 0;
-					const sandbox = await (await ctx.client()).updateSandbox(ctx.arg(0), { extendMinutes: minutes });
+					const minutes = whole(ctx.optional(1), "minutes");
+					const idleStopMinutes = idleStopOf(ctx.string("idle-stop"));
+					if (minutes === undefined && idleStopMinutes === undefined) {
+						throw new UsageError("give the minutes to extend it by, or --idle-stop <minutes|never>");
+					}
+					const sandbox = await (await ctx.client()).updateSandbox(ctx.arg(0), {
+						...(minutes === undefined ? {} : { extendMinutes: minutes }),
+						...(idleStopMinutes === undefined ? {} : { idleStopMinutes }),
+					});
 					const { stopsAt } = sandbox;
+					const idle = idleStopText(sandbox);
 					ctx.emit(sandbox, () =>
-						stopsAt === undefined ? `${sandbox.id} ${sandbox.state}` : `${sandbox.id} stops ${until(stopsAt)}`,
+						[
+							stopsAt === undefined ? `${sandbox.id} ${sandbox.state}` : `${sandbox.id} stops ${until(stopsAt)}`,
+							...(idleStopMinutes === undefined ? [] : [`idle stop: ${idle ?? "never"}`]),
+						].join("\n"),
 					);
 				},
 			},
@@ -1987,10 +2112,16 @@ const SECTIONS: readonly Section[] = [
 					};
 					const result = await client.runCommand(sandboxId, body);
 					if (unlimited && result.state === "running") return follow(ctx, client, sandboxId, result.id, result);
+					// A foreground command Kantel stopped waiting for (its gateway restarting), which runs on: not its end.
+					const stopped = !detached && result.state === "running";
+					const why = `Kantel stopped waiting for ${result.id}, which may still be running: kantel attach ${sandboxId} ${result.id}`;
 					if (ctx.json) {
 						ctx.out(JSON.stringify(result, null, 2));
-						return exitCodeOf(result);
+						if (!stopped) return exitCodeOf(result);
+						ctx.note(`kantel: ${why}`);
+						return 1;
 					}
+					if (stopped) throw new CliError(why);
 					if (result.state === "running") {
 						ctx.out(result.id);
 						ctx.note(
@@ -2592,16 +2723,22 @@ const SECTIONS: readonly Section[] = [
 				async run(ctx) {
 					const config = await ctx.config();
 					const description = ctx.string("description");
-					const environment = await (await ctx.client()).createEnvironment({
-						...(config.account === undefined ? {} : { account: config.account }),
-						name: ctx.arg(0),
-						...(description === undefined ? {} : { description }),
-					});
+					const client = await ctx.client();
+					// Asked alongside, so whoever makes one for a protected value hears before setting it that it can't be.
+					const [environment, offered] = await Promise.all([
+						client.createEnvironment({
+							...(config.account === undefined ? {} : { account: config.account }),
+							name: ctx.arg(0),
+							...(description === undefined ? {} : { description }),
+						}),
+						protectedValuesOffered(client),
+					]);
 					ctx.emit(withoutProtectedValues(environment), () =>
 						[
 							`Created ${environment.id} (${environment.name}).`,
 							`  Add a variable:  kantel env set ${environment.name} NAME=value`,
 							`  Use it:          kantel new --env ${environment.name}`,
+							...(offered === false ? [`Note: ${NO_PROTECTED_VALUES}.`] : []),
 						].join("\n"),
 					);
 				},
@@ -2708,6 +2845,8 @@ const SECTIONS: readonly Section[] = [
 					}
 					const value = fromStdin ? await valueFromStdin(ctx) : inline;
 					const client = await ctx.client();
+					// Asked for a protected value: refused here, on a deployment that keeps none, before anything is written.
+					if (asked || keep || bindings.length > 0) await requireProtectedValues(client);
 					const environment = await loadEnvironment(ctx, client, ref);
 					const existing = environment.variables.find((variable) => variable.name === name);
 					const wasProtected = existing?.protected === true;
@@ -2776,13 +2915,15 @@ const SECTIONS: readonly Section[] = [
 					const path = ctx.arg(1);
 					const mode = modeOf(ctx.string("mode"));
 					const from = ctx.string("from");
-					let content: Uint8Array;
-					if (from === undefined) {
-						const stdin = ctx.io.stdin();
-						if (stdin.isTTY === true) throw new UsageError("give the content with --from <file>, or pipe it in");
-						content = await readAll(stdin);
-					} else content = await readFile(resolve(ctx.io.cwd, from));
+					const stdin = ctx.io.stdin();
+					if (from === undefined && stdin.isTTY === true) {
+						throw new UsageError("give the content with --from <file>, or pipe it in");
+					}
 					const client = await ctx.client();
+					// Before the content is read: a deployment that keeps no secret files would refuse it anyway.
+					await requireProtectedValues(client);
+					const content: Uint8Array =
+						from === undefined ? await readAll(stdin) : await readFile(resolve(ctx.io.cwd, from));
 					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
 					const answer: unknown = await client.setEnvironmentFile(environmentId, {
 						path,
@@ -2908,7 +3049,8 @@ const SECTIONS: readonly Section[] = [
 				},
 				details:
 					"CODE/RULE is the X-Kantel-Proxy-Error code the sandbox saw, and the grant or setting that decided.\n" +
-					"Paths are kept without their query. An HTTPS tunnel the proxy doesn't open shows as one CONNECT.",
+					"Paths are kept without their query. An HTTPS tunnel the proxy doesn't open shows as one CONNECT, with no\n" +
+					"status: an HTTP error inside it (a 503, say) is the site's. The proxy's own failures show as upstream-failed.",
 				async run(ctx) {
 					const limit = whole(ctx.string("limit"), "--limit");
 					const client = await ctx.client();

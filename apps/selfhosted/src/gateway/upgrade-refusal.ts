@@ -14,6 +14,7 @@
  * | 4403 | 403: the credential is good but its holder may not (whoever exposed the port lost access) |
  * | 4404 | 404: nothing upgrades at this path (a path the gateway doesn't serve, an unsigned replica stream) |
  * | 4502 | 502: the gateway couldn't check the request (its store or a replica didn't answer) |
+ * | 4503 | 503: an exposed port's sandbox isn't running (stopped by its idle stop or otherwise); the reason says why |
  *
  * That is 4000 plus the HTTP status. The gateway's other close codes are unchanged: 4003 for a tunnel, desktop or host
  * credential that is wrong, expired or revoked (`HOST_CLOSE_REVOKED`, `RELAY_CLOSE_REVOKED`; kantel-host reads it as

@@ -55,6 +55,7 @@ import "@kantel/contracts/legacy-env";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { secretsKeyMissing } from "@kantel/compute";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { oauthClientsFromEnv } from "@kantel/identity/oauth";
 import { kantelSessionProvider } from "@kantel/identity/otp";
@@ -184,6 +185,11 @@ export async function serveGateway(cfg = gatewayConfig()) {
 				);
 	const sessions = components.otp.sessions;
 	const secretsKey = process.env.KANTEL_SECRETS_KEY?.trim() || undefined;
+	// Users are told only that protected values aren't supported here; the operator is told why, and what turns them on.
+	if (secretsKey === undefined && components.computeStore?.persistent === true) {
+		const how = "Add it to the control plane's settings: 32 random bytes in base64, from openssl rand -base64 32";
+		console.warn(`[gateway] ${secretsKeyMissing(how).replace(/^kantel: /, "")}`);
+	}
 	// One mailer for sign-in codes and both kinds of invite: the deployment's organisation's and a compute organisation's.
 	const mailer = cfg.mail === undefined ? undefined : createMailer(cfg.mail);
 	const compute = await gatewayCompute({
