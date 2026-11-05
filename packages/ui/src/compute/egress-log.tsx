@@ -248,7 +248,10 @@ function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boole
 					<span className="font-medium text-fg">{hostText(entry)}</span>
 				</span>
 				{entry.path === undefined || entry.path === "" ? null : (
-					<span className="block truncate pl-16 text-muted">{entry.path}</span>
+					// The whole path, broken after its slashes where it's longer than the column, never cut off.
+					<span className="block pl-16 whitespace-normal wrap-break-word text-muted">
+						<BreakableCommand command={entry.path} />
+					</span>
 				)}
 			</>
 		);
@@ -354,7 +357,8 @@ function WideEntry({
 			<tr
 				data-egress={entry.id}
 				data-decision={entry.decision}
-				className={`${expanded ? "bg-hover" : ""}${opens(entry) ? " cursor-pointer hover:bg-hover" : ""}`}
+				// Every cell on the request's first line, so a row with a path under its host still reads straight across.
+				className={`[&>td]:align-top${expanded ? " bg-hover" : ""}${opens(entry) ? " cursor-pointer hover:bg-hover" : ""}`}
 				onClick={
 					opens(entry)
 						? (event) => {
