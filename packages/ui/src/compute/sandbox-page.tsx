@@ -831,10 +831,10 @@ function Overview({
 			</div>
 		);
 	}
-	return (
+	// A failed mount across the whole page, over both columns, so the problem leads and nothing sits beside it.
+	const columns = (
 		<div className="grid min-w-0 items-start gap-10 xl:grid-cols-[minmax(0,1fr)_var(--kt-popover-width)]">
 			<div className="flex min-w-0 flex-col gap-8">
-				{mountNotice}
 				{windows && tiles.length > 0 ? <div className="grid grid-cols-2 gap-4">{tiles.map(tile)}</div> : null}
 				{windows && tiles.length === 0 ? <NoScreens /> : null}
 				{ssh}
@@ -848,6 +848,14 @@ function Overview({
 				{image}
 				{details}
 			</aside>
+		</div>
+	);
+	return mountNotice === null ? (
+		columns
+	) : (
+		<div className="flex min-w-0 flex-col gap-8">
+			{mountNotice}
+			{columns}
 		</div>
 	);
 }

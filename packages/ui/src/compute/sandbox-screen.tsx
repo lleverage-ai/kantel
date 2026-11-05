@@ -73,7 +73,7 @@ export function ScreenPreview({ kind, url, label }: { kind: "desktop" | "browser
 	const [ref, { width }] = useSize<HTMLDivElement>();
 	const scale = width / PREVIEW_WIDTH;
 	return (
-		<div ref={ref} className="kt-screen-preview relative aspect-[16/10] w-full overflow-hidden bg-sunken">
+		<div ref={ref} className="kt-screen-preview relative aspect-[16/9] w-full overflow-hidden bg-sunken">
 			<div
 				className="absolute top-0 left-0 origin-top-left"
 				style={{ width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT, transform: `scale(${scale})` }}
