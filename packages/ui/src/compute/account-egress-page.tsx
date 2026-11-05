@@ -435,9 +435,10 @@ function PolicySummary({ policy, onChange }: { policy: EgressPolicy; onChange: (
 			<span>
 				Sandboxes may reach <span className="font-medium text-fg">{label.toLowerCase()}</span>.
 			</span>
-			<Button size="xs" variant="ghost" onClick={onChange}>
+			<Button size="xs" onClick={onChange}>
 				Change
 			</Button>
+			<span className="basis-full">Deny wins. The cloud metadata address is always blocked.</span>
 		</p>
 	);
 }

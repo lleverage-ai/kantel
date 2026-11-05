@@ -234,7 +234,8 @@ function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boole
 		<>
 			{/* Wrapped, the method and host stay together on one line and the path breaks only after a slash. */}
 			<span className={wrap ? "whitespace-nowrap" : undefined}>
-				<span className="text-muted">{entry.method} </span>
+				{/* In the wide log the method has a fixed width, so every host starts on one line down the column. */}
+				<span className={`text-muted${wrap ? "" : " inline-block w-16"}`}>{entry.method} </span>
 				<span className="font-medium text-fg">{hostText(entry)}</span>
 			</span>
 			<span className="text-muted">
@@ -273,7 +274,7 @@ function RequestCell({
 	return (
 		<button
 			type="button"
-			className={`kt-focusable -ml-1 flex max-w-full min-w-0 cursor-pointer items-center ${wrap ? "w-full gap-2" : "gap-1"} rounded-sm border-0 bg-transparent px-1 py-0.5 text-left hover:bg-hover`}
+			className={`kt-focusable -ml-1 flex w-full max-w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1 py-0.5 text-left hover:bg-hover`}
 			aria-expanded={open}
 			aria-controls={detailId}
 			title={text}
@@ -282,8 +283,8 @@ function RequestCell({
 			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-break-word" : "max-w-(--kt-card-width) truncate"}`}>
 				<RequestText entry={entry} wrap={wrap} />
 			</span>
-			{/* Wrapped, as on a phone's card, the chevron keeps to the card's right edge, wherever the request ends. */}
-			<Chevron size="sm" className={`flex-none text-faint${wrap ? " ml-auto self-start mt-0.5" : ""}`} />
+			{/* The chevron keeps to the cell's right edge wherever the request ends, so the chevrons make one column. */}
+			<Chevron size="sm" className={`ml-auto flex-none text-faint${wrap ? " mt-0.5 self-start" : ""}`} />
 		</button>
 	);
 }
@@ -294,13 +295,16 @@ function Decision({ entry, slot = true }: { entry: LoggedEntry; slot?: boolean }
 	return (
 		<span className="flex items-baseline gap-2">
 			{/* The sandbox list's status pattern: a dot and the word, the word quiet for Allowed and red for Denied. */}
-			{entry.decision === "allowed" ? (
-				<StatusLabel status="done" quiet>
-					Allowed
-				</StatusLabel>
-			) : (
-				<StatusLabel status="error">Denied</StatusLabel>
-			)}
+			{/* In the wide log a fixed width, so the codes after it line up down the column. */}
+			<span className={slot ? "inline-block w-18" : undefined}>
+				{entry.decision === "allowed" ? (
+					<StatusLabel status="done" quiet>
+						Allowed
+					</StatusLabel>
+				) : (
+					<StatusLabel status="error">Denied</StatusLabel>
+				)}
+			</span>
 			{/* In the wide log a fixed slot, empty when there's no status, keeps the codes in one column; a phone's meta line
 			    leaves it out rather than leave a hole. */}
 			{slot ? (
@@ -391,17 +395,17 @@ function PhoneEntry({
 			data-egress={entry.id}
 			data-decision={entry.decision}
 		>
-			{/* Three tiers: the request whole; the decision with when and which sandbox; then, quieter, what was swapped
-			    in and how much moved. */}
+			{/* Three tiers: the request whole; the outcome on the left and when on the right; then, quieter, which
+			    sandbox, what was swapped in and how much moved. */}
 			<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap />
-			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted">
+			<div className="flex min-w-0 items-baseline justify-between gap-3 text-sm text-muted">
 				<Decision entry={entry} slot={false} />
-				<span className="tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
+				<span className="flex-none tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
 					{agoText(entry.at, now)}
 				</span>
-				{sandboxColumn ? <span>{entry.sandboxName}</span> : null}
 			</div>
 			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted empty:hidden">
+				{sandboxColumn ? <span className="text-fg">{entry.sandboxName}</span> : null}
 				{entry.swapped.length === 0 ? null : (
 					<span>
 						Swapped <span className="font-mono text-fg">{entry.swapped.join(", ")}</span>
