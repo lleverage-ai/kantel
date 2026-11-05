@@ -1,0 +1,26 @@
+#!/bin/sh
+# The desktop's browser (the dock's, the menu's and the default for links): a Chromium of its own on the desktop,
+# with its own profile (~/.config/chromium). The sandbox's Chromium (kantel-browser), which agents drive over CDP and
+# the console's Browser view shows, runs on a display of its own (:2) with a profile only it may hold: Chromium lets
+# one process have a profile, and a second launch with it would open its window on that process's display, not here.
+#
+# Where the sandbox's Chromium runs on this desktop instead (KANTEL_BROWSER_DISPLAY=:1, or a host that doesn't boot
+# the guest with kantel.browser=surface), this brings its window forward rather than open a second browser.
+if [ "$(cat /run/kantel-browser/display 2>/dev/null)" = "${DISPLAY:-:1}" ]; then
+	window=$(xdotool search --onlyvisible --class '^(chromium|Chromium|google-chrome|Google-chrome)$' 2>/dev/null | head -n 1)
+	if [ -n "$window" ]; then exec xdotool windowactivate "$window"; fi
+fi
+browser=$(command -v chromium || command -v google-chrome-stable || command -v chromium-browser) || {
+	echo "no browser in this image" >&2
+	exit 1
+}
+profile=$HOME/.config/chromium
+# A lock with no Chromium holding it is from another boot (a fork, or a resume without memory): Chromium won't take
+# one from another host name and asks on a dialog instead.
+if ! pgrep -u "$(id -u)" -f -- "--user-data-dir=$profile( |$)" >/dev/null 2>&1; then
+	rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
+fi
+# Its proxy is the guest agent's forwarder, as for the sandbox's Chromium (see kantel-browser).
+exec "$browser" --user-data-dir="$profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage \
+	--password-store=basic --hide-crash-restore-bubble --disable-features=Translate,MediaRouter --start-maximized \
+	--proxy-server=http://127.0.0.1:3128 ${KANTEL_DESKTOP_BROWSER_FLAGS:-} "$@"

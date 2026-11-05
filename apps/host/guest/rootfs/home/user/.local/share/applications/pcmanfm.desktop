@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File manager
+# Kantel: the dock's name and icon for it, so the apps list matches the dock.
+Comment=PCManFM
+Exec=pcmanfm %U
+Icon=/usr/share/kantel/icons/files.svg
+Terminal=false
+StartupNotify=true
+Categories=GTK;System;Core;FileTools;FileManager;
+MimeType=inode/directory;
