@@ -372,13 +372,10 @@ function SavedList({
 										<span className="text-fg">{entry.sandboxName}</span>
 										{entry.sandboxId === undefined ? <span className={cellSub}>Since deleted</span> : null}
 									</td>
-									{/* Plain words, as the sandboxes list gives a type: a tag here would outweigh the name. */}
-									<td className={td} data-phone="bare">
-										{SANDBOX_KIND_LABELS[entry.kind]}
-									</td>
-									<td className={`${td} text-right tabular-nums`} data-phone="bare">
-										{bytesText(entry.sizeBytes)}
-									</td>
+									{/* Plain words, as the sandboxes list gives a type: a tag here would outweigh the name. On a phone the
+									    type, size and uses carry their column's name before them, as a key card's facts do. */}
+									<td className={td}>{SANDBOX_KIND_LABELS[entry.kind]}</td>
+									<td className={`${td} text-right tabular-nums`}>{bytesText(entry.sizeBytes)}</td>
 									{/* On a phone, when and by whom on the card's last line, after what it is, its size and its uses. */}
 									<td className={`${td} whitespace-nowrap`} data-phone="bare line last">
 										<span className="text-fg" title={new Date(entry.createdAt).toLocaleString("en-GB")}>
@@ -386,10 +383,7 @@ function SavedList({
 										</span>
 										<span className={cellSub}>by {entry.createdBy}</span>
 									</td>
-									<td className={`${td} text-right tabular-nums`} data-phone="bare">
-										{entry.uses.toLocaleString("en-GB")}
-										<span className="kt-phone-only"> {entry.uses === 1 ? "use" : "uses"}</span>
-									</td>
+									<td className={`${td} text-right tabular-nums`}>{entry.uses.toLocaleString("en-GB")}</td>
 									<td className={`${td} w-0 text-right`}>
 										<Menu label={`Actions for ${entry.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
 									</td>

@@ -95,7 +95,7 @@
 		background: var(--kt-hover);
 	}
 
-	/* A value under the name: inline, in the secondary size and colour, the values a step apart. */
+	/* A value under the name: inline, in the secondary size, the values a step apart. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td {
 		order: 4;
 		display: block;
@@ -109,7 +109,8 @@
 		white-space: normal;
 		text-align: left;
 		overflow-wrap: anywhere;
-		color: var(--kt-text-muted);
+		/* Values in the text colour and their headings muted, as a key card's facts are: one meta rule for phone cards. */
+		color: var(--kt-text);
 		font-size: var(--kt-text-sm);
 	}
 
@@ -122,8 +123,8 @@
 		> tr
 		> td[data-label]:not([data-phone~="bare"], [data-phone~="title"])::before {
 		content: attr(data-label);
-		margin-right: var(--kt-step-1);
-		color: var(--kt-text-faint);
+		margin-right: var(--kt-step-1_5);
+		color: var(--kt-text-muted);
 	}
 
 	/* A value with a second line (a date and who made it, a source and that it's gone) runs on as one phrase. */
