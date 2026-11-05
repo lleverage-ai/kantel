@@ -22,7 +22,7 @@
   mkdir  $TMP/etc (mode 0755)
   mkdir  $TMP/etc/kantel-host (mode 0755)
   post   https://kantel.example.com/v1/hosts/register as "builder-1" with labels gpu=none, zone=ams, which uses the token up
-  note   to report what this host can run, registering starts its tiers for a moment, which makes their directories under $TMP/var/lib/kantel-host and, for microVMs, sets up the network rules below
+  note   to report what this host can run, registering starts its tiers for a moment, which makes their directories under $TMP/var/lib/kantel-host; for microVMs it also makes the bucket mounts' read cache, $TMP/var/lib/kantel-host/mount-cache, up to 10240 MiB, and their key, $TMP/var/lib/kantel-host/mount-proof.key, and sets up the network rules below
 ==> Save the settings
   write  $TMP/etc/kantel-host/config.json (mode 0600: the control plane, the host's ID and credential, and its settings)
 ==> Start the service
@@ -36,6 +36,7 @@
 Each file it gets is written as <name>.part and renamed when its digest matches; an image's digest is kept beside it in <name>.sha256-source, so running install again keeps what's already there.
 Install adds no users or groups (kantel-host runs as root) and changes no sysctl settings.
 Once it runs, the service keeps sandboxes, snapshots and templates under $TMP/var/lib/kantel-host, and memory snapshots in RAM at /dev/shm/kantel-host first.
+For microVMs it keeps a template snapshot for each vCPU count, about a gigabyte of disk each, made in the background when it starts, under $TMP/var/lib/kantel-host/microvm. It also keeps the bucket mounts' read cache, $TMP/var/lib/kantel-host/mount-cache, up to 10240 MiB, and their key, $TMP/var/lib/kantel-host/mount-proof.key.
 For microVMs, kantel-host sets up its own network when it registers and each time the service starts: iptables chains KANTEL-INPUT and KANTEL-FORWARD, jumped to from INPUT, FORWARD and (on a host with Docker) DOCKER-USER, and ip6tables rules that drop its devices' traffic. The service adds a TAP device (kt0, kt1, …) in 10.231.0.0/16 for each microVM, with IPv6 off on it, and its egress proxy takes port 3129 on those devices only.
 
 Dry run: nothing has been changed, and the token hasn't been used. Run the same command without --dry-run to install.

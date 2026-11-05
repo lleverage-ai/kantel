@@ -54,6 +54,7 @@ ok      ip                     ip
 ok      iptables               iptables
 ok      mkfs.ext4              mkfs.ext4
 ok      cp                     cp
+ok      docker                 Docker 28.5.1 builds templates' images
 ok      tun                    /dev/net/tun
 ok      disk                   412 GiB free at /var/lib, which will hold /var/lib/kantel-host (20 GiB or more recommended)
 ok      memory                 128776 MiB (4 GiB or more recommended)
@@ -63,7 +64,7 @@ This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, i
 
 On a machine that already has `kantel-host`, `sudo kantel-host doctor` runs the same checks.
 
-`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory` and `nested virtualisation` are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. `--json` prints the checks as JSON, each with its `state` and whether it's `required`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
+`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory`, `nested virtualisation` and `docker` (which only template builds need) are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. `--json` prints the checks as JSON, each with its `state` and whether it's `required`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
 
 ## Get kantel-host and the images
 
@@ -207,7 +208,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 ==> Register with https://kantel.example.com
   mkdir  /etc/kantel-host (mode 0755)
   post   https://kantel.example.com/v1/hosts/register as "builder-1", which uses the token up
-  note   to report what this host can run, registering starts its tiers for a moment, which makes their directories under /var/lib/kantel-host and, for microVMs, sets up the network rules below
+  note   to report what this host can run, registering starts its tiers for a moment, which makes their directories under /var/lib/kantel-host; for microVMs it also makes the bucket mounts' read cache, /var/lib/kantel-host/mount-cache, up to 10240 MiB, and their key, /var/lib/kantel-host/mount-proof.key, and sets up the network rules below
 ==> Save the settings
   write  /etc/kantel-host/config.json (mode 0600: the control plane, the host's ID and credential, and its settings)
 ==> Start the service

@@ -254,7 +254,11 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 			return nil
 		})
 		// register reports the host's facts from its tiers, started for a moment (agent.New).
-		p.add("note", "to report what this host can run, registering starts its tiers for a moment, which makes their directories under "+cfg.Root+" and, for microVMs, sets up the network rules below", nil)
+		started := "makes their directories under " + cfg.Root
+		if kvm {
+			started += "; for microVMs it also makes " + mountsText(*cfg) + ", and sets up the network rules below"
+		}
+		p.add("note", "to report what this host can run, registering starts its tiers for a moment, which "+started, nil)
 		p.plan.usesToken = true
 	}
 	p.step("Save the settings")
@@ -283,6 +287,11 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 		"Install adds no users or groups (kantel-host runs as root) and changes no sysctl settings.",
 		"Once it runs, the service keeps sandboxes, snapshots and templates under "+cfg.Root+", and memory snapshots in RAM at "+cfg.SpoolDir+" first.")
 	if kvm {
+		templates := "a template snapshot for each vCPU count, about a gigabyte of disk each, made in the background when it starts"
+		if !cfg.MicroVM.SharedTemplates() {
+			templates = "a template snapshot for each size, made the first time the size is asked for, since microvm.sharedTemplate is false"
+		}
+		p.plan.after = append(p.plan.after, "For microVMs it keeps "+templates+", under "+filepath.Join(cfg.Root, "microvm")+". It also keeps "+mountsText(*cfg)+".")
 		p.plan.after = append(p.plan.after,
 			"For microVMs, kantel-host sets up its own network when it registers and each time the service starts: iptables chains KANTEL-INPUT and KANTEL-FORWARD, jumped to from INPUT, FORWARD and (on a host with Docker) DOCKER-USER, and ip6tables rules that drop its devices' traffic. The service adds a TAP device (kt0, kt1, …) in "+cfg.Subnet+" for each microVM, with IPv6 off on it, and its egress proxy takes port "+fmt.Sprint(cfg.ProxyPort)+" on those devices only.")
 	}
@@ -488,6 +497,22 @@ func labelsText(labels map[string]string) string {
 		pairs[i] = k + "=" + labels[k]
 	}
 	return " with labels " + strings.Join(pairs, ", ")
+}
+
+// mountsText is what bucket mounts keep on disk (agent.newMounts): their read cache, and the key their proofs are
+// signed with.
+func mountsText(cfg agent.Config) string {
+	if cfg.MountCacheMiB < 0 {
+		return "no bucket mount cache (mountCacheMiB is -1)"
+	}
+	dir, size := cfg.MountCacheDir, cfg.MountCacheMiB
+	if dir == "" {
+		dir = filepath.Join(cfg.Root, "mount-cache")
+	}
+	if size == 0 {
+		size = agent.DefaultMountCacheMiB
+	}
+	return fmt.Sprintf("the bucket mounts' read cache, %s, up to %d MiB, and their key, %s", dir, size, filepath.Join(cfg.Root, "mount-proof.key"))
 }
 
 // writable: a file can be made in dir.
