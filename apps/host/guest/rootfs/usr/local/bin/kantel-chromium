@@ -5,21 +5,27 @@
 # one process have a profile, and a second launch with it would open its window on that process's display, not here.
 #
 # Where the sandbox's Chromium runs on this desktop instead (KANTEL_BROWSER_DISPLAY=:1, or a host that doesn't boot
-# the guest with kantel.browser=surface), this brings its window forward rather than open a second browser.
-if [ "$(cat /run/kantel-browser/display 2>/dev/null)" = "${DISPLAY:-:1}" ]; then
-	window=$(xdotool search --onlyvisible --class '^(chromium|Chromium|google-chrome|Google-chrome)$' 2>/dev/null | head -n 1)
-	if [ -n "$window" ]; then exec xdotool windowactivate "$window"; fi
-fi
+# the guest with kantel.browser=surface), this uses that browser rather than open a second one: with nothing to open
+# it brings the window forward, and links and files it hands to that browser's profile, whose running Chromium opens
+# them (Chromium passes a second launch's arguments to the process holding the profile, and exits).
+#
+# A lock left in ~/.config/chromium by another boot is cleared by kantel-session as the desktop starts, before
+# anything can launch this, and never here: two launches at once could otherwise remove a lock the first one's
+# Chromium has just taken.
 browser=$(command -v chromium || command -v google-chrome-stable || command -v chromium-browser) || {
 	echo "no browser in this image" >&2
 	exit 1
 }
-profile=$HOME/.config/chromium
-# A lock with no Chromium holding it is from another boot (a fork, or a resume without memory): Chromium won't take
-# one from another host name and asks on a dialog instead.
-if ! pgrep -u "$(id -u)" -f -- "--user-data-dir=$profile( |$)" >/dev/null 2>&1; then
-	rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
+if [ "$(cat /run/kantel-browser/display 2>/dev/null)" = "${DISPLAY:-:1}" ]; then
+	window=$(xdotool search --onlyvisible --class '^(chromium|Chromium|google-chrome|Google-chrome)$' 2>/dev/null | head -n 1)
+	if [ -n "$window" ]; then
+		if [ $# -eq 0 ]; then exec xdotool windowactivate "$window"; fi
+		# The same browser kantel-browser picks (Chrome first, in an image that has it), since only it shares the profile.
+		sandbox=$(command -v google-chrome-stable || command -v chromium || command -v chromium-browser)
+		exec "$sandbox" --user-data-dir="$HOME/.config/kantel-chrome" "$@"
+	fi
 fi
+profile=$HOME/.config/chromium
 # Its proxy is the guest agent's forwarder, as for the sandbox's Chromium (see kantel-browser).
 exec "$browser" --user-data-dir="$profile" --no-first-run --no-default-browser-check --disable-dev-shm-usage \
 	--password-store=basic --hide-crash-restore-bubble --disable-features=Translate,MediaRouter --start-maximized \

@@ -10,6 +10,14 @@ export NO_AT_BRIDGE=1
 # sandbox's own Chromium (kantel-browser, on :2) reads that file too, and dark there would change the pages agents see
 # (prefers-color-scheme) and the Browser view.
 export GTK_THEME=Adwaita:dark
+# The desktop Chromium's profile (kantel-chromium): a lock in it with no Chromium holding it is from another boot (the
+# template's, or one before a stop or a fork), whose host name Chromium won't accept, and it asks on a dialog instead.
+# Cleared here, once, before the dock and the menu exist to launch it; a desktop restart has stopped any Chromium
+# started from the last session, since it ran in the same unit.
+profile=$HOME/.config/chromium
+if ! pgrep -u "$(id -u)" -f -- "--user-data-dir=$profile( |$)" >/dev/null 2>&1; then
+	rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
+fi
 # The background as a root pixmap (hsetroot), which the dock's rounded corners show through without a compositor.
 hsetroot -solid '#15171b' >/dev/null 2>&1 || xsetroot -solid '#15171b'
 xsetroot -cursor_name left_ptr
