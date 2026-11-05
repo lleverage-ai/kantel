@@ -327,7 +327,11 @@ function General({
 	return (
 		<div className={computePage}>
 			<SettingsPageHeader title="General" narrow={narrow} />
-			<NameField account={account} {...(rename === undefined ? {} : { rename })} />
+			{/* Its own section under a heading, as Members and Leave are, so the page reads as three blocks of one kind. */}
+			<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-organisation`}>
+				<SectionHeading id={`${headingId}-organisation`} title="Organisation" />
+				<NameField account={account} {...(rename === undefined ? {} : { rename })} />
+			</section>
 			{invited?.code === undefined ? null : (
 				<OneTimeSecret
 					title={
@@ -484,6 +488,10 @@ function NameField({ account, rename }: { account: ComputeAccount; rename?: (nam
 			<div className="min-w-0 flex-1">
 				<TextField
 					label="Name"
+					// How an edit is kept, since Save shows only once the name changes.
+					{...(rename === undefined
+						? {}
+						: { hint: dirty ? "Save, or press Enter, to rename it." : "Shown to everyone in it." })}
 					value={name}
 					readOnly={rename === undefined}
 					maxLength={100}
