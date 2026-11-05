@@ -84,7 +84,7 @@ import {
 	parseGrant,
 	withoutProtectedValues,
 } from "./environments.ts";
-import { CliError, HostAnswerError, notRunningOf, UsageError } from "./errors.ts";
+import { CliError, HostAnswerError, notRunningOf, UnreachableError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
@@ -610,7 +610,7 @@ function makeClient(io: Io, config: ResolvedConfig): KantelClient {
 			if (error instanceof Error && error.name === "AbortError") throw error;
 			const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
 			const reason = cause instanceof Error ? cause.message : String(cause);
-			throw new CliError(`couldn't reach Kantel at ${originOf(config.url)}: ${reason}`);
+			throw new UnreachableError(`couldn't reach Kantel at ${originOf(config.url)}: ${reason}`);
 		}
 	};
 	const guarded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -735,13 +735,16 @@ function killed(ctx: Context, command: Command): number {
 /** How long `follow` keeps asking again while Kantel can't be reached, before it gives up and says how to follow again. */
 const FOLLOW_RETRY_MS = 120_000;
 
-/** A failure to reach Kantel, or Kantel unable to answer for now, that asking again may get past. */
-function transient(error: unknown): boolean {
+/**
+ * A failure to reach Kantel, or Kantel unable to answer for now, that asking again may get past: why, or undefined for
+ * an answer that won't change.
+ */
+function transient(error: unknown): string | undefined {
 	if (error instanceof KantelApiError) {
-		return error.status >= 500 || error.status === 429 || error.code === "unavailable";
+		const retry = error.status >= 500 || error.status === 429 || error.code === "unavailable";
+		return retry ? `Kantel can't answer for now (${error.message})` : undefined;
 	}
-	// fetch's own failures (a refused or dropped connection) are TypeErrors.
-	return error instanceof TypeError;
+	return error instanceof UnreachableError ? error.message : undefined;
 }
 
 /**
@@ -767,12 +770,12 @@ async function follow(
 			try {
 				return await client.getCommand(sandboxId, commandId);
 			} catch (error) {
-				if (!transient(error)) throw error;
-				const why = error instanceof Error ? error.message : String(error);
+				const why = transient(error);
+				if (why === undefined) throw error;
 				if (waited >= FOLLOW_RETRY_MS) {
-					throw new CliError(`couldn't reach Kantel (${why}); ${commandId} may still be running: ${again}`);
+					throw new CliError(`${why}; ${commandId} may still be running: ${again}`);
 				}
-				if (!ctx.json && waited === 0) ctx.note(`kantel: couldn't reach Kantel (${why}); trying again`);
+				if (!ctx.json && waited === 0) ctx.note(`kantel: ${why}; trying again`);
 				await ctx.io.sleep(backoff);
 				waited += backoff;
 				backoff = Math.min(backoff * 2, 10_000);
