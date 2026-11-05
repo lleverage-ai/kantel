@@ -144,6 +144,30 @@ of the three ways, makes them with the email code's subject, so first sign-ins t
 the Access hostname (harbour.myslop.app), which signs in with Access as before. Removing a repository secret doesn't
 remove the Worker secret (the secrets file is additive): `wrangler secret delete` does.
 
+### Protected variables and secret files
+
+Environments' protected variables and secret files, and bucket sources' credentials, are sealed in the stack object's
+SQLite with `KANTEL_SECRETS_KEY`, by the same sealer as a self-hosted install's (`@kantel/compute/secrets`). An
+account host fetches its sandboxes' values over its connection, and its egress proxy swaps them in for the
+placeholders the sandbox sees, as a self-hosted install's hosts do. The key is 32 random bytes in base64, a Worker
+secret set once by an operator (the deploy never writes it):
+
+```sh
+# Generate the key and keep a copy in the password manager first: the Worker never shows it again, and losing or
+# changing it loses every value sealed with it.
+openssl rand -base64 32
+
+# From apps/cloudflare, with wrangler signed in to the account (or CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+# set). It prompts for the value; setting a secret deploys a new version of the Worker at once.
+pnpm exec wrangler secret put KANTEL_SECRETS_KEY --name harbour
+```
+
+Unset, protected values and secret files are refused with `not_supported` ("This deployment doesn't support protected
+variables or secret files"), `GET /v1/whoami` says `protectedValues: false` so the CLI and console say so before
+anything is written, plain variables still work, and the stack object logs at start that the key is missing. A key
+that isn't 32 bytes of base64 stops the object starting, naming the setting and never its value. The deploy's secrets
+file is additive, so a deploy keeps the key.
+
 ### Exposed ports
 
 With `KANTEL_COMPUTE_PORTS_DOMAIN` set (the repository variable; `kantel.run` for Kantel's own), the deploy routes

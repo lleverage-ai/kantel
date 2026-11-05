@@ -1255,6 +1255,11 @@ export interface FileInput {
 }
 
 export interface EnvironmentsSource {
+	/**
+	 * `false`: the deployment keeps no protected variables or secret files (it has no secrets key), so the pages say so and
+	 * offer neither. Absent or `true`: they are offered.
+	 */
+	readonly protectedValues?: boolean;
 	list(accountId: string): Promise<readonly Environment[]>;
 	get(id: string): Promise<Environment>;
 	create(input: { accountId: string; name: string; description?: string }): Promise<Environment>;

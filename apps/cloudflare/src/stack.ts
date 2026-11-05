@@ -329,6 +329,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					},
 				}),
 		...(options.config.templates === true ? { templates: true } : {}),
+		...(options.config.secretsKey === undefined ? {} : { secretsKey: options.config.secretsKey }),
 		now: () => clock.now(),
 	});
 	phase("compute");

@@ -221,9 +221,71 @@ func TestKillStopsAForegroundCommandByItsID(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the killed command wasn't answered")
 	}
-	// A foreground command is forgotten once it ends.
-	if _, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_f"}); err == nil {
-		t.Fatal("an ended foreground command is still known")
+	// A foreground command's end is kept, as killed (137), for a control plane whose answer was lost.
+	if status, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_f"}); err != nil || status.State != proto.ExecEnded || status.Result == nil || status.Result.ExitCode != 137 {
+		t.Fatalf("an ended foreground command reads as %+v, %v", status, err)
+	}
+}
+
+// A foreground command whose connection goes while it runs runs on (its call's context outlives the session), and its
+// result, with nowhere to go, is kept for a get; a get with a wait waits for it to end.
+func TestAForegroundCommandRunsOnPastItsConnectionAndKeepsItsResult(t *testing.T) {
+	tier := newHeldTier()
+	h := hostWith(t, tier)
+	session, endSession := context.WithCancel(context.Background())
+	ctx := context.WithoutCancel(session)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := callCmd[proto.ExecResult](t, h, ctx, proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "pnpm install", CommandID: "cmd_c", TimeoutMs: 600_000})
+		answered <- err
+	}()
+	<-tier.started
+	endSession()
+	now, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_c"})
+	if err != nil || now.State != proto.ExecRunning {
+		t.Fatalf("after its connection went: %+v, %v", now, err)
+	}
+	got := make(chan proto.ExecStatus, 1)
+	go func() {
+		status, _ := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_c", WaitMs: 5000})
+		got <- status
+	}()
+	tier.release <- proto.ExecResult{ExitCode: 0, Stdout: "Done in 42s\n"}
+	if err := <-answered; err != nil {
+		t.Fatalf("its call: %v", err)
+	}
+	select {
+	case ended := <-got:
+		if ended.State != proto.ExecEnded || ended.Result == nil || ended.Result.Stdout != "Done in 42s\n" {
+			t.Fatalf("the held get: %+v", ended)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the held get wasn't answered at its end")
+	}
+	again, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_c"})
+	if err != nil || again.State != proto.ExecEnded {
+		t.Fatalf("kept: %+v, %v", again, err)
+	}
+}
+
+// A foreground command that ends while its connection still looks up keeps its result too: its answer may be lost as
+// it is sent (the connection going just then), and the control plane then asks for it by its ID.
+func TestAForegroundCommandKeepsItsResultWhenItsAnswerIsSent(t *testing.T) {
+	tier := newHeldTier()
+	h := hostWith(t, tier)
+	answered := make(chan proto.ExecResult, 1)
+	go func() {
+		result, _ := callCmd[proto.ExecResult](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "make", CommandID: "cmd_s"})
+		answered <- result
+	}()
+	<-tier.started
+	tier.release <- proto.ExecResult{ExitCode: 3, Stdout: "built\n"}
+	if got := <-answered; got.ExitCode != 3 {
+		t.Fatalf("its answer: %+v", got)
+	}
+	kept, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_s"})
+	if err != nil || kept.State != proto.ExecEnded || kept.Result == nil || kept.Result.ExitCode != 3 || kept.Result.Stdout != "built\n" {
+		t.Fatalf("kept: %+v, %v", kept, err)
 	}
 }
 
@@ -332,8 +394,11 @@ func TestAForegroundCallKeepsItsOwnGuard(t *testing.T) {
 	if !released {
 		t.Fatal("a foreground call's guard wasn't released with it")
 	}
-	if !detachedExec(proto.MethodExec, []byte(`{"detached":true,"commandId":"cmd_x"}`)) || detachedExec(proto.MethodExec, []byte(`{"detached":true}`)) {
-		t.Fatal("detachedExec")
+	if !keptExec(proto.MethodExec, []byte(`{"detached":true,"commandId":"cmd_x"}`)) ||
+		!keptExec(proto.MethodExec, []byte(`{"commandId":"cmd_x"}`)) ||
+		keptExec(proto.MethodExec, []byte(`{"detached":true}`)) ||
+		keptExec(proto.MethodExecGet, []byte(`{"commandId":"cmd_x"}`)) {
+		t.Fatal("keptExec")
 	}
 }
 

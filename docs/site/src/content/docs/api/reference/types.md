@@ -308,7 +308,7 @@ A bundle's files: the tar the account uploaded (`POST /bundles`), unpacked read-
 
 ### Caller
 
-Who is calling, the accounts they may act in, and the deployment's mode.
+Who is calling, the accounts they may act in, and the deployment's mode and what it supports.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -319,6 +319,7 @@ Who is calling, the accounts they may act in, and the deployment's mode.
 | `superAdmin` | boolean | yes | Whether the caller may manage the deployment's hosts. |
 | `mode` | [DeploymentMode](/api/reference/types/#deploymentmode) | yes |  |
 | `sandboxDomain` | string | no | The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. |
+| `protectedValues` | boolean | no | Whether the deployment keeps environments' protected variables and secret files (and bucket sources' credentials). `false`: setting one is refused with `not_supported`, and plain variables still work. Absent from a deployment older than this field: try, and read the error. |
 
 ### CallerApiKey
 

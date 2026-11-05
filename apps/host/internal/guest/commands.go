@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // Commands run with an ID (ExecRequest.ID) are known to the agent by it while they run, so the host can stop one
@@ -16,11 +17,17 @@ import (
 // host to fetch (GET /exec/{id}). A guest from before them answers these routes 404 or 405 (IsUnknownRoute): the host
 // then runs a detached command itself, as a foreground one held open (agent's background runs).
 
-// ExecStatus is GET /exec/{id}'s answer: State is ExecRunning or ExecEnded, and an ended one has its Result.
+// ExecStatus is GET /exec/{id}'s answer: State is ExecRunning or ExecEnded, and an ended one has its Result. A running
+// detached one has its output so far (Stdout, Stderr and Truncated): the start of each stream up to its cap, so only
+// ever more of the same, and never a partial UTF-8 sequence at its end. A guest from before running output leaves them
+// out.
 type ExecStatus struct {
-	ID     string      `json:"id"`
-	State  string      `json:"state"`
-	Result *ExecResult `json:"result,omitempty"`
+	ID        string      `json:"id"`
+	State     string      `json:"state"`
+	Result    *ExecResult `json:"result,omitempty"`
+	Stdout    string      `json:"stdout,omitempty"`
+	Stderr    string      `json:"stderr,omitempty"`
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 const (
@@ -47,6 +54,8 @@ type command struct {
 	// detached: its result is kept once it ends.
 	detached bool
 	result   ExecResult
+	// stdout and stderr are a detached command's output as it comes (its status while it runs).
+	stdout, stderr *cappedBuffer
 }
 
 // commands are the agent's commands run with an ID.
@@ -172,7 +181,7 @@ func (s *Server) startCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	stdout, stderr := &cappedBuffer{max: max}, &cappedBuffer{max: max}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	run := &command{cancel: cancel, done: make(chan struct{}), detached: true}
+	run := &command{cancel: cancel, done: make(chan struct{}), detached: true, stdout: stdout, stderr: stderr}
 	if !s.commands.add(req.ID, run) {
 		cancel()
 		fail(w, 409, errors.New("a command with this id is already known"))
@@ -240,8 +249,32 @@ func (s *Server) commandStatus(w http.ResponseWriter, r *http.Request) {
 		s.commands.mu.Unlock()
 		writeJSON(w, 200, ExecStatus{ID: id, State: ExecEnded, Result: &result})
 	default:
-		writeJSON(w, 200, ExecStatus{ID: id, State: ExecRunning})
+		status := ExecStatus{ID: id, State: ExecRunning}
+		if cmd.stdout != nil && cmd.stderr != nil {
+			status.Stdout, status.Stderr = string(cmd.stdout.whole()), string(cmd.stderr.whole())
+			status.Truncated = cmd.stdout.cut() || cmd.stderr.cut()
+		}
+		writeJSON(w, 200, status)
 	}
+}
+
+// whole is a copy of the buffer up to its last whole UTF-8 sequence: a running command's output so far, which a later
+// look only adds to (a sequence cut short now would read as U+FFFD, then as itself once the rest has come).
+func (b *cappedBuffer) whole() []byte {
+	b.mu.Lock()
+	out := append([]byte(nil), b.buf...)
+	b.mu.Unlock()
+	// Back over at most one sequence's continuation bytes to its lead byte: dropped when its sequence isn't whole yet.
+	for i := len(out) - 1; i >= 0 && i >= len(out)-utf8.UTFMax; i-- {
+		if !utf8.RuneStart(out[i]) {
+			continue
+		}
+		if !utf8.FullRune(out[i:]) {
+			return out[:i]
+		}
+		break
+	}
+	return out
 }
 
 // killCommand is POST /exec/{id}/kill: SIGKILL to the command's whole process group. {"killed": false} for one that

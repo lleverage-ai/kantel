@@ -15,7 +15,12 @@ import type { PersonIdentity } from "../src/auth.ts";
 import type { BackendEgress, ExecRequest, ExecResult, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer, createSealer, parseSecretsKey, sealedAt } from "../src/secrets.ts";
-import { MAX_EGRESS_ENTRIES, type ReportedEgress, repoCredential } from "../src/service.ts";
+import {
+	MAX_EGRESS_ENTRIES,
+	PROTECTED_VALUES_UNSUPPORTED,
+	type ReportedEgress,
+	repoCredential,
+} from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import { type ComputeStore, createMemoryStore, type StoredEnvironment, UniqueViolation } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
@@ -247,7 +252,9 @@ describe("a SQL store", sqlTimeout, () => {
 			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET, bindings: GITHUB }),
 		);
 		expect(refused.code).toBe("not_supported");
-		expect(refused.message).toContain("KANTEL_SECRETS_KEY");
+		// What a user can act on: this deployment doesn't support them. Setting the key is the operator's, and in its log.
+		expect(refused.message).toBe(PROTECTED_VALUES_UNSUPPORTED);
+		expect(refused.message).not.toContain("KANTEL_SECRETS_KEY");
 		expect(refused.message).not.toContain(SECRET);
 		const file = await failure(tom.setEnvironmentFile(environment.id, { path: ".npmrc", content: "token" }));
 		expect(file.code).toBe("not_supported");
@@ -261,6 +268,80 @@ describe("a SQL store", sqlTimeout, () => {
 		expect(sandbox.state).toBe("running");
 		expect(specOf(recorded, sandbox.id).env).toEqual({ LOG_LEVEL: "debug" });
 		expect(JSON.stringify(await store.environments.list())).not.toContain(SECRET);
+	});
+
+	it("says on the caller whether it keeps protected values, so a client can check before it makes an environment", async () => {
+		const without = setup({ store: createSqlComputeStore(await sqlStore()) });
+		expect((await without.tom.getCaller()).protectedValues).toBe(false);
+		const keyed = setup({ store: createSqlComputeStore(await sqlStore()), secretsKey: KEY });
+		expect((await keyed.tom.getCaller()).protectedValues).toBe(true);
+		// A memory store seals with a key of its own for the process, so it keeps them while it runs.
+		expect((await setup().tom.getCaller()).protectedValues).toBe(true);
+	});
+
+	it("through the command line refuses a protected value up front, writing nothing, without a secrets key", async () => {
+		const { api, tom } = setup({ store: createSqlComputeStore(await sqlStore()) });
+		await tom.createEnvironment({ name: "plain" });
+		const cliDir = await mkdtemp(join(tmpdir(), "kantel-cli-nokey-"));
+		cleanups.push(() => rm(cliDir, { recursive: true, force: true }));
+		const cli = async (argv: readonly string[], stdin?: string) => {
+			const routes: string[] = [];
+			const out: string[] = [];
+			const output = {
+				isTTY: false,
+				write(chunk: string | Uint8Array) {
+					out.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+					return true;
+				},
+			};
+			const code = await runCli(argv, {
+				fetch: async (input, init) => {
+					const request = new Request(input, init);
+					routes.push(`${request.method} ${new URL(request.url).pathname}`);
+					return (await api.fetch(request)) ?? new Response(null, { status: 404 });
+				},
+				env: { KANTEL_URL: BASE_URL.replace(/\/v1$/, ""), KANTEL_API_KEY: "tom-token" },
+				stdout: output,
+				stderr: output,
+				stdin: {
+					isTTY: stdin === undefined,
+					async *[Symbol.asyncIterator]() {
+						if (stdin !== undefined) yield stdin;
+					},
+				},
+				configDir: cliDir,
+				cwd: cliDir,
+				home: cliDir,
+				self: ["/usr/local/bin/node", "/usr/local/bin/kantel"],
+				openUrl: () => {},
+				sleep: async () => {},
+			});
+			const text = out.join("");
+			expect(text).not.toContain(SECRET);
+			return { code, text, routes };
+		};
+
+		const set = await cli(
+			["env", "set", "plain", "GH_TOKEN", "--value-stdin", "--protected", "--bind", "api.github.com"],
+			SECRET,
+		);
+		expect(set.code).not.toBe(0);
+		expect(set.text).toContain("this deployment doesn't support protected variables or secret files");
+		expect(set.text).not.toContain("KANTEL_SECRETS_KEY");
+		expect(set.routes).toEqual(["GET /v1/whoami"]);
+
+		const file = await cli(["env", "file", "plain", "/home/user/.npmrc"], "//registry/:_authToken=x");
+		expect(file.code).not.toBe(0);
+		expect(file.text).toContain("doesn't support protected variables or secret files");
+		expect(file.routes).toEqual(["GET /v1/whoami"]);
+
+		// Making an environment says so up front; a plain variable is set as ever.
+		const made = await cli(["env", "create", "other"]);
+		expect(made.code).toBe(0);
+		expect(made.text).toContain("Note: this deployment doesn't support protected variables or secret files");
+		const plain = await cli(["env", "set", "plain", "LOG_LEVEL=debug"]);
+		expect(plain.code, plain.text).toBe(0);
+		expect(plain.routes).not.toContain("GET /v1/whoami");
 	});
 
 	it("with a secrets key keeps protected values sealed, for every gateway with that key", async () => {

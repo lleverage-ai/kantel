@@ -93,6 +93,58 @@ func TestDetachedCommandOutputIsCapped(t *testing.T) {
 	}
 }
 
+// A running detached command's status has its output so far, which a later look only adds to, then its result.
+func TestARunningDetachedCommandShowsItsOutputSoFar(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	ctx := context.Background()
+	gate := filepath.Join(t.TempDir(), "go")
+	cmd := "echo 'Reading package lists...'; echo warn >&2; while [ ! -e " + gate + " ]; do sleep 0.05; done; echo Done"
+	if _, err := client.StartCommand(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_o", Command: cmd}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	var status ExecStatus
+	for time.Now().Before(deadline) {
+		var err error
+		if status, err = client.CommandStatus(ctx, "cmd_o", 0); err != nil {
+			t.Fatal(err)
+		}
+		if status.Stdout != "" && strings.Contains(status.Stderr, "warn\n") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// (A login shell may say more on stderr first, on a machine whose profile it can't read.)
+	if status.State != ExecRunning || status.Stdout != "Reading package lists...\n" || !strings.HasSuffix(status.Stderr, "warn\n") || status.Result != nil {
+		t.Fatalf("while it runs: %+v", status)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result := waitEnded(t, client, "cmd_o"); result.Stdout != "Reading package lists...\nDone\n" {
+		t.Fatalf("result %+v", result)
+	}
+}
+
+// A running command's output so far never ends in part of a UTF-8 sequence, which would read as U+FFFD now and as
+// itself once the rest has come.
+func TestRunningOutputHoldsBackAPartialSequence(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"ab", "ab"},
+		{"a\xe2\x82", "a"},
+		{"a\xe2\x82\xac", "a\xe2\x82\xac"},
+		{"a\xf0\x9f", "a"},
+		{"\xc3", ""},
+		{"", ""},
+	} {
+		b := &cappedBuffer{max: 100}
+		_, _ = b.Write([]byte(tc.in))
+		if got := string(b.whole()); got != tc.want {
+			t.Errorf("whole(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // alive is whether the process pid exists (and isn't a zombie left for its parent).
 func alive(pid int) bool {
 	if syscall.Kill(pid, 0) != nil {

@@ -10,6 +10,14 @@ export class CliError extends Error {
 	}
 }
 
+/** Kantel out of reach: its connection refused or dropped before it answered. */
+export class UnreachableError extends CliError {
+	constructor(message: string) {
+		super(message);
+		this.name = "UnreachableError";
+	}
+}
+
 /**
  * A host's own answer refusing an E2E call, with its code (`invalid` for a path outside the sandbox, `not_found` for one
  * that isn't there): not the session failing to open or dropping, which stay plain `CliError`s.
