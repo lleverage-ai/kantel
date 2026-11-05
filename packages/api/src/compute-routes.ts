@@ -1,7 +1,7 @@
 /**
  * The compute plane's routes: sandboxes (isolates and microVMs) behind one API, with their commands, files, ports,
- * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, environments, webhooks,
- * OpenTelemetry export and hosts around them. A self-hosted gateway always serves them.
+ * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, environments, templates,
+ * webhooks, OpenTelemetry export and hosts around them. A self-hosted gateway always serves them.
  *
  * Every route but a device sign-in's start and poll (`public`) takes a bearer: a scoped API key (`ksk_…`), or a person's
  * sign-in. A key acts in its own account; a person
@@ -19,6 +19,7 @@ import {
 	ApiKeyList,
 	ApiKeyPath,
 	ApproveDeviceLoginBody,
+	BaseImageList,
 	BrowserAccess,
 	BucketSource,
 	BucketSourceList,
@@ -38,6 +39,7 @@ import {
 	CreateInviteBody,
 	CreateOrganisationBody,
 	CreateSandboxBody,
+	CreateTemplateBody,
 	CreateWebhookBody,
 	DesktopAccess,
 	DeviceLogin,
@@ -82,6 +84,8 @@ import {
 	ListFilesQuery,
 	ListSandboxesQuery,
 	ListSnapshotsQuery,
+	ListTemplatesQuery,
+	LiveFrame,
 	Member,
 	MemberList,
 	MemberPath,
@@ -90,6 +94,7 @@ import {
 	PortPath,
 	ProxySettings,
 	PublicUrl,
+	PublishTemplateBaseBody,
 	PutEgressGrantsBody,
 	PutEnvironmentReposBody,
 	PutProxySettingsBody,
@@ -120,11 +125,19 @@ import {
 	TakeSnapshotBody,
 	TelemetryExport,
 	TelemetryTest,
+	Template,
+	TemplateBaseChannel,
+	TemplateBaseList,
+	TemplateList,
+	TemplatePath,
+	TemplateSnapshotList,
+	TemplateVersionList,
 	UpdateAccountBody,
 	UpdateEnvironmentBody,
 	UpdateHostBody,
 	UpdateMemberBody,
 	UpdateSandboxBody,
+	UpdateTemplateBody,
 	UpdateWebhookBody,
 	UploadBundleQuery,
 	UsageQuery,
@@ -140,6 +153,7 @@ import {
 import { defineRoute } from "./route.ts";
 
 const scope = (needed: string) => `A key needs \`${needed}\`.`;
+const SUPER_ADMIN = "A deployment super-admin only (a key needs `hosts:admin`).";
 const describe = (...parts: string[]) => parts.join(" ");
 const readErrors = ["invalid", "forbidden", "not_found"] as const;
 const changeErrors = ["invalid", "forbidden", "not_found", "conflict"] as const;
@@ -183,6 +197,7 @@ export const createOrganisation = defineRoute({
 	summary: "Create an organisation",
 	description: describe("Makes an organisation account with the caller as its owner. People only: a key is refused."),
 	body: CreateOrganisationBody,
+	idempotent: true,
 	answer: { status: 201, description: "The organisation.", schema: Account },
 	errors: ["invalid", "forbidden", "exhausted"],
 });
@@ -308,6 +323,7 @@ export const createInvite = defineRoute({
 	),
 	params: AccountPath,
 	body: CreateInviteBody,
+	idempotent: true,
 	answer: { status: 201, description: "The invite, with its code.", schema: Invite },
 	errors: changeErrors,
 });
@@ -439,6 +455,7 @@ export const updateSandbox = defineRoute({
 	),
 	params: SandboxPath,
 	body: UpdateSandboxBody,
+	idempotent: true,
 	answer: { status: 200, description: "The sandbox.", schema: Sandbox },
 	errors: changeErrors,
 });
@@ -525,8 +542,34 @@ export const recoverSandbox = defineRoute({
 		scope("sandboxes:write"),
 	),
 	params: SandboxPath,
+	idempotent: true,
 	answer: { status: 200, description: "The sandbox, starting.", schema: Sandbox },
 	errors: lifecycleErrors,
+});
+
+/** What the image patching routes say of their switch. */
+const IMAGE_PATCHING =
+	"Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).";
+
+export const restartSandboxOnLatest = defineRoute({
+	operationId: "restartSandboxOnLatest",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/restart-on-latest",
+	tag: "sandboxes",
+	summary: "Restart a sandbox on the latest base",
+	description: describe(
+		"Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is",
+		"stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so",
+		"are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`)",
+		"moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call",
+		"moves after this restart has stopped it is `aborted`.",
+		scope("sandboxes:write"),
+		IMAGE_PATCHING,
+	),
+	params: SandboxPath,
+	idempotent: true,
+	answer: { status: 200, description: "The sandbox, starting.", schema: Sandbox },
+	errors: [...lifecycleErrors, "exhausted", "aborted"],
 });
 
 export const deleteSandbox = defineRoute({
@@ -540,6 +583,7 @@ export const deleteSandbox = defineRoute({
 		scope("sandboxes:delete"),
 	),
 	params: SandboxPath,
+	idempotent: true,
 	answer: { status: 200, description: "The sandbox, deleting.", schema: Sandbox },
 	errors: changeErrors,
 });
@@ -573,6 +617,7 @@ export const sandboxRoutes = {
 	resumeSandbox,
 	forkSandbox,
 	recoverSandbox,
+	restartSandboxOnLatest,
 	deleteSandbox,
 	getSandboxUsage,
 } as const;
@@ -587,8 +632,10 @@ export const runCommand = defineRoute({
 	summary: "Run a command",
 	description: describe(
 		"Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at",
-		"`timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A",
-		"stopped sandbox is `conflict`: resume it first.",
+		"`timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless",
+		"`timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from",
+		"`timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it",
+		"first.",
 		scope("exec"),
 	),
 	params: SandboxPath,
@@ -617,7 +664,7 @@ export const getCommand = defineRoute({
 	path: "/sandboxes/{sandboxId}/commands/{commandId}",
 	tag: "commands",
 	summary: "Get a command",
-	description: describe("Its state and its output so far.", scope("exec")),
+	description: describe("Its state, and once it has ended its exit code and output.", scope("exec")),
 	params: CommandPath,
 	answer: { status: 200, description: "The command.", schema: Command },
 	errors: readErrors,
@@ -629,7 +676,11 @@ export const killCommand = defineRoute({
 	path: "/sandboxes/{sandboxId}/commands/{commandId}",
 	tag: "commands",
 	summary: "Kill a command",
-	description: describe("Ends a running command; one that has ended is answered as it is.", scope("exec")),
+	description: describe(
+		"Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's",
+		"kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running.",
+		scope("exec"),
+	),
 	params: CommandPath,
 	answer: { status: 200, description: "The command.", schema: Command },
 	errors: readErrors,
@@ -799,6 +850,7 @@ export const exposePort = defineRoute({
 	),
 	params: SandboxPath,
 	body: ExposePortBody,
+	idempotent: true,
 	answer: { status: 201, description: "The port's URL.", schema: ExposedPort },
 	errors: [...changeErrors, "not_supported"],
 });
@@ -951,6 +1003,7 @@ export const takeSnapshot = defineRoute({
 	),
 	params: SandboxPath,
 	body: TakeSnapshotBody,
+	idempotent: true,
 	answer: { status: 201, description: "The snapshot, being taken.", schema: Snapshot },
 	errors: lifecycleErrors,
 });
@@ -967,6 +1020,7 @@ export const saveSnapshot = defineRoute({
 		scope("snapshots:write"),
 	),
 	body: SaveSnapshotBody,
+	idempotent: true,
 	answer: { status: 201, description: "The saved snapshot.", schema: Snapshot },
 	errors: [...lifecycleErrors, "exhausted"],
 });
@@ -1061,6 +1115,7 @@ export const createApiKey = defineRoute({
 		scope("account:admin"),
 	),
 	body: CreateApiKeyBody,
+	idempotent: true,
 	answer: { status: 201, description: "The key and its secret.", schema: IssuedApiKey },
 	errors: ["invalid", "forbidden"],
 });
@@ -1085,6 +1140,7 @@ export const rotateApiKey = defineRoute({
 	summary: "Rotate an API key",
 	description: describe("Replaces its secret; the old one stops working at once.", scope("account:admin")),
 	params: ApiKeyPath,
+	idempotent: true,
 	answer: { status: 200, description: "The key and its new secret.", schema: IssuedApiKey },
 	errors: changeErrors,
 });
@@ -1247,6 +1303,7 @@ export const createEnvironment = defineRoute({
 		scope("account:admin"),
 	),
 	body: CreateEnvironmentBody,
+	idempotent: true,
 	answer: { status: 201, description: "The environment.", schema: Environment },
 	errors: ["invalid", "forbidden", "conflict"],
 });
@@ -1436,6 +1493,185 @@ export const environmentComputeRoutes = {
 	putSandboxGrants,
 } as const;
 
+// Templates (experimental): microVM profiles, versioned, and the snapshots built from them.
+
+const TEMPLATES = "Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).";
+
+export const listTemplates = defineRoute({
+	operationId: "listTemplates",
+	method: "GET",
+	path: "/templates",
+	tag: "templates",
+	summary: "List templates",
+	description: describe(
+		"The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to",
+		"that base.",
+		scope("account:read"),
+		TEMPLATES,
+	),
+	query: ListTemplatesQuery,
+	answer: { status: 200, description: "The templates.", schema: TemplateList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createTemplate = defineRoute({
+	operationId: "createTemplate",
+	method: "POST",
+	path: "/templates",
+	tag: "templates",
+	summary: "Create a template",
+	description: describe(
+		"A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of",
+		"host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves.",
+		"A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that",
+		"build (`unavailable` until then), as nothing else holds the image.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	body: CreateTemplateBody,
+	idempotent: true,
+	answer: { status: 201, description: "The template.", schema: Template },
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
+});
+
+export const getTemplate = defineRoute({
+	operationId: "getTemplate",
+	method: "GET",
+	path: "/templates/{templateId}",
+	tag: "templates",
+	summary: "Get a template",
+	description: describe("With its build, and how far behind a pinned base is.", scope("account:read"), TEMPLATES),
+	params: TemplatePath,
+	answer: { status: 200, description: "The template.", schema: Template },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const updateTemplate = defineRoute({
+	operationId: "updateTemplate",
+	method: "PATCH",
+	path: "/templates/{templateId}",
+	tag: "templates",
+	summary: "Change a template",
+	description: describe(
+		"Renames it or changes its description; a new `spec` makes the next version, which builds in the background.",
+		"Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready; a",
+		"Dockerfile's or image reference's wait for the new version's image to build.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	body: UpdateTemplateBody,
+	answer: { status: 200, description: "The template.", schema: Template },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const deleteTemplate = defineRoute({
+	operationId: "deleteTemplate",
+	method: "DELETE",
+	path: "/templates/{templateId}",
+	tag: "templates",
+	summary: "Delete a template",
+	description: describe(
+		"Deletes it, its versions and its built snapshots. Sandboxes made from it keep running.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listTemplateVersions = defineRoute({
+	operationId: "listTemplateVersions",
+	method: "GET",
+	path: "/templates/{templateId}/versions",
+	tag: "templates",
+	summary: "List a template's versions",
+	description: describe("Newest first.", scope("account:read"), TEMPLATES),
+	params: TemplatePath,
+	answer: { status: 200, description: "Its versions.", schema: TemplateVersionList },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listTemplateSnapshots = defineRoute({
+	operationId: "listTemplateSnapshots",
+	method: "GET",
+	path: "/templates/{templateId}/snapshots",
+	tag: "templates",
+	summary: "List a template's snapshots",
+	description: describe(
+		"Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots.",
+		scope("account:read"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	answer: { status: 200, description: "Its snapshots.", schema: TemplateSnapshotList },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const rebuildTemplate = defineRoute({
+	operationId: "rebuildTemplate",
+	method: "POST",
+	path: "/templates/{templateId}/rebuild",
+	tag: "templates",
+	summary: "Rebuild a template",
+	description: describe(
+		"Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from",
+		"it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones",
+		"are ready, or, for a Dockerfile or image reference, wait for its image to build.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	idempotent: true,
+	answer: { status: 200, description: "The template, building.", schema: Template },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listTemplateBases = defineRoute({
+	operationId: "listTemplateBases",
+	method: "GET",
+	path: "/template-bases",
+	tag: "templates",
+	summary: "List base images' channels",
+	description: describe(
+		"Every base channel templates may follow, with the digests it has published. Any signed-in caller.",
+		TEMPLATES,
+	),
+	answer: { status: 200, description: "The channels.", schema: TemplateBaseList },
+	errors: ["not_supported"],
+});
+
+export const publishTemplateBase = defineRoute({
+	operationId: "publishTemplateBase",
+	method: "POST",
+	path: "/template-bases",
+	tag: "templates",
+	summary: "Publish a base image's digest",
+	description: describe(
+		"Makes `digest` the channel's current one, made if it is new. Every template following the channel rebuilds in",
+		"the background; pinned ones don't, and say how far behind they are.",
+		SUPER_ADMIN,
+		TEMPLATES,
+	),
+	body: PublishTemplateBaseBody,
+	answer: { status: 200, description: "The channel.", schema: TemplateBaseChannel },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const templateRoutes = {
+	listTemplates,
+	createTemplate,
+	getTemplate,
+	updateTemplate,
+	deleteTemplate,
+	listTemplateVersions,
+	listTemplateSnapshots,
+	rebuildTemplate,
+	listTemplateBases,
+	publishTemplateBase,
+} as const;
+
 // Events, webhooks and telemetry.
 
 export const listEvents = defineRoute({
@@ -1473,6 +1709,7 @@ export const createWebhook = defineRoute({
 	summary: "Create a webhook",
 	description: describe("Its signing secret is answered once.", scope("account:admin")),
 	body: CreateWebhookBody,
+	idempotent: true,
 	answer: { status: 201, description: "The webhook and its signing secret.", schema: WebhookWithSecret },
 	errors: ["invalid", "forbidden", "exhausted"],
 });
@@ -1525,6 +1762,7 @@ export const rotateWebhookSecret = defineRoute({
 		scope("account:admin"),
 	),
 	params: WebhookPath,
+	idempotent: true,
 	answer: { status: 200, description: "The webhook and its new secret.", schema: WebhookWithSecret },
 	errors: readErrors,
 });
@@ -1594,7 +1832,27 @@ export const deleteTelemetry = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
-export const eventRoutes = { listEvents } as const;
+export const watchEvents = defineRoute({
+	operationId: "watchEvents",
+	method: "GET",
+	path: "/events/live",
+	tag: "events",
+	summary: "Watch sandboxes live",
+	description: describe(
+		"Server-sent events, one frame each, as the account's sandboxes change state: who changed one makes no difference " +
+			"(the console, the CLI, the API or an SDK, an auto-stop, a host). First a `hello`, then a `sandbox` frame per " +
+			"change, of the sandboxes the caller may see. A comment line every 25 s keeps it open. The server ends it after " +
+			"10 minutes, or once the caller may no longer watch, and nothing is replayed: reconnect, and read what you show " +
+			"again on each `hello`.",
+		scope("sandboxes:read"),
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The account's live changes." },
+	stream: { frame: LiveFrame, eventsOnly: true },
+	errors: ["invalid", "forbidden"],
+});
+
+export const eventRoutes = { listEvents, watchEvents } as const;
 export const webhookRoutes = {
 	listWebhooks,
 	createWebhook,
@@ -1608,8 +1866,6 @@ export const webhookRoutes = {
 export const telemetryRoutes = { getTelemetry, putTelemetry, deleteTelemetry } as const;
 
 // Hosts: the deployment's super-admins only. The host agent's own protocol is not part of the public API.
-
-const SUPER_ADMIN = "A deployment super-admin only (a key needs `hosts:admin`).";
 
 export const listHosts = defineRoute({
 	operationId: "listHosts",
@@ -1676,6 +1932,7 @@ export const createHostJoinToken = defineRoute({
 		SUPER_ADMIN,
 	),
 	body: CreateHostJoinTokenBody,
+	idempotent: true,
 	answer: { status: 201, description: "The token and its command.", schema: HostJoinToken },
 	errors: ["invalid", "forbidden"],
 });
@@ -1740,6 +1997,27 @@ export const hostRoutes = {
 	setPublicUrl,
 } as const;
 
+// Kantel's base images and how far behind each is (image patching, experimental): the deployment's super-admins only.
+
+export const listBaseImages = defineRoute({
+	operationId: "listBaseImages",
+	method: "GET",
+	path: "/admin/hosts/images",
+	tag: "hosts",
+	summary: "List base images",
+	description: describe(
+		"Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel,",
+		"its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read",
+		"is answered as `error`, with no images.",
+		SUPER_ADMIN,
+		IMAGE_PATCHING,
+	),
+	answer: { status: 200, description: "The base images.", schema: BaseImageList },
+	errors: ["forbidden", "not_supported"],
+});
+
+export const baseImageRoutes = { listBaseImages } as const;
+
 // An account's own hosts, added by its people rather than by the deployment's super-admin. Only that account's
 // sandboxes run on them. Experimental: a deployment serves these only with KANTEL_ACCOUNT_HOSTS=experimental, and
 // answers `not_supported` otherwise.
@@ -1762,6 +2040,7 @@ export const createAccountJoinToken = defineRoute({
 		ACCOUNT_HOSTS,
 	),
 	body: CreateAccountJoinTokenBody,
+	idempotent: true,
 	answer: { status: 201, description: "The token and its command.", schema: AccountJoinToken },
 	errors: ["invalid", "forbidden", "not_supported"],
 });
@@ -1922,6 +2201,7 @@ export const createBucketSource = defineRoute({
 		MOUNTS,
 	),
 	body: CreateBucketSourceBody,
+	idempotent: true,
 	answer: { status: 201, description: "The bucket source.", schema: BucketSource },
 	errors: ["invalid", "forbidden", "not_supported"],
 });
@@ -2000,9 +2280,12 @@ export const computeRoutes = {
 	...deviceLoginRoutes,
 	...proxyRoutes,
 	...environmentComputeRoutes,
+	...templateRoutes,
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,
+	// Before the hosts' `/admin/hosts/{hostId}`, which would otherwise take `images` for a host's ID.
+	...baseImageRoutes,
 	...hostRoutes,
 	...accountHostRoutes,
 	...mountRoutes,

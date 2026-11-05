@@ -14,6 +14,7 @@ import {
 	storageTokens,
 } from "./api/identity.ts";
 import { ComputeApp, joinLink, legacyComputePath } from "./compute/compute-app.tsx";
+import { SOURCE_KEY } from "./compute/tab-query.ts";
 import { orderedSaves, syncTheme } from "./state/theme-sync.ts";
 import { BOOT } from "./ui/shell-styles.ts";
 import "./ui/styles.css";
@@ -43,7 +44,6 @@ if (moved !== undefined) history.replaceState(null, "", `${moved}${location.sear
 if (joinLink.take(location.hash)) history.replaceState(null, "", `${location.pathname}${location.search}`);
 
 const params = new URLSearchParams(location.search);
-const SOURCE_KEY = "kantel.console.source";
 const asked = params.get("source");
 if (asked === "api" || asked === "recorded") sessionStorage.setItem(SOURCE_KEY, asked);
 const source =

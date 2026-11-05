@@ -28,6 +28,11 @@ export {
 export type {
 	AccountsSource,
 	ApiKeysSource,
+	BaseImage,
+	BaseImagesOverview,
+	BaseImagesSource,
+	BaseImageTemplate,
+	BaseImageVersion,
 	BillingSource,
 	BrowserDeviceSource,
 	BrowserStanding,
@@ -49,11 +54,17 @@ export type {
 	FileRange,
 	HostingMode,
 	HostsSource,
+	ImageBuildReason,
+	ImageFinding,
+	ImageScan,
+	ImageSeverity,
 	ProxySource,
 	PublicUrlSource,
+	SandboxBase,
 	SandboxEgress,
 	SandboxesSource,
 	SandboxImage,
+	SandboxProcess,
 	SandboxShape,
 	SandboxShapes,
 	SandboxSshKey,
@@ -61,6 +72,14 @@ export type {
 	SnapshotsSource,
 	SshTarget,
 	TelemetrySource,
+	Template,
+	TemplateBaseChannel,
+	TemplateSnapshot,
+	TemplateSpec,
+	TemplatesSource,
+	TemplateVersion,
+	UsageRange,
+	UsageSeries,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
 export {
@@ -171,6 +190,7 @@ export {
 export { Switch, type SwitchProps } from "./primitives/switch.tsx";
 export { TabBar, type TabBarItem, type TabBarProps } from "./primitives/tab-bar.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
+export { HelpHint, Tooltip, type TooltipProps } from "./primitives/tooltip.tsx";
 export { DEFAULT_THEME_PREFERENCE, THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
 export {
 	createThemeController,

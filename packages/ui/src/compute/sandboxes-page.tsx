@@ -1,27 +1,32 @@
-// The Sandboxes page (compute console): an account's sandboxes, for finding one and seeing its state. A table on a wide
-// screen (name, with what went wrong under it, state, machine, environment, when it stops, its CPU live over the last
-// two minutes, when it was made) and rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
+// The Sandboxes page (compute console): an account's sandboxes, for finding one and seeing its state. A condensed table
+// on a wide screen, after boat.dev's (Tom, 5 Nov 2026): the name (renamed in place) with its address under it, its ID
+// to copy, state, when it was made, its type, a countdown to its auto-stop, its latest snapshot, its cost (hosted) and
+// its CPU, RAM, disk and IO as one small chart, which opens its metrics dialog. A search over names, addresses and IDs,
+// and State, Snapshot and Type filters, sit over it. Rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
 // running microVM's row under the pointer and open in the console, Recover on a failed one's, and ⋯ has Stop, Fork,
-// Save snapshot, Auto-stop and Delete. New makes a sandbox at once with the defaults (a medium
+// Save snapshot, Auto-stop, Restart on latest base (beside the state, a sandbox on an outdated base says so) and
+// Delete. New makes a sandbox at once with the defaults (a medium
 // microVM that stops after an hour); its caret opens New sandbox to choose. Either way the new row shows at once,
 // starting, at the top, and the page follows it until it's running. Rows can be ticked (Select all is the table's head,
 // or over a phone's rows) to stop or delete several at once. Every call goes through the `SandboxesSource` the host
 // binds; stories bind it to fixtures.
 
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
-import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
+import { Button, buttonClass, buttonLabelClass, IconButton } from "../primitives/button.tsx";
+import { CopyButton, inputClass, SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
-import { compactAge } from "../primitives/format.ts";
-import { ChevronRightIcon, GlobeIcon, PlusIcon, StopIcon } from "../primitives/icons.tsx";
+import { compactAge, HOUR, MINUTE } from "../primitives/format.ts";
+import { ChevronDownIcon, ChevronRightIcon, GlobeIcon, PencilIcon, PlusIcon, StopIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { SliderField } from "../primitives/slider.tsx";
-import { Skeleton, skeletonClass } from "../primitives/spinner.tsx";
+import { Skeleton } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { HelpHint, Tooltip } from "../primitives/tooltip.tsx";
+import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import {
 	type ComputeAccount,
 	type CreateSandboxInput,
@@ -36,7 +41,6 @@ import {
 	microvmsAvailable,
 	onGrid,
 	presetOf,
-	quietState,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_STATE_LABELS,
 	SANDBOX_STATE_STATUS,
@@ -49,22 +53,39 @@ import {
 	type SavedSnapshot,
 	sandboxActions,
 	sandboxMoving,
+	sandboxScreen,
+	sandboxSpec,
 	shapeCentsPerHour,
 	shapeCreatable,
 	sizeText,
 	stopsInText,
+	type Template,
 	vcpuRangeFor,
 } from "./compute-model.ts";
-import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf, Sparkline, tableFrame } from "./parts.tsx";
+import { useFollowSandboxes } from "./live-sandboxes.ts";
+import { seriesOf, useLiveUsage } from "./live-usage.ts";
+import { computePage, messageOf } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
+import {
+	filterCounts,
+	filtered,
+	NO_FILTERS,
+	type SandboxFilters,
+	SNAPSHOT_FILTERS,
+	STATE_FILTERS,
+	sandboxesShown,
+	TYPE_FILTERS,
+} from "./sandbox-filters.ts";
 import { popOut } from "./sandbox-screen.tsx";
 import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
+import { buildPollMs, TEMPLATE_POLL_MS } from "./template-view.ts";
+import { resourcesText, templatePickHint } from "./templates-page.tsx";
+import { ROW_USAGE_SPAN_MS, SandboxMetricsDialog, UsageSparkline } from "./usage-metrics.tsx";
+
+export { sandboxesShown } from "./sandbox-filters.ts";
 
 /** A view of one sandbox's page that a row links to. */
 export type SandboxRowView = "overview" | "desktop" | "browser";
-
-export type SandboxFilter = "all" | "running" | "stopped" | "error";
 
 export interface SandboxesPageProps {
 	readonly source: SandboxesSource;
@@ -81,12 +102,20 @@ export interface SandboxesPageProps {
 	readonly navigate?: (path: string) => void;
 	/** The account's environments, which New sandbox offers to start from. */
 	readonly environments?: (accountId: string) => Promise<readonly Environment[]>;
+	/** The account's templates (experimental), which New sandbox offers to make the machine from. */
+	readonly templates?: (accountId: string) => Promise<readonly Template[]>;
+	/** The template New sandbox starts with picked: a template page's New sandbox. */
+	readonly template?: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 	/** How often the list is read again while a sandbox is starting or stopping, in milliseconds. Default 1000. */
 	readonly pollMs?: number;
 	/** Open New sandbox when the page opens, for a story or a `?new` link. */
 	readonly creating?: boolean;
+	/** The filters and search it opens with, for a story. */
+	readonly initialFilters?: SandboxFilters;
+	/** The sandbox whose metrics it opens with, by ID, for a story. */
+	readonly metricsOf?: string;
 	/** A phone: rows rather than the table. */
 	readonly narrow?: boolean;
 	/**
@@ -115,35 +144,9 @@ export const QUICK_SANDBOX = { kind: "microvm", autoStopMinutes: 60 } as const s
 	"accountId"
 >;
 
-const FILTERS: readonly { value: SandboxFilter; label: string }[] = [
-	{ value: "all", label: "All" },
-	{ value: "running", label: "Running" },
-	{ value: "stopped", label: "Stopped" },
-	{ value: "error", label: "Error" },
-];
-
-/** Which filter a state counts under: a failed sandbox isn't a stopped one, and a paused one is. */
-const bucket = (state: SandboxState): Exclude<SandboxFilter, "all"> =>
-	state === "error" ? "error" : state === "stopped" || state === "paused" ? "stopped" : "running";
-
-const matches = (box: Sandbox, filter: SandboxFilter): boolean => filter === "all" || bucket(box.state) === filter;
-
 /**
- * The sandboxes the list shows: those in the filter whose name has the search in it. The search field is there at every
- * width, so a search typed on a wider window can be cleared on a phone too.
- */
-export const sandboxesShown = (
-	sandboxes: readonly Sandbox[],
-	filter: SandboxFilter,
-	search: string,
-): readonly Sandbox[] => {
-	const needle = search.trim().toLowerCase();
-	return sandboxes.filter((box) => matches(box, filter) && box.name.toLowerCase().includes(needle));
-};
-
-/**
- * Whether a row draws its CPU line: only while the sandbox runs, or has just stopped answering. A stopped, paused or
- * starting one shows nothing rather than a flat line. One with no samples yet draws a faint flat line.
+ * Whether a sandbox is read live: only while it runs, or has just stopped answering. A stopped, paused or starting one
+ * isn't read; its row draws a faint flat line, still a way into its metrics.
  */
 export const showsCpu = (box: Pick<Sandbox, "state">): boolean =>
 	box.state === "running" || box.state === "stopping" || box.state === "error";
@@ -152,6 +155,19 @@ export const showsCpu = (box: Pick<Sandbox, "state">): boolean =>
 function stopsText(box: Sandbox, now: number): string {
 	const text = stopsInText(box, now);
 	return /^\d/.test(text) ? `in ${text}` : text;
+}
+
+/**
+ * The time left before auto-stop stops it: "4:07" under 10 minutes, ticking each second, "52m" or "6h 10m" above,
+ * "Always on", "Now", or a dash when it isn't running.
+ */
+export function countdownText(box: Pick<Sandbox, "state" | "stopsAt">, now: number): string {
+	const text = stopsInText(box, now);
+	if (box.stopsAt === undefined || !/^\d/.test(text)) return text;
+	const left = box.stopsAt - now;
+	if (left >= 10 * MINUTE) return text;
+	const seconds = Math.ceil(left / 1000);
+	return `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, "0")}`;
 }
 
 /** Re-renders every `ms` while `on`, so countdowns keep up. */
@@ -172,9 +188,13 @@ export function SandboxesPage({
 	sandboxHref,
 	navigate,
 	environments,
+	templates,
+	template,
 	now: fixedNow,
 	pollMs = 1000,
 	creating = false,
+	initialFilters,
+	metricsOf,
 	narrow = false,
 	addHostHref,
 	ownHostHref,
@@ -183,9 +203,10 @@ export function SandboxesPage({
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New is pressed.
 	const [local, setLocal] = useState<ReadonlyMap<string, Sandbox | null>>(new Map());
-	const [filter, setFilter] = useState<SandboxFilter>("all");
-	const [search, setSearch] = useState("");
+	const [filters, setFilters] = useState<SandboxFilters>(initialFilters ?? NO_FILTERS);
 	const [newOpen, setNewOpen] = useState(creating);
+	// The sandbox whose metrics are open, by ID, so the dialog follows it as the list is read again.
+	const [metricsId, setMetricsId] = useState(metricsOf);
 	const [notice, setNotice] = useState<SandboxNotice>();
 	useTick(fixedNow === undefined, 30_000);
 	const now = fixedNow ?? Date.now();
@@ -209,6 +230,8 @@ export function SandboxesPage({
 		const timer = setTimeout(reload, pollMs);
 		return () => clearTimeout(timer);
 	}, [moving, reload, pollMs, listed]);
+	// And at once when one changes elsewhere: the CLI, the API, an auto-stop.
+	useFollowSandboxes(source, account.id, reload);
 	useEffect(() => {
 		if (listed === undefined) return;
 		setLocal((current) => {
@@ -240,8 +263,7 @@ export function SandboxesPage({
 	const create = async (input: CreateSandboxInput) => {
 		setNewOpen(false);
 		// The new row is at the top, so show it whatever was filtered.
-		setFilter("all");
-		setSearch("");
+		setFilters(NO_FILTERS);
 		// The row shows at once under a temporary id; the real one replaces it when the call answers.
 		const pendingId = `pending_${Date.now().toString(36)}`;
 		const placeholder: Sandbox = {
@@ -274,13 +296,8 @@ export function SandboxesPage({
 		}
 	};
 
-	const counts = useMemo(() => {
-		const all = sandboxes ?? [];
-		return Object.fromEntries(
-			FILTERS.map((option) => [option.value, all.filter((box) => matches(box, option.value)).length]),
-		) as Record<SandboxFilter, number>;
-	}, [sandboxes]);
-	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filter, search);
+	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filters, now);
+	const metricsBox = metricsId === undefined ? undefined : sandboxes?.find((box) => box.id === metricsId);
 
 	// With no host anywhere, nothing could run a new sandbox: no New until one is added.
 	const newButton =
@@ -358,35 +375,16 @@ export function SandboxesPage({
 				</EmptyState>
 			) : (
 				<>
-					<div className="flex flex-wrap items-center justify-between gap-3">
-						<SegmentedControl
-							label="Show sandboxes"
-							options={FILTERS.filter(
-								(option) => option.value !== "error" || counts.error > 0 || filter === "error",
-							).map((option) => ({
-								...option,
-								count: counts[option.value],
-								alert: option.value === "error" && counts.error > 0,
-							}))}
-							value={filter}
-							onChange={setFilter}
-						/>
-						<div className={narrow ? "w-full" : "w-(--kt-popover-width) max-w-full"}>
-							<TextField
-								label="Search sandboxes"
-								hideLabel
-								type="search"
-								placeholder="Search"
-								value={search}
-								onChange={(event) => setSearch(event.currentTarget.value)}
-							/>
-						</div>
-					</div>
+					<SandboxToolbar sandboxes={sandboxes} filters={filters} now={now} narrow={narrow} onChange={setFilters} />
 					<SandboxList
 						sandboxes={shown ?? []}
 						hosting={hosting}
 						now={now}
+						fixedNow={fixedNow !== undefined}
 						narrow={narrow}
+						filtered={filtered(filters)}
+						onClearFilters={() => setFilters(NO_FILTERS)}
+						onMetrics={setMetricsId}
 						source={source}
 						{...(snapshots === undefined ? {} : { save: snapshots.save })}
 						{...(sandboxHref === undefined ? {} : { sandboxHref })}
@@ -404,9 +402,121 @@ export function SandboxesPage({
 				{...(source.shapes === undefined ? {} : { shapes: () => readShapes(source, account.id) })}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
 				{...(environments === undefined ? {} : { environments: () => environments(account.id) })}
+				{...(templates === undefined ? {} : { templates: () => templates(account.id) })}
+				{...(template === undefined ? {} : { template })}
+				now={now}
 				onClose={() => setNewOpen(false)}
 				onCreate={(input) => void create(input)}
 			/>
+			<SandboxMetricsDialog sandbox={metricsBox} source={source} onClose={() => setMetricsId(undefined)} />
+		</div>
+	);
+}
+
+/** A filter's dropdown: "State: Running", with each option's count, the current one ticked. */
+function FilterMenu<V extends string>({
+	name,
+	value,
+	options,
+	counts,
+	onChange,
+}: {
+	name: string;
+	value: V;
+	options: readonly { value: V; label: string; short?: string }[];
+	counts: ReadonlyMap<V, number>;
+	onChange: (value: V) => void;
+}) {
+	const current = options.find((option) => option.value === value) ?? options[0];
+	const any = value === options[0]?.value;
+	return (
+		<Menu
+			label={`Filter by ${name.toLowerCase()}`}
+			triggerClassName={`${buttonClass("secondary", "sm")} kt-sandbox-filter ${any ? "" : "bg-selected"}`}
+			trigger={
+				<>
+					<span className={buttonLabelClass}>
+						<span className="text-muted">{name}</span>
+						{any ? null : <span className="text-fg">: {current?.short ?? current?.label}</span>}
+					</span>
+					<ChevronDownIcon size="sm" className="text-faint" />
+				</>
+			}
+			size="sm"
+			entries={options.map((option) => ({
+				kind: "item",
+				id: option.value,
+				label: option.label,
+				detail: String(counts.get(option.value) ?? 0),
+				checked: option.value === value,
+				onSelect: () => onChange(option.value),
+			}))}
+		/>
+	);
+}
+
+/** Over the table: the search, then the State, Snapshot and Type filters, and Clear while any narrows the list. */
+function SandboxToolbar({
+	sandboxes,
+	filters,
+	now,
+	narrow,
+	onChange,
+}: {
+	sandboxes: readonly Sandbox[];
+	filters: SandboxFilters;
+	now: number;
+	narrow: boolean;
+	onChange: (filters: SandboxFilters) => void;
+}) {
+	const counts = <K extends "state" | "snapshot" | "type">(key: K, options: readonly { value: SandboxFilters[K] }[]) =>
+		filterCounts(sandboxes, filters, key, options, now);
+	// Type tells apart only where there are both.
+	const types = new Set(sandboxes.map((box) => box.kind)).size > 1;
+	return (
+		<div className="kt-sandbox-toolbar flex flex-wrap items-center gap-2">
+			<div className={narrow ? "w-full" : "w-(--kt-popover-width) max-w-full"}>
+				<TextField
+					label="Search sandboxes"
+					hideLabel
+					type="search"
+					placeholder="Search name, subdomain or ID"
+					value={filters.search}
+					onChange={(event) => onChange({ ...filters, search: event.currentTarget.value })}
+				/>
+			</div>
+			<FilterMenu
+				name="State"
+				value={filters.state}
+				options={STATE_FILTERS}
+				counts={counts("state", STATE_FILTERS)}
+				onChange={(state) => onChange({ ...filters, state })}
+			/>
+			<FilterMenu
+				name="Snapshot"
+				value={filters.snapshot}
+				options={SNAPSHOT_FILTERS}
+				counts={counts("snapshot", SNAPSHOT_FILTERS)}
+				onChange={(snapshot) => onChange({ ...filters, snapshot })}
+			/>
+			{types || filters.type !== "all" ? (
+				<FilterMenu
+					name="Type"
+					value={filters.type}
+					options={TYPE_FILTERS}
+					counts={counts("type", TYPE_FILTERS)}
+					onChange={(type) => onChange({ ...filters, type })}
+				/>
+			) : null}
+			{filtered({ ...filters, search: "" }) ? (
+				<Button
+					size="sm"
+					variant="ghost"
+					onClick={() => onChange({ ...filters, state: "all", snapshot: "all", type: "all" })}
+				>
+					Clear filters
+				</Button>
+			) : null}
 		</div>
 	);
 }
@@ -430,6 +540,8 @@ type RowCalls = {
 	/** What to pass `onChange` with a call's answer, read as the call is made, so a later change to it wins. */
 	asked?: (id: string) => number;
 	onNotice: (notice: SandboxNotice | undefined) => void;
+	/** Opens a sandbox's metrics dialog. */
+	onMetrics?: (id: string) => void;
 };
 
 /** The table on a wide screen, rows on a phone, and what acts on the ticked ones. */
@@ -437,7 +549,11 @@ function SandboxList({
 	sandboxes,
 	hosting,
 	now,
+	fixedNow,
 	narrow,
+	filtered: narrowed,
+	onClearFilters,
+	onMetrics,
 	source,
 	save,
 	sandboxHref,
@@ -449,7 +565,12 @@ function SandboxList({
 	sandboxes: readonly Sandbox[];
 	hosting: HostingMode;
 	now: number;
+	/** The time is fixed (a story): countdowns don't tick. */
+	fixedNow: boolean;
 	narrow: boolean;
+	/** Something narrows the list, so an empty one says so and offers to clear it. */
+	filtered: boolean;
+	onClearFilters: () => void;
 	/** Where a sandbox's changes have got to, for `onChange` from an answer that may be overtaken. */
 	asked: (id: string) => number;
 } & RowCalls) {
@@ -486,10 +607,20 @@ function SandboxList({
 		if (failed > 0) onNotice({ level: "error", text: `Kantel couldn't stop ${failed} of them. Try again.` });
 	};
 	if (sandboxes.length === 0) {
-		return <p className="m-0 text-sm text-muted">No sandboxes match.</p>;
+		return (
+			<p className="m-0 flex items-center gap-2 text-sm text-muted">
+				No sandboxes match.
+				{narrowed ? (
+					<Button size="xs" variant="ghost" onClick={onClearFilters}>
+						Clear search and filters
+					</Button>
+				) : null}
+			</p>
+		);
 	}
 	const calls: RowCalls = {
 		source,
+		...(onMetrics === undefined ? {} : { onMetrics }),
 		...(save === undefined ? {} : { save }),
 		...(sandboxHref === undefined ? {} : { sandboxHref }),
 		...(navigate === undefined ? {} : { navigate }),
@@ -498,7 +629,7 @@ function SandboxList({
 		onNotice,
 	};
 	const list = narrow ? (
-		<ul className="kt-sandbox-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
+		<ul className="kt-sandbox-rows m-0 flex list-none flex-col p-0">
 			{sandboxes.map((box) => (
 				<SandboxPhoneRow
 					key={box.id}
@@ -511,9 +642,8 @@ function SandboxList({
 			))}
 		</ul>
 	) : (
-		<div className={tableFrame}>
-			<table className="w-full table-fixed border-collapse text-left text-md">
-				<SandboxColumns hosted={hosting === "hosted"} />
+		<div className="kt-compute-table min-w-0 overflow-x-auto">
+			<table className="w-full border-collapse text-left text-md">
 				<thead>
 					<tr>
 						<th className={`${head} w-0 pr-0`} scope="col">
@@ -526,30 +656,44 @@ function SandboxList({
 							/>
 						</th>
 						<th className={head} scope="col">
-							Name
+							Name / subdomain
+						</th>
+						<th className={head} scope="col">
+							Sandbox ID
 						</th>
 						<th className={head} scope="col">
 							State
 						</th>
 						<th className={head} scope="col">
-							Machine
+							Created
 						</th>
 						<th className={head} scope="col">
-							Environment
+							Type
 						</th>
 						<th className={head} scope="col">
-							Stops
+							<HeadHint label="Stops in">
+								When auto-stop stops it, and saves a snapshot to start from again. Its page can push this back or make
+								it always on.
+							</HeadHint>
 						</th>
 						<th className={head} scope="col">
-							CPU
+							<HeadHint label="Snapshot">
+								When its latest snapshot was saved: on stop, every so often while it runs, or by a fork. It starts again
+								from this one.
+							</HeadHint>
 						</th>
 						{hosting === "hosted" ? (
 							<th className={`${head} text-right`} scope="col">
-								Cost
+								<HeadHint label="Cost" end>
+									What it has cost this billing period. Billing has the account's total.
+								</HeadHint>
 							</th>
 						) : null}
-						<th className={`${head} text-right`} scope="col">
-							Created
+						<th className={head} scope="col">
+							<HeadHint label="Usage">
+								CPU, RAM, disk and IO over the last 10 minutes, as a share of what it has. Click a chart for its metrics
+								over an hour, a day or a week, and its busiest processes.
+							</HeadHint>
 						</th>
 						<th className={head} scope="col">
 							<span className="kt-sr-only">Actions</span>
@@ -563,6 +707,7 @@ function SandboxList({
 							sandbox={box}
 							hosting={hosting}
 							now={now}
+							fixedNow={fixedNow}
 							calls={calls}
 							ticked={ticked.has(box.id)}
 							onTick={(on) => tick(box.id, on)}
@@ -629,7 +774,212 @@ function SandboxList({
 
 /** The table: no frame round it, a hairline under the head and under every row. */
 const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
-const cell = "border-b border-border px-2 py-3 align-middle whitespace-nowrap";
+const cell = "border-b border-border px-2 py-2 align-middle whitespace-nowrap";
+
+/** A column's heading with a "?" that says what it means. */
+function HeadHint({ label, end = false, children }: { label: string; end?: boolean; children: ReactNode }) {
+	return (
+		<span className={`inline-flex items-center gap-1 ${end ? "justify-end" : ""}`}>
+			{label}
+			<HelpHint label={`About ${label.toLowerCase()}`}>{children}</HelpHint>
+		</span>
+	);
+}
+
+/**
+ * The time left to its auto-stop, ticking each second in its last 10 minutes and each 30 seconds before. Its tooltip
+ * has the time it stops at.
+ */
+function Countdown({ sandbox, now: listNow, live }: { sandbox: Sandbox; now: number; live: boolean }) {
+	const left = sandbox.stopsAt === undefined ? undefined : sandbox.stopsAt - Date.now();
+	const running = sandbox.state === "running" || sandbox.state === "starting";
+	useTick(
+		live && running && left !== undefined && left > -1000,
+		left !== undefined && left < 10 * MINUTE ? 1000 : 30_000,
+	);
+	const now = live ? Date.now() : listNow;
+	const text = countdownText(sandbox, now);
+	const soon = sandbox.stopsAt !== undefined && running && sandbox.stopsAt - now < 10 * MINUTE;
+	const tone =
+		text === "–" ? "text-faint" : soon ? "text-status-waiting" : text === "Always on" ? "text-fg" : "text-muted";
+	const shown = <span className={`tabular-nums ${tone}`}>{text}</span>;
+	if (sandbox.stopsAt === undefined || !running) return shown;
+	const at = new Date(sandbox.stopsAt);
+	return (
+		<Tooltip
+			content={`Stops at ${at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}${sandbox.stopsAt - now > 12 * HOUR ? `, ${at.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}` : ""}`}
+		>
+			<span className="relative z-1">{shown}</span>
+		</Tooltip>
+	);
+}
+
+/** "2h ago" for a time, with the date and time in a tooltip. */
+function When({ at, now }: { at: number; now: number }) {
+	return (
+		<Tooltip content={new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}>
+			<span className="relative z-1 text-muted tabular-nums">{compactAge(at, now)}</span>
+		</Tooltip>
+	);
+}
+
+/** "sbx_9f2k…7d1q": an ID's start and end, which tell them apart; the whole of it in a tooltip. */
+export function shortId(id: string): string {
+	const [prefix, rest] = id.includes("_")
+		? [id.slice(0, id.indexOf("_") + 1), id.slice(id.indexOf("_") + 1)]
+		: ["", id];
+	return rest.length <= 10 ? id : `${prefix}${rest.slice(0, 4)}…${rest.slice(-4)}`;
+}
+
+/** Its ID, shortened, and a button that copies the whole of it. */
+function IdCell({ sandbox }: { sandbox: Sandbox }) {
+	if (sandbox.id.startsWith("pending_")) return <span className="text-faint">–</span>;
+	return (
+		<span className="relative z-1 inline-flex items-center gap-0.5">
+			<Tooltip content={<span className="font-mono text-code">{sandbox.id}</span>}>
+				<span className="font-mono text-code text-muted">{shortId(sandbox.id)}</span>
+			</Tooltip>
+			<CopyButton
+				text={sandbox.id}
+				label={`Copy ${sandbox.name}'s ID`}
+				iconOnly
+				size="xs"
+				variant="ghost"
+				className={onHover}
+			/>
+		</span>
+	);
+}
+
+/** Its latest snapshot's age, or None; its tooltip has when, and that it starts from it. */
+function SnapshotCell({ sandbox, now }: { sandbox: Sandbox; now: number }) {
+	if (sandbox.snapshot === undefined) return <span className="text-faint">None</span>;
+	if (sandbox.snapshot.takenAt === undefined) return <span className="text-muted">Saved</span>;
+	return <When at={sandbox.snapshot.takenAt} now={now} />;
+}
+
+/**
+ * The name, a link to its page, with its address under it, truncated with the whole of each in a tooltip. With a
+ * rename, a pencil beside it under the pointer turns it into a field: Enter or leaving it renames, Escape doesn't.
+ */
+function NameCell({
+	sandbox,
+	href,
+	onLink,
+	calls,
+}: {
+	sandbox: Sandbox;
+	href: string | undefined;
+	onLink: (event: LinkClick) => void;
+	calls: RowCalls;
+}) {
+	const [editing, setEditing] = useState(false);
+	const [draft, setDraft] = useState(sandbox.name);
+	const [busy, setBusy] = useState(false);
+	const input = useRef<HTMLInputElement>(null);
+	const rename = calls.source.rename;
+	const pending = sandbox.id.startsWith("pending_");
+	useEffect(() => {
+		if (editing) input.current?.select();
+	}, [editing]);
+	const save = async () => {
+		const name = draft.trim();
+		if (rename === undefined || busy) return;
+		if (name === "" || name === sandbox.name) {
+			setEditing(false);
+			return;
+		}
+		setBusy(true);
+		try {
+			const since = calls.asked?.(sandbox.id);
+			calls.onChange(await rename(sandbox.id, name), sandbox.id, since);
+			setEditing(false);
+		} catch (caught) {
+			calls.onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't rename ${sandbox.name}. Try again.`) });
+			input.current?.focus();
+		} finally {
+			setBusy(false);
+		}
+	};
+	if (editing)
+		return (
+			<span className="relative z-1 flex min-w-0 flex-col gap-0.5">
+				<input
+					ref={input}
+					className={`${inputClass} h-control-xs py-0 font-medium`}
+					aria-label={`New name for ${sandbox.name}`}
+					value={draft}
+					disabled={busy}
+					spellCheck={false}
+					autoCapitalize="off"
+					onChange={(event) => setDraft(event.currentTarget.value.toLowerCase())}
+					onKeyDown={(event) => {
+						if (event.key === "Enter") {
+							event.preventDefault();
+							void save();
+						} else if (event.key === "Escape") {
+							event.preventDefault();
+							setDraft(sandbox.name);
+							setEditing(false);
+						}
+					}}
+					onBlur={() => void save()}
+				/>
+				<span className="truncate text-xs text-faint">Enter renames it; its address stays. Escape doesn't.</span>
+			</span>
+		);
+	const name =
+		href === undefined ? (
+			<span className="block truncate font-medium text-fg">{sandbox.name}</span>
+		) : (
+			<a
+				className="kt-focusable relative z-1 block truncate font-medium text-fg no-underline hover:underline"
+				href={href}
+				onClick={onLink}
+			>
+				{sandbox.name}
+			</a>
+		);
+	const address = sandbox.hostname === "" ? undefined : sandbox.hostname;
+	return (
+		<span className="flex min-w-0 items-center gap-1">
+			<span className="flex min-w-0 flex-col">
+				{/* The tooltip only where the name is cut short. */}
+				<Tooltip content={sandbox.name} whenTruncated className="w-full">
+					{name}
+				</Tooltip>
+				{address === undefined ? null : (
+					<Tooltip
+						content={
+							<span className="flex flex-col">
+								<span className="font-mono text-code">{address}</span>
+								{sandbox.environment === undefined ? null : (
+									<span className="text-muted">From {sandbox.environment.name}</span>
+								)}
+							</span>
+						}
+					>
+						<span className="relative z-1 block w-fit max-w-full truncate text-sm text-muted">{address}</span>
+					</Tooltip>
+				)}
+			</span>
+			{rename === undefined || pending ? null : (
+				<span className={`relative z-1 flex-none ${onHover}`}>
+					<IconButton
+						size="xs"
+						variant="ghost"
+						label={`Rename ${sandbox.name}`}
+						icon={<PencilIcon size="sm" />}
+						onClick={() => {
+							setDraft(sandbox.name);
+							setEditing(true);
+						}}
+					/>
+				</span>
+			)}
+		</span>
+	);
+}
 
 /** Follows a link in the app without reloading, unless it's a modified click (a new tab). */
 const follow = (navigate: ((path: string) => void) | undefined) => (event: LinkClick) => {
@@ -647,15 +997,16 @@ type LinkClick = Pick<
 };
 
 /**
- * A row's Browser and Desktop: to the sandbox's page, or each to a tab of its own where the console can't frame them
- * (`screens` "tab"), as on the sandbox's page. `openTab` runs during the click, so the browser lets the tab open.
+ * A row's Desktop (or Browser): its page of its own, which the link opens in a new tab, or the screen itself in a tab
+ * where the console can't frame it (`screens` "tab"), as on the sandbox's page. `openTab` runs during the click, so
+ * the browser lets the tab open.
  */
 export function screenLink(
 	screens: SandboxesSource["screens"],
-	navigate: ((path: string) => void) | undefined,
 	openTab: (view: "browser" | "desktop") => void,
 ): (view: "browser" | "desktop") => (event: LinkClick) => void {
-	if (screens !== "tab") return () => follow(navigate);
+	// The link's own new tab.
+	if (screens !== "tab") return () => () => {};
 	return (view) => (event) => {
 		if (event.button !== 0) return;
 		event.preventDefault();
@@ -669,6 +1020,8 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const pending = sandbox.id.startsWith("pending_");
 	const can = sandboxActions(sandbox.state);
 	const windows = can.connect && sandbox.kind === "microvm";
+	// Its one screen: the desktop, where it has one (the browser runs on it), or else its browser.
+	const screen = sandboxScreen(sandbox);
 	const menu = useSandboxMenu(sandbox, {
 		source,
 		...(save === undefined ? {} : { save }),
@@ -712,77 +1065,36 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const href =
 		pending || sandboxHref === undefined ? undefined : (view?: SandboxRowView) => sandboxHref(sandbox.id, view);
 	const onLink = follow(calls.navigate);
-	const onScreen = screenLink(source.screens, calls.navigate, (view) =>
-		popOut(view, undefined, () => source.access(sandbox.id)),
-	);
-	return { pending, can, windows, resume, recover, actions, href, onLink, onScreen };
+	const onScreen = screenLink(source.screens, (view) => popOut(view, undefined, () => source.access(sandbox.id)));
+	return { pending, can, windows, screen, resume, recover, actions, href, onLink, onScreen };
 }
 
-/**
- * The state: its dot in its colour, and its words in its colour only where it needs a look (an error, or one on its
- * way up or down). Running, paused and stopped, most of a list, keep their words quiet.
- */
+/** The state, in its colour. */
 const StateLabel = ({ state }: { state: SandboxState }) => (
-	<StatusLabel status={SANDBOX_STATE_STATUS[state]} quiet={quietState(state)}>
-		{SANDBOX_STATE_LABELS[state]}
-	</StatusLabel>
+	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
 );
 
 /**
- * CPU over the last two minutes, as a line read again every few seconds, or nothing when it isn't running. Without a
- * live source it's the sandbox's recent CPU as listed, which doesn't move. A row in error says what happened in words
- * instead, so it draws no line.
+ * Its CPU, RAM, disk and IO over the last 10 minutes as one small chart, read again every few seconds while it runs;
+ * a click opens its metrics. Without a live source it's its recent CPU as listed, which doesn't move. One that isn't
+ * running, or a row in error, is a faint flat line, still a way into its history.
  */
-function Cpu({
-	sandbox,
-	source,
-	percent = false,
-	compact = false,
-}: {
-	sandbox: Sandbox;
-	source: SandboxesSource;
-	percent?: boolean;
-	/** Under a phone row's state: the figure at the text around it, not the table's fixed-width column. */
-	compact?: boolean;
-}) {
-	const shown = showsCpu(sandbox) && sandbox.state !== "error";
-	const live = useLiveUsage(shown ? source.usageSeries : undefined, sandbox.id, {
-		keepMs: ROW_SPAN_MS,
+function Usage({ sandbox, calls }: { sandbox: Sandbox; calls: RowCalls }) {
+	const running = showsCpu(sandbox) && sandbox.state !== "error";
+	const live = useLiveUsage(running ? calls.source.usageSeries : undefined, sandbox.id, {
+		keepMs: ROW_USAGE_SPAN_MS,
 	});
-	// Nothing to read: a dash in the table's column, as its other empty cells have, and nothing under a phone row's state.
-	if (!shown) return compact ? null : <span className="text-faint">–</span>;
-	const series = seriesOf(live);
-	const line = lineOf(series, (point) => point.cpu, ROW_SPAN_MS);
-	// Without a live source, its recent CPU as listed, untimed.
-	const values = series === undefined ? (live.status === "off" ? sandbox.usage : []) : line.values;
-	const loading = live.status === "loading";
-	const latest = values.at(-1);
-	const busy = latest !== undefined && latest >= 0.8;
-	const peak = Math.round(Math.max(0, ...values) * 100);
-	const label =
-		values.length === 0
-			? `No CPU readings for ${sandbox.name} yet`
-			: `CPU ${series === undefined ? "lately" : "over the last 2 minutes"} for ${sandbox.name}, peak ${peak}%`;
+	if (sandbox.id.startsWith("pending_")) return null;
+	const { onMetrics } = calls;
 	return (
-		<span className="inline-flex items-baseline gap-2">
-			<Sparkline
-				size={compact ? "xs" : "sm"}
-				values={values}
-				// In the sandbox page's CPU colour, so one measure has one colour; busy past 80%, the line and its figure turn the
-				// caution colour, so a glance finds the loaded ones.
-				tone={busy ? "warning" : "done"}
-				label={loading ? `Reading ${sandbox.name}'s CPU` : label}
-				loading={loading}
-				{...(series === undefined ? {} : { timed: line.timed })}
-			/>
-			{percent && sandbox.state === "running" ? (
-				<span
-					className={`tabular-nums ${compact ? "w-10 text-right " : "w-9 text-right text-md "}${busy ? "text-status-approval" : "text-muted"}`}
-				>
-					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
-				</span>
-			) : null}
-		</span>
+		<UsageSparkline
+			name={sandbox.name}
+			series={seriesOf(live)}
+			fallback={live.status === "off" ? sandbox.usage : []}
+			loading={live.status === "loading"}
+			running={running}
+			{...(onMetrics === undefined ? {} : { onOpen: () => onMetrics(sandbox.id) })}
+		/>
 	);
 }
 
@@ -790,35 +1102,11 @@ function Cpu({
 const onHover =
 	"opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 transition-opacity";
 
-/** A link styled as a ghost button: Browser and Desktop open in the console. */
-const ghostLink = `${buttonClass("ghost", "sm")} relative no-underline`;
-
-/**
- * The sandboxes table's columns, fixed so the loaded table and its loading skeleton line up exactly: the name takes
- * what the others leave. The actions column fits Resume (shown under the pointer) and the menu.
- */
-function SandboxColumns({ hosted }: { hosted: boolean }) {
-	return (
-		<colgroup>
-			<col className="w-10" />
-			<col />
-			<col className="w-24" />
-			<col className="w-50" />
-			<col className="w-28" />
-			<col className="w-24" />
-			<col className="w-28" />
-			{hosted ? <col className="w-20" /> : null}
-			<col className="w-16" />
-			{/* The row menu, and Recover where a row has it; Browser and Desktop overlay the columns to its left. */}
-			<col className="w-12" />
-		</colgroup>
-	);
-}
-
 function SandboxRow({
 	sandbox,
 	hosting,
 	now,
+	fixedNow,
 	calls,
 	ticked,
 	onTick,
@@ -826,101 +1114,112 @@ function SandboxRow({
 	sandbox: Sandbox;
 	hosting: HostingMode;
 	now: number;
+	fixedNow: boolean;
 	calls: RowCalls;
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, can, windows, resume, recover, actions, href, onLink, onScreen } = useRowActions(sandbox, calls);
-	const stops = stopsText(sandbox, now);
+	const { pending, can, windows, screen, resume, recover, actions, href, onLink, onScreen } = useRowActions(
+		sandbox,
+		calls,
+	);
 	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
-	// A failed sandbox's two rows share a light error ground and a red edge on the left: one band, read at a glance.
-	const failedGround = "bg-status-error-soft/60 [&>td:first-child]:shadow-[inset_2px_0_0_var(--kt-status-error)]";
-	const tone = ticked ? "bg-selected" : failure === undefined ? "hover:bg-hover" : failedGround;
+	const tone = ticked ? "bg-selected" : "hover:bg-hover";
+	const spec = sandboxSpec(sandbox);
 	const row = (
-		// The name's link covers the row (its ::after), so anywhere on it opens the sandbox; the tick box and the buttons
-		// sit above it.
+		// A link under the whole row opens the sandbox; the tick box, the name, the ID, the chart and the buttons sit above
+		// it, and so do the bits with tooltips.
 		<tr
 			className={`kt-sandbox-row group/row relative ${tone} ${failure === undefined ? "" : "[&>td]:border-b-0 [&>td]:pb-1"}`}
 			data-sandbox={sandbox.id}
 		>
 			<td className={`${cell} w-0 pr-0`}>
+				{href === undefined ? null : (
+					// biome-ignore lint/a11y/useAnchorContent: a pointer's way in only; the name is the link a keyboard and a screen reader use.
+					<a className="absolute inset-0" href={href()} tabIndex={-1} aria-hidden="true" onClick={onLink} />
+				)}
 				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
 			</td>
 			{/* The name takes the room the other columns leave, and truncates, so the row's actions never go off the edge. */}
-			<td className={`${cell} w-full min-w-40 max-w-0`}>
-				{href === undefined ? (
-					<span className="block truncate font-medium text-fg" title={sandbox.name}>
-						{sandbox.name}
+			<td className={`${cell} w-full min-w-44 max-w-0`}>
+				<NameCell sandbox={sandbox} href={href?.()} onLink={onLink} calls={calls} />
+			</td>
+			<td className={cell}>
+				<IdCell sandbox={sandbox} />
+			</td>
+			<td className={cell}>
+				{sandbox.base?.outdated === true ? (
+					<span className="relative z-1 flex flex-col items-start gap-0.5">
+						<StateLabel state={sandbox.state} />
+						<BaseOutdatedBadge base={sandbox.base} now={now} />
 					</span>
 				) : (
-					<a
-						className="kt-focusable block truncate font-medium text-fg no-underline after:absolute after:inset-0"
-						href={href()}
-						title={sandbox.name}
-						onClick={onLink}
-					>
-						{sandbox.name}
-					</a>
+					<StateLabel state={sandbox.state} />
 				)}
 			</td>
 			<td className={cell}>
-				<StateLabel state={sandbox.state} />
+				<When at={sandbox.createdAt} now={now} />
 			</td>
 			<td className={cell}>
-				{SANDBOX_KIND_LABELS[sandbox.kind]}
-				<span className="text-muted">, {sizeText(sandbox.resources ?? sandbox.size)}</span>
+				<Tooltip
+					content={`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(spec)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
+				>
+					<span className="relative z-1 flex flex-col">
+						<span>{SANDBOX_KIND_LABELS[sandbox.kind]}</span>
+						<span className="text-sm text-muted">{sizeText(spec)}</span>
+					</span>
+				</Tooltip>
 			</td>
 			<td className={cell}>
-				{sandbox.environment === undefined ? <span className="text-faint">–</span> : sandbox.environment.name}
+				<Countdown sandbox={sandbox} now={now} live={!fixedNow} />
 			</td>
 			<td className={cell}>
-				<span className={stops === "–" ? "text-faint" : stops === "Always on" ? "text-fg" : "text-muted"}>{stops}</span>
-			</td>
-			<td className={cell}>
-				<Cpu sandbox={sandbox} source={calls.source} percent />
+				<SnapshotCell sandbox={sandbox} now={now} />
 			</td>
 			{hosting === "hosted" ? (
 				<td className={`${cell} text-right tabular-nums`}>{costText(sandbox.costCents ?? 0)}</td>
 			) : null}
-			<td className={`${cell} text-right`}>
-				<span className="text-muted tabular-nums" title={new Date(sandbox.createdAt).toLocaleString("en-GB")}>
-					{compactAge(sandbox.createdAt, now)}
-				</span>
+			<td className={cell}>
+				<Usage sandbox={sandbox} calls={calls} />
 			</td>
 			<td className={`${cell} w-0 text-right`}>
-				<span className="relative flex items-center justify-end gap-1">
-					{windows && href !== undefined ? (
-						// Over the columns to its left while shown, so the hidden buttons take no width from every row. The
-						// card's white under the row's own hover tint matches the row it sits on.
-						<span className={`absolute right-full mr-1 rounded-control bg-raised ${onHover}`}>
-							<span className="flex gap-1 rounded-control bg-hover pl-2">
-								<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
-									<GlobeIcon size="sm" />
-									<span className={buttonLabelClass}>Browser</span>
-								</a>
-								<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
-									<DesktopIcon size="sm" />
-									<span className={buttonLabelClass}>Desktop</span>
-								</a>
-							</span>
-						</span>
-					) : can.recover && failure === undefined ? (
-						// Over Created, as Browser and Desktop are: the column keeps only the menu's width.
-						<span className="absolute right-full mr-1 rounded-control bg-raised">
-							<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
-								Recover
+				<span className="relative z-1 flex items-center justify-end gap-0.5">
+					{windows && screen !== undefined && href !== undefined ? (
+						// An icon under the pointer, so it takes little room from every row and never covers its usage.
+						<Tooltip content={screen === "desktop" ? "Open its desktop in a new tab" : "Open its browser in a new tab"}>
+							<a
+								className={`${buttonClass("ghost", "xs", true)} no-underline ${onHover}`}
+								href={href(screen)}
+								target="_blank"
+								rel="noopener"
+								aria-label={`${screen === "desktop" ? "Desktop" : "Browser"} of ${sandbox.name}`}
+								onClick={onScreen(screen)}
+							>
+								{screen === "desktop" ? <DesktopIcon size="sm" /> : <GlobeIcon size="sm" />}
+							</a>
+						</Tooltip>
+					) : can.recover ? (
+						<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+							Recover
+						</Button>
+					) : can.resume ? (
+						<span className={onHover}>
+							<Button size="sm" variant="ghost" icon={<PlayIcon size="sm" />} onClick={resume}>
+								Resume
 							</Button>
 						</span>
-					) : can.resume ? (
-						<span className={`absolute right-full mr-1 rounded-control bg-raised ${onHover}`}>
-							<span className="flex rounded-control bg-hover pl-2">
-								<Button size="sm" variant="ghost" icon={<PlayIcon size="sm" />} onClick={resume}>
-									Resume
-								</Button>
-							</span>
-						</span>
 					) : null}
+					{href === undefined ? null : (
+						<a
+							className={`${buttonClass("ghost", "xs", true)} no-underline`}
+							href={href()}
+							aria-label={`Open ${sandbox.name}`}
+							onClick={onLink}
+						>
+							<ChevronRightIcon size="sm" />
+						</a>
+					)}
 					{actions}
 				</span>
 			</td>
@@ -930,20 +1229,13 @@ function SandboxRow({
 	return (
 		<>
 			{row}
-			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : failedGround}`}>
+			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : ""}`}>
 				<td className="border-b border-border p-0" />
-				{/* What went wrong under the name, and what to do about it at the end of the same line. */}
-				<td className="border-b border-border px-2 pt-0 pb-2.5 text-sm" colSpan={hosting === "hosted" ? 9 : 8}>
-					{/* The fix directly under the problem it answers, on the message's own left edge: one eye movement, and
-					    the same place on every failed row. */}
-					<span className="flex min-w-0 flex-col items-start gap-2">
-						<span className="min-w-0 text-fg">{failure}</span>
-						{can.recover ? (
-							<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
-								Recover
-							</Button>
-						) : null}
-					</span>
+				<td
+					className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error"
+					colSpan={hosting === "hosted" ? 10 : 9}
+				>
+					{failure}
 				</td>
 			</tr>
 		</>
@@ -951,8 +1243,9 @@ function SandboxRow({
 }
 
 /**
- * A phone's row, all of it a link to the sandbox's page: the name with its machine and when it stops under it, its
- * state with its CPU under that on the right, and a chevron. The page has the actions. The tick box is beside the link, not in it.
+ * A phone's row, a link to the sandbox's page: the name with its state beside it, the machine and when it stops under
+ * it, then its usage chart and a chevron. The page has the actions. The tick box and the usage chart (a button that
+ * opens its metrics) are beside the link, not in it.
  */
 function SandboxPhoneRow({
 	sandbox,
@@ -969,70 +1262,50 @@ function SandboxPhoneRow({
 }) {
 	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
-	// Where it runs and when it stops as one phrase ("backend-dev, stops in 52m"), so they don't read as one name.
-	const stopText = stops === "–" ? undefined : stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`;
-	const whereWhen = [
-		sandbox.environment?.name,
-		stopText === undefined || sandbox.environment === undefined ? stopText : stopText.toLowerCase(),
-	]
-		.filter((part) => part !== undefined)
-		.join(", ");
-	// Two columns: what it is on the left (its name, then its machine, environment and stop time), and how it is on the
-	// right (its state, then its CPU), so every healthy card stays two lines and the figures line up down the list.
 	const body = (
-		<div className="flex min-w-0 flex-1 items-start gap-3">
-			<div className="flex min-w-0 flex-1 flex-col gap-1">
-				<span className="min-w-0 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				{sandbox.state === "error" && sandbox.error !== undefined ? (
-					<span className="text-sm text-fg">{sandbox.error}</span>
-				) : (
-					// The machine on one line, then where it runs and when it stops on the next: the same lines on every card.
-					<span className="flex min-w-0 flex-col text-sm text-muted">
-						<span className="truncate">
-							{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
-						</span>
-						{whereWhen === "" ? null : <span className="truncate">{whereWhen}</span>}
+		<div className="flex min-w-0 flex-1 flex-col gap-1">
+			<div className="flex min-w-0 items-center gap-3">
+				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
+				<StateLabel state={sandbox.state} />
+			</div>
+			{sandbox.state === "error" && sandbox.error !== undefined ? (
+				<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
+			) : (
+				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
+					<span>
+						{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandboxSpec(sandbox))}
 					</span>
-				)}
-			</div>
-			{/* The chevron on the state's line, in a slot the CPU line keeps too, so state, figure and chevron share
-			    one right edge on every card. */}
-			<div className="flex flex-none flex-col items-end gap-1">
-				<span className="flex items-center gap-1">
-					<StateLabel state={sandbox.state} />
-					{href === undefined ? null : (
-						<ChevronRightIcon size="sm" className="flex-none text-faint" aria-hidden="true" />
-					)}
+					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
+					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
+					<BaseOutdatedBadge base={sandbox.base} now={now} />
 				</span>
-				<span className="flex items-center gap-1 text-sm not-has-[.kt-sparkline]:hidden">
-					<Cpu sandbox={sandbox} source={calls.source} percent compact />
-					{href === undefined ? null : <span className="w-4 flex-none" aria-hidden="true" />}
-				</span>
-			</div>
+			)}
 		</div>
 	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 flex-wrap items-start gap-x-3 border-b border-border px-3 first:rounded-t-panel last:rounded-b-panel last:border-b-0 ${ticked ? "bg-selected" : sandbox.state === "error" ? "bg-status-error-soft/60 shadow-[inset_2px_0_0_var(--kt-status-error)]" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 flex-wrap items-center gap-x-3 border-b border-border ${ticked ? "bg-selected" : ""}`}
 			data-sandbox={sandbox.id}
 		>
-			{/* On the name's line, not the middle of the row: it selects the sandbox the name names. */}
-			<span className="flex h-(--kt-control-xs) items-center self-start pt-3 box-content">
-				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
-			</span>
+			<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
 			{href === undefined ? (
 				<div className="flex min-w-0 flex-1 items-center gap-2 py-3">
 					{body}
+					<Usage sandbox={sandbox} calls={calls} />
 					{actions}
 				</div>
 			) : (
-				<a
-					className="kt-focusable flex min-w-0 flex-1 items-center gap-2 py-3 text-inherit no-underline"
-					href={href()}
-					onClick={follow(calls.navigate)}
-				>
-					{body}
-				</a>
+				<>
+					<a
+						className="kt-focusable flex min-w-0 flex-1 items-center gap-2 py-3 text-inherit no-underline"
+						href={href()}
+						onClick={follow(calls.navigate)}
+					>
+						{body}
+					</a>
+					<Usage sandbox={sandbox} calls={calls} />
+					<ChevronRightIcon size="sm" className="flex-none text-faint" />
+				</>
 			)}
 			{can.recover && href !== undefined ? (
 				<div className="basis-full pb-3 pl-6.5">
@@ -1179,7 +1452,7 @@ export function ShapeFields({
 					marks={[range.default]}
 					onChange={onMemory}
 				/>
-				<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+				<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
 					<span>Shared CPU: an isolate runs on its account's VM and shares its CPU.</span>
 					{cents === undefined ? null : <span>{costText(cents)} an hour.</span>}
 				</p>
@@ -1192,7 +1465,7 @@ export function ShapeFields({
 	// No disk is promised: it is the host's to give (by its sizes, or the snapshot it starts from), and the sandbox shows
 	// the disk it got once it runs.
 	const summary = (
-		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
 			<span>
 				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory
 				{price}
@@ -1261,6 +1534,135 @@ export function ShapeFields({
 /** Where New sandbox's shapes are: read (or the source can't say, so the defaults stand), being read, or not read. */
 type ShapesRead = "ready" | "reading" | "failed";
 
+/** New sandbox's read of the account's templates: loading, read, or failed with nothing read yet. */
+export type TemplatesRead =
+	| { readonly status: "loading" }
+	| { readonly status: "failed" }
+	| { readonly status: "ready"; readonly value: readonly Template[] };
+
+/**
+ * The template asked for in New sandbox (picked, or named by the page that opened it): the list's record of it, still
+ * `pending` while the list is read, or a `problem` once it can't be had. Create waits on the first and shows the
+ * second, so a sandbox asked for from a template is never quietly made without it.
+ */
+export function requestedTemplate(
+	templateId: string,
+	read: TemplatesRead,
+	type: NewSandboxType,
+): { readonly template?: Template; readonly pending: boolean; readonly problem?: string } {
+	if (templateId === "") return { pending: false };
+	// An isolate takes no template, but only one the user chose drops it: one picked for them keeps it, refused.
+	if (type.kind === "isolate")
+		return type.chosen
+			? { pending: false }
+			: {
+					pending: false,
+					problem:
+						"A template makes a microVM, and none of this organisation's hosts run them. Pick None or choose Isolate to make a clean isolate.",
+				};
+	if (read.status === "loading") return { pending: true };
+	if (read.status === "failed")
+		return { pending: false, problem: "Kantel couldn't read the templates. Close this and try again, or pick None." };
+	const template = read.value.find((entry) => entry.id === templateId);
+	return template === undefined
+		? { pending: false, problem: "That template isn't in this account. Pick another, or None." }
+		: { template, pending: false };
+}
+
+/** The type New sandbox makes, and whether the user chose it rather than having it picked for them. */
+export interface NewSandboxType {
+	readonly kind: SandboxKind;
+	readonly chosen: boolean;
+}
+
+/**
+ * The type New sandbox makes: the one chosen, else a microVM. Where no host runs microVMs an isolate is all that can
+ * be made, so it's an isolate, chosen only if the user chose it.
+ */
+export function newSandboxType(chosen: SandboxKind | undefined, microvms: boolean): NewSandboxType {
+	if (!microvms) return { kind: "isolate", chosen: chosen === "isolate" };
+	return { kind: chosen ?? "microvm", chosen: chosen !== undefined };
+}
+
+/** What New sandbox's form asks for. */
+export interface NewSandboxForm {
+	readonly accountId: string;
+	readonly name: string;
+	readonly kind: SandboxKind;
+	readonly shape: SandboxShape;
+	/** Whether the sliders were moved from the template's own vCPUs and memory. */
+	readonly shapeChosen: boolean;
+	readonly from: string;
+	readonly environment: string;
+	/** The template a microVM is made from, resolved by `requestedTemplate`. */
+	readonly template?: Template;
+	readonly autoStop: string;
+}
+
+/**
+ * The create New sandbox sends. A microVM from a template whose sliders weren't moved names no shape, so the
+ * template's own vCPUs and memory apply; moved, the shape overrides them, and the sandbox boots fresh (a template's
+ * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one.
+ */
+export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
+	const template = form.kind === "microvm" ? form.template : undefined;
+	return {
+		accountId: form.accountId,
+		...(form.name === "" ? {} : { name: form.name }),
+		kind: form.kind,
+		...(template !== undefined && !form.shapeChosen ? {} : { shape: form.shape }),
+		...(form.from === "" || template !== undefined ? {} : { fromSnapshot: form.from }),
+		...(form.environment === "" ? {} : { environmentId: form.environment }),
+		...(template === undefined ? {} : { templateId: template.id }),
+		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
+	};
+}
+
+/**
+ * Reads the account's templates each time New sandbox opens, and again while one builds so the picker's hint keeps up.
+ * A failed read keeps the last list, and is shown only when there's none.
+ */
+function useTemplatesRead(
+	open: boolean,
+	templates: (() => Promise<readonly Template[]>) | undefined,
+	pollMs: number,
+): TemplatesRead {
+	const [read, setRead] = useState<TemplatesRead>(
+		templates === undefined ? { status: "ready", value: [] } : { status: "loading" },
+	);
+	const [generation, setGeneration] = useState(0);
+	// The page passes a new function each render: the read follows the latest without reading again for it.
+	const latest = useRef(templates);
+	latest.current = templates;
+	const offered = templates !== undefined;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is a read again.
+	useEffect(() => {
+		const list = latest.current;
+		if (!open || list === undefined) return;
+		let live = true;
+		list().then(
+			(value) => {
+				if (live) setRead({ status: "ready", value });
+			},
+			() => {
+				// A fresh object keeps the polling going after a failed read of a list already shown.
+				if (live) setRead((current) => (current.status === "ready" ? { ...current } : { status: "failed" }));
+			},
+		);
+		return () => {
+			live = false;
+		};
+	}, [open, offered, generation]);
+	const wait = open && read.status === "ready" ? buildPollMs(read.value, pollMs) : undefined;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: each read schedules the next while a template builds.
+	useEffect(() => {
+		if (wait === undefined) return;
+		const timer = setTimeout(() => setGeneration((value) => value + 1), wait);
+		return () => clearTimeout(timer);
+	}, [wait, read]);
+	return read;
+}
+
 export function NewSandboxDialog({
 	open,
 	account,
@@ -1268,6 +1670,9 @@ export function NewSandboxDialog({
 	shapes: loadShapes,
 	savedSnapshots,
 	environments,
+	templates,
+	template: initialTemplate,
+	now,
 	onClose,
 	onCreate,
 }: {
@@ -1277,11 +1682,14 @@ export function NewSandboxDialog({
 	shapes?: () => Promise<SandboxShapes>;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
 	environments?: () => Promise<readonly Environment[]>;
+	templates?: () => Promise<readonly Template[]>;
+	template?: string;
+	now: number;
 	onClose: () => void;
 	onCreate: (input: CreateSandboxInput) => void;
 }) {
 	const [name, setName] = useState("");
-	const [kind, setKind] = useState<SandboxKind>("microvm");
+	const [chosenKind, setChosenKind] = useState<SandboxKind>();
 	const [shapes, setShapes] = useState<SandboxShapes>(DEFAULT_SANDBOX_SHAPES);
 	const [vcpus, setVcpus] = useState(DEFAULT_SANDBOX_SHAPES.microvm.vcpus.default);
 	const [memoryMb, setMemoryMb] = useState(DEFAULT_SANDBOX_SHAPES.microvm.memoryMb.default);
@@ -1294,6 +1702,10 @@ export function NewSandboxDialog({
 	// A source that says what its hosts offer: nothing may be chosen or created until it has, so a create never goes
 	// with the sample's figures. One that can't say keeps the defaults.
 	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
+	const [templateId, setTemplateId] = useState(initialTemplate ?? "");
+	const tplRead = useTemplatesRead(open, templates, TEMPLATE_POLL_MS);
+	// Whether the sliders were moved from a picked template's own vCPUs and memory.
+	const [shapeChosen, setShapeChosen] = useState(false);
 	const asked = useRef(false);
 	const readShapesNow = useCallback(() => {
 		if (loadShapes === undefined) return;
@@ -1315,8 +1727,6 @@ export function NewSandboxDialog({
 					setMemoryMb(start.memoryMb);
 				}
 				setIsolateMb(onGrid(read.isolate.memoryMb, read.isolate.memoryMb.default));
-				// No host runs microVMs: an isolate is all that can be made.
-				if (!microvmsAvailable(read)) setKind("isolate");
 				setShapesRead("ready");
 			},
 			() => setShapesRead("failed"),
@@ -1330,25 +1740,48 @@ export function NewSandboxDialog({
 		readShapesNow();
 	}, [open, savedSnapshots, environments, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
-	const fromOptions = saved.filter((entry) => entry.kind === kind);
-	const shape: SandboxShape = kind === "isolate" ? { vcpus: 0, memoryMb: isolateMb } : { vcpus, memoryMb };
-	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
 	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
-	const ready = valid && shapesRead === "ready" && shapeCreatable(shapes, kind, shape);
+	const type = newSandboxType(chosenKind, !noMicrovms);
+	const kind = type.kind;
+	const fromOptions = saved.filter((entry) => entry.kind === kind);
+	const tpls = tplRead.status === "ready" ? tplRead.value : [];
+	const requested = requestedTemplate(templateId, tplRead, type);
+	const picked = requested.template;
+	// A template's sandbox gets the template's own vCPUs and memory until a slider moves.
+	const ownShape = picked !== undefined && !shapeChosen;
+	const shape: SandboxShape =
+		kind === "isolate"
+			? { vcpus: 0, memoryMb: isolateMb }
+			: ownShape
+				? { vcpus: picked.spec.vcpus, memoryMb: picked.spec.memoryMb }
+				: { vcpus, memoryMb };
+	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
+	const ready =
+		valid &&
+		shapesRead === "ready" &&
+		(ownShape || shapeCreatable(shapes, kind, shape)) &&
+		!requested.pending &&
+		requested.problem === undefined;
 	const submit = () => {
 		if (!ready) return;
-		onCreate({
-			accountId: account.id,
-			...(name === "" ? {} : { name }),
-			kind,
-			shape,
-			...(from === "" ? {} : { fromSnapshot: from }),
-			...(environment === "" ? {} : { environmentId: environment }),
-			...(autoStop === "never" ? {} : { autoStopMinutes: Number(autoStop) }),
-		});
+		onCreate(
+			newSandboxInput({
+				accountId: account.id,
+				name,
+				kind,
+				shape,
+				shapeChosen,
+				from,
+				environment,
+				...(picked === undefined ? {} : { template: picked }),
+				autoStop,
+			}),
+		);
 		setName("");
 		setFrom("");
 		setEnvironment("");
+		setTemplateId("");
+		setShapeChosen(false);
 	};
 	return (
 		<Dialog
@@ -1359,7 +1792,7 @@ export function NewSandboxDialog({
 			actions={
 				<>
 					<Button onClick={onClose}>Cancel</Button>
-					<Button type="submit" variant="primary" disabled={!ready}>
+					<Button type="submit" variant="primary" busy={requested.pending} disabled={!ready}>
 						Create
 					</Button>
 				</>
@@ -1383,9 +1816,9 @@ export function NewSandboxDialog({
 							{ value: "isolate", label: "Isolate" },
 						]}
 						value={kind}
-						onChange={setKind}
+						onChange={setChosenKind}
 					/>
-					<span className="text-sm text-muted">
+					<span className="text-xs text-muted">
 						{noMicrovms
 							? "None of this organisation's hosts run microVMs, so only isolates can be made here."
 							: kind === "microvm"
@@ -1393,8 +1826,38 @@ export function NewSandboxDialog({
 								: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
 					</span>
 				</div>
+				{/* A requested template stays in view when an isolate was picked for the user, refused until they choose. */}
+				{(kind === "microvm" ? tpls.length > 0 || templateId !== "" : templateId !== "" && !type.chosen) ? (
+					<SelectField
+						label="Template"
+						value={templateId}
+						onChange={(event) => {
+							setTemplateId(event.currentTarget.value);
+							setShapeChosen(false);
+						}}
+						hint={
+							picked !== undefined
+								? templatePickHint(picked, now, shape)
+								: requested.pending
+									? "Reading the templates."
+									: "Experimental."
+						}
+						{...(requested.problem === undefined ? {} : { error: requested.problem })}
+						options={[
+							{ value: "", label: "None: Kantel's base image" },
+							// The one asked for, until the list has it: it stays picked rather than becoming None.
+							...(templateId === "" || tpls.some((entry) => entry.id === templateId)
+								? []
+								: [{ value: templateId, label: templateId }]),
+							...tpls.map((entry) => ({
+								value: entry.id,
+								label: `${entry.name} (v${entry.version}, ${resourcesText(entry.spec)})`,
+							})),
+						]}
+					/>
+				) : null}
 				{shapesRead === "reading" ? (
-					<p className="text-sm text-muted" role="status">
+					<p className="text-xs text-muted" role="status">
 						Reading what the hosts offer…
 					</p>
 				) : shapesRead === "failed" ? (
@@ -1415,11 +1878,22 @@ export function NewSandboxDialog({
 						hosting={hosting}
 						shape={shape}
 						onVcpus={(next) => {
+							// From what the sliders show: a picked template's own shape until one moves.
+							setShapeChosen(true);
 							setVcpus(next);
-							setMemoryMb((current) => fitMemory(shapes, next, current));
+							setMemoryMb(fitMemory(shapes, next, shape.memoryMb));
 						}}
-						onMemory={(next) => (kind === "isolate" ? setIsolateMb(next) : setMemoryMb(next))}
+						onMemory={(next) => {
+							if (kind === "isolate") {
+								setIsolateMb(next);
+								return;
+							}
+							setShapeChosen(true);
+							setVcpus(shape.vcpus);
+							setMemoryMb(next);
+						}}
 						onPreset={(next) => {
+							setShapeChosen(true);
 							setVcpus(next.vcpus);
 							setMemoryMb(next.memoryMb);
 						}}
@@ -1439,7 +1913,7 @@ export function NewSandboxDialog({
 					onChange={(event) => setAutoStop(event.currentTarget.value)}
 					options={AUTO_STOP_CHOICES}
 				/>
-				{savedSnapshots === undefined ? null : (
+				{savedSnapshots === undefined || picked !== undefined ? null : (
 					<SelectField
 						label="Start from"
 						value={from}
@@ -1452,62 +1926,5 @@ export function NewSandboxDialog({
 				)}
 			</div>
 		</Dialog>
-	);
-}
-
-/**
- * Typical cell text for each column after the name. A placeholder is that text drawn as a bar, its glyphs transparent,
- * so the auto-sized columns come out the width the loaded rows give them.
- */
-const SKELETON_TEXT = ["Running", "MicroVM, 8 vCPU, 16 GB", "backend-dev", "in 52m", "CPU 00% ~~~~~~", "40m"] as const;
-const SKELETON_NAMES = [
-	"preview-pr-412",
-	"scratch",
-	"alpine-worker",
-	"eval-runner-12",
-	"ci-docker",
-	"api-server",
-	"browser-agent",
-	"dev-stack",
-];
-
-export function SandboxesTableSkeleton({ rows = 8 }: { rows?: number }) {
-	return (
-		<div className={tableFrame} aria-hidden="true">
-			<table className="w-full table-fixed border-collapse text-left text-md">
-				<SandboxColumns hosted={false} />
-				<thead>
-					<tr>
-						<th className={`${head} w-0 pr-0`}>
-							<span className={`${skeletonClass} size-3.5`} />
-						</th>
-						{["Name", "State", "Machine", "Environment", "Stops", "CPU"].map((label) => (
-							<th key={label} className={head}>
-								{label}
-							</th>
-						))}
-						<th className={`${head} text-right`}>Created</th>
-						<th className={head} />
-					</tr>
-				</thead>
-				<tbody>
-					{Array.from({ length: rows }, (_, row) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
-						<tr key={row}>
-							<td className={`${cell} w-0 pr-0`}>
-								<span className={`${skeletonClass} size-3.5`} />
-							</td>
-							{[SKELETON_NAMES[row % SKELETON_NAMES.length] ?? "sandbox", ...SKELETON_TEXT].map((text, column) => (
-								// biome-ignore lint/suspicious/noArrayIndexKey: fixed placeholder columns.
-								<td key={column} className={`${cell} ${column === 6 ? "text-right" : ""}`}>
-									<span className={`${skeletonClass} inline-block text-transparent select-none`}>{text}</span>
-								</td>
-							))}
-							<td className={cell} />
-						</tr>
-					))}
-				</tbody>
-			</table>
-		</div>
 	);
 }

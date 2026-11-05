@@ -43,7 +43,12 @@ function cluster(options: { now?: () => number; store?: ClusterStore } = {}) {
 		return replica.local();
 	};
 	const forwarded: string[] = [];
+	/** Usage ticks passed on: the peer, and the tick's `seq`. */
+	const sharedUsage: string[] = [];
 	const transport: PeerTransport = {
+		usage: async (to, _hostId, usage) => {
+			sharedUsage.push(`${to.id} ${(usage as { seq?: number }).seq}`);
+		},
 		call: (to, hostId, method, params, callOptions) => {
 			forwarded.push(`${to.id} ${method}`);
 			return peer(to.id).call(hostId, method, params, callOptions);
@@ -84,7 +89,7 @@ function cluster(options: { now?: () => number; store?: ClusterStore } = {}) {
 		const token = await service.createJoinToken({ name: "box" });
 		return (await service.register({ token: token.token, facts: facts() })).hostId;
 	};
-	return { store, replica, join, forwarded };
+	return { store, replica, join, forwarded, sharedUsage };
 }
 
 describe("gateway replicas", () => {
@@ -321,6 +326,45 @@ describe("usage ticks passed on to other replicas", () => {
 		// Once drained, the next goes at once.
 		a.shareUsage("host_x", { at: 1000 });
 		await vi.waitFor(() => expect(sent.at(-1)).toBe("rep_b host_x 1000"));
+	});
+});
+
+describe("usage ticks from a host held here", () => {
+	it("are passed on only once taken here, in order, and not when taking them failed", async () => {
+		const { replica, join, sharedUsage } = cluster();
+		const a = await replica("rep_a");
+		await replica("rep_b");
+		const hostId = await join(a.service);
+		const pending = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
+		a.service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordUsage: (_, usage) =>
+				new Promise<void>((resolve, reject) => {
+					pending.set(usage.seq ?? 0, { resolve, reject });
+				}),
+		});
+		await a.node.tick();
+		const host = new FakeHost(a.service, hostId, ["usage", "usage-acks"]);
+		host.connect();
+		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+		const usage = (seq: number) => ({
+			seq,
+			run: "r1",
+			at: 1_793_793_600_000 + seq * 5000,
+			intervalMs: 5000,
+			host: { cpu: 0.1, memUsedBytes: 1, memTotalBytes: 2, diskUsedBytes: 3, diskTotalBytes: 4 },
+			sandboxes: [],
+		});
+		for (const seq of [1, 2, 3]) host.send({ type: "usage", usage: usage(seq) });
+		await vi.waitFor(() => expect(pending.size).toBe(3));
+		await tick();
+		// Nothing goes on before it is taken here.
+		expect(sharedUsage).toEqual([]);
+		pending.get(1)?.resolve();
+		pending.get(2)?.reject(new Error("store down"));
+		pending.get(3)?.resolve();
+		await vi.waitFor(() => expect(sharedUsage).toEqual(["rep_b 1", "rep_b 3"]));
 	});
 });
 

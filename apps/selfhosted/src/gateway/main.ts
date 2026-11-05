@@ -194,7 +194,9 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
+		...(components.liveRelay === undefined ? {} : { liveRelay: components.liveRelay }),
 		...(secretsKey === undefined ? {} : { secretsKey }),
+		...(cfg.compute.imagePatching === undefined ? {} : { imagePatching: cfg.compute.imagePatching }),
 		// KANTEL_BUNDLES_DIR, else beside the bootstrap file: the directory the gateway keeps on disk (Compose's
 		// gatewaystate volume).
 		...(cfg.compute.mounts === true
@@ -207,6 +209,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 				}
 			: {}),
 		...(mailer === undefined ? {} : { invites: computeInvites(mailer, cfg.publicOrigin, components.identity) }),
+		...(cfg.compute.templates === true ? { templates: true } : {}),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(

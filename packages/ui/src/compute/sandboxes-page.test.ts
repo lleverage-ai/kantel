@@ -1,11 +1,26 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { Sandbox, SandboxState } from "./compute-model.ts";
+import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
+import type { Sandbox, SandboxState, Template } from "./compute-model.ts";
+import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
+import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
-import { QUICK_SANDBOX, sandboxesShown, screenLink, showsCpu } from "./sandboxes-page.tsx";
+import {
+	countdownText,
+	newSandboxInput,
+	newSandboxType,
+	QUICK_SANDBOX,
+	requestedTemplate,
+	SandboxesPage,
+	sandboxesShown,
+	screenLink,
+	shortId,
+	showsCpu,
+} from "./sandboxes-page.tsx";
 import { SettingsFrame } from "./settings-nav.tsx";
+import { sampleTemplates } from "./template-fixtures.ts";
 
 const box = (name: string, state: SandboxState): Sandbox => ({
 	id: `sbx_${name}`,
@@ -89,7 +104,7 @@ describe("a sandbox's page", () => {
 		expect(sandboxViewShown("egress", running)).toBe("overview");
 	});
 
-	it("opens a row's Browser and Desktop in a tab where the console can't frame them, and on its page elsewhere", () => {
+	it("opens a row's Desktop in a tab where the console can't frame it, and leaves its link's new tab elsewhere", () => {
 		const click = (button = 0) => {
 			const event = {
 				button,
@@ -104,25 +119,24 @@ describe("a sandbox's page", () => {
 			};
 			return event;
 		};
-		const went: string[] = [];
 		const tabs: string[] = [];
-		const navigate = (path: string) => went.push(path);
 		const openTab = (view: string) => tabs.push(view);
 
 		const local = click();
-		screenLink("tab", navigate, openTab)("desktop")(local);
-		expect([local.prevented, tabs, went]).toEqual([true, ["desktop"], []]);
+		screenLink("tab", openTab)("desktop")(local);
+		expect([local.prevented, tabs]).toEqual([true, ["desktop"]]);
 		// Not a primary click: left to the browser.
 		const middle = click(1);
-		screenLink("tab", navigate, openTab)("browser")(middle);
+		screenLink("tab", openTab)("browser")(middle);
 		expect([middle.prevented, tabs]).toEqual([false, ["desktop"]]);
 
+		// The console's screen page, in the new tab its link opens: the click is the browser's.
 		for (const screens of ["console", undefined] as const) {
 			const hosted = click();
-			screenLink(screens, navigate, openTab)("desktop")(hosted);
-			expect(hosted.prevented).toBe(true);
+			screenLink(screens, openTab)("desktop")(hosted);
+			expect(hosted.prevented).toBe(false);
 		}
-		expect([went, tabs]).toEqual([["/sandboxes/sbx_a/desktop", "/sandboxes/sbx_a/desktop"], ["desktop"]]);
+		expect(tabs).toEqual(["desktop"]);
 	});
 
 	it("reads a running sandbox's files (over E2E where it is), and no snapshot of an end-to-end one", () => {
@@ -152,7 +166,7 @@ describe("a sandbox's page", () => {
 });
 
 describe("the sandboxes list", () => {
-	it("draws CPU while a sandbox runs or has just failed, isolates and new ones too, never for a stopped one", () => {
+	it("reads usage live while a sandbox runs or has just failed, isolates and new ones too, never for a stopped one", () => {
 		expect(showsCpu({ state: "running" })).toBe(true);
 		expect(showsCpu({ state: "stopping" })).toBe(true);
 		expect(showsCpu({ state: "error" })).toBe(true);
@@ -171,12 +185,69 @@ describe("the sandboxes list", () => {
 			box("web", "stopped"),
 		];
 		const names = (list: readonly Sandbox[]) => list.map((each) => each.name);
-		expect(names(sandboxesShown(all, "all", ""))).toEqual(["api-server", "API-worker", "eval", "web"]);
-		expect(names(sandboxesShown(all, "all", "  api "))).toEqual(["api-server", "API-worker"]);
+		const shown = (state: SandboxFilters["state"], search: string) =>
+			names(sandboxesShown(all, { ...NO_FILTERS, state, search }, 0));
+		expect(shown("all", "")).toEqual(["api-server", "API-worker", "eval", "web"]);
+		expect(shown("all", "  api ")).toEqual(["api-server", "API-worker"]);
 		// Paused counts as stopped; a failed one only under Error.
-		expect(names(sandboxesShown(all, "stopped", ""))).toEqual(["API-worker", "web"]);
-		expect(names(sandboxesShown(all, "error", ""))).toEqual(["eval"]);
-		expect(names(sandboxesShown(all, "running", "api"))).toEqual(["api-server"]);
+		expect(shown("stopped", "")).toEqual(["API-worker", "web"]);
+		expect(shown("error", "")).toEqual(["eval"]);
+		expect(shown("running", "api")).toEqual(["api-server"]);
+	});
+
+	it("searches a sandbox's address and ID as well as its name", () => {
+		const all = [
+			{ ...box("api", "running"), id: "sbx_9f2k7d1q", hostname: "api.acme.kantel.dev" },
+			{ ...box("web", "running"), id: "sbx_33aa", hostname: "web.acme.kantel.dev" },
+		];
+		const names = (search: string) => sandboxesShown(all, { ...NO_FILTERS, search }, 0).map((each) => each.name);
+		expect(names("9F2K")).toEqual(["api"]);
+		expect(names("acme.kantel")).toEqual(["api", "web"]);
+		expect(names("web.acme")).toEqual(["web"]);
+	});
+
+	it("filters by the latest snapshot's age and by type, and counts each option with the others as they are", () => {
+		const now = 10 * DAY;
+		const all: Sandbox[] = [
+			{ ...box("fresh", "running"), snapshot: { id: "snp_1", takenAt: now - HOUR } },
+			{ ...box("old", "stopped"), snapshot: { id: "snp_2", takenAt: now - 3 * DAY } },
+			{ ...box("never", "running"), kind: "isolate" },
+		];
+		const names = (filters: Partial<SandboxFilters>) =>
+			sandboxesShown(all, { ...NO_FILTERS, ...filters }, now).map((each) => each.name);
+		expect(names({ snapshot: "day" })).toEqual(["fresh"]);
+		expect(names({ snapshot: "older" })).toEqual(["old"]);
+		expect(names({ snapshot: "none" })).toEqual(["never"]);
+		expect(names({ type: "isolate" })).toEqual(["never"]);
+		expect(names({ type: "microvm", state: "running" })).toEqual(["fresh"]);
+		// A snapshot whose time the source doesn't say is in no age's filter, only Any's.
+		const unknown = [...all, { ...box("undated", "stopped"), snapshot: { id: "snp_3" } }];
+		const shown = (filters: Partial<SandboxFilters>) =>
+			sandboxesShown(unknown, { ...NO_FILTERS, ...filters }, now).map((each) => each.name);
+		expect(shown({ snapshot: "day" })).toEqual(["fresh"]);
+		expect(shown({ snapshot: "older" })).toEqual(["old"]);
+		expect(shown({ snapshot: "none" })).toEqual(["never"]);
+		expect(shown({})).toContain("undated");
+		const counts = filterCounts(all, { ...NO_FILTERS, state: "running" }, "type", TYPE_FILTERS, now);
+		expect([...counts]).toEqual([
+			["all", 2],
+			["microvm", 1],
+			["isolate", 1],
+		]);
+	});
+
+	it("counts down to auto-stop in minutes, and in minutes and seconds for its last 10", () => {
+		const running = { state: "running" as const };
+		expect(countdownText({ ...running, stopsAt: 52 * MINUTE }, 0)).toBe("52m");
+		expect(countdownText({ ...running, stopsAt: 4 * MINUTE + 7_000 }, 0)).toBe("4:07");
+		expect(countdownText({ ...running, stopsAt: 59_500 }, 0)).toBe("1:00");
+		expect(countdownText(running, 0)).toBe("Always on");
+		expect(countdownText({ state: "stopped", stopsAt: 5 * MINUTE }, 0)).toBe("–");
+	});
+
+	it("shortens a long ID to its start and end, and leaves a short one whole", () => {
+		expect(shortId("sbx_9f2k7d1qzz4m")).toBe("sbx_9f2k…zz4m");
+		expect(shortId("sbx_33aa")).toBe("sbx_33aa");
 	});
 });
 
@@ -192,5 +263,93 @@ describe("Settings' navigation", () => {
 			).replace(/ class="[^"]*"/g, "");
 		expect(skeleton(true)).toBe(skeleton(false));
 		expect(skeleton(true)).toContain('<form id="page">');
+	});
+});
+
+describe("New sandbox", () => {
+	const python = sampleTemplates(FIXTURE_NOW).find((template) => template.id === "tpl_python") as Template;
+	const form = {
+		accountId: LLEVERAGE.id,
+		name: "",
+		kind: "microvm" as const,
+		shape: { vcpus: 2, memoryMb: 4096 },
+		shapeChosen: false,
+		from: "",
+		environment: "",
+		autoStop: "60",
+	};
+
+	it("names no shape for a template's sandbox unless a slider moved, so the template's own applies", () => {
+		const own = newSandboxInput({ ...form, template: python });
+		expect(own).toEqual({ accountId: LLEVERAGE.id, kind: "microvm", templateId: "tpl_python", autoStopMinutes: 60 });
+		expect("shape" in own).toBe(false);
+		const moved = { vcpus: 4, memoryMb: 8192 };
+		expect(newSandboxInput({ ...form, template: python, shape: moved, shapeChosen: true }).shape).toEqual(moved);
+		// Without a template, and for an isolate, the shape the sliders show.
+		expect(newSandboxInput(form).shape).toEqual({ vcpus: 2, memoryMb: 4096 });
+		expect(newSandboxInput({ ...form, kind: "isolate", shape: { vcpus: 0, memoryMb: 256 }, template: python })).toEqual(
+			{
+				accountId: LLEVERAGE.id,
+				kind: "isolate",
+				shape: { vcpus: 0, memoryMb: 256 },
+				autoStopMinutes: 60,
+			},
+		);
+	});
+
+	it("keeps a requested template until the list is read, and says so when it can't be had", () => {
+		const microvm = newSandboxType(undefined, true);
+		expect(requestedTemplate("tpl_python", { status: "loading" }, microvm)).toEqual({ pending: true });
+		expect(requestedTemplate("tpl_python", { status: "ready", value: [python] }, microvm)).toEqual({
+			template: python,
+			pending: false,
+		});
+		expect(requestedTemplate("tpl_python", { status: "failed" }, microvm).problem).toMatch(
+			/couldn't read the templates/,
+		);
+		expect(requestedTemplate("tpl_gone", { status: "ready", value: [python] }, microvm).problem).toMatch(
+			/isn't in this account/,
+		);
+		expect(requestedTemplate("", { status: "loading" }, microvm)).toEqual({ pending: false });
+	});
+
+	it("keeps a requested template, refused, when the hosts' answer says none runs microVMs", () => {
+		const list = { status: "ready", value: [python] } as const;
+		// Before the hosts answer, a microVM from the template, waiting for its list.
+		const before = newSandboxType(undefined, true);
+		expect(before).toEqual({ kind: "microvm", chosen: false });
+		expect(requestedTemplate("tpl_python", { status: "loading" }, before)).toEqual({ pending: true });
+		// The answer lands with no microVM host: an isolate is picked, but the template isn't dropped for it.
+		const after = newSandboxType(undefined, false);
+		expect(after).toEqual({ kind: "isolate", chosen: false });
+		for (const read of [{ status: "loading" } as const, list]) {
+			const requested = requestedTemplate("tpl_python", read, after);
+			expect(requested.pending).toBe(false);
+			expect(requested.template).toBeUndefined();
+			expect(requested.problem).toMatch(/none of this organisation's hosts run them\. Pick None or choose Isolate/);
+		}
+		// A clean isolate takes the user's own choice: None, or Isolate chosen.
+		expect(requestedTemplate("", list, after)).toEqual({ pending: false });
+		expect(requestedTemplate("tpl_python", list, newSandboxType("isolate", false))).toEqual({ pending: false });
+		expect(requestedTemplate("tpl_python", list, newSandboxType("isolate", true))).toEqual({ pending: false });
+		// A microVM chosen before the answer can't be made once it says there are none.
+		expect(newSandboxType("microvm", false)).toEqual({ kind: "isolate", chosen: false });
+	});
+
+	it("opens from a template's page with it picked, and waits for the list rather than dropping it", () => {
+		const markup = renderToStaticMarkup(
+			createElement(SandboxesPage, {
+				source: createComputeFixtures().sandboxes,
+				account: LLEVERAGE,
+				hosting: "self-hosted",
+				templates: () => new Promise<readonly Template[]>(() => {}),
+				template: "tpl_python",
+				creating: true,
+				now: FIXTURE_NOW,
+			}),
+		);
+		expect(markup).toMatch(/<option value="tpl_python" selected="">tpl_python<\/option>/);
+		expect(markup).toContain("Reading the templates.");
+		expect(markup).toMatch(/<button[^>]*type="submit"[^>]*disabled=""[^>]*aria-busy="true"/);
 	});
 });

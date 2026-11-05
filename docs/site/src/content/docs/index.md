@@ -41,6 +41,6 @@ The console, the API, the SDK, the CLI and the MCP server are the same in both: 
 | Run all of it yourself | [Self-host quick start](/self-hosting/quickstart/) |
 | Look up a route | [API reference](/api/reference/) |
 
-Parts still being built carry an **Experimental** badge in the sidebar and a note at the top of the page.
+Parts still being built carry an **Experimental** badge in the sidebar and a note at the top of the page. [What works today](/what-works-today/) says which parts have run on real machines and which are covered by tests only.
 
 Kantel was called Harbour, and a few names keep that: `harbour` in some image, database and Worker names, `HARBOUR_*` settings (read when the `KANTEL_*` one isn't set) and API keys starting `hbr_`. Write them as they are.

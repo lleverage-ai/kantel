@@ -164,6 +164,26 @@ button with `aria-expanded`; the detail is rendered only while open.
 **For** copying a link, a binding code or a command. Shows "Copied" with a tick for 1.5 seconds, announced
 politely. `iconOnly` for tight rows.
 
+### Tooltip and HelpHint
+
+**For** a few words about what's under the pointer or the keyboard's focus: a truncated name or address in full
+(`whenTruncated` shows it only while the text is cut short), a time's date, a chart's figures, an icon button's
+purpose. It shows after 350ms, at once while moving along a row of them, on keyboard focus too, and Escape or a scroll
+hides it. It is on the page's body, so a table's scrolling frame or a row's covering link never clips it. `HelpHint`
+is the small "?" after a column heading or a label, a Tab stop of its own with the explanation in its tooltip.
+
+**Not for** anything someone must act on (a tooltip can't hold a button) or must read to use the page. Not on touch:
+a tap shows nothing, so nothing essential may live only there.
+
+### Dialog
+
+**For** a modal: a heading, a sentence or a field, and its buttons (`actions`). Without `actions` it is a dialog to
+look at, with a close button in the heading's corner; `width="wide"` gives it room for a chart and a table, `icon` an
+icon before the heading and `toolbar` controls at the heading's end (a sandbox's metrics: the 1h, 24h and 1w range).
+On a narrow screen the toolbar goes under the heading.
+
+**Not for** long forms or anything with its own address (use a page).
+
 ### Config pages and forms: PageHeader, FormLayout, FormSection, FormField, FormGrid and FormActions
 
 Every config page (skills, memory, schedules, vault, audit log, API keys) and every form on them uses these, so

@@ -12,6 +12,7 @@ import {
 	onGrid,
 	presetOf,
 	type SandboxShapes,
+	sandboxSpec,
 	shapeAllowed,
 	shapeCentsPerHour,
 	shapeCreatable,
@@ -57,6 +58,16 @@ describe("sandbox shapes", () => {
 		expect(memoryText(1536)).toBe("1.5 GB");
 		expect(sizeText({ vcpus: 0, memoryGb: 0.25 })).toBe("Shared CPU, 256 MB");
 		expect(sizeText({ vcpus: 4, memoryGb: 8 })).toBe("4 vCPU, 8 GB");
+	});
+
+	it("counts an isolate with no resources as the default isolate, never a microVM size", () => {
+		// The console's API source gives an isolate made before shapes the size "small".
+		const unshaped = sandboxSpec({ kind: "isolate", size: "small" });
+		expect(unshaped).toEqual({ vcpus: 0, memoryGb: 0.25, diskGb: 0 });
+		expect(sizeText(unshaped)).toBe("Shared CPU, 256 MB");
+		const given = { vcpus: 0, memoryGb: 0.375, diskGb: 0 };
+		expect(sandboxSpec({ kind: "isolate", size: "small", resources: given })).toBe(given);
+		expect(sandboxSpec({ kind: "microvm", size: "small" })).toMatchObject({ vcpus: 2, memoryGb: 4, diskGb: 40 });
 	});
 });
 
@@ -203,6 +214,7 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 					open: true,
 					account: { id: "acct", kind: "personal", name: "Ada", role: "owner", members: 1 },
 					hosting: "self-hosted",
+					now: 0,
 					...(shapes === undefined ? {} : { shapes }),
 					onClose: () => {},
 					onCreate: () => {},

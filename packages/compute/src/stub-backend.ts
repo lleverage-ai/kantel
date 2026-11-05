@@ -2,12 +2,14 @@
  * A `SandboxBackend` in memory, for tests and local runs before hosts exist. One stub host (`host_stub`, named `stub`)
  * runs every sandbox; each sandbox is a just-bash shell over its own in-memory filesystem with `/home/user` (the
  * working directory) and `/tmp`, so commands really run. A snapshot is a deep copy of the file tree (path to bytes),
- * restored on start, resume, fork and create-from. microVM-only features answer stub URLs under
+ * restored on start, resume, fork and create-from. A template snapshot is a file tree too, kept apart from snapshots:
+ * a build runs the template's setup in a fresh shell and keeps what it leaves, and a fresh boot from a template runs the
+ * setup in the new sandbox. microVM-only features answer stub URLs under
  * `https://stub.kantel.invalid/` for a microVM, and `not_supported` for an isolate. Nothing here is a security
  * boundary: it is a stand-in for lane 2's host scheduler.
  */
 import type { computeSchema } from "@kantel/api";
-import { KantelError } from "@kantel/contracts";
+import { KantelError, placementError } from "@kantel/contracts";
 import { Bash, InMemoryFs } from "just-bash";
 import {
 	type BackendCapabilities,
@@ -16,6 +18,7 @@ import {
 	type BackendShape,
 	type BackendSize,
 	type BootOptions,
+	type BuiltTemplate,
 	CUSTOM_SHAPES_FEATURE,
 	type ExecRequest,
 	type ExecResult,
@@ -24,13 +27,21 @@ import {
 	type SandboxSpec,
 	type SshGrant,
 	type TakenSnapshot,
+	type TemplateBuildSpec,
+	type TemplateRuntime,
 	type UsageSample,
 } from "./backend.ts";
 import { type BackendUsageReport, RAW_WINDOW_MS, USAGE_INTERVAL_MS } from "./usage-series.ts";
-import { baseName, HOME, randomId, randomSecret, sliceRange } from "./util.ts";
+import { baseName, HOME, randomId, randomSecret, sha256Hex, sliceRange } from "./util.ts";
 
 /** The stub's one host. */
 export const STUB_HOST_ID = "host_stub";
+
+/** The stub host's runtime, which its template snapshots are keyed by. */
+export const STUB_RUNTIME = { kernel: "stub", firecracker: "stub" } as const;
+
+/** The prefix of the stub's template snapshots' refs: `tpl-snap:<snapshotId>`. */
+export const STUB_TEMPLATE_REF_PREFIX = "tpl-snap:";
 
 /** Where the stub's microVM-only URLs point. */
 export const STUB_ORIGIN = "https://stub.kantel.invalid";
@@ -47,6 +58,8 @@ export interface StubBackendOptions {
 /** The stub host's memory and disk, as its usage reports them. */
 const STUB_HOST_MEMORY_BYTES = 256 * 1024 ** 3;
 const STUB_HOST_DISK_BYTES = 2048 * 1024 ** 3;
+/** What a stub microVM's disk holds before its own files: its image's writable layer, as a guest would count it. */
+const STUB_GUEST_DISK_BYTES = 1.5 * 1024 ** 3;
 /** What the stub host itself uses, besides its sandboxes. */
 const STUB_HOST_BASE_BYTES = 2 * 1024 ** 3;
 const MIB = 1024 * 1024;
@@ -104,6 +117,7 @@ const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	docker: false,
 	kvm: false,
 	pause: false,
+	browserSurface: false,
 };
 
 const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
@@ -116,6 +130,8 @@ const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	docker: true,
 	kvm: true,
 	pause: true,
+	// The stub's browser view is its own page, apart from its desktop's.
+	browserSurface: true,
 };
 
 /** just-bash's own directories, which a snapshot leaves out. */
@@ -242,7 +258,14 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	/** When the stub host came up: it reports nothing before. */
 	const upSince = now();
 	const machines = new Map<string, Machine>();
+	/** Sandboxes a create is making now (booting, restoring, running a template's setup). */
+	const creating = new Set<string>();
+	/** The commands running now with an ID, by sandbox and ID: what ends each (`killCommand`). */
+	const killers = new Map<string, () => void>();
+	const commandKey = (sandboxId: string, commandId: string) => `${sandboxId}\u0000${commandId}`;
 	const snapshots = new Map<string, Tree>();
+	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
+	const templateSnapshots = new Map<string, Tree>();
 
 	const host: BackendHost = {
 		id: STUB_HOST_ID,
@@ -277,10 +300,13 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			throw new KantelError("not_supported", `${what} needs a microVM; this is an isolate`);
 	};
 	const placeable = (eligibleHosts: readonly string[], type: computeSchema.SandboxType) => {
-		if (!types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
+		if (!types.includes(type)) {
+			throw placementError("unavailable", "no_host_for_type", `No host runs ${type} sandboxes`);
+		}
 		if (eligibleHosts.includes(STUB_HOST_ID)) return;
-		throw new KantelError(
+		throw placementError(
 			"unavailable",
+			"host_unavailable",
 			eligibleHosts.length === 0
 				? `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now: none of its eligible hosts is the stub's`
 				: `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now; it may use ${eligibleHosts.join(", ")}`,
@@ -325,9 +351,37 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const viewUrl = (sandboxId: string, what: string) =>
 		`${STUB_ORIGIN}/${what}/${sandboxId}?token=${randomSecret("", 24)}`;
 
+	/** Runs a template's setup as root in a shell; rejects with its output's end when it fails. */
+	const runSetup = async (bash: Bash, setup: string, env: { readonly [name: string]: string }) => {
+		const result = await bash.exec(setup, { cwd: "/", env: { ...env, HOME: "/root", USER: "root" } });
+		if (result.exitCode !== 0) {
+			throw new KantelError(
+				"invalid",
+				`The template's setup exited with ${result.exitCode}: ${result.stderr.slice(-500).trim()}`,
+			);
+		}
+	};
+
 	const create = async (spec: SandboxSpec): Promise<Placement> => {
 		placeable(spec.eligibleHosts, spec.type);
-		if (machines.has(spec.sandboxId)) throw new KantelError("conflict", `${spec.sandboxId} already has a machine`);
+		if (machines.has(spec.sandboxId) || creating.has(spec.sandboxId)) {
+			throw new KantelError("conflict", `${spec.sandboxId} already has a machine`);
+		}
+		if (spec.template !== undefined && spec.type !== "microvm") {
+			throw new KantelError("not_supported", "A template makes microVMs; this is an isolate");
+		}
+		// Held from here until it is made or has failed, so a second create of it, while a setup runs, is a conflict and
+		// never replaces the machine this one makes.
+		creating.add(spec.sandboxId);
+		try {
+			return await made(spec);
+		} finally {
+			creating.delete(spec.sandboxId);
+		}
+	};
+
+	/** Makes the machine `create` has checked and holds. */
+	const made = async (spec: SandboxSpec): Promise<Placement> => {
 		const machine: Machine = {
 			id: spec.sandboxId,
 			type: spec.type,
@@ -340,9 +394,19 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			runningSince: now(),
 			ports: new Map(),
 		};
-		boot(machine, await fromSnapshot(spec.fromSnapshot));
+		const template = spec.template;
+		// A template snapshot the stub no longer holds (lost with the process, as the records outlast it) boots fresh, and
+		// says so (`bootedFresh`).
+		const prepared = template?.snapshot === undefined ? undefined : templateSnapshots.get(template.snapshot);
+		if (prepared !== undefined) boot(machine, await restore(prepared));
+		else boot(machine, await fromSnapshot(spec.fromSnapshot));
+		// A fresh boot from a template: its setup runs in the new machine, as a build would have run it.
+		if (template !== undefined && prepared === undefined && template.setup !== undefined) {
+			await runSetup((machine as LiveMachine).bash, template.setup, machine.env);
+		}
 		machines.set(spec.sandboxId, machine);
-		return placement(machine);
+		const placed = placement(machine);
+		return template?.snapshot !== undefined && prepared === undefined ? { ...placed, bootedFresh: true } : placed;
 	};
 
 	const reboot = async (sandboxId: string, options: BootOptions, keepMemory: boolean): Promise<Placement> => {
@@ -452,15 +516,18 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 				);
 			}
 			const signal = request.signal;
-			if (signal !== undefined) {
+			// A stub's command runs in this process, so it ends with its wait (its signal) as with a kill.
+			const key = request.commandId === undefined ? undefined : commandKey(sandboxId, request.commandId);
+			if (signal !== undefined || key !== undefined) {
 				races.push(
 					new Promise<ExecResult>((resolve) => {
 						onAbort = () => {
 							controller.abort();
 							resolve({ exitCode: 137, stdout: "", stderr: "killed\n", timedOut: false });
 						};
-						if (signal.aborted) onAbort();
-						else signal.addEventListener("abort", onAbort, { once: true });
+						if (key !== undefined) killers.set(key, onAbort);
+						if (signal?.aborted) onAbort();
+						else signal?.addEventListener("abort", onAbort, { once: true });
 					}),
 				);
 			}
@@ -469,7 +536,12 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			} finally {
 				if (timer !== undefined) clearTimeout(timer);
 				if (signal !== undefined && onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+				if (key !== undefined && killers.get(key) === onAbort) killers.delete(key);
 			}
+		},
+
+		async killCommand(sandboxId, commandId) {
+			killers.get(commandKey(sandboxId, commandId))?.();
 		},
 
 		async readFile(sandboxId, path, range) {
@@ -557,6 +629,46 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			snapshots.delete(ref);
 		},
 
+		async templateRuntimes(): Promise<TemplateRuntime[]> {
+			// It "builds" custom images too: it runs nothing of them, and names a digest for each.
+			return types.includes("microvm") ? [{ hostId: STUB_HOST_ID, ...STUB_RUNTIME, customImages: true }] : [];
+		},
+
+		async buildTemplate(spec: TemplateBuildSpec): Promise<BuiltTemplate> {
+			if (!types.includes("microvm")) throw new KantelError("unavailable", "No host runs microvm sandboxes");
+			if (spec.hostId !== STUB_HOST_ID) throw new KantelError("unavailable", `The stub has no host ${spec.hostId}`);
+			const fs = await restore(undefined);
+			if (spec.setup !== undefined) {
+				await runSetup(new Bash({ fs, cwd: "/", env: { ...spec.env } }), spec.setup, spec.env);
+			}
+			const tree = await capture(fs);
+			const ref = `${STUB_TEMPLATE_REF_PREFIX}${spec.snapshotId}`;
+			templateSnapshots.set(ref, tree);
+			// It boots no image: the base's digest stands for the one a host pulls (none for its own sandbox image), and a
+			// custom image's for the one a build microVM makes (a pinned reference's own).
+			if (spec.image !== undefined) {
+				const source = spec.image.kind === "dockerfile" ? spec.image.dockerfile : spec.image.ref;
+				const pinned = spec.image.kind === "image" ? /@(sha256:[0-9a-f]{64})$/.exec(spec.image.ref)?.[1] : undefined;
+				return {
+					ref,
+					hostId: STUB_HOST_ID,
+					imageDigest: pinned ?? `sha256:${await sha256Hex(`${spec.image.scope}\n${source}`)}`,
+					rootfsKey: await sha256Hex(`${spec.accountId}\n${spec.image.scope}\n${source}`),
+					sizeBytes: treeSize(tree),
+				};
+			}
+			return {
+				ref,
+				hostId: STUB_HOST_ID,
+				...(spec.baseDigest === "" ? {} : { imageDigest: spec.baseDigest }),
+				sizeBytes: treeSize(tree),
+			};
+		},
+
+		async deleteTemplateSnapshot(bytes) {
+			templateSnapshots.delete(bytes.ref ?? `${STUB_TEMPLATE_REF_PREFIX}${bytes.snapshotId}`);
+		},
+
 		async exposePort(sandboxId, port, { subdomain }) {
 			const machine = running(sandboxId);
 			const url = `http://${port}-${subdomain}.${domain}`;
@@ -594,7 +706,11 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		async openBrowser(sandboxId) {
 			const machine = running(sandboxId);
 			microvmOnly(machine, "The browser");
-			return { url: viewUrl(sandboxId, "browser"), cdpUrl: `wss://stub.kantel.invalid/cdp/${sandboxId}` };
+			return {
+				url: viewUrl(sandboxId, "browser"),
+				cdpUrl: `wss://stub.kantel.invalid/cdp/${sandboxId}`,
+				surface: "browser",
+			};
 		},
 
 		async usage(sandboxId): Promise<UsageSample> {
@@ -621,7 +737,16 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 					.map((machine) => {
 						const reading = stubReading(machine.id, at, bases.get(machine.id) ?? 0);
 						// Its limit is the shape it runs as, as its placement says: a custom shape's, else its named size's.
-						const memoryMb = placement(machine).resources?.memoryMb;
+						const { memoryMb, diskGb } = placement(machine).resources ?? {};
+						// A microVM's guest also counts its disk (its files, on a base) and its IO pressure, as a host's does.
+						const guest =
+							machine.type === "microvm" && diskGb !== undefined
+								? {
+										diskUsedBytes: Math.min(diskGb * 1024 * MIB, STUB_GUEST_DISK_BYTES + (bases.get(machine.id) ?? 0)),
+										diskTotalBytes: diskGb * 1024 * MIB,
+										ioPressure: Math.round(Math.max(0, reading.cpu - 0.15) * 0.3 * 1000) / 1000,
+									}
+								: {};
 						return {
 							id: machine.id,
 							kind: machine.type,
@@ -629,6 +754,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 							memUsedBytes: reading.memUsedBytes,
 							memLimitBytes:
 								machine.type === "microvm" && memoryMb !== undefined ? memoryMb * MIB : ISOLATE_MEMORY_BYTES,
+							...guest,
 						};
 					});
 				const ambient = stubReading(STUB_HOST_ID, at, STUB_HOST_BASE_BYTES);

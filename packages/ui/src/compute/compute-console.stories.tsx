@@ -82,7 +82,14 @@ MobileFirstRun.meta = { width: 390 };
 /** Admin's Install on a phone: Hosts and Install in a row over the page. */
 export const MobileInstall: Story = () => <Scenario page="install" narrow />;
 MobileInstall.meta = { width: 390 };
+/** Templates (experimental, `KANTEL_TEMPLATES`): in the sidebar after Environments. */
+export const Templates: Story = () => <Scenario page="templates" options={{ templates: true }} />;
+export const TemplateDetail: Story = () => (
+	<Scenario page="templates" sandboxId="tpl_node" options={{ templates: true }} />
+);
 export const HostsHosted: Story = () => <Scenario page="hosts" hosting="hosted" />;
+/** Admin's Images: the base images, their scans and the templates. */
+export const Images: Story = () => <Scenario page="images" />;
 /** A member who isn't a super-admin has no Hosts. */
 export const NotSuperAdmin: Story = () => <Scenario options={{ notSuperAdmin: true }} />;
 /** One sandbox open on its overview. */

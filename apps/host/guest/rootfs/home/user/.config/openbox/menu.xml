@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Kantel's right-click menu on the desktop: the dock's apps, and every app (kantel-apps). -->
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Kantel">
+    <item label="Terminal" icon="/usr/share/kantel/icons/terminal.svg"><action name="Execute"><command>lxterminal</command></action></item>
+    <item label="Browser" icon="/usr/share/icons/hicolor/48x48/apps/chromium.png"><action name="Execute"><command>kantel-chromium</command></action></item>
+    <item label="Files" icon="/usr/share/kantel/icons/files.svg"><action name="Execute"><command>pcmanfm</command></action></item>
+    <item label="Editor" icon="/usr/share/kantel/icons/editor.svg"><action name="Execute"><command>geany</command></action></item>
+    <separator/>
+    <item label="All apps" icon="/usr/share/kantel/icons/apps.svg"><action name="Execute"><command>kantel-apps</command></action></item>
+  </menu>
+</openbox_menu>

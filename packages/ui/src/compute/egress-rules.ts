@@ -50,10 +50,11 @@ export function splitList(text: string): readonly string[] {
 		.filter((entry) => entry !== "");
 }
 
-/** An environment variable's name: what a shell accepts, and not one Kantel sets itself. */
+/** An environment variable's name, as the API checks it: what a shell accepts, and not one Kantel sets itself. */
 export function variableNameProblem(name: string): string | undefined {
 	if (name === "") return "Give the variable a name.";
 	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return "Use letters, digits and underscores, not starting with a digit.";
+	if (name.length > 255) return "Keep the name to 255 characters.";
 	if (/^(KANTEL_|HTTPS?_PROXY$|NO_PROXY$)/i.test(name)) return "Kantel sets this one itself. Choose another name.";
 	return undefined;
 }

@@ -29,6 +29,26 @@ export interface McpLaunch {
 	readonly args: readonly string[];
 }
 
+/**
+ * The tool timeout to give `kantel mcp` in a client, in seconds: its longest wait (an exec's 10 minute timeout, or
+ * command_get's longest waitMs) and a minute to spare.
+ */
+export const TOOL_TIMEOUT_SECONDS = 660;
+
+/** What the guide says about Claude Code's tool timeout. */
+export const CLAUDE_TIMEOUT_NOTE = [
+	"Claude Code waits for a tool call as long as MCP_TOOL_TIMEOUT says, about 28 hours when it isn't set. If",
+	`you've set it lower, give Kantel its own: "timeout": ${TOOL_TIMEOUT_SECONDS * 1000} in the kantel entry of ~/.claude.json or`,
+	".mcp.json.",
+].join("\n");
+
+/** What the guide says about Codex's tool timeout. */
+export const CODEX_TIMEOUT_NOTE = [
+	"Codex gives a tool call 60 s unless told otherwise, and Kantel's can wait up to 10 minutes, so add",
+	`tool_timeout_sec = ${TOOL_TIMEOUT_SECONDS} under [mcp_servers.kantel] in ~/.codex/config.toml (codex mcp add has no flag`,
+	"for it). The config.toml below has it.",
+].join("\n");
+
 /** `kantel mcp`, found on the PATH: what every snippet says when `kantel` is installed there. */
 export const MCP_ON_PATH: McpLaunch = { command: "kantel", args: ["mcp"] };
 
@@ -64,6 +84,7 @@ export function codexToml(url: string, launch: McpLaunch = MCP_ON_PATH): string 
 		`command = ${JSON.stringify(launch.command)}`,
 		`args = [${launch.args.map((arg) => JSON.stringify(arg)).join(", ")}]`,
 		`env = { KANTEL_URL = ${JSON.stringify(url)}, KANTEL_API_KEY = "${KEY_PLACEHOLDER}" }`,
+		`tool_timeout_sec = ${TOOL_TIMEOUT_SECONDS}`,
 	].join("\n");
 }
 
@@ -79,8 +100,10 @@ const CHEAT_SHEET = `- Create one: \`id=$(kantel new --type microvm --json | jq 
   isolate: it starts in milliseconds but runs JavaScript only; a microVM is a full Linux with root and Docker.
 - Run a command: \`kantel exec "$id" -- npm test\`. Its output and exit code are the command's (30 s limit;
   \`--timeout 0\` = no limit, following its output).
-- A server or a long job: \`kantel exec "$id" --detach -- npm run dev\` prints the command's ID; then
-  \`kantel attach "$id" <command>\` follows its output, and \`kantel kill "$id" <command>\` stops it.
+- A job you don't wait for: \`kantel exec "$id" --detach -- npm run build\` prints the command's ID; then
+  \`kantel attach "$id" <command>\` follows its output, and \`kantel kill "$id" <command>\` stops it and what it
+  started. It has no time limit; a host whose kantel-host predates exec-control still ends it after about 2 minutes
+  on a microVM and can't kill it (\`pkill -f\` does).
 - Copy files: \`kantel push "$id" .\` (git-tracked files, to /home/user/<dir>), or
   \`kantel scp ./file "$id":/home/user/\` and \`kantel scp "$id":/home/user/out.zip .\` (\`-r\` for a directory).
 - A URL for a port: \`kantel host "$id" 3000\` (private, with a token; \`--public\` for none).
@@ -174,7 +197,7 @@ export function agentsGuide(url: string, harness: Harness | "all" = "all", launc
 		].join("\n"),
 	];
 	const wants = (name: Harness): boolean => harness === "all" || harness === name;
-	if (wants("claude")) sections.push(`Claude Code:\n\n  ${claudeSetup(url, launch)}`);
+	if (wants("claude")) sections.push(`Claude Code:\n\n  ${claudeSetup(url, launch)}\n\n${CLAUDE_TIMEOUT_NOTE}`);
 	if (wants("codex")) {
 		sections.push(
 			[
@@ -182,7 +205,9 @@ export function agentsGuide(url: string, harness: Harness | "all" = "all", launc
 				"",
 				`  ${codexSetup(url, launch)}`,
 				"",
-				`or in ~/.codex/config.toml, with the key in place of ${KEY_PLACEHOLDER}:`,
+				CODEX_TIMEOUT_NOTE,
+				"",
+				`Or all of it in ~/.codex/config.toml, with the key in place of ${KEY_PLACEHOLDER}:`,
 				"",
 				indent(codexToml(url, launch)),
 			].join("\n"),
@@ -205,6 +230,9 @@ export function agentsGuide(url: string, harness: Harness | "all" = "all", launc
 				`${KEY_PLACEHOLDER}:`,
 				"",
 				indent(mcpServersJson(url, launch)),
+				"",
+				`If the client has a tool timeout, make it at least ${TOOL_TIMEOUT_SECONDS} s: a Kantel tool call can wait up to 10`,
+				"minutes.",
 			].join("\n"),
 		);
 	}

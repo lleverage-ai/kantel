@@ -90,7 +90,9 @@ func (p *Proxy) rootsFor(rules Rules) *x509.CertPool {
 // back can be scrubbed as it is.
 func (p *Proxy) interceptTransport(rules Rules, attribution string) *http.Transport {
 	tr := &http.Transport{
-		DialContext:         func(_ context.Context, network, addr string) (net.Conn, error) { return p.Dial(network, addr) },
+		DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
+			return p.dialFor(rules)(network, addr)
+		},
 		TLSClientConfig:     &tls.Config{RootCAs: p.rootsFor(rules), NextProtos: []string{"http/1.1"}},
 		TLSHandshakeTimeout: 15 * time.Second,
 		DisableCompression:  true,
@@ -416,13 +418,13 @@ func (p *Proxy) verifyTLS(ctx context.Context, rules Rules, attribution, host st
 // identity) when it has one, else straight there.
 func (p *Proxy) dialTunnel(ctx context.Context, rules Rules, attribution, target string) (net.Conn, error) {
 	if rules.Upstream == "" {
-		return p.Dial("tcp", target)
+		return p.dialFor(rules)("tcp", target)
 	}
 	u, err := url.Parse(rules.Upstream)
 	if err != nil || u.Host == "" {
 		return nil, &upstreamProxyError{}
 	}
-	c, err := p.Dial("tcp", u.Host)
+	c, err := p.dialFor(rules)("tcp", u.Host)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 // Sample data for the compute console's pages: a personal account and two organisations, sandboxes in every state on
-// both tiers, snapshots with a small file tree, keys, a proxy, webhooks, telemetry, three hosts, the hosted plans, and
-// the bundles and bucket sources two sandboxes mount read-only.
+// both tiers (some on an outdated base image), snapshots with a small file tree, keys, a proxy, webhooks, telemetry,
+// three hosts, the base images with their scans and templates, the hosted plans, and the bundles and bucket sources
+// two sandboxes mount read-only.
 // `createComputeFixtures` serves it all from memory as a `ComputeSource`, so stories and the console's sample data can
 // create, stop, resume, fork and delete. Nothing leaves the page.
 
@@ -8,6 +9,10 @@ import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import type {
 	ApiKey,
 	ApiScope,
+	BaseImage,
+	BaseImagesOverview,
+	BaseImageTemplate,
+	BaseImageVersion,
 	BillingSummary,
 	BucketSource,
 	Bundle,
@@ -24,6 +29,10 @@ import type {
 	FileRange,
 	Host,
 	HostingMode,
+	ImageBuildReason,
+	ImageFinding,
+	ImageScan,
+	ImageSeverity,
 	MountSource,
 	OrganisationInvite,
 	OrganisationMember,
@@ -31,15 +40,19 @@ import type {
 	ProxySettings,
 	PublicUrl,
 	Sandbox,
+	SandboxBase,
 	SandboxCommand,
 	SandboxEgress,
 	SandboxImage,
 	SandboxKind,
 	SandboxPort,
+	SandboxProcess,
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
 	TelemetrySettings,
+	UsageRange,
+	UsageSeries,
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
@@ -51,10 +64,13 @@ import {
 	presetOf,
 	type SandboxSize,
 	sameProxySettings,
+	sandboxScreen,
 	sizeSpec,
 	sshWithoutCliCommand,
+	startingSnapshot,
 } from "./compute-model.ts";
 import { inUseText } from "./mounts.ts";
+import { createTemplateFixtures } from "./template-fixtures.ts";
 import { stubUsage } from "./usage-stub.ts";
 
 /** The code the fixtures' waiting command line showed. */
@@ -115,6 +131,56 @@ export function usageSeries(seed: number, busy = 0.5, points = 30): readonly num
 
 const flat = (points = 30): readonly number[] => Array.from({ length: points }, () => 0);
 
+/** What a sandbox's history range spans, and the interval its points are at, as the API keeps them. */
+const HISTORY: Readonly<Record<UsageRange, { readonly spanMs: number; readonly intervalMs: number }>> = {
+	"1h": { spanMs: HOUR, intervalMs: 5_000 },
+	"24h": { spanMs: DAY, intervalMs: 5 * MINUTE },
+	"1w": { spanMs: 7 * DAY, intervalMs: HOUR },
+};
+
+/** A running sandbox's busiest processes, as `ps` would list them: a desktop's for one with a screen, else a server's. */
+function sampleProcesses(box: Sandbox): readonly SandboxProcess[] {
+	const mb = 1024 ** 2;
+	// They move a little on each read, as a live list does.
+	const wobble = (base: number, at: number) =>
+		Math.max(0, Math.round((base + Math.sin(Date.now() / 7_000 + at) * base * 0.15) * 10) / 10);
+	const desktop: readonly [string, number, number][] = [
+		[
+			"/opt/google/chrome/chrome --type=gpu-process --disable-dev-shm-usage --use-gl=angle --use-angle=swiftshader-webgl --field-trial-handle=3,i,1738263561934",
+			38.4,
+			269,
+		],
+		["/usr/bin/sunshine /etc/kantel/sunshine.conf", 11.8, 268],
+		[
+			"/opt/google/chrome/chrome --type=renderer --disable-dev-shm-usage --lang=en-GB --num-raster-threads=2 --enable-main-frame-before-activation",
+			6.1,
+			204,
+		],
+		["/usr/lib/xorg/Xorg -core :0 -seat seat0 -auth /var/run/lightdm/root/:0 -nolisten tcp vt7 -novtswitch", 0.8, 50],
+		["node /home/kantel/app/node_modules/.bin/next dev --port 3000", 0.6, 302],
+		["/usr/local/bin/kantel-guest serve --vsock 1024", 0.3, 18],
+		["/usr/sbin/sshd -D -e", 0, 7],
+	];
+	const server: readonly [string, number, number][] = [
+		["node --enable-source-maps dist/server.js --port 8080", 24.6, 412],
+		["postgres: kantel app 127.0.0.1(51422) SELECT", 7.2, 96],
+		["/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock", 1.4, 88],
+		["/usr/bin/containerd", 0.7, 41],
+		["redis-server *:6379", 0.4, 12],
+		["/usr/local/bin/kantel-guest serve --vsock 1024", 0.3, 18],
+		["/usr/sbin/sshd -D -e", 0, 7],
+	];
+	const rows = sandboxScreen(box) === "desktop" ? desktop : server;
+	return rows
+		.map(([command, cpu, memory], at) => ({
+			pid: 412 + at * 37,
+			command,
+			cpuPercent: wobble(cpu, at),
+			memoryBytes: Math.round(wobble(memory, at + 3) * mb),
+		}))
+		.sort((a, b) => b.cpuPercent - a.cpuPercent);
+}
+
 /** The sample hosts' disk for a microVM of `memoryMb`: the first preset's with at least that memory, else the last's. */
 const sampleDisk = (memoryMb: number): number => {
 	const presets = DEFAULT_SANDBOX_SHAPES.microvm.presets;
@@ -134,6 +200,27 @@ const sandbox = (
 	};
 };
 
+/** The latest `sandbox` base image on the stable channel: a rebuild for a fixable vulnerability, three hours ago. */
+export const SANDBOX_IMAGE_LATEST = { version: "2026.11.04.812", builtAt: FIXTURE_NOW - 3 * HOUR } as const;
+
+/** The latest `browser` base image: the daily rebuild, nine hours ago. */
+export const BROWSER_IMAGE_LATEST = { version: "2026.11.03.811", builtAt: FIXTURE_NOW - 9 * HOUR } as const;
+
+/** A base on `image` at `version`: the latest, or behind it by `behind`, with security fixes waiting if `security`. */
+const onBase = (
+	image: string,
+	latest: { readonly version: string; readonly builtAt: number },
+	version: string,
+	behind?: { readonly days: number; readonly versions: number },
+	security = false,
+): SandboxBase => ({
+	image,
+	version,
+	outdated: behind !== undefined,
+	latest,
+	...(behind === undefined ? {} : { behind }),
+	...(security ? { security: true } : {}),
+});
 /** The sample bundles' digests: the tars' SHA-256s. */
 export const SKILLS_DIGEST = "sha256:3f2a7c1e9b4d8a6f0e5c2b7a9d1f4e8c6b3a0d7f2e9c5b1a8d4f6e0c3b7a9c01";
 export const ATTACHMENTS_DIGEST = "sha256:a41c9e075d2b8f36e1a7c4d90b6f3e28c75a1d94f2e08b6c3d9a7e15b4c62f8e";
@@ -153,7 +240,7 @@ export const KANTEL_IMAGE: SandboxImage = {
 	init: "systemd",
 	injected: false,
 	agentVersion: "0.42.0",
-	desktop: { available: true, detail: "Xtigervnc, xfce4-session, Selkies" },
+	desktop: { available: true, detail: "Xtigervnc, Openbox, Selkies" },
 	browser: { available: true, detail: "Chromium" },
 	docker: { available: true, detail: "dockerd 29.1" },
 	kvm: true,
@@ -208,6 +295,8 @@ export const API_SERVER = sandbox({
 	shared: true,
 	createdBy: "Alex Kemp",
 	environment: { id: "env_backend", name: "backend-dev" },
+	// Six days behind, with the openssl fix the latest was rebuilt for.
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.29.809", { days: 6, versions: 3 }, true),
 	mounts: [
 		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
 		{
@@ -247,6 +336,7 @@ export const DEV_STACK = sandbox({
 	hostId: "hst_hetzner_1",
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
 	mounts: [
 		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
 		{
@@ -335,6 +425,7 @@ export const RENDER = sandbox({
 	hostId: "hst_hetzner_2",
 	shared: true,
 	createdBy: "Bethan Price",
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.11.02.811", { days: 2, versions: 1 }),
 });
 
 export const BROWSER_AGENT = sandbox({
@@ -412,6 +503,7 @@ export const PERSONAL_OLD = sandbox({
 	snapshot: { id: "snp_wine_4", takenAt: FIXTURE_NOW - 5 * DAY },
 	costCents: 96,
 	hostId: "hst_hetzner_2",
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.23.803", { days: 12, versions: 9 }),
 });
 
 export const SANDBOXES: readonly Sandbox[] = [
@@ -439,6 +531,7 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Alex Kemp",
 		sizeBytes: 3.4 * 1024 ** 3,
 		uses: 214,
+		base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.22.802", { days: 13, versions: 10 }),
 	},
 	{
 		id: "ssn_dev_stack_warm",
@@ -463,6 +556,7 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Bethan Price",
 		sizeBytes: 5.1 * 1024 ** 3,
 		uses: 9,
+		base: onBase("browser", BROWSER_IMAGE_LATEST, BROWSER_IMAGE_LATEST.version),
 	},
 	{
 		id: "ssn_py_tools",
@@ -550,7 +644,7 @@ function historyFor(box: Sandbox): readonly SandboxSnapshot[] {
 	const out: SandboxSnapshot[] = [];
 	const count = box.state === "running" ? 6 : 3;
 	for (let at = 0; at < count; at += 1) {
-		const takenAt = box.snapshot.takenAt - at * (box.state === "running" ? 10 * MINUTE : 7 * HOUR);
+		const takenAt = (box.snapshot.takenAt ?? box.createdAt) - at * (box.state === "running" ? 10 * MINUTE : 7 * HOUR);
 		out.push({
 			id: at === 0 ? box.snapshot.id : `${box.snapshot.id}_${at}`,
 			sandboxId: box.id,
@@ -1206,6 +1300,165 @@ export const HOSTS: readonly Host[] = [
 	},
 ];
 
+/** A sample image digest: `sha256:` and 64 hex digits, the same for the same seed. Not a real image's. */
+export function sampleDigest(seed: string): string {
+	let hash = 2_166_136_261;
+	let hex = "";
+	for (let round = 0; hex.length < 64; round += 1) {
+		for (const char of `${seed}/${round}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619) >>> 0;
+		hex += hash.toString(16).padStart(8, "0");
+	}
+	return `sha256:${hex.slice(0, 64)}`;
+}
+
+/** A scan that found `findings`, counted as a scanner counts them. */
+function sampleScan(scannedAt: number, findings: readonly ImageFinding[] = []): ImageScan {
+	const counts: Record<ImageSeverity, number> = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+	for (const finding of findings) counts[finding.severity] += 1;
+	const fixable = (severity: ImageSeverity) =>
+		findings.filter((finding) => finding.severity === severity && finding.fixed !== undefined).length;
+	return {
+		scanner: "trivy 0.67.2",
+		scannedAt,
+		counts,
+		fixable: { critical: fixable("critical"), high: fixable("high") },
+		findings,
+	};
+}
+
+const imageVersion = (
+	image: string,
+	version: string,
+	builtAt: number,
+	reason: ImageBuildReason,
+	scan?: ImageScan,
+): BaseImageVersion => ({
+	version,
+	digest: sampleDigest(`${image}@${version}`),
+	builtAt,
+	signed: true,
+	reason,
+	...(scan === undefined ? {} : { scan }),
+});
+
+const baseImage = (name: string, versions: readonly BaseImageVersion[]): BaseImage => ({
+	name,
+	// The microVM host images are GitHub Releases; the others are containers on GHCR.
+	repository:
+		name === "host"
+			? `https://github.com/lleverage-ai/kantel/releases/download/${versions[0]?.version ?? "host-images"}`
+			: `ghcr.io/lleverage-ai/kantel-${name}`,
+	channel: "stable",
+	...(versions[0] === undefined ? {} : { latest: versions[0] }),
+	versions,
+});
+
+/** What the browser image's latest scan found: a Critical in openssl with a fix out, and a High with none yet. */
+export const BROWSER_FINDINGS: readonly ImageFinding[] = [
+	{
+		id: "CVE-2026-31789",
+		severity: "critical",
+		package: "openssl",
+		installed: "3.0.13-0ubuntu3.5",
+		fixed: "3.0.13-0ubuntu3.6",
+		title: "openssl: heap overflow in X.509 name constraint checks",
+	},
+	{
+		id: "CVE-2026-28114",
+		severity: "high",
+		package: "libxml2",
+		installed: "2.9.14+dfsg-1.3ubuntu3.4",
+		title: "libxml2: use after free in xmlXIncludeCopyNode",
+	},
+	{
+		id: "CVE-2026-20417",
+		severity: "medium",
+		package: "curl",
+		installed: "8.5.0-2ubuntu10.6",
+		fixed: "8.5.0-2ubuntu10.7",
+		title: "curl: cookie leak across redirects to another port",
+	},
+	{
+		id: "GHSA-7q4v-9hx2-mq3c",
+		severity: "low",
+		package: "node-tar",
+		installed: "6.2.0",
+		fixed: "6.2.1",
+	},
+];
+
+/**
+ * The deployment's base images and templates, at `at` (the fixtures' clock): the sandbox image just rebuilt for a
+ * fixable vulnerability, the browser image's scan finding a fixable Critical, the rest clean; one template rebuilding,
+ * one pinned behind, one current.
+ */
+function sampleImages(at: (time: number) => number): BaseImagesOverview {
+	const ago = (ms: number) => at(FIXTURE_NOW - ms);
+	const latest = (image: { readonly version: string; readonly builtAt: number }) => ({
+		version: image.version,
+		builtAt: at(image.builtAt),
+	});
+	const sandboxLatest = latest(SANDBOX_IMAGE_LATEST);
+	const browserLatest = latest(BROWSER_IMAGE_LATEST);
+	const images: readonly BaseImage[] = [
+		baseImage("sandbox", [
+			imageVersion("sandbox", SANDBOX_IMAGE_LATEST.version, sandboxLatest.builtAt, "cve", sampleScan(ago(2 * HOUR))),
+			imageVersion("sandbox", "2026.11.02.811", ago(2 * DAY + 3 * HOUR), "daily"),
+			imageVersion("sandbox", "2026.10.31.810", ago(4 * DAY + 3 * HOUR), "daily"),
+		]),
+		baseImage("browser", [
+			imageVersion(
+				"browser",
+				BROWSER_IMAGE_LATEST.version,
+				browserLatest.builtAt,
+				"daily",
+				sampleScan(ago(HOUR), BROWSER_FINDINGS),
+			),
+			imageVersion("browser", "2026.11.02.810", ago(DAY + 9 * HOUR), "daily"),
+		]),
+		baseImage("isolate-host", [
+			imageVersion("isolate-host", "2026.11.04.812", ago(4 * HOUR), "daily", sampleScan(ago(3 * HOUR))),
+			imageVersion("isolate-host", "2026.11.03.811", ago(DAY + 4 * HOUR), "daily"),
+		]),
+		baseImage("host", [
+			imageVersion("host", "host-images-20261104.812", ago(5 * HOUR), "push", sampleScan(ago(4 * HOUR))),
+			imageVersion("host", "host-images-20261103.811", ago(DAY + 5 * HOUR), "daily"),
+		]),
+	];
+	const templates: readonly BaseImageTemplate[] = [
+		{
+			id: "tpl_node22",
+			name: "node-22",
+			image: "sandbox",
+			channel: "stable",
+			base: onBase("sandbox", sandboxLatest, "2026.11.02.811", { days: 2, versions: 1 }, true),
+			rebuilding: true,
+		},
+		{
+			id: "tpl_python313",
+			name: "python-3.13",
+			image: "sandbox",
+			pinned: sampleDigest("sandbox@2026.10.31.810"),
+			base: onBase("sandbox", sandboxLatest, "2026.10.31.810", { days: 4, versions: 2 }, true),
+			rebuilding: false,
+		},
+		{
+			id: "tpl_browser_agent",
+			name: "browser-agent",
+			image: "browser",
+			channel: "stable",
+			base: onBase("browser", browserLatest, BROWSER_IMAGE_LATEST.version),
+			rebuilding: false,
+		},
+	];
+	return {
+		images,
+		templates,
+		indexUrl: "https://github.com/lleverage-ai/kantel/releases/download/base-images/index.json",
+		generatedAt: ago(20 * MINUTE),
+	};
+}
+
 export const PLANS: readonly Plan[] = [
 	{
 		id: "plan_hobby",
@@ -1340,7 +1593,7 @@ export interface ComputeFixtureOptions {
 	readonly hang?: boolean;
 	/** Every read fails: an error state. */
 	readonly fail?: boolean;
-	/** No sandboxes, snapshots, keys, webhooks, hosts, bundles or bucket sources: the empty states. */
+	/** No sandboxes, snapshots, keys, webhooks, hosts, images, bundles or bucket sources: the empty states. */
 	readonly empty?: boolean;
 	/** The deployment hasn't turned mounts on: no Mounts page, and no sandbox mounts anything. */
 	readonly noMounts?: boolean;
@@ -1355,6 +1608,13 @@ export interface ComputeFixtureOptions {
 	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
 	 */
 	readonly publicUrl?: string;
+	/** The deployment has templates turned on (experimental): Templates in the sidebar and a picker in New sandbox. */
+	readonly templates?: boolean;
+	/**
+	 * What a sandbox's host measures: `all` (default) CPU, memory, disk and IO; `cpu-memory` an older host's CPU and
+	 * memory alone, with no history beyond the live hour and no process list.
+	 */
+	readonly metrics?: "all" | "cpu-memory";
 }
 
 let counter = 0;
@@ -1377,6 +1637,26 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const at = (time: number): number => time + shift;
 	const now = (): number => (options.now === undefined ? base : Date.now());
 	const settleMs = options.settleMs ?? 1200;
+	const allMetrics = (options.metrics ?? "all") === "all";
+	/** A sandbox's made-up readings between two times: none while it isn't running, its disk and IO where measured. */
+	const sandboxUsage = (id: string, since: number, to: number, intervalMs?: number, history = false): UsageSeries => {
+		const box = find(sandboxes, id, "sandbox");
+		const spec = box.resources ?? sizeSpec(box.size);
+		const memLimitBytes = spec.memoryGb * 1024 ** 3;
+		const disk = allMetrics && box.kind === "microvm" ? { diskTotalBytes: spec.diskGb * 1024 ** 3 } : {};
+		// A stopped one has its history up to when it stopped; the live read has nothing for it.
+		if (box.state !== "running" && !history) return { intervalMs: 5_000, memLimitBytes, ...disk, points: [] };
+		const stopped = box.state === "running" ? to : Math.min(to, box.snapshot?.takenAt ?? box.createdAt);
+		return stubUsage(id, {
+			since: Math.max(since, box.createdAt),
+			now: stopped,
+			memLimitBytes,
+			...disk,
+			...(allMetrics && box.kind === "microvm" ? { io: true } : {}),
+			...(intervalMs === undefined ? {} : { intervalMs }),
+			...(box.kind === "isolate" ? { busy: 0.04 + (id.length % 5) / 50 } : {}),
+		});
+	};
 	const empty = options.empty === true;
 	const mountsOn = options.noMounts !== true;
 
@@ -1393,6 +1673,12 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		const { costCents: _, ...rest } = box;
 		return rest;
 	};
+	/** A record's base image with its latest's build time on `now` too. */
+	const movedBase = <T extends { readonly base?: SandboxBase }>(record: T): T => {
+		const latest = record.base?.latest;
+		if (record.base === undefined || latest === undefined) return record;
+		return { ...record, base: { ...record.base, latest: { ...latest, builtAt: at(latest.builtAt) } } };
+	};
 
 	const withMounts = (box: Sandbox): Sandbox => {
 		if (mountsOn) return box;
@@ -1404,8 +1690,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
 			const copy = moved(box, ["createdAt", "stopsAt"]);
 			const snapshot =
-				box.snapshot === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
-			return [box.id, withMounts(withCost({ ...copy, ...snapshot }))];
+				box.snapshot?.takenAt === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
+			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot })))];
 		}),
 	);
 	// Bundles by account and digest: a digest names a bundle only within its account.
@@ -1420,7 +1706,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		(empty || !mountsOn ? [] : BUCKET_SOURCES).map((bucket) => [bucket.id, moved(bucket, ["createdAt"])]),
 	);
 	const saved = new Map<string, SavedSnapshot>(
-		(empty ? [] : SAVED).map((entry) => [entry.id, moved(entry, ["createdAt"])]),
+		(empty ? [] : SAVED).map((entry) => [entry.id, movedBase(moved(entry, ["createdAt"]))]),
 	);
 	const history = new Map<string, SandboxSnapshot[]>(
 		[...sandboxes.values()].map((box) => [box.id, [...historyFor(box)]]),
@@ -1524,6 +1810,10 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		await new Promise((resolve) => setTimeout(resolve, 60));
 		return make();
 	};
+	const templates =
+		options.templates === true
+			? createTemplateFixtures({ now: at(base), clock: now, empty, gate, accountId: LLEVERAGE.id })
+			: undefined;
 	/** Refuses a grant write made from an older read, as Kantel's API does with `conflict`. */
 	const requireGrants = (expected: readonly EgressGrant[] | undefined, now: readonly EgressGrant[], what: string) => {
 		const key = (grants: readonly EgressGrant[]) =>
@@ -1714,7 +2004,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						.sort((a, b) => b.createdAt - a.createdAt),
 				),
 			create: (input: CreateSandboxInput) =>
-				gate(() => {
+				gate(async () => {
+					const made = input.templateId === undefined ? undefined : await templates?.get(input.templateId);
+					// A template's own vCPUs and memory when the sliders weren't moved off them.
+					const shape =
+						input.shape ?? (made === undefined ? undefined : { vcpus: made.spec.vcpus, memoryMb: made.spec.memoryMb });
 					const id = nextId("sbx");
 					const name = input.name?.trim() || `sandbox-${id.slice(-4)}`;
 					const box: Sandbox = {
@@ -1724,17 +2018,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						accountId: input.accountId,
 						kind: input.kind,
 						size:
-							input.shape === undefined
+							shape === undefined
 								? "medium"
-								: ((presetOf(DEFAULT_SANDBOX_SHAPES, input.shape)?.name ?? "medium") as SandboxSize),
-						...(input.shape === undefined
+								: ((presetOf(DEFAULT_SANDBOX_SHAPES, shape)?.name ?? "medium") as SandboxSize),
+						...(shape === undefined
 							? {}
 							: {
 									resources: {
-										vcpus: input.shape.vcpus,
-										memoryGb: input.shape.memoryMb / 1024,
+										vcpus: shape.vcpus,
+										memoryGb: shape.memoryMb / 1024,
 										// As a host gives it: a preset's own, else the smallest preset's with at least its memory.
-										diskGb: input.kind === "isolate" ? 0 : sampleDisk(input.shape.memoryMb),
+										diskGb: input.kind === "isolate" ? 0 : sampleDisk(shape.memoryMb),
 									},
 								}),
 						state: "starting",
@@ -1751,6 +2045,23 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									environment: {
 										id: input.environmentId,
 										name: find(environments, input.environmentId, "environment").name,
+									},
+								}),
+						...(made === undefined
+							? {}
+							: {
+									template: {
+										id: made.id,
+										name: made.name,
+										version: made.version,
+										// Only a snapshot of its current version restores, and only into the vCPUs and memory it was
+										// built as.
+										start:
+											startingSnapshot(made) === undefined ||
+											shape?.vcpus !== made.spec.vcpus ||
+											shape.memoryMb !== made.spec.memoryMb
+												? "boot"
+												: "snapshot",
 									},
 								}),
 					};
@@ -1805,6 +2116,33 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const { error: _, ...current } = find(sandboxes, id, "sandbox");
 					const box = put({ ...current, state: "starting" });
 					settle(id, (latest) => ({ ...latest, state: "running", stopsAt: now() + HOUR }));
+					return box;
+				}),
+			// As a recover, but it comes back on its base image's latest version: nothing outdated about it any more.
+			restartOnLatest: (id) =>
+				gate(() => {
+					const { error: _, base, ...current } = find(sandboxes, id, "sandbox");
+					const onLatest =
+						base === undefined
+							? {}
+							: {
+									base: {
+										image: base.image,
+										outdated: false,
+										...(base.latest === undefined
+											? base.version === undefined
+												? {}
+												: { version: base.version }
+											: { version: base.latest.version, latest: base.latest }),
+									},
+								};
+					const box = put({ ...current, ...onLatest, state: "starting" });
+					settle(id, (latest) => ({
+						...latest,
+						state: "running",
+						stopsAt: now() + HOUR,
+						usage: usageSeries(id.length + 5, 0.3),
+					}));
 					return box;
 				}),
 			remove: (id) =>
@@ -1870,18 +2208,39 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
 				}),
 			// Live on this browser's clock, whatever time the rest is at: the graphs move.
-			usageSeries: (id, since) =>
+			usageSeries: (id, since) => gate(() => sandboxUsage(id, since, Date.now())),
+			...(allMetrics
+				? {
+						// Every 5 seconds over the last hour, 5-minute means over a day, hourly over a week, as the API keeps them.
+						usageHistory: (id: string, range: UsageRange) =>
+							gate(() => {
+								// On this browser's clock, as the live read is.
+								const to = Date.now();
+								const { spanMs, intervalMs } = HISTORY[range];
+								return sandboxUsage(id, to - spanMs, to, intervalMs, true);
+							}),
+						processes: (id: string) =>
+							gate(() => {
+								const box = find(sandboxes, id, "sandbox");
+								return box.state === "running" ? sampleProcesses(box) : [];
+							}),
+					}
+				: {}),
+			rename: (id, name) =>
 				gate(() => {
 					const box = find(sandboxes, id, "sandbox");
-					const spec = box.resources ?? sizeSpec(box.size);
-					const memLimitBytes = spec.memoryGb * 1024 ** 3;
-					if (box.state !== "running") return { intervalMs: 5_000, memLimitBytes, points: [] };
-					return stubUsage(id, {
-						since,
-						now: Date.now(),
-						memLimitBytes,
-						...(box.kind === "isolate" ? { busy: 0.04 + (id.length % 5) / 50 } : {}),
-					});
+					if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name))
+						throw new Error(
+							"A name is lowercase letters, digits and dashes, and starts and ends with a letter or digit.",
+						);
+					if (
+						[...sandboxes.values()].some(
+							(other) => other.id !== id && other.accountId === box.accountId && other.name === name,
+						)
+					)
+						throw new Error(`This account already has a sandbox called ${name}.`);
+					// As the API's: the name only, its address stays.
+					return put({ ...box, name });
 				}),
 			ports: (id) => gate(() => [...(ports.get(id) ?? [])].sort((a, b) => a.port - b.port)),
 			exposePort: (id, port, isPublic) =>
@@ -1934,6 +2293,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						createdBy: VIEWER.name,
 						sizeBytes: Math.round(sizeSpec(box.size).diskGb * 1024 ** 3 * 0.1),
 						uses: 0,
+						// Saved on the base the sandbox is on now.
+						...(box.base === undefined ? {} : { base: box.base }),
 					};
 					saved.set(entry.id, entry);
 					return entry;
@@ -2039,6 +2400,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					return withUpstream;
 				}),
 		},
+		...(templates === undefined ? {} : { templates }),
 		environments: {
 			list: (accountId) =>
 				gate(() =>
@@ -2345,6 +2707,18 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							gate(() => {
 								hosts.delete(id);
 							}),
+					},
+					images: {
+						overview: () =>
+							gate(() =>
+								empty
+									? {
+											images: [],
+											templates: [],
+											indexUrl: "https://github.com/lleverage-ai/kantel/releases/download/base-images/index.json",
+										}
+									: sampleImages(at),
+							),
 					},
 				}),
 		devices: {

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
-import { IDEMPOTENCY_CLAIM_MS } from "../src/service.ts";
+import { CLAIM_LAPSED, IDEMPOTENCY_CLAIM_MS } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore, sqlCollection } from "../src/sql-store.ts";
 import { type Collection, type ComputeStore, createMemoryStore, memoryCollection } from "../src/store.ts";
 import { createStubBackend } from "../src/stub-backend.ts";
@@ -445,7 +445,7 @@ describe("two compute APIs over one database", {
 		expect(gate.creates).toBe(2);
 	});
 
-	it("takes over a key whose holder died mid-call once its claim lapses, and frees a key whose call failed", async () => {
+	it("never takes over a key whose holder stopped mid-call, even once its claim lapses, and frees a key whose call failed", async () => {
 		let clock = 1_000_000;
 		const { first, store } = await twoReplicas(() => clock);
 		// A replica claimed the key and died before it answered.
@@ -458,10 +458,14 @@ describe("two compute APIs over one database", {
 		});
 		expect((await refusal(first.createSandbox({ wait: true }, { idempotencyKey: "k-dead" }))).code).toBe("conflict");
 		clock += IDEMPOTENCY_CLAIM_MS + 1;
-		const sandbox = await first.createSandbox({ wait: true }, { idempotencyKey: "k-dead" });
-		expect(sandbox.state).toBe("running");
-		expect((await store.idempotency.get(id))?.body).toBeDefined();
-		expect((await first.createSandbox({ wait: true }, { idempotencyKey: "k-dead" })).id).toBe(sandbox.id);
+		// It may only have stalled, and go on to make the sandbox: a retry under the key makes none, and says so.
+		const lapsed = await refusal(first.createSandbox({ wait: true }, { idempotencyKey: "k-dead" }));
+		expect(lapsed.code).toBe("conflict");
+		expect(lapsed.message).toBe(CLAIM_LAPSED);
+		expect((await store.idempotency.get(id))?.claim).toBe("claim_dead");
+		expect((await first.listSandboxes({ all: true })).items).toEqual([]);
+		// A new key makes one.
+		expect((await first.createSandbox({ wait: true }, { idempotencyKey: "k-new" })).state).toBe("running");
 
 		// A call that fails keeps nothing: its retry runs again.
 		const bad = { size: "small" } as const;

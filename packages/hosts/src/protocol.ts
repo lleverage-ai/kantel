@@ -39,6 +39,12 @@ export type HostErrorCode =
 export interface HostError {
 	readonly code: HostErrorCode | string;
 	readonly message: string;
+	/**
+	 * Kantel's own mark, never the host's: the call was sent and no answer came (its link dropped, it timed out or was
+	 * aborted, the replica holding the host lost it), so whether the host carried it out is unknown. Absent, the host
+	 * answered, or the call never left.
+	 */
+	readonly unanswered?: boolean;
 }
 
 export type SandboxTier = "microvm" | "isolate";
@@ -75,6 +81,39 @@ export interface HostFacts {
 	 * merely accept, is gated on one: a host that predates it would ignore the field and report success.
 	 */
 	readonly features?: readonly string[];
+	/**
+	 * The microVM tier's Firecracker (`v1.17.0`) and guest kernel (its version and a SHA-256 prefix of the file,
+	 * `6.1.102+0123456789ab`): a template snapshot restores only onto the same two. Absent on a host without the tier, or
+	 * one from before templates.
+	 */
+	readonly firecracker?: string;
+	readonly guestKernel?: string;
+	/** What the host boots new sandboxes on, and its image settings; present with `image-patching`. */
+	readonly images?: HostImages;
+}
+
+/** A host's images: the version new sandboxes start on, and how it takes new ones. */
+export interface HostImages {
+	/** The host images version new sandboxes boot on; empty when the images aren't versioned yet. */
+	readonly version: string;
+	/** The Firecracker version the host runs, such as `v1.17.0`. */
+	readonly firecracker: string;
+	/** Whether the host follows the welcome's `images`. */
+	readonly autoUpdate: boolean;
+	/** Its signature policy: `require`, `warn` or `off`. */
+	readonly signatures: string;
+	/** Asked about a sandbox (`host.images` with `sandboxId`): its state on the host, such as `running`. */
+	readonly state?: string;
+}
+
+/** The host images Kantel wants hosts on (a welcome's `images`). */
+export interface HostImageChannel {
+	/** Such as `stable`. */
+	readonly channel: string;
+	/** The release, such as `host-images-20261103`. */
+	readonly version: string;
+	/** The release's download base: it holds `manifest.json` and `manifest.json.sigstore.json` (a cosign bundle). */
+	readonly url: string;
 }
 
 /** Features a host may report in its facts. */
@@ -84,6 +123,12 @@ export const HOST_FEATURES = {
 	 * only where bound, refuses older `revision`s, and a fork takes its `env`.
 	 */
 	egressPolicy: "egress-policy",
+	/**
+	 * Image patching (experimental): the host keeps its host images by version, follows the welcome's `images`, reports
+	 * each sandbox's and snapshot's `base`, and restarts a sandbox on its current images when `sandbox.start` has
+	 * `rebase`.
+	 */
+	imagePatching: "image-patching",
 	/**
 	 * Bundle mounts (`HostMount` of kind `bundle` in a create, start, resume, fork or recover): the host fetches the
 	 * bundle's tar (`GET /v1/hosts/bundles/{digest}`), mounts it read-only, and answers each mount's status in the
@@ -112,7 +157,89 @@ export const HOST_FEATURES = {
 	 * running a command in it, which it still does for a host without it.
 	 */
 	usage: "usage",
+	/**
+	 * Templates: `template.build` and `template.delete`, and `sandbox.create`'s `template` (a template snapshot restored,
+	 * or the template's base image booted fresh with its setup run). Reported only by a host that can make a template's
+	 * root filesystem from an image (Docker there, which pulls and exports it). A host without it is never sent a template: one that predates them would drop `template` and boot the
+	 * default image as if it had made the sandbox from it.
+	 */
+	templates: "template-build",
+	/**
+	 * Acknowledged usage ticks: each tick carries `run` and `seq` (`HostUsageReport`), and on a connection whose welcome
+	 * has `usageAcks` the host keeps every tick until a `usage.ack` covers it, sending again on its next connection what
+	 * wasn't, so a tick written into a connection that then dies isn't lost. Without the welcome's `usageAcks` (an older
+	 * Kantel), a tick is done with once written, as before.
+	 */
+	usageAcks: "usage-acks",
+	/**
+	 * Templates' custom images: a `HostTemplateImage` (a Dockerfile, or an image reference) built or pulled in a build
+	 * microVM whose only network is the host's egress proxy, never on the host's Docker, and booted through the injected
+	 * guest agent. Reported beside `templates` by a host whose settings switch its template builder on. A host without
+	 * it is never sent a `HostTemplateImage`, in a build or a create.
+	 */
+	templateImages: "template-image-build",
+	/**
+	 * Commands by Kantel's ID (`HostExecParams.commandId`): `sandbox.exec.kill` stops one that is running, with its whole
+	 * process group, and a `detached` one is answered at once and runs past any call (and the host's connection),
+	 * with no limit but its own `timeoutMs`, its result kept for `sandbox.exec.get`. Without it Kantel can't stop a
+	 * host's command, and a detached one runs as a foreground one, to the guest's default limit (120 s; an isolate's
+	 * 30 s).
+	 */
+	execControl: "exec-control",
 } as const;
+
+/**
+ * `sandbox.exec`'s params (the Go side's `ExecParams`). The host fills in `sandboxId`; `stdin` is base64. With no
+ * `timeoutMs` a foreground command has the tier's default limit (the guest's 120 s, an isolate's 30 s).
+ */
+export interface HostExecParams {
+	readonly command: string;
+	readonly cwd?: string;
+	readonly env?: { readonly [name: string]: string };
+	readonly stdin?: string;
+	readonly timeoutMs?: number;
+	/** Kantel's command ID (`execControl`): what `sandbox.exec.kill` and `sandbox.exec.get` name it by. */
+	readonly commandId?: string;
+	/**
+	 * With `commandId` (`execControl`): answered at once with a `HostExecStatus` (`running`); the command runs with no
+	 * limit but `timeoutMs` (an isolate's has its default), and its result is `sandbox.exec.get`'s once it ends.
+	 */
+	readonly detached?: boolean;
+}
+
+/** What a command ended with: `sandbox.exec`'s answer, and an ended `HostExecStatus`'s `result`. */
+export interface HostExecResult {
+	readonly exitCode: number;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly truncated?: boolean;
+	readonly timedOut?: boolean;
+	readonly durationMs?: number;
+}
+
+/** `sandbox.exec.get`'s and `sandbox.exec.kill`'s params: a command by Kantel's ID. */
+export interface HostExecRef {
+	readonly commandId: string;
+	/** For a get: hold the answer up to this long (at most `HOST_EXEC_MAX_WAIT_MS`) for a running command to end. */
+	readonly waitMs?: number;
+}
+
+/** The longest a host holds a `sandbox.exec.get` for its command to end (the Go side's `ExecMaxWaitMs`). */
+export const HOST_EXEC_MAX_WAIT_MS = 60_000;
+
+/** A command by its ID: a detached `sandbox.exec`'s answer, and `sandbox.exec.get`'s. */
+export interface HostExecStatus {
+	readonly commandId: string;
+	readonly state: "running" | "exited";
+	readonly pid?: number;
+	/** Once it has ended. */
+	readonly result?: HostExecResult;
+	/**
+	 * On a detached start: the sandbox didn't answer it, so whether the command started is unknown. Kantel follows it by
+	 * its ID as any; `sandbox.exec.get`'s `not_found` then means it never started.
+	 */
+	readonly unconfirmed?: boolean;
+}
 
 /**
  * How far either end of a file stream may get ahead of the other's `stream.ack`: a write's sender (Kantel) of what
@@ -208,6 +335,11 @@ export interface HostCapacity {
 	readonly running: number;
 	readonly stopped: number;
 	readonly load1: number;
+	/**
+	 * The template builds (their snapshot IDs) the host has admitted and not yet ended, whose machines' memory and disk
+	 * `freeMemoryMiB` and `freeDiskGiB` already leave out. Absent from a host from before it named them.
+	 */
+	readonly builds?: readonly string[];
 }
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";
@@ -230,6 +362,16 @@ export interface HostSandbox {
 	 * `account` (its account's VM already ran).
 	 */
 	readonly source?: string;
+	/**
+	 * The host images version its root file system is; absent when unknown (images not versioned). One older than the
+	 * host's `images.version` is outdated until restarted with `rebase`.
+	 */
+	readonly base?: string;
+	/**
+	 * When it was put on `base` (unix milliseconds, the host's clock: a create, a rebase or its first pinning), with
+	 * `base` only. Reports of a sandbox's base are ordered by it.
+	 */
+	readonly baseAt?: number;
 	/** Its mounts' statuses, from a host with a mounts feature. */
 	readonly mounts?: readonly HostMountStatus[];
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
@@ -254,6 +396,8 @@ export interface HostGuest {
 	readonly init: "systemd" | "kantel";
 	readonly desktop: HostGuestFeature;
 	readonly browser: HostGuestFeature;
+	/** The browser alone, on a display of its own with a stream of it; absent from an agent too old to say. */
+	readonly browserSurface?: HostGuestFeature;
 	readonly docker: HostGuestFeature & { readonly kvm: boolean };
 }
 
@@ -266,6 +410,8 @@ export interface HostSnapshot {
 	readonly sizeBytes: number;
 	readonly memory: boolean;
 	readonly tier: SandboxTier;
+	/** The host images version its root file system is; absent when unknown (images not versioned). */
+	readonly base?: string;
 }
 
 /** A sandbox's way out, sent with create, resume and fork. The host holds the token; the sandbox never sees it. */
@@ -364,6 +510,17 @@ export interface HostEgressRecord {
  * host's of all its CPUs. Above 1 is taken as 1.
  */
 export interface HostUsageReport {
+	/**
+	 * From a host with `usage-acks`: the tick's place in its `run`, from 1 up by one per tick taken (a tick the host's
+	 * bounded backlog dropped leaves a gap). Kantel acknowledges a tick by it (`usage.ack`), and takes a tick at most once
+	 * by it: a tick sent again after a reconnect whose `seq` it has taken already is acknowledged and not taken again.
+	 */
+	readonly seq?: number;
+	/**
+	 * With `seq`: which run of the host's sampler it counts in, chosen when kantel-host starts, so a restarted host's
+	 * `seq` starting again at 1 isn't taken for ticks Kantel has already had.
+	 */
+	readonly run?: string;
 	/** When the readings were taken, epoch milliseconds. */
 	readonly at: number;
 	/** The tick, 1000 to 300000; 5000 by default. */
@@ -387,14 +544,35 @@ export interface HostSandboxUsage {
 	readonly kind: SandboxTier;
 	readonly cpu: number;
 	/**
-	 * As kantel-host measures it from the host's side (`SandboxUsage` in apps/host/internal/proto/proto.go): a microVM's
-	 * Firecracker process's resident memory (the guest memory it has touched, page cache included, and the VMM's own); an
-	 * isolate's even share of its account's runtime's resident memory.
+	 * As kantel-host measures it, with nothing run in the sandbox (`SandboxUsage` in apps/host/internal/proto/proto.go): a
+	 * microVM's guest's own count of its used memory, MemTotal - MemAvailable as its balloon driver reports them to
+	 * Firecracker (`memSource` `guest`: page cache not counted, and it falls when the guest frees memory); else, for a VM
+	 * without those figures, its Firecracker process's resident memory (`rss`: the guest memory it has touched, page cache
+	 * included, and the VMM's own; it never falls). An isolate's even share of its account's runtime's resident memory.
 	 */
 	readonly memUsedBytes: number;
 	/** A microVM's size's memory; an isolate's even share of its account's runtime's memory limit. */
 	readonly memLimitBytes: number;
+	/**
+	 * Where `memUsedBytes` came from: `guest` (the guest's own count) or `rss` (the host process's resident memory). A host
+	 * that predates it sends none, and its figures are all `rss`.
+	 */
+	readonly memSource?: HostMemorySource;
+	/**
+	 * A microVM's own disk as its guest counts it (df's used and size), from its agent: both or neither. Neither for an
+	 * isolate, or from a host or guest agent that predates them.
+	 */
+	readonly diskUsedBytes?: number;
+	readonly diskTotalBytes?: number;
+	/**
+	 * The share of the interval, 0 to 1, in which at least one of a microVM's guest tasks waited on IO (its kernel's IO
+	 * pressure, "some"). None from a guest without pressure figures (booted without psi=1) or for its first reading.
+	 */
+	readonly ioPressure?: number;
 }
+
+/** `HostSandboxUsage.memSource`. */
+export type HostMemorySource = "guest" | "rss";
 
 export interface HostHello {
 	readonly hostId: string;
@@ -415,6 +593,32 @@ export interface HostWelcome {
 	 */
 	readonly pools?: { readonly [pool: string]: never };
 	readonly draining?: boolean;
+	/**
+	 * The host images Kantel wants hosts on (image patching): a host with automatic image updates on fetches them, checks
+	 * their signature, and starts new sandboxes on them. Running and stopped sandboxes stay on theirs until a
+	 * `sandbox.start` with `rebase`.
+	 */
+	readonly images?: HostImageChannel;
+	/**
+	 * This Kantel acknowledges usage ticks (`HOST_FEATURES.usageAcks`): once the gateway holding the host's connection
+	 * has taken a tick into its series it answers `{ "type": "usage.ack", "acked": seq }`, covering that tick and every
+	 * earlier one. A connection's first welcome decides it for the connection.
+	 */
+	readonly usageAcks?: boolean;
+}
+
+/**
+ * `sandbox.start` and `sandbox.resume`'s params, past the sandbox's ID (the Go side's `ResumeParams`).
+ */
+export interface HostResumeParams {
+	readonly egress?: HostEgress;
+	/** Orders the boot's egress (its `egressRevision`); with one, no `egress` is the host's default, a clear. */
+	readonly revision?: number;
+	/**
+	 * On `sandbox.start` (a cold boot): first move the sandbox onto the host's current images. Its own disk stays, its
+	 * memory snapshot is dropped. `sandbox.resume` ignores it.
+	 */
+	readonly rebase?: boolean;
 }
 
 export interface HostEvent {
@@ -437,6 +641,7 @@ export interface HostMessage {
 		| "welcome"
 		| "heartbeat"
 		| "usage"
+		| "usage.ack"
 		| "call"
 		| "result"
 		| "event"
@@ -460,7 +665,8 @@ export interface HostMessage {
 	readonly reason?: string;
 	/**
 	 * For `stream.ack`: the bytes of a file stream its receiver has taken so far, the sandbox's of a write (host →
-	 * Kantel), Kantel's reader's of a read (Kantel → host).
+	 * Kantel), Kantel's reader's of a read (Kantel → host). For `usage.ack` (Kantel → host): the `seq` of the newest
+	 * usage tick taken, which covers every earlier one of the run.
 	 */
 	readonly acked?: number;
 }
@@ -483,6 +689,13 @@ export const HostMethods = {
 	get: "sandbox.get",
 	list: "sandbox.list",
 	exec: "sandbox.exec",
+	/** `HostExecRef` (`execControl`): a command's `HostExecStatus`, or `not_found` once the host no longer knows it. */
+	execGet: "sandbox.exec.get",
+	/**
+	 * `HostExecRef` (`execControl`): kills a running command and its process group; answered `{ killed }`, false for one
+	 * that had already ended.
+	 */
+	execKill: "sandbox.exec.kill",
 	fileRead: "sandbox.files.read",
 	fileWrite: "sandbox.files.write",
 	fileDelete: "sandbox.files.delete",
@@ -494,6 +707,11 @@ export const HostMethods = {
 	snapshotRead: "snapshot.read",
 	portOpen: "port.open",
 	hostUpdate: "host.update",
+	/**
+	 * Kantel to host (image patching): `{ sandboxId? }`, answered with the host's `HostImages` as they are now, and with
+	 * a `sandboxId` that sandbox's `state` on the host.
+	 */
+	hostImages: "host.images",
 	/**
 	 * Kantel to a host from before warm pools were removed, which still reports warm machines: `{}`, the pools it should
 	 * keep (none). A current host has no such method.
@@ -515,12 +733,91 @@ export const HostMethods = {
 	 * sandbox is on that host and mounts that bucket source.
 	 */
 	bucketFetch: "bucket.fetch",
+	/** Builds a template snapshot: `HostTemplateBuild`, answered with `HostTemplateBuilt`. */
+	templateBuild: "template.build",
+	/** Deletes a template snapshot's directory, `{ snapshotId }`, and nothing else. Result `{ ok: true }`. */
+	templateDelete: "template.delete",
 } as const;
 
 /** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */
 export const HOST_EVENT_MOUNTS = "sandbox.mounts";
 
 export type HostMethod = (typeof HostMethods)[keyof typeof HostMethods];
+
+/**
+ * A template's image: a Kantel base image, which the host pulls by digest from its operator's registry
+ * (`templateRegistry`), never building one.
+ */
+interface HostTemplateBase {
+	/** The base image's name, such as `kantel/sandbox`: a repository path, with no registry, tag or digest. */
+	readonly baseImage: string;
+	/** Absent while the default base's channel has no published digest: the host's own sandbox image. */
+	readonly baseDigest?: string;
+}
+
+/**
+ * A template's custom image, built or pulled in a build microVM (`HOST_FEATURES.templateImages`). `scope` is the
+ * template, its version and its rebuild (`<templateId>@<version>#<epoch>`): a rebuild builds or pulls it again.
+ */
+export type HostTemplateImage =
+	| { readonly kind: "dockerfile"; readonly dockerfile: string; readonly scope: string }
+	| { readonly kind: "image"; readonly ref: string; readonly scope: string };
+
+/** How a sandbox made from a template boots, on `sandbox.create` (microVMs only). */
+export interface HostTemplateBoot extends HostTemplateBase {
+	/**
+	 * Its custom image; a fresh boot boots the root filesystem `rootfsKey` names, which a build on the host made (a
+	 * create never builds one).
+	 */
+	readonly image?: HostTemplateImage;
+	/** The image's root filesystem on the host (`images/templates/<key>.ext4`); absent, the host works it out. */
+	readonly rootfsKey?: string;
+	/** Run as root in a sandbox booted fresh (no `snapshot`), once it has its identity. */
+	readonly setup?: string;
+	/**
+	 * A template snapshot on that host (`template.build`'s `ref`) to restore, only when it was built with the create's
+	 * vCPUs and memory (its `size`'s, or its custom shape's); absent, or built as another machine, the image boots fresh.
+	 */
+	readonly snapshot?: string;
+}
+
+/**
+ * `template.build`: the base image booted once, its setup run as root, snapshotted as `snapshotId`. The host admits it
+ * against its memory budget and free disk, refusing it (`capacity`) while its sandboxes and other builds leave too
+ * little, and counts it in its reports' free memory and disk, naming it (`HostCapacity.builds`), until its machine has
+ * gone.
+ */
+export interface HostTemplateBuild extends HostTemplateBase {
+	readonly snapshotId: string;
+	/** Its custom image, built in a build microVM under `egress` and the operator's registries; absent, the base. */
+	readonly image?: HostTemplateImage;
+	readonly setup?: string;
+	readonly env?: { readonly [name: string]: string };
+	readonly vcpus: number;
+	readonly memoryMiB: number;
+	/** The disk a create of the vCPUs and memory gets on the host: its named size's, or its custom shape's (`diskFor`). */
+	readonly diskGiB: number;
+	readonly keyHash: string;
+	/** The build's way out while its setup runs: the template's grants. */
+	readonly egress?: HostEgress;
+	/** The account the template is of. */
+	readonly owner?: string;
+}
+
+/** `template.build`'s answer: `ref` names the snapshot on its host. */
+export interface HostTemplateBuilt {
+	readonly ref: string;
+	/** The pulled base's image ID; for a custom image, its resolved digest (a reference's) or built image ID. */
+	readonly imageDigest?: string;
+	/** A custom image's root filesystem on the host, which a create's fresh boot names (`HostTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
+	/** A custom image's provenance: its kind, and the Dockerfile's digest or the reference pulled. */
+	readonly source?: "dockerfile" | "image";
+	readonly dockerfileDigest?: string;
+	readonly imageRef?: string;
+	readonly sizeBytes: number;
+	readonly timings?: { readonly [step: string]: number };
+}
 
 /** A binary frame: the stream ID, then the payload. */
 export function encodeStreamFrame(stream: number, payload: Uint8Array): Uint8Array {

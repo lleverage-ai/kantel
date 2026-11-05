@@ -54,6 +54,9 @@ kantel e2e join <org> <genesis>            # the member: prints a card and a fin
 kantel e2e add-device --member <card>      # the admin
 ```
 
+A genesis may start with `-`. One that starts with `--` goes after `--`, `kantel e2e join <org> -- <genesis>`, and
+`kantel e2e init` prints any that starts with `-` that way.
+
 ## Use it
 
 ```sh

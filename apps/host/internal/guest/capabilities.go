@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,30 +27,59 @@ func Detect(root, version, pid1 string, injected bool) proto.GuestCapabilities {
 	c.Init = pid1
 	systemd := pid1 == "systemd"
 
-	// The console's desktop is Kantel's: TigerVNC and XFCE behind Selkies, started by kantel-desktop's unit.
+	// The console's desktop is Kantel's: TigerVNC behind Selkies, started by kantel-desktop's unit, running Kantel's
+	// Openbox session or the session the image names instead (desktopSession).
 	if !exists(root, "/usr/local/bin/kantel-desktop") || !unitExists(root, "kantel-desktop.service") {
 		c.Desktop.Reason = "No desktop in this image"
-		if found := firstOf(root, "Xtigervnc", "Xvnc", "Xorg", "xfce4-session"); found != "" {
+		if found := firstOf(root, "Xtigervnc", "Xvnc", "Xorg", "openbox", "xfce4-session"); found != "" {
 			c.Desktop.Reason = "No Kantel desktop service in this image (it has " + found + ")"
 		}
 	} else if !systemd {
 		c.Desktop.Reason = "The desktop needs systemd in the image"
 	} else {
 		c.Desktop.Available = true
-		c.Desktop.Detail = strings.Join(found(root, "Xtigervnc", "xfce4-session", "selkies"), ", ")
+		detail := found(root, "Xtigervnc")
+		if session := desktopSession(root); session != "" {
+			detail = append(detail, session)
+		}
+		c.Desktop.Detail = strings.Join(append(detail, found(root, "selkies")...), ", ")
 	}
 
+	// The browser is Chromium on a display of its own (kantel-browser-display), or on the desktop: in an image from
+	// before it, one that puts it back (KANTEL_BROWSER_DISPLAY=:1), or on a host that doesn't boot the guest with
+	// kantel.browser=surface (one from before it, which would drop this report).
 	chromium := firstOf(root, "chromium", "chromium-browser", "google-chrome", "chrome")
+	ownDisplay := exists(root, "/usr/local/bin/kantel-browser-display") && unitExists(root, "kantel-browser-display.service") &&
+		browserDisplay(root) == ":2"
 	switch {
 	case chromium == "":
 		c.Browser.Reason = "No browser in this image"
 	case !exists(root, "/usr/local/bin/kantel-browser") || !unitExists(root, "kantel-browser.service"):
 		c.Browser.Reason = "No Kantel browser service in this image (it has " + chromium + ")"
-	case !c.Desktop.Available:
+	case !systemd:
+		c.Browser.Reason = "The browser needs systemd in the image"
+	case !ownDisplay && !c.Desktop.Available:
 		c.Browser.Reason = "The browser needs the desktop"
 	default:
 		c.Browser.Available = true
 		c.Browser.Detail = titleCase(chromium)
+	}
+
+	// The browser alone, streamed apart from the desktop: its display, and a stream of it (started on demand).
+	switch {
+	case !c.Browser.Available:
+		c.BrowserSurface.Reason = "No browser in this image to show"
+		if c.Browser.Reason != "" {
+			c.BrowserSurface.Reason = c.Browser.Reason
+		}
+	case !ownDisplay:
+		c.BrowserSurface.Reason = "The image runs its browser on the desktop"
+	case !exists(root, "/usr/local/bin/kantel-browser-stream") || !unitExists(root, "kantel-browser-stream.service") ||
+		lookPath(root, "selkies") == "":
+		c.BrowserSurface.Reason = "No stream of the browser's display in this image"
+	default:
+		c.BrowserSurface.Available = true
+		c.BrowserSurface.Detail = strings.Join(append(found(root, "Xtigervnc"), "Selkies"), ", ")
 	}
 
 	dockerd := firstOf(root, "dockerd")
@@ -67,6 +97,62 @@ func Detect(root, version, pid1 string, injected bool) proto.GuestCapabilities {
 		c.Docker.KVM = true
 	}
 	return c
+}
+
+// BrowserSurfaceBootArg on the guest's kernel command line is the host saying it forwards BrowserSurface: Kantel's
+// image then runs Chromium on its own display (kantel-browser, and the display's and stream's units' condition).
+const BrowserSurfaceBootArg = "kantel.browser=surface"
+
+// browserDisplay is the X display the image's browser will run on, as kantel-browser chooses it: the desktop's (:1)
+// when /etc/kantel/desktop.env sets KANTEL_BROWSER_DISPLAY=:1 (its last assignment, as systemd reads it; no other
+// value moves it), else its own (:2) when the host booted the guest with BrowserSurfaceBootArg, else the desktop's.
+// It is a prediction, made before services start: the host chooses a machine's view from where kantel-browser
+// recorded it started Chromium (/run/kantel-browser/display), which a setup's change or a later boot can move.
+func browserDisplay(root string) string {
+	if desktopEnv(root, "KANTEL_BROWSER_DISPLAY") != ":1" && bootedWith(root, BrowserSurfaceBootArg) {
+		return ":2"
+	}
+	return ":1"
+}
+
+// desktopSession names the session kantel-desktop runs on the desktop: the one /etc/kantel/desktop.env sets in
+// KANTEL_DESKTOP_SESSION (a command line, named by its program, as startxfce4), else Kantel's own (kantel-session,
+// Openbox), else, in an image from before it, the XFCE session that image always ran. "" when it finds none.
+func desktopSession(root string) string {
+	if set := strings.Fields(desktopEnv(root, "KANTEL_DESKTOP_SESSION")); len(set) > 0 {
+		return filepath.Base(set[0])
+	}
+	if lookPath(root, "kantel-session") != "" {
+		if lookPath(root, "openbox") != "" {
+			return titleCase("openbox")
+		}
+		return ""
+	}
+	if lookPath(root, "xfce4-session") != "" {
+		return "xfce4-session"
+	}
+	return ""
+}
+
+// desktopEnv is the value /etc/kantel/desktop.env gives key: its last assignment, as systemd's EnvironmentFile reads
+// it, unquoted. "" when it has none.
+func desktopEnv(root, key string) string {
+	set := ""
+	if raw, err := os.ReadFile(filepath.Join(root, "/etc/kantel/desktop.env")); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if ok && strings.TrimSpace(strings.TrimPrefix(k, "export ")) == key {
+				set = strings.Trim(strings.TrimSpace(v), `"'`)
+			}
+		}
+	}
+	return set
+}
+
+// bootedWith says whether the guest's kernel command line has arg, a whole word of it.
+func bootedWith(root, arg string) bool {
+	cmdline, err := os.ReadFile(filepath.Join(root, "/proc/cmdline"))
+	return err == nil && slices.Contains(strings.Fields(string(cmdline)), arg)
 }
 
 // osRelease reads ID, PRETTY_NAME and VERSION_ID from os-release.
@@ -221,6 +307,8 @@ func titleCase(name string) string {
 	switch name {
 	case "selkies":
 		return "Selkies"
+	case "openbox":
+		return "Openbox"
 	case "chromium", "chromium-browser":
 		return "Chromium"
 	case "google-chrome", "chrome":

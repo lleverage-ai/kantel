@@ -87,6 +87,8 @@ export interface SandboxSpec {
 	readonly fromSnapshot?: string;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
+	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
+	readonly template?: SandboxTemplateBoot;
 	/**
 	 * Read-only mounts (experimental, `KANTEL_MOUNTS`): microVMs only. A backend answers each one's status in
 	 * `Placement.mounts`; one it doesn't answer is marked `failed` by the service, so a backend that predates mounts
@@ -111,6 +113,112 @@ export interface BackendMountStatus {
 	readonly path: string;
 	readonly status: computeSchema.MountStatus;
 	readonly error?: string;
+}
+
+/**
+ * A template's custom image as a backend builds it (`TemplateBuildSpec.image`) or boots it (`SandboxTemplateBoot.image`):
+ * a Dockerfile, or an image reference, built or pulled only in an isolated build microVM whose sole way out is the
+ * sandbox egress proxy, never on a host's Docker. `scope` is the template, its version and its rebuild
+ * (`<templateId>@<version>#<epoch>`): a rebuild builds or pulls it again.
+ */
+export type BackendTemplateImage =
+	| { readonly kind: "dockerfile"; readonly dockerfile: string; readonly scope: string }
+	| { readonly kind: "image"; readonly ref: string; readonly scope: string };
+
+/**
+ * How a sandbox made from a template boots, as its spec's `shape` either way: a snapshot is picked only when it was
+ * built with those vCPUs and memory, so a restore and a fresh boot get the same machine.
+ */
+export interface SandboxTemplateBoot {
+	/**
+	 * Its custom image, which only a host that built it boots: a fresh boot boots the root filesystem `rootfsKey` names on
+	 * its host, which a build there made (`BuiltTemplate.rootfsKey`), and never builds one. The spec's eligible hosts are
+	 * only hosts holding it.
+	 */
+	readonly image?: BackendTemplateImage;
+	readonly rootfsKey?: string;
+	/** The custom image's digest (`BuiltTemplate.imageDigest`): what the sandbox records it boots. */
+	readonly imageDigest?: string;
+	/** The base image's name, such as `kantel/sandbox`, which a host pulls from its operator's registry by digest. */
+	readonly baseImage: string;
+	/** Empty while the default base's channel has no published digest: each host's own sandbox image. */
+	readonly baseDigest: string;
+	readonly setup?: string;
+	/**
+	 * A template snapshot's `ref` (`BuiltTemplate.ref`) to start from, on the host that built it, which must be one of
+	 * the spec's eligible hosts. Absent: a fresh boot, which boots the template's base image and runs its setup in the
+	 * new machine. A backend that no longer holds the snapshot boots fresh too, and one whose host has no room for the
+	 * machine boots it fresh on another eligible host, either way saying so (`Placement.bootedFresh`): the snapshot only
+	 * speeds a create up.
+	 */
+	readonly snapshot?: string;
+}
+
+/** A machine's vCPUs, memory and disk, as its host gave them. */
+export interface MachineResources {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	readonly diskGb: number;
+}
+
+/** A host's runtime, which a template snapshot is only good for: the guest kernel and Firecracker it runs. */
+export interface TemplateRuntime {
+	readonly hostId: string;
+	readonly kernel: string;
+	readonly firecracker: string;
+	/** It builds templates' custom images, in a build microVM; only such a host is given one to build or boot. */
+	readonly customImages?: boolean;
+}
+
+/** A template snapshot to build: the template's base image booted once, its setup run, then snapshotted. */
+export interface TemplateBuildSpec {
+	/** The template snapshot's ID, `tsn_…`, which names its bytes on the host. */
+	readonly snapshotId: string;
+	readonly accountId: string;
+	readonly templateId: string;
+	readonly version: number;
+	/** As `SandboxTemplateBoot.baseImage`. */
+	readonly baseImage: string;
+	/** As `SandboxTemplateBoot.baseDigest`. */
+	readonly baseDigest: string;
+	/**
+	 * The template's vCPUs and memory to build it as, which its sandboxes ask for too: its host gives the disk it would
+	 * give a create of that shape, so a restore of it is the machine a fresh boot would be.
+	 */
+	readonly shape: BackendShape;
+	readonly env: { readonly [name: string]: string };
+	readonly setup?: string;
+	/**
+	 * Its custom image, built or pulled in a build microVM under `egress` (and the registries the host's operator allows)
+	 * before the boot; absent, the base. Only a runtime with `customImages` is given one.
+	 */
+	readonly image?: BackendTemplateImage;
+	/** The template's grants (and the account's proxy settings), for the build's boot, and a custom image's build. */
+	readonly egress?: BackendEgress;
+	readonly keyHash: string;
+	/** The host to build on: the one whose runtime the key names. */
+	readonly hostId: string;
+}
+
+/**
+ * A template snapshot's bytes to delete: by `ref` once its build answered, else by its ID on the host it was built on,
+ * which may have made them although its build's answer never came (it timed out, say).
+ */
+export interface TemplateSnapshotBytes {
+	readonly snapshotId: string;
+	readonly hostId: string;
+	readonly ref?: string;
+}
+
+/** A template snapshot built: its opaque reference, the host holding it, and its size. */
+export interface BuiltTemplate {
+	readonly ref: string;
+	readonly hostId: string;
+	/** The image booted: a pulled base's ID, or a custom image's digest (a reference's resolved one, a build's image ID). */
+	readonly imageDigest?: string;
+	readonly sizeBytes: number;
+	/** A custom image's root filesystem on its host, which a fresh boot there names (`SandboxTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
 }
 
 /**
@@ -153,14 +261,30 @@ export interface BackendEgressGrant {
 /** Where a machine was placed, and what it can do. */
 export interface Placement {
 	readonly hostId: string;
-	readonly resources?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	readonly resources?: MachineResources;
 	readonly capabilities: computeSchema.SandboxCapabilities;
+	/**
+	 * The base image version its root file system is: a host images version (`host-images-20261104.812`) for a sandbox
+	 * on a host with image patching, or a container image's `sha256:` digest. Absent where the backend doesn't know (the
+	 * stub, a host whose images aren't versioned), and the sandbox's record keeps what it had.
+	 */
+	readonly base?: string;
+	/**
+	 * With `base`: when the machine was put on it, by the backend's own clock (a host's root filesystem link time).
+	 * The record keeps it, and a later report of the base replaces it only when it says a later time.
+	 */
+	readonly baseAt?: number;
 	/**
 	 * The status of each of the spec's or boot's mounts the backend handled, by path. A mount it doesn't answer for is
 	 * `failed` ("this host can't mount …"). A later change (`pending` to `ready`) comes through
 	 * `ComputeService.reportMounts`.
 	 */
 	readonly mounts?: readonly BackendMountStatus[];
+	/**
+	 * A create from a template snapshot that booted the template fresh instead, running its setup: its host no longer
+	 * held the snapshot (or couldn't restore it), or had no room and another host booted it.
+	 */
+	readonly bootedFresh?: boolean;
 }
 
 /** How to boot a machine for a sandbox that has none. */
@@ -183,12 +307,25 @@ export interface BootOptions {
 	 * host's default), and an update read before it is refused as older.
 	 */
 	readonly egressRevision?: number;
+	/**
+	 * On `start` only (a cold boot): move the sandbox onto its host's current base images first, keeping its own disk
+	 * and dropping any memory it kept (image patching, `restartSandboxOnLatest`). A backend with no versioned images (the
+	 * stub) ignores it, and so does a host without the `image-patching` feature.
+	 */
+	readonly rebase?: boolean;
+	/**
+	 * With `rebase`: the base version the rebase is to land on (the index's `stable`), which the machine refuses to boot
+	 * onto any other. Absent, the host's current one.
+	 */
+	readonly rebaseTo?: string;
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */
 export interface TakenSnapshot {
 	readonly ref: string;
 	readonly sizeBytes: number;
+	/** The base image version its root file system is, as `Placement.base`; absent where the backend doesn't know. */
+	readonly base?: string;
 }
 
 export interface ExecRequest {
@@ -199,8 +336,34 @@ export interface ExecRequest {
 	readonly stdin?: string;
 	/** Kill it after this long; absent, no limit. */
 	readonly timeoutMs?: number;
-	/** Kills it when aborted. */
+	/**
+	 * Stops waiting for it when aborted. Whether the command itself stops too is the backend's: `killCommand` is what
+	 * stops it, and a backend with one may leave a detached command running.
+	 */
 	readonly signal?: AbortSignal;
+	/** The compute API's ID for it, which `killCommand` and `commandResult` name it by. */
+	readonly commandId?: string;
+	/**
+	 * Started to run in the background, so its end, not one call, is what `exec` waits for: it runs with no limit but
+	 * `timeoutMs`, and `commandResult` can fetch its result later, from any gateway, where the backend keeps it.
+	 */
+	readonly detached?: boolean;
+}
+
+/**
+ * What a backend's `exec` of a detached command rejects with when its `signal` ended the wait while the command runs
+ * on where `commandResult` can fetch it: the compute API then leaves it `running`, for `getCommand` to fetch its end,
+ * rather than recording a failure. Any other rejection is the command's end.
+ */
+export class DetachedWaitEnded extends Error {
+	constructor() {
+		super("Kantel stopped waiting for the command; it runs on, and its end can be fetched");
+		this.name = "DetachedWaitEnded";
+	}
+}
+
+export function isDetachedWaitEnded(error: unknown): boolean {
+	return error instanceof Error && error.name === "DetachedWaitEnded";
 }
 
 export interface ExecResult {
@@ -274,6 +437,17 @@ export interface SandboxBackend {
 	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/**
+	 * Image patching: whether a `start` with `rebase` (and `rebaseTo`) can land now, checked before a running sandbox is
+	 * stopped for it. Rejects when it can't: the machine its disk is on isn't among `eligibleHosts`, doesn't patch
+	 * images (`not_supported`), or isn't on `rebaseTo` yet (`unavailable`). Absent where a backend has no versioned
+	 * images (a rebase there is a plain start). Answers whether the machine is running there, where its host says: a
+	 * sandbox recorded as `error` may still be, and is stopped before the rebase's cold boot.
+	 */
+	prepareRebase?(
+		sandboxId: string,
+		options: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string },
+	): Promise<{ readonly running?: boolean } | undefined>;
+	/**
 	 * Saves the disk as a snapshot and lets the machine go, or with `keepMemory` pauses it, keeping its memory too
 	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken.
 	 */
@@ -323,6 +497,16 @@ export interface SandboxBackend {
 	placedOn?(sandboxId: string): Promise<string | undefined>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
+	/**
+	 * Kills a running command by its `ExecRequest.commandId`, and what it started. It throws `not_supported` where the
+	 * sandbox can't stop a command (a host too old). Absent, a command is stopped only by its `signal`.
+	 */
+	killCommand?(sandboxId: string, commandId: string): Promise<void>;
+	/**
+	 * A detached command's result once it has ended, `undefined` while it runs; `not_found` once the backend no longer
+	 * knows it. Absent, or `not_supported`, a detached command's result is only what its `exec` answers.
+	 */
+	commandResult?(sandboxId: string, commandId: string): Promise<ExecResult | undefined>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
 	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */
@@ -354,10 +538,15 @@ export interface SandboxBackend {
 		sandboxId: string,
 		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly embedUrl: string }>;
+	/**
+	 * The browser's live view and CDP URLs. `url` shows the browser alone, apart from the desktop, where the sandbox's
+	 * machine runs it on a surface of its own, as the backend finds it on that machine now (a report kept from another
+	 * boot of its image can be stale); else the desktop it runs on. The answer's `surface` says which (absent: `desktop`).
+	 */
 	openBrowser(
 		sandboxId: string,
 		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
-	): Promise<{ readonly url: string; readonly cdpUrl: string }>;
+	): Promise<{ readonly url: string; readonly cdpUrl: string; readonly surface?: "browser" | "desktop" }>;
 	/**
 	 * A tunnel to the host's E2E responder for the sandbox (`@kantel/e2e`), whose bytes the relay passes on unread, and
 	 * the host's ID. Absent when sandboxes aren't on hosts (the stub).
@@ -386,6 +575,21 @@ export interface SandboxBackend {
 	 * what it holds of them, and fetches them again on the sandbox's next request. Absent, nothing holds them.
 	 */
 	updateSecrets?(sandboxId: string, version: number): Promise<void>;
+	/**
+	 * The runtime of each host that can build and boot template snapshots, one entry a host. Absent (with `buildTemplate`
+	 * and `deleteTemplateSnapshot`), the backend has no templates, and their routes answer `not_supported`.
+	 */
+	templateRuntimes?(): Promise<TemplateRuntime[]>;
+	/**
+	 * Builds a template snapshot on `spec.hostId`; rejects with why when the build or its setup fails, and `exhausted`
+	 * when the host has no room for the build now (it is tried again later).
+	 */
+	buildTemplate?(spec: TemplateBuildSpec): Promise<BuiltTemplate>;
+	/**
+	 * Deletes a template snapshot's bytes from its host, resolving once they are gone, or were never there. Never a user
+	 * snapshot's (`deleteSnapshot`).
+	 */
+	deleteTemplateSnapshot?(bytes: TemplateSnapshotBytes): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */

@@ -129,7 +129,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		h.mu.Lock()
 		h.events = nil
 		if h.link == s.calls {
-			h.link = nil
+			h.link, h.usageAcks = nil, false
 		}
 		h.mu.Unlock()
 		// Calls waiting on this connection fail now rather than at their timeout.
@@ -141,7 +141,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		}
 		s.mu.Unlock()
 	}()
-	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.facts, Sandboxes: h.List(), Capacity: h.Capacity()}}
+	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.Facts(), Sandboxes: h.List(), Capacity: h.Capacity()}}
 	if err := s.send(ctx, hello); err != nil {
 		return err
 	}
@@ -164,7 +164,12 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		_ = s.send(ctx, proto.Message{Type: "event", Event: &e})
 	}
 	h.link = s.calls
+	// The first welcome decides it for the connection, as on Kantel's side (a rewelcome forwarded by an older gateway
+	// replica may lack it).
+	h.usageAcks = welcome.Welcome.UsageAcks
 	h.mu.Unlock()
+	// Mounts of sandboxes adopted at start can resolve their bucket sources now.
+	go h.reconcileMounts(ctx)
 	beat := welcome.Welcome.HeartbeatSeconds
 	if beat <= 0 {
 		beat = 15
@@ -216,6 +221,9 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 		if m.Welcome != nil {
 			s.host.applyWelcome(ctx, m.Welcome, update)
 		}
+	case "usage.ack":
+		// Kantel has taken the usage ticks up to this one: the backlog lets them go.
+		s.host.usageAcked(uint64(max(m.Acked, 0)))
 	case "stream.close":
 		s.closeStream(m.Stream)
 	case "stream.ack":
@@ -230,6 +238,8 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 }
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
+	// Before the binary's update, which returns early for an E2E host; followImages has the same rule.
+	h.followImages(ctx, w.Images)
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		if h.e2e != nil && h.e2e.Enrolled() {
 			h.log.Info("not updating from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", w.DesiredVersion)
@@ -259,7 +269,13 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error
-	callCtx, done, err := s.host.gatewayGuard(ctx, m.Method, m.Params)
+	// A detached command the host runs itself holds its guard until it ends (startDetached): past the call, and past this
+	// session, so its guard isn't ended by the connection going.
+	guarded := ctx
+	if detachedExec(m.Method, m.Params) {
+		guarded = context.WithoutCancel(ctx)
+	}
+	callCtx, done, err := s.host.gatewayGuard(guarded, m.Method, m.Params)
 	if err != nil {
 		reply.Error = toError(err)
 		if err := s.send(ctx, reply); err != nil {
@@ -295,6 +311,9 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		result = map[string]bool{"ok": err == nil}
 		done()
 	default:
+		// What outlives the call (a detached command the host runs) may take over the guard's release.
+		var rel *callRelease
+		callCtx, rel = withRelease(callCtx, done)
 		result, err = s.host.Call(callCtx, m.Method, m.Params, func(e proto.Event) {
 			if callCtx.Err() != nil {
 				return
@@ -306,7 +325,7 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		if callCtx.Err() != nil && ctx.Err() == nil {
 			result, err = nil, &proto.Error{Code: proto.ErrConflict, Message: "this call was ended: its sandbox's space turned E2E on, or the sandbox is being replaced"}
 		}
-		done()
+		rel.release()
 	}
 	if err != nil {
 		reply.Error = toError(err)

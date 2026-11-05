@@ -63,7 +63,7 @@ A host runs `kantel-host`, which boots every sandbox from a kernel and a disk im
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --no-join
 ```
 
-The installer picks the binary for the machine and checks it against the release's `SHA256SUMS`. The kernel and images are published too: the installer fetches them in the next step and checks each one's SHA-256. The default sandbox is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH. The published set is for x86_64; on an aarch64 machine, build your own, as [Hosts](/hosts/#get-kantel-host-and-the-images) shows, and add `--images ~/kantel-images` to the install.
+The installer picks the binary for the machine and checks it against the release's `SHA256SUMS`. The kernel and images are published too: the installer fetches them in the next step and checks each one's SHA-256. The default sandbox is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH. They're published for x86_64 and arm64, and the installer takes the ones for the machine. The arm64 ones are boot-checked in emulation, not yet on arm64 hardware. To use images of your own, build them as [Hosts](/hosts/#get-kantel-host-and-the-images) shows and add `--images ~/kantel-images` to the install.
 
 Check that the machine can run sandboxes:
 
@@ -71,7 +71,7 @@ Check that the machine can run sandboxes:
 sudo kantel-host doctor
 ```
 
-The `kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` lines must say `ok`. On a machine that has never been a host, the `disk` line reads 0 GiB because `/var/lib/kantel-host` doesn't exist yet: check the free space with `df -h /var/lib` instead. [Hosts](/hosts/#check-a-machine) explains each line.
+The `kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` lines must say `ok`, and `doctor` exits non-zero until they do. [Hosts](/hosts/#check-a-machine) explains each line.
 
 ## 5. Join the host
 

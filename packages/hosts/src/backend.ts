@@ -3,9 +3,10 @@
  * sandbox's host over its WebSocket. The compute API keeps every record; this keeps only placements (the registry's).
  *
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
- * it goes on that host. Desktops, browsers and SSH are reached through tunnel URLs with tickets (`tunnel.ts`): the
- * desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced there when the ticket says so, Chromium's
- * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
+ * it goes on that host. A template snapshot's `ref` is the same, and a sandbox made from it goes on its host too, or
+ * boots the template fresh elsewhere when that host is full. Desktops, browsers and SSH are reached through tunnel URLs
+ * with tickets (`tunnel.ts`): the desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced
+ * there when the ticket says so, Chromium's DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
  *
  * Mounts go to a host with every create, start, resume, fork and recover, but only those its features say it can do
@@ -13,23 +14,27 @@
  * reports `file-streams`; on one that doesn't, `not_supported` sends the compute service back to `readFile` and
  * `writeFile`.
  */
-import type {
-	BackendCapabilities,
-	BackendEgress,
-	BackendFileEntry,
-	BackendHost,
-	BackendMount,
-	BackendSize,
-	BootOptions,
-	ExecResult,
-	FileStream,
-	Placement,
-	SandboxBackend,
-	SandboxSpec,
-	TakenSnapshot,
+import {
+	type BackendCapabilities,
+	type BackendEgress,
+	type BackendFileEntry,
+	type BackendHost,
+	type BackendMount,
+	type BackendSize,
+	type BootOptions,
+	type BuiltTemplate,
+	DetachedWaitEnded,
+	type ExecResult,
+	type FileStream,
+	type Placement,
+	type SandboxBackend,
+	type SandboxSpec,
+	type SandboxTemplateBoot,
+	type TakenSnapshot,
+	type TemplateRuntime,
 } from "@kantel/compute";
-import { type ErrorCode, KantelError } from "@kantel/contracts";
-import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
+import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
+import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -40,23 +45,88 @@ import {
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
 	type HostEgress,
+	type HostExecParams,
+	type HostExecRef,
+	type HostExecResult,
+	type HostExecStatus,
 	type HostGuest,
 	HostMethods,
 	type HostMount,
 	type HostSandbox,
+	type HostTemplateBoot,
 	type SandboxTier,
 } from "./protocol.ts";
-import { type HostsService, mountHandoff, type SandboxPlacement } from "./service.ts";
+import {
+	type CreateSandboxInput,
+	type HostsService,
+	kantelErrorFromHost,
+	mountHandoff,
+	type SandboxPlacement,
+	unanswered,
+} from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
-export { DESKTOP_PORT } from "./desktop.ts";
+export { BROWSER_STREAM_PORT, DESKTOP_PORT } from "./desktop.ts";
 /** Where the guest image's Chromium (CDP) and sshd listen; its desktop stream is `DESKTOP_PORT`. */
 export const BROWSER_PORT = 9222;
 export const SSH_PORT = 22;
+/**
+ * Printed before Chromium's DevTools version by `openBrowser`'s command when the machine runs Chromium on its own
+ * display now, with that display up. The image's `kantel-browser` records where it started Chromium in its unit's
+ * runtime directory (BROWSER_DISPLAY_RECORD): gone when the unit stops and on a cold boot, kept in memory. That one
+ * record is the answer whatever made it so: the host's boot argument, `desktop.env`, a template's setup, a pause under
+ * an older host; an image from before it has none, and its Chromium is on the desktop.
+ */
+export const BROWSER_SURFACE_MARK = "kantel-browser-surface\n";
+export const BROWSER_DISPLAY_RECORD = "/run/kantel-browser/display";
+const BROWSER_SURFACE_CHECK = `[ "$(cat ${BROWSER_DISPLAY_RECORD} 2>/dev/null)" = :2 ] && [ -S /tmp/.X11-unix/X2 ] && printf 'kantel-browser-surface\\n'; `;
 
 const PUBLIC_KEY =
 	/^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$/;
 const FINGERPRINT_MARK = "--kantel-host-key--";
+
+/** How long each `sandbox.exec.get` of a detached command asks the host to hold its answer for the command to end. */
+export const EXEC_WAIT_MS = 30_000;
+/** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
+const EXEC_RETRY_MIN_MS = 1_000;
+const EXEC_RETRY_MAX_MS = 30_000;
+
+/** Added to a detached command's stderr when a host from before detached commands stopped it at its own limit. */
+export const OLD_HOST_DETACHED =
+	"Kantel: this sandbox's host runs a kantel-host from before detached commands, which stops one at its own time limit (2 minutes on a microVM); upgrade its kantel-host to run them with no limit\n";
+/** A detached command whose start its sandbox never confirmed, and which its host then didn't know: it never ran. */
+const UNCONFIRMED_START =
+	"The sandbox didn't confirm this command's start, and its host doesn't know it, so it never ran: run it again";
+/** Why a kill can't reach the process on a host from before kills. */
+export const OLD_HOST_KILL =
+	"this sandbox's host runs a kantel-host from before kills, which can't stop a command; upgrade its kantel-host";
+
+/** A host's `sandbox.exec` answer as the compute API takes it. */
+function execResult(result: HostExecResult): ExecResult {
+	return {
+		exitCode: result.exitCode,
+		stdout: result.stdout,
+		stderr: result.stderr,
+		timedOut: result.timedOut === true,
+	};
+}
+
+/** Waits `ms`, or until `signal` aborts. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve();
+			return;
+		}
+		const done = () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener("abort", done, { once: true });
+	});
+}
 
 /** Lets a key in for `user` (making a pair when none is given), and prints the private key and the host key's SHA256. */
 const SSH_ACCESS_SCRIPT = [
@@ -137,7 +207,16 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 interface HostSnapshot {
 	readonly id: string;
 	readonly sizeBytes: number;
+	/** The host images version its root file system is (image patching); absent when unknown. */
+	readonly base?: string;
 }
+
+/** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
+const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
+	ref: `${hostId}/${snap.id}`,
+	sizeBytes: snap.sizeBytes,
+	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
+});
 
 interface HostFileEntry {
 	readonly name: string;
@@ -156,6 +235,32 @@ function parseRef(ref: string): { hostId: string; snapshotId: string } {
 		throw new KantelError("not_found", "No such snapshot");
 	}
 	return { hostId, snapshotId: id };
+}
+
+/** A template's base image as a host takes it: its name, and its digest unless there is none (the host's own image). */
+function hostTemplateBase(baseImage: string, baseDigest: string): Pick<HostTemplateBoot, "baseImage" | "baseDigest"> {
+	return {
+		baseImage,
+		...(baseDigest === "" ? {} : { baseDigest }),
+	};
+}
+
+/**
+ * A sandbox's template boot as the registry takes it, restoring `snapshotId` (on that host) when there is one, as the
+ * create's size or shape.
+ */
+function hostTemplateBoot(
+	template: SandboxTemplateBoot,
+	snapshotId: string | undefined,
+): NonNullable<CreateSandboxInput["template"]> {
+	return {
+		...hostTemplateBase(template.baseImage, template.baseDigest),
+		...(template.setup === undefined ? {} : { setup: template.setup }),
+		...(snapshotId === undefined ? {} : { snapshot: snapshotId }),
+		// A custom image boots the root filesystem a build on the host made, which `rootfsKey` names.
+		...(template.image === undefined ? {} : { image: { ...template.image } }),
+		...(template.rootfsKey === undefined ? {} : { rootfsKey: template.rootfsKey }),
+	};
 }
 
 const fromBase64 = (data: string) => Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
@@ -225,7 +330,8 @@ export function fileStreamEnd(reason: string): { readonly size: number } | Kante
 /**
  * What a sandbox can do. A microVM's guest report, where its host sent one, says what its image has: an image without
  * a desktop, a browser or Docker can't offer them, and `/dev/kvm` must open inside for nesting. With no report (a host
- * from before the guest agent said), a microVM is Kantel's own image, which has them all.
+ * from before the guest agent said), a microVM is Kantel's own image, which has them all. The browser alone
+ * (`browserSurface`) only where the report says so: images from before it show the browser on the desktop.
  */
 export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean, guest?: HostGuest) {
 	const vm = tier === "microvm";
@@ -236,6 +342,7 @@ export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolea
 		ssh: vm,
 		desktop: vm && (report?.desktop.available ?? true),
 		browser: vm && (report?.browser.available ?? true),
+		browserSurface: vm && report?.browserSurface?.available === true,
 		ports: vm && ports,
 		docker: vm && (report?.docker.available ?? true),
 		kvm: vm && nested && (report?.docker.kvm ?? true),
@@ -294,12 +401,77 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						},
 					}),
 			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
+			...(sandbox.base === undefined || sandbox.base === ""
+				? {}
+				: {
+						base: sandbox.base,
+						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
+					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
 		};
 	}
 
 	/** What the host reports doing beyond protocol 1 (`HOST_FEATURES`). */
 	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
+
+	/** Whether the sandbox's host runs commands by Kantel's ID (`execControl`): detached ones, and kills. */
+	async function controlsCommands(sandboxId: string): Promise<boolean> {
+		const { hostId } = await tierOf(sandboxId);
+		return (await featuresOf(hostId)).includes(HOST_FEATURES.execControl);
+	}
+
+	/**
+	 * A detached command's end, from its host (`sandbox.exec.get`, each held up to `EXEC_WAIT_MS` for it to end): not one
+	 * call, so it survives the host's connection dropping and coming back, a gateway taking the host over, and however
+	 * long the command runs. A host out of reach is asked again, from 1 s doubling to 30 s apart; one that no longer
+	 * knows the command (it, or the sandbox, restarted) ends it with that said, or, after a start that went unanswered
+	 * (`unanswered`), with that start's error: it never started. `signal` ends the wait, not the command
+	 * (`DetachedWaitEnded`).
+	 */
+	async function commandEnd(
+		sandboxId: string,
+		commandId: string,
+		signal: AbortSignal | undefined,
+		unanswered?: unknown,
+	): Promise<ExecResult> {
+		let backoff = EXEC_RETRY_MIN_MS;
+		for (;;) {
+			if (signal?.aborted) throw new DetachedWaitEnded();
+			let status: HostExecStatus | undefined;
+			try {
+				status = await call<HostExecStatus>(
+					sandboxId,
+					HostMethods.execGet,
+					{ commandId, waitMs: EXEC_WAIT_MS } satisfies HostExecRef,
+					signal,
+					EXEC_WAIT_MS + 15_000,
+				);
+			} catch (error) {
+				if (signal?.aborted) throw new DetachedWaitEnded();
+				if (isKantelError(error) && error.code === "not_found") {
+					if (unanswered !== undefined) throw unanswered;
+					return {
+						exitCode: 1,
+						stdout: "",
+						stderr:
+							"The sandbox's host no longer knows this command (it or the sandbox restarted), so its result is lost\n",
+						timedOut: false,
+					};
+				}
+				// Asked again only while the host is out of reach (`unavailable`), or busy with the sandbox (`conflict`),
+				// or for a peer replica's plain error: any other refusal (`not_supported` once its space turns E2E on,
+				// `forbidden`, `invalid`) is final, and ends the command with it rather than leave it running.
+				if (isKantelError(error) && error.code !== "unavailable" && error.code !== "conflict") throw error;
+				await pause(backoff, signal);
+				backoff = Math.min(backoff * 2, EXEC_RETRY_MAX_MS);
+				continue;
+			}
+			backoff = EXEC_RETRY_MIN_MS;
+			if (status.state === "exited" && status.result !== undefined) return execResult(status.result);
+			// Still running: the host held the answer for its wait, so ask again after a moment.
+			await pause(EXEC_RETRY_MIN_MS, signal);
+		}
+	}
 
 	/**
 	 * Refuses a file stream with `not_supported` unless the sandbox's host can stream files, so the compute service falls
@@ -330,7 +502,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	 */
 	const mayUse = (hostId: string, eligible: readonly string[]) => {
 		if (!eligible.includes(hostId)) {
-			throw new KantelError("unavailable", `The host its disk is on (${hostId}) can't take it now`);
+			throw placementError("unavailable", "host_unavailable", `The host its disk is on (${hostId}) can't take it now`);
 		}
 	};
 
@@ -350,6 +522,11 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const sandbox = await call<HostSandbox>(sandboxId, method, {
 			...egressOf(how.egress),
 			...(revision === undefined ? {} : { revision }),
+			// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
+			// to land anywhere else.
+			...(method === "sandbox.start" && how.rebase === true
+				? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
+				: {}),
 			...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
 		});
 		const statuses = mounts.status(sandbox);
@@ -373,39 +550,71 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		});
 	}
 
-	/** The desktop's Selkies page (desktop.ts); view-only is the ticket's, kept in its row, so the gateway enforces it. */
+	/**
+	 * A Selkies page (desktop.ts): the desktop's, or with `port` the browser's alone. View-only is the ticket's, kept in
+	 * its row, so the gateway enforces it; so is the stream it opens.
+	 */
 	async function desktopPage(
 		sandboxId: string,
 		ttlMinutes: number,
 		viewOnly: boolean,
 		grantee: string | undefined,
+		port: number = DESKTOP_PORT,
 	): Promise<string> {
 		const mode: DesktopMode = viewOnly ? "view" : "control";
-		return `${httpBase}${desktopPath(await ticketFor(sandboxId, DESKTOP_PORT, ttlMinutes, grantee, mode), mode)}`;
+		return `${httpBase}${desktopPath(await ticketFor(sandboxId, port, ttlMinutes, grantee, mode), mode)}`;
 	}
 
 	async function tunnel(sandboxId: string, port: number, ttlMinutes: number, grantee: string | undefined) {
 		return `${wsBase}${HOSTS_TUNNEL_PATH}/${await ticketFor(sandboxId, port, ttlMinutes, grantee)}`;
 	}
 
+	/**
+	 * Places and makes one sandbox. A snapshot, the sandbox's or its template's, is on one host's disk: the sandbox goes
+	 * there. A template snapshot only speeds a create up, so when its host has no room (`exhausted`) the template boots
+	 * fresh on another eligible host instead (`bootedFresh`); a sandbox's own snapshot has nowhere else to go.
+	 */
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
-		if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
+		const templateFrom = spec.template?.snapshot === undefined ? undefined : parseRef(spec.template.snapshot);
+		const pinned = from ?? templateFrom;
+		if (pinned !== undefined) mayUse(pinned.hostId, spec.eligibleHosts);
 		const mounts = mountsOf(spec.mounts);
 		// The service sends the mounts the host it chooses can do, and answers each one's status.
-		const { sandbox, hostId, ...known } = await hosts.sandboxes.create({
-			sandboxId: spec.sandboxId,
-			tier: spec.type,
-			...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
-			// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a custom shape.
-			...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
-			owner: spec.accountId,
-			env: spec.env,
-			hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
-			...(from === undefined ? {} : { from: from.snapshotId }),
-			...egressOf(spec.egress),
-			...(mounts === undefined ? {} : { mounts }),
-		});
+		const create = (hostIds: readonly string[], templateSnapshot: string | undefined) =>
+			hosts.sandboxes.create({
+				sandboxId: spec.sandboxId,
+				tier: spec.type,
+				...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+				// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
+				// custom shape; a template's snapshot is restored only where it was built as that shape.
+				...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
+				owner: spec.accountId,
+				env: spec.env,
+				hostIds,
+				...(from === undefined ? {} : { from: from.snapshotId }),
+				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
+				...egressOf(spec.egress),
+				...(mounts === undefined ? {} : { mounts }),
+			});
+		if (templateFrom !== undefined) {
+			const elsewhere = spec.eligibleHosts.filter((hostId) => hostId !== templateFrom.hostId);
+			try {
+				const { sandbox, hostId, ...known } = await create([templateFrom.hostId], templateFrom.snapshotId);
+				const placement = await placed(spec.sandboxId, sandbox, hostId, known);
+				// Its host couldn't restore the snapshot (gone, broken, made for another machine) and booted the template
+				// fresh, running its setup.
+				return sandbox.source === "boot" ? { ...placement, bootedFresh: true } : placement;
+			} catch (error) {
+				if (!isKantelError(error, "exhausted") || elsewhere.length === 0) throw error;
+			}
+			const { sandbox, hostId, ...known } = await create(elsewhere, undefined);
+			return { ...(await placed(spec.sandboxId, sandbox, hostId, known)), bootedFresh: true };
+		}
+		const { sandbox, hostId, ...known } = await create(
+			pinned === undefined ? spec.eligibleHosts : [pinned.hostId],
+			undefined,
+		);
 		return placed(spec.sandboxId, sandbox, hostId, known);
 	}
 
@@ -452,6 +661,40 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		create: createOne,
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		async prepareRebase(sandboxId, { eligibleHosts, rebaseTo }) {
+			const { hostId } = await tierOf(sandboxId);
+			mayUse(hostId, eligibleHosts);
+			// A host's sandbox is on host images: without a version to land on (the index unread, or naming no stable host
+			// release) a rebase would land on whatever the host has, so it's refused before the sandbox stops.
+			if (rebaseTo === undefined) {
+				throw new KantelError(
+					"unavailable",
+					"Kantel's base image index names no stable host images now, so there's no latest base to restart on: try again later",
+				);
+			}
+			// Asked now rather than read from the hello's facts, which an update since has left behind, and for this sandbox:
+			// its tier's images, which a host config naming its root filesystem by path can hold back.
+			const images = await hosts.hub
+				.call<{ version?: string; state?: string }>(hostId, HostMethods.hostImages, { sandboxId })
+				.catch((error: unknown) => {
+					const mapped = kantelErrorFromHost(error);
+					throw isKantelError(mapped, "not_supported")
+						? new KantelError(
+								"not_supported",
+								`The host its disk is on (${hostId}) doesn't patch its images: turn on imagePatching in its config, or update kantel-host`,
+							)
+						: mapped;
+				});
+			const have = images.version ?? "";
+			if (have !== rebaseTo) {
+				throw new KantelError(
+					"unavailable",
+					`The host its disk is on (${hostId}) has images ${have === "" ? "that aren't versioned" : have}, not ${rebaseTo}, yet: try again once it has taken the update`,
+				);
+			}
+			// Unknown when the host doesn't say: its start then refuses a machine still running on other images.
+			return images.state === undefined ? {} : { running: images.state === "running" };
+		},
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
 		// no longer lists, and can't hide, must not still reach the machine.
@@ -479,7 +722,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				snapshotId: snapshotId(),
 				memory: keepMemory,
 			});
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
 			const out: Placement[] = [];
@@ -512,26 +755,64 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 		},
 		async exec(sandboxId, request): Promise<ExecResult> {
-			const result = await call<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>(
+			const controls = request.commandId !== undefined && (await controlsCommands(sandboxId));
+			const params: HostExecParams = {
+				command: request.command,
+				...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+				...(request.env === undefined ? {} : { env: request.env }),
+				...(request.stdin === undefined ? {} : { stdin: toBase64(new TextEncoder().encode(request.stdin)) }),
+				...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+				// Only to a host that takes them: an older one would run a "detached" command as a foreground one anyway.
+				...(controls ? { commandId: request.commandId } : {}),
+			};
+			if (controls && request.detached === true && request.commandId !== undefined) {
+				let started: HostExecStatus;
+				try {
+					started = await call<HostExecStatus>(
+						sandboxId,
+						HostMethods.exec,
+						{ ...params, detached: true },
+						request.signal,
+					);
+				} catch (error) {
+					if (request.signal?.aborted) throw new DetachedWaitEnded();
+					// Sent and never answered (`unanswered`: the connection dropped, or the call timed out), or a peer replica's
+					// response cut off as a plain error: the host may have started it all the same, so it is followed by its
+					// ID, and only a host that never heard of it makes this the command's end. The host's own refusals, and a
+					// call never sent (its host not connected), are answers.
+					if (isKantelError(error) && !unanswered(error)) throw error;
+					return commandEnd(sandboxId, request.commandId, request.signal, error);
+				}
+				// The sandbox didn't confirm it started: followed as any, and a host that then doesn't know it says so.
+				const unconfirmed =
+					started?.unconfirmed === true ? new KantelError("unavailable", UNCONFIRMED_START) : undefined;
+				return commandEnd(sandboxId, request.commandId, request.signal, unconfirmed);
+			}
+			const result = await call<HostExecResult>(
 				sandboxId,
-				"sandbox.exec",
-				{
-					command: request.command,
-					...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-					...(request.env === undefined ? {} : { env: request.env }),
-					...(request.stdin === undefined ? {} : { stdin: toBase64(new TextEncoder().encode(request.stdin)) }),
-					...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
-				},
+				HostMethods.exec,
+				params,
 				request.signal,
 				// The command's own limit, and some for the answer to come back; with none, an hour.
 				request.timeoutMs === undefined ? 3_600_000 : request.timeoutMs + 10_000,
 			);
-			return {
-				exitCode: result.exitCode,
-				stdout: result.stdout,
-				stderr: result.stderr,
-				timedOut: result.timedOut === true,
-			};
+			const ended = execResult(result);
+			// A host from before detached commands ran this one as a foreground one, which its guest stops at its default.
+			if (request.detached === true && !controls && ended.timedOut) {
+				return { ...ended, stderr: `${ended.stderr}${OLD_HOST_DETACHED}` };
+			}
+			return ended;
+		},
+		async killCommand(sandboxId, commandId) {
+			if (!(await controlsCommands(sandboxId))) throw new KantelError("not_supported", OLD_HOST_KILL);
+			await call<{ killed: boolean }>(sandboxId, HostMethods.execKill, { commandId } satisfies HostExecRef);
+		},
+		async commandResult(sandboxId, commandId) {
+			if (!(await controlsCommands(sandboxId))) {
+				throw new KantelError("not_supported", "This sandbox's host keeps no command results");
+			}
+			const status = await call<HostExecStatus>(sandboxId, HostMethods.execGet, { commandId } satisfies HostExecRef);
+			return status.state === "exited" && status.result !== undefined ? execResult(status.result) : undefined;
 		},
 		async readFile(sandboxId, path, range) {
 			const answer = await call<{ data: string; fileSize?: number }>(
@@ -661,7 +942,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async placedOn(sandboxId) {
 			const placement = await hosts.sandboxes.placement(sandboxId);
-			return placement === undefined || placement.state === "deleted" ? undefined : placement.hostId;
+			// A lost one is an earlier attempt its host said it doesn't have: not where it is placed now.
+			return placement === undefined || placement.state === "deleted" || placement.state === "lost"
+				? undefined
+				: placement.hostId;
 		},
 		async writeFileStream(sandboxId, path, body, mode) {
 			await streamingHost(sandboxId);
@@ -726,7 +1010,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
 			const snap = await call<HostSnapshot>(sandboxId, "snapshot.save", { snapshotId: snapshotId() });
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);
@@ -744,6 +1028,41 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async deleteSnapshot(ref) {
 			const { hostId, snapshotId: id } = parseRef(ref);
 			await hosts.hub.call(hostId, "snapshot.delete", { snapshotId: id });
+		},
+		async templateRuntimes(): Promise<TemplateRuntime[]> {
+			return (await hosts.templates.runtimes()).map((runtime) => ({
+				hostId: runtime.hostId,
+				kernel: runtime.guestKernel ?? "unknown",
+				firecracker: runtime.firecracker ?? "unknown",
+				...(runtime.customImages === true ? { customImages: true } : {}),
+			}));
+		},
+		async buildTemplate(spec): Promise<BuiltTemplate> {
+			const built = await hosts.templates.build(spec.hostId, {
+				snapshotId: spec.snapshotId,
+				...hostTemplateBase(spec.baseImage, spec.baseDigest),
+				...(spec.setup === undefined ? {} : { setup: spec.setup }),
+				...(spec.image === undefined ? {} : { image: { ...spec.image } }),
+				env: { ...spec.env },
+				vcpus: spec.shape.vcpus,
+				memoryMiB: spec.shape.memoryMb,
+				keyHash: spec.keyHash,
+				owner: spec.accountId,
+				...egressOf(spec.egress),
+			});
+			return {
+				ref: `${spec.hostId}/${built.ref}`,
+				hostId: spec.hostId,
+				...(built.imageDigest === undefined ? {} : { imageDigest: built.imageDigest }),
+				sizeBytes: built.sizeBytes,
+				...(built.rootfsKey === undefined || spec.image === undefined ? {} : { rootfsKey: built.rootfsKey }),
+			};
+		},
+		async deleteTemplateSnapshot(bytes) {
+			// A host names a template snapshot's bytes by its ID, which its ref is too.
+			const { hostId, snapshotId: id } =
+				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : parseRef(bytes.ref);
+			await hosts.templates.delete(hostId, id);
 		},
 		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee }) {
 			const { tier } = await tierOf(sandboxId);
@@ -810,13 +1129,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async openBrowser(sandboxId, { ttlMinutes, viewOnly, grantee }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no browser");
-			// Chromium's browser-wide DevTools target, passed through the tunnel with its path.
+			// Chromium's browser-wide DevTools target, passed through the tunnel with its path. The same command says where
+			// this machine's Chromium runs now (BROWSER_SURFACE_CHECK): the image's report is from one boot of it, and this
+			// machine's display follows its own boot, its memory's and its setup.
 			const version = await call<{ exitCode: number; stdout: string }>(sandboxId, "sandbox.exec", {
-				command: "curl -fsS --max-time 5 http://127.0.0.1:9222/json/version",
+				command: `${BROWSER_SURFACE_CHECK}curl -fsS --max-time 5 http://127.0.0.1:9222/json/version`,
 			});
+			const ownDisplay = version.stdout.startsWith(BROWSER_SURFACE_MARK);
 			let target: string | undefined;
 			try {
-				const parsed = JSON.parse(version.stdout) as { webSocketDebuggerUrl?: unknown };
+				const json = ownDisplay ? version.stdout.slice(BROWSER_SURFACE_MARK.length) : version.stdout;
+				const parsed = JSON.parse(json) as { webSocketDebuggerUrl?: unknown };
 				if (typeof parsed.webSocketDebuggerUrl === "string") target = new URL(parsed.webSocketDebuggerUrl).pathname;
 			} catch {
 				target = undefined;
@@ -825,8 +1148,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				throw new KantelError("unavailable", "The sandbox's browser isn't up yet");
 			}
 			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes, grantee)}${target}`;
-			// People watch and drive Chromium where it runs: on the desktop.
-			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee), cdpUrl };
+			// People watch and drive Chromium where it runs: on its own display, whose stream the guest starts for the first
+			// viewer, or, in an image without one, on the desktop.
+			if (ownDisplay) {
+				const url = await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee, BROWSER_STREAM_PORT);
+				return { url, cdpUrl, surface: "browser" };
+			}
+			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee), cdpUrl, surface: "desktop" };
 		},
 		async revokeHost(hostId) {
 			await hosts.revoke(hostId).catch((error: unknown) => {

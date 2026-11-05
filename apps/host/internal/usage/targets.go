@@ -1,9 +1,13 @@
 package usage
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Process is a running sandbox that is a process of its own on the host (a microVM's Firecracker): its CPU is that
-// process's, as a share of the CPUs the sandbox was given, and its memory the process's resident memory.
+// process's, as a share of the CPUs the sandbox was given. Its memory is what the guest itself counts as used
+// (ReadGuest), or, where the guest can't say, the process's resident memory.
 type Process struct {
 	SandboxID string
 	// Owner is the sandbox's space (account), read with it, for the E2E filter.
@@ -12,9 +16,22 @@ type Process struct {
 	// CPUs is the sandbox's allocation (its vCPUs); MemLimitBytes the memory its size gives it.
 	CPUs          float64
 	MemLimitBytes int64
+	// ReadGuest, if set, reads the guest's own MemTotal and MemAvailable from outside it (a microVM's balloon
+	// statistics, which Firecracker keeps): nothing runs in the guest to answer it. It fails for a VM without them.
+	ReadGuest func(ctx context.Context) (Memory, error)
+	// ReadStats, if set, asks the guest's agent for its disk and IO pressure: the one reading that runs in the guest.
+	ReadStats func(ctx context.Context) (GuestStats, error)
 	// Held: the sandbox was mid-operation (its lock taken by a create, snapshot or stop), so it wasn't read this time.
 	// It has no figure in this sample, and its counters are kept for the next.
 	Held bool
+}
+
+// GuestStats is a guest's own disk and IO figures (guest.Stats): its disk as df counts it, and its IO pressure's "some"
+// total in microseconds since boot, nil when its kernel has none.
+type GuestStats struct {
+	DiskUsedBytes  int64
+	DiskTotalBytes int64
+	IOSomeMicros   *uint64
 }
 
 // Shared is a process that runs several sandboxes, which can't be measured apart from the host's side: an account's

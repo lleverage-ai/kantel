@@ -69,6 +69,8 @@ type Host struct {
 	net     *network.Manager
 	proxy   *egress.Proxy
 	facts   proto.Facts
+	// callKantel stands in for the link to Kantel in tests (nil: the link).
+	callKantel func(ctx context.Context, method string, params any) (json.RawMessage, error)
 	// secrets holds sandboxes' protected values, in memory only, fetched from Kantel (secrets.fetch) on first use.
 	secrets *protect.Store
 	// cas are the sandboxes' interception CAs (keys in Root/egress-ca/<sandbox>, never in a guest).
@@ -88,12 +90,16 @@ type Host struct {
 	e2e *e2e.Store
 	// commands is the history of commands devices ran in E2E sessions (history.go).
 	commands *commandLog
+	// runs are the commands with a control plane's ID running, and the detached ones the host ran (commands.go).
+	runs commandRuns
 	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update
 	// or boot arriving late is ignored; kept on disk too (floorDir), across restarts.
 	floorMu sync.Mutex
 	floors  map[string]int64
 	// durable is what of floors is on disk, so a retry of the same revision writes a floor an earlier write failed to.
 	durable map[string]int64
+	// patching is versioned host images, with Config.ImagePatching (images.go).
+	patching imagePatching
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -102,6 +108,8 @@ type Host struct {
 	events func(proto.Event)
 	// link makes calls to the control plane while connected.
 	link *caller
+	// usageAcks says the link's welcome had UsageAcks: usage ticks wait for Kantel's usage.ack (usage.go).
+	usageAcks bool
 	// usage samples the host and its sandboxes while RunUsage runs (usage.go).
 	usage *usageSampler
 }
@@ -166,13 +174,24 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			}
 			log.Info("microVMs boot through Kantel's initramfs (injected guest agent)", "agent", cfg.GuestAgent, "initramfs", initrd)
 		}
+		mnt, err := h.newMounts(dest)
+		if err != nil {
+			return nil, err
+		}
 		mv, err := microvm.New(microvm.Config{
-			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd,
-			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
+			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
+			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
+			Root:            cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
-			Events: h.sandboxEvent,
-			Attach: h.attachSlot,
-			Detach: h.detachSlot,
+			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
+			Events:         h.sandboxEvent,
+			Attach:         h.attachSlot,
+			Detach:         h.detachSlot,
+			SharedTemplate: cfg.MicroVM.SharedTemplates(), TemplateVCPUs: cfg.MicroVM.TemplateVCPUs,
+			TemplateMemoryMiB: cfg.MicroVM.TemplateMemoryMiB, TemplateMaxMemoryMiB: cfg.MicroVM.TemplateMaxMemoryMiB,
+			TemplateDiskGiB: cfg.MicroVM.TemplateDiskGiB,
+			// Creates, starts, resumes and template builds are admitted against the host's budget, as Capacity reports it.
+			Budget: h.budgetBeside(microvm.Tier),
 		})
 		if err != nil {
 			return nil, err
@@ -188,9 +207,14 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
 	if (all || want[isolate.Tier]) && isolateReady {
+		// A VM runtime's images, held on one version for the daemon's lifetime (isolateImages); native uses none.
+		isoKernel, isoRootfs := cfg.Kernel, cfg.IsolateImage
+		if cfg.IsolateRuntime != "native" {
+			isoKernel, isoRootfs = h.isolateImages(cfg)
+		}
 		iso, err := isolate.New(isolate.Config{
-			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: cfg.Kernel,
-			Rootfs: cfg.IsolateImage, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
+			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
+			Rootfs: isoRootfs, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
@@ -203,7 +227,14 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	if len(h.tiers) == 0 {
 		return nil, errors.New("this host can run no sandbox tier: run `kantel-host doctor`")
 	}
-	h.facts = h.makeFacts()
+	if cfg.ImagePatching {
+		h.startImagePatching(kvm)
+	}
+	h.facts = h.withRuntime(h.makeFacts())
+	if mv, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
+		// Its shared templates, now the budget their builds are admitted against knows the host's memory.
+		mv.PrepareTemplates()
+	}
 	go h.egressLog.run()
 	return h, nil
 }
@@ -240,7 +271,7 @@ func (h *Host) makeFacts() proto.Facts {
 	if reserve == 0 {
 		reserve = max(2048, total/10)
 	}
-	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -256,7 +287,13 @@ func (h *Host) makeFacts() proto.Facts {
 		}
 	}
 	if h.cfg.usageInterval() > 0 {
-		features = append(features, proto.FeatureUsage)
+		features = append(features, proto.FeatureUsage, proto.FeatureUsageAcks)
+	}
+	if h.cfg.ImagePatching {
+		features = append(features, proto.FeatureImagePatching)
+	}
+	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t) {
+		features = append(features, proto.FeatureBucketMounts)
 	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
@@ -266,10 +303,25 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 }
 
-// Facts are what the host tells the control plane it is.
-func (h *Host) Facts() proto.Facts { return h.facts }
+// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates.
+func (h *Host) Facts() proto.Facts {
+	f := h.facts
+	if held := h.patching.facts.Load(); held != nil {
+		copied := *held
+		f.Images = &copied
+	}
+	if h.canBuildTemplates(context.Background()) == nil {
+		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
+		// Custom images only beside template builds: the control plane sends them to a host with both.
+		if h.canBuildTemplateImages() == nil {
+			f.Features = append(f.Features, proto.FeatureTemplateImageBuild)
+		}
+	}
+	return f
+}
 
-// Capacity is what is free now.
+// Capacity is what is free now: the memory budget less what its sandboxes and its template builds use, and the free
+// disk less what its builds hold; with the builds named, as they are counted.
 func (h *Host) Capacity() proto.Capacity {
 	c := proto.Capacity{Warm: map[string]int{}, Load1: hostinfo.Load1(), FreeDiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root)}
 	var used int64
@@ -279,9 +331,34 @@ func (h *Host) Capacity() proto.Capacity {
 		c.Running += running
 		c.Stopped += stopped
 	}
-	budget := int64(float64(h.facts.MemoryMiB) * h.cfg.OvercommitMemory)
-	c.FreeMemoryMiB = max(0, budget-used)
+	if t, err := h.templateTier(); err == nil {
+		ids, memoryMiB, diskGiB := t.TemplateBuilds()
+		used += memoryMiB
+		c.FreeDiskGiB = max(0, c.FreeDiskGiB-diskGiB)
+		c.Builds = ids
+	}
+	c.FreeMemoryMiB = max(0, h.memoryBudgetMiB()-used)
 	return c
+}
+
+// budgetBeside is what the tier named may use now (microvm.Config.Budget): the memory budget less what the other
+// tiers use, and the free disk. It never calls that tier, whose lock is held when it is called.
+func (h *Host) budgetBeside(tier string) func() (memoryMiB, diskGiB int64) {
+	return func() (int64, int64) {
+		memory := h.memoryBudgetMiB()
+		for name, t := range h.tiers {
+			if name != tier {
+				used, _, _ := t.Usage()
+				memory -= used
+			}
+		}
+		return memory, hostinfo.FreeDiskGiB(h.cfg.Root)
+	}
+}
+
+// memoryBudgetMiB is the memory the host gives its sandboxes and template builds: what it has for them, overcommitted.
+func (h *Host) memoryBudgetMiB() int64 {
+	return int64(float64(h.facts.MemoryMiB) * h.cfg.OvercommitMemory)
 }
 
 // ResetTemplates drops a tier's templates (a benchmark's cold start).
@@ -291,7 +368,20 @@ func (h *Host) ResetTemplates(tier string) {
 	}
 }
 
+// WaitTemplate waits until the template a create of the params would restore is made, where the tier keeps templates
+// (a benchmark measuring creates after a host's templates are ready).
+func (h *Host) WaitTemplate(ctx context.Context, tier string, p proto.CreateParams) error {
+	t, ok := h.tiers[tier].(interface {
+		WaitTemplate(context.Context, proto.CreateParams) error
+	})
+	if !ok {
+		return nil
+	}
+	return t.WaitTemplate(ctx, p)
+}
+
 func (h *Host) Close() {
+	h.stopImagePatching()
 	for _, t := range h.tiers {
 		t.Close()
 	}
@@ -324,6 +414,7 @@ func (h *Host) egressRules(sandboxID, account string, e *proto.Egress) egress.Ru
 		r.Mode = e.Mode
 	}
 	r.Allow, r.Deny, r.DefaultDeny = e.Allow, e.Deny, e.DefaultDeny
+	r.PublicOnly = e.PublicOnly
 	// Protected variables and grants apply whatever the data path: a placeholder is worthless unless swapped, and a
 	// grant restricts.
 	if e.Protected != nil {
@@ -471,6 +562,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		if p.Template != nil && h.tierName(p.Tier) != microvm.Tier {
+			return nil, invalid("a sandbox made from a template is a microVM")
+		}
+		if len(p.Mounts) > 0 && !supportsMounts(t) {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier has no mounts on this host", h.tierName(p.Tier))}
+		}
 		defer h.lifecycle.lock(p.SandboxID)()
 		if _, err := h.tierOf(p.SandboxID); err == nil {
 			// Before any CA is made: a new one would replace the CA the running sandbox of that ID trusts.
@@ -546,6 +643,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
+		}
+		// A rebase onto images this host hasn't taken is refused before anything changes (the tier checks again as it
+		// relinks).
+		if method == proto.MethodStart && p.Rebase && p.RebaseTo != "" {
+			if err := h.rebaseTarget(p.SandboxID, p.RebaseTo); err != nil {
+				return nil, err
+			}
 		}
 		revision := revisionOf(p)
 		// A boot with a revision states the sandbox's egress, none being the host's default; one without an egress
@@ -643,6 +747,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if h.commands != nil {
 			h.commands.forget(p.SandboxID)
 		}
+		h.runs.forget(p.SandboxID)
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)
@@ -656,6 +761,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		return t.Get(p.SandboxID)
 	case proto.MethodList:
 		return h.List(), nil
+	case proto.MethodMountsRefresh:
+		p, err := decode[proto.MountsRefreshParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.refreshMounts(ctx, p)
 	case proto.MethodExec:
 		p, err := decode[proto.ExecParams](params)
 		if err != nil {
@@ -671,7 +782,22 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				onEvent(proto.Event{Kind: "exec.output", Stdout: stdout, Stderr: stderr})
 			}
 		}
+		if p.CommandID != "" {
+			return h.runCommand(ctx, t, p, onOutput)
+		}
 		return t.Exec(ctx, p, onOutput)
+	case proto.MethodExecGet:
+		p, err := decode[proto.ExecRef](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.commandStatus(ctx, p)
+	case proto.MethodExecKill:
+		p, err := decode[proto.ExecRef](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.killCommand(ctx, p)
 	case proto.MethodFileRead:
 		p, err := decode[proto.FileParams](params)
 		if err != nil {
@@ -804,6 +930,10 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
+	case proto.MethodHostImages:
+		return h.hostImages(params)
+	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:
+		return h.templateCall(ctx, method, params)
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
 }

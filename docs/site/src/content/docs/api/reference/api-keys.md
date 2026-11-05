@@ -33,13 +33,19 @@ The account's keys, revoked ones included. A key needs `account:read`.
 
 Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`.
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Body**: [CreateApiKeyBody](/api/reference/types/#createapikeybody)
 
 **Answers**
 
 - `201`: [IssuedApiKey](/api/reference/types/#issuedapikey) (`application/json`). The key and its secret.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get an API key
 
@@ -89,8 +95,14 @@ Replaces its secret; the old one stops working at once. A key needs `account:adm
 | --- | --- | --- | --- |
 | `apiKeyId` | string | yes | The key's ID. |
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Answers**
 
 - `200`: [IssuedApiKey](/api/reference/types/#issuedapikey) (`application/json`). The key and its new secret.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).

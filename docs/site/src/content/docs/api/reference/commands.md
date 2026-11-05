@@ -38,7 +38,7 @@ Its commands, newest first, also while it is stopped. A key needs `exec`.
 
 `POST /v1/sandboxes/{sandboxId}/commands` (SDK method `runCommand`)
 
-Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`.
+Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless `timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`.
 
 **Path parameters**
 
@@ -50,7 +50,7 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later. (at most 255 characters) |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
 
 **Body**: [RunCommandBody](/api/reference/types/#runcommandbody)
 
@@ -58,13 +58,13 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 - `200`: [Command](/api/reference/types/#command) (`application/json`). The command, ended (or running, when detached).
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a command
 
 `GET /v1/sandboxes/{sandboxId}/commands/{commandId}` (SDK method `getCommand`)
 
-Its state and its output so far. A key needs `exec`.
+Its state, and once it has ended its exit code and output. A key needs `exec`.
 
 **Path parameters**
 
@@ -83,7 +83,7 @@ Its state and its output so far. A key needs `exec`.
 
 `DELETE /v1/sandboxes/{sandboxId}/commands/{commandId}` (SDK method `killCommand`)
 
-Ends a running command; one that has ended is answered as it is. A key needs `exec`.
+Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`.
 
 **Path parameters**
 

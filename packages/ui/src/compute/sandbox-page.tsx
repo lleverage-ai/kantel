@@ -1,31 +1,38 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
-// state, Browser, Desktop and Stop, and ⋯ for Fork, Save snapshot, Auto-stop and Delete; under it its address, its
-// environment and when it stops. Five tabs follow. Overview: live previews of its desktop and browser (which open in
-// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only
-// mounts, where it has any. Logs: commands and what happened to it, in one timeline. Egress: its egress log.
-// Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a phone the
-// previews and Stop go (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds;
-// stories bind them to fixtures.
+// state, its one screen (Desktop, or Browser where there's no desktop) and Stop, and ⋯ for Fork, Save snapshot,
+// Auto-stop and Delete; under it its address, its environment and when it stops. Five tabs follow. Overview: SSH
+// (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only mounts, where it has any; no screen
+// streams until Desktop or Browser opens it. Logs: commands and what happened to it, in one timeline. Egress: its
+// egress log. Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a
+// phone Stop goes (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds; stories
+// bind them to fixtures.
 
-import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { CopyButton } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
-import { CheckIcon, ClockIcon, EyeIcon, GlobeIcon, MinusCircleIcon, StopIcon } from "../primitives/icons.tsx";
+import { CheckIcon, ClockIcon, GlobeIcon, MinusCircleIcon, StopIcon } from "../primitives/icons.tsx";
 import { type Loaded, useLoad, useReloadOn } from "../primitives/load.ts";
-import { DesktopIcon, EllipsisIcon, EnvironmentIcon, PlayIcon, ReconnectIcon } from "../primitives/lucide.tsx";
+import {
+	DesktopIcon,
+	EllipsisIcon,
+	EnvironmentIcon,
+	PlayIcon,
+	ReconnectIcon,
+	TemplateIcon,
+} from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { PageTabs } from "../primitives/page-tabs.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge, behindText } from "./base-outdated.tsx";
 import {
 	costText,
 	type EgressSource,
 	type HostingMode,
 	imageLacks,
-	quietState,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_STATE_LABELS,
 	SANDBOX_STATE_STATUS,
@@ -37,19 +44,21 @@ import {
 	type SnapshotsSource,
 	sandboxActions,
 	sandboxMoving,
+	sandboxScreen,
+	sandboxSpec,
 	screenUnavailable,
-	sizeSpec,
 	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
+import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "./live-usage.ts";
-import { computePage, FoldSection, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
+import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
-import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
+import { popOut, SandboxViewer, type ScreenView } from "./sandbox-screen.tsx";
 import { SandboxSsh } from "./sandbox-ssh.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
 import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
@@ -99,6 +108,13 @@ export interface SandboxPageProps {
 	readonly sandboxId: string;
 	/** The account the console has selected: a sandbox of another one says so. */
 	readonly accountId?: string;
+	/** The viewer's accounts, for `onOpenAccount`. */
+	readonly accountIds?: ReadonlySet<string>;
+	/**
+	 * On a screen's page, which has no account switcher: moves this tab to the sandbox's account when it's another of
+	 * the viewer's (`accountIds`), rather than saying it's in another account.
+	 */
+	readonly onOpenAccount?: (accountId: string) => void;
 	/** The view the address names; the page keeps its own when absent. */
 	readonly view?: SandboxView;
 	/** Where to start, when the page keeps its own view. */
@@ -108,6 +124,8 @@ export interface SandboxPageProps {
 	readonly sandboxesHref: string;
 	/** An environment's page, from the sandbox's environment. */
 	readonly environmentHref?: (environmentId: string) => string;
+	/** A template's page, from the template the sandbox was made from. */
+	readonly templateHref?: (templateId: string) => string;
 	/** Goes to a path in the app; without it the page changes view in place. */
 	readonly navigate?: (path: string) => void;
 	/** A fixed time, for stories. */
@@ -124,14 +142,9 @@ export interface SandboxPageProps {
 	readonly filesHref?: (at: FilesAt, sealed: boolean) => string;
 }
 
-/** A section's body as a card, as the page's other sections (ports, mounts, SSH) have theirs. */
-const sectionCard = "rounded-panel border border-border bg-raised p-4";
-
-/** The state, by the list's rule: words in its colour only for an error or a change under way, quiet otherwise. */
+/** The state, in its colour. */
 const StateLabel = ({ state }: { state: Sandbox["state"] }) => (
-	<StatusLabel status={SANDBOX_STATE_STATUS[state]} quiet={quietState(state)}>
-		{SANDBOX_STATE_LABELS[state]}
-	</StatusLabel>
+	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
 );
 
 type HeldAccess = { readonly value: SandboxAccess | "loading" | Error; readonly at: number };
@@ -202,6 +215,7 @@ export function SandboxPage({
 	href,
 	sandboxesHref,
 	environmentHref,
+	templateHref,
 	navigate,
 	now: fixedNow,
 	pollMs = 1000,
@@ -209,6 +223,8 @@ export function SandboxPage({
 	menuOpen = false,
 	filesAt,
 	filesHref,
+	accountIds,
+	onOpenAccount,
 }: SandboxPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [own, setOwn] = useState<SandboxView>(initialView);
@@ -243,6 +259,8 @@ export function SandboxPage({
 		const timer = setTimeout(reload, wait);
 		return () => clearTimeout(timer);
 	}, [moving, running, pollMs, fixedNow, reload, state]);
+	// And at once when it changes elsewhere: the CLI, the API, its auto-stop.
+	useFollowSandboxes(source, sandbox?.accountId, reload, { id: sandboxId, onDeleted: () => setDeleted(true) });
 
 	const windows = running && sandbox?.kind === "microvm";
 	const { access, read: readAccess, fresh: freshAccess, stale: accessStale } = useAccess(source, sandboxId, windows);
@@ -264,8 +282,8 @@ export function SandboxPage({
 	const view = lacked
 		? "overview"
 		: sandboxViewShown(asked, { inTab, windows, known: sandbox !== undefined, tabs: tabsShown });
-	// A screen, or Overview's previews, mount new connections: old access is read again first.
-	const opensScreens = (next: SandboxView) => isScreen(next) || next === "overview";
+	// A screen mounts a new connection: old access is read again first. Overview shows none.
+	const opensScreens = isScreen;
 	const go = (next: SandboxView) => {
 		if (inTab && isScreen(next)) {
 			// The tab opens now and goes to the screen once fresh access is read.
@@ -281,6 +299,22 @@ export function SandboxPage({
 	useEffect(() => {
 		if (opensScreens(view) && accessStale()) readAccess();
 	}, [view]);
+	// A screen's page for a sandbox that can't show one (stopped, an isolate, an image without it) goes to its Overview,
+	// in the console, rather than a bare page with nothing on it.
+	const fellBack = isScreen(asked) && !isScreen(view);
+	// A shared screen's link opened in a tab on another account: the tab moves to the sandbox's, if it's the viewer's.
+	const elsewhere =
+		sandbox !== undefined && accountId !== undefined && sandbox.accountId !== accountId ? sandbox.accountId : undefined;
+	const moves =
+		elsewhere !== undefined && isScreen(asked) && onOpenAccount !== undefined && accountIds?.has(elsewhere) === true;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only another account to move to moves the tab.
+	useEffect(() => {
+		if (moves && elsewhere !== undefined) onOpenAccount?.(elsewhere);
+	}, [moves, elsewhere]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only falling back moves the address.
+	useEffect(() => {
+		if (fellBack) navigate?.(href(view));
+	}, [fellBack]);
 
 	// Whether its files and output can be read here, or only end to end; the gateway's console may ask its chain.
 	const e2e = useLoad(
@@ -333,10 +367,13 @@ export function SandboxPage({
 			current={current}
 		/>
 	);
+	// A screen's page has no console around it, so no padding either: these states bring their own.
+	const early = isScreen(asked) ? `${computePage} p-gutter` : computePage;
 
-	if (deleted) {
+	// Deleted while this page watched, or found deleted by a read (one after the feed reconnected, which missed it).
+	if (deleted || sandbox?.deleted === true) {
 		return (
-			<div className={computePage}>
+			<div className={early}>
 				{crumbs(<span>{sandbox?.name ?? sandboxId}</span>)}
 				<EmptyState title="Deleted">{notice?.text}</EmptyState>
 			</div>
@@ -344,7 +381,7 @@ export function SandboxPage({
 	}
 	if (sandbox === undefined) {
 		return (
-			<div className={computePage}>
+			<div className={early}>
 				{crumbs(<span>{sandboxId}</span>)}
 				{state.status === "error" ? (
 					<Notice
@@ -363,9 +400,16 @@ export function SandboxPage({
 			</div>
 		);
 	}
+	if (moves) {
+		return (
+			<div className={early}>
+				<Skeleton lines={4} />
+			</div>
+		);
+	}
 	if (accountId !== undefined && sandbox.accountId !== accountId) {
 		return (
-			<div className={computePage}>
+			<div className={early}>
 				{crumbs(<span>{sandbox.name}</span>)}
 				<Notice level="error">This sandbox belongs to another account. Switch to that account to open it.</Notice>
 			</div>
@@ -383,7 +427,9 @@ export function SandboxPage({
 				viewHref={href}
 				onView={go}
 				onRetry={readAccess}
-				freshAccess={freshAccess}
+				onWake={() => {
+					if (accessStale()) readAccess();
+				}}
 				narrow={narrow}
 			/>
 		);
@@ -391,10 +437,17 @@ export function SandboxPage({
 
 	const can = sandboxActions(sandbox.state);
 	const stop = () => act("stop", () => source.stop(sandbox.id));
-	const entries: readonly MenuEntry[] = menu.entries;
+	const entries: readonly MenuEntry[] =
+		narrow && can.stop
+			? [
+					{ kind: "item", id: "stop", label: "Stop", icon: <StopIcon size="sm" />, onSelect: stop },
+					{ kind: "separator", id: "sep-stop" },
+					...menu.entries,
+				]
+			: menu.entries;
 	const held = access?.value;
 	const readyAccess = held !== undefined && held !== "loading" && !(held instanceof Error) ? held : undefined;
-	const screenLink = (to: ScreenView, label: string, icon: ReactNode, primary = false) => {
+	const screenLink = (to: ScreenView, label: string, icon: ReactNode) => {
 		// One its image lacks isn't offered at all: Overview's Image section says what's missing.
 		if (imageLacks(sandbox, to === "browser" ? "browser" : "desktop") !== undefined) return null;
 		// One that can't open here is shown disabled with its reason, never opened onto an error page.
@@ -411,11 +464,14 @@ export function SandboxPage({
 					{label}
 				</Button>
 			) : (
+				// A page of its own in a new tab, its address to share; where the console can't frame it, the screen itself.
 				<a
-					className={`${buttonClass(primary ? "primary" : "secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
+					className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
 					href={href(to)}
+					target="_blank"
+					rel="noopener"
 					onClick={(event) => {
-						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+						if (!inTab || event.metaKey || event.ctrlKey || event.shiftKey) return;
 						event.preventDefault();
 						go(to);
 					}}
@@ -427,16 +483,15 @@ export function SandboxPage({
 		// A button doesn't grow; on a phone its wrapper does, so the two share the row.
 		return narrow ? <span className="flex min-w-0 flex-1">{link}</span> : link;
 	};
+	// One screen: the browser runs on the desktop, so where there's a desktop, Browser would show the same picture.
+	const screen = sandboxScreen(sandbox);
 	const actions = (
 		<>
-			{windows ? (
-				<>
-					{/* The desktop is the way in that does the most, so it's the page's one primary action; Browser sits
-					    beside it as the lighter way. */}
-					{screenLink("browser", "Browser", <GlobeIcon size="sm" />)}
-					{screenLink("desktop", "Desktop", <DesktopIcon size="sm" />, true)}
-				</>
-			) : null}
+			{!windows || screen === undefined
+				? null
+				: screen === "desktop"
+					? screenLink("desktop", "Desktop", <DesktopIcon size="sm" />)
+					: screenLink("browser", "Browser", <GlobeIcon size="sm" />)}
 			{can.recover ? (
 				<Button
 					size={narrow ? "md" : "sm"}
@@ -456,9 +511,8 @@ export function SandboxPage({
 					Resume
 				</Button>
 			) : null}
-			{/* Stop stays in sight on a phone too, beside the ways in. */}
-			{can.stop ? (
-				<Button size={narrow ? "md" : "sm"} icon={<StopIcon size="sm" />} onClick={stop}>
+			{can.stop && !narrow ? (
+				<Button size="sm" icon={<StopIcon size="sm" />} onClick={stop}>
 					Stop
 				</Button>
 			) : null}
@@ -493,11 +547,8 @@ export function SandboxPage({
 			{crumbs(<span>{sandbox.name}</span>)}
 			<header className="kt-sandbox-header flex min-w-0 flex-col gap-3">
 				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-3">
-					{/* The state on the name's baseline, so it reads as part of the title rather than beside it. */}
-					<div className="flex min-w-0 items-baseline gap-3">
-						<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
-						<StateLabel state={sandbox.state} />
-					</div>
+					<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
+					<StateLabel state={sandbox.state} />
 					<div className={`flex items-center gap-2 ${narrow ? "w-full" : "ml-auto"}`}>{actions}</div>
 				</div>
 				<div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted">
@@ -519,6 +570,29 @@ export function SandboxPage({
 							)}
 						</span>
 					)}
+					{sandbox.template === undefined ? null : (
+						<span
+							className="inline-flex items-center gap-1.5"
+							title={
+								sandbox.template.start === "snapshot"
+									? "Started from the template's snapshot"
+									: "Booted the template's image and ran its setup"
+							}
+						>
+							<TemplateIcon size="sm" />
+							{templateHref === undefined ? (
+								sandbox.template.name
+							) : (
+								<a
+									className="text-fg underline decoration-border-strong underline-offset-2"
+									href={templateHref(sandbox.template.id)}
+								>
+									{sandbox.template.name}
+								</a>
+							)}
+							<span className="text-faint">v{sandbox.template.version}</span>
+						</span>
+					)}
 					{stops === "–" ? null : (
 						<span className="inline-flex items-center gap-1.5">
 							<ClockIcon size="sm" />
@@ -528,6 +602,25 @@ export function SandboxPage({
 				</div>
 			</header>
 			{sandbox.state === "error" && sandbox.error !== undefined ? <Notice level="error">{sandbox.error}</Notice> : null}
+			{sandbox.base?.outdated === true ? (
+				<Notice
+					level="warning"
+					{...(menu.restartOnLatest === undefined
+						? {}
+						: {
+								action: (
+									<Button size="xs" onClick={menu.restartOnLatest}>
+										Restart on latest
+									</Button>
+								),
+							})}
+				>
+					{sandbox.base.security === true
+						? "This sandbox is on an outdated base image with security fixes waiting."
+						: "This sandbox is on an outdated base image."}{" "}
+					Kantel never patches a running sandbox: restart it on the latest base to pick up the newer image.
+				</Notice>
+			) : null}
 			{notice === undefined ? null : (
 				<Notice
 					level={notice.level}
@@ -564,8 +657,6 @@ export function SandboxPage({
 					windows={windows}
 					access={access?.value}
 					onAccessRetry={readAccess}
-					onOpen={go}
-					screenHref={href}
 					onNotice={setNotice}
 					usageKey={state}
 				/>
@@ -617,8 +708,6 @@ function Overview({
 	windows,
 	access,
 	onAccessRetry,
-	onOpen,
-	screenHref,
 	onNotice,
 	usageKey,
 }: {
@@ -630,97 +719,29 @@ function Overview({
 	windows: boolean;
 	access: SandboxAccess | "loading" | Error | undefined;
 	onAccessRetry: () => void;
-	onOpen: (view: ScreenView) => void;
-	screenHref: (view: ScreenView) => string;
 	onNotice: (notice: SandboxNotice | undefined) => void;
 	/** Changes with each read of the sandbox, so memory and disk are read again with its CPU. */
 	usageKey: unknown;
 }) {
-	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
-	// Where the page can't frame a screen, its tile is the drawing and opens the screen in a tab.
-	const framed = ready !== undefined && source.screens !== "tab" ? ready : undefined;
-	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
+	const spec = sandboxSpec(sandbox);
 	const { ports, exposePort, hidePort } = source;
 	const portsShown = ports !== undefined && exposePort !== undefined && hidePort !== undefined;
 
-	const lacks = { desktop: imageLacks(sandbox, "desktop"), browser: imageLacks(sandbox, "browser") };
-	const tiles = (["desktop", "browser"] as const).filter(
-		(kind) => lacks[kind] === undefined || lacks.desktop === undefined || lacks.browser === undefined,
-	);
-	const tile = (kind: "desktop" | "browser") => {
-		// What the image lacks first: no access makes a desktop the image doesn't have.
-		const unavailable = lacks[kind] ?? (ready === undefined ? undefined : screenUnavailable(ready, kind));
-		if (unavailable !== undefined) {
-			// Nothing to open: the drawing, dimmed, and why under it.
-			return (
-				<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
-					<div className="opacity-50">
-						<ScreenPreview kind={kind} label={kind === "desktop" ? "Desktop" : "Browser"} />
-					</div>
-					<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
-						<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
-						<span className="flex-1" />
-						<span className="truncate text-muted text-sm">{unavailable}</span>
-					</div>
-				</div>
-			);
-		}
-		return (
-			<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
-				<a
-					className="kt-focusable block"
-					href={screenHref(kind)}
-					aria-label={kind === "desktop" ? "Open the desktop" : "Open the browser"}
-					onClick={(event) => {
-						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-						event.preventDefault();
-						onOpen(kind);
-					}}
-				>
-					<ScreenPreview
-						kind={kind}
-						label={kind === "desktop" ? `${sandbox.name}'s desktop` : `${sandbox.name}'s browser`}
-						{...(framed === undefined
-							? {}
-							: (() => {
-									const url = embedUrl(framed, kind === "desktop" ? "watch" : "browser");
-									return url === undefined ? {} : { url };
-								})())}
-					/>
-				</a>
-				<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
-					<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
-					<span className="flex-1" />
-					{kind === "desktop" ? (
-						<a
-							className={`${buttonClass("ghost", "xs")} no-underline`}
-							href={screenHref("watch")}
-							onClick={(event) => {
-								if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-								event.preventDefault();
-								onOpen("watch");
-							}}
-						>
-							<EyeIcon size="sm" />
-							<span className={buttonLabelClass}>Watch</span>
-						</a>
-					) : null}
-				</div>
-			</div>
-		);
-	};
+	// No screen is shown here, so nothing streams until Desktop (or Browser) opens one in a tab of its own.
+	const screen = sandboxScreen(sandbox);
 
 	const ssh = !windows ? null : (
 		<SandboxSsh source={source} sandboxId={sandbox.id} access={access} onAccessRetry={onAccessRetry} now={now} />
 	);
 
 	const usage = showsCpu(sandbox) ? <Usage source={source} sandbox={sandbox} refreshKey={usageKey} /> : null;
-	const image = sandbox.image === undefined ? null : <ImageSection image={sandbox.image} folded={narrow} />;
+	const image = sandbox.image === undefined ? null : <ImageSection image={sandbox.image} />;
 
 	const created = compactAge(sandbox.createdAt, now);
-	const detailsList = (
-		<div className={sectionCard}>
-			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
+	const details = (
+		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-details">
+			<SectionHeading id="sandbox-details" title="Details" />
+			<dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2.5 text-sm">
 				<dt className={dt}>ID</dt>
 				<dd className={`${dd} flex items-center gap-1`}>
 					<span className="truncate font-mono text-code">{sandbox.id}</span>
@@ -733,10 +754,26 @@ function Overview({
 					{sizeText(spec)}
 					{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
 				</dd>
+				{sandbox.base === undefined ? null : (
+					<>
+						<dt className={dt}>Base</dt>
+						<dd className={`${dd} flex flex-wrap items-center gap-x-2 gap-y-1`}>
+							<span className="truncate font-mono text-code" title={sandbox.base.image}>
+								{sandbox.base.version ?? sandbox.base.image}
+							</span>
+							<BaseOutdatedBadge base={sandbox.base} now={now} />
+							{sandbox.base.outdated && sandbox.base.behind !== undefined ? (
+								<span className="text-muted">{behindText(sandbox.base.behind)}</span>
+							) : null}
+						</dd>
+					</>
+				)}
 				{sandbox.snapshot === undefined ? null : (
 					<>
 						<dt className={dt}>Snapshot</dt>
-						<dd className={dd}>{agoText(sandbox.snapshot.takenAt, now)}</dd>
+						<dd className={dd}>
+							{sandbox.snapshot.takenAt === undefined ? "Saved" : agoText(sandbox.snapshot.takenAt, now)}
+						</dd>
 					</>
 				)}
 				<dt className={dt}>Created</dt>
@@ -757,48 +794,12 @@ function Overview({
 					</>
 				)}
 			</dl>
-		</div>
-	);
-	// A phone folds it to one line: what it is and its size.
-	const details = narrow ? (
-		<FoldSection
-			id="sandbox-details"
-			title="Details"
-			summary={`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(spec)}`}
-		>
-			{detailsList}
-		</FoldSection>
-	) : (
-		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-details">
-			<SectionHeading id="sandbox-details" title="Details" />
-			{detailsList}
 		</section>
 	);
 
 	// Its read-only mounts (experimental), only where it has any.
 	const mounts =
 		sandbox.mounts === undefined || sandbox.mounts.length === 0 ? null : <SandboxMounts mounts={sandbox.mounts} />;
-	// A mount that failed is a problem with this sandbox: said at the top of the page, not only at the end of its list.
-	const failedMounts = sandbox.mounts?.filter((mount) => mount.status === "failed") ?? [];
-	const mountNotice =
-		failedMounts.length === 0 ? null : (
-			<Notice
-				level="error"
-				announce={false}
-				action={
-					<a className={`${buttonClass("secondary", "sm")} no-underline`} href="#mounts">
-						<span className={buttonLabelClass}>{failedMounts.length === 1 ? "See the mount" : "See mounts"}</span>
-					</a>
-				}
-			>
-				{failedMounts.length === 1
-					? `${failedMounts[0]?.path} didn't mount.`
-					: `${failedMounts.length} mounts didn't mount.`}{" "}
-				{failedMounts.length === 1 && failedMounts[0]?.error !== undefined
-					? failedMounts[0].error.replace(/[^.]$/, "$&.")
-					: "Mounts, below, says why."}
-			</Notice>
-		);
 
 	const portsSection =
 		// A port's URL reaches a running microVM only.
@@ -811,66 +812,38 @@ function Overview({
 		sandbox.kind === "isolate"
 			? "An isolate has no desktop, browser or SSH."
 			: sandboxActions(sandbox.state).resume
-				? tiles.length === 0
+				? screen === undefined
 					? "Resume it to use SSH."
-					: "Resume it to use its desktop, browser and SSH."
+					: `Resume it to use its ${screen} and SSH.`
 				: undefined;
 
 	if (narrow) {
 		return (
 			<div className="flex min-w-0 flex-col gap-8">
-				{mountNotice}
 				{windows || hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
-				{/* The way in first, as on a wide screen, then how it's doing. */}
-				{ssh}
+				{/* How it's doing first, on a phone, where the side column would otherwise come after the way in. */}
 				{usage}
+				{ssh}
 				{portsSection}
-				{mounts}
 				{image}
 				{details}
+				{mounts}
 			</div>
 		);
 	}
-	// A failed mount across the whole page, over both columns, so the problem leads and nothing sits beside it.
-	const columns = (
+	return (
 		<div className="grid min-w-0 items-start gap-10 xl:grid-cols-[minmax(0,1fr)_var(--kt-popover-width)]">
 			<div className="flex min-w-0 flex-col gap-8">
-				{windows && tiles.length > 0 ? <div className="grid grid-cols-2 gap-4">{tiles.map(tile)}</div> : null}
-				{windows && tiles.length === 0 ? <NoScreens /> : null}
 				{ssh}
 				{portsSection}
-				{/* Mounts are about using the sandbox, beside the ways in: the side column keeps what it is and how it's doing. */}
-				{mounts}
 				{hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
 			</div>
 			<aside className="flex min-w-0 flex-col gap-8">
 				{usage}
 				{image}
 				{details}
+				{mounts}
 			</aside>
-		</div>
-	);
-	return mountNotice === null ? (
-		columns
-	) : (
-		<div className="flex min-w-0 flex-col gap-8">
-			{mountNotice}
-			{columns}
-		</div>
-	);
-}
-
-/** Where the previews would be, for an image with neither a desktop nor a browser: said once, plainly. */
-function NoScreens() {
-	return (
-		<div className="flex min-w-0 items-start gap-3 rounded-panel border border-border border-dashed px-4 py-3 text-sm">
-			<span className="mt-0.5 flex-none text-faint" aria-hidden="true">
-				<DesktopIcon size="sm" />
-			</span>
-			<span className="flex min-w-0 flex-col gap-0.5">
-				<span className="text-fg">No desktop or browser in this image</span>
-				<span className="text-muted">Commands, files, ports and SSH work as in any sandbox.</span>
-			</span>
 		</div>
 	);
 }
@@ -889,12 +862,12 @@ function FeatureRow({ label, feature }: { label: string; feature: SandboxFeature
 				</span>
 				{feature.available ? (
 					feature.detail === undefined ? null : (
-						<span className="truncate text-muted text-sm" title={feature.detail}>
+						<span className="truncate text-muted text-xs" title={feature.detail}>
 							{feature.detail}
 						</span>
 					)
 				) : (
-					<span className="text-muted text-sm">{feature.reason}</span>
+					<span className="text-muted text-xs">{feature.reason}</span>
 				)}
 			</span>
 		</li>
@@ -911,14 +884,14 @@ const LIBC_LABELS: Readonly<Record<SandboxImage["libc"], string>> = {
  * What its image has, as its guest agent found it: the OS, and the desktop, browser, Docker and nested virtualisation,
  * each there or plainly missing, so nothing the image lacks is offered as a button that fails.
  */
-export function ImageSection({ image, folded = false }: { image: SandboxImage; folded?: boolean }) {
-	const capabilitiesId = useId();
+export function ImageSection({ image }: { image: SandboxImage }) {
 	const kvm: SandboxFeature = image.kvm
 		? { available: true, detail: "/dev/kvm" }
 		: { available: false, reason: "Not on this host" };
-	const body = (
-		<div className={`${sectionCard} flex flex-col gap-3`}>
-			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
+	return (
+		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-image">
+			<SectionHeading id="sandbox-image" title="Image" />
+			<dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2.5 text-sm">
 				<dt className={dt}>OS</dt>
 				<dd className={`${dd} truncate`} title={image.os}>
 					{image.os}
@@ -933,29 +906,12 @@ export function ImageSection({ image, folded = false }: { image: SandboxImage; f
 					<span className="text-muted">, {image.agentVersion}</span>
 				</dd>
 			</dl>
-			{/* Its own block under a rule, so the checklist doesn't break the label and value grid above it. */}
-			<div className="flex min-w-0 flex-col gap-2.5 border-t border-border pt-3">
-				<span id={capabilitiesId} className="text-sm text-muted">
-					Capabilities
-				</span>
-				<ul className="m-0 flex list-none flex-col gap-2.5 p-0 text-sm" aria-labelledby={capabilitiesId}>
-					<FeatureRow label="Desktop" feature={image.desktop} />
-					<FeatureRow label="Browser" feature={image.browser} />
-					<FeatureRow label="Docker" feature={image.docker} />
-					<FeatureRow label="Nested virtualisation" feature={kvm} />
-				</ul>
-			</div>
-		</div>
-	);
-	// A phone folds it to one line: the OS and architecture.
-	return folded ? (
-		<FoldSection id="sandbox-image" title="Image" summary={`${image.os}, ${image.arch}`}>
-			{body}
-		</FoldSection>
-	) : (
-		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-image">
-			<SectionHeading id="sandbox-image" title="Image" />
-			{body}
+			<ul className="m-0 flex list-none flex-col gap-2.5 p-0 text-sm" aria-label="What the image has">
+				<FeatureRow label="Desktop" feature={image.desktop} />
+				<FeatureRow label="Browser" feature={image.browser} />
+				<FeatureRow label="Docker" feature={image.docker} />
+				<FeatureRow label="Nested virtualisation" feature={kvm} />
+			</ul>
 		</section>
 	);
 }
@@ -976,7 +932,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 	const live = useLiveUsage(sandbox.state === "error" ? undefined : source.usageSeries, sandbox.id);
 	const series = seriesOf(live);
 	const loading = live.status === "loading";
-	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
+	const spec = sandboxSpec(sandbox);
 	const liveCpu = lineOf(series, (point) => point.cpu, USAGE_KEEP_MS);
 	const liveMemory = lineOf(series, (point) => point.memUsedBytes, USAGE_KEEP_MS);
 	// Without a live source, its recent CPU as listed, untimed.
@@ -1009,18 +965,17 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 			<SectionHeading
 				id="sandbox-usage"
 				title="Usage"
-				actions={<span className="text-sm text-muted">{live.status === "off" ? "Recent" : "Last 10 minutes"}</span>}
+				actions={<span className="text-xs text-muted">{live.status === "off" ? "Recent" : "Last 10 minutes"}</span>}
 			/>
-			<div className={`${sectionCard} flex flex-col gap-4 text-sm`}>
+			<div className="flex flex-col gap-4 text-sm">
 				<UsageGraph
 					title="CPU"
 					{...(latestCpu === undefined ? {} : { value: `${Math.round(latestCpu * 100)}%` })}
 					values={cpu}
 					{...(series === undefined ? { slots: cpu.length } : { timed: liveCpu.timed })}
-					// Busy past 80% in the caution colour, as the sandboxes list shows it: one threshold everywhere.
-					tone={sandbox.state === "error" ? "error" : latestCpu !== undefined && latestCpu >= 0.8 ? "warning" : "done"}
+					tone={sandbox.state === "error" ? "error" : "done"}
 					loading={loading}
-					// No time axis of its own: the memory chart under it carries the pair's.
+					{...(series === undefined ? {} : { ends: GRAPH_ENDS })}
 					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
 				/>
 				{live.status === "off" ? (
@@ -1044,7 +999,8 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 						}
 					/>
 				)}
-				{now?.diskGb === undefined ? null : meter("Disk", now.diskGb, spec.diskGb)}
+				{/* No disk of its own (an isolate's is 0): nothing to measure against, as Details says. */}
+				{now?.diskGb === undefined || spec.diskGb <= 0 ? null : meter("Disk", now.diskGb, spec.diskGb)}
 			</div>
 		</section>
 	);
@@ -1167,7 +1123,11 @@ function FilesTab({
 	}
 	return (
 		<div className="flex min-w-0 flex-col gap-3">
-			<p className="m-0 text-sm text-muted">From its snapshot {agoText(sandbox.snapshot.takenAt, now)}.</p>
+			<p className="m-0 text-sm text-muted">
+				{sandbox.snapshot.takenAt === undefined
+					? "From its snapshot."
+					: `From its snapshot ${agoText(sandbox.snapshot.takenAt, now)}.`}
+			</p>
 			<SnapshotFiles source={snapshots} snapshotId={sandbox.snapshot.id} {...browse} />
 		</div>
 	);

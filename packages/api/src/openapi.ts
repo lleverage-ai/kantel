@@ -108,7 +108,10 @@ function parameters(route: RouteDefinition, registry: SchemaRegistry): JsonSchem
 			required: false,
 			description:
 				"A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer " +
-				"and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+				"and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` " +
+				"`in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is " +
+				"never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The " +
+				"same key with a different request is `refused`.",
 			schema: { type: "string", minLength: 1, maxLength: MAX_IDEMPOTENCY_KEY_LENGTH },
 		});
 	}
@@ -120,47 +123,62 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 	const errorResponse = (description: string) => ({ description, content: { "application/json": { schema: error } } });
 	const frame = route.stream === undefined ? undefined : registry.use(route.stream.frame);
 	const success =
-		frame !== undefined
+		frame !== undefined && route.stream?.eventsOnly === true
 			? {
-					"101": {
-						description:
-							"Upgraded to a WebSocket (send `Upgrade: websocket`). Each message is a JSON array of frames; an empty " +
-							"array is a keep-alive. The server negotiates `permessage-deflate` where the platform can. The client " +
-							"sends nothing; to resume, reconnect with `?after=` and the last cursor it holds.",
-						content: { "application/json": { schema: { type: "array", items: frame } } },
-					},
 					[String(route.answer.status)]: {
 						description:
-							`${route.answer.description} Without an upgrade: server-sent events, each named after its frame's ` +
-							"type with the frame as its JSON data, then one `ready` event once the client has caught up. " +
-							"Snapshot and delta events carry their cursor as the event ID, so `Last-Event-ID` resumes too.",
+							`${route.answer.description} Server-sent events, each named after its frame's type with the frame as its ` +
+							"JSON data; a comment line is a keep-alive. It takes no WebSocket upgrade.",
 						content: { "text/event-stream": { schema: frame } },
 					},
 				}
-			: Object.fromEntries(
-					[route.answer, ...(route.otherAnswers ?? [])].map((answer) => [
-						String(answer.status),
-						answer.media !== undefined
-							? {
-									description: answer.description,
-									content: Object.fromEntries(
-										answer.media.map((type) => [type, { schema: { type: "string", format: "binary" } }]),
-									),
-								}
-							: answer.schema === undefined
-								? { description: answer.description }
-								: {
+			: frame !== undefined
+				? {
+						"101": {
+							description:
+								"Upgraded to a WebSocket (send `Upgrade: websocket`). Each message is a JSON array of frames; an empty " +
+								"array is a keep-alive. The server negotiates `permessage-deflate` where the platform can. The client " +
+								"sends nothing; to resume, reconnect with `?after=` and the last cursor it holds.",
+							content: { "application/json": { schema: { type: "array", items: frame } } },
+						},
+						[String(route.answer.status)]: {
+							description:
+								`${route.answer.description} Without an upgrade: server-sent events, each named after its frame's ` +
+								"type with the frame as its JSON data, then one `ready` event once the client has caught up. " +
+								"Snapshot and delta events carry their cursor as the event ID, so `Last-Event-ID` resumes too.",
+							content: { "text/event-stream": { schema: frame } },
+						},
+					}
+				: Object.fromEntries(
+						[route.answer, ...(route.otherAnswers ?? [])].map((answer) => [
+							String(answer.status),
+							answer.media !== undefined
+								? {
 										description: answer.description,
-										content: { "application/json": { schema: registry.use(answer.schema) } },
-									},
-					]),
-				);
+										content: Object.fromEntries(
+											answer.media.map((type) => [type, { schema: { type: "string", format: "binary" } }]),
+										),
+									}
+								: answer.schema === undefined
+									? { description: answer.description }
+									: {
+											description: answer.description,
+											content: { "application/json": { schema: registry.use(answer.schema) } },
+										},
+						]),
+					);
 	const responses: { [status: string]: unknown } = {
 		...success,
 		[String(UNAUTHENTICATED_STATUS)]: errorResponse("The request needs a valid credential (`unauthenticated`)."),
 	};
 	const byStatus = new Map<number, ErrorCode[]>();
-	for (const code of route.errors) byStatus.set(statusFor(code), [...(byStatus.get(statusFor(code)) ?? []), code]);
+	// An idempotent route can also answer a retry `conflict` (its first call still working) or `refused` (the key was for
+	// another request).
+	const codes = new Set<ErrorCode>([
+		...route.errors,
+		...(route.idempotent === true ? (["conflict", "refused"] as const) : []),
+	]);
+	for (const code of codes) byStatus.set(statusFor(code), [...(byStatus.get(statusFor(code)) ?? []), code]);
 	for (const [status, codes] of [...byStatus].sort(([a], [b]) => a - b)) {
 		responses[String(status)] = errorResponse(codes.map((code) => `\`${code}\``).join(" or "));
 	}

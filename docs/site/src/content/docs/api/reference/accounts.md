@@ -39,13 +39,19 @@ The caller's personal account and every organisation they belong to; for a key, 
 
 Makes an organisation account with the caller as its owner. People only: a key is refused.
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Body**: [CreateOrganisationBody](/api/reference/types/#createorganisationbody)
 
 **Answers**
 
 - `201`: [Account](/api/reference/types/#account) (`application/json`). The organisation.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `429` exhausted. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused, `429` exhausted. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Join an organisation
 
@@ -230,13 +236,19 @@ Makes a join code, shown once, for one person or for anyone holding it; needs ad
 | --- | --- | --- | --- |
 | `accountId` | string | yes | The account's ID. |
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Body**: [CreateInviteBody](/api/reference/types/#createinvitebody)
 
 **Answers**
 
 - `201`: [Invite](/api/reference/types/#invite) (`application/json`). The invite, with its code.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Revoke an invite
 

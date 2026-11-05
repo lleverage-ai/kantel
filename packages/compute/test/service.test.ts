@@ -1,12 +1,19 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { SandboxBackend } from "../src/backend.ts";
+import {
+	type BackendCapabilities,
+	DetachedWaitEnded,
+	type ExecRequest,
+	type ExecResult,
+	type SandboxBackend,
+} from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	checkShape,
+	HOST_REVOKED_REASON,
 	hourlyRate,
 	type InviteMail,
 	inviteForSomeoneElse,
@@ -20,7 +27,7 @@ import {
 	SHARED_KEY_REFUSED,
 	shapeFor,
 } from "../src/service.ts";
-import { createMemoryStore } from "../src/store.ts";
+import { createMemoryStore, type StoredCommand } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -40,7 +47,10 @@ afterEach(async () => {
 
 function setup(
 	backend: SandboxBackend = createStubBackend(),
-	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts" | "invites"> = {},
+	extra: Pick<
+		Parameters<typeof createComputeApi>[0],
+		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs" | "store"
+	> = {},
 ) {
 	const api = createComputeApi({
 		...extra,
@@ -141,6 +151,284 @@ describe("sandboxes", () => {
 		expect(ended.stdout).toBe("later\n");
 	});
 
+	it("says when its latest snapshot was taken, from the snapshot, for a snapshot taken while it runs and an older record", async () => {
+		const { api, tom } = setup();
+		const sandbox = await tom.createSandbox({ wait: true });
+		const taken = await tom.takeSnapshot(sandbox.id, {});
+		const running = await tom.getSandbox(sandbox.id);
+		expect(running).toMatchObject({ latestSnapshotId: taken.id, latestSnapshotAt: taken.createdAt });
+		// A record kept before it had the time: the list and the sandbox read it from the snapshot's own record.
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		if (stored === undefined) expect.fail("no sandbox");
+		const { latestSnapshotAt: _, ...older } = stored;
+		await api.store.sandboxes.put(older);
+		expect((await tom.getSandbox(sandbox.id)).latestSnapshotAt).toBe(taken.createdAt);
+		const listed = (await tom.listSandboxes()).items.find((item) => item.id === sandbox.id);
+		expect(listed?.latestSnapshotAt).toBe(taken.createdAt);
+	});
+
+	it("sends a detached command with its ID and no limit but the caller's, and a kill to its backend", async () => {
+		const stub = createStubBackend();
+		const requests: ExecRequest[] = [];
+		const kills: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (id, request) => {
+				requests.push(request);
+				return stub.exec(id, request);
+			},
+			killCommand: async (id, commandId) => {
+				kills.push(commandId);
+				await stub.killCommand?.(id, commandId);
+			},
+		};
+		const { api, tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const free = await tom.runCommand(sandbox.id, { command: "echo free", detached: true });
+		const capped = await tom.runCommand(sandbox.id, { command: "echo capped", detached: true, timeoutMs: 5_000 });
+		await api.service.idle();
+		expect(requests.map(({ commandId, detached, timeoutMs }) => ({ commandId, detached, timeoutMs }))).toEqual([
+			{ commandId: free.id, detached: true, timeoutMs: undefined },
+			{ commandId: capped.id, detached: true, timeoutMs: 5_000 },
+		]);
+		// A foreground command has its ID too (a kill names it), and the default limit.
+		const foreground = await tom.runCommand(sandbox.id, { command: "echo now" });
+		expect(requests.at(-1)).toMatchObject({ commandId: foreground.id, timeoutMs: 30_000 });
+		expect(requests.at(-1)?.detached).toBeUndefined();
+
+		// A kill goes to the backend by the command's ID, once it is recorded killed.
+		const held = await tom.runCommand(sandbox.id, { command: "sleep 600", detached: true });
+		const killed = await tom.killCommand(sandbox.id, held.id);
+		expect(killed).toMatchObject({ state: "killed", exitCode: 137, stderr: "" });
+		expect(kills).toEqual([held.id]);
+		await api.service.idle();
+		expect((await tom.getCommand(sandbox.id, held.id)).state).toBe("killed");
+		// One that has ended isn't killed again.
+		expect((await tom.killCommand(sandbox.id, free.id)).state).toBe("exited");
+		expect(kills).toEqual([held.id]);
+	});
+
+	it("marks a command killed when its backend can't stop it, and says so", async () => {
+		const stub = createStubBackend();
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((resolve) =>
+					request.signal?.addEventListener("abort", () =>
+						resolve({ exitCode: 1, stdout: "", stderr: "", timedOut: false }),
+					),
+				),
+			killCommand: async () => {
+				throw new KantelError("not_supported", "this sandbox's host can't stop a command; upgrade its kantel-host");
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const killed = await tom.killCommand(sandbox.id, held.id);
+		expect(killed.state).toBe("killed");
+		expect(killed.stderr).toBe(
+			"Kantel marked this command killed but couldn't stop it, so it may still be running: this sandbox's host can't stop a command; upgrade its kantel-host\n",
+		);
+		expect((await tom.getCommand(sandbox.id, held.id)).stderr).toBe(killed.stderr);
+	});
+
+	it("fetches a detached command's end from its backend once the gateway that started it has gone", async () => {
+		const stub = createStubBackend();
+		const results = new Map<string, ExecResult | undefined>();
+		const backend: SandboxBackend = {
+			...stub,
+			// The command runs on in the sandbox; only the gateway's wait for it ends.
+			exec: (_id, request) =>
+				new Promise((_resolve, reject) =>
+					request.signal?.addEventListener("abort", () => reject(new DetachedWaitEnded())),
+				),
+			commandResult: async (_id, commandId) => {
+				if (!results.has(commandId)) throw new KantelError("not_found", "no such command");
+				return results.get(commandId);
+			},
+		};
+		const store = createMemoryStore();
+		const first = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		const client = (api: ComputeApi) =>
+			createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+		const sandbox = await client(first).createSandbox({ wait: true });
+		const started = await client(first).runCommand(sandbox.id, { command: "./build", detached: true });
+		results.set(started.id, undefined);
+		// The gateway closes (a restart, or another replica serves the next call): the command isn't failed for it.
+		await first.close();
+		const second = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		opened.push(second);
+		expect((await client(second).getCommand(sandbox.id, started.id)).state).toBe("running");
+		results.set(started.id, { exitCode: 0, stdout: "built\n", stderr: "", timedOut: false });
+		expect(await client(second).getCommand(sandbox.id, started.id)).toMatchObject({
+			state: "exited",
+			exitCode: 0,
+			stdout: "built\n",
+		});
+	});
+
+	it("brings an unfollowed detached command's end in before listing it, killing it or stopping its sandbox", async () => {
+		const stub = createStubBackend();
+		const results = new Map<string, ExecResult | undefined>();
+		const kills: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((_resolve, reject) =>
+					request.signal?.addEventListener("abort", () => reject(new DetachedWaitEnded())),
+				),
+			killCommand: async (_id, commandId) => void kills.push(commandId),
+			commandResult: async (_id, commandId) => results.get(commandId),
+		};
+		const store = createMemoryStore();
+		const first = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		const client = (api: ComputeApi) =>
+			createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+		const sandbox = await client(first).createSandbox({ wait: true });
+		const listed = await client(first).runCommand(sandbox.id, { command: "./a", detached: true });
+		const killed = await client(first).runCommand(sandbox.id, { command: "./b", detached: true });
+		const stopped = await client(first).runCommand(sandbox.id, { command: "./c", detached: true });
+		const running = await client(first).runCommand(sandbox.id, { command: "./d", detached: true });
+		await first.close();
+		const second = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		opened.push(second);
+		const tom = client(second);
+		const built = { exitCode: 0, stdout: "built\n", stderr: "", timedOut: false };
+		// Each ends just before the call that has to bring its end in, so each call is what does.
+		results.set(listed.id, built);
+		const items = (await tom.listCommands(sandbox.id)).items;
+		expect(items.find((item) => item.id === listed.id)).toMatchObject({ state: "exited", stdout: "built\n" });
+		expect(items.find((item) => item.id === killed.id)?.state).toBe("running");
+		expect(items.find((item) => item.id === running.id)?.state).toBe("running");
+		// Ended already: a kill answers its end, and sends nothing.
+		results.set(killed.id, built);
+		expect(await tom.killCommand(sandbox.id, killed.id)).toMatchObject({ state: "exited", stdout: "built\n" });
+		expect(kills).toEqual([]);
+		// A stop keeps the end of one that ended, and marks the one still running killed.
+		expect((await store.commands.get(stopped.id))?.state).toBe("running");
+		results.set(stopped.id, built);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		expect(await tom.getCommand(sandbox.id, stopped.id)).toMatchObject({ state: "exited", stdout: "built\n" });
+		expect((await tom.getCommand(sandbox.id, running.id)).state).toBe("killed");
+	});
+
+	it("sends a kill again when the first never reached the backend, until it does", async () => {
+		const stub = createStubBackend();
+		const kills: string[] = [];
+		let reachable = false;
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((resolve) =>
+					request.signal?.addEventListener("abort", () =>
+						resolve({ exitCode: 137, stdout: "", stderr: "", timedOut: false }),
+					),
+				),
+			killCommand: async (_id, commandId) => {
+				kills.push(commandId);
+				if (!reachable) throw new KantelError("unavailable", "the host disconnected");
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const first = await tom.killCommand(sandbox.id, held.id);
+		expect(first.state).toBe("killed");
+		expect(first.stderr).toContain("may still be running: the host disconnected; kill it again to retry");
+		// The host is back: the next kill sends it again, and says nothing more.
+		reachable = true;
+		const again = await tom.killCommand(sandbox.id, held.id);
+		expect(again.state).toBe("killed");
+		expect(kills).toEqual([held.id, held.id]);
+		// Delivered: a third kill sends nothing.
+		await tom.killCommand(sandbox.id, held.id);
+		expect(kills).toEqual([held.id, held.id]);
+	});
+
+	it("doesn't reopen a delivered kill when an older attempt fails after it", async () => {
+		const stub = createStubBackend();
+		const deliveries: { resolve: () => void; reject: (error: Error) => void }[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((_resolve, reject) =>
+					request.signal?.addEventListener("abort", () => reject(new DetachedWaitEnded())),
+				),
+			killCommand: () =>
+				new Promise<void>((resolve, reject) => {
+					deliveries.push({ resolve, reject });
+				}),
+		};
+		const { api, tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		// Two kills at once: the first marks it killed, pending; the second retries the pending kill.
+		const first = tom.killCommand(sandbox.id, held.id);
+		await vi.waitFor(() => expect(deliveries).toHaveLength(1));
+		const second = tom.killCommand(sandbox.id, held.id);
+		await vi.waitFor(() => expect(deliveries).toHaveLength(2));
+		// The second is delivered, then the first fails.
+		deliveries[1]?.resolve();
+		expect((await second).stderr).toBe("");
+		deliveries[0]?.reject(new KantelError("unavailable", "the host disconnected"));
+		const late = await first;
+		expect(late.stderr).toBe("");
+		const stored = await api.store.commands.get(held.id);
+		expect(stored?.killPending).toBeUndefined();
+		expect(stored?.stderr).toBe("");
+		// Delivered: another kill sends nothing.
+		await tom.killCommand(sandbox.id, held.id);
+		expect(deliveries).toHaveLength(2);
+	});
+
+	it("keeps an end recorded while a kill was on its way, and sends that kill nowhere", async () => {
+		const stub = createStubBackend();
+		const kills: string[] = [];
+		const backend: SandboxBackend = { ...stub, killCommand: async (_id, commandId) => void kills.push(commandId) };
+		const store = createMemoryStore();
+		// The kill reads the command while it still runs; its end lands before the kill writes.
+		let stale: StoredCommand | undefined;
+		const commands = {
+			...store.commands,
+			get: async (id: string) => {
+				const read = stale?.id === id ? stale : await store.commands.get(id);
+				stale = undefined;
+				return read;
+			},
+		};
+		const api = createComputeApi({
+			backend,
+			store: { ...store, commands },
+			authenticatePerson: async () => PEOPLE["tom-token"],
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		const ran = await tom.runCommand(sandbox.id, { command: "echo done" });
+		expect(ran.state).toBe("exited");
+		stale = { ...((await store.commands.get(ran.id)) as StoredCommand), state: "running" };
+		const answer = await tom.killCommand(sandbox.id, ran.id);
+		expect(answer).toMatchObject({ state: "exited", exitCode: 0, stdout: "done\n" });
+		expect((await store.commands.get(ran.id))?.state).toBe("exited");
+		expect(kills).toEqual([]);
+	});
+
 	it("stops with a history snapshot and resumes with its files", async () => {
 		const { tom } = setup();
 		const sandbox = await tom.createSandbox({ wait: true });
@@ -153,6 +441,7 @@ describe("sandboxes", () => {
 		expect(history.items).toHaveLength(1);
 		expect(history.items[0]).toMatchObject({ kind: "automatic", trigger: "stop", sandboxId: sandbox.id });
 		expect(stopped.latestSnapshotId).toBe(history.items[0]?.id);
+		expect(stopped.latestSnapshotAt).toBe(history.items[0]?.createdAt);
 		expect((await failure(tom.runCommand(sandbox.id, { command: "true" }))).code).toBe("conflict");
 		expect((await tom.listSandboxes()).items.map((item) => item.id)).not.toContain(sandbox.id);
 		expect((await tom.listSandboxes({ all: true })).items.map((item) => item.id)).toContain(sandbox.id);
@@ -443,6 +732,316 @@ describe("sandboxes", () => {
 		expect(stopped.state).toBe("stopped");
 		expect(stopped.usage.runningSeconds).toBe(31 * 60);
 		expect(stopped.cost.total).toBeGreaterThan(0);
+		expect(stopped.reason).toBe("auto-stop");
+
+		// A command then is refused with why it stopped and how to resume it; nothing resumes it.
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is stopped (auto-stop); resume it first");
+		expect(refused.details).toEqual({
+			code: "sandbox_stopped",
+			sandboxId: sandbox.id,
+			state: "stopped",
+			stopReason: "auto-stop",
+			hint: `Resume it with kantel resume ${sandbox.id} or POST /v1/sandboxes/${sandbox.id}/resume, then try again`,
+		});
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+		// Its reason goes once it runs again.
+		expect((await tom.resumeSandbox(sandbox.id, { wait: true })).reason).toBeUndefined();
+	});
+});
+
+/** A backend whose resumes wait for `release` and then go on, or fail with `failWith`. */
+function gatedResumes() {
+	const stub = createStubBackend();
+	let release: () => void = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const state = { resumes: 0, failWith: undefined as Error | undefined };
+	const backend: SandboxBackend = {
+		...stub,
+		resume: async (sandboxId, options) => {
+			state.resumes++;
+			await gate;
+			if (state.failWith !== undefined) throw state.failWith;
+			return stub.resume(sandboxId, options);
+		},
+	};
+	return { backend, release: () => release(), state };
+}
+
+describe("calls on a sandbox that isn't running", () => {
+	it("refuses a stopped or paused sandbox with a stable code and the resume call, and stops nothing else", async () => {
+		const { tom } = setup();
+		const isolate = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(isolate.id, { wait: true });
+		const stopped = await failure(tom.readFile(isolate.id, { path: "f.txt" }));
+		expect(stopped.status).toBe(409);
+		expect(stopped.code).toBe("conflict");
+		expect(stopped.message).toBe("The sandbox is stopped; resume it first");
+		// A stop someone asked for records no reason.
+		expect(stopped.details).toEqual({
+			code: "sandbox_stopped",
+			sandboxId: isolate.id,
+			state: "stopped",
+			hint: `Resume it with kantel resume ${isolate.id} or POST /v1/sandboxes/${isolate.id}/resume, then try again`,
+		});
+		for (const call of [
+			tom.runCommand(isolate.id, { command: "true" }),
+			tom.writeFile(isolate.id, { path: "f.txt", content: "x" }),
+			tom.listFiles(isolate.id),
+			tom.deleteFile(isolate.id, { path: "f.txt" }),
+		]) {
+			expect((await failure(call)).details).toMatchObject({ code: "sandbox_stopped", state: "stopped" });
+		}
+
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const paused = await failure(tom.runCommand(vm.id, { command: "true" }));
+		expect(paused.code).toBe("conflict");
+		expect(paused.message).toBe("The sandbox is paused; resume it first");
+		expect(paused.details).toMatchObject({ code: "sandbox_paused", sandboxId: vm.id, state: "paused" });
+		expect(paused.details?.hint).toContain(`kantel resume ${vm.id}`);
+		expect((await tom.getSandbox(vm.id)).state).toBe("paused");
+	});
+
+	it("holds a call made while the sandbox starts and runs it once it is running", async () => {
+		const gated = gatedResumes();
+		const { api, tom } = setup(gated.backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const starting = await tom.resumeSandbox(sandbox.id, { wait: false });
+		expect(starting.state).toBe("starting");
+
+		// Two callers wait on the one start; its own timeout starts only once it runs.
+		const first = tom.runCommand(sandbox.id, { command: "echo one", timeoutMs: 50 });
+		const second = tom.writeFile(sandbox.id, { path: "two.txt", content: "two" });
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		gated.release();
+		const command = await first;
+		expect(command).toMatchObject({ state: "exited", exitCode: 0, stdout: "one\n" });
+		expect(await second).toMatchObject({ path: "/home/user/two.txt" });
+		expect(gated.state.resumes).toBe(1);
+		await api.service.idle();
+		const events = await tom.listEvents({ sandboxId: sandbox.id });
+		expect(events.items.filter((event) => event.type === "sandbox.running")).toHaveLength(2);
+	});
+
+	it("holds a call while another gateway starts the sandbox, reading it again until it runs", async () => {
+		const { api, tom } = setup(createStubBackend(), { startPollMs: 10 });
+		const sandbox = await tom.createSandbox({ wait: true });
+		const running = await api.store.sandboxes.get(sandbox.id);
+		if (running === undefined) throw new Error("No record");
+		// As this gateway sees a start another gateway carries out: starting, with no work of its own to wait on.
+		await api.store.sandboxes.put({ ...running, state: "starting" });
+		setTimeout(() => void api.store.sandboxes.put(running), 100);
+		const command = await tom.runCommand(sandbox.id, { command: "echo ran" });
+		expect(command).toMatchObject({ state: "exited", stdout: "ran\n" });
+	});
+
+	it("answers sandbox_starting once the hold runs out, so the caller sends it again", async () => {
+		const gated = gatedResumes();
+		const { api, tom } = setup(gated.backend, { startHoldMs: 100, startPollMs: 10 });
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.resumeSandbox(sandbox.id, { wait: false });
+		const refused = await failure(tom.runCommand(sandbox.id, { command: "true" }));
+		expect(refused.status).toBe(409);
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is still starting after 100 ms; send the call again");
+		expect(refused.details).toEqual({
+			code: "sandbox_starting",
+			sandboxId: sandbox.id,
+			state: "starting",
+			hint: "It is still starting: send the call again in a moment",
+		});
+		// Nothing was run or recorded for it; the start carries on, and the call sent again runs.
+		expect((await tom.listCommands(sandbox.id)).items).toEqual([]);
+		gated.release();
+		await api.service.idle();
+		expect((await tom.runCommand(sandbox.id, { command: "true" })).exitCode).toBe(0);
+	});
+
+	it("refuses a held call with sandbox_error and its reason when the start fails", async () => {
+		const gated = gatedResumes();
+		const { tom } = setup(gated.backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.resumeSandbox(sandbox.id, { wait: false });
+		gated.state.failWith = new Error("The host ran out of disk");
+		const held = failure(tom.runCommand(sandbox.id, { command: "true" }));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		gated.release();
+		const refused = await held;
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toBe("The sandbox is in error (The host ran out of disk); resume it first");
+		expect(refused.details).toMatchObject({
+			code: "sandbox_error",
+			sandboxId: sandbox.id,
+			state: "error",
+			stopReason: "The host ran out of disk",
+		});
+		// Not `details.reason`, which the SDK reads as a placement's.
+		expect(refused.details).not.toHaveProperty("reason");
+		expect(refused.details?.hint).toContain(`kantel resume ${sandbox.id}`);
+	});
+});
+
+describe("placement reasons", () => {
+	/** The stub, its hosts as `hosts` says (the stub's own one, as it reports it, by default). */
+	function placing(
+		hosts: (own: BackendCapabilities) => BackendCapabilities = (own) => own,
+		types?: Parameters<typeof createStubBackend>[0],
+	): SandboxBackend {
+		const stub = createStubBackend(types);
+		return { ...stub, capabilities: async () => hosts(await stub.capabilities()) };
+	}
+	const reasonOf = async (call: Promise<unknown>) => {
+		const error = await failure(call);
+		return { status: error.status, code: error.code, reason: error.reason, details: error.details };
+	};
+
+	it("says no_host when no host is connected, and no_host_for_type when none runs the type", async () => {
+		const { tom } = setup(placing(() => ({ types: [], sizes: [], hosts: [] })));
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toEqual({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host",
+			details: { reason: "no_host" },
+		});
+		const isolates = setup(placing(undefined, { types: ["isolate"] }));
+		expect(await reasonOf(isolates.tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host_for_type",
+		});
+		// The host is there, but offline.
+		const offline = setup(
+			placing((own) => ({ ...own, hosts: own.hosts.map((host) => ({ ...host, connected: false })) })),
+		);
+		expect(await reasonOf(offline.tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			reason: "no_host",
+		});
+	});
+
+	it("says no_host_with_labels and no_host_offers_size, the codes as before", async () => {
+		const { tom } = setup(placing((own) => ({ ...own, sizes: own.sizes.filter((size) => size.name !== "xlarge") })));
+		expect(await reasonOf(tom.createSandbox({ hostLabels: { zone: "ams" } }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host_with_labels",
+		});
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", size: "xlarge" }))).toMatchObject({
+			status: 501,
+			code: "not_supported",
+			reason: "no_host_offers_size",
+		});
+	});
+
+	it("says account_limit when the account runs as many sandboxes as it may", async () => {
+		const { tom } = setup(placing(), { limits: { concurrentSandboxes: 1 } });
+		await tom.createSandbox({ wait: true });
+		expect(await reasonOf(tom.createSandbox({}))).toMatchObject({
+			status: 429,
+			code: "exhausted",
+			reason: "account_limit",
+		});
+	});
+
+	it("says host_unavailable when a stopped sandbox's host can't take it back", async () => {
+		let hostUp = true;
+		let otherHost = false;
+		const backend = placing((own) => {
+			const [stub] = own.hosts;
+			if (stub === undefined) throw new Error("The stub has a host");
+			return {
+				...own,
+				hosts: [
+					{ ...stub, connected: hostUp },
+					...(otherHost ? [{ ...stub, id: "host_other", name: "other", connected: true }] : []),
+				],
+			};
+		});
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		hostUp = false;
+		// No host at all: the start is refused, naming its own host as the trouble.
+		expect(await reasonOf(tom.startSandbox(sandbox.id, { wait: true }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		// So are a fork of it and a sandbox made from its snapshot, bound to that host as it is, whatever the fleet has.
+		expect(await reasonOf(tom.forkSandbox(sandbox.id, {}))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		const snapshotId = (await tom.getSandbox(sandbox.id)).latestSnapshotId;
+		expect(snapshotId).toBeDefined();
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", from: snapshotId }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		// Another host is up, but its disk is on its own: its boot fails, and the sandbox says why.
+		otherHost = true;
+		const started = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ state: "error", placementReason: "host_unavailable" });
+		// Back on its host, it starts, and the reason goes with the error.
+		hostUp = true;
+		const again = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(again.state).toBe("running");
+		expect(again.placementReason).toBeUndefined();
+	});
+
+	it("names a refusal for the type by the hosts the caller may use, and a snapshot's by its host", async () => {
+		let microvmHost = true;
+		let isolatesUp = true;
+		const backend = placing((own) => {
+			const [stub] = own.hosts;
+			if (stub === undefined) throw new Error("The stub has a host");
+			const isolates = {
+				...stub,
+				id: "host_isolates",
+				name: "isolates",
+				tiers: ["isolate" as const],
+				connected: isolatesUp,
+			};
+			return {
+				...own,
+				types: microvmHost ? ["isolate", "microvm"] : ["isolate"],
+				hosts: microvmHost ? [stub, isolates] : [isolates],
+			};
+		});
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const from = (await tom.getSandbox(sandbox.id)).latestSnapshotId;
+		// The microVM host is gone (revoked, say): only an isolate host is left.
+		microvmHost = false;
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", from }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			reason: "no_host_for_type",
+		});
+		// And with that one offline too, none is connected at all.
+		isolatesUp = false;
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toMatchObject({ status: 503, reason: "no_host" });
+	});
+
+	it("carries no reason on other errors", async () => {
+		const { tom } = setup();
+		const error = await failure(tom.getSandbox("sbx_missing"));
+		expect([error.code, error.reason, error.details]).toEqual(["not_found", undefined, undefined]);
 	});
 });
 
@@ -1208,6 +1807,201 @@ describe("hosts", () => {
 		for (const bad of ["https://$(id).example.com", "https://a'b.example.com", "https://a!b.example.com"]) {
 			expect(() => publicOrigin(bad)).toThrow("domain name or an IP address");
 		}
+	});
+
+	it("says a revoked host's sandboxes can't be reached, and lets them be deleted", async () => {
+		const { tom, root } = setup();
+		const running = await tom.createSandbox({ wait: true });
+		const stopped = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(stopped.id, { wait: true });
+		await root.revokeHost(STUB_HOST_ID);
+		for (const id of [running.id, stopped.id]) {
+			const after = await tom.getSandbox(id);
+			expect(after).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		}
+		const deleted = await tom.deleteSandbox(running.id);
+		expect(deleted.state).toBe("deleted");
+	});
+
+	it("doesn't run a first create on a host revoked while the host made it", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Where it is placed while it boots, as a host backend records it before asking the host.
+			placedOn: async () => STUB_HOST_ID,
+			// The host makes it, and before its record names the host, the host is revoked and its sandboxes scanned.
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return placement;
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("error");
+	});
+
+	it("fails a revocation whose sandbox write failed, and finishes it when it is made again", async () => {
+		const store = createMemoryStore();
+		const sandboxes = store.sandboxes;
+		let failNext = false;
+		const { tom, root } = setup(createStubBackend(), {
+			store: {
+				...store,
+				sandboxes: {
+					...sandboxes,
+					async update(id, change, expected) {
+						if (failNext) {
+							failNext = false;
+							throw new Error("The database is away");
+						}
+						return sandboxes.update(id, change, expected);
+					},
+				},
+			},
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		failNext = true;
+		await failure(root.revokeHost(STUB_HOST_ID));
+		// Not claimed done: it still says what it was, and the host is revoked.
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await root.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+		await root.revokeHost(STUB_HOST_ID);
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("runs a first create stranded for a revoked host its boot didn't end up on", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Its placement read as the revoked host (as a template restore's, before it booted fresh elsewhere).
+			placedOn: async () => STUB_HOST_ID,
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return { ...placement, hostId: "host_elsewhere" };
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		expect(sandbox.reason).toBeUndefined();
+	});
+
+	/**
+	 * A stub whose first create is read as placed on `placedOn()` by a revocation, and ends on `endsOn`; with `reconcile`,
+	 * its egress changes while it boots, and the revocation lands while that egress is being sent.
+	 */
+	function revokedMidBoot(options: { endsOn: string; reconcile?: boolean; alsoRevoke?: string; refuse?: boolean }) {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		const delivered: (number | undefined)[] = [];
+		let placedNow = STUB_HOST_ID;
+		let revoke: (hostId: string) => Promise<unknown> = async () => undefined;
+		const revokeAll = async () => {
+			await revoke(STUB_HOST_ID);
+			if (options.alsoRevoke !== undefined) {
+				placedNow = options.alsoRevoke;
+				await revoke(options.alsoRevoke);
+			}
+		};
+		const api = setup(
+			{
+				...stub,
+				async capabilities() {
+					const known = await stub.capabilities();
+					const [only] = known.hosts;
+					return only === undefined || options.alsoRevoke === undefined
+						? known
+						: { ...known, hosts: [...known.hosts, { ...only, id: options.alsoRevoke, name: options.alsoRevoke }] };
+				},
+				placedOn: async () => placedNow,
+				async create(spec) {
+					const placement = await stub.create(spec);
+					if (options.reconcile === true) {
+						// Its egress changes while it starts: its boot has it sent before it may run.
+						await store.sandboxes.update(spec.sandboxId, (current) => ({
+							...current,
+							egressRevision: (current.egressRevision ?? 0) + 1,
+						}));
+					} else {
+						await revokeAll();
+					}
+					return { ...placement, hostId: options.endsOn };
+				},
+				async updateEgress(_sandboxId, _egress, revision) {
+					delivered.push(revision);
+					// The revocation's scan lands while this egress is on its way.
+					if (options.reconcile === true && delivered.length === 1) await revokeAll();
+					// Its host then refuses the egress, which would have it stopped.
+					if (options.refuse === true) throw new KantelError("not_supported", "This host can't enforce it");
+				},
+			},
+			{ store },
+		);
+		revoke = (hostId) => api.root.revokeHost(hostId);
+		return { ...api, store, delivered };
+	}
+
+	it("doesn't run a first create whose host is revoked while its egress is being reconciled", async () => {
+		const { tom, delivered } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(delivered.length).toBeGreaterThan(0);
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("runs, with its egress as it is now, a first create whose egress was reconciled on a host that wasn't revoked", async () => {
+		const { tom, store, delivered } = revokedMidBoot({ endsOn: "host_elsewhere", reconcile: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const stored = await store.sandboxes.get(sandbox.id);
+		expect(delivered).toContain(stored?.egressRevision);
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("ends a first create whose host is revoked before its egress is refused in error, not handed back from a stop", async () => {
+		const { tom } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true, refuse: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("doesn't run a first create that moved to another host revoked too", async () => {
+		const { tom } = revokedMidBoot({ endsOn: "host_elsewhere", alsoRevoke: "host_elsewhere" });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("doesn't strand a boot whose record moved on after its placement was read", async () => {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		let moveOn: ((sandboxId: string) => Promise<unknown>) | undefined;
+		const { tom, root } = setup(
+			{
+				...stub,
+				// Read as the revoked host; then, before the scan writes, the sandbox moves on (a recovery, say).
+				async placedOn(sandboxId) {
+					await moveOn?.(sandboxId);
+					return STUB_HOST_ID;
+				},
+				async create(spec) {
+					const placement = await stub.create(spec);
+					await revokeMeanwhile?.();
+					return { ...placement, hostId: "host_elsewhere" };
+				},
+			},
+			{ store },
+		);
+		moveOn = (sandboxId) =>
+			store.sandboxes.update(sandboxId, (current) => ({ ...current, lifecycle: (current.lifecycle ?? 0) + 2 }));
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const events = (await tom.listEvents({ sandboxId: sandbox.id })).items.map((event) => event.type);
+		expect(events).not.toContain("sandbox.error");
 	});
 
 	it("keeps a revocation that lands while a drain is in flight", async () => {

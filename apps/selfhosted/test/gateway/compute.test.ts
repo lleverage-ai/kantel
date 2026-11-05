@@ -234,6 +234,15 @@ describe("the compute plane on the gateway", () => {
 		}
 	});
 
+	it("turns templates on only for KANTEL_TEMPLATES=experimental, on the stub or on hosts", () => {
+		expect(computeConfig({ KANTEL_TEMPLATES: "off" })).toEqual({});
+		expect(computeConfig({ KANTEL_TEMPLATES: "experimental" })).toEqual({ templates: true });
+		expect(
+			computeConfig({ KANTEL_TEMPLATES: "experimental", KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" }),
+		).toMatchObject({ templates: true, hosts: { publicUrl: "http://127.0.0.1:58090" } });
+		expect(() => computeConfig({ KANTEL_TEMPLATES: "on" })).toThrow(/KANTEL_TEMPLATES/);
+	});
+
 	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {
 		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
 		expect(computeConfig(env)?.hosts?.desiredVersion).toBeUndefined();
@@ -274,6 +283,36 @@ describe("the compute plane on the gateway", () => {
 			);
 		}
 		expect(computeConfig(env)?.hosts?.portsDomain).toBeUndefined();
+	});
+
+	it("tells the caller the ports domain as the domain sandboxes are under, and names none without one", async () => {
+		const components = createGatewayComponents();
+		cleanups.push(() => components.close());
+		const authenticator = createAuthenticator({
+			identity: components.identity,
+			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+		});
+		for (const [portsDomain, named] of [
+			["kantel-ports.example", "kantel-ports.example"],
+			[undefined, undefined],
+		] as const) {
+			const config = { publicUrl: "https://kantel.example.com", ...(portsDomain === undefined ? {} : { portsDomain }) };
+			const service = gatewayHosts(config, createMemoryHostStore(), () => undefined);
+			cleanups.push(async () => service.close());
+			const compute = await gatewayCompute({
+				authenticator,
+				hosts: gatewayRelay(config, service, createMemoryRelayStore()),
+			});
+			cleanups.push(() => compute.close());
+			const gateway = createGateway({ components, authenticator, compute: compute.api });
+			cleanups.push(() => gateway.close());
+			const admin = createKantelClient({
+				baseUrl: "http://gateway.test/v1",
+				token: compute.superAdminKey,
+				fetch: (input, init) => gateway.fetch(new Request(input, init)),
+			});
+			expect((await admin.getCaller()).sandboxDomain).toBe(named);
+		}
 	});
 
 	it("lets a host register with a join token the API minted, through the gateway, with no sign-in", async () => {

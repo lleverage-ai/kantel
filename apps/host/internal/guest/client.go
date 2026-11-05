@@ -170,9 +170,43 @@ func (c *Client) Capabilities(ctx context.Context) (*proto.GuestCapabilities, er
 	return &out, nil
 }
 
+// Stats asks the agent for its disk and IO figures; an IsNotFound error from an agent too old to say.
+func (c *Client) Stats(ctx context.Context) (Stats, error) {
+	var out Stats
+	_, err := c.do(ctx, http.MethodGet, "/stats", nil, &out)
+	return out, err
+}
+
 func (c *Client) SetIdentity(ctx context.Context, id Identity) error {
-	_, err := c.do(ctx, http.MethodPost, "/identity", jsonBody(id), &map[string]any{})
+	_, err := c.SetIdentitySteps(ctx, id)
 	return err
+}
+
+// SetIdentitySteps is SetIdentity, answering how long the guest took over each part (ms; none from an older agent).
+func (c *Client) SetIdentitySteps(ctx context.Context, id Identity) (map[string]float64, error) {
+	var out struct {
+		StepsMs map[string]float64 `json:"stepsMs"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/identity", jsonBody(id), &out)
+	return out.StepsMs, err
+}
+
+// GrowDisk grows the file system on the sandbox's disk (/dev/vdb) to fill the device, online, after the host made the
+// device bytes long: the agent first waits until the guest kernel sees that capacity. An older agent answers 404
+// (IsNotFound).
+func (c *Client) GrowDisk(ctx context.Context, bytes int64) error {
+	_, err := c.do(ctx, http.MethodPost, "/disk/grow?bytes="+strconv.FormatInt(bytes, 10), nil, &map[string]any{})
+	return err
+}
+
+// Mount makes the guest's read-only mounts the specs (an empty list unmounts them all).
+func (c *Client) Mount(ctx context.Context, specs []MountSpec) ([]MountResult, error) {
+	if specs == nil {
+		specs = []MountSpec{}
+	}
+	var out []MountResult
+	_, err := c.do(ctx, http.MethodPost, "/mounts", jsonBody(specs), &out)
+	return out, err
 }
 
 func (c *Client) Sync(ctx context.Context) error {
@@ -357,6 +391,12 @@ func IsRefused(err error) bool {
 	return errors.As(err, &api) && api.Status == 400
 }
 
+// IsConflict reports a 409 from the agent (a command ID already known).
+func IsConflict(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && api.Status == 409
+}
+
 // IsUnknownRoute reports the agent not serving what it was asked for at all: one from before it.
 func IsUnknownRoute(err error) bool {
 	var api *apiError
@@ -435,3 +475,34 @@ type readerConn struct {
 }
 
 func (c *readerConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+// StartCommand runs req (with its ID) in the background (POST /exec/start) and answers its pid. A guest from before
+// detached commands by ID answers IsUnknownRoute.
+func (c *Client) StartCommand(ctx context.Context, req ExecRequest) (ExecResult, error) {
+	req.Stream, req.Detached = false, false
+	var out ExecResult
+	_, err := c.do(ctx, http.MethodPost, "/exec/start", jsonBody(req), &out)
+	return out, err
+}
+
+// CommandStatus is a command's state by its ID (GET /exec/{id}), waiting up to wait for a running one to end. A
+// command the guest doesn't know is IsNotFound.
+func (c *Client) CommandStatus(ctx context.Context, id string, wait time.Duration) (ExecStatus, error) {
+	var out ExecStatus
+	path := "/exec/" + url.PathEscape(id)
+	if wait > 0 {
+		path += "?waitMs=" + strconv.FormatInt(wait.Milliseconds(), 10)
+	}
+	_, err := c.do(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+
+// KillCommand kills a command by its ID and its process group (POST /exec/{id}/kill), saying whether it was running.
+// A command the guest doesn't know is IsNotFound; a guest from before kills answers IsUnknownRoute.
+func (c *Client) KillCommand(ctx context.Context, id string) (bool, error) {
+	var out struct {
+		Killed bool `json:"killed"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/exec/"+url.PathEscape(id)+"/kill", nil, &out)
+	return out.Killed, err
+}

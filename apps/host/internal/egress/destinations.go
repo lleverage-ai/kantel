@@ -115,3 +115,22 @@ func (p *Proxy) control(network, address string, _ syscall.RawConn) error {
 	}
 	return p.Destinations.Check(ap.Addr())
 }
+
+// publicControl is control for PublicOnly rules: Destinations without its Allow, so only a public address passes,
+// whatever private ranges the operator lets ordinary sandboxes reach.
+func (p *Proxy) publicControl(network, address string, _ syscall.RawConn) error {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("%s: %w", address, ErrDestination)
+	}
+	if p.PublicDestinations != nil {
+		return p.PublicDestinations.Check(ap.Addr())
+	}
+	return p.Destinations.PublicOnly().Check(ap.Addr())
+}
+
+// PublicOnly is d without its Allow: public addresses only.
+func (d Destinations) PublicOnly() Destinations {
+	d.Allow = nil
+	return d
+}

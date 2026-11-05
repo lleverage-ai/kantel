@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/agent"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
+	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -68,8 +68,9 @@ func (l labelFlag) Set(v string) error {
 	return nil
 }
 
-func install(args []string) error {
-	fs := flag.NewFlagSet("install", flag.ExitOnError)
+// parseInstall reads install's options.
+func parseInstall(args []string) (installOptions, error) {
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	controlPlane := fs.String("url", os.Getenv("KANTEL_URL"), "Kantel's URL")
 	token := fs.String("token", os.Getenv("KANTEL_HOST_TOKEN"), "a kth_ registration token from Kantel's Hosts page")
 	name := fs.String("name", "", "the host's name in Kantel (default: its hostname)")
@@ -83,121 +84,54 @@ func install(args []string) error {
 	proxyDataPath := fs.Bool("proxy-data-path", false, "turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
 	injectGuestAgent := fs.Bool("inject-guest-agent", false, "boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
 	noStart := fs.Bool("no-start", false, "install and register, but don't start the service")
-	_ = fs.Parse(args)
-	if os.Geteuid() != 0 {
-		return errors.New("install needs root: run it with sudo (sudo kantel-host install …)")
+	dryRun := fs.Bool("dry-run", false, "print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
+	if err := fs.Parse(args); err != nil {
+		return installOptions{}, err
 	}
-	if *controlPlane == "" {
-		return errors.New("--url is required: Kantel's URL, such as https://kantel.example.com")
+	// install takes no operands. Go's flags stop at the first one, so anything after it (`--no-start false
+	// --dry-run`) would go unread: a dry run that was asked for must never become an install.
+	if fs.NArg() > 0 {
+		// Not echoed: what's left may hold the token, still unused.
+		return installOptions{}, errors.New("install takes options only, and stopped reading at an argument that isn't one (such as false after --no-start), so nothing from there on was read and nothing was done: give a true or false flag its value with =, as in --no-start=false")
 	}
-	*controlPlane = strings.TrimRight(*controlPlane, "/")
-	cfg, _ := agent.LoadConfig(*configPath)
-	if cfg.Credential != "" && cfg.ControlPlane == *controlPlane && *token == "" {
-		fmt.Println("Already registered with", cfg.ControlPlane, "as", cfg.HostID, "; updating the install.")
-	} else if *token == "" {
-		return errors.New("--token is required: make one on Kantel's Hosts page (a kth_ token)")
-	}
-	cfg.ControlPlane = *controlPlane
-	// The installer's own files go back to where it puts them, under the new root; an operator's own sandbox image or
-	// guest agent (a custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone. Which
-	// is which is decided here alone (keptFiles).
-	image, agentBin, keep, err := keptFiles(cfg, *root)
-	if err != nil {
-		return err
-	}
-	cfg.Root = *root
-	if *name != "" {
-		cfg.Name = *name
-	}
-	if len(labels) > 0 {
-		cfg.Labels = labels
-	}
-	if *tiers != "" {
-		cfg.Tiers = strings.Split(*tiers, ",")
-	}
-	if *isolateRuntime != "" {
-		cfg.IsolateRuntime = *isolateRuntime
-	}
-	if *proxyDataPath {
-		cfg.ProxyDataPath = true
-	}
-	if *injectGuestAgent {
-		cfg.InjectGuestAgent = true
-	}
-	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", image, "", "", "", "", agentBin
-	cfg.Defaults()
-
-	step("Checking this machine")
-	kvm, kvmDetail := hostinfo.KVM()
-	nested, nestedDetail := hostinfo.Nested()
-	fmt.Printf("  kvm: %v (%s)\n  nested virtualisation: %v (%s)\n", kvm, kvmDetail, nested, nestedDetail)
-	if !kvm && cfg.IsolateRuntime != "native" {
-		return errors.New("no usable /dev/kvm, so no microVMs and no isolate VMs: fix that (see `kantel-host doctor`), or install with --isolate-runtime native --tiers isolate to run isolates only, with workerd on this machine itself (trusted code only)")
-	}
-
-	step("Installing kantel-host " + version)
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	if self, err = filepath.EvalSymlinks(self); err != nil {
-		return err
-	}
-	if self != binPath {
-		if err := copyFile(self, binPath, 0o755); err != nil {
-			return err
-		}
-	}
-
-	step("Fetching Firecracker and the sandbox images")
-	source := *images
-	if source == "" {
-		source = cfg.ControlPlane + "/v1/hosts/images"
-	}
-	if err := fetchImages(cfg, source, kvm, keep); err != nil {
-		return err
-	}
-
-	if *token != "" {
-		step("Registering with " + cfg.ControlPlane)
-		hostID, credential, err := register(cfg, *token)
-		if err != nil {
-			return err
-		}
-		cfg.HostID, cfg.Credential = hostID, credential
-		fmt.Println("  registered as", hostID)
-	}
-	if err := cfg.Save(*configPath); err != nil {
-		return err
-	}
-
-	step("Starting the service")
-	if _, err := os.Stat("/run/systemd/system"); err != nil {
-		// A container, WSL without systemd, or another init: the install is done, the supervising is theirs.
-		fmt.Println("  no systemd on this machine: run `kantel-host run` under your own supervisor (as root, restarted when it exits)")
-		return nil
-	}
-	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
-		return err
-	}
-	if out, err := runOutput("systemctl", "daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
-	}
-	if *noStart {
-		fmt.Println("  installed; start it with: sudo systemctl enable --now kantel-host")
-		return nil
-	}
-	if out, err := runOutput("systemctl", "enable", "--now", "kantel-host"); err != nil {
-		return fmt.Errorf("systemctl enable --now kantel-host: %v: %s", err, out)
-	}
-	if out, err := runOutput("systemctl", "restart", "kantel-host"); err != nil {
-		return fmt.Errorf("systemctl restart kantel-host: %v: %s", err, out)
-	}
-	fmt.Println("\nDone. This host is on Kantel's Hosts page; `kantel-host status` and `journalctl -u kantel-host` show it here.")
-	return nil
+	return installOptions{
+		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
+		tiers: *tiers, isolateRuntime: *isolateRuntime, labels: labels, proxyDataPath: *proxyDataPath,
+		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun,
+	}, nil
 }
 
-func step(s string) { fmt.Println("==> " + s) }
+// install is `install`, or with planOnly `plan`: install's options, but only ever the dry run, whatever they say.
+// install.sh --dry-run runs `plan`, so an option that takes "--dry-run" as its value (`--name --dry-run`) can't turn
+// its preview into an install.
+func install(args []string, planOnly bool) error {
+	err := runInstall(thisMachine(), args, planOnly)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+// runInstall is `install`: its options read in full before anything else, then the plan, printed (--dry-run, or
+// planOnly) or done.
+func runInstall(in *installer, args []string, planOnly bool) error {
+	o, err := parseInstall(args)
+	if err != nil {
+		return err
+	}
+	if planOnly {
+		o.dryRun = true
+	}
+	plan, err := in.planInstall(o)
+	if err != nil {
+		return err
+	}
+	if o.dryRun {
+		printPlan(in.out, plan)
+		return nil
+	}
+	return in.doPlan(plan)
+}
 
 func runOutput(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).CombinedOutput()
@@ -228,114 +162,22 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return os.Rename(tmp, dst)
 }
 
-// ImageManifest is <images>/manifest.json: the files a host needs, by name, for this architecture.
-type ImageManifest struct {
-	Version string               `json:"version"`
-	Files   map[string]ImageFile `json:"files"`
-}
+// ImageManifest is <images>/manifest.json: the files a host needs, by name, for this architecture (package images,
+// which the daemon's image updates share).
+type ImageManifest = images.Manifest
 
-type ImageFile struct {
-	// Path is relative to the manifest (or a full URL).
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size"`
-	// Gzip: the file is gzip-compressed and is unpacked as it is fetched.
-	Gzip bool `json:"gzip,omitempty"`
-}
+type ImageFile = images.File
 
-func archName() string {
-	if runtime.GOARCH == "arm64" {
-		return "arm64"
-	}
-	return "amd64"
-}
+func archName() string { return images.Arch() }
 
 // open reads a file from a URL or a directory.
 func open(base, rel string) (io.ReadCloser, error) {
-	if strings.HasPrefix(rel, "https://") || strings.HasPrefix(rel, "http://") {
-		return httpGet(rel)
-	}
-	if strings.HasPrefix(base, "https://") || strings.HasPrefix(base, "http://") {
-		u, err := url.JoinPath(base, rel)
-		if err != nil {
-			return nil, err
-		}
-		return httpGet(u)
-	}
-	return os.Open(filepath.Join(strings.TrimPrefix(base, "file://"), rel))
-}
-
-func httpGet(u string) (io.ReadCloser, error) {
-	res, err := (&http.Client{Timeout: 0}).Get(u)
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode != 200 {
-		res.Body.Close()
-		return nil, fmt.Errorf("GET %s: %s", u, res.Status)
-	}
-	return res.Body, nil
+	return images.Open(context.Background(), base, rel)
 }
 
 // fetch writes one file, checking its digest; a file already there with the right digest is kept.
 func fetch(base string, f ImageFile, dst string, mode os.FileMode) error {
-	if f.SHA256 != "" {
-		if sum, err := recordedSHA256(dst); err == nil && sum == f.SHA256 {
-			if _, err := os.Stat(dst); err == nil {
-				fmt.Printf("  %s: up to date\n", filepath.Base(dst))
-				return nil
-			}
-		}
-	}
-	in, err := open(base, f.Path)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	hash := sha256.New()
-	var reader io.Reader = io.TeeReader(in, hash)
-	if f.Gzip {
-		gz, err := gzip.NewReader(reader)
-		if err != nil {
-			return err
-		}
-		reader = gz
-	}
-	tmp := dst + ".part"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return err
-	}
-	started := time.Now()
-	n, err := io.Copy(out, reader)
-	if err != nil {
-		out.Close()
-		return fmt.Errorf("%s: %w", f.Path, err)
-	}
-	_, _ = io.Copy(io.Discard, in)
-	if err := out.Close(); err != nil {
-		return err
-	}
-	sum := hex.EncodeToString(hash.Sum(nil))
-	if f.SHA256 != "" && sum != f.SHA256 {
-		os.Remove(tmp)
-		return fmt.Errorf("%s: digest %s, want %s", f.Path, sum, f.SHA256)
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		return err
-	}
-	_ = os.WriteFile(dst+".sha256-source", []byte(sum), 0o644)
-	fmt.Printf("  %s: %d MB in %s\n", filepath.Base(dst), n>>20, time.Since(started).Round(100*time.Millisecond))
-	return nil
-}
-
-// recordedSHA256 is the digest fetch recorded beside dst when it downloaded it.
-func recordedSHA256(dst string) (string, error) {
-	raw, err := os.ReadFile(dst + ".sha256-source")
-	return strings.TrimSpace(string(raw)), err
+	return images.Fetch(context.Background(), base, f, dst, mode)
 }
 
 // fileSHA256 hashes a file as it is on disk.
@@ -380,87 +222,6 @@ func keptFiles(loaded agent.Config, newRoot string) (image, agentBin string, kee
 	return image, agentBin, kept{image: image != "", agent: agentBin != ""}, nil
 }
 
-func fetchImages(cfg agent.Config, source string, kvm bool, keep kept) error {
-	arch := archName()
-	// An operator's own sandbox image or guest agent: theirs to keep, not a release's to replace.
-	mine := func(own bool, dst, setting string) (bool, error) {
-		if !own {
-			return false, nil
-		}
-		if _, err := os.Stat(dst); err != nil {
-			return true, fmt.Errorf("the configured %s: %w", setting, err)
-		}
-		return true, nil
-	}
-	in, err := open(source, "manifest.json")
-	if err != nil {
-		return fmt.Errorf("images manifest at %s: %w", source, err)
-	}
-	var manifest ImageManifest
-	err = json.NewDecoder(in).Decode(&manifest)
-	in.Close()
-	if err != nil {
-		return fmt.Errorf("images manifest: %w", err)
-	}
-	if kvm {
-		if err := checkArch(manifest, arch); err != nil {
-			return fmt.Errorf("images at %s: %w", source, err)
-		}
-	}
-	get := func(name, dst string, mode os.FileMode, required bool) error {
-		f, ok := manifest.Files[name]
-		if !ok {
-			if required {
-				return fmt.Errorf("the images manifest has no %s", name)
-			}
-			return nil
-		}
-		return fetch(source, f, dst, mode)
-	}
-	if kvm {
-		if err := fetchFirecracker(cfg.Firecracker); err != nil {
-			return err
-		}
-		if err := get("vmlinux-"+arch, cfg.Kernel, 0o644, true); err != nil {
-			return err
-		}
-		if own, err := mine(keep.image, cfg.SandboxImage, "sandboxImage"); err != nil {
-			return err
-		} else if !own {
-			if err := get("sandbox-"+arch+".ext4", cfg.SandboxImage, 0o644, true); err != nil {
-				return err
-			}
-		}
-		if err := get("isolate-"+arch+".ext4", cfg.IsolateImage, 0o644, false); err != nil {
-			return err
-		}
-		// The static agent the initramfs is made from (injectGuestAgent); required only when that's on.
-		if own, err := mine(keep.agent, cfg.GuestAgent, "guestAgent"); err != nil {
-			return err
-		} else if !own {
-			if err := get("kantel-guest-"+arch, cfg.GuestAgent, 0o755, cfg.InjectGuestAgent); err != nil {
-				return err
-			}
-		}
-	}
-	if cfg.IsolateRuntime == "native" {
-		if err := get("workerd-"+arch, cfg.Workerd, 0o755, true); err != nil {
-			return err
-		}
-		if f, ok := manifest.Files["isolate-bundle.tar.gz"]; ok {
-			r, err := open(source, f.Path)
-			if err != nil {
-				return err
-			}
-			defer r.Close()
-			if err := untar(r, cfg.IsolateBundle); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 // checkArch says, before anything is downloaded, when the images are for other architectures only: one release holds
 // each architecture's kernel and sandbox image side by side (vmlinux-<arch>, sandbox-<arch>.ext4), and a host takes
 // its own.
@@ -485,71 +246,6 @@ func checkArch(manifest ImageManifest, arch string) error {
 			arch, strings.Join(missing, ", "), strings.Join(others, ", "), arch, arch)
 	}
 	return fmt.Errorf("the images manifest has no %s", strings.Join(missing, " or "))
-}
-
-// fetchFirecracker gets Firecracker's release from GitHub and checks it against the release's SHA256SUMS.
-func fetchFirecracker(dst string) error {
-	if out, err := exec.Command(dst, "--version").Output(); err == nil && strings.Contains(string(out), strings.TrimPrefix(FirecrackerVersion, "v")) {
-		fmt.Printf("  firecracker %s: up to date\n", FirecrackerVersion)
-		return nil
-	}
-	arch := "x86_64"
-	if runtime.GOARCH == "arm64" {
-		arch = "aarch64"
-	}
-	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + FirecrackerVersion + "/"
-	name := fmt.Sprintf("firecracker-%s-%s.tgz", FirecrackerVersion, arch)
-	sums, err := httpGet(base + name + ".sha256.txt")
-	if err != nil {
-		return err
-	}
-	sumText, _ := io.ReadAll(sums)
-	sums.Close()
-	want := strings.Fields(string(sumText))
-	body, err := httpGet(base + name)
-	if err != nil {
-		return err
-	}
-	raw, err := io.ReadAll(body)
-	body.Close()
-	if err != nil {
-		return err
-	}
-	got := sha256.Sum256(raw)
-	if len(want) == 0 || want[0] != hex.EncodeToString(got[:]) {
-		return fmt.Errorf("%s: digest doesn't match the release's", name)
-	}
-	gz, err := gzip.NewReader(bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	tr := tar.NewReader(gz)
-	member := fmt.Sprintf("release-%s-%s/firecracker-%s-%s", FirecrackerVersion, arch, FirecrackerVersion, arch)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return fmt.Errorf("%s has no %s", name, member)
-		}
-		if err != nil {
-			return err
-		}
-		if h.Name == member {
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-				return err
-			}
-			out, err := os.OpenFile(dst+".part", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
-				return err
-			}
-			out.Close()
-			fmt.Printf("  firecracker %s\n", FirecrackerVersion)
-			return os.Rename(dst+".part", dst)
-		}
-	}
 }
 
 func untar(r io.Reader, dir string) error {

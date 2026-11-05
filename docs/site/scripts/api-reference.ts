@@ -148,6 +148,13 @@ const TAGS: {
 		about:
 			"What new sandboxes inherit: variables (plain and protected), secret files, repositories and egress grants; and a sandbox's egress log.",
 	},
+	templates: {
+		title: "Templates",
+		order: 8.7,
+		about:
+			"Versioned microVM profiles (an image, vCPUs and memory, variables, a setup script and egress) that Kantel builds once and snapshots, so their sandboxes restore instead of booting; and the base channels they follow.",
+		note: "Experimental: a deployment serves these only with `KANTEL_TEMPLATES=experimental`.",
+	},
 	events: { title: "Events", order: 9, about: "The account's events, as webhooks deliver them." },
 	webhooks: {
 		title: "Webhooks",
@@ -367,6 +374,16 @@ function collectRefs(schema: unknown, into: Set<string>): void {
 const byTag = new Map<string, string[]>();
 const usedTypes = new Set<string>(["ErrorBody"]);
 collectRefs(schemas.ErrorBody, usedTypes);
+// The named schemas no route or other schema refers to: those published on their own (`extraSchemas`), such as an
+// error's `details` (SandboxNotRunning).
+const referenced = new Set<string>();
+collectRefs(document.paths, referenced);
+for (const schema of Object.values(schemas)) collectRefs(schema, referenced);
+for (const name of Object.keys(schemas)) {
+	if (referenced.has(name) || usedTypes.has(name)) continue;
+	usedTypes.add(name);
+	collectRefs(schemas[name], usedTypes);
+}
 for (const [path, item] of Object.entries(document.paths)) {
 	for (const method of METHODS) {
 		const operation = item[method];

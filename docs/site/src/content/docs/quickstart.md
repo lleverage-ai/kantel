@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The hosted service, hosts of your own and the compute API may still change.
+The hosted service, hosts of your own and the compute API may still change. [What works today](/what-works-today/) says what has run on real machines so far.
 :::
 
 Kantel's hosted service runs the control plane for you at <https://app.kantel.dev>. You bring the Linux machines that run your sandboxes: a sandbox only ever runs on a host of your own account, so you add one before your first sandbox. This page signs you in, adds one machine as a host, and starts a sandbox on it.

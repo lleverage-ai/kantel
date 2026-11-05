@@ -12,7 +12,9 @@ import {
 	SandboxIcon,
 	ServerIcon,
 	SettingsIcon,
+	ShieldCheckIcon,
 	SnapshotIcon,
+	TemplateIcon,
 } from "../primitives/lucide.tsx";
 import { Sidebar, SidebarBrand, SidebarItem, SidebarSection } from "../primitives/sidebar.tsx";
 import { Skeleton, skeletonClass } from "../primitives/spinner.tsx";
@@ -37,24 +39,26 @@ import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
 import { FirstRun } from "./first-run.tsx";
 import { HostsPage } from "./hosts-page.tsx";
+import { ImagesPage } from "./images-page.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { MountsPage } from "./mounts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
 import { ProfilePage } from "./profile-page.tsx";
 import { SANDBOX_VIEWS, SandboxPage, type SandboxView } from "./sandbox-page.tsx";
-import { SandboxesPage, SandboxesTableSkeleton } from "./sandboxes-page.tsx";
+import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
 import type { FilesAt } from "./snapshot-files.tsx";
 import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
 import { TelemetryPage } from "./telemetry-page.tsx";
+import { TemplatePage, TemplatesPage } from "./templates-page.tsx";
 import { UserMenu } from "./user-menu.tsx";
 import { WebhooksPage } from "./webhooks-page.tsx";
 
 // The compute console: the shell around the compute plane's pages. On a wide screen, a sidebar with the account
 // switcher, the account's five pages (Sandboxes, Snapshots, Environments, Egress, Settings), Admin for a super-admin
 // and your menu at its foot; on a phone, a top bar with the switcher and your initials, and the five pages in a tab bar
-// along the bottom. Admin is its own area, outside the accounts: a super-admin's Hosts and Install, with its own
+// along the bottom. Admin is its own area, outside the accounts: a super-admin's Hosts, Install and Images, with its own
 // sidebar and a way back. It routes on the path under `base` (the root of the console app, `""`) and leaves where the
 // data comes from to its `source`: the sample data in fixtures.ts, or the API. A super-admin on a deployment with no
 // host yet is shown the first run: Sandboxes leads with adding one, right there.
@@ -63,6 +67,7 @@ export type ComputePage =
 	| "sandboxes"
 	| "snapshots"
 	| "environments"
+	| "templates"
 	| "egress"
 	| "keys"
 	| "webhooks"
@@ -73,12 +78,14 @@ export type ComputePage =
 	| "hosts"
 	| "mounts"
 	| "install"
+	| "images"
 	| "device";
 
 export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"sandboxes",
 	"snapshots",
 	"environments",
+	"templates",
 	"egress",
 	"keys",
 	"webhooks",
@@ -89,6 +96,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"hosts",
 	"mounts",
 	"install",
+	"images",
 	"device",
 ];
 
@@ -102,6 +110,8 @@ export type ComputeRoute = {
 	readonly sandboxId?: string;
 	readonly sandboxView?: SandboxView;
 	readonly environmentId?: string;
+	/** Templates (experimental): the template that's open. */
+	readonly templateId?: string;
 };
 
 /** The route for `pathname`, or undefined when it isn't under `base` or names no page. `base` itself is Sandboxes. */
@@ -122,6 +132,7 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 	if (parts.length > 2) return undefined;
 	if (page === "snapshots" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	if (page === "environments" && second !== undefined) return { page, environmentId: decodeURIComponent(second) };
+	if (page === "templates" && second !== undefined) return { page, templateId: decodeURIComponent(second) };
 	// Egress is the account's, or one sandbox's.
 	if (page === "egress" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	return parts.length === 1 ? { page } : undefined;
@@ -135,6 +146,7 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 export function pathAfterAccountSwitch(pathname: string, base = "/compute"): string | undefined {
 	const open = parseComputePath(pathname, base);
 	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
+	if (open?.page === "templates" && open.templateId !== undefined) return computePath("templates", base);
 	if ((open?.page === "egress" || open?.page === "sandboxes") && open.sandboxId !== undefined)
 		return computePath("sandboxes", base);
 	// A snapshot's files, or a sandbox's history, are the last account's: the new one's saved snapshots instead.
@@ -146,6 +158,25 @@ export function pathAfterAccountSwitch(pathname: string, base = "/compute"): str
 export function sandboxPath(base: string, sandboxId: string, view: SandboxView = "overview"): string {
 	const page = computePath("sandboxes", base, sandboxId);
 	return view === "overview" ? page : `${page}/${view}`;
+}
+
+/**
+ * The query of a screen's page, which opens in a new tab: `tabQuery`, what this tab runs on (its source and hosting,
+ * as the app chose them when it started), and this address's `?theme`. Nothing of this page's own (`?new`, a file
+ * browser's place, Egress's tab) goes with it.
+ */
+export function screenSearch(search: string, tabQuery = ""): string {
+	const params = new URLSearchParams(tabQuery);
+	const theme = new URLSearchParams(search).get("theme");
+	if (theme !== null) params.set("theme", theme);
+	const query = params.toString();
+	return query === "" ? "" : `?${query}`;
+}
+
+/** The address of a sandbox's view: a screen's carries the query a new tab needs (`screenSearch`). */
+function sandboxViewPath(base: string, sandboxId: string, view: SandboxView, query: string): string {
+	const path = sandboxPath(base, sandboxId, view);
+	return view === "desktop" || view === "watch" || view === "browser" ? `${path}${query}` : path;
 }
 
 /** The query parameters a file browser keeps in the address: the folder, the file open in it, and whose files. */
@@ -263,6 +294,11 @@ export interface ComputeConsoleProps {
 	readonly signedInAs?: { readonly name?: string; readonly email?: string };
 	/** The person chose a theme in their menu, which has applied it: the app keeps it for them. */
 	readonly onThemeChoose?: (preference: ThemePreference) => void;
+	/**
+	 * What a new tab of the console needs in its query to show the same data as this one (`source=recorded`,
+	 * `hosting=hosted`): a screen's page opens in one, and a tab opened without its opener has none of this tab's session.
+	 */
+	readonly tabQuery?: string;
 	/** An invite's code from its email's link: the console opens Join with it. */
 	readonly joinCode?: string;
 	/** The Join `joinCode` opened is done with, joined or closed: the app forgets the code. */
@@ -365,6 +401,7 @@ export function ComputeConsole({
 	onSignOut,
 	signedInAs,
 	onThemeChoose,
+	tabQuery,
 	joinCode,
 	onJoinCodeDone,
 }: ComputeConsoleProps) {
@@ -457,6 +494,8 @@ export function ComputeConsole({
 	// shared hosts, so none of its own only adds a link to Add a host beside New sandbox (PageFor).
 	const noHosts = hosts.state.status === "ready" && hosts.state.value?.length === 0;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
+	// The deployment's base images and templates: a super-admin's, beside Hosts.
+	const imagesShown = superAdmin && source.images !== undefined;
 	// Read-only mounts' bundles and bucket sources, where the deployment has turned mounts on (experimental).
 	const mountsShown = source.mounts !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
@@ -466,22 +505,26 @@ export function ComputeConsole({
 	const page =
 		(route.page === "hosts" && me !== undefined && !hostsShown) ||
 		(route.page === "install" && me !== undefined && installSource === undefined) ||
+		(route.page === "images" && me !== undefined && !imagesShown) ||
 		(route.page === "billing" && !billingShown) ||
 		(route.page === "mounts" && !mountsShown) ||
-		(route.page === "device" && source.devices === undefined)
+		(route.page === "device" && source.devices === undefined) ||
+		(route.page === "templates" && source.templates === undefined)
 			? "sandboxes"
 			: route.page;
 
 	const failed =
 		viewer.state.status === "error" ? viewer.state : accounts.state.status === "error" ? accounts.state : undefined;
 
-	// Admin is the deployment's, not an account's: a super-admin's Hosts, outside the switcher, with a way back.
-	const adminShown = hostsShown && superAdmin;
-	const inAdmin = adminShown && (page === "hosts" || page === "install");
-	const adminHref = computePath("hosts", base);
+	// Admin is the deployment's, not an account's: a super-admin's Hosts, Install and Images, outside the switcher, with
+	// a way back.
+	const adminShown = superAdmin && (hostsShown || imagesShown);
+	const inAdmin = adminShown && (page === "hosts" || page === "install" || page === "images");
+	const adminHref = computePath(hostsShown ? "hosts" : "images", base);
 	const adminItems: SettingsNavItem[] = [
-		{ id: "hosts", label: "Hosts" },
+		...(hostsShown ? [{ id: "hosts", label: "Hosts" }] : []),
 		...(installSource === undefined ? [] : [{ id: "install", label: "Install" }]),
+		...(imagesShown ? [{ id: "images", label: "Images" }] : []),
 	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
 	const hostCount = hosts.state.status === "ready" ? hosts.state.value?.length : undefined;
 	// An account's own hosts, where the deployment lets it add them, are one of its settings.
@@ -522,6 +565,15 @@ export function ComputeConsole({
 		{ id: "egress", label: "Egress", short: "Egress", icon: <ProxyIcon />, on: page === "egress" && !sandboxEgress },
 		{ id: "organisation", label: "Settings", short: "Settings", icon: <SettingsIcon />, on: inSettings },
 	] as const;
+	// Templates (experimental), where the deployment has them: in the sidebar after Environments, not in a phone's tab
+	// bar, which keeps its five.
+	const sidebarPages = [
+		...pages.slice(0, 3),
+		...(source.templates === undefined
+			? []
+			: [{ id: "templates", label: "Templates", icon: <TemplateIcon />, on: page === "templates" }]),
+		...pages.slice(3, 4),
+	];
 	const href = (id: string) => computePath(id as ComputePage, base);
 
 	const name = signedInAs?.name ?? me?.name;
@@ -566,6 +618,64 @@ export function ComputeConsole({
 			Console
 		</a>
 	);
+
+	// A sandbox's desktop or browser is a page of its own, the whole window, without the console around it: the sandbox's
+	// page opens it in a new tab, and its address is one to share.
+	const screenPage =
+		page === "sandboxes" &&
+		route.sandboxId !== undefined &&
+		(route.sandboxView === "desktop" || route.sandboxView === "watch" || route.sandboxView === "browser");
+	if (screenPage) {
+		return (
+			// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
+			// biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, so the keyboard takes the same path.
+			<div className="kt-screen-page h-dvh min-h-0 min-w-0 bg-canvas text-fg" onClick={onClick}>
+				{failed !== undefined ? (
+					<div className="grid h-full place-items-center p-gutter">
+						<ConsoleUnavailable
+							title={undefined}
+							message={messageOf(failed.error, "Try again in a moment.")}
+							onRetry={() => {
+								viewer.reload();
+								accounts.reload();
+							}}
+						/>
+					</div>
+				) : account === undefined || me === undefined ? (
+					<div className="p-gutter">
+						<Skeleton lines={3} />
+					</div>
+				) : (
+					<PageFor
+						page={page}
+						route={route}
+						source={source}
+						account={account}
+						viewer={me}
+						now={now}
+						base={base}
+						search={search}
+						hash={hash}
+						navigate={navigate}
+						noHosts={noHosts}
+						narrow={narrow}
+						hosts={hostsSource}
+						ownHosts={!superAdmin}
+						accounts={list ?? []}
+						onSwitch={switchTo}
+						onRenamed={() => accounts.reload()}
+						you={{ name: name ?? me.name, email: email ?? me.email }}
+						onHostJoined={hosts.reload}
+						onCreate={() => setDialog("create")}
+						onJoin={() => setDialog("join")}
+						onLeft={() => accounts.reload()}
+						onOpenAccount={setAccountId}
+						tabQuery={tabQuery}
+					/>
+				)}
+			</div>
+		);
+	}
 
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
@@ -620,7 +730,15 @@ export function ComputeConsole({
 								{adminItems.map((item) => (
 									<SidebarItem
 										key={item.id}
-										icon={item.id === "hosts" ? <ServerIcon /> : <SettingsIcon />}
+										icon={
+											item.id === "hosts" ? (
+												<ServerIcon />
+											) : item.id === "images" ? (
+												<ShieldCheckIcon />
+											) : (
+												<SettingsIcon />
+											)
+										}
 										label={item.label}
 										href={item.href}
 										selected={item.selected ?? false}
@@ -635,7 +753,7 @@ export function ComputeConsole({
 						<>
 							{switcher}
 							<SidebarSection label="Pages" heading={false}>
-								{pages.slice(0, 4).map((each) => (
+								{sidebarPages.map((each) => (
 									<SidebarItem
 										key={each.id}
 										icon={each.icon}
@@ -702,7 +820,10 @@ export function ComputeConsole({
 						/>
 					</div>
 				) : account === undefined || me === undefined ? (
-					<ConsoleLoading narrow={narrow} title={inSettings ? "Settings" : pages.find((each) => each.on)?.label} />
+					<ConsoleLoading
+						narrow={narrow}
+						title={inSettings ? "Settings" : sidebarPages.find((each) => each.on)?.label}
+					/>
 				) : (
 					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
 						<SettingsFrameFor
@@ -714,7 +835,7 @@ export function ComputeConsole({
 						>
 							<PageFor
 								// A new account or page starts afresh: nothing of the last one's dialogs or filters carries over.
-								key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? ""}`}
+								key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? route.templateId ?? ""}`}
 								page={page}
 								route={route}
 								source={source}
@@ -742,6 +863,7 @@ export function ComputeConsole({
 									if (personal !== undefined) switchTo(personal);
 									accounts.reload();
 								}}
+								tabQuery={tabQuery}
 							/>
 						</SettingsFrameFor>
 					</div>
@@ -809,6 +931,8 @@ function PageFor({
 	onCreate,
 	onJoin,
 	onLeft,
+	onOpenAccount,
+	tabQuery,
 }: {
 	page: ComputePage;
 	route: ComputeRoute;
@@ -841,8 +965,15 @@ function PageFor({
 	onCreate: () => void;
 	onJoin: () => void;
 	onLeft: () => void;
+	/**
+	 * A screen's page, which has no switcher: the sandbox is in another of the viewer's accounts, and this tab moves to
+	 * it, not remembered, so a shared link opens whichever account was used last.
+	 */
+	onOpenAccount?: (accountId: string) => void;
+	tabQuery: string | undefined;
 }): ReactNode {
 	const timing = now === undefined ? {} : { now };
+	const screenQuery = screenSearch(search, tabQuery);
 	switch (page) {
 		case "sandboxes":
 			return route.sandboxId !== undefined ? (
@@ -853,10 +984,16 @@ function PageFor({
 					hosting={source.hosting}
 					sandboxId={route.sandboxId}
 					accountId={account.id}
+					{...(onOpenAccount === undefined
+						? {}
+						: { accountIds: new Set(accounts.map((each) => each.id)), onOpenAccount })}
 					view={route.sandboxView ?? "overview"}
-					href={(view) => sandboxPath(base, route.sandboxId ?? "", view)}
+					href={(view) => sandboxViewPath(base, route.sandboxId ?? "", view, screenQuery)}
 					sandboxesHref={computePath("sandboxes", base)}
 					environmentHref={(id) => computePath("environments", base, id)}
+					{...(source.templates === undefined
+						? {}
+						: { templateHref: (id: string) => computePath("templates", base, id) })}
 					navigate={navigate}
 					narrow={narrow}
 					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search, hash) } : {})}
@@ -874,9 +1011,18 @@ function PageFor({
 					snapshots={source.snapshots}
 					account={account}
 					hosting={source.hosting}
-					sandboxHref={(sandboxId, view) => sandboxPath(base, sandboxId, view)}
+					sandboxHref={(sandboxId, view) => sandboxViewPath(base, sandboxId, view ?? "overview", screenQuery)}
 					navigate={navigate}
 					environments={(accountId) => source.environments.list(accountId)}
+					{...(source.templates === undefined
+						? {}
+						: {
+								templates: (accountId: string) =>
+									(source.templates as NonNullable<ComputeSource["templates"]>).list(accountId),
+								...(new URLSearchParams(search).get("template") === null
+									? {}
+									: { template: new URLSearchParams(search).get("template") as string }),
+							})}
 					creating={new URLSearchParams(search).has("new")}
 					narrow={narrow}
 					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
@@ -914,6 +1060,28 @@ function PageFor({
 					environmentId={route.environmentId}
 					accountId={account.id}
 					listHref={computePath("environments", base)}
+					navigate={navigate}
+					{...timing}
+				/>
+			);
+		case "templates":
+			if (source.templates === undefined) return null;
+			return route.templateId === undefined ? (
+				<TemplatesPage
+					source={source.templates}
+					account={account}
+					templateHref={(id) => computePath("templates", base, id)}
+					navigate={navigate}
+					creating={new URLSearchParams(search).has("new")}
+					{...timing}
+				/>
+			) : (
+				<TemplatePage
+					source={source.templates}
+					templateId={route.templateId}
+					accountId={account.id}
+					listHref={computePath("templates", base)}
+					newSandboxHref={(id) => `${computePath("sandboxes", base)}?new&template=${encodeURIComponent(id)}`}
 					navigate={navigate}
 					{...timing}
 				/>
@@ -1002,6 +1170,8 @@ function PageFor({
 			return hosts?.publicUrl === undefined || ownHosts ? null : (
 				<InstallPage source={hosts.publicUrl} narrow={narrow} />
 			);
+		case "images":
+			return source.images === undefined ? null : <ImagesPage source={source.images} {...timing} />;
 		case "device": {
 			const code = new URLSearchParams(search).get("code") ?? undefined;
 			return source.devices === undefined ? null : (
@@ -1173,8 +1343,29 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 					</div>
 				</div>
 			) : (
-				// The sandboxes table itself, with placeholders in its cells: the page that arrives lands on it unmoved.
-				<SandboxesTableSkeleton rows={rows} />
+				// Rows of placeholders in the table's card, until the sandboxes list arrives.
+				<div className="flex flex-col rounded-panel border border-border bg-raised">
+					{Array.from({ length: rows }, (_, row) => (
+						<div
+							// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
+							key={row}
+							className="flex items-center gap-6 border-b border-border px-4 py-4 last:border-b-0"
+						>
+							<div className="min-w-0 flex-1">
+								<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
+							</div>
+							<div className="w-24">
+								<Skeleton width="70%" />
+							</div>
+							<div className="w-40">
+								<Skeleton width="80%" />
+							</div>
+							<div className="w-24">
+								<Skeleton width="60%" />
+							</div>
+						</div>
+					))}
+				</div>
 			)}
 		</div>
 	);

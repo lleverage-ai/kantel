@@ -1,7 +1,7 @@
 // Package fc runs Firecracker microVMs through Firecracker's REST API on its Unix socket.
 //
 // We call the API directly rather than through firecracker-go-sdk: the SDK's last release (v1.0.0, 2022) predates the
-// snapshot API this host relies on (`mem_backend`, `network_overrides`, `vsock_override`, `clock_realtime`).
+// snapshot API this host relies on (`mem_backend`, `network_overrides`, `vsock_override`).
 //
 // Every VM runs with its own directory as the working directory, and its drives and vsock socket are given by
 // relative paths (rootfs.ext4, disk.ext4, v.sock). A snapshot records those relative paths, so any number of clones
@@ -185,6 +185,28 @@ type BootConfig struct {
 	MAC       string
 	// GuestCID is the vsock context ID (3 or more).
 	GuestCID uint32
+	// HotplugMiB, when set, adds a virtio-mem device with that much hotpluggable memory, all of it unplugged at boot
+	// (a multiple of HotplugSlotMiB). PlugMemory plugs it later, on this VM or on one restored from its snapshot.
+	HotplugMiB int
+	// BalloonStatsSeconds, above 0, adds a virtio-balloon device that only reports: no memory taken (a target of 0
+	// MiB, deflate_on_oom in case one is ever set), its guest driver's memory statistics refreshed this often, for
+	// ReadBalloonStats. A snapshot keeps the device, so every VM restored from one made with it reports too.
+	BalloonStatsSeconds int
+	// Drives are attached after rootfs (/dev/vda) and disk (/dev/vdb), in order, as /dev/vdc on: a template builder's
+	// output drive. Their paths are relative to the VM's directory, as the others' are.
+	Drives []Drive
+}
+
+// Drive is an extra block device.
+type Drive struct {
+	ID       string
+	Path     string
+	ReadOnly bool
+}
+
+// balloon is the reporting-only balloon BootConfig.BalloonStatsSeconds asks for.
+func balloon(statsSeconds int) map[string]any {
+	return map[string]any{"amount_mib": 0, "deflate_on_oom": true, "stats_polling_interval_s": statsSeconds}
 }
 
 func bootSource(cfg BootConfig) map[string]any {
@@ -195,23 +217,40 @@ func bootSource(cfg BootConfig) map[string]any {
 	return source
 }
 
+// HotplugSlotMiB is the virtio-mem slot size Firecracker uses by default; the hotpluggable total is a multiple of it.
+const HotplugSlotMiB = 128
+
+// HotplugBlockMiB is the virtio-mem block size: what is plugged is a multiple of it.
+const HotplugBlockMiB = 2
+
 // Boot configures the VM (rootfs.ext4 read-only, disk.ext4 writable, eth0, vsock) and starts it.
 func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
-	steps := []struct {
+	type step struct {
 		path string
 		body any
-	}{
+	}
+	steps := []step{
 		{"/machine-config", map[string]any{"vcpu_count": cfg.VCPUs, "mem_size_mib": cfg.MemoryMiB, "smt": false}},
 		{"/boot-source", bootSource(cfg)},
 		{"/drives/rootfs", map[string]any{"drive_id": "rootfs", "path_on_host": RootfsFile, "is_root_device": true, "is_read_only": true}},
 		{"/drives/disk", map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false}},
-		{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},
-		{"/vsock", map[string]any{"guest_cid": cfg.GuestCID, "uds_path": VsockSocket}},
-		{"/entropy", map[string]any{}},
 	}
+	for _, d := range cfg.Drives {
+		steps = append(steps, step{"/drives/" + d.ID, map[string]any{"drive_id": d.ID, "path_on_host": d.Path, "is_root_device": false, "is_read_only": d.ReadOnly}})
+	}
+	steps = append(steps,
+		step{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},
+		step{"/vsock", map[string]any{"guest_cid": cfg.GuestCID, "uds_path": VsockSocket}},
+		step{"/entropy", map[string]any{}},
+		step{"/hotplug/memory", map[string]any{"total_size_mib": cfg.HotplugMiB, "block_size_mib": HotplugBlockMiB, "slot_size_mib": HotplugSlotMiB}},
+		step{"/balloon", balloon(cfg.BalloonStatsSeconds)},
+	)
 	for _, step := range steps {
 		if step.path == "/network-interfaces/eth0" && cfg.TapDevice == "" {
 			// No network device (the isolate tier's VM talks to the host over vsock only).
+			continue
+		}
+		if step.path == "/hotplug/memory" && cfg.HotplugMiB <= 0 || step.path == "/balloon" && cfg.BalloonStatsSeconds <= 0 {
 			continue
 		}
 		if err := m.call(ctx, http.MethodPut, step.path, step.body); err != nil {
@@ -240,12 +279,19 @@ func (m *Machine) Snapshot(ctx context.Context, statePath, memPath string) error
 }
 
 // Load restores a snapshot into this (fresh) process and resumes it. tap replaces the snapshot's eth0 device.
+//
+// kvmclock resumes where it was when the snapshot was taken (clock_realtime off). Advancing it by the time since
+// (clock_realtime) moves only the guest's scheduler clock, which reads kvmclock, and not its time of day, which reads
+// the TSC: the scheduler then charges the whole gap to the task each vCPU was running when the snapshot was taken,
+// which waits behind every other task until it has caught up. On a 1-vCPU template that task is a kworker, and the
+// guest agent answered 4-20 s late, or not within a restore's wait (TASK-5137). The guest's time of day is set by its
+// agent instead, from the identity every restore sends (microvm and isolate alike).
 func (m *Machine) Load(ctx context.Context, statePath, memPath, tap string) error {
 	body := map[string]any{
 		"snapshot_path":     statePath,
 		"mem_backend":       map[string]string{"backend_type": "File", "backend_path": memPath},
 		"resume_vm":         true,
-		"clock_realtime":    true,
+		"clock_realtime":    false,
 		"vsock_override":    map[string]string{"uds_path": VsockSocket},
 		"track_dirty_pages": false,
 	}
@@ -253,6 +299,90 @@ func (m *Machine) Load(ctx context.Context, statePath, memPath, tap string) erro
 		body["network_overrides"] = []map[string]string{{"iface_id": "eth0", "host_dev_name": tap}}
 	}
 	return m.call(ctx, http.MethodPut, "/snapshot/load", body)
+}
+
+// HotplugStatus is the virtio-mem device's state (GET /hotplug/memory).
+type HotplugStatus struct {
+	TotalMiB     int `json:"total_size_mib"`
+	PluggedMiB   int `json:"plugged_size_mib"`
+	RequestedMiB int `json:"requested_size_mib"`
+}
+
+// PlugMemory asks the guest to plug mib of the VM's hotpluggable memory (a multiple of HotplugBlockMiB). The guest
+// driver plugs it asynchronously: Hotplug says how far it has got.
+func (m *Machine) PlugMemory(ctx context.Context, mib int) error {
+	return m.call(ctx, http.MethodPatch, "/hotplug/memory", map[string]int{"requested_size_mib": mib})
+}
+
+// Hotplug reads the virtio-mem device's state.
+func (m *Machine) Hotplug(ctx context.Context) (HotplugStatus, error) {
+	var out HotplugStatus
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://firecracker/hotplug/memory", nil)
+	if err != nil {
+		return out, err
+	}
+	res, err := m.http.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return out, fmt.Errorf("firecracker GET /hotplug/memory: %d %s", res.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return out, json.NewDecoder(res.Body).Decode(&out)
+}
+
+// RescanDrive tells the guest a drive's file changed size (after the host grew it): Firecracker re-reads it and
+// signals the guest, which sees the new capacity.
+func (m *Machine) RescanDrive(ctx context.Context, id, path string) error {
+	return m.call(ctx, http.MethodPatch, "/drives/"+id, map[string]string{"drive_id": id, "path_on_host": path})
+}
+
+// BalloonStats is what GET /balloon/statistics answers that the host reads: the guest's own count of its memory, as its
+// virtio_balloon driver last reported it (MemTotal, MemAvailable and MemFree, in bytes). A figure the driver hasn't
+// reported yet is nil.
+type BalloonStats struct {
+	TotalMemory     *int64 `json:"total_memory"`
+	AvailableMemory *int64 `json:"available_memory"`
+	FreeMemory      *int64 `json:"free_memory"`
+}
+
+// ReadBalloonStats asks the Firecracker running in dir for its balloon's statistics. It fails for a VM booted without
+// the balloon (or restored from a snapshot made without it): Firecracker answers 400.
+//
+// It opens its own connection to the API socket and closes it, so it needs no Machine (and none of its locks).
+func ReadBalloonStats(ctx context.Context, dir string) (BalloonStats, error) {
+	socket := filepath.Join(dir, APISocket)
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+		DisableKeepAlives: true,
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://firecracker/balloon/statistics", nil)
+	if err != nil {
+		return BalloonStats{}, err
+	}
+	req.Header.Set("accept", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return BalloonStats{}, fmt.Errorf("firecracker GET /balloon/statistics: %w", err)
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	if err != nil {
+		return BalloonStats{}, err
+	}
+	if res.StatusCode >= 300 {
+		return BalloonStats{}, fmt.Errorf("firecracker GET /balloon/statistics: %d %s", res.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var stats BalloonStats
+	if err := json.Unmarshal(raw, &stats); err != nil {
+		return BalloonStats{}, fmt.Errorf("firecracker GET /balloon/statistics: %w", err)
+	}
+	return stats, nil
 }
 
 // Kill ends the process and waits for it.
@@ -277,7 +407,11 @@ func (m *Machine) Shutdown(ctx context.Context, grace time.Duration) {
 // PidFile is where Launch notes the process, so a VM left behind by a crashed daemon can be found.
 const PidFile = "firecracker.pid"
 
-// KillLeftover ends the Firecracker process a crashed daemon left running in dir, if there is one.
+// leftoverExit is how long KillLeftover waits for a killed process to have gone.
+const leftoverExit = 10 * time.Second
+
+// KillLeftover ends the Firecracker process a crashed daemon left running in dir, if there is one, and waits (up to
+// leftoverExit) until it has exited, so its memory is free when it returns.
 func KillLeftover(dir string) {
 	raw, err := os.ReadFile(filepath.Join(dir, PidFile))
 	if err != nil {
@@ -288,11 +422,50 @@ func KillLeftover(dir string) {
 		return
 	}
 	// Only if that PID is still a process working in dir (PIDs are reused).
-	cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
-	if err != nil || strings.TrimSuffix(cwd, " (deleted)") != dir {
+	if !workingIn(pid, dir) {
 		return
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
+	for deadline := time.Now().Add(leftoverExit); !exited(pid) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// workingIn says process pid's working directory is dir. They are compared as directories (device and inode), not
+// as paths: /proc gives the working directory's resolved path, so a dir reached through a symlink (the host's state
+// directory, say) never equals it as text. A working directory since removed (" (deleted)") is compared by path.
+func workingIn(pid int, dir string) bool {
+	proc := fmt.Sprintf("/proc/%d/cwd", pid)
+	if cwd, err := os.Stat(proc); err == nil {
+		if want, err := os.Stat(dir); err == nil && os.SameFile(cwd, want) {
+			return true
+		}
+	}
+	cwd, err := os.Readlink(proc)
+	if err != nil {
+		return false
+	}
+	cwd = strings.TrimSuffix(cwd, " (deleted)")
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		if abs, err := filepath.Abs(resolved); err == nil && cwd == abs {
+			return true
+		}
+	}
+	return cwd == filepath.Clean(dir)
+}
+
+// exited says a process is gone, or a zombie (its memory freed, waiting for its parent to reap it).
+func exited(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return true
+	}
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return true
+	}
+	// pid (comm) state ...: comm may hold spaces and parentheses, so the state follows the last ")".
+	_, rest, ok := strings.Cut(string(raw[bytes.LastIndexByte(raw, ')')+1:]), " ")
+	return ok && strings.HasPrefix(rest, "Z")
 }
 
 // Fingerprint identifies the files a snapshot was made with (Firecracker, the kernel, the root filesystem): a

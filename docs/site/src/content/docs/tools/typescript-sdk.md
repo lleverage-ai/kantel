@@ -91,9 +91,15 @@ The per-call options are:
 | Option | What it does |
 | --- | --- |
 | `signal` | An `AbortSignal` to cancel the call |
-| `idempotencyKey` | Sent as `Idempotency-Key` on the calls that take one (creating and forking sandboxes, running commands), so a retry with the same key does nothing twice |
+| `idempotencyKey` | Sent as `Idempotency-Key` on the calls that take one (their docs say so; [Safe retries](/api/reference/#safe-retries) lists them), so a retry with the same key does nothing twice. A `409` whose `details.idempotencyKey` is `"held"` means the first call didn't finish: check, then use a new key |
 | `requestId` | Sent as `kantel-request-id`, which ties the call to its entries in Kantel's audit trail |
 | `headers` | More headers for this call |
+
+To send a key with every call that takes one, give the client a maker. It makes one key per call, so a `fetch` of your own that retries the request sends the same key:
+
+```ts
+const kantel = createKantelClient({ baseUrl, token, idempotencyKey: () => crypto.randomUUID() });
+```
 
 ## Errors
 
@@ -111,7 +117,7 @@ try {
 }
 ```
 
-The codes are listed under [ErrorCode](/api/reference/types/#errorcode). The ones to plan for are `conflict` (a sandbox in the wrong state, such as running a command in a stopped one), `exhausted` (a limit, or every host full: wait and try again) and `unavailable` (no host can take the call now). A call that never reaches Kantel, such as when the address is wrong, rejects with `fetch`'s own error instead.
+The codes are listed under [ErrorCode](/api/reference/types/#errorcode). The ones to plan for are `conflict` (a sandbox in the wrong state, such as running a command in a stopped one), `exhausted` (a limit, or every host full: wait and try again) and `unavailable` (no host can take the call now). When a sandbox can't be placed, `error.reason` says why, such as `no_host_for_type` (one found only as it boots, such as `insufficient_capacity`, is in the sandbox's `placementReason` instead); see [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed). A call that never reaches Kantel, such as when the address is wrong, rejects with `fetch`'s own error instead.
 
 ## Types
 

@@ -40,32 +40,60 @@ type Server struct {
 	Injected bool
 	// Init is PID 1: "systemd" (the image's) or "kantel" (kantel-guest init's own, for an image without systemd).
 	Init string
+	// Mounts are the sandbox's read-only bucket mounts (POST /mounts); nil refuses them.
+	Mounts *Mounts
 
 	sshOnce    sync.Once
 	ssh        *SSHServer
 	expectOnce sync.Once
 	expect     []string
+	demandOnce sync.Once
+	demand     *onDemand
 
 	mu       sync.Mutex
 	identity *Identity
 	// upstream is the host proxy LocalProxyAddr forwards to (a string, host:port or "").
 	upstream atomic.Value
+	// commands are those run with an ID (commands.go).
+	commands commands
 }
 
 func (s *Server) Handler() http.Handler {
+	// Read at start, so a service left running with nothing connected (by an agent before this one) is stopped too.
+	s.onDemand()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /capabilities", s.capabilities)
+	mux.HandleFunc("GET /stats", s.stats)
 	mux.HandleFunc("POST /identity", s.setIdentity)
 	mux.HandleFunc("POST /exec", s.exec)
+	mux.HandleFunc("POST /exec/start", s.startCommand)
+	mux.HandleFunc("GET /exec/{id}", s.commandStatus)
+	mux.HandleFunc("POST /exec/{id}/kill", s.killCommand)
 	mux.HandleFunc("POST /sync", s.sync)
+	mux.HandleFunc("POST /disk/grow", s.growDisk)
 	mux.HandleFunc("GET /files", s.readFile)
 	mux.HandleFunc("PUT /files", s.writeFile)
 	mux.HandleFunc("DELETE /files", s.deleteFile)
 	mux.HandleFunc("GET /files/list", s.listFiles)
 	mux.HandleFunc("POST /files/extract", s.extractArchive)
 	mux.HandleFunc("GET /ports/{port}", s.port)
+	mux.HandleFunc("POST /mounts", s.mounts)
 	return mux
+}
+
+// mounts makes the guest's read-only mounts the ones asked for ([]MountSpec), answering []MountResult.
+func (s *Server) mounts(w http.ResponseWriter, r *http.Request) {
+	if s.Mounts == nil {
+		fail(w, http.StatusNotImplemented, errors.New("this guest agent has no mounts"))
+		return
+	}
+	var specs []MountSpec
+	if err := json.NewDecoder(r.Body).Decode(&specs); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, s.Mounts.Apply(r.Context(), specs))
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -195,7 +223,8 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	if err := s.applyIdentity(&id); err != nil {
+	steps := map[string]float64{}
+	if err := s.applyIdentity(&id, steps); err != nil {
 		fail(w, 500, err)
 		return
 	}
@@ -203,10 +232,18 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 	s.identity = &id
 	s.mu.Unlock()
 	s.upstream.Store(proxyUpstream(id.ProxyEnv))
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "stepsMs": steps})
 }
 
-func (s *Server) applyIdentity(id *Identity) error {
+// applyIdentity makes the guest the identity's machine, recording in steps how long each part took (ms).
+func (s *Server) applyIdentity(id *Identity, steps map[string]float64) error {
+	last := time.Now()
+	step := func(name string) {
+		now := time.Now()
+		steps[name] += float64(now.Sub(last).Microseconds()) / 1000
+		last = now
+	}
+	defer step("rest")
 	if s.Injected {
 		ensureAPIHome()
 	}
@@ -219,27 +256,26 @@ func (s *Server) applyIdentity(id *Identity) error {
 		tv := syscall.NsecToTimeval(id.UnixTimeMs * int64(time.Millisecond))
 		_ = syscall.Settimeofday(&tv)
 	}
+	step("entropy+clock")
 	if id.Hostname != "" {
 		_ = syscall.Sethostname([]byte(id.Hostname))
 		_ = os.WriteFile("/etc/hostname", []byte(id.Hostname+"\n"), 0o644)
 		_ = os.WriteFile("/etc/hosts", []byte(fmt.Sprintf("127.0.0.1 localhost\n127.0.1.1 %s\n::1 localhost ip6-localhost ip6-loopback\n", id.Hostname)), 0o644)
 	}
-	if id.Address != "" && s.Injected {
-		// Any image: no ip(8) to count on (debian:trixie and busybox have none), so netlink directly.
+	if id.MAC != "" {
+		// A restore keeps its template's MAC address: every clone would share one. virtio-net takes a new one while
+		// up (Firecracker's TAP doesn't filter on it).
+		if err := SetMAC("eth0", id.MAC); err != nil {
+			return fmt.Errorf("eth0: %w", err)
+		}
+	}
+	if id.Address != "" {
+		// Over rtnetlink in this process, for any image (debian:trixie and busybox have no ip(8)), and because an ip
+		// process costs tens of milliseconds in a just-restored VM.
 		if err := ConfigureInterface("eth0", id.Address, id.Gateway); err != nil {
 			return fmt.Errorf("eth0: %w", err)
 		}
-	} else if id.Address != "" {
-		// One ip process for the lot: each process costs milliseconds in a just-restored VM.
-		batch := "link set eth0 up\naddr flush dev eth0\naddr add " + id.Address + " dev eth0\n"
-		if id.Gateway != "" {
-			batch += "route replace default via " + id.Gateway + "\n"
-		}
-		cmd := exec.Command("ip", "-batch", "-")
-		cmd.Stdin = strings.NewReader(batch)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("ip: %v: %s", err, strings.TrimSpace(string(out)))
-		}
+		step("ip")
 	}
 	if len(id.DNS) > 0 {
 		var b strings.Builder
@@ -273,6 +309,7 @@ func (s *Server) applyIdentity(id *Identity) error {
 			// An image without ca-certificates' tool (busybox): the bundle programs read, with the CA added once.
 			trustCA(id.CACert)
 		}
+		step("ca")
 	}
 	if id.Fresh {
 		machineID := make([]byte, 16)
@@ -285,6 +322,7 @@ func (s *Server) applyIdentity(id *Identity) error {
 		if err := writeHostKey("/etc/ssh/ssh_host_ed25519_key", id.Hostname); err != nil {
 			return err
 		}
+		step("hostkey")
 		// sshd fails to start with no host keys (a template, a fresh clone), so restart rather than try-restart, which
 		// leaves a failed unit alone. An injected agent is the SSH server, and reads the key per connection.
 		if !s.Injected {
@@ -292,6 +330,7 @@ func (s *Server) applyIdentity(id *Identity) error {
 				return err
 			}
 		}
+		step("sshd")
 	}
 	if id.SSHAuthorizedKeys != nil {
 		home, uid, gid := "/home/user", 1000, 1000
@@ -522,8 +561,8 @@ func (s *Server) buildCommand(ctx context.Context, req *ExecRequest) (*exec.Cmd,
 		attr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}
 	}
 	cmd.SysProcAttr = attr
-	// Kill the whole process group on timeout, not just bash.
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// Kill the whole process group on timeout or a kill, not just bash.
+	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }
 	cmd.WaitDelay = 2 * time.Second
 	if req.Stdin != "" {
 		raw, err := base64.StdEncoding.DecodeString(req.Stdin)
@@ -557,6 +596,18 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	}
 	b.buf = append(b.buf, p...)
 	return len(p), nil
+}
+
+func (b *cappedBuffer) bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf
+}
+
+func (b *cappedBuffer) cut() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
 }
 
 func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
@@ -595,6 +646,9 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
+	// The rest of the body read, so the server notices the host closing the request (its context ends, and with it
+	// the command): a host stops a command of an older guest, which has no kill route, that way.
+	_, _ = io.Copy(io.Discard, r.Body)
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	cmd, err := s.buildCommand(ctx, &req)
@@ -602,8 +656,34 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
+	// With an ID it can be killed (POST /exec/{id}/kill) while it runs.
+	var run *command
+	if req.ID != "" {
+		if !validCommandID(req.ID) {
+			fail(w, 400, errors.New("a command's id is letters, digits, _, - and ."))
+			return
+		}
+		run = &command{cancel: cancel, done: make(chan struct{})}
+		if !s.commands.add(req.ID, run) {
+			fail(w, 409, errors.New("a command with this id is already known"))
+			return
+		}
+		defer func() {
+			if run != nil {
+				s.commands.end(req.ID, run, ExecResult{})
+			}
+		}()
+	}
+	killed := func() bool {
+		if run == nil {
+			return false
+		}
+		s.commands.mu.Lock()
+		defer s.commands.mu.Unlock()
+		return run.killed
+	}
 	if req.Stream {
-		s.execStream(ctx, w, cmd)
+		s.execStream(ctx, w, cmd, killed)
 		return
 	}
 	max := req.MaxOutputBytes
@@ -615,7 +695,9 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	err = cmd.Run()
 	result := ExecResult{Stdout: string(stdout.buf), Stderr: string(stderr.buf), Truncated: stdout.truncated || stderr.truncated, DurationMs: time.Since(started).Milliseconds()}
 	result.ExitCode = exitCode(err)
-	if ctx.Err() == context.DeadlineExceeded {
+	if killed() {
+		result.ExitCode = 137
+	} else if ctx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
 		result.ExitCode = 124
 	} else if err != nil && result.ExitCode == -1 {
@@ -671,7 +753,7 @@ func (p *streamPipe) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd) {
+func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd, killed func() bool) {
 	w.Header().Set("content-type", "application/x-ndjson")
 	w.WriteHeader(200)
 	flusher, _ := w.(http.Flusher)
@@ -680,6 +762,11 @@ func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exe
 	cmd.Stderr = &streamPipe{events: events, stderr: true}
 	err := cmd.Run()
 	code := exitCode(err)
+	if killed() {
+		code = 137
+		events.emit(ExecEvent{Exit: &code})
+		return
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		code = 124
 		events.emit(ExecEvent{Exit: &code, TimedOut: true})
@@ -901,11 +988,15 @@ func (s *Server) port(w http.ResponseWriter, r *http.Request) {
 		s.sshServer().ServeConn(&bufferedConn{Conn: conn, r: buffered.Reader})
 		return
 	}
-	target, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
+	// An on-demand port's service (the browser's stream) is started for its first connection (OnDemandFile).
+	target, done, err := s.onDemand().dial(r.Context(), port, func() (net.Conn, error) {
+		return net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
+	})
 	if err != nil {
 		fail(w, 502, err)
 		return
 	}
+	defer done()
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		target.Close()
@@ -919,6 +1010,12 @@ func (s *Server) port(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + PortUpgrade + "\r\n\r\n"))
 	Pipe(conn, buffered, target)
+}
+
+// onDemand is the image's on-demand services (OnDemandFile), read once.
+func (s *Server) onDemand() *onDemand {
+	s.demandOnce.Do(func() { s.demand = loadOnDemand() })
+	return s.demand
 }
 
 // bufferedConn reads what the HTTP server had already buffered before the rest of the connection.

@@ -2,6 +2,9 @@
 Description=Kantel desktop stream: Selkies (web client and WebSocket stream) on 127.0.0.1:6080
 After=kantel-desktop.service
 Wants=kantel-desktop.service
+# Restarted with the desktop: Selkies keeps the display's size and DPI as it last set them, so a new X server would
+# otherwise stay at 1920x1080 and 96 DPI however the viewer asks; its viewers reconnect and ask again.
+PartOf=kantel-desktop.service
 
 [Service]
 User=user

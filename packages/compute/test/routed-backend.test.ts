@@ -1,7 +1,15 @@
 // The routed backend: each call goes to the backend that holds the sandbox or snapshot, and gets the service's
 // eligible hosts narrowed to that backend's own, so the service's constraints (type, labels, owner) survive.
 import { describe, expect, it } from "vitest";
-import type { BackendCapabilities, BackendHost, SandboxBackend } from "../src/backend.ts";
+import type {
+	BackendCapabilities,
+	BackendHost,
+	BuiltTemplate,
+	SandboxBackend,
+	TemplateBuildSpec,
+	TemplateRuntime,
+	TemplateSnapshotBytes,
+} from "../src/backend.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
@@ -94,6 +102,14 @@ describe("createRoutedBackend", () => {
 		expect(primary.seen.map((call) => call.eligible)).toEqual([["host_own"], ["host_own"]]);
 	});
 
+	it("asks the backend that holds a sandbox whether a rebase can land, among its own hosts", async () => {
+		const { routed, primary, fallback } = setup();
+		await routed.prepareRebase?.("sbx_p1", { eligibleHosts: ["host_own", "host_stub"], rebaseTo: "v2" });
+		await routed.prepareRebase?.("sbx_f1", { eligibleHosts: ["host_own", "host_stub"] });
+		expect(primary.seen).toEqual([{ method: "prepareRebase", eligible: ["host_own"] }]);
+		expect(fallback.seen).toEqual([{ method: "prepareRebase", eligible: ["host_stub"] }]);
+	});
+
 	it("refuses a sandbox neither holds rather than ask the fallback for it, and places it again only with create", async () => {
 		const primary = fake([host("host_own", "acc_a")]);
 		const fallback = fake([host("host_stub")]);
@@ -112,7 +128,11 @@ describe("createRoutedBackend", () => {
 			routed.recover("sbx_lost", { env: {}, eligibleHosts: eligible }),
 			routed.exec("sbx_lost", { command: "true" }),
 		]) {
-			await expect(call).rejects.toMatchObject({ code: "unavailable", message: NOT_HELD });
+			await expect(call).rejects.toMatchObject({
+				code: "unavailable",
+				message: NOT_HELD,
+				details: { reason: "host_unavailable" },
+			});
 		}
 		expect([...primary.seen, ...fallback.seen]).toEqual([]);
 		// What the fallback holds still goes there, a destroy of one neither holds too (it has nothing to destroy).
@@ -145,5 +165,86 @@ describe("createRoutedBackend", () => {
 		await expect(stub.recover("sbx_f1", { env: {}, eligibleHosts: ["host_own"] })).rejects.toMatchObject({
 			message: `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now; it may use host_own`,
 		});
+	});
+
+	it("puts a sandbox made from a template snapshot on the backend holding the snapshot", async () => {
+		const { routed, primary, fallback } = setup();
+		const template = { baseImage: "kantel/sandbox", baseDigest: "" };
+		await routed.create({
+			...spec("sbx_t1", ["host_own", "host_stub"]),
+			template: { ...template, snapshot: "host_own/tsn_1" },
+		});
+		await routed.create({ ...spec("sbx_t2", ["host_stub"]), template: { ...template, snapshot: "tpl-snap:tsn_2" } });
+		expect(primary.seen).toEqual([{ method: "create", eligible: ["host_own"] }]);
+		expect(fallback.seen).toEqual([{ method: "create", eligible: ["host_stub"] }]);
+	});
+});
+
+describe("createRoutedBackend's templates", () => {
+	/** A backend with `hosts` and, unless `templates` is false, templates on each of them; it records its template calls. */
+	function templated(hosts: BackendHost[], templates = true) {
+		const calls: string[] = [];
+		const backend = {
+			capabilities: async (): Promise<BackendCapabilities> => ({ types: ["microvm"], sizes: [], hosts }),
+			...(templates
+				? {
+						templateRuntimes: async (): Promise<TemplateRuntime[]> =>
+							hosts.map((each) => ({ hostId: each.id, kernel: "6.1", firecracker: "v1.17.0" })),
+						buildTemplate: async (spec: TemplateBuildSpec): Promise<BuiltTemplate> => {
+							calls.push(`build ${spec.hostId}`);
+							return { ref: `${spec.hostId}/${spec.snapshotId}`, hostId: spec.hostId, sizeBytes: 1 };
+						},
+						deleteTemplateSnapshot: async (bytes: TemplateSnapshotBytes) => {
+							calls.push(`delete ${bytes.ref ?? `${bytes.hostId} ${bytes.snapshotId}`}`);
+						},
+					}
+				: {}),
+		} as unknown as SandboxBackend;
+		return { backend, calls };
+	}
+	const buildSpec = (hostId: string): TemplateBuildSpec => ({
+		snapshotId: "tsn_1",
+		accountId: "acc_a",
+		templateId: "tpl_1",
+		version: 1,
+		baseImage: "kantel/sandbox",
+		baseDigest: "sha256:a",
+		shape: { vcpus: 2, memoryMb: 2048 },
+		env: {},
+		keyHash: "k",
+		hostId,
+	});
+	const route = (primary: SandboxBackend, fallback: SandboxBackend) =>
+		createRoutedBackend({
+			primary,
+			fallback,
+			holds: async () => false,
+			holdsSnapshot: (ref) => ref.startsWith("host_"),
+		});
+
+	it("lists both backends' runtimes, and sends each build and delete (by ref, or by ID) to the backend of its host", async () => {
+		const primary = templated([host("host_own", "acc_a")]);
+		const fallback = templated([host("host_stub")]);
+		const routed = route(primary.backend, fallback.backend);
+		expect((await routed.templateRuntimes?.())?.map((runtime) => runtime.hostId)).toEqual(["host_own", "host_stub"]);
+		await routed.buildTemplate?.(buildSpec("host_own"));
+		await routed.buildTemplate?.(buildSpec("host_stub"));
+		await routed.deleteTemplateSnapshot?.({ snapshotId: "tsn_1", hostId: "host_own", ref: "host_own/tsn_1" });
+		await routed.deleteTemplateSnapshot?.({ snapshotId: "tsn_1", hostId: "host_stub", ref: "tpl-snap:tsn_1" });
+		// A build that never answered has no ref: its bytes are deleted by ID on the host it was built on.
+		await routed.deleteTemplateSnapshot?.({ snapshotId: "tsn_2", hostId: "host_own" });
+		await routed.deleteTemplateSnapshot?.({ snapshotId: "tsn_3", hostId: "host_stub" });
+		expect(primary.calls).toEqual(["build host_own", "delete host_own/tsn_1", "delete host_own tsn_2"]);
+		expect(fallback.calls).toEqual(["build host_stub", "delete tpl-snap:tsn_1", "delete host_stub tsn_3"]);
+	});
+
+	it("has templates when either backend has, and none when neither has", async () => {
+		const bare = route(templated([host("host_own")], false).backend, templated([host("host_stub")], false).backend);
+		expect(bare.templateRuntimes).toBeUndefined();
+		expect(bare.buildTemplate).toBeUndefined();
+		expect(bare.deleteTemplateSnapshot).toBeUndefined();
+		const half = route(templated([host("host_own")], false).backend, templated([host("host_stub")]).backend);
+		expect((await half.templateRuntimes?.())?.map((runtime) => runtime.hostId)).toEqual(["host_stub"]);
+		await expect(half.buildTemplate?.(buildSpec("host_own"))).rejects.toMatchObject({ code: "not_supported" });
 	});
 });

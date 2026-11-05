@@ -28,6 +28,14 @@
 	--kt-status-approval-line: color-mix(in srgb, var(--kt-status-approval) 35%, transparent);
 	--kt-status-error-line: color-mix(in srgb, var(--kt-status-error) 35%, transparent);
 
+	/* A sandbox's metrics on one chart (its row's sparkline, its metrics dialog): a line each for CPU, memory, disk and
+	   IO, from the status colours, which each theme already fits to its canvas. Sky, indigo, amber, emerald: four that
+	   stay apart in both themes. */
+	--kt-chart-cpu: var(--kt-status-working);
+	--kt-chart-memory: var(--kt-status-waiting);
+	--kt-chart-disk: var(--kt-status-approval);
+	--kt-chart-io: var(--kt-status-done);
+
 	/* Diff: the done and failed colours, an eighth of the way to the text: they sit on the code well, a shade off the
 	   canvas the status colours are fitted to. */
 	--kt-diff-add: color-mix(in srgb, var(--kt-status-done) 88%, var(--kt-text));
@@ -171,6 +179,7 @@
 	--kt-ring: 2px;
 	--kt-content-width: 46rem; /* the transcript and composer column, as T3 Code's chat-content-max-width */
 	--kt-card-width: 560px;
+	--kt-dialog-wide-width: 52rem; /* a dialog that shows a chart and a table: a sandbox's metrics */
 	--kt-presented-image-size: 336px; /* an image's tile in the transcript, alone: the widest it shows */
 	--kt-presented-image-size-many: 176px; /* the same, two or more side by side: four to a row in the content width */
 	--kt-sidebar-width: 300px;

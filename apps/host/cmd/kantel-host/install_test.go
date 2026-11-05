@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,19 @@ func TestKeptFilesAcrossInstalls(t *testing.T) {
 	}
 }
 
-// fetchImages fetches none of the operator's own files, even one at the very path the installer would use, and
+// fetchImages plans the images step alone, and does it.
+func fetchImages(cfg agent.Config, source string, kvm bool, keep kept) error {
+	in := thisMachine()
+	in.out = io.Discard
+	p := &planner{in: in, dirs: map[string]bool{}}
+	p.step("Fetch Firecracker and the sandbox images")
+	if err := p.images(cfg, source, kvm, keep); err != nil {
+		return err
+	}
+	return in.doPlan(&p.plan)
+}
+
+// The images step fetches none of the operator's own files, even one at the very path the installer would use, and
 // still fetches its own.
 func TestFetchImagesLeavesKeptFilesAlone(t *testing.T) {
 	source, root := t.TempDir(), t.TempDir()

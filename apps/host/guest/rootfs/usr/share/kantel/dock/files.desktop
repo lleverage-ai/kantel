@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Comment=PCManFM, the file manager
+Exec=pcmanfm
+Icon=/usr/share/kantel/icons/files.svg
+Terminal=false
+NoDisplay=true

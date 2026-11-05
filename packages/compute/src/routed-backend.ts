@@ -12,8 +12,11 @@
  * type, the labels), and the backend that answers gets the ones among them that are its own. A sandbox neither holds
  * (its create failed, say) isn't sent to `fallback` to be answered as if it were there: it is refused (`NOT_HELD`), and
  * the service makes it again with `create`, which places it as any new sandbox.
+ *
+ * Templates are each backend's own too: their runtimes are both backends' hosts', a build goes to the backend whose host
+ * it names, and a template snapshot is answered by the backend its reference is of (`holdsSnapshot`).
  */
-import { KantelError } from "@kantel/contracts";
+import { KantelError, placementError } from "@kantel/contracts";
 import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
 
 export interface RoutedBackendOptions {
@@ -36,6 +39,14 @@ export const NOT_HELD =
 	"No backend holds this sandbox: it isn't on one of the account's own hosts or on the deployment's shared hosts " +
 	"(it was never placed, if its create failed)";
 
+/**
+ * What a create made again is refused with when `primary` holds the sandbox but can't take it now: it stays placed on
+ * one of the account's own hosts until that host says what it has, or the sandbox is deleted.
+ */
+export const HELD_ELSEWHERE =
+	"It is placed on one of the account's own hosts, none of which may take it now; it stays there until that host " +
+	"says whether it has it, or until it is deleted";
+
 export function createRoutedBackend(options: RoutedBackendOptions): SandboxBackend {
 	const { primary, fallback, fallbackHolds } = options;
 	/** Sandboxes `fallback` made here whose placement `fallbackHolds` doesn't see yet; each goes once it does. */
@@ -52,7 +63,7 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return fallback;
 		}
 		if (madeOnFallback.has(sandboxId)) return fallback;
-		throw new KantelError("unavailable", NOT_HELD);
+		throw placementError("unavailable", "host_unavailable", NOT_HELD);
 	};
 	const forRef = (ref: string): SandboxBackend => (options.holdsSnapshot(ref) ? primary : fallback);
 
@@ -67,18 +78,20 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		const own = new Set((await backend.capabilities()).hosts.map((host) => host.id));
 		const eligibleHosts = input.eligibleHosts.filter((id) => own.has(id));
 		if (backend === fallback && eligibleHosts.length === 0 && input.eligibleHosts.length > 0) {
-			throw new KantelError(
+			throw placementError(
 				"unavailable",
+				"host_unavailable",
 				`It is on the deployment's shared hosts, none of which it may use now; it may use ${input.eligibleHosts.join(", ")}`,
 			);
 		}
 		return { ...input, eligibleHosts };
 	}
 
-	/** Where a new sandbox goes: the backend its snapshot is on, else `primary` for any of its hosts. */
+	/** Where a new sandbox goes: the backend its snapshot (or its template's) is on, else `primary` for any of its hosts. */
 	async function placeNew(spec: SandboxSpec): Promise<{ backend: SandboxBackend; spec: SandboxSpec }> {
-		if (spec.fromSnapshot !== undefined) {
-			const backend = forRef(spec.fromSnapshot);
+		const snapshot = spec.fromSnapshot ?? spec.template?.snapshot;
+		if (snapshot !== undefined) {
+			const backend = forRef(snapshot);
 			return { backend, spec: await affine(backend, spec) };
 		}
 		const own = new Set((await primary.capabilities()).hosts.map((host) => host.id));
@@ -87,7 +100,54 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		return { backend: fallback, spec: { ...spec, eligibleHosts: spec.eligibleHosts.filter((id) => !own.has(id)) } };
 	}
 
+	/** The backend a host is on: `primary` when it is one of its hosts, else `fallback`. */
+	const forHost = async (hostId: string): Promise<SandboxBackend> =>
+		(await primary.capabilities()).hosts.some((host) => host.id === hostId) ? primary : fallback;
+
+	const hasTemplates = (backend: SandboxBackend) =>
+		backend.templateRuntimes !== undefined &&
+		backend.buildTemplate !== undefined &&
+		backend.deleteTemplateSnapshot !== undefined;
+
+	/** Template calls, when either backend has templates: absent, the routed backend has none either. */
+	const templates: Pick<SandboxBackend, "templateRuntimes" | "buildTemplate" | "deleteTemplateSnapshot"> =
+		hasTemplates(primary) || hasTemplates(fallback)
+			? {
+					async templateRuntimes() {
+						const [first, second] = await Promise.all([
+							hasTemplates(primary) ? primary.templateRuntimes?.() : [],
+							hasTemplates(fallback) ? fallback.templateRuntimes?.() : [],
+						]);
+						return [...(first ?? []), ...(second ?? [])];
+					},
+					async buildTemplate(spec) {
+						const backend = await forHost(spec.hostId);
+						if (!hasTemplates(backend) || backend.buildTemplate === undefined) {
+							throw new KantelError("not_supported", `The host ${spec.hostId} can't build templates`);
+						}
+						return backend.buildTemplate(spec);
+					},
+					async deleteTemplateSnapshot(bytes) {
+						// Bytes its build never answered for are on the host it was built on.
+						const backend = bytes.ref === undefined ? await forHost(bytes.hostId) : forRef(bytes.ref);
+						await backend.deleteTemplateSnapshot?.(bytes);
+					},
+				}
+			: {};
+
+	/** A create made again for a sandbox `primary` holds: on `primary`'s eligible hosts, refused when it has none now. */
+	async function heldBy(spec: SandboxSpec): Promise<SandboxSpec> {
+		if (spec.fromSnapshot !== undefined && !options.holdsSnapshot(spec.fromSnapshot)) {
+			throw new KantelError("conflict", HELD_ELSEWHERE);
+		}
+		const own = new Set((await primary.capabilities()).hosts.map((host) => host.id));
+		const eligibleHosts = spec.eligibleHosts.filter((id) => own.has(id));
+		if (eligibleHosts.length === 0) throw placementError("unavailable", "host_unavailable", HELD_ELSEWHERE);
+		return { ...spec, eligibleHosts };
+	}
+
 	return {
+		...templates,
 		async capabilities(): Promise<BackendCapabilities> {
 			const [first, second] = await Promise.all([primary.capabilities(), fallback.capabilities()]);
 			const sizes = new Map<string, BackendSize>();
@@ -99,6 +159,10 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			};
 		},
 		async create(spec): Promise<Placement> {
+			// One `primary` holds already is a create made again (its first went unanswered, and is kept placed there until
+			// its host says): it stays with `primary`, whose own checks decide it (refused while unsettled or there, made
+			// again once lost). It never goes to `fallback` too, which would leave two backends holding one ID.
+			if (await options.holds(spec.sandboxId)) return primary.create(await heldBy(spec));
 			const placed = await placeNew(spec);
 			const placement = await placed.backend.create(placed.spec);
 			made(placed.backend, [spec.sandboxId]);
@@ -107,6 +171,11 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async start(id, boot) {
 			const backend = await on(id);
 			return backend.start(id, await affine(backend, boot));
+		},
+		async prepareRebase(id, how) {
+			// The backend that holds it checks, among its own hosts; one with no versioned images has nothing to check.
+			const backend = await on(id);
+			return await backend.prepareRebase?.(id, await affine(backend, how));
 		},
 		stop: async (id, how) => (await on(id)).stop(id, how),
 		async resume(id, boot) {
@@ -135,6 +204,20 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return ((await options.holds(id)) ? primary : fallback).destroy(id);
 		},
 		exec: async (id, request) => (await on(id)).exec(id, request),
+		async killCommand(id, commandId) {
+			const backend = await on(id);
+			if (backend.killCommand === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't stop a command");
+			}
+			await backend.killCommand(id, commandId);
+		},
+		async commandResult(id, commandId) {
+			const backend = await on(id);
+			if (backend.commandResult === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend keeps no command results");
+			}
+			return backend.commandResult(id, commandId);
+		},
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
 		writeFile: async (id, path, content, mode) => (await on(id)).writeFile(id, path, content, mode),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),
@@ -165,6 +248,14 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 							fallback.usageReports?.(since, until) ?? [],
 						]);
 						return [...first, ...second].sort((a, b) => a.at - b.at);
+					},
+				}),
+		...(primary.placedOn === undefined && fallback.placedOn === undefined
+			? {}
+			: {
+					// Where the backend holding it placed it, even while it boots there.
+					async placedOn(id: string) {
+						return ((await options.holds(id)) ? primary : fallback).placedOn?.(id);
 					},
 				}),
 		async updateEgress(id, egress, revision) {

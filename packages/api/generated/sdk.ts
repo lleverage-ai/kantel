@@ -92,7 +92,7 @@ export interface ApiKeyList {
 /** A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`. */
 export type ApiKeyPreset = "read-only" | "agent" | "ci" | "admin";
 
-/** What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only. */
+/** What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments, templates and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments, templates and sandboxes' grants. `hosts:admin`: the deployment's hosts and template bases, for a super-admin's key only. */
 export type ApiKeyScope =
 	| "sandboxes:read"
 	| "sandboxes:write"
@@ -116,9 +116,121 @@ export interface ApproveDeviceLoginBody {
 	readonly expiresInDays?: number;
 }
 
+export interface BaseImage {
+	/** `sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images. */
+	readonly name: string;
+	/** Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's. */
+	readonly repository: string;
+	/** The channel `latest` is of. */
+	readonly channel: "stable";
+	/** One build of a base image. */
+	readonly latest?: BaseImageVersion;
+	/** Its newest versions, newest first, at most 10. */
+	readonly versions: readonly BaseImageVersion[];
+}
+
+/** One vulnerability a scan found in an image. */
+export interface BaseImageFinding {
+	/** `CVE-2026-1234`, or the scanner's own ID where there is no CVE. */
+	readonly id: string;
+	readonly severity: ScanSeverity;
+	/** The package it is in, such as `openssl`. */
+	readonly package: string;
+	/** The package's version in the image. */
+	readonly installed: string;
+	/** The version that fixes it, where one is out. */
+	readonly fixed?: string;
+	readonly title?: string;
+}
+
+/** Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what their CVE scans found. */
+export interface BaseImageList {
+	readonly images: readonly BaseImage[];
+	/** Templates and their bases; empty until templates exist. */
+	readonly templates: readonly BaseImageTemplate[];
+	/** Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`). */
+	readonly indexUrl: string;
+	/** When the index was last written, ISO 8601. */
+	readonly generatedAt?: string;
+	/** Why the index couldn't be read; `images` is empty then. It is tried again soon. */
+	readonly error?: string;
+}
+
+/** What the newest CVE scan of a version found. */
+export interface BaseImageScan {
+	/** What scanned it, such as `trivy 0.68.1`. */
+	readonly scanner: string;
+	/** When, ISO 8601. */
+	readonly scannedAt: string;
+	/** Every finding, by severity. */
+	readonly counts: BaseImageScanCounts;
+	/** Critical and High findings with a fix out: what makes Kantel rebuild the image at once. */
+	readonly fixable: BaseImageScanFixable;
+	/** The Critical and High findings, most severe first, at most 50. */
+	readonly findings: readonly BaseImageFinding[];
+}
+
+/** Every finding, by severity. */
+export interface BaseImageScanCounts {
+	/** Critical findings. */
+	readonly critical: number;
+	/** High findings. */
+	readonly high: number;
+	/** Medium findings. */
+	readonly medium: number;
+	/** Low findings. */
+	readonly low: number;
+	/** Findings of no known severity. */
+	readonly unknown: number;
+}
+
+/** Critical and High findings with a fix out: what makes Kantel rebuild the image at once. */
+export interface BaseImageScanFixable {
+	/** Critical findings with a fix out. */
+	readonly critical: number;
+	/** High findings with a fix out. */
+	readonly high: number;
+}
+
+/** A template and the base it is built on. */
+export interface BaseImageTemplate {
+	readonly id: string;
+	readonly name: string;
+	/** The base image it is built on. */
+	readonly image: string;
+	/** The channel it follows, such as `stable`. */
+	readonly channel?: string;
+	/** The digest it is pinned to, when it doesn't follow a channel. */
+	readonly pinned?: string;
+	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+	readonly base: SandboxBase;
+	/** Whether it is being rebuilt on the latest base now. */
+	readonly rebuilding: boolean;
+}
+
+/** One build of a base image. */
+export interface BaseImageVersion {
+	/** Its tag, such as `2026.11.04.1`. */
+	readonly version: string;
+	/** `sha256:…`: the digest it is pulled by. A version's digest never changes. */
+	readonly digest: string;
+	/** When it was built, ISO 8601. */
+	readonly builtAt: string;
+	/** Signed with cosign, keyless, by Kantel's build. */
+	readonly signed: boolean;
+	/** Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change. */
+	readonly reason?: "daily" | "cve" | "manual" | "push";
+	/** What the newest CVE scan of a version found. */
+	readonly scan?: BaseImageScan;
+}
+
 export interface BrowserAccess {
-	/** Watch and drive the sandbox's Chromium in a browser. */
+	/** Watch and drive the sandbox's Chromium in a browser: the browser alone where `surface` is `browser`, else the desktop it runs on. */
 	readonly url: string;
+	/** The same view, for an `<iframe>` in your own app. */
+	readonly embedUrl: string;
+	/** Experimental. What `url` shows: `browser`, the browser alone on a display of its own, sized to the viewer and streamed only while someone watches; `desktop`, the sandbox's desktop with Chromium on it (an image without a browser surface). */
+	readonly surface: "browser" | "desktop";
 	/** A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. */
 	readonly cdpUrl: string;
 	readonly viewOnly: boolean;
@@ -228,6 +340,8 @@ export interface Caller {
 	readonly superAdmin: boolean;
 	/** `selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans. */
 	readonly mode: DeploymentMode;
+	/** The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. */
+	readonly sandboxDomain?: string;
 }
 
 /** The key the call was signed in with, when it was a key. */
@@ -251,7 +365,7 @@ export interface Command {
 	readonly cwd?: string;
 	readonly state: CommandState;
 	readonly exitCode?: number;
-	/** Its output so far, up to 1 MiB; `truncated` says if there was more. */
+	/** Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. */
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly truncated: boolean;
@@ -384,7 +498,7 @@ export interface CreateSandboxBody {
 	readonly type?: SandboxType;
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
-	/** What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch. */
+	/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
 	readonly resources?: SandboxShapeInput;
 	/** A microVM's base image. Default: the deployment's. */
 	readonly image?: string;
@@ -403,6 +517,8 @@ export interface CreateSandboxBody {
 	};
 	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. */
 	readonly environment?: string;
+	/** Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. */
+	readonly template?: string;
 	/** Place it only on a host with each label, such as `{ site: "home" }`. */
 	readonly hostLabels?: {
 		readonly [key: string]: string;
@@ -411,6 +527,16 @@ export interface CreateSandboxBody {
 	readonly mounts?: readonly Mount[];
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
+}
+
+export interface CreateTemplateBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** Unique in the account: lower-case letters, digits and dashes, at most 63. */
+	readonly name: string;
+	readonly description?: string;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec: TemplateSpec;
 }
 
 export interface CreateWebhookBody {
@@ -661,6 +787,8 @@ export interface EventData {
 	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly previousState?: SandboxState;
 	readonly reason?: string;
+	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
+	readonly placementReason?: PlacementReason;
 	readonly actor?: CreatedBy;
 }
 
@@ -800,7 +928,7 @@ export interface GuestAgent {
 	readonly injected: boolean;
 }
 
-/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker. */
 export interface GuestCapabilities {
 	/** Epoch milliseconds, UTC. */
 	readonly reportedAt: number;
@@ -818,12 +946,14 @@ export interface GuestCapabilities {
 	readonly desktop: GuestFeature;
 	/** One thing a microVM's image has or lacks. */
 	readonly browser: GuestFeature;
+	/** One thing a microVM's image has or lacks. */
+	readonly browserSurface?: GuestFeature;
 	readonly docker: GuestDocker;
 }
 
 export interface GuestDocker {
 	readonly available: boolean;
-	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	/** What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. */
 	readonly detail?: string;
 	/** Why it isn't available, in words, such as `No desktop in this image`. */
 	readonly reason?: string;
@@ -834,7 +964,7 @@ export interface GuestDocker {
 /** One thing a microVM's image has or lacks. */
 export interface GuestFeature {
 	readonly available: boolean;
-	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	/** What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. */
 	readonly detail?: string;
 	/** Why it isn't available, in words, such as `No desktop in this image`. */
 	readonly reason?: string;
@@ -1030,6 +1160,36 @@ export interface ListSnapshotsQuery {
 	readonly cursor?: string;
 }
 
+export interface ListTemplatesQuery {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** Only those with a snapshot built from this base digest, or pinned to it. */
+	readonly baseDigest?: string;
+}
+
+/** One frame of the account's live stream. */
+export type LiveFrame = LiveHello | LiveSandboxChange;
+
+/** The stream is open. Read what you show again after each one: changes made while no stream was open (before the first, between a drop and the reconnection) are not sent. */
+export interface LiveHello {
+	readonly type: "hello";
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+}
+
+/** A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, the API or an SDK, its auto-stop, its host). No `previousState`: it was just made. Read the sandbox for the rest. */
+export interface LiveSandboxChange {
+	readonly type: "sandbox";
+	readonly sandboxId: string;
+	readonly accountId: string;
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	readonly state: SandboxState;
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	readonly previousState?: SandboxState;
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+}
+
 export interface Member {
 	readonly userId: string;
 	readonly name: string;
@@ -1073,6 +1233,18 @@ export type MountSource = BundleMountSource | BucketMountSource;
 
 /** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
 export type MountStatus = "pending" | "ready" | "failed";
+
+/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
+export type PlacementReason =
+	| "no_host"
+	| "no_host_for_type"
+	| "no_host_with_labels"
+	| "no_host_offers_size"
+	| "no_host_enforces_egress"
+	| "no_host_for_template"
+	| "insufficient_capacity"
+	| "host_unavailable"
+	| "account_limit";
 
 export interface PollDeviceLoginBody {
 	readonly deviceCode: string;
@@ -1135,6 +1307,15 @@ export interface PublicUrl {
 	readonly deploymentUrl: string;
 	/** `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. */
 	readonly loopback: boolean;
+}
+
+export interface PublishTemplateBaseBody {
+	/** The base image, such as `kantel/sandbox`. */
+	readonly image: string;
+	/** A channel, such as `stable`. */
+	readonly channel: string;
+	/** The digest the channel publishes from now. */
+	readonly digest: string;
 }
 
 export interface PutEgressGrantsBody {
@@ -1208,9 +1389,9 @@ export interface RunCommandBody {
 		readonly [key: string]: string;
 	};
 	readonly stdin?: string;
-	/** Default 30 000; at most 600 000 (10 minutes). */
+	/** Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one. */
 	readonly timeoutMs?: number;
-	/** Start it and answer at once, with no time limit; read it back by its ID. */
+	/** Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID. */
 	readonly detached?: boolean;
 }
 
@@ -1232,8 +1413,10 @@ export interface Sandbox {
 	readonly state: SandboxState;
 	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
 	readonly health?: SandboxHealth;
-	/** Why it is in `error` or `degraded`, in words. */
+	/** Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, or a rule's reason. A stop someone asked for has none. */
 	readonly reason?: string;
+	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
+	readonly placementReason?: PlacementReason;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
 	readonly visibility: SandboxVisibility;
 	/** What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them. */
@@ -1248,10 +1431,14 @@ export interface Sandbox {
 	readonly stopsAt?: number;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
+	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
+	readonly latestSnapshotAt?: number;
 	/** What it was made from. */
 	readonly source?: SandboxSource;
 	/** The environment it was made from. */
 	readonly environmentId?: string;
+	/** The template a sandbox was made from. */
+	readonly template?: SandboxTemplate;
 	/** Its own egress grants, on top of its environment's. */
 	readonly grants: readonly EgressGrant[];
 	/** Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
@@ -1268,6 +1455,39 @@ export interface Sandbox {
 	readonly usage: UsageSummary;
 	/** The host it runs on; only a super-admin is shown it. */
 	readonly hostId?: string;
+	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+	readonly base?: SandboxBase;
+}
+
+/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+export interface SandboxBase {
+	/** The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: kernel and root file system), `sandbox` for the container tier. */
+	readonly image: string;
+	/** The version of the base it is on, such as `host-images-20261104.812`. */
+	readonly version?: string;
+	/** Its base isn't the version its channel (`stable`) names now. */
+	readonly outdated: boolean;
+	/** The version its channel names now. */
+	readonly latest?: SandboxBaseLatest;
+	/** How far behind its channel it is, while outdated. */
+	readonly behind?: SandboxBaseBehind;
+	/** A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest. */
+	readonly security?: boolean;
+}
+
+/** How far behind its channel it is, while outdated. */
+export interface SandboxBaseBehind {
+	/** Whole days since the version after its own was built: how long it has been superseded. */
+	readonly days: number;
+	/** How many versions are newer. */
+	readonly versions: number;
+}
+
+/** The version its channel names now. */
+export interface SandboxBaseLatest {
+	readonly version: string;
+	/** When it was built, ISO 8601. */
+	readonly builtAt: string;
 }
 
 /** What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them. */
@@ -1277,13 +1497,15 @@ export interface SandboxCapabilities {
 	readonly ssh: boolean;
 	readonly desktop: boolean;
 	readonly browser: boolean;
+	/** Experimental. Whether `openBrowser`'s `url` shows the browser alone rather than the desktop it runs on: the image has a display and a stream for its browser. Absent: false. */
+	readonly browserSurface?: boolean;
 	readonly ports: boolean;
 	readonly docker: boolean;
 	/** `/dev/kvm` inside, for nested virtualisation. */
 	readonly kvm: boolean;
 	/** Whether it can be paused with its memory kept. */
 	readonly pause: boolean;
-	/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+	/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker. */
 	readonly guest?: GuestCapabilities;
 }
 
@@ -1325,6 +1547,28 @@ export interface SandboxMount {
 	readonly error?: string;
 }
 
+/** The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call. */
+export interface SandboxNotRunning {
+	/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. */
+	readonly code: SandboxNotRunningCode;
+	readonly sandboxId: string;
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	readonly state: SandboxState;
+	/** Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. */
+	readonly stopReason?: string;
+	/** What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again`. */
+	readonly hint: string;
+}
+
+/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. */
+export type SandboxNotRunningCode =
+	| "sandbox_starting"
+	| "sandbox_stopping"
+	| "sandbox_stopped"
+	| "sandbox_paused"
+	| "sandbox_error"
+	| "sandbox_deleting";
+
 export interface SandboxPage {
 	readonly items: readonly Sandbox[];
 	/** Present when more items follow. */
@@ -1350,11 +1594,15 @@ export interface SandboxSeriesPoint {
 	readonly at: number;
 	/** CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs. */
 	readonly cpu: number;
-	/** Memory in use at `at`. */
+	/** Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. */
 	readonly memUsedBytes: number;
+	/** A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it. */
+	readonly diskUsedBytes?: number;
+	/** The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. */
+	readonly ioPressure?: number;
 }
 
-/** What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch. */
+/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
 export interface SandboxShapeInput {
 	/** A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. */
 	readonly vcpus?: number;
@@ -1392,6 +1640,19 @@ export type SandboxState =
 	| "deleting"
 	| "deleted";
 
+/** The template a sandbox was made from. */
+export interface SandboxTemplate {
+	/** The template's ID, `tpl_…`. */
+	readonly id: string;
+	readonly name: string;
+	/** The template's version it was made from. */
+	readonly version: number;
+	/** The template snapshot it started from, `tsn_…`; absent for a fresh boot. */
+	readonly snapshotId?: string;
+	/** `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself (a custom image: the one its build made). */
+	readonly start: "snapshot" | "boot";
+}
+
 /** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 export type SandboxType = "isolate" | "microvm";
 
@@ -1407,10 +1668,13 @@ export interface SandboxUsage {
 	};
 	/** The memory it may use, when its host reports it or its size sets it. */
 	readonly memLimitBytes?: number;
+	/** Its own disk's size, as its guest counts it, when its host sends disk figures. */
+	readonly diskTotalBytes?: number;
 	/** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
 	readonly series: SandboxUsageSeries;
 }
 
+/** One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
 export interface SandboxUsagePoint {
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
@@ -1419,6 +1683,12 @@ export interface SandboxUsagePoint {
 	readonly memoryMb: number;
 	readonly runningSeconds: number;
 	readonly cost: number;
+	/** Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. */
+	readonly measured?: boolean;
+	/** The sandbox's own disk in use, its mean over the interval; absent where its host doesn't send it. */
+	readonly diskUsedBytes?: number;
+	/** The share of the interval in which at least one of its tasks waited on IO, its mean; absent where its guest has no pressure figures. */
+	readonly ioPressure?: number;
 }
 
 /** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
@@ -1442,6 +1712,8 @@ export interface SaveSnapshotBody {
 	/** Replace a saved snapshot of the same name. */
 	readonly replace?: boolean;
 }
+
+export type ScanSeverity = "critical" | "high" | "medium" | "low" | "unknown";
 
 /** `encoding` says how `content` is written: `utf8` (the default) or `base64`. */
 export interface SetEnvironmentFileBody {
@@ -1510,11 +1782,16 @@ export interface Snapshot {
 	readonly trigger?: "periodic" | "stop" | "manual" | "save";
 	/** Whether it holds the sandbox's memory as well as its disk (a pause). */
 	readonly memory: boolean;
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	readonly size?: SandboxSizeName;
+	readonly resources?: SandboxResources;
 	readonly sizeBytes?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
+	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+	readonly base?: SandboxBase;
 }
 
 export interface SnapshotFilesQuery {
@@ -1612,6 +1889,227 @@ export interface TelemetryTestResult {
 	readonly error?: string;
 }
 
+/** A microVM profile: image, base, resources, variables, setup and egress, versioned. */
+export interface Template {
+	/** The template's ID, such as `tpl_4kq9x2mt`. */
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	/** Its current version; a new spec makes the next. */
+	readonly version: number;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec: TemplateSpec;
+	readonly build: TemplateBuildStatus;
+	/** How many sandboxes were made from it and still exist. */
+	readonly sandboxCount: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+	readonly createdBy: CreatedBy;
+}
+
+/** The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image. */
+export type TemplateBase = TemplateBaseChannelRef | TemplateBasePinned;
+
+/** A base image's channel and the digests it has published. */
+export interface TemplateBaseChannel {
+	readonly image: string;
+	readonly channel: string;
+	/** The digest it publishes now. */
+	readonly digest: string;
+	/** Epoch milliseconds, UTC. */
+	readonly publishedAt: number;
+	/** Every digest it has published, newest first. */
+	readonly history: readonly TemplateBaseRelease[];
+}
+
+/** Follow a channel: rebuilt when it publishes a new digest. */
+export interface TemplateBaseChannelRef {
+	/** The base image, such as `kantel/sandbox`. */
+	readonly image: string;
+	/** A channel, such as `stable`. */
+	readonly channel: string;
+}
+
+export interface TemplateBaseList {
+	readonly items: readonly TemplateBaseChannel[];
+}
+
+/** Pin an exact digest, one its channels published: never rebuilt for a new release. */
+export interface TemplateBasePinned {
+	/** The base image, such as `kantel/sandbox`. */
+	readonly image: string;
+	/** The digest pinned. */
+	readonly digest: string;
+}
+
+export interface TemplateBaseRelease {
+	readonly digest: string;
+	/** Epoch milliseconds, UTC. */
+	readonly publishedAt: number;
+}
+
+/** How far a pinned base is behind its channel. */
+export interface TemplateBehind {
+	/** How many digests the base's channel has published since the pinned one. */
+	readonly releases: number;
+	/** Epoch milliseconds, UTC. */
+	readonly since: number;
+	readonly latestDigest: string;
+}
+
+export interface TemplateBuildStatus {
+	/** `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that build (`unavailable` until then). */
+	readonly state: "none" | "building" | "ready" | "stale" | "failed";
+	/** A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots. */
+	readonly ready?: TemplateSnapshot;
+	/** A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots. */
+	readonly building?: TemplateSnapshot;
+	readonly error?: string;
+	/** How far a pinned base is behind its channel. */
+	readonly behind?: TemplateBehind;
+}
+
+/** What a template snapshot was built from. */
+export interface TemplateBuiltFrom {
+	readonly baseImage: string;
+	/** The channel it followed; absent when pinned. */
+	readonly channel?: string;
+	/** Empty while the channel has no published digest. */
+	readonly baseDigest: string;
+	readonly pinned: boolean;
+	/** The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference resolved to; for a `dockerfile`, the built image's ID. */
+	readonly imageDigest?: string;
+	/** The template image's kind it was built from. Absent: `kantel-base`. */
+	readonly source?: "kantel-base" | "dockerfile" | "image";
+	/** For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`. */
+	readonly dockerfileDigest?: string;
+	/** For an `image`, the reference pulled. */
+	readonly imageRef?: string;
+	readonly kernel: string;
+	readonly firecracker: string;
+}
+
+/** What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory. */
+export interface TemplateCacheKey {
+	/** `<templateId>@<version>`. */
+	readonly templateVersion: string;
+	readonly baseDigest: string;
+	/** A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`. */
+	readonly source?: string;
+	/** A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, recorded once the build answers. Absent for `kantel-base`. */
+	readonly imageDigest?: string;
+	readonly kernel: string;
+	readonly firecracker: string;
+	readonly vcpus: number;
+	/** With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. */
+	readonly memoryMb: number;
+}
+
+/** Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address. */
+export interface TemplateDockerfileImage {
+	readonly kind: "dockerfile";
+	/** A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the template's `base`; any other `FROM` image is pulled. */
+	readonly dockerfile: string;
+}
+
+/** What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`. */
+export type TemplateImage = TemplateKantelBaseImage | TemplateDockerfileImage | TemplateImageRef;
+
+/** Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An image that isn't one of Kantel's boots through the guest agent the host injects. */
+export interface TemplateImageRef {
+	readonly kind: "image";
+	/** An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the template is built, and again on a rebuild. */
+	readonly ref: string;
+}
+
+/** The template's `base` itself, as its deployment publishes it; the setup script adds the rest. */
+export interface TemplateKantelBaseImage {
+	readonly kind: "kantel-base";
+}
+
+export interface TemplateList {
+	readonly items: readonly Template[];
+}
+
+/** Egress grants for its sandboxes and for its build's boot. */
+export interface TemplateNetwork {
+	readonly grants: readonly EgressGrantInput[];
+}
+
+/** Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB. */
+export interface TemplateResources {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+}
+
+/** A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots. */
+export interface TemplateSnapshot {
+	/** The template snapshot's ID, `tsn_…`. */
+	readonly id: string;
+	readonly templateId: string;
+	readonly version: number;
+	/** What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory. */
+	readonly key: TemplateCacheKey;
+	/** The SHA-256 hex of the key's canonical JSON. */
+	readonly keyHash: string;
+	/** `stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away. */
+	readonly state: TemplateSnapshotState;
+	/** The host it was built on, which holds it. */
+	readonly hostId?: string;
+	/** What a template snapshot was built from. */
+	readonly builtFrom: TemplateBuiltFrom;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly readyAt?: number;
+	/** Why the build failed. */
+	readonly error?: string;
+	readonly sizeBytes?: number;
+}
+
+export interface TemplateSnapshotList {
+	/** Newest first. */
+	readonly items: readonly TemplateSnapshot[];
+}
+
+/** `stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away. */
+export type TemplateSnapshotState = "queued" | "building" | "ready" | "stale" | "failed" | "discarded";
+
+/** A template version's definition, never changed once made. Answered with every default filled in. */
+export interface TemplateSpec {
+	/** What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`. */
+	readonly image?: TemplateImage;
+	/** The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image. */
+	readonly base?: TemplateBase;
+	/** Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB. */
+	readonly resources?: TemplateResources;
+	/** Plain variables, not secrets: under the environment's and the create's own. */
+	readonly env?: {
+		readonly [key: string]: string;
+	};
+	/** A shell script run once, as root, when the snapshot is built (or at a fresh boot). */
+	readonly setup?: string;
+	/** Egress grants for its sandboxes and for its build's boot. */
+	readonly network?: TemplateNetwork;
+}
+
+export interface TemplateVersion {
+	readonly version: number;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec: TemplateSpec;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	readonly createdBy: CreatedBy;
+}
+
+export interface TemplateVersionList {
+	/** Newest first. */
+	readonly items: readonly TemplateVersion[];
+}
+
 export interface UpdateAccountBody {
 	readonly name?: string;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
@@ -1649,6 +2147,15 @@ export interface UpdateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+}
+
+/** A `spec` that differs from the current one makes a new version. */
+export interface UpdateTemplateBody {
+	readonly name?: string;
+	/** Empty clears it. */
+	readonly description?: string;
+	/** A template version's definition, never changed once made. Answered with every default filled in. */
+	readonly spec?: TemplateSpec;
 }
 
 export interface UpdateWebhookBody {
@@ -1783,6 +2290,12 @@ export interface KantelClientOptions {
 	 * (undici's) takes. A browser can't put a header on a socket, so in a browser the page must be signed in by cookie.
 	 */
 	readonly webSocket?: (url: string, headers: { readonly [name: string]: string }) => WebSocketLike;
+	/**
+	 * Makes the `Idempotency-Key` for each call to a route that takes one and wasn't given one (`options.idempotencyKey`),
+	 * such as `() => crypto.randomUUID()`. It is made once per call, so a `fetch` that retries the request sends the
+	 * same key and the call is done once.
+	 */
+	readonly idempotencyKey?: () => string;
 }
 
 /** The parts of a WHATWG WebSocket a stream uses. */
@@ -1799,7 +2312,11 @@ export interface StreamHandlers<Frame> {
 	/** The frames of one message, in order: `hello`, then a snapshot or the deltas after `after`, then live deltas. */
 	onFrames(frames: readonly Frame[]): void;
 	onOpen?(): void;
-	/** The socket closed, by either side. Reconnect with `{ after: handle.cursor }` to resume. */
+	/**
+	 * The socket closed, by either side. Reconnect with `{ after: handle.cursor }` to resume. A server-sent events stream
+	 * that Kantel refused closes with 4000 and the HTTP status (4401 for a sign-in that ended), one that ended with 1000,
+	 * and one that failed with 1006.
+	 */
 	onClose?(event: { readonly code: number; readonly reason: string }): void;
 }
 
@@ -1817,24 +2334,32 @@ export interface CallOptions {
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
-	 * call's answer and does nothing again; while the first call is still working, a retry may be `conflict`. Use a new key,
-	 * such as a UUID, for each new call.
+	 * call's answer and does nothing again. A `conflict` with `details.idempotencyKey` `"in_progress"` means the first call is
+	 * still working (retry with the same key); `"held"` means it didn't finish and is never done again under the key (check,
+	 * then use a new key). The same key with a different request is `refused`. Use a new key, such as a UUID, for each new
+	 * call.
 	 */
 	readonly idempotencyKey?: string;
 	readonly headers?: { readonly [name: string]: string };
 }
 
-/** An error Kantel answered with: its KantelError code (or `unauthenticated`), message and HTTP status. */
+/**
+ * An error Kantel answered with: its KantelError code (or `unauthenticated`), message and HTTP status, and its details.
+ * A sandbox that can't be placed has `reason` (`details.reason`), such as `insufficient_capacity`: retry later.
+ */
 export class KantelApiError extends Error {
 	readonly status: number;
 	readonly code: string;
 	readonly details?: { readonly [key: string]: unknown };
+	/** Why a sandbox couldn't be placed, a `PlacementReason` such as `no_host_for_type`; absent for other errors. */
+	readonly reason?: string;
 	constructor(status: number, code: string, message: string, details?: { readonly [key: string]: unknown }) {
 		super(message);
 		this.name = "KantelApiError";
 		this.status = status;
 		this.code = code;
 		if (details !== undefined) this.details = details;
+		if (typeof details?.reason === "string") this.reason = details.reason;
 	}
 }
 
@@ -1854,6 +2379,10 @@ export interface ApiCall {
 	readonly headers?: { readonly [name: string]: string | undefined };
 	/** The answer is bytes, such as an image, not JSON: the call resolves with a `Blob`. */
 	readonly binary?: boolean;
+	/** A stream served as server-sent events only: read over `fetch`, never a WebSocket. */
+	readonly events?: boolean;
+	/** The route takes an `Idempotency-Key`. */
+	readonly idempotent?: boolean;
 }
 
 const queryString = (query: object | undefined): string => {
@@ -1902,7 +2431,9 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 	if (call.body !== undefined) headers["content-type"] = "application/json";
 	if (call.raw !== undefined) headers["content-type"] = call.raw.type;
 	if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
-	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
+	const idempotencyKey =
+		callOptions.idempotencyKey ?? (call.idempotent === true ? options.idempotencyKey?.() : undefined);
+	if (idempotencyKey !== undefined) headers["idempotency-key"] = idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
 	const doFetch = options.fetch ?? fetch;
@@ -1948,13 +2479,101 @@ function defaultWebSocket(url: string, headers: { readonly [name: string]: strin
 	return Object.keys(headers).length === 0 ? new Socket(url) : new Socket(url, { headers });
 }
 
-/** Opens a stream route's WebSocket and hands each message's frames to `handlers`. */
+/**
+ * The frame of one server-sent event (`data:` lines, joined), or undefined for a comment, a keep-alive or anything
+ * that isn't JSON.
+ */
+function eventFrame(block: string): unknown {
+	const data = block
+		.split("\n")
+		.filter((line) => line.startsWith("data:"))
+		.map((line) => line.slice(line.startsWith("data: ") ? 6 : 5));
+	if (data.length === 0) return undefined;
+	try {
+		return JSON.parse(data.join("\n"));
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Reads a stream route's server-sent events over `fetch`, with the client's headers as any call has them, and hands each
+ * event's frame to `handlers`.
+ */
+function openEvents<Frame>(
+	options: KantelClientOptions,
+	call: ApiCall,
+	handlers: StreamHandlers<Frame>,
+	callOptions: CallOptions,
+): StreamHandle {
+	const aborter = new AbortController();
+	let closed = false;
+	const finish = (code: number, reason: string) => {
+		if (closed) return;
+		closed = true;
+		aborter.abort();
+		handlers.onClose?.({ code, reason });
+	};
+	const handle: StreamHandle = {
+		cursor: undefined,
+		close() {
+			if (closed) return;
+			closed = true;
+			aborter.abort();
+		},
+	};
+	callOptions.signal?.addEventListener("abort", () => handle.close(), { once: true });
+	void (async () => {
+		const headers: { [name: string]: string } = { accept: "text/event-stream" };
+		Object.assign(headers, (await options.headers?.()) ?? {});
+		const token = typeof options.token === "function" ? await options.token() : options.token;
+		if (token !== undefined) headers.authorization = `Bearer ${token}`;
+		if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
+		Object.assign(headers, callOptions.headers ?? {});
+		if (closed) return;
+		const doFetch = options.fetch ?? fetch;
+		const response = await doFetch(`${options.baseUrl.replace(/\/+$/, "")}${call.path}${queryString(call.query)}`, {
+			method: call.method,
+			headers,
+			signal: aborter.signal,
+		});
+		if (!response.ok) {
+			const error = await errorOf(response);
+			return finish(4000 + response.status, error.message);
+		}
+		if (response.body === null) return finish(1006, "The stream had no body");
+		handlers.onOpen?.();
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+			for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+				const frame = eventFrame(buffer.slice(0, end));
+				buffer = buffer.slice(end + 2);
+				if (frame !== undefined && !closed) handlers.onFrames([frame as Frame]);
+			}
+		}
+		finish(1000, "The server ended the stream");
+	})().catch((error: unknown) => {
+		finish(1006, error instanceof Error ? error.message : "The stream failed");
+	});
+	return handle;
+}
+
+/**
+ * Opens a stream route and hands each message's frames to `handlers`: over a WebSocket, or a route served as
+ * server-sent events only (`events`) over `fetch`.
+ */
 export function openStream<Frame>(
 	options: KantelClientOptions,
 	call: ApiCall,
 	handlers: StreamHandlers<Frame>,
 	callOptions: CallOptions = {},
 ): StreamHandle {
+	if (call.events === true) return openEvents(options, call, handlers, callOptions);
 	const base = options.baseUrl.replace(/\/+$/, "");
 	const origin = (globalThis as { location?: { href?: string } }).location?.href;
 	const url = new URL(`${base}${call.path}${queryString(call.query)}`, origin);
@@ -2023,7 +2642,7 @@ export interface KantelClient {
 	getCaller(options?: CallOptions): Promise<Caller>;
 	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. `GET /accounts` */
 	listAccounts(options?: CallOptions): Promise<AccountList>;
-	/** Create an organisation. Makes an organisation account with the caller as its owner. People only: a key is refused. `POST /accounts` */
+	/** Create an organisation. Makes an organisation account with the caller as its owner. People only: a key is refused. Idempotent with `options.idempotencyKey`. `POST /accounts` */
 	createOrganisation(body: CreateOrganisationBody, options?: CallOptions): Promise<Account>;
 	/** Join an organisation. Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`. `POST /accounts/join` */
 	joinOrganisation(body: JoinOrganisationBody, options?: CallOptions): Promise<Account>;
@@ -2043,7 +2662,7 @@ export interface KantelClient {
 	removeMember(accountId: string, userId: string, options?: CallOptions): Promise<void>;
 	/** List an organisation's open invites. Codes are not shown again. A key needs `account:admin`. `GET /accounts/{accountId}/invites` */
 	listInvites(accountId: string, options?: CallOptions): Promise<InviteList>;
-	/** Invite someone to an organisation. Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. `POST /accounts/{accountId}/invites` */
+	/** Invite someone to an organisation. Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /accounts/{accountId}/invites` */
 	createInvite(accountId: string, body?: CreateInviteBody, options?: CallOptions): Promise<Invite>;
 	/** Revoke an invite. A key needs `account:admin`. `DELETE /accounts/{accountId}/invites/{inviteId}` */
 	revokeInvite(accountId: string, inviteId: string, options?: CallOptions): Promise<void>;
@@ -2055,7 +2674,7 @@ export interface KantelClient {
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Change a sandbox. Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. `PATCH /sandboxes/{sandboxId}` */
+	/** Change a sandbox. Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `PATCH /sandboxes/{sandboxId}` */
 	updateSandbox(sandboxId: string, body?: UpdateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Start a sandbox. Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/start` */
 	startSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
@@ -2065,19 +2684,21 @@ export interface KantelClient {
 	resumeSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
-	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/recover` */
+	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. `DELETE /sandboxes/{sandboxId}` */
+	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/restart-on-latest` */
+	restartSandboxOnLatest(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
+	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. Idempotent with `options.idempotencyKey`. `DELETE /sandboxes/{sandboxId}` */
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox's usage. CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
 	getSandboxUsage(sandboxId: string, query?: UsageQuery, options?: CallOptions): Promise<SandboxUsage>;
-	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
+	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless `timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
 	runCommand(sandboxId: string, body: RunCommandBody, options?: CallOptions): Promise<Command>;
 	/** List a sandbox's commands. Its commands, newest first, also while it is stopped. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands` */
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
-	/** Get a command. Its state and its output so far. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Get a command. Its state, and once it has ended its exit code and output. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
-	/** Kill a command. Ends a running command; one that has ended is answered as it is. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Kill a command. Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
 	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a binary file, or of a text file cut mid-character. A key needs `files`. `GET /sandboxes/{sandboxId}/files` */
 	readFile(sandboxId: string, query: ReadFileQuery, options?: CallOptions): Promise<FileContent>;
@@ -2100,7 +2721,7 @@ export interface KantelClient {
 	): Promise<ExtractedArchive>;
 	/** List a sandbox's public ports. A key needs `access`. `GET /sandboxes/{sandboxId}/ports` */
 	listPorts(sandboxId: string, options?: CallOptions): Promise<ExposedPortList>;
-	/** Expose a port. Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. `POST /sandboxes/{sandboxId}/ports` */
+	/** Expose a port. Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/ports` */
 	exposePort(sandboxId: string, body: ExposePortBody, options?: CallOptions): Promise<ExposedPort>;
 	/** Hide a port. Its URL stops working at once. A key needs `access`. `DELETE /sandboxes/{sandboxId}/ports/{port}` */
 	hidePort(sandboxId: string, port: string, options?: CallOptions): Promise<void>;
@@ -2118,9 +2739,9 @@ export interface KantelClient {
 	appendE2EChain(accountId: string, body: E2EChainAppend, options?: CallOptions): Promise<E2EChain>;
 	/** List snapshots. The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. `GET /snapshots` */
 	listSnapshots(query?: ListSnapshotsQuery, options?: CallOptions): Promise<SnapshotPage>;
-	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. `POST /sandboxes/{sandboxId}/snapshots` */
+	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/snapshots` */
 	takeSnapshot(sandboxId: string, body?: TakeSnapshotBody, options?: CallOptions): Promise<Snapshot>;
-	/** Save a snapshot. Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. `POST /snapshots` */
+	/** Save a snapshot. Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. Idempotent with `options.idempotencyKey`. `POST /snapshots` */
 	saveSnapshot(body: SaveSnapshotBody, options?: CallOptions): Promise<Snapshot>;
 	/** Get a snapshot. A key needs `snapshots:read`. `GET /snapshots/{snapshotId}` */
 	getSnapshot(snapshotId: string, options?: CallOptions): Promise<Snapshot>;
@@ -2132,11 +2753,11 @@ export interface KantelClient {
 	deleteSnapshot(snapshotId: string, options?: CallOptions): Promise<void>;
 	/** List API keys. The account's keys, revoked ones included. A key needs `account:read`. `GET /api-keys` */
 	listApiKeys(query?: AccountScopedQuery, options?: CallOptions): Promise<ApiKeyList>;
-	/** Create an API key. Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. `POST /api-keys` */
+	/** Create an API key. Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /api-keys` */
 	createApiKey(body: CreateApiKeyBody, options?: CallOptions): Promise<IssuedApiKey>;
 	/** Get an API key. A key needs `account:read`. `GET /api-keys/{apiKeyId}` */
 	getApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
-	/** Rotate an API key. Replaces its secret; the old one stops working at once. A key needs `account:admin`. `POST /api-keys/{apiKeyId}/rotate` */
+	/** Rotate an API key. Replaces its secret; the old one stops working at once. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /api-keys/{apiKeyId}/rotate` */
 	rotateApiKey(apiKeyId: string, options?: CallOptions): Promise<IssuedApiKey>;
 	/** Revoke an API key. It stops working at once. A key needs `account:admin`. `DELETE /api-keys/{apiKeyId}` */
 	revokeApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
@@ -2160,7 +2781,7 @@ export interface KantelClient {
 	putProxySettings(body: PutProxySettingsBody, options?: CallOptions): Promise<ProxySettings>;
 	/** List environments. The account's environments, oldest first. A key needs `account:read`. `GET /environments` */
 	listEnvironments(query?: AccountScopedQuery, options?: CallOptions): Promise<EnvironmentList>;
-	/** Create an environment. An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`. `POST /environments` */
+	/** Create an environment. An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /environments` */
 	createEnvironment(body: CreateEnvironmentBody, options?: CallOptions): Promise<Environment>;
 	/** Get an environment. Never a protected variable's value nor a secret file's contents. A key needs `account:read`. `GET /environments/{environmentId}` */
 	getEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
@@ -2197,11 +2818,33 @@ export interface KantelClient {
 	getSandboxEgress(sandboxId: string, query?: SandboxEgressQuery, options?: CallOptions): Promise<SandboxEgress>;
 	/** Set a sandbox's egress grants. Replaces its own grants, on top of its environment's. A running sandbox picks them up at once. A key needs `account:admin`. `PUT /sandboxes/{sandboxId}/grants` */
 	putSandboxGrants(sandboxId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<SandboxEgress>;
+	/** List templates. The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates` */
+	listTemplates(query?: ListTemplatesQuery, options?: CallOptions): Promise<TemplateList>;
+	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). Idempotent with `options.idempotencyKey`. `POST /templates` */
+	createTemplate(body: CreateTemplateBody, options?: CallOptions): Promise<Template>;
+	/** Get a template. With its build, and how far behind a pinned base is. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}` */
+	getTemplate(templateId: string, options?: CallOptions): Promise<Template>;
+	/** Change a template. Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready; a Dockerfile's or image reference's wait for the new version's image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `PATCH /templates/{templateId}` */
+	updateTemplate(templateId: string, body?: UpdateTemplateBody, options?: CallOptions): Promise<Template>;
+	/** Delete a template. Deletes it, its versions and its built snapshots. Sandboxes made from it keep running. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `DELETE /templates/{templateId}` */
+	deleteTemplate(templateId: string, options?: CallOptions): Promise<void>;
+	/** List a template's versions. Newest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}/versions` */
+	listTemplateVersions(templateId: string, options?: CallOptions): Promise<TemplateVersionList>;
+	/** List a template's snapshots. Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}/snapshots` */
+	listTemplateSnapshots(templateId: string, options?: CallOptions): Promise<TemplateSnapshotList>;
+	/** Rebuild a template. Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready, or, for a Dockerfile or image reference, wait for its image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). Idempotent with `options.idempotencyKey`. `POST /templates/{templateId}/rebuild` */
+	rebuildTemplate(templateId: string, options?: CallOptions): Promise<Template>;
+	/** List base images' channels. Every base channel templates may follow, with the digests it has published. Any signed-in caller. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /template-bases` */
+	listTemplateBases(options?: CallOptions): Promise<TemplateBaseList>;
+	/** Publish a base image's digest. Makes `digest` the channel's current one, made if it is new. Every template following the channel rebuilds in the background; pinned ones don't, and say how far behind they are. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /template-bases` */
+	publishTemplateBase(body: PublishTemplateBaseBody, options?: CallOptions): Promise<TemplateBaseChannel>;
 	/** List events. The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`. `GET /events` */
 	listEvents(query?: ListEventsQuery, options?: CallOptions): Promise<EventPage>;
+	/** Watch sandboxes live. Server-sent events, one frame each, as the account's sandboxes change state: who changed one makes no difference (the console, the CLI, the API or an SDK, an auto-stop, a host). First a `hello`, then a `sandbox` frame per change, of the sandboxes the caller may see. A comment line every 25 s keeps it open. The server ends it after 10 minutes, or once the caller may no longer watch, and nothing is replayed: reconnect, and read what you show again on each `hello`. A key needs `sandboxes:read`. `GET /events/live` */
+	watchEvents(handlers: StreamHandlers<LiveFrame>, query?: AccountScopedQuery, options?: CallOptions): StreamHandle;
 	/** List webhooks. A key needs `account:admin`. `GET /webhooks` */
 	listWebhooks(query?: AccountScopedQuery, options?: CallOptions): Promise<WebhookList>;
-	/** Create a webhook. Its signing secret is answered once. A key needs `account:admin`. `POST /webhooks` */
+	/** Create a webhook. Its signing secret is answered once. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /webhooks` */
 	createWebhook(body: CreateWebhookBody, options?: CallOptions): Promise<WebhookWithSecret>;
 	/** Get a webhook. A key needs `account:admin`. `GET /webhooks/{webhookId}` */
 	getWebhook(webhookId: string, options?: CallOptions): Promise<Webhook>;
@@ -2209,7 +2852,7 @@ export interface KantelClient {
 	updateWebhook(webhookId: string, body?: UpdateWebhookBody, options?: CallOptions): Promise<Webhook>;
 	/** Delete a webhook. Its queued deliveries are dropped. A key needs `account:admin`. `DELETE /webhooks/{webhookId}` */
 	deleteWebhook(webhookId: string, options?: CallOptions): Promise<void>;
-	/** Rotate a webhook's signing secret. Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. `POST /webhooks/{webhookId}/rotate` */
+	/** Rotate a webhook's signing secret. Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /webhooks/{webhookId}/rotate` */
 	rotateWebhookSecret(webhookId: string, options?: CallOptions): Promise<WebhookWithSecret>;
 	/** Send a test delivery. Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`. `POST /webhooks/{webhookId}/test` */
 	testWebhook(webhookId: string, options?: CallOptions): Promise<WebhookDelivery>;
@@ -2225,9 +2868,11 @@ export interface KantelClient {
 	putTelemetry(body: PutTelemetryBody, options?: CallOptions): Promise<TelemetryTest>;
 	/** Remove the OpenTelemetry export. A key needs `account:admin`. `DELETE /telemetry` */
 	deleteTelemetry(query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
+	/** List base images. Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). `GET /admin/hosts/images` */
+	listBaseImages(options?: CallOptions): Promise<BaseImageList>;
 	/** List hosts. Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts` */
 	listHosts(options?: CallOptions): Promise<HostList>;
-	/** Make a host join token. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/join-tokens` */
+	/** Make a host join token. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). Idempotent with `options.idempotencyKey`. `POST /admin/hosts/join-tokens` */
 	createHostJoinToken(body?: CreateHostJoinTokenBody, options?: CallOptions): Promise<HostJoinToken>;
 	/** Get a host. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}` */
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
@@ -2241,7 +2886,7 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
-	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/join-tokens` */
+	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). Idempotent with `options.idempotencyKey`. `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
 	listAccountHosts(query?: AccountScopedQuery, options?: CallOptions): Promise<HostList>;
@@ -2261,7 +2906,7 @@ export interface KantelClient {
 	getBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<Bundle>;
 	/** Delete a bundle. Removes it from the account. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included, since they mount it again when they start: delete those sandboxes first. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bundles/{digest}` */
 	deleteBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
-	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bucket-sources` */
+	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). Idempotent with `options.idempotencyKey`. `POST /bucket-sources` */
 	createBucketSource(body: CreateBucketSourceBody, options?: CallOptions): Promise<BucketSource>;
 	/** List bucket sources. The account's bucket sources, oldest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources` */
 	listBucketSources(query?: AccountScopedQuery, options?: CallOptions): Promise<BucketSourceList>;
@@ -2287,7 +2932,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		createProject: (body, callOptions) => send(options, { method: "POST", path: "/projects", body }, callOptions),
 		getCaller: (callOptions) => send(options, { method: "GET", path: "/whoami" }, callOptions),
 		listAccounts: (callOptions) => send(options, { method: "GET", path: "/accounts" }, callOptions),
-		createOrganisation: (body, callOptions) => send(options, { method: "POST", path: "/accounts", body }, callOptions),
+		createOrganisation: (body, callOptions) =>
+			send(options, { method: "POST", path: "/accounts", body, idempotent: true }, callOptions),
 		joinOrganisation: (body, callOptions) =>
 			send(options, { method: "POST", path: "/accounts/join", body }, callOptions),
 		getAccount: (accountId, callOptions) =>
@@ -2319,7 +2965,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listInvites: (accountId, callOptions) =>
 			send(options, { method: "GET", path: `/accounts/${encodeURIComponent(accountId)}/invites` }, callOptions),
 		createInvite: (accountId, body = {}, callOptions) =>
-			send(options, { method: "POST", path: `/accounts/${encodeURIComponent(accountId)}/invites`, body }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/accounts/${encodeURIComponent(accountId)}/invites`, body, idempotent: true },
+				callOptions,
+			),
 		revokeInvite: (accountId, inviteId, callOptions) =>
 			send(
 				options,
@@ -2332,11 +2982,16 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listSandboxes: (query, callOptions) => send(options, { method: "GET", path: "/sandboxes", query }, callOptions),
 		getSandboxShapes: (query, callOptions) =>
 			send(options, { method: "GET", path: "/sandbox-shapes", query }, callOptions),
-		createSandbox: (body = {}, callOptions) => send(options, { method: "POST", path: "/sandboxes", body }, callOptions),
+		createSandbox: (body = {}, callOptions) =>
+			send(options, { method: "POST", path: "/sandboxes", body, idempotent: true }, callOptions),
 		getSandbox: (sandboxId, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}` }, callOptions),
 		updateSandbox: (sandboxId, body = {}, callOptions) =>
-			send(options, { method: "PATCH", path: `/sandboxes/${encodeURIComponent(sandboxId)}`, body }, callOptions),
+			send(
+				options,
+				{ method: "PATCH", path: `/sandboxes/${encodeURIComponent(sandboxId)}`, body, idempotent: true },
+				callOptions,
+			),
 		startSandbox: (sandboxId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/start`, body }, callOptions),
 		stopSandbox: (sandboxId, body = {}, callOptions) =>
@@ -2344,17 +2999,35 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		resumeSandbox: (sandboxId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/resume`, body }, callOptions),
 		forkSandbox: (sandboxId, body = {}, callOptions) =>
-			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/fork`, body }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/fork`, body, idempotent: true },
+				callOptions,
+			),
 		recoverSandbox: (sandboxId, callOptions) =>
-			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/recover` }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/recover`, idempotent: true },
+				callOptions,
+			),
+		restartSandboxOnLatest: (sandboxId, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/restart-on-latest`, idempotent: true },
+				callOptions,
+			),
 		deleteSandbox: (sandboxId, callOptions) =>
-			send(options, { method: "DELETE", path: `/sandboxes/${encodeURIComponent(sandboxId)}` }, callOptions),
+			send(
+				options,
+				{ method: "DELETE", path: `/sandboxes/${encodeURIComponent(sandboxId)}`, idempotent: true },
+				callOptions,
+			),
 		getSandboxUsage: (sandboxId, query, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/usage`, query }, callOptions),
 		runCommand: (sandboxId, body, callOptions) =>
 			send(
 				options,
-				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/commands`, body },
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/commands`, body, idempotent: true },
 				callOptions,
 			),
 		listCommands: (sandboxId, query, callOptions) =>
@@ -2423,7 +3096,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listPorts: (sandboxId, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/ports` }, callOptions),
 		exposePort: (sandboxId, body, callOptions) =>
-			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/ports`, body }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/ports`, body, idempotent: true },
+				callOptions,
+			),
 		hidePort: (sandboxId, port, callOptions) =>
 			send(
 				options,
@@ -2450,10 +3127,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		takeSnapshot: (sandboxId, body = {}, callOptions) =>
 			send(
 				options,
-				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/snapshots`, body },
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/snapshots`, body, idempotent: true },
 				callOptions,
 			),
-		saveSnapshot: (body, callOptions) => send(options, { method: "POST", path: "/snapshots", body }, callOptions),
+		saveSnapshot: (body, callOptions) =>
+			send(options, { method: "POST", path: "/snapshots", body, idempotent: true }, callOptions),
 		getSnapshot: (snapshotId, callOptions) =>
 			send(options, { method: "GET", path: `/snapshots/${encodeURIComponent(snapshotId)}` }, callOptions),
 		listSnapshotFiles: (snapshotId, query, callOptions) =>
@@ -2463,11 +3141,16 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		deleteSnapshot: (snapshotId, callOptions) =>
 			send(options, { method: "DELETE", path: `/snapshots/${encodeURIComponent(snapshotId)}` }, callOptions),
 		listApiKeys: (query, callOptions) => send(options, { method: "GET", path: "/api-keys", query }, callOptions),
-		createApiKey: (body, callOptions) => send(options, { method: "POST", path: "/api-keys", body }, callOptions),
+		createApiKey: (body, callOptions) =>
+			send(options, { method: "POST", path: "/api-keys", body, idempotent: true }, callOptions),
 		getApiKey: (apiKeyId, callOptions) =>
 			send(options, { method: "GET", path: `/api-keys/${encodeURIComponent(apiKeyId)}` }, callOptions),
 		rotateApiKey: (apiKeyId, callOptions) =>
-			send(options, { method: "POST", path: `/api-keys/${encodeURIComponent(apiKeyId)}/rotate` }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/api-keys/${encodeURIComponent(apiKeyId)}/rotate`, idempotent: true },
+				callOptions,
+			),
 		revokeApiKey: (apiKeyId, callOptions) =>
 			send(options, { method: "DELETE", path: `/api-keys/${encodeURIComponent(apiKeyId)}` }, callOptions),
 		startDeviceLogin: (body = {}, callOptions) =>
@@ -2489,7 +3172,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listEnvironments: (query, callOptions) =>
 			send(options, { method: "GET", path: "/environments", query }, callOptions),
 		createEnvironment: (body, callOptions) =>
-			send(options, { method: "POST", path: "/environments", body }, callOptions),
+			send(options, { method: "POST", path: "/environments", body, idempotent: true }, callOptions),
 		getEnvironment: (environmentId, callOptions) =>
 			send(options, { method: "GET", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
 		updateEnvironment: (environmentId, body = {}, callOptions) =>
@@ -2543,9 +3226,34 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/egress`, query }, callOptions),
 		putSandboxGrants: (sandboxId, body, callOptions) =>
 			send(options, { method: "PUT", path: `/sandboxes/${encodeURIComponent(sandboxId)}/grants`, body }, callOptions),
+		listTemplates: (query, callOptions) => send(options, { method: "GET", path: "/templates", query }, callOptions),
+		createTemplate: (body, callOptions) =>
+			send(options, { method: "POST", path: "/templates", body, idempotent: true }, callOptions),
+		getTemplate: (templateId, callOptions) =>
+			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}` }, callOptions),
+		updateTemplate: (templateId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/templates/${encodeURIComponent(templateId)}`, body }, callOptions),
+		deleteTemplate: (templateId, callOptions) =>
+			send(options, { method: "DELETE", path: `/templates/${encodeURIComponent(templateId)}` }, callOptions),
+		listTemplateVersions: (templateId, callOptions) =>
+			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}/versions` }, callOptions),
+		listTemplateSnapshots: (templateId, callOptions) =>
+			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}/snapshots` }, callOptions),
+		rebuildTemplate: (templateId, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/templates/${encodeURIComponent(templateId)}/rebuild`, idempotent: true },
+				callOptions,
+			),
+		listTemplateBases: (callOptions) => send(options, { method: "GET", path: "/template-bases" }, callOptions),
+		publishTemplateBase: (body, callOptions) =>
+			send(options, { method: "POST", path: "/template-bases", body }, callOptions),
 		listEvents: (query, callOptions) => send(options, { method: "GET", path: "/events", query }, callOptions),
+		watchEvents: (handlers, query, callOptions) =>
+			openStream(options, { method: "GET", path: "/events/live", query, events: true }, handlers, callOptions),
 		listWebhooks: (query, callOptions) => send(options, { method: "GET", path: "/webhooks", query }, callOptions),
-		createWebhook: (body, callOptions) => send(options, { method: "POST", path: "/webhooks", body }, callOptions),
+		createWebhook: (body, callOptions) =>
+			send(options, { method: "POST", path: "/webhooks", body, idempotent: true }, callOptions),
 		getWebhook: (webhookId, callOptions) =>
 			send(options, { method: "GET", path: `/webhooks/${encodeURIComponent(webhookId)}` }, callOptions),
 		updateWebhook: (webhookId, body = {}, callOptions) =>
@@ -2553,7 +3261,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		deleteWebhook: (webhookId, callOptions) =>
 			send(options, { method: "DELETE", path: `/webhooks/${encodeURIComponent(webhookId)}` }, callOptions),
 		rotateWebhookSecret: (webhookId, callOptions) =>
-			send(options, { method: "POST", path: `/webhooks/${encodeURIComponent(webhookId)}/rotate` }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/webhooks/${encodeURIComponent(webhookId)}/rotate`, idempotent: true },
+				callOptions,
+			),
 		testWebhook: (webhookId, callOptions) =>
 			send(options, { method: "POST", path: `/webhooks/${encodeURIComponent(webhookId)}/test` }, callOptions),
 		listWebhookDeliveries: (webhookId, query, callOptions) =>
@@ -2566,9 +3278,10 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		putTelemetry: (body, callOptions) => send(options, { method: "PUT", path: "/telemetry", body }, callOptions),
 		deleteTelemetry: (query, callOptions) =>
 			send(options, { method: "DELETE", path: "/telemetry", query }, callOptions),
+		listBaseImages: (callOptions) => send(options, { method: "GET", path: "/admin/hosts/images" }, callOptions),
 		listHosts: (callOptions) => send(options, { method: "GET", path: "/admin/hosts" }, callOptions),
 		createHostJoinToken: (body = {}, callOptions) =>
-			send(options, { method: "POST", path: "/admin/hosts/join-tokens", body }, callOptions),
+			send(options, { method: "POST", path: "/admin/hosts/join-tokens", body, idempotent: true }, callOptions),
 		getHost: (hostId, callOptions) =>
 			send(options, { method: "GET", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getHostUsage: (hostId, query, callOptions) =>
@@ -2580,7 +3293,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
-			send(options, { method: "POST", path: "/hosts/join-tokens", body }, callOptions),
+			send(options, { method: "POST", path: "/hosts/join-tokens", body, idempotent: true }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),
 		getAccountHost: (hostId, callOptions) =>
 			send(options, { method: "GET", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
@@ -2598,7 +3311,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		deleteBundle: (digest, query, callOptions) =>
 			send(options, { method: "DELETE", path: `/bundles/${encodeURIComponent(digest)}`, query }, callOptions),
 		createBucketSource: (body, callOptions) =>
-			send(options, { method: "POST", path: "/bucket-sources", body }, callOptions),
+			send(options, { method: "POST", path: "/bucket-sources", body, idempotent: true }, callOptions),
 		listBucketSources: (query, callOptions) =>
 			send(options, { method: "GET", path: "/bucket-sources", query }, callOptions),
 		getBucketSource: (bucketSourceId, callOptions) =>

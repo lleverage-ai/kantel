@@ -155,6 +155,14 @@ kantel scp -r sbx_g2yy5jhyqr:build ./build               # a directory out
 
 `kantel push <id> [dir]` copies a directory, the current one by default, to `/home/user/<its name>` (or `--to <path>`). In a git repository it sends the files git tracks and the new ones `.gitignore` doesn't leave out, so `node_modules`, build output and `.git` stay behind. Executable bits are kept; files you deleted locally stay in the sandbox.
 
+Push also leaves credentials behind, at any depth, and names each one it skips on stderr:
+
+- Always: `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.netrc`, `.pypirc` and `.docker/config.json`, even when git tracks them.
+- Unless git tracks the file: `.claude`, `.codex` and `.cursor`, which hold agents' sign-ins, `.npmrc`, and `.env` files such as `.env.local`. `.env.example`, `.env.sample` and `.env.template` go. A project's committed `.claude/settings.json` goes; your untracked `.claude/settings.local.json` doesn't.
+- Links that resolve outside the directory, or to a file left out above.
+
+`--no-default-excludes` sends the first two groups too; links outside the directory never go. Push refuses a directory inside one it leaves out, such as `~/.ssh`, unless you add `--no-default-excludes`. It refuses your home directory, or a directory holding it or Kantel's config directory (`~/.config/kantel`), unless you add `--allow-home`; even then Kantel's config directory, which holds your API key, stays behind, and nothing inside it is ever pushed.
+
 Both go through Kantel's files API, so they work on isolates as well as microVMs and need no SSH. The API moves at most 1 MiB a call: a bigger file comes out in ranged reads, and goes in in parts that a command in the sandbox joins, which needs a microVM. `kantel files` (`ls`, `cat`, `put`, `get`, `rm`) works on one file at a time.
 
 ## Ports, SSH, desktop and browser

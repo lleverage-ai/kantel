@@ -281,7 +281,8 @@ export function memoryText(memoryMb: number): string {
 /** The latest snapshot a sandbox has: what a resume or fork starts from. */
 export interface SnapshotRef {
 	readonly id: string;
-	readonly takenAt: number;
+	/** When it was taken; absent where the source doesn't say (its record gone), never a guess. */
+	readonly takenAt?: number;
 }
 
 export interface Sandbox {
@@ -296,6 +297,11 @@ export interface Sandbox {
 	/** What its host gave it, where that's known: the page shows this rather than its size's usual figures. */
 	readonly resources?: { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number };
 	readonly state: SandboxState;
+	/**
+	 * It was deleted: the API keeps its record a while, and a read of it says so (its `state` is then `stopped`). A
+	 * sandbox's page shows it as deleted, however it learnt of it.
+	 */
+	readonly deleted?: boolean;
 	readonly createdAt: number;
 	/** Who made it. */
 	readonly createdBy: string;
@@ -316,13 +322,127 @@ export interface Sandbox {
 	readonly forkedFrom?: string;
 	/** The environment it was made from. */
 	readonly environment?: { readonly id: string; readonly name: string };
+	/**
+	 * The base image it runs on, and how far that is behind the latest on its channel. Kantel never patches a running
+	 * sandbox: it moves to the latest base when it restarts on it. Absent where Kantel doesn't say (an isolate).
+	 */
+	readonly base?: SandboxBase;
 	/** Its read-only mounts (experimental), each with whether its files are in place. Absent: none. */
 	readonly mounts?: readonly SandboxMount[];
 	/** What a microVM's image has, as its guest agent found it; absent until one has said (an older host or image). */
 	readonly image?: SandboxImage;
+	/** The template it was made from, and whether it started from the template's snapshot or booted fresh. */
+	readonly template?: {
+		readonly id: string;
+		readonly name: string;
+		readonly version: number;
+		readonly start: "snapshot" | "boot";
+	};
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Base images
+
+/** A sandbox's, a saved snapshot's or a template's base image, against the latest version on its channel. */
+export interface SandboxBase {
+	/** The image's name: `sandbox`, `browser`. */
+	readonly image: string;
+	/** The version it is on, where Kantel knows it: `2026.11.03.811`. */
+	readonly version?: string;
+	/** A newer version is on its channel. */
+	readonly outdated: boolean;
+	/** The latest version on its channel, and when it was built. */
+	readonly latest?: { readonly version: string; readonly builtAt: number };
+	/** How far behind the latest it is, when outdated. */
+	readonly behind?: { readonly days: number; readonly versions: number };
+	/** The newer versions carry security fixes. */
+	readonly security?: boolean;
+}
+
+/** How bad a vulnerability a scan found is. */
+export type ImageSeverity = "critical" | "high" | "medium" | "low" | "unknown";
+
+/** One vulnerability a scan found in a base image's package. */
+export interface ImageFinding {
+	/** `CVE-2026-31789`, or the scanner's own ID. */
+	readonly id: string;
+	readonly severity: ImageSeverity;
+	readonly package: string;
+	/** The version in the image. */
+	readonly installed: string;
+	/** The version that fixes it; absent while there is no fix. */
+	readonly fixed?: string;
+	readonly title?: string;
+}
+
+/** What a vulnerability scan of one version of a base image found. */
+export interface ImageScan {
+	/** The scanner and its version: `trivy 0.67.2`. */
+	readonly scanner: string;
+	readonly scannedAt: number;
+	readonly counts: Readonly<Record<ImageSeverity, number>>;
+	/** Critical and high findings with a fix out: what makes Kantel rebuild the image. */
+	readonly fixable: { readonly critical: number; readonly high: number };
+	readonly findings: readonly ImageFinding[];
+}
+
+/** Why a version was built: the daily rebuild, a fixable vulnerability, by hand, or a change pushed to its recipe. */
+export type ImageBuildReason = "daily" | "cve" | "manual" | "push";
+
+export interface BaseImageVersion {
+	readonly version: string;
+	/** Its content digest: `sha256:` and 64 hex digits. */
+	readonly digest: string;
+	readonly builtAt: number;
+	/** Its signature checks out. */
+	readonly signed: boolean;
+	readonly reason?: ImageBuildReason;
+	/** Its latest scan; absent before the first. */
+	readonly scan?: ImageScan;
+}
+
+/** A base image Kantel builds sandboxes from, and its versions on the stable channel. */
+export interface BaseImage {
+	readonly name: string;
+	/** Where it's published: `ghcr.io/lleverage-ai/kantel-sandbox`. */
+	readonly repository: string;
+	readonly channel: "stable";
+	readonly latest?: BaseImageVersion;
+	/** Newest first. */
+	readonly versions: readonly BaseImageVersion[];
+}
+
+/** A template, a base image with a setup on top, and how far its base is behind. */
+export interface BaseImageTemplate {
+	readonly id: string;
+	readonly name: string;
+	/** The base image it's built on. */
+	readonly image: string;
+	/** The channel it follows, when it follows one. */
+	readonly channel?: string;
+	/** The digest it's pinned to, when it's pinned rather than following a channel. */
+	readonly pinned?: string;
+	readonly base: SandboxBase;
+	/** Kantel is building it again on the latest base now. */
+	readonly rebuilding: boolean;
+}
+
+/** The deployment's base images and templates, as its image index says. */
+export interface BaseImagesOverview {
+	readonly images: readonly BaseImage[];
+	readonly templates: readonly BaseImageTemplate[];
+	/** Where the image index is. */
+	readonly indexUrl: string;
+	/** When the index was made. */
+	readonly generatedAt?: number;
+	/** Why Kantel couldn't read the index, in words; what it has may then be old or empty. */
+	readonly error?: string;
+}
+
+export interface BaseImagesSource {
+	overview(): Promise<BaseImagesOverview>;
+}
+
 // Read-only mounts (experimental: a deployment shows them only with `KANTEL_MOUNTS=experimental`)
 
 /** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't. */
@@ -391,7 +511,7 @@ export interface MountsSource {
 /** One thing an image has or lacks: what the guest agent found, or why it isn't there. */
 export interface SandboxFeature {
 	readonly available: boolean;
-	/** What was found, such as "Xtigervnc, xfce4-session, Selkies". */
+	/** What was found, such as "Xtigervnc, Openbox, Selkies". */
 	readonly detail?: string;
 	/** Why not, in a few words, such as "No desktop in this image". */
 	readonly reason?: string;
@@ -440,6 +560,16 @@ export function imageLacks(
 	return found.reason ?? IMAGE_LACKS[feature];
 }
 
+/**
+ * The one screen a sandbox offers: its desktop, where its image has one, since its browser runs on that desktop and
+ * shows the same picture; otherwise its browser, where it has one; undefined for neither. Unknown counts as there.
+ */
+export function sandboxScreen(sandbox: Pick<Sandbox, "image">): "desktop" | "browser" | undefined {
+	if (imageLacks(sandbox, "desktop") === undefined) return "desktop";
+	if (imageLacks(sandbox, "browser") === undefined) return "browser";
+	return undefined;
+}
+
 export interface CreateSandboxInput {
 	readonly accountId: string;
 	readonly name?: string;
@@ -455,6 +585,8 @@ export interface CreateSandboxInput {
 	readonly autoStopMinutes?: number;
 	/** The environment it starts with. */
 	readonly environmentId?: string;
+	/** The template it is made from (experimental): its newest built snapshot, or a fresh boot of its image. */
+	readonly templateId?: string;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -606,8 +738,13 @@ export interface UsagePoint {
 	/** CPU use over it, 0 to 1 of what it has: a sandbox's vCPUs, a host's. The unit of `Sandbox.usage`. */
 	readonly cpu: number;
 	readonly memUsedBytes: number;
-	/** A host's disk in use; a sandbox's points leave it out. */
+	/** Its disk in use, where its host says: a host's always, a sandbox's where its host reads its filesystem. */
 	readonly diskUsedBytes?: number;
+	/**
+	 * How much of the interval its work waited on disk IO, 0 to 1 (Linux's IO pressure, `some`): a sandbox's where its
+	 * host reads it. Absent: not measured, not none.
+	 */
+	readonly ioPressure?: number;
 }
 
 /** Usage points at a steady interval, oldest first, with what they're measured against. */
@@ -615,9 +752,23 @@ export interface UsageSeries {
 	readonly intervalMs: number;
 	/** The most memory there is: a sandbox's limit, a host's total. */
 	readonly memLimitBytes?: number;
-	/** A host's disk. */
+	/** Its disk: a host's, or a sandbox's where its host reads its filesystem. */
 	readonly diskTotalBytes?: number;
 	readonly points: readonly UsagePoint[];
+}
+
+/** How far back a sandbox's metrics look: the last hour, day or week. */
+export type UsageRange = "1h" | "24h" | "1w";
+
+/** One of the busiest processes in a running sandbox, as `ps` says. */
+export interface SandboxProcess {
+	readonly pid: number;
+	/** Its command line, whole. */
+	readonly command: string;
+	/** Its CPU, as a share of one vCPU in percent: 150 is one and a half. */
+	readonly cpuPercent: number;
+	/** Its resident memory, in bytes. */
+	readonly memoryBytes: number;
 }
 
 /**
@@ -633,6 +784,13 @@ export interface SandboxesSource {
 	 */
 	shapes?(accountId: string): Promise<SandboxShapes>;
 	list(accountId: string): Promise<readonly Sandbox[]>;
+	/**
+	 * Follows the account's sandboxes live: `changed` with a sandbox's ID each time one changes state, whoever changed it
+	 * (the CLI, the API, an auto-stop), and `deleted` when it was deleted; with none each time the feed connects or
+	 * reconnects, when anything may have changed meanwhile. The pages read again on each. Answers a function that stops.
+	 * Absent: the pages read again only after their own changes and while a sandbox starts or stops.
+	 */
+	watch?(accountId: string, changed: (sandboxId?: string, deleted?: boolean) => void): () => void;
 	create(input: CreateSandboxInput): Promise<Sandbox>;
 	stop(id: string): Promise<Sandbox>;
 	resume(id: string): Promise<Sandbox>;
@@ -640,6 +798,11 @@ export interface SandboxesSource {
 	fork(id: string): Promise<Sandbox>;
 	/** Restarts a sandbox's machine that doesn't answer; the disk is kept. */
 	recover(id: string): Promise<Sandbox>;
+	/**
+	 * Restarts a sandbox on the latest version of its base image: Kantel saves its disk, stops it and starts it again,
+	 * so running processes and memory are lost and its files stay. Absent: the console doesn't offer it.
+	 */
+	restartOnLatest?(id: string): Promise<Sandbox>;
 	/** Deletes the sandbox and every snapshot of it, for good. */
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
@@ -657,6 +820,15 @@ export interface SandboxesSource {
 	usageNow?(id: string): Promise<SandboxUsageNow>;
 	/** Its CPU and memory every few seconds, for the live graphs. Absent: they draw `usage` and don't move. */
 	readonly usageSeries?: UsageRead;
+	/**
+	 * Its metrics over the last hour, day or week, for its metrics dialog: points at an interval that suits the range.
+	 * Absent: the dialog draws what the live read has.
+	 */
+	usageHistory?(id: string, range: UsageRange): Promise<UsageSeries>;
+	/** A running sandbox's busiest processes, by CPU, most first. Absent: the dialog says it can't list them. */
+	processes?(id: string): Promise<readonly SandboxProcess[]>;
+	/** Gives it a new name; its address (subdomain) stays as it was. Absent: the list offers no rename. */
+	rename?(id: string, name: string): Promise<Sandbox>;
 	/** Its ports with a URL. Absent where the host can't list them: the page has no Ports. */
 	ports?(id: string): Promise<readonly SandboxPort[]>;
 	/** Gives a port a URL, or changes whether it's public. A private port's answer has its token in the URL, once. */
@@ -714,6 +886,11 @@ export interface SavedSnapshot {
 	readonly sizeBytes: number;
 	/** Sandboxes started from it. */
 	readonly uses: number;
+	/**
+	 * The base image it was saved on. Sandboxes started from an outdated one start on the old base; a snapshot saved
+	 * from a sandbox restarted on the latest refreshes it.
+	 */
+	readonly base?: SandboxBase;
 }
 
 /** A file or folder in a snapshot. */
@@ -1076,6 +1253,186 @@ export interface EnvironmentsSource {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Templates (experimental)
+
+/**
+ * What a template's machines boot: Kantel's base image, customised by the setup script; a Dockerfile (no build context,
+ * `FROM $KANTEL_BASE` for the base); or an image reference. A Dockerfile or reference is built or pulled in an isolated
+ * build microVM whose only way out is the template's egress grants, and only on hosts that build custom images.
+ */
+export type TemplateImage =
+	| { readonly kind: "kantel-base" }
+	| { readonly kind: "dockerfile"; readonly dockerfile: string }
+	| { readonly kind: "image"; readonly ref: string };
+
+/**
+ * The Kantel base image it boots, as the deployment publishes it: a channel it follows (rebuilt when it publishes), or
+ * an exact digest, one of that image's channels published, it is pinned to.
+ */
+export type TemplateBase =
+	| { readonly image: string; readonly channel: string; readonly digest?: undefined }
+	| { readonly image: string; readonly digest: string; readonly channel?: undefined };
+
+/** One digest a base channel published. */
+export interface TemplateBaseRelease {
+	readonly digest: string;
+	readonly publishedAt: number;
+}
+
+/** A base image's channel, as the deployment's super-admin published it, and the digests it has published. */
+export interface TemplateBaseChannel {
+	/** Such as `kantel/sandbox`. */
+	readonly image: string;
+	/** Such as `stable`. */
+	readonly channel: string;
+	/** The digest it publishes now. */
+	readonly digest: string;
+	readonly publishedAt: number;
+	/** Every digest it has published, newest first. */
+	readonly history: readonly TemplateBaseRelease[];
+}
+
+/** A template version's definition. Never changed once made: a new one is the next version. */
+export interface TemplateSpec {
+	readonly image: TemplateImage;
+	readonly base: TemplateBase;
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	/** Plain variables, not secrets. */
+	readonly env: Readonly<Record<string, string>>;
+	/** A shell script run once as root when the snapshot is built, or at a fresh boot. */
+	readonly setup?: string;
+	/** Egress grants for its sandboxes and its build. */
+	readonly grants: readonly EgressGrant[];
+}
+
+/**
+ * A built template's state. `stale`: built for a key no longer wanted (an older version, base, kernel or Firecracker),
+ * still used until its replacement is ready. `discarded`: thrown away.
+ */
+export type TemplateSnapshotState = "queued" | "building" | "ready" | "stale" | "failed" | "discarded";
+
+/** One entry in a template's snapshot cache: its image booted once, its setup run, then snapshotted. */
+export interface TemplateSnapshot {
+	readonly id: string;
+	readonly version: number;
+	readonly state: TemplateSnapshotState;
+	/** What it is for: a change to any part builds another. */
+	readonly key: {
+		readonly templateVersion: string;
+		readonly baseDigest: string;
+		/** A custom image's source: `dockerfile:sha256:…` or `image:<ref>`. */
+		readonly source?: string;
+		/** A custom image's digest, once its build made or resolved it. */
+		readonly imageDigest?: string;
+		readonly kernel: string;
+		readonly firecracker: string;
+		readonly vcpus: number;
+	};
+	readonly keyHash: string;
+	/** The host that built it and holds it. */
+	readonly hostId?: string;
+	readonly builtFrom: {
+		readonly baseImage: string;
+		readonly channel?: string;
+		readonly baseDigest: string;
+		readonly pinned: boolean;
+		readonly imageDigest?: string;
+		/** The image's kind it was built from; absent, `kantel-base`. */
+		readonly source?: "kantel-base" | "dockerfile" | "image";
+		readonly dockerfileDigest?: string;
+		readonly imageRef?: string;
+	};
+	readonly startedAt: number;
+	readonly readyAt?: number;
+	readonly error?: string;
+	readonly sizeBytes?: number;
+}
+
+/** A template's build: its newest usable snapshot, and the build under way. */
+export interface TemplateBuild {
+	/**
+	 * `none`: nothing built yet, sandboxes boot fresh. `stale`: what is built is for an older key, used until rebuilt if
+	 * it's of the template's current version (`startingSnapshot`).
+	 */
+	readonly state: "none" | "building" | "ready" | "stale" | "failed";
+	/** The newest ready (or stale) snapshot, of any version: new sandboxes start from it only per `startingSnapshot`. */
+	readonly ready?: TemplateSnapshot;
+	readonly building?: TemplateSnapshot;
+	readonly error?: string;
+	/** How far a pinned base is behind its channel. */
+	readonly behind?: { readonly releases: number; readonly since: number; readonly latestDigest: string };
+}
+
+/** A microVM profile: image, base, resources, variables, setup and egress, versioned. */
+export interface Template {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly version: number;
+	readonly spec: TemplateSpec;
+	readonly build: TemplateBuild;
+	readonly sandboxCount: number;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+}
+
+/**
+ * Whether a template's new sandboxes, at its own vCPUs and memory, may start from a cache entry: a ready one, or a stale
+ * one still used until its replacement is ready, of the template's current version. Kantel restores no other, so one
+ * of an older version stays in the cache but starts nothing.
+ */
+export function startsNewSandboxes(template: Pick<Template, "version">, entry: TemplateSnapshot): boolean {
+	return (entry.state === "ready" || entry.state === "stale") && entry.version === template.version;
+}
+
+/**
+ * The snapshot a template's new sandboxes start from: its build's ready (or stale) one when `startsNewSandboxes`, else
+ * none, and they boot the image fresh and run its setup.
+ */
+export function startingSnapshot(template: Pick<Template, "version" | "build">): TemplateSnapshot | undefined {
+	const ready = template.build.ready;
+	return ready !== undefined && startsNewSandboxes(template, ready) ? ready : undefined;
+}
+
+export interface TemplateVersion {
+	readonly version: number;
+	readonly spec: TemplateSpec;
+	readonly createdAt: number;
+	/** Who made it: a person's name, or an API key's. */
+	readonly by?: string;
+}
+
+/** A change to a template: only what's given changes. An empty description clears it. */
+export interface TemplateChange {
+	readonly name?: string;
+	readonly description?: string;
+	readonly spec?: TemplateSpec;
+}
+
+export interface TemplatesSource {
+	list(accountId: string): Promise<readonly Template[]>;
+	get(id: string): Promise<Template>;
+	create(input: { accountId: string; name: string; description?: string; spec: TemplateSpec }): Promise<Template>;
+	/** A `spec` that differs from the current one makes the next version, which builds in the background. */
+	update(id: string, change: TemplateChange): Promise<Template>;
+	/** Deletes it, its versions and its built snapshots. Sandboxes made from it keep running. */
+	remove(id: string): Promise<void>;
+	/** Newest first. */
+	versions(id: string): Promise<readonly TemplateVersion[]>;
+	/** Its snapshot cache, newest first. */
+	snapshots(id: string): Promise<readonly TemplateSnapshot[]>;
+	/** The base images' channels templates may follow or pin a digest from. */
+	bases(): Promise<readonly TemplateBaseChannel[]>;
+	/**
+	 * Builds its snapshot again. A ready one of its current version goes on serving, stale, until the rebuild's is ready,
+	 * and after a rebuild that failed; with none, sandboxes boot fresh until it's ready.
+	 */
+	rebuild(id: string): Promise<Template>;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // A sandbox's egress
 
 /** One request or connection a sandbox made through its host's egress proxy. Never a credential's value. */
@@ -1390,11 +1747,15 @@ export interface ComputeSource {
 	readonly keys: ApiKeysSource;
 	readonly proxy: ProxySource;
 	readonly environments: EnvironmentsSource;
+	/** Templates: only where the deployment has turned them on (experimental, `KANTEL_TEMPLATES`). */
+	readonly templates?: TemplatesSource;
 	readonly egress: EgressSource;
 	readonly webhooks: WebhooksSource;
 	readonly telemetry: TelemetrySource;
 	/** The deployment's hosts: only for a super-admin. */
 	readonly hosts?: HostsSource;
+	/** The deployment's base images, their scans, and its templates: only for a super-admin. */
+	readonly images?: BaseImagesSource;
 	/**
 	 * An account's own hosts, which run only its sandboxes: for everyone else, where the deployment lets accounts add
 	 * machines of their own (experimental). Absent, it doesn't.
@@ -1481,6 +1842,18 @@ export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 
 export const sizeSpec = (size: SandboxSize): SandboxSizeSpec =>
 	SANDBOX_SIZES.find((spec) => spec.size === size) ?? (SANDBOX_SIZES[1] as SandboxSizeSpec);
+
+/**
+ * What a sandbox was given: what its host said, else its size's usual figures. An isolate made before shapes says
+ * nothing and has no size, so it counts as the default isolate (shared CPU, 256 MB, no disk), as Kantel bills it.
+ */
+export const sandboxSpec = (
+	sandbox: Pick<Sandbox, "kind" | "size" | "resources">,
+): { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number } =>
+	sandbox.resources ??
+	(sandbox.kind === "isolate"
+		? { vcpus: 0, memoryGb: ISOLATE_MEMORY.default / 1024, diskGb: 0 }
+		: sizeSpec(sandbox.size));
 
 /** "4 vCPU, 8 GB" ("Shared CPU, 256 MB" for an isolate): a size, or what a sandbox was given, in a line. */
 export const sizeText = (size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number }): string => {

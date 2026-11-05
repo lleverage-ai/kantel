@@ -13,16 +13,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // A snapshot's files are read without starting it: its disk holds the overlay's upper layer (/root on the disk) over
-// the shared image, so a path is looked up in the upper layer first, then in the image, as overlayfs does in the
-// guest. debugfs (e2fsprogs) reads both ext4 images without mounting them, so no root is needed and nothing the
-// sandbox wrote is ever mounted on the host. A squashfs image (a custom image, injectGuestAgent) is read with
-// unsquashfs where the host has it; an erofs one isn't read at all (unsupported, never an empty directory).
+// its root filesystem (the host image version, or the template's base, it records), so a path is looked up in the upper layer
+// first, then in the root filesystem, as overlayfs does in the guest. debugfs (e2fsprogs) reads both ext4 images
+// without mounting them, so no root is needed and nothing the sandbox wrote is ever mounted on the host. A squashfs
+// image (a custom image, injectGuestAgent) is read with unsquashfs where the host has it; an erofs one isn't read at
+// all (unsupported, never an empty directory).
 
 type dentry struct {
 	name  string
@@ -79,31 +81,32 @@ func imageFormat(image string) string {
 	return ""
 }
 
-// imageList lists a directory of the sandbox's image (the overlay's lower layer), whichever file system it is:
-// found is whether the directory is there; an error is an image this host can't read, never an empty directory.
-func (m *Manager) imageList(dir string) (entries []dentry, found bool, err error) {
-	switch format := imageFormat(m.cfg.Rootfs); format {
+// imageList lists a directory of a snapshot's image (the overlay's lower layer: rootfs, the host's or a template's),
+// whichever file system it is: found is whether the directory is there; an error is an image this host can't read,
+// never an empty directory.
+func imageList(rootfs, dir string) (entries []dentry, found bool, err error) {
+	switch format := imageFormat(rootfs); format {
 	case "ext4":
-		entries, found = debugfsList(m.cfg.Rootfs, dir)
+		entries, found = debugfsList(rootfs, dir)
 		return entries, found, nil
 	case "squashfs":
-		return unsquashfsList(m.cfg.Rootfs, dir)
+		return unsquashfsList(rootfs, dir)
 	default:
 		return nil, false, unreadable(format)
 	}
 }
 
 // imageRead reads a file of the image found by imageList.
-func (m *Manager) imageRead(p string, e dentry) ([]byte, error) {
-	if imageFormat(m.cfg.Rootfs) == "squashfs" {
+func imageRead(rootfs, p string, e dentry) ([]byte, error) {
+	if imageFormat(rootfs) == "squashfs" {
 		// -no-wildcards: the path is a name, not a pattern (a file called "[ab].txt" beside a.txt).
-		out, err := exec.Command("unsquashfs", "-no-wildcards", "-cat", m.cfg.Rootfs, p).Output()
+		out, err := exec.Command("unsquashfs", "-no-wildcards", "-cat", rootfs, p).Output()
 		if err != nil {
 			return nil, fmt.Errorf("unsquashfs -cat %s: %w", p, err)
 		}
 		return out, nil
 	}
-	return debugfsDump(m.cfg.Rootfs, e)
+	return debugfsDump(rootfs, e)
 }
 
 func unreadable(format string) error {
@@ -231,11 +234,14 @@ func kind(mode uint32) string {
 // whiteout is overlayfs's mark of a deleted file: a character device 0/0.
 func whiteout(e dentry) bool { return e.mode&0o170000 == 0o020000 }
 
-func (m *Manager) snapshotImages(id string) (string, error) {
-	if _, err := m.readSnapshot(id); err != nil {
-		return "", err
+// snapshotLayers are a snapshot's disk (the upper layer) and the root filesystem under it, the one a sandbox made
+// from the snapshot reads (startOf).
+func (m *Manager) snapshotLayers(id string) (disk, lower string, err error) {
+	snap, err := m.readSnapshot(id)
+	if err != nil {
+		return "", "", err
 	}
-	return filepath.Join(m.snapshotDir(id), fc.DiskFile), nil
+	return filepath.Join(m.snapshotDir(id), fc.DiskFile), m.snapshotRootfs(snap), nil
 }
 
 // HasSnapshot says whether a snapshot is this tier's.
@@ -246,7 +252,7 @@ func (m *Manager) HasSnapshot(id string) bool {
 
 // SnapshotFiles lists a directory of a snapshot as the sandbox saw it.
 func (m *Manager) SnapshotFiles(id, p string) ([]proto.FileEntry, error) {
-	disk, err := m.snapshotImages(id)
+	disk, rootfs, err := m.snapshotLayers(id)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +277,7 @@ func (m *Manager) SnapshotFiles(id, p string) ([]proto.FileEntry, error) {
 	lowerFound := false
 	if !opaque {
 		var lower []dentry
-		lower, lowerFound, err = m.imageList(p)
+		lower, lowerFound, err = imageList(rootfs, p)
 		if err != nil {
 			return nil, err
 		}
@@ -298,7 +304,7 @@ func (m *Manager) SnapshotFiles(id, p string) ([]proto.FileEntry, error) {
 
 // SnapshotRead reads a file of a snapshot (up to 16 MiB).
 func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
-	disk, err := m.snapshotImages(id)
+	disk, rootfs, err := m.snapshotLayers(id)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +314,7 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 		var entries []dentry
 		if upper {
 			entries, _ = debugfsList(disk, path.Join("/root", parent))
-		} else if entries, _, err = m.imageList(parent); err != nil {
+		} else if entries, _, err = imageList(rootfs, parent); err != nil {
 			return nil, err
 		}
 		for _, e := range entries {
@@ -327,18 +333,32 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 			if upper {
 				return debugfsDump(disk, e)
 			}
-			return m.imageRead(p, e)
+			return imageRead(rootfs, p, e)
 		}
 	}
 	return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no file " + p + " in snapshot " + id}
 }
 
-// ResetTemplates forgets every size's template snapshot (a benchmark's cold start).
+// ResetTemplates forgets every template snapshot, the sizes' and the shared ones (a benchmark's cold start).
 func (m *Manager) ResetTemplates() {
+	names := map[string]bool{}
 	for _, size := range m.cfg.Sizes {
-		lock := m.templates[size.Name]
+		names[size.Name] = true
+	}
+	// The shared templates too, made or being made.
+	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, "templates"))
+	for _, e := range entries {
+		if name := strings.TrimSuffix(e.Name(), ".building"); strings.HasPrefix(name, sharedPrefix) {
+			names[name] = true
+		}
+	}
+	for name := range names {
+		lock := m.templateLock(name)
 		lock.Lock()
-		_ = os.RemoveAll(filepath.Join(m.cfg.Root, "templates", size.Name))
+		_ = os.RemoveAll(filepath.Join(m.cfg.Root, "templates", name))
 		lock.Unlock()
 	}
+	m.mu.Lock()
+	m.sharedFailed = map[int]time.Time{}
+	m.mu.Unlock()
 }

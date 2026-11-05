@@ -7,7 +7,7 @@
 // rules and approvals, the vault, skills, memory, browsers) was removed; its tables, on a database an older version
 // used, are left as they are and never read.
 import { createMemoryAuditStore } from "@kantel/audit/memory";
-import type { ComputeStore } from "@kantel/compute";
+import type { ComputeStore, LiveRelay } from "@kantel/compute";
 import {
 	type AuditStore,
 	type Authentication,
@@ -52,6 +52,11 @@ export interface GatewayComponents {
 	 * gateways over one database share them. Absent in memory, where the API makes its own.
 	 */
 	readonly computeStore?: ComputeStore;
+	/**
+	 * Carries sandboxes' live changes between gateway replicas over one database (live-relay.ts). Absent in memory,
+	 * where there is one gateway.
+	 */
+	readonly liveRelay?: LiveRelay;
 	/**
 	 * Tunnel tickets and exposed ports (`@kantel/hosts/relay-store`), with `computeHosts`: Postgres with a database, so
 	 * desktop, browser, SSH and port URLs outlast a restart and work on every gateway over the database.

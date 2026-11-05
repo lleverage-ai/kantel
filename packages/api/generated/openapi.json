@@ -262,6 +262,19 @@
 				"summary": "Create an organisation",
 				"description": "Makes an organisation account with the caller as its owner. People only: a key is refused.",
 				"tags": ["accounts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -305,6 +318,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1075,6 +1108,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"requestBody": {
@@ -1140,6 +1184,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1346,7 +1400,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -1417,6 +1471,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1603,6 +1667,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"requestBody": {
@@ -1675,6 +1750,16 @@
 								}
 							}
 						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
 					}
 				}
 			},
@@ -1691,6 +1776,17 @@
 						"description": "The sandbox's ID.",
 						"schema": {
 							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
 						}
 					}
 				],
@@ -1747,6 +1843,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2131,7 +2237,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -2210,6 +2316,16 @@
 							}
 						}
 					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"429": {
 						"description": "`exhausted`",
 						"content": {
@@ -2257,6 +2373,17 @@
 						"description": "The sandbox's ID.",
 						"schema": {
 							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
 						}
 					}
 				],
@@ -2313,6 +2440,148 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/restart-on-latest": {
+			"post": {
+				"operationId": "restartSandboxOnLatest",
+				"summary": "Restart a sandbox on the latest base",
+				"description": "Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The sandbox, starting.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Sandbox"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict` or `aborted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "`exhausted`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2439,7 +2708,7 @@
 			"post": {
 				"operationId": "runCommand",
 				"summary": "Run a command",
-				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`.",
+				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless `timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -2455,7 +2724,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -2526,6 +2795,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2640,7 +2919,7 @@
 			"get": {
 				"operationId": "getCommand",
 				"summary": "Get a command",
-				"description": "Its state and its output so far. A key needs `exec`.",
+				"description": "Its state, and once it has ended its exit code and output. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -2718,7 +2997,7 @@
 			"delete": {
 				"operationId": "killCommand",
 				"summary": "Kill a command",
-				"description": "Ends a running command; one that has ended is answered as it is. A key needs `exec`.",
+				"description": "Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -3610,6 +3889,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"requestBody": {
@@ -3675,6 +3965,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -4436,6 +4736,19 @@
 				"summary": "Save a snapshot",
 				"description": "Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`.",
 				"tags": ["snapshots"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -4507,6 +4820,16 @@
 							}
 						}
 					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"429": {
 						"description": "`exhausted`",
 						"content": {
@@ -4554,6 +4877,17 @@
 						"description": "The sandbox's ID.",
 						"schema": {
 							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
 						}
 					}
 				],
@@ -4620,6 +4954,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -5067,6 +5411,19 @@
 				"summary": "Create an API key",
 				"description": "Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`.",
 				"tags": ["api-keys"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -5110,6 +5467,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -5276,6 +5653,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"responses": {
@@ -5331,6 +5719,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -5914,6 +6312,19 @@
 				"summary": "Create an environment",
 				"description": "An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`.",
 				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -5967,6 +6378,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -6923,6 +7344,821 @@
 				}
 			}
 		},
+		"/templates": {
+			"get": {
+				"operationId": "listTemplates",
+				"summary": "List templates",
+				"description": "The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "baseDigest",
+						"in": "query",
+						"required": false,
+						"description": "Only those with a snapshot built from this base digest, or pinned to it.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The templates.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createTemplate",
+				"summary": "Create a template",
+				"description": "A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateTemplateBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The template.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}": {
+			"get": {
+				"operationId": "getTemplate",
+				"summary": "Get a template",
+				"description": "With its build, and how far behind a pinned base is. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The template.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateTemplate",
+				"summary": "Change a template",
+				"description": "Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready; a Dockerfile's or image reference's wait for the new version's image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateTemplateBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The template.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteTemplate",
+				"summary": "Delete a template",
+				"description": "Deletes it, its versions and its built snapshots. Sandboxes made from it keep running. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}/versions": {
+			"get": {
+				"operationId": "listTemplateVersions",
+				"summary": "List a template's versions",
+				"description": "Newest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its versions.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateVersionList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}/snapshots": {
+			"get": {
+				"operationId": "listTemplateSnapshots",
+				"summary": "List a template's snapshots",
+				"description": "Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its snapshots.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateSnapshotList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}/rebuild": {
+			"post": {
+				"operationId": "rebuildTemplate",
+				"summary": "Rebuild a template",
+				"description": "Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready, or, for a Dockerfile or image reference, wait for its image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The template, building.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/template-bases": {
+			"get": {
+				"operationId": "listTemplateBases",
+				"summary": "List base images' channels",
+				"description": "Every base channel templates may follow, with the digests it has published. Any signed-in caller. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"responses": {
+					"200": {
+						"description": "The channels.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateBaseList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "publishTemplateBase",
+				"summary": "Publish a base image's digest",
+				"description": "Makes `digest` the channel's current one, made if it is new. Every template following the channel rebuilds in the background; pinned ones don't, and say how far behind they are. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PublishTemplateBaseBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The channel.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateBaseChannel"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/events": {
 			"get": {
 				"operationId": "listEvents",
@@ -7029,6 +8265,67 @@
 				}
 			}
 		},
+		"/events/live": {
+			"get": {
+				"operationId": "watchEvents",
+				"summary": "Watch sandboxes live",
+				"description": "Server-sent events, one frame each, as the account's sandboxes change state: who changed one makes no difference (the console, the CLI, the API or an SDK, an auto-stop, a host). First a `hello`, then a `sandbox` frame per change, of the sandboxes the caller may see. A comment line every 25 s keeps it open. The server ends it after 10 minutes, or once the caller may no longer watch, and nothing is replayed: reconnect, and read what you show again on each `hello`. A key needs `sandboxes:read`.",
+				"tags": ["events"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The account's live changes. Server-sent events, each named after its frame's type with the frame as its JSON data; a comment line is a keep-alive. It takes no WebSocket upgrade.",
+						"content": {
+							"text/event-stream": {
+								"schema": {
+									"$ref": "#/components/schemas/LiveFrame"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/webhooks": {
 			"get": {
 				"operationId": "listWebhooks",
@@ -7094,6 +8391,19 @@
 				"summary": "Create a webhook",
 				"description": "Its signing secret is answered once. A key needs `account:admin`.",
 				"tags": ["webhooks"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -7137,6 +8447,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -7395,6 +8725,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"responses": {
@@ -7440,6 +8781,26 @@
 					},
 					"404": {
 						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -7794,6 +9155,56 @@
 				}
 			}
 		},
+		"/admin/hosts/images": {
+			"get": {
+				"operationId": "listBaseImages",
+				"summary": "List base images",
+				"description": "Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The base images.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BaseImageList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/hosts": {
 			"get": {
 				"operationId": "listHosts",
@@ -7840,6 +9251,19 @@
 				"summary": "Make a host join token",
 				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": false,
 					"content": {
@@ -7883,6 +9307,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -8317,6 +9761,19 @@
 				"summary": "Make a join token for one of your own hosts",
 				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": false,
 					"content": {
@@ -8360,6 +9817,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -9162,6 +10639,19 @@
 				"summary": "Create a bucket source",
 				"description": "A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
 				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -9205,6 +10695,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -9730,7 +11240,7 @@
 					}
 				],
 				"title": "ApiKeyScope",
-				"description": "What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only."
+				"description": "What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments, templates and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments, templates and sandboxes' grants. `hosts:admin`: the deployment's hosts and template bases, for a super-admin's key only."
 			},
 			"ApproveDeviceLoginBody": {
 				"type": "object",
@@ -9752,13 +11262,284 @@
 				"title": "ApproveDeviceLoginBody",
 				"description": "The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin."
 			},
+			"BaseImage": {
+				"type": "object",
+				"required": ["name", "repository", "channel", "versions"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"description": "`sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images."
+					},
+					"repository": {
+						"type": "string",
+						"description": "Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's."
+					},
+					"channel": {
+						"type": "string",
+						"const": "stable",
+						"description": "The channel `latest` is of."
+					},
+					"latest": {
+						"$ref": "#/components/schemas/BaseImageVersion"
+					},
+					"versions": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageVersion"
+						},
+						"description": "Its newest versions, newest first, at most 10."
+					}
+				},
+				"title": "BaseImage"
+			},
+			"BaseImageFinding": {
+				"type": "object",
+				"required": ["id", "severity", "package", "installed"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "`CVE-2026-1234`, or the scanner's own ID where there is no CVE."
+					},
+					"severity": {
+						"$ref": "#/components/schemas/ScanSeverity"
+					},
+					"package": {
+						"type": "string",
+						"description": "The package it is in, such as `openssl`."
+					},
+					"installed": {
+						"type": "string",
+						"description": "The package's version in the image."
+					},
+					"fixed": {
+						"type": "string",
+						"description": "The version that fixes it, where one is out."
+					},
+					"title": {
+						"type": "string"
+					}
+				},
+				"title": "BaseImageFinding",
+				"description": "One vulnerability a scan found in an image."
+			},
+			"BaseImageList": {
+				"type": "object",
+				"required": ["images", "templates", "indexUrl"],
+				"properties": {
+					"images": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImage"
+						}
+					},
+					"templates": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageTemplate"
+						},
+						"description": "Templates and their bases; empty until templates exist."
+					},
+					"indexUrl": {
+						"type": "string",
+						"description": "Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`)."
+					},
+					"generatedAt": {
+						"type": "string",
+						"description": "When the index was last written, ISO 8601."
+					},
+					"error": {
+						"type": "string",
+						"description": "Why the index couldn't be read; `images` is empty then. It is tried again soon."
+					}
+				},
+				"title": "BaseImageList",
+				"description": "Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what their CVE scans found."
+			},
+			"BaseImageScan": {
+				"type": "object",
+				"required": ["scanner", "scannedAt", "counts", "fixable", "findings"],
+				"properties": {
+					"scanner": {
+						"type": "string",
+						"description": "What scanned it, such as `trivy 0.68.1`."
+					},
+					"scannedAt": {
+						"type": "string",
+						"description": "When, ISO 8601."
+					},
+					"counts": {
+						"$ref": "#/components/schemas/BaseImageScanCounts"
+					},
+					"fixable": {
+						"$ref": "#/components/schemas/BaseImageScanFixable"
+					},
+					"findings": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageFinding"
+						},
+						"description": "The Critical and High findings, most severe first, at most 50."
+					}
+				},
+				"title": "BaseImageScan",
+				"description": "What the newest CVE scan of a version found."
+			},
+			"BaseImageScanCounts": {
+				"type": "object",
+				"required": ["critical", "high", "medium", "low", "unknown"],
+				"properties": {
+					"critical": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Critical findings."
+					},
+					"high": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "High findings."
+					},
+					"medium": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Medium findings."
+					},
+					"low": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Low findings."
+					},
+					"unknown": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Findings of no known severity."
+					}
+				},
+				"title": "BaseImageScanCounts",
+				"description": "Every finding, by severity."
+			},
+			"BaseImageScanFixable": {
+				"type": "object",
+				"required": ["critical", "high"],
+				"properties": {
+					"critical": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Critical findings with a fix out."
+					},
+					"high": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "High findings with a fix out."
+					}
+				},
+				"title": "BaseImageScanFixable",
+				"description": "Critical and High findings with a fix out: what makes Kantel rebuild the image at once."
+			},
+			"BaseImageTemplate": {
+				"type": "object",
+				"required": ["id", "name", "image", "base", "rebuilding"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"image": {
+						"type": "string",
+						"description": "The base image it is built on."
+					},
+					"channel": {
+						"type": "string",
+						"description": "The channel it follows, such as `stable`."
+					},
+					"pinned": {
+						"type": "string",
+						"description": "The digest it is pinned to, when it doesn't follow a channel."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
+					},
+					"rebuilding": {
+						"type": "boolean",
+						"description": "Whether it is being rebuilt on the latest base now."
+					}
+				},
+				"title": "BaseImageTemplate",
+				"description": "A template and the base it is built on."
+			},
+			"BaseImageVersion": {
+				"type": "object",
+				"required": ["version", "digest", "builtAt", "signed"],
+				"properties": {
+					"version": {
+						"type": "string",
+						"description": "Its tag, such as `2026.11.04.1`."
+					},
+					"digest": {
+						"type": "string",
+						"description": "`sha256:…`: the digest it is pulled by. A version's digest never changes."
+					},
+					"builtAt": {
+						"type": "string",
+						"description": "When it was built, ISO 8601."
+					},
+					"signed": {
+						"type": "boolean",
+						"description": "Signed with cosign, keyless, by Kantel's build."
+					},
+					"reason": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "daily"
+							},
+							{
+								"type": "string",
+								"const": "cve"
+							},
+							{
+								"type": "string",
+								"const": "manual"
+							},
+							{
+								"type": "string",
+								"const": "push"
+							}
+						],
+						"description": "Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change."
+					},
+					"scan": {
+						"$ref": "#/components/schemas/BaseImageScan"
+					}
+				},
+				"title": "BaseImageVersion",
+				"description": "One build of a base image."
+			},
 			"BrowserAccess": {
 				"type": "object",
-				"required": ["url", "cdpUrl", "viewOnly", "expiresAt"],
+				"required": ["url", "embedUrl", "surface", "cdpUrl", "viewOnly", "expiresAt"],
 				"properties": {
 					"url": {
 						"type": "string",
-						"description": "Watch and drive the sandbox's Chromium in a browser."
+						"description": "Watch and drive the sandbox's Chromium in a browser: the browser alone where `surface` is `browser`, else the desktop it runs on."
+					},
+					"embedUrl": {
+						"type": "string",
+						"description": "The same view, for an `<iframe>` in your own app."
+					},
+					"surface": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "browser"
+							},
+							{
+								"type": "string",
+								"const": "desktop"
+							}
+						],
+						"description": "Experimental. What `url` shows: `browser`, the browser alone on a display of its own, sized to the viewer and streamed only while someone watches; `desktop`, the sandbox's desktop with Chromium on it (an image without a browser surface)."
 					},
 					"cdpUrl": {
 						"type": "string",
@@ -10043,6 +11824,10 @@
 					},
 					"mode": {
 						"$ref": "#/components/schemas/DeploymentMode"
+					},
+					"sandboxDomain": {
+						"type": "string",
+						"description": "The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none."
 					}
 				},
 				"title": "Caller",
@@ -10109,7 +11894,7 @@
 					},
 					"stdout": {
 						"type": "string",
-						"description": "Its output so far, up to 1 MiB; `truncated` says if there was more."
+						"description": "Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more."
 					},
 					"stderr": {
 						"type": "string"
@@ -10482,6 +12267,10 @@
 						"type": "string",
 						"description": "Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables."
 					},
+					"template": {
+						"type": "string",
+						"description": "Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables."
+					},
 					"hostLabels": {
 						"type": "object",
 						"patternProperties": {
@@ -10506,6 +12295,29 @@
 				},
 				"title": "CreateSandboxBody",
 				"description": "Every field is optional: `{}` makes a running isolate in the caller's account."
+			},
+			"CreateTemplateBody": {
+				"type": "object",
+				"required": ["name", "spec"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+						"description": "Unique in the account: lower-case letters, digits and dashes, at most 63."
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 500
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					}
+				},
+				"title": "CreateTemplateBody"
 			},
 			"CreateWebhookBody": {
 				"type": "object",
@@ -11167,15 +12979,19 @@
 							},
 							"details": {
 								"type": "object",
-								"patternProperties": {
-									"^.*$": {}
-								}
+								"properties": {
+									"reason": {
+										"$ref": "#/components/schemas/PlacementReason"
+									}
+								},
+								"additionalProperties": true,
+								"description": "More about the error, by code. A sandbox that can't be placed (on create, start, resume or fork) has `reason`. A call that needs a running sandbox answers `conflict` with a `SandboxNotRunning` here when it isn't running: its `code` (`sandbox_stopped`, `sandbox_starting`...), `state`, `stopReason` and `hint`."
 							}
 						}
 					}
 				},
 				"title": "ErrorBody",
-				"description": "Every error: the KantelError's code and message."
+				"description": "Every error: the KantelError's `code` and `message`, and for some errors `details`, such as a `SandboxNotRunning`."
 			},
 			"ErrorCode": {
 				"anyOf": [
@@ -11271,6 +13087,9 @@
 					},
 					"reason": {
 						"type": "string"
+					},
+					"placementReason": {
+						"$ref": "#/components/schemas/PlacementReason"
 					},
 					"actor": {
 						"$ref": "#/components/schemas/CreatedBy"
@@ -11687,12 +13506,15 @@
 					"browser": {
 						"$ref": "#/components/schemas/GuestFeature"
 					},
+					"browserSurface": {
+						"$ref": "#/components/schemas/GuestFeature"
+					},
 					"docker": {
 						"$ref": "#/components/schemas/GuestDocker"
 					}
 				},
 				"title": "GuestCapabilities",
-				"description": "What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker."
+				"description": "What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker."
 			},
 			"GuestDocker": {
 				"type": "object",
@@ -11703,7 +13525,7 @@
 					},
 					"detail": {
 						"type": "string",
-						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+						"description": "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`."
 					},
 					"reason": {
 						"type": "string",
@@ -11725,7 +13547,7 @@
 					},
 					"detail": {
 						"type": "string",
-						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+						"description": "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`."
 					},
 					"reason": {
 						"type": "string",
@@ -12088,6 +13910,62 @@
 				},
 				"title": "JoinOrganisationBody"
 			},
+			"LiveFrame": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/LiveHello"
+					},
+					{
+						"$ref": "#/components/schemas/LiveSandboxChange"
+					}
+				],
+				"title": "LiveFrame",
+				"description": "One frame of the account's live stream."
+			},
+			"LiveHello": {
+				"type": "object",
+				"required": ["type", "at"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "hello"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "LiveHello",
+				"description": "The stream is open. Read what you show again after each one: changes made while no stream was open (before the first, between a drop and the reconnection) are not sent."
+			},
+			"LiveSandboxChange": {
+				"type": "object",
+				"required": ["type", "sandboxId", "accountId", "state", "at"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "sandbox"
+					},
+					"sandboxId": {
+						"type": "string"
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"state": {
+						"$ref": "#/components/schemas/SandboxState"
+					},
+					"previousState": {
+						"$ref": "#/components/schemas/SandboxState"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "LiveSandboxChange",
+				"description": "A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, the API or an SDK, its auto-stop, its host). No `previousState`: it was just made. Read the sandbox for the rest."
+			},
 			"Member": {
 				"type": "object",
 				"required": ["userId", "name", "role", "joinedAt"],
@@ -12225,6 +14103,48 @@
 				],
 				"title": "MountStatus",
 				"description": "`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it."
+			},
+			"PlacementReason": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "no_host"
+					},
+					{
+						"type": "string",
+						"const": "no_host_for_type"
+					},
+					{
+						"type": "string",
+						"const": "no_host_with_labels"
+					},
+					{
+						"type": "string",
+						"const": "no_host_offers_size"
+					},
+					{
+						"type": "string",
+						"const": "no_host_enforces_egress"
+					},
+					{
+						"type": "string",
+						"const": "no_host_for_template"
+					},
+					{
+						"type": "string",
+						"const": "insufficient_capacity"
+					},
+					{
+						"type": "string",
+						"const": "host_unavailable"
+					},
+					{
+						"type": "string",
+						"const": "account_limit"
+					}
+				],
+				"title": "PlacementReason",
+				"description": "Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may."
 			},
 			"PollDeviceLoginBody": {
 				"type": "object",
@@ -12415,6 +14335,30 @@
 					}
 				},
 				"title": "PublicUrl"
+			},
+			"PublishTemplateBaseBody": {
+				"type": "object",
+				"required": ["image", "channel", "digest"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
+						"description": "The base image, such as `kantel/sandbox`."
+					},
+					"channel": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "A channel, such as `stable`."
+					},
+					"digest": {
+						"type": "string",
+						"pattern": "^sha256:[0-9a-f]{64}$",
+						"description": "The digest the channel publishes from now."
+					}
+				},
+				"title": "PublishTemplateBaseBody"
 			},
 			"PutEgressGrantsBody": {
 				"type": "object",
@@ -12608,11 +14552,11 @@
 						"type": "integer",
 						"minimum": 1,
 						"maximum": 600000,
-						"description": "Default 30 000; at most 600 000 (10 minutes)."
+						"description": "Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one."
 					},
 					"detached": {
 						"type": "boolean",
-						"description": "Start it and answer at once, with no time limit; read it back by its ID."
+						"description": "Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID."
 					}
 				},
 				"title": "RunCommandBody"
@@ -12672,7 +14616,10 @@
 					},
 					"reason": {
 						"type": "string",
-						"description": "Why it is in `error` or `degraded`, in words."
+						"description": "Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, or a rule's reason. A stop someone asked for has none."
+					},
+					"placementReason": {
+						"$ref": "#/components/schemas/PlacementReason"
 					},
 					"visibility": {
 						"$ref": "#/components/schemas/SandboxVisibility"
@@ -12709,12 +14656,19 @@
 						"type": "string",
 						"description": "The snapshot a resume or fork would use."
 					},
+					"latestSnapshotAt": {
+						"type": "integer",
+						"description": "When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone."
+					},
 					"source": {
 						"$ref": "#/components/schemas/SandboxSource"
 					},
 					"environmentId": {
 						"type": "string",
 						"description": "The environment it was made from."
+					},
+					"template": {
+						"$ref": "#/components/schemas/SandboxTemplate"
 					},
 					"grants": {
 						"type": "array",
@@ -12754,9 +14708,75 @@
 					"hostId": {
 						"type": "string",
 						"description": "The host it runs on; only a super-admin is shown it."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
 					}
 				},
 				"title": "Sandbox"
+			},
+			"SandboxBase": {
+				"type": "object",
+				"required": ["image", "outdated"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"description": "The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: kernel and root file system), `sandbox` for the container tier."
+					},
+					"version": {
+						"type": "string",
+						"description": "The version of the base it is on, such as `host-images-20261104.812`."
+					},
+					"outdated": {
+						"type": "boolean",
+						"description": "Its base isn't the version its channel (`stable`) names now."
+					},
+					"latest": {
+						"$ref": "#/components/schemas/SandboxBaseLatest"
+					},
+					"behind": {
+						"$ref": "#/components/schemas/SandboxBaseBehind"
+					},
+					"security": {
+						"type": "boolean",
+						"description": "A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest."
+					}
+				},
+				"title": "SandboxBase",
+				"description": "The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version."
+			},
+			"SandboxBaseBehind": {
+				"type": "object",
+				"required": ["days", "versions"],
+				"properties": {
+					"days": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Whole days since the version after its own was built: how long it has been superseded."
+					},
+					"versions": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many versions are newer."
+					}
+				},
+				"title": "SandboxBaseBehind",
+				"description": "How far behind its channel it is, while outdated."
+			},
+			"SandboxBaseLatest": {
+				"type": "object",
+				"required": ["version", "builtAt"],
+				"properties": {
+					"version": {
+						"type": "string"
+					},
+					"builtAt": {
+						"type": "string",
+						"description": "When it was built, ISO 8601."
+					}
+				},
+				"title": "SandboxBaseLatest",
+				"description": "The version its channel names now."
 			},
 			"SandboxCapabilities": {
 				"type": "object",
@@ -12776,6 +14796,10 @@
 					},
 					"browser": {
 						"type": "boolean"
+					},
+					"browserSurface": {
+						"type": "boolean",
+						"description": "Experimental. Whether `openBrowser`'s `url` shows the browser alone rather than the desktop it runs on: the image has a display and a stream for its browser. Absent: false."
 					},
 					"ports": {
 						"type": "boolean"
@@ -12901,6 +14925,61 @@
 				"title": "SandboxMount",
 				"description": "A mount of a sandbox's, and whether its files are in place."
 			},
+			"SandboxNotRunning": {
+				"type": "object",
+				"required": ["code", "sandboxId", "state", "hint"],
+				"properties": {
+					"code": {
+						"$ref": "#/components/schemas/SandboxNotRunningCode"
+					},
+					"sandboxId": {
+						"type": "string"
+					},
+					"state": {
+						"$ref": "#/components/schemas/SandboxState"
+					},
+					"stopReason": {
+						"type": "string",
+						"description": "Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's."
+					},
+					"hint": {
+						"type": "string",
+						"description": "What to do, in words, such as `Resume it with kantel resume sbx_4kq9x2mt or POST /v1/sandboxes/sbx_4kq9x2mt/resume, then try again`."
+					}
+				},
+				"title": "SandboxNotRunning",
+				"description": "The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call."
+			},
+			"SandboxNotRunningCode": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "sandbox_starting"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_stopping"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_stopped"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_paused"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_error"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_deleting"
+					}
+				],
+				"title": "SandboxNotRunningCode",
+				"description": "Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted."
+			},
 			"SandboxPage": {
 				"type": "object",
 				"required": ["items"],
@@ -12972,7 +15051,18 @@
 					"memUsedBytes": {
 						"type": "integer",
 						"minimum": 0,
-						"description": "Memory in use at `at`."
+						"description": "Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime."
+					},
+					"diskUsedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it."
+					},
+					"ioPressure": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures."
 					}
 				},
 				"title": "SandboxSeriesPoint"
@@ -12993,7 +15083,7 @@
 					}
 				},
 				"title": "SandboxShapeInput",
-				"description": "What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch."
+				"description": "What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch."
 			},
 			"SandboxShapes": {
 				"type": "object",
@@ -13086,6 +15176,42 @@
 				"title": "SandboxState",
 				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots."
 			},
+			"SandboxTemplate": {
+				"type": "object",
+				"required": ["id", "name", "version", "start"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The template's ID, `tpl_…`."
+					},
+					"name": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer",
+						"description": "The template's version it was made from."
+					},
+					"snapshotId": {
+						"type": "string",
+						"description": "The template snapshot it started from, `tsn_…`; absent for a fresh boot."
+					},
+					"start": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "snapshot"
+							},
+							{
+								"type": "string",
+								"const": "boot"
+							}
+						],
+						"description": "`snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself (a custom image: the one its build made)."
+					}
+				},
+				"title": "SandboxTemplate",
+				"description": "The template a sandbox was made from."
+			},
 			"SandboxType": {
 				"anyOf": [
 					{
@@ -13136,6 +15262,11 @@
 						"minimum": 0,
 						"description": "The memory it may use, when its host reports it or its size sets it."
 					},
+					"diskTotalBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Its own disk's size, as its guest counts it, when its host sends disk figures."
+					},
 					"series": {
 						"$ref": "#/components/schemas/SandboxUsageSeries"
 					}
@@ -13164,9 +15295,25 @@
 					},
 					"cost": {
 						"type": "number"
+					},
+					"measured": {
+						"type": "boolean",
+						"description": "Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it."
+					},
+					"diskUsedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The sandbox's own disk in use, its mean over the interval; absent where its host doesn't send it."
+					},
+					"ioPressure": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the interval in which at least one of its tasks waited on IO, its mean; absent where its guest has no pressure figures."
 					}
 				},
-				"title": "SandboxUsagePoint"
+				"title": "SandboxUsagePoint",
+				"description": "One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best."
 			},
 			"SandboxUsageSeries": {
 				"type": "object",
@@ -13230,6 +15377,31 @@
 					}
 				},
 				"title": "SaveSnapshotBody"
+			},
+			"ScanSeverity": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "critical"
+					},
+					{
+						"type": "string",
+						"const": "high"
+					},
+					{
+						"type": "string",
+						"const": "medium"
+					},
+					{
+						"type": "string",
+						"const": "low"
+					},
+					{
+						"type": "string",
+						"const": "unknown"
+					}
+				],
+				"title": "ScanSeverity"
 			},
 			"SetEnvironmentFileBody": {
 				"type": "object",
@@ -13415,6 +15587,12 @@
 						"type": "boolean",
 						"description": "Whether it holds the sandbox's memory as well as its disk (a pause)."
 					},
+					"size": {
+						"$ref": "#/components/schemas/SandboxSizeName"
+					},
+					"resources": {
+						"$ref": "#/components/schemas/SandboxResources"
+					},
 					"sizeBytes": {
 						"type": "integer"
 					},
@@ -13425,6 +15603,9 @@
 					"expiresAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
 					}
 				},
 				"title": "Snapshot"
@@ -13664,6 +15845,598 @@
 				"title": "TelemetryTestResult",
 				"description": "What the collector answered to an empty export sent on save."
 			},
+			"Template": {
+				"type": "object",
+				"required": [
+					"id",
+					"accountId",
+					"name",
+					"version",
+					"spec",
+					"build",
+					"sandboxCount",
+					"createdAt",
+					"updatedAt",
+					"createdBy"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The template's ID, such as `tpl_4kq9x2mt`."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer",
+						"description": "Its current version; a new spec makes the next."
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					},
+					"build": {
+						"$ref": "#/components/schemas/TemplateBuildStatus"
+					},
+					"sandboxCount": {
+						"type": "integer",
+						"description": "How many sandboxes were made from it and still exist."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/CreatedBy"
+					}
+				},
+				"title": "Template",
+				"description": "A microVM profile: image, base, resources, variables, setup and egress, versioned."
+			},
+			"TemplateBase": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/TemplateBaseChannelRef"
+					},
+					{
+						"$ref": "#/components/schemas/TemplateBasePinned"
+					}
+				],
+				"title": "TemplateBase",
+				"description": "The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image."
+			},
+			"TemplateBaseChannel": {
+				"type": "object",
+				"required": ["image", "channel", "digest", "publishedAt", "history"],
+				"properties": {
+					"image": {
+						"type": "string"
+					},
+					"channel": {
+						"type": "string"
+					},
+					"digest": {
+						"type": "string",
+						"description": "The digest it publishes now."
+					},
+					"publishedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"history": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateBaseRelease"
+						},
+						"description": "Every digest it has published, newest first."
+					}
+				},
+				"title": "TemplateBaseChannel",
+				"description": "A base image's channel and the digests it has published."
+			},
+			"TemplateBaseChannelRef": {
+				"type": "object",
+				"required": ["image", "channel"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
+						"description": "The base image, such as `kantel/sandbox`."
+					},
+					"channel": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "A channel, such as `stable`."
+					}
+				},
+				"title": "TemplateBaseChannelRef",
+				"description": "Follow a channel: rebuilt when it publishes a new digest."
+			},
+			"TemplateBaseList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateBaseChannel"
+						}
+					}
+				},
+				"title": "TemplateBaseList"
+			},
+			"TemplateBasePinned": {
+				"type": "object",
+				"required": ["image", "digest"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
+						"description": "The base image, such as `kantel/sandbox`."
+					},
+					"digest": {
+						"type": "string",
+						"pattern": "^sha256:[0-9a-f]{64}$",
+						"description": "The digest pinned."
+					}
+				},
+				"title": "TemplateBasePinned",
+				"description": "Pin an exact digest, one its channels published: never rebuilt for a new release."
+			},
+			"TemplateBaseRelease": {
+				"type": "object",
+				"required": ["digest", "publishedAt"],
+				"properties": {
+					"digest": {
+						"type": "string"
+					},
+					"publishedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "TemplateBaseRelease"
+			},
+			"TemplateBehind": {
+				"type": "object",
+				"required": ["releases", "since", "latestDigest"],
+				"properties": {
+					"releases": {
+						"type": "integer",
+						"description": "How many digests the base's channel has published since the pinned one."
+					},
+					"since": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"latestDigest": {
+						"type": "string"
+					}
+				},
+				"title": "TemplateBehind",
+				"description": "How far a pinned base is behind its channel."
+			},
+			"TemplateBuildStatus": {
+				"type": "object",
+				"required": ["state"],
+				"properties": {
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "none"
+							},
+							{
+								"type": "string",
+								"const": "building"
+							},
+							{
+								"type": "string",
+								"const": "ready"
+							},
+							{
+								"type": "string",
+								"const": "stale"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							}
+						],
+						"description": "`none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that build (`unavailable` until then)."
+					},
+					"ready": {
+						"$ref": "#/components/schemas/TemplateSnapshot"
+					},
+					"building": {
+						"$ref": "#/components/schemas/TemplateSnapshot"
+					},
+					"error": {
+						"type": "string"
+					},
+					"behind": {
+						"$ref": "#/components/schemas/TemplateBehind"
+					}
+				},
+				"title": "TemplateBuildStatus"
+			},
+			"TemplateBuiltFrom": {
+				"type": "object",
+				"required": ["baseImage", "baseDigest", "pinned", "kernel", "firecracker"],
+				"properties": {
+					"baseImage": {
+						"type": "string"
+					},
+					"channel": {
+						"type": "string",
+						"description": "The channel it followed; absent when pinned."
+					},
+					"baseDigest": {
+						"type": "string",
+						"description": "Empty while the channel has no published digest."
+					},
+					"pinned": {
+						"type": "boolean"
+					},
+					"imageDigest": {
+						"type": "string",
+						"description": "The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference resolved to; for a `dockerfile`, the built image's ID."
+					},
+					"source": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "kantel-base"
+							},
+							{
+								"type": "string",
+								"const": "dockerfile"
+							},
+							{
+								"type": "string",
+								"const": "image"
+							}
+						],
+						"description": "The template image's kind it was built from. Absent: `kantel-base`."
+					},
+					"dockerfileDigest": {
+						"type": "string",
+						"description": "For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`."
+					},
+					"imageRef": {
+						"type": "string",
+						"description": "For an `image`, the reference pulled."
+					},
+					"kernel": {
+						"type": "string"
+					},
+					"firecracker": {
+						"type": "string"
+					}
+				},
+				"title": "TemplateBuiltFrom",
+				"description": "What a template snapshot was built from."
+			},
+			"TemplateCacheKey": {
+				"type": "object",
+				"required": ["templateVersion", "baseDigest", "kernel", "firecracker", "vcpus", "memoryMb"],
+				"properties": {
+					"templateVersion": {
+						"type": "string",
+						"description": "`<templateId>@<version>`."
+					},
+					"baseDigest": {
+						"type": "string"
+					},
+					"source": {
+						"type": "string",
+						"description": "A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`."
+					},
+					"imageDigest": {
+						"type": "string",
+						"description": "A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, recorded once the build answers. Absent for `kantel-base`."
+					},
+					"kernel": {
+						"type": "string"
+					},
+					"firecracker": {
+						"type": "string"
+					},
+					"vcpus": {
+						"type": "integer"
+					},
+					"memoryMb": {
+						"type": "integer",
+						"description": "With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too."
+					}
+				},
+				"title": "TemplateCacheKey",
+				"description": "What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory."
+			},
+			"TemplateDockerfileImage": {
+				"type": "object",
+				"required": ["kind", "dockerfile"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "dockerfile"
+					},
+					"dockerfile": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 65536,
+						"description": "A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the template's `base`; any other `FROM` image is pulled."
+					}
+				},
+				"title": "TemplateDockerfileImage",
+				"description": "Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address."
+			},
+			"TemplateImage": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/TemplateKantelBaseImage"
+					},
+					{
+						"$ref": "#/components/schemas/TemplateDockerfileImage"
+					},
+					{
+						"$ref": "#/components/schemas/TemplateImageRef"
+					}
+				],
+				"title": "TemplateImage",
+				"description": "What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`."
+			},
+			"TemplateImageRef": {
+				"type": "object",
+				"required": ["kind", "ref"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "image"
+					},
+					"ref": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 512,
+						"pattern": "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::[0-9]{1,5})?/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$",
+						"description": "An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the template is built, and again on a rebuild."
+					}
+				},
+				"title": "TemplateImageRef",
+				"description": "Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An image that isn't one of Kantel's boots through the guest agent the host injects."
+			},
+			"TemplateKantelBaseImage": {
+				"type": "object",
+				"required": ["kind"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "kantel-base"
+					}
+				},
+				"title": "TemplateKantelBaseImage",
+				"description": "The template's `base` itself, as its deployment publishes it; the setup script adds the rest."
+			},
+			"TemplateList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Template"
+						}
+					}
+				},
+				"title": "TemplateList"
+			},
+			"TemplateNetwork": {
+				"type": "object",
+				"required": ["grants"],
+				"properties": {
+					"grants": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrantInput"
+						},
+						"maxItems": 200
+					}
+				},
+				"title": "TemplateNetwork",
+				"description": "Egress grants for its sandboxes and for its build's boot."
+			},
+			"TemplateResources": {
+				"type": "object",
+				"required": ["vcpus", "memoryMb"],
+				"properties": {
+					"vcpus": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 64
+					},
+					"memoryMb": {
+						"type": "integer",
+						"minimum": 128,
+						"maximum": 262144
+					}
+				},
+				"title": "TemplateResources",
+				"description": "Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB."
+			},
+			"TemplateSnapshot": {
+				"type": "object",
+				"required": ["id", "templateId", "version", "key", "keyHash", "state", "builtFrom", "startedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The template snapshot's ID, `tsn_…`."
+					},
+					"templateId": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer"
+					},
+					"key": {
+						"$ref": "#/components/schemas/TemplateCacheKey"
+					},
+					"keyHash": {
+						"type": "string",
+						"description": "The SHA-256 hex of the key's canonical JSON."
+					},
+					"state": {
+						"$ref": "#/components/schemas/TemplateSnapshotState"
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it was built on, which holds it."
+					},
+					"builtFrom": {
+						"$ref": "#/components/schemas/TemplateBuiltFrom"
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"readyAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"error": {
+						"type": "string",
+						"description": "Why the build failed."
+					},
+					"sizeBytes": {
+						"type": "integer"
+					}
+				},
+				"title": "TemplateSnapshot",
+				"description": "A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots."
+			},
+			"TemplateSnapshotList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateSnapshot"
+						},
+						"description": "Newest first."
+					}
+				},
+				"title": "TemplateSnapshotList"
+			},
+			"TemplateSnapshotState": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "queued"
+					},
+					{
+						"type": "string",
+						"const": "building"
+					},
+					{
+						"type": "string",
+						"const": "ready"
+					},
+					{
+						"type": "string",
+						"const": "stale"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "discarded"
+					}
+				],
+				"title": "TemplateSnapshotState",
+				"description": "`stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away."
+			},
+			"TemplateSpec": {
+				"type": "object",
+				"properties": {
+					"image": {
+						"$ref": "#/components/schemas/TemplateImage"
+					},
+					"base": {
+						"$ref": "#/components/schemas/TemplateBase"
+					},
+					"resources": {
+						"$ref": "#/components/schemas/TemplateResources"
+					},
+					"env": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Plain variables, not secrets: under the environment's and the create's own."
+					},
+					"setup": {
+						"type": "string",
+						"maxLength": 65536,
+						"description": "A shell script run once, as root, when the snapshot is built (or at a fresh boot)."
+					},
+					"network": {
+						"$ref": "#/components/schemas/TemplateNetwork"
+					}
+				},
+				"title": "TemplateSpec",
+				"description": "A template version's definition, never changed once made. Answered with every default filled in."
+			},
+			"TemplateVersion": {
+				"type": "object",
+				"required": ["version", "spec", "createdAt", "createdBy"],
+				"properties": {
+					"version": {
+						"type": "integer"
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/CreatedBy"
+					}
+				},
+				"title": "TemplateVersion"
+			},
+			"TemplateVersionList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateVersion"
+						},
+						"description": "Newest first."
+					}
+				},
+				"title": "TemplateVersionList"
+			},
 			"UpdateAccountBody": {
 				"type": "object",
 				"properties": {
@@ -13765,6 +16538,25 @@
 					}
 				},
 				"title": "UpdateSandboxBody"
+			},
+			"UpdateTemplateBody": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 500,
+						"description": "Empty clears it."
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					}
+				},
+				"title": "UpdateTemplateBody",
+				"description": "A `spec` that differs from the current one makes a new version."
 			},
 			"UpdateWebhookBody": {
 				"type": "object",

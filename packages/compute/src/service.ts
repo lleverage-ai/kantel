@@ -16,6 +16,10 @@
  * grants. A protected variable's value is sealed (`secrets.ts`) and never answered: the sandbox gets a placeholder of
  * its own, and only the sandbox's host is given the value (`protectedTable`, over its link), for its egress proxy to
  * swap in on requests to the variable's bindings.
+ *
+ * A template (experimental, `templates.ts`) is a versioned microVM profile whose snapshots are built in the background
+ * and kept as a cache apart from the account's snapshots; a create naming one starts from its newest ready snapshot, or
+ * boots fresh.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
 import {
@@ -25,6 +29,9 @@ import {
 	mountCovering,
 	mountsTouching,
 	normaliseEmail,
+	type PlacementReason,
+	placementError,
+	placementReasonOf,
 } from "@kantel/contracts";
 import type { ChainEntry } from "@kantel/e2e/chain";
 import {
@@ -52,11 +59,17 @@ import {
 	type BackendMountStatus,
 	type BackendSize,
 	type BootOptions,
-	CUSTOM_SHAPES_FEATURE,
+	type ExecResult,
+	isDetachedWaitEnded,
 	type Placement,
 	type SandboxBackend,
+	type SandboxTemplateBoot,
 } from "./backend.ts";
+import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
+import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
+import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
+import { makesCustom, makesShape, recordedMachine, recordsMachine, sandboxMachine } from "./machine.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
 import {
 	backendMounts,
@@ -67,6 +80,7 @@ import {
 	reportMountStatuses,
 } from "./mounts-service.ts";
 import { isPlaceholderName, personName } from "./names.ts";
+import { delay, START_HOLD_MS, START_POLL_MS, sandboxNotRunning } from "./not-running.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -80,16 +94,19 @@ import type {
 	StoredEnvironmentFile,
 	StoredEnvironmentVariable,
 	StoredHost,
+	StoredIdempotency,
 	StoredInvite,
 	StoredProxy,
 	StoredSample,
 	StoredSandbox,
 	StoredSnapshot,
 	StoredTelemetry,
+	StoredUsageClaim,
 	StoredWebhook,
 } from "./store.ts";
-import { UniqueViolation } from "./store.ts";
+import { UniqueViolation, usageClaimId } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
+import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
 	type BackendUsageReport,
 	createUsageSeries,
@@ -181,6 +198,11 @@ export interface ComputeServiceOptions {
 	readonly apiBasePath?: string;
 	/** Default `selfhosted`. */
 	readonly mode?: "selfhosted" | "hosted";
+	/**
+	 * The domain sandboxes' addresses are under (`<subdomain>.<domain>`, ports `<port>-<subdomain>.<domain>`), which the
+	 * caller is told so the console names them as the deployment serves them. Absent, none is named.
+	 */
+	readonly sandboxDomain?: string;
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
 	readonly hostJoinCommand?: string;
 	/**
@@ -195,6 +217,12 @@ export interface ComputeServiceOptions {
 	 * `KANTEL_MOUNTS=experimental`.
 	 */
 	readonly mounts?: MountsOptions;
+	/**
+	 * Templates (experimental, `templates.ts`): versioned microVM profiles and their snapshot cache (`/v1/templates`).
+	 * Off, those routes and a create naming a template answer `not_supported`, as they do with a backend that has no
+	 * templates. Default off; the gateways turn it on with `KANTEL_TEMPLATES=experimental`.
+	 */
+	readonly templates?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
 	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
@@ -217,8 +245,27 @@ export interface ComputeServiceOptions {
 	 * (`not_supported`), and plain variables still work. Not a key: the service refuses to start.
 	 */
 	readonly secretsKey?: string;
+	/**
+	 * Image patching (experimental): Kantel's base image index (`base-status.ts`), which sandboxes' and snapshots' `base`,
+	 * `restartSandboxOnLatest` and the admin's `listBaseImages` read. Absent, the feature is off: no `base` is answered
+	 * and those routes answer `not_supported`. The gateways set it with `KANTEL_IMAGE_PATCHING=experimental`, and cache
+	 * the index themselves.
+	 */
+	readonly baseImages?: BaseImages;
 	/** Emails an invite made for an address, with a link that joins with its code. Absent, Kantel sends none. */
 	readonly invites?: InviteMailing;
+	/**
+	 * Carries sandboxes' changes between gateways over one database (`live.ts`), so a console watching on one sees what
+	 * another did. Absent, one process alone: its own changes only.
+	 */
+	readonly liveRelay?: LiveRelay;
+	/**
+	 * How long a call that needs a running sandbox (a command, a file) waits for one that is starting, before it answers
+	 * `conflict` with `sandbox_starting`. Not counted against a command's own timeout. Default `START_HOLD_MS`, 60 s.
+	 */
+	readonly startHoldMs?: number;
+	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
+	readonly startPollMs?: number;
 }
 
 /** One invite to email: the same message as identity's `InviteMessage`, so its mailers send it as they are. */
@@ -303,6 +350,8 @@ export const SHARED_HOSTS_REFUSED =
 export const NEVER_MADE =
 	"This sandbox was never made from its source, and there's no snapshot left to make it from; fork or create it again";
 
+/** A sandbox's reason once its host is revoked (`strandOn`). */
+export const HOST_REVOKED_REASON = "Its host was revoked, so it can't be reached; delete it to write it off";
 /** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
 	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
@@ -334,8 +383,17 @@ export interface ComputeService {
 	readonly handlers: RouteHandlers<SignedInComputeRoutes, Principal>;
 	/** A handler for each route that takes no credential (`publicComputeRoutes`), given no caller. */
 	readonly publicHandlers: RouteHandlers<PublicComputeRoutes, undefined>;
-	/** Stops every running sandbox whose `stopsAt` has passed. */
+	/**
+	 * Stops every running sandbox whose `stopsAt` has passed, and with templates on reconciles every template's snapshot
+	 * cache (which notices hosts' runtimes changing).
+	 */
 	sweep(): Promise<void>;
+	/**
+	 * Makes `digest` a template base channel's current one (the image patching pipeline's call, as the super-admin's
+	 * `POST /v1/template-bases` is), and rebuilds the templates following it in the background. `not_supported` while
+	 * templates are off.
+	 */
+	publishTemplateBase(input: computeSchema.PublishTemplateBaseBody): Promise<computeSchema.TemplateBaseChannel>;
 	/**
 	 * Whether `grantee` (`encodeGrantee`) may still open `sandboxId`'s access: the key unrevoked and unexpired, or the
 	 * person's sign-in live, and either still able to see the sandbox with the `access` scope. A relay asks while access
@@ -351,7 +409,9 @@ export interface ComputeService {
 	 * Takes a host's usage tick (`HostUsageReport` in @kantel/hosts): its own readings and its sandboxes', kept in
 	 * memory for an hour as they came and as 5-minute means, a sandbox's in its record. Readings for a sandbox not on
 	 * `hostId` are dropped. A host's ticks are taken in the order they came. `shared`: another gateway replica, the one
-	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't.
+	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't. A numbered tick
+	 * (`seq` and `run`) taken already, as one sent again after a reconnect is, resolves without being taken twice. It
+	 * resolves once the tick is in its series: what the host's link acknowledges (`usage.ack`).
 	 */
 	recordUsage(hostId: string, report: ReportedUsage, how?: { readonly shared?: boolean }): Promise<void>;
 	/**
@@ -377,6 +437,16 @@ export interface ComputeService {
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
 	 */
 	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
+	/**
+	 * Fills in the bases a host says its sandboxes' disks and its snapshots are on (image patching, experimental: its
+	 * hello, its events and its snapshot list), so what was made before the host versioned its images shows its base
+	 * without another boot. Only a sandbox on `hostId`, or a snapshot whose ref is that host's. A sandbox's report is
+	 * ordered by its `baseAt`, the time the host put it on that base: it fills a missing base, and replaces one only when
+	 * later than the time recorded (a rebase boot whose answer was lost), so one read before a boot never undoes it. A
+	 * snapshot's base never changes, so only a missing one is filled. Only a base that looks like one (a host images
+	 * version or a digest).
+	 */
+	recordBases(hostId: string, reports: BaseReports): Promise<void>;
 	/**
 	 * A bundle's tar, for the host that asked (`GET /v1/hosts/bundles/{digest}`): `undefined` unless `sandboxId` is on
 	 * `hostId` (or still starting, so being placed there) and mounts `digest`. Mounts off: always `undefined`.
@@ -464,10 +534,36 @@ export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_OUTPUT_CHARS = 1024 * 1024;
 /** A command's default time limit. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
+/** How long after its start a detached command its backend doesn't know is taken as lost, not as not yet started. */
+const LOST_COMMAND_MS = 60_000;
+/** The longest a stop or delete waits to bring in the ends of a sandbox's detached commands no gateway here follows. */
+const RECONCILE_MS = 5_000;
+/** How many of each base image's versions the admin list answers, newest first. */
+export const BASE_IMAGE_VERSIONS_LISTED = 10;
+/** The routes whose answers carry a sandbox's or snapshot's `base`, which read the base image index first. */
+const BASE_ROUTES = [
+	"listSandboxes",
+	"createSandbox",
+	"getSandbox",
+	"updateSandbox",
+	"startSandbox",
+	"stopSandbox",
+	"resumeSandbox",
+	"forkSandbox",
+	"recoverSandbox",
+	"restartSandboxOnLatest",
+	"deleteSandbox",
+	"listSnapshots",
+	"takeSnapshot",
+	"saveSnapshot",
+	"getSnapshot",
+] as const satisfies readonly (keyof SignedInComputeRoutes)[];
 /** How long an automatic snapshot is kept. */
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** The usage readings kept per sandbox: a day of 5-minute means. */
 export const MAX_SAMPLES = 288;
+/** The hourly means kept per sandbox before its day of 5-minute ones (`keptSamples`): six more days, a week in all. */
+export const HOURLY_SAMPLES = 144;
 /** How far apart readings are taken by running a command in a sandbox, for a host that doesn't send its own. */
 export const FALLBACK_INTERVAL_MS = 60_000;
 /** How often a read may run that command at most, per sandbox. */
@@ -476,6 +572,27 @@ export const FALLBACK_READ_GAP_MS = 15_000;
 const SETTLE_EVERY_MS = 60_000;
 /** How far ahead of the control plane's a host's clock may be before its ticks are stamped on arrival instead. */
 const MAX_CLOCK_SKEW_MS = 30_000;
+/** The most numbered ticks held for a host while they can't be taken: its own backlog's bound (kantel-host's). */
+export const MAX_HELD_USAGE = 120;
+const HOUR_MS = 3_600_000;
+/** The runs of a host's sampler whose taken ticks are kept (`takenSeq`): a restart or two, and a late tick of the last. */
+const MAX_RUNS_KEPT = 4;
+/** Expired usage claims removed at once, and the pause between batches (`sweepUsageClaims`). */
+const CLAIM_SWEEP_BATCH = 50;
+const CLAIM_SWEEP_PAUSE_MS = 50;
+
+/** A tick from a host with acknowledged ticks (`usage-acks`): its `seq` and `run` both there. */
+type NumberedUsage = ReportedUsage & { readonly seq: number; readonly run: string };
+
+/**
+ * A numbered tick on its way in. `shared`: another replica passed it on. `exported`: whether this replica exports it,
+ * once its claim (`claimUsage`) is settled; kept while it is held, so trying it again doesn't claim it again.
+ */
+interface HeldUsage {
+	readonly report: NumberedUsage;
+	readonly shared: boolean;
+	exported?: boolean;
+}
 /** A host is reporting while its last tick came within this, or 3 of its intervals if longer. */
 const REPORTING_WITHIN_MS = 15_000;
 /** How far back the metrics export reaches for a sandbox it hasn't exported before. */
@@ -491,14 +608,17 @@ export function spanMean(
 	samples: readonly StoredSample[],
 	from: number,
 	to: number,
-): { cpu: number; memoryMb: number } {
+): { cpu: number; memoryMb: number; measured: boolean; diskMb?: number; io?: number } {
 	let weight = 0;
 	let cpu = 0;
 	let memoryMb = 0;
+	const disk = { weight: 0, sum: 0 };
+	const io = { weight: 0, sum: 0 };
 	for (const sample of samples) {
+		const readings = sample.readings ?? 1;
 		const covered =
 			sample.readings !== undefined
-				? Math.min(to, sample.at + ROLLUP_MS) - Math.max(from, sample.at)
+				? Math.min(to, sample.at + (sample.spanMs ?? ROLLUP_MS)) - Math.max(from, sample.at)
 				: sample.at >= from && sample.at < to
 					? FALLBACK_INTERVAL_MS
 					: 0;
@@ -506,8 +626,80 @@ export function spanMean(
 		weight += covered;
 		cpu += covered * sample.cpu;
 		memoryMb += covered * sample.memoryMb;
+		// Disk and IO count for the share of its readings that had them.
+		if (sample.diskMb !== undefined) {
+			const share = covered * (diskReadings(sample) / readings);
+			disk.weight += share;
+			disk.sum += share * sample.diskMb;
+		}
+		if (sample.io !== undefined) {
+			const share = covered * (ioReadings(sample) / readings);
+			io.weight += share;
+			io.sum += share * sample.io;
+		}
 	}
-	return weight === 0 ? { cpu: 0, memoryMb: 0 } : { cpu: cpu / weight, memoryMb: memoryMb / weight };
+	if (weight === 0) return { cpu: 0, memoryMb: 0, measured: false };
+	return {
+		cpu: cpu / weight,
+		memoryMb: memoryMb / weight,
+		measured: true,
+		...(disk.weight === 0 ? {} : { diskMb: disk.sum / disk.weight }),
+		...(io.weight === 0 ? {} : { io: io.sum / io.weight }),
+	};
+}
+
+/**
+ * A sandbox's samples with a new 5-minute mean in its place (`keepRollup`), at most a day of 5-minute means: older ones
+ * are folded into hourly means, each the mean of the 5-minute means of one clock hour weighted by their readings and
+ * covering from its first to the end of its last (`spanMs`), at most `HOURLY_SAMPLES` of them. Oldest first.
+ */
+export function keptSamples(samples: readonly StoredSample[]): StoredSample[] {
+	const folded = samples.filter((sample) => sample.spanMs !== undefined);
+	const fine = samples.filter((sample) => sample.spanMs === undefined);
+	if (fine.length <= MAX_SAMPLES) return [...samples];
+	const hourly = [...folded];
+	for (const sample of fine.slice(0, fine.length - MAX_SAMPLES)) {
+		const last = hourly[hourly.length - 1];
+		const end = sample.at + (sample.readings === undefined ? FALLBACK_INTERVAL_MS : ROLLUP_MS);
+		if (last !== undefined && Math.floor(last.at / HOUR_MS) === Math.floor(sample.at / HOUR_MS)) {
+			hourly[hourly.length - 1] = foldSample(last, sample, end);
+		} else {
+			hourly.push({ ...sample, readings: sample.readings ?? 1, spanMs: end - sample.at });
+		}
+	}
+	return [...hourly.slice(-HOURLY_SAMPLES), ...fine.slice(-MAX_SAMPLES)];
+}
+
+/** Of a sample's readings, those with a disk figure: all of them unless it says (`diskReadings`), none without one. */
+const diskReadings = (sample: StoredSample): number =>
+	sample.diskMb === undefined ? 0 : (sample.diskReadings ?? sample.readings ?? 1);
+/** Of a sample's readings, those with IO pressure, likewise. */
+const ioReadings = (sample: StoredSample): number =>
+	sample.io === undefined ? 0 : (sample.ioReadings ?? sample.readings ?? 1);
+
+/**
+ * An hourly mean with one more 5-minute mean (or reading) in it, to `end`. CPU and memory are weighted by all their
+ * readings; disk and IO only by those that had them, so a gap between two figures doesn't dilute either.
+ */
+function foldSample(into: StoredSample, sample: StoredSample, end: number): StoredSample {
+	const a = into.readings ?? 1;
+	const b = sample.readings ?? 1;
+	const readings = a + b;
+	const fold = (x: number | undefined, wx: number, y: number | undefined, wy: number) =>
+		x === undefined || wx === 0 ? y : y === undefined || wy === 0 ? x : (x * wx + y * wy) / (wx + wy);
+	const disks = diskReadings(into) + diskReadings(sample);
+	const ios = ioReadings(into) + ioReadings(sample);
+	const diskMb = fold(into.diskMb, diskReadings(into), sample.diskMb, diskReadings(sample));
+	const io = fold(into.io, ioReadings(into), sample.io, ioReadings(sample));
+	return {
+		at: into.at,
+		cpu: (into.cpu * a + sample.cpu * b) / readings,
+		memoryMb: (into.memoryMb * a + sample.memoryMb * b) / readings,
+		readings,
+		spanMs: Math.max(into.at + (into.spanMs ?? ROLLUP_MS), end) - into.at,
+		...(diskMb === undefined ? {} : { diskMb, ...(disks === readings ? {} : { diskReadings: disks }) }),
+		...(io === undefined ? {} : { io, ...(ios === readings ? {} : { ioReadings: ios }) }),
+	};
 }
 const MIB = 1024 * 1024;
 /** The egress log entries kept per sandbox, newest first. */
@@ -539,6 +731,48 @@ const USAGE_FEATURE = "usage";
  */
 export const IDEMPOTENCY_CLAIM_MS = 60_000;
 export const IDEMPOTENCY_RENEW_MS = 20_000;
+/** A retry of a call whose answer held a secret the deployment had no key to seal, so didn't keep. */
+export const ANSWER_WITHHELD =
+	"The call with this Idempotency-Key was done, and its answer held a secret this deployment keeps no copy of without " +
+	"KANTEL_SECRETS_KEY: look the record up instead, or rotate its secret";
+/** A retry of a call that stopped answering or failed part way: it may have taken effect (or yet will), so it is never done again. */
+export const CLAIM_LAPSED =
+	"A call with this Idempotency-Key didn't finish (it stopped answering, or failed part way), so whether it took effect is " +
+	"unknown: check, then use a new key";
+/**
+ * The errors a call refuses with before it does anything (a check, a state, a limit), which free its Idempotency-Key.
+ * `unavailable`, `aborted` and an error that isn't Kantel's may come after an effect, so they keep it.
+ */
+const REFUSALS: ReadonlySet<string> = new Set([
+	"invalid",
+	"forbidden",
+	"not_found",
+	"conflict",
+	"refused",
+	"exhausted",
+	"not_supported",
+	"expired",
+]);
+const refusedBeforeEffects = (error: unknown): boolean => error instanceof KantelError && REFUSALS.has(error.code);
+/** Where an idempotent call's sealed answer is kept, as its additional data. */
+const idempotencyAad = (id: string) => sealedAt("idempotency", id, "body");
+/** Whether a stored key is for this request: a key kept before fingerprints were is taken to be. */
+const sameRequest = (record: StoredIdempotency, fingerprint: string) =>
+	record.fingerprint === undefined || record.fingerprint === fingerprint;
+const keyReused = () =>
+	new KantelError("refused", "This Idempotency-Key was used for a different request; use a new key for each new call");
+
+/** `value` as JSON with each object's keys in order, so the same request always reads the same. */
+export function canonicalJson(value: unknown): string {
+	if (value === undefined) return "null";
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value))
+		return `[${value.map((each) => (each === undefined ? "null" : canonicalJson(each))).join(",")}]`;
+	const entries = Object.entries(value as { [key: string]: unknown })
+		.filter(([, each]) => each !== undefined)
+		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+	return `{${entries.map(([key, each]) => `${JSON.stringify(key)}:${canonicalJson(each)}`).join(",")}}`;
+}
 const DEFAULT_AUTO_STOP_MINUTES = 60;
 /**
  * How stale a host record's `lastSeenAt` may get before it is written again: it moves on every heartbeat, and the host
@@ -561,9 +795,6 @@ const LEGACY_SIZES: { readonly [size: string]: { readonly vcpus: number; readonl
 	large: { vcpus: 4, memoryMb: 8192 },
 	xlarge: { vcpus: 16, memoryMb: 32768 },
 };
-
-/** Whether a host makes microVMs of any shape, not only its named sizes. */
-const makesCustom = (host: BackendHost) => host.features?.includes(CUSTOM_SHAPES_FEATURE) === true;
 
 /** `value` down to a multiple of `step`. */
 const floorTo = (value: number, step: number) => Math.floor(value / step) * step;
@@ -652,19 +883,6 @@ export function checkShape(
 	return { vcpus, memoryMb };
 }
 
-/** Whether `host` can make a microVM of `shape`: one of its named sizes, or any shape it has room for where it makes them. */
-function makesShape(
-	host: BackendHost,
-	deploymentSizes: readonly BackendSize[],
-	shape: { readonly vcpus: number; readonly memoryMb: number },
-): boolean {
-	if (!host.tiers.includes("microvm")) return false;
-	const named = (host.sizes ?? deploymentSizes).some(
-		(size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb,
-	);
-	return named || (makesCustom(host) && shape.vcpus <= host.capacity.vcpus && shape.memoryMb <= host.capacity.memoryMb);
-}
-
 /**
  * A create's shape, checked: what it asked for, against the hosts it may go to (`hosts`), however full they are now.
  * An isolate that asks for nothing gets the default 256 MB; a microVM, its deployment's default size (undefined). A
@@ -684,8 +902,9 @@ export function shapeFor(
 	const presets = hosts.flatMap((host) => host.sizes ?? deploymentSizes);
 	const shape = checkShape(type, resources, presets);
 	if (type === "microvm" && checkHosts && !hosts.some((host) => makesShape(host, deploymentSizes, shape))) {
-		throw new KantelError(
+		throw placementError(
 			"not_supported",
+			"no_host_offers_size",
 			`No host this sandbox may use can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB; see getSandboxShapes`,
 		);
 	}
@@ -708,6 +927,8 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
 	"error",
 	"deleting",
 ];
+/** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
+const STRANDABLE: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping", "stopped", "paused"];
 /**
  * How long SSH, desktop and browser access can be opened for, unless the call says: a bearer URL that leaks is good for
  * minutes, as boat.dev's are. A connection opened in time stays open; the schema caps a request at an hour.
@@ -1187,7 +1408,17 @@ const whole = (value: unknown): number =>
 
 /** The compute plane's handlers over a store and a backend. */
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
-	const { store, backend, dispatcher, exporter, now } = options;
+	const { backend, dispatcher, exporter, now } = options;
+	// Every change of a sandbox's state is a write of its record, so the feed publishes from the store itself: whoever moved
+	// it (a call, the sweep's auto-stop, a host's report), the watchers hear of it (`live.ts`).
+	const live = createLiveFeed({
+		read: (sandboxId) => options.store.sandboxes.get(sandboxId),
+		...(options.liveRelay === undefined ? {} : { relay: options.liveRelay }),
+	});
+	const store: ComputeStore = {
+		...options.store,
+		sandboxes: watchSandboxes(options.store.sandboxes, (change) => live.publish(change), now),
+	};
 	const e2eChains = createE2EChains(store.e2eChain, now);
 	/**
 	 * A host's own account's chain; for a shared host, the chain of a space it runs a sandbox of or is enrolled in
@@ -1211,6 +1442,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
+	const deploymentDomain = options.sandboxDomain === undefined ? {} : { sandboxDomain: options.sandboxDomain };
+	const apiBasePath = (options.apiBasePath ?? "/v1").replace(/\/+$/, "");
+	const startHoldMs = options.startHoldMs ?? START_HOLD_MS;
+	const startPollMs = options.startPollMs ?? START_POLL_MS;
+	/**
+	 * The base image index as last read (image patching on), for the views, which answer synchronously: the routes that
+	 * answer sandboxes or snapshots read it first (`BASE_ROUTES`). One that fails to read keeps the last one read.
+	 */
+	let baseIndex: BaseImageIndex | undefined;
+	const refreshBase = async (): Promise<void> => {
+		if (options.baseImages === undefined) return;
+		baseIndex = (await options.baseImages.index().catch(() => undefined)) ?? baseIndex;
+	};
+	const requireImagePatching = (): BaseImages => {
+		if (options.baseImages === undefined) {
+			throw new KantelError("not_supported", "Image patching is off on this deployment (KANTEL_IMAGE_PATCHING)");
+		}
+		return options.baseImages;
+	};
+	/** How far behind a recorded base is, while image patching is on and the index knows its image. */
+	const baseView = (base: string | undefined): computeSchema.SandboxBase | undefined =>
+		options.baseImages === undefined || baseIndex === undefined || base === undefined
+			? undefined
+			: baseStatus(baseIndex, baseImageOf(base), base, now());
 	// A key that isn't one throws here, so the deployment fails to start rather than on its first protected value.
 	const sealer: Sealer | undefined =
 		options.secretsKey !== undefined
@@ -1230,10 +1485,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** Each sandbox's queue of lifecycle work; settled promises, so a failure doesn't stop the next. */
 	const pending = new Map<string, Promise<void>>();
-	/** Detached commands and their kill switches. */
+	/** The commands this gateway is waiting for, and what ends each wait. */
 	const runningCommands = new Map<string, AbortController>();
 	const background = new Set<Promise<unknown>>();
-	const inflight = new Map<string, Promise<unknown>>();
+	/** Idempotent calls working on this gateway, by their key's ID, with their request's fingerprint. */
+	const inflight = new Map<string, { readonly fingerprint: string; readonly promise: Promise<unknown> }>();
 	/** Each sandbox's readings, and each host's, as they came (`recordUsage`); in this process's memory. */
 	const sandboxSeries = createUsageSeries();
 	const hostSeries = createUsageSeries();
@@ -1243,11 +1499,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const exportedUntil = new Map<string, number>();
 	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
 	const tickArrivedAt = new Map<string, number>();
+	/**
+	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in each of its
+	 * sampler's recent runs (`MAX_RUNS_KEPT`, newest last): one sent again after a reconnect, at or before it, is
+	 * acknowledged without being taken twice. By run, so a late tick of a host's old run (passed on from another replica)
+	 * never moves its new run's back. A run's ticks are taken in order (`ingestInTurn`), so every one at or before it is in.
+	 */
+	const takenSeq = new Map<string, Map<string, number>>();
+	/**
+	 * Each host's numbered ticks that couldn't be taken (the store failing), oldest first, with every numbered tick after
+	 * them: taken in order before anything newer (`ingestInTurn`).
+	 */
+	const heldUsage = new Map<string, HeldUsage[]>();
 	/** Up to when the backend's own ticks (the stub's) are in. */
 	let pulledUntil = Number.NEGATIVE_INFINITY;
 	/** The stub's past ticks being taken (`catchUpUsage`), if they are. */
 	let replaying: Promise<void> | undefined;
 	let settledAt = Number.NEGATIVE_INFINITY;
+	/** This process, as the owner of the usage ticks it claims to export (`StoredUsageClaim.owner`). */
+	const usageOwner = crypto.randomUUID();
+	let claimsSweptAt = Number.NEGATIVE_INFINITY;
+	/** Set by `close`: a claim sweep under way stops. */
+	let closing = false;
 
 	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
 	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
@@ -1256,6 +1529,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const tracked: Promise<unknown> = work.catch(() => undefined).finally(() => background.delete(tracked));
 		background.add(tracked);
 	};
+
+	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
+	const templates = createTemplateService({
+		store,
+		backend,
+		now,
+		enabled: options.templates === true,
+		keepGoing,
+		buildHosts: async (accountId, userId) => {
+			const shared = options.sharedHosts === undefined || (await options.sharedHosts(userId));
+			try {
+				return requireHosts(await ensureHosts(), accountId, "microvm", {}, false, shared);
+			} catch {
+				return [];
+			}
+		},
+		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants })).egress,
+		normaliseGrants,
+		checkVariableName,
+		checkResources: (resources) => checkShape("microvm", resources),
+		actorOf: (principal) => actorOf(principal),
+		once: (principal, operation, input, work) => once(principal, operation, input, work),
+	});
 
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
 	function track<T>(ids: readonly string[], work: () => Promise<T>): Promise<T> {
@@ -1397,19 +1693,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine: boolean,
 		shared: boolean,
 	): string[] {
-		const qualifying = hosts
-			.filter((host) => host.state === "online" || (affine && host.state === "draining"))
-			.filter((host) => host.tiers.includes(type))
-			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
+		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none.
+		const up = hosts
+			.filter((host) => host.accountId === accountId || (shared && host.accountId === undefined))
+			.filter((host) => host.state === "online" || (affine && host.state === "draining"));
+		const typed = up.filter((host) => host.tiers.includes(type));
+		const qualifying = typed.filter((host) =>
+			Object.entries(labels).every(([key, value]) => host.labels[key] === value),
+		);
 		const own = qualifying.filter((host) => host.accountId === accountId);
 		const common = shared ? qualifying.filter((host) => host.accountId === undefined) : [];
 		const eligible = (affine ? [...own, ...common] : own.length > 0 ? own : common).map((host) => host.id);
 		if (eligible.length === 0) {
-			throw new KantelError(
+			// Bound to its disk or snapshot, it can go only on that one host, whatever else the fleet has: that host is the
+			// reason, as it is when the boot finds it gone with other hosts up.
+			const reason: PlacementReason = affine
+				? "host_unavailable"
+				: up.length === 0
+					? "no_host"
+					: typed.length === 0
+						? "no_host_for_type"
+						: "no_host_with_labels";
+			const what = `${article(type)} ${type} sandbox${reason === "no_host_with_labels" ? " with those host labels" : ""}`;
+			throw placementError(
 				"unavailable",
+				reason,
 				shared
-					? `No host can run ${article(type)} ${type} sandbox now`
-					: `No host of this account's own can run ${article(type)} ${type} sandbox now. Add one with kantel hosts add, or under Hosts in the console`,
+					? `No host can run ${what} now`
+					: `No host of this account's own can run ${what} now. Add one with kantel hosts add, or under Hosts in the console`,
 			);
 		}
 		return eligible;
@@ -1440,11 +1751,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hourlyRate(rates, sandbox.type, resources);
 	};
 
-	/** A sandbox's mean CPU: its kept 5-minute means and the one under way. */
-	const meanCpu = (sandbox: StoredSandbox) => {
-		const samples = withPartial(sandbox);
-		return samples.length === 0 ? 0 : samples.reduce((total, sample) => total + sample.cpu, 0) / samples.length;
-	};
+	/**
+	 * A sandbox's mean CPU over `[from, to)` (all it has kept, without): its kept means and the one under way, each
+	 * weighted by the time it covers, so an hourly mean counts for its hour and one outside the span not at all.
+	 */
+	const meanCpu = (sandbox: StoredSandbox, from = 0, to = now()) => spanMean(withPartial(sandbox), from, to).cpu;
 
 	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
@@ -1461,14 +1772,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			state: sandbox.state,
 			health: sandbox.health,
 			reason: sandbox.reason,
+			placementReason: sandbox.placementReason,
 			visibility: sandbox.visibility,
 			capabilities: sandbox.capabilities,
 			labels: sandbox.labels,
 			autoStopMinutes: sandbox.autoStopMinutes,
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			latestSnapshotId: sandbox.latestSnapshotId,
+			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
 			environmentId: sandbox.environmentId,
+			template: sandbox.template === undefined ? undefined : { ...sandbox.template },
 			grants: (sandbox.grants ?? []).map(copyGrant),
 			createdBy: sandbox.createdBy,
 			createdAt: sandbox.createdAt,
@@ -1484,6 +1798,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...sparklines(sandbox),
 			},
 			hostId: principal.superAdmin ? sandbox.hostId : undefined,
+			base: baseView(sandbox.base),
 		};
 	}
 
@@ -1498,9 +1813,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		state: snapshot.state,
 		trigger: snapshot.trigger,
 		memory: snapshot.memory,
+		...recordedMachine(snapshot),
 		sizeBytes: snapshot.sizeBytes,
 		createdAt: snapshot.createdAt,
 		expiresAt: snapshot.expiresAt,
+		base: baseView(snapshot.base),
+	});
+
+	/** A version of a base image as the admin list answers it: what the index says of it, its commit left out. */
+	const baseVersionView = (version: BaseImageVersion): computeSchema.BaseImageVersion => ({
+		version: version.version,
+		digest: version.digest,
+		builtAt: version.builtAt,
+		signed: version.signed,
+		...(version.reason === undefined ? {} : { reason: version.reason }),
+		...(version.scan === undefined
+			? {}
+			: {
+					scan: {
+						scanner: version.scan.scanner,
+						scannedAt: version.scan.scannedAt,
+						counts: { ...version.scan.counts },
+						fixable: { ...version.scan.fixable },
+						findings: version.scan.findings.map((finding) => ({
+							id: finding.id,
+							severity: finding.severity,
+							package: finding.package,
+							installed: finding.installed,
+							...(finding.fixed === undefined ? {} : { fixed: finding.fixed }),
+							...(finding.title === undefined ? {} : { title: finding.title }),
+						})),
+					},
+				}),
 	});
 
 	const commandView = (command: StoredCommand): computeSchema.Command => ({
@@ -1652,7 +1996,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<boolean> {
 		const at = now();
 		const due = await patchSandbox(sandboxId, (current) =>
-			current.state === evaluated.state && current.egressRevision === evaluated.egressRevision
+			current.state === evaluated.state &&
+			current.egressRevision === evaluated.egressRevision &&
+			// Its host revoked under its boot (`strandOn`): its boot ends it `error`, not a stop its host can't take.
+			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
 						...current,
 						...(placement === undefined
@@ -1661,6 +2008,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									hostId: placement.hostId,
 									resources: placement.resources ?? current.resources,
 									capabilities: placement.capabilities,
+									...placedBase(placement),
 								}),
 						stopsAt: at,
 						stopFor: reason,
@@ -2133,6 +2481,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const withMakerNamed = async <T extends { readonly createdBy: Sandbox["createdBy"] }>(item: T): Promise<T> =>
 		(await withMakersNamed([item]))[0] ?? item;
 
+	/**
+	 * Sandboxes with when their latest snapshot was taken, for those whose record has the snapshot but not when (kept
+	 * before records had it): from the snapshot's own record, if it is still there.
+	 */
+	async function withSnapshotTimes(items: readonly Sandbox[]): Promise<Sandbox[]> {
+		return Promise.all(
+			items.map(async (item) => {
+				if (item.latestSnapshotId === undefined || item.latestSnapshotAt !== undefined) return item;
+				const snapshot = await store.snapshots.get(item.latestSnapshotId);
+				return snapshot === undefined ? item : { ...item, latestSnapshotAt: snapshot.createdAt };
+			}),
+		);
+	}
+
 	// Events.
 
 	async function emit(
@@ -2223,10 +2585,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: at + autoStop * 60_000,
 			startedAt: running && !wasRunning ? at : sandbox.startedAt,
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
+			lifecycle: (sandbox.lifecycle ?? 0) + 1,
 			reason: extra.reason,
+			placementReason: extra.placementReason,
+			// Stranded only in the state its stranding wrote (`strandOn`).
+			strandedOn: extra.strandedOn,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
+	}
+
+	/**
+	 * A watcher as they are now: a key's current scopes and limits, or a person whose sign-in is still live; undefined once
+	 * the key is revoked or expired, or the sign-in has ended.
+	 */
+	async function watcherNow(principal: Principal): Promise<Principal | undefined> {
+		if (principal.kind === "key") return liveKeyPrincipal(store, principal.keyId, now());
+		if (principal.session !== undefined && options.sessionLive !== undefined) {
+			if (!(await options.sessionLive(principal.session))) return undefined;
+		}
+		return (await store.users.get(principal.userId)) === undefined ? undefined : principal;
 	}
 
 	/** Whether the caller may see a sandbox in an account where they have `role`. */
@@ -2287,13 +2665,59 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 	}
 
-	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
-	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
-		const sandbox = await settledFor(principal, sandboxId);
-		if (sandbox.state !== "running") {
-			throw new KantelError("conflict", `The sandbox is ${sandbox.state}; it must be running (resume it first)`);
+	/**
+	 * `settledFor`, refused with `conflict` (`sandboxNotRunning`) unless the sandbox is running. One that is starting is
+	 * waited for, up to `startHoldMs`: its start's own work when this gateway carries it out, else read again every
+	 * `startPollMs` (another gateway's). It moves nothing itself: concurrent callers each wait, and a stopped sandbox
+	 * stays stopped.
+	 */
+	function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, (id) => settledFor(principal, id));
+	}
+
+	/**
+	 * `requireRunning` for a call a token authorises rather than a principal (a signed file URL): the same wait and the
+	 * same refusals, with no check of who may use the sandbox, which the token already made.
+	 */
+	function requireRunningByToken(sandboxId: string): Promise<StoredSandbox> {
+		return runningOnce(sandboxId, async (id) => {
+			await settledOn(id);
+			return mustGetSandbox(id);
+		});
+	}
+
+	/** The wait behind `requireRunning`: `settled` reads the sandbox once its queued work ends. */
+	async function runningOnce(
+		sandboxId: string,
+		settled: (sandboxId: string) => Promise<StoredSandbox>,
+	): Promise<StoredSandbox> {
+		let held = false;
+		const hold = delay(startHoldMs);
+		const holdOver = hold.done.then(() => {
+			held = true;
+		});
+		try {
+			for (;;) {
+				const latest = await mustGetSandbox(sandboxId);
+				if (latest.state !== "starting") {
+					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
+					const sandbox = await settled(sandboxId);
+					if (sandbox.state === "running") return sandbox;
+					// Started by what was queued (a start queued behind a stop): waited for as any start.
+					if (sandbox.state === "starting") continue;
+					if (sandbox.state === "deleted") throw notFound("sandbox");
+					throw sandboxNotRunning(sandbox, apiBasePath);
+				}
+				if (held) throw sandboxNotRunning(latest, apiBasePath, startHoldMs);
+				// Its start's own work, when this gateway carries it out; never a tight loop on the store when it doesn't.
+				const work = pending.get(sandboxId);
+				const poll = delay(startPollMs);
+				await Promise.race([...(work === undefined ? [] : [work]), poll.done, holdOver]);
+				poll.cancel();
+			}
+		} finally {
+			hold.cancel();
 		}
-		return sandbox;
 	}
 
 	/** Mounts, bundles, bucket sources, file URLs and archives, when the deployment turned them on. */
@@ -2315,9 +2739,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						return sealer;
 					},
 					publicUrl: (request) => (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, ""),
-					apiBasePath: (options.apiBasePath ?? "/v1").replace(/\/+$/, ""),
+					apiBasePath,
 					sandboxFor,
 					requireRunning,
+					requireRunningByToken,
+					once: (principal, operation, input, work) => once(principal, operation, input, work),
 				});
 
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {
@@ -2326,7 +2752,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(sandbox) => sandbox.state === "starting" || sandbox.state === "running" || sandbox.state === "stopping",
 		).length;
 		if (active + adding > limits.concurrentSandboxes) {
-			throw new KantelError("exhausted", `The account may run ${limits.concurrentSandboxes} sandboxes at once`);
+			throw placementError(
+				"exhausted",
+				"account_limit",
+				`The account may run ${limits.concurrentSandboxes} sandboxes at once`,
+			);
 		}
 	}
 
@@ -2371,26 +2801,55 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
-	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image, at its own
-	 * size and shape), placed as a create is, since no backend has it to start. `sandbox` is the record as the boot moved
-	 * it (a restart's new size and shape included), and `boot` its sizing.
+	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image, or its
+	 * template's base and setup as its create resolved them, booted fresh, at its own size and shape), placed as a create
+	 * is, since no backend has it to start. `sandbox` is the record as the boot moved it (a restart's new size and shape
+	 * included), and `boot` its sizing.
 	 */
-	function bootAgain(
+	async function bootAgain(
 		sandbox: StoredSandbox,
 		boot: BootOptions,
 		booted: (boot: BootOptions) => Promise<Placement>,
 	): Promise<Placement> {
 		if (!neverPlaced(sandbox)) return booted(boot);
-		return backend.create({
+		const stored = sandbox.source === undefined ? sandbox.templateBoot : undefined;
+		let template: Omit<SandboxTemplateBoot, "snapshot"> | undefined;
+		let eligibleHosts = boot.eligibleHosts;
+		if (stored !== undefined) {
+			const { holders, ...fresh } = stored;
+			template = fresh;
+			// A custom image boots only where it was built: on its holders the sandbox may still use.
+			if (holders !== undefined) {
+				eligibleHosts = holders.filter((hostId) => boot.eligibleHosts.includes(hostId));
+				if (eligibleHosts.length === 0) {
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						"No host this sandbox may use holds its template's image now; make a new sandbox from the template once it's built",
+					);
+				}
+			}
+		}
+		const placement = await backend.create({
 			...boot,
+			eligibleHosts,
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
 			type: sandbox.type,
 			subdomain: sandbox.subdomain,
 			...(boot.shape === undefined ? {} : { shape: boot.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
+			...(template === undefined ? {} : { template: { ...template } }),
 		});
+		// Made again from its template's base, its setup run: no longer the snapshot its create was to start from.
+		return template === undefined || sandbox.template?.start !== "snapshot"
+			? placement
+			: { ...placement, bootedFresh: true };
 	}
+
+	/** A template's boot as a sandbox keeps it for a retry of its create (`templateBoot`): its base and setup, no snapshot. */
+	const freshBoot = ({ snapshot: _cached, ...fresh }: SandboxTemplateBoot): Omit<SandboxTemplateBoot, "snapshot"> =>
+		fresh;
 
 	/** A boot's sizing from the record as it moved: its named size and, where it has one, its shape. */
 	const sizingOf = (sandbox: StoredSandbox): Pick<BootOptions, "size" | "shape"> => ({
@@ -2415,6 +2874,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return environment;
 	}
 
+	/**
+	 * Refuses a start, recovery or restart on latest that makes a sandbox again from its template (`bootAgain`), running
+	 * the template's setup with its env, to a caller that may not run commands, as its create does.
+	 */
+	function requireSetupScope(principal: Principal, role: MemberRole, sandbox: StoredSandbox): void {
+		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.templateBoot?.setup === undefined) return;
+		requireScope(principal, "exec", role);
+	}
+
 	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
 	async function bootProvisioned(
 		sandboxId: string,
@@ -2435,13 +2903,137 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await backend.deleteSnapshot(ref).catch(() => undefined);
 	}
 
-	/** Marks a sandbox's running commands killed, and kills the detached ones. */
+	/** Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. */
+	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
+		const stdout = truncate(result.stdout);
+		const stderr = truncate(result.stderr);
+		const at = now();
+		const ended = await settleCommand(commandId, (latest) => ({
+			...latest,
+			state: result.timedOut ? "timed_out" : "exited",
+			exitCode: result.exitCode,
+			stdout: stdout.text,
+			stderr: stderr.text,
+			truncated: stdout.truncated || stderr.truncated,
+			endedAt: at,
+			durationMs: at - latest.startedAt,
+		}));
+		return ended ?? (await store.commands.get(commandId));
+	}
+
+	/**
+	 * Moves a command out of `running` with `change`, atomically: `undefined` when it was no longer running (another
+	 * end, a kill or a stop got there first, on any gateway), which is then kept as it is.
+	 */
+	async function settleCommand(
+		commandId: string,
+		change: (running: StoredCommand) => StoredCommand,
+	): Promise<StoredCommand | undefined> {
+		let won = false;
+		const written = await store.commands.update(commandId, (latest) => {
+			won = latest.state === "running";
+			return won ? change(latest) : undefined;
+		});
+		return won ? written : undefined;
+	}
+
+	/**
+	 * A detached command no gateway here is waiting for (the one that started it closed, or is another replica), as its
+	 * backend has it now: ended once the backend says so, and lost once it no longer knows it.
+	 */
+	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
+		if (
+			command.state !== "running" ||
+			command.detached !== true ||
+			runningCommands.has(command.id) ||
+			backend.commandResult === undefined
+		) {
+			return command;
+		}
+		let result: ExecResult | undefined;
+		try {
+			result = await backend.commandResult(command.sandboxId, command.id);
+		} catch (error) {
+			// Not just started (a start the backend hasn't recorded yet reads as unknown too).
+			if (
+				!(error instanceof KantelError && error.code === "not_found") ||
+				now() - command.startedAt < LOST_COMMAND_MS
+			) {
+				return command;
+			}
+			result = {
+				exitCode: 1,
+				stdout: "",
+				stderr:
+					"Kantel lost this command's result: its sandbox's host no longer knows it (it or the sandbox restarted)\n",
+				timedOut: false,
+			};
+		}
+		if (result === undefined) return command;
+		return (await endCommand(command.id, result)) ?? command;
+	}
+
+	/**
+	 * Sends a killed command's kill to its backend (`killCommand`), the record's `killPending` until it is done: the
+	 * backend took it, or can't ever (`not_supported`, an older host). One that failed otherwise (its host out of reach)
+	 * stays pending, its stderr saying so, and the next kill of it, on any gateway, sends it again.
+	 */
+	async function deliverKill(sandboxId: string, command: StoredCommand): Promise<StoredCommand> {
+		if (backend.killCommand === undefined) return command;
+		let failure: unknown;
+		let delivered = false;
+		try {
+			await backend.killCommand(sandboxId, command.id);
+			delivered = true;
+		} catch (error) {
+			failure = error;
+		}
+		const final = delivered || (failure instanceof KantelError && failure.code === "not_supported");
+		const note = delivered
+			? undefined
+			: `Kantel marked this command killed but couldn't stop it, so it may still be running: ${messageOf(failure)}${
+					final ? "" : "; kill it again to retry"
+				}\n`;
+		// Only while it is still pending: once another attempt has delivered it, a late failure changes nothing.
+		const written = await store.commands.update(command.id, (latest) => {
+			if (latest.state !== "killed" || latest.killPending !== true) return undefined;
+			const stderr =
+				note === undefined || latest.stderr.includes(note) ? latest.stderr : truncate(`${latest.stderr}${note}`).text;
+			if (!final) return { ...latest, stderr, killPending: true };
+			const { killPending: _, ...done } = latest;
+			return { ...done, stderr };
+		});
+		return written ?? (await store.commands.get(command.id)) ?? command;
+	}
+
+	/**
+	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
+	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
+	 */
 	async function killCommandsOf(sandboxId: string): Promise<void> {
-		for (const command of await store.commands.list({ sandboxId, state: "running" })) {
+		const running = await store.commands.list({ sandboxId, state: "running" });
+		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
+		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
+		// time is marked killed.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const budget = new Promise<undefined>((resolve) => {
+			timer = setTimeout(() => resolve(undefined), RECONCILE_MS);
+		});
+		const reconciled = await Promise.all(
+			running.map(async (listed) => (await Promise.race([fetchedCommand(listed), budget])) ?? listed),
+		);
+		if (timer !== undefined) clearTimeout(timer);
+		for (const command of reconciled) {
+			if (command.state !== "running") continue;
+			const at = now();
+			await settleCommand(command.id, (latest) => ({
+				...latest,
+				state: "killed",
+				endedAt: at,
+				durationMs: at - latest.startedAt,
+			}));
 			runningCommands.get(command.id)?.abort();
 			runningCommands.delete(command.id);
-			const at = now();
-			await store.commands.put({ ...command, state: "killed", endedAt: at, durationMs: at - command.startedAt });
 		}
 	}
 
@@ -2464,6 +3056,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// The revision its backend has: what the boot sent, or what reconciling sent since.
 		let applied = sent?.egressRevision;
+		// Made from a template snapshot whose host had no room, it booted the template fresh elsewhere: so its record says.
+		const bootedFresh = (template: computeSchema.SandboxTemplate): computeSchema.SandboxTemplate => {
+			const { snapshotId: _none, ...rest } = template;
+			return { ...rest, start: "boot" };
+		};
 		const toRunning = (sandbox: StoredSandbox) =>
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
@@ -2473,8 +3070,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(sandbox.type === "microvm" && placement.resources !== undefined
 					? { shape: { vcpus: placement.resources.vcpus, memoryMb: placement.resources.memoryMb } }
 					: {}),
+				...(placement.bootedFresh === true && sandbox.template !== undefined
+					? { template: bootedFresh(sandbox.template) }
+					: {}),
+				// Its image is the base it booted, not the one its snapshot (perhaps a release behind) was built from.
+				...(placement.bootedFresh === true && sandbox.templateBoot !== undefined
+					? { image: templateBootImage(sandbox.templateBoot) }
+					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
+				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
+				...placedBase(placement),
 				...(sandbox.mounts === undefined ? {} : { mounts: mountsAfter(sandbox.mounts, placement.mounts) }),
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
@@ -2484,7 +3090,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Running only if its egress is what its backend has (what the boot sent, at first), on every move to running:
 		// the usual case, in one write.
 		const upToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
-		let result = await transition(sandboxId, "starting", toRunning, upToDate, written);
+		// Its host revoked while it booted, by a scan that found it placed there (`strandOn`): its own move from `starting`
+		// is its outcome, `error`, whenever it comes (now, or after its egress is reconciled), and its egress isn't waited
+		// for. A host another attempt was placed on, or this one before it moved, isn't its host and doesn't count.
+		const revokedUnder = (sandbox: StoredSandbox) => sandbox.strandedOn?.includes(placement.hostId) === true;
+		const publish = (sandbox: StoredSandbox) =>
+			revokedUnder(sandbox)
+				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
+				: toRunning(sandbox);
+		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
+		let result = await transition(sandboxId, "starting", publish, ready, written);
 		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
 		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
 		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
@@ -2494,7 +3109,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (round >= BOOT_RECONCILE_ROUNDS) {
 				const reason = "Its egress couldn't be applied to it while it started";
 				if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
-				result = await transition(sandboxId, "starting", toRunning, upToDate);
+				result = await transition(sandboxId, "starting", publish, ready);
 				continue;
 			}
 			try {
@@ -2508,10 +3123,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A call that didn't get through: tried again, a moment on.
 				await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
 			}
-			result = await transition(sandboxId, "starting", toRunning, upToDate);
+			result = await transition(sandboxId, "starting", publish, ready);
 		}
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
+		if (next.state === "error") {
+			await emit("sandbox.error", next.accountId, {
+				sandbox: next,
+				data: { previousState: "starting", reason: HOST_REVOKED_REASON },
+			});
+			return undefined;
+		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
 		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
@@ -2524,12 +3146,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function fail(sandboxId: string, error: unknown, from: SandboxState): Promise<StoredSandbox | undefined> {
 		const reason = messageOf(error);
-		const result = await transition(sandboxId, from, (sandbox) => withState(sandbox, "error", { reason })).catch(
-			() => undefined,
-		);
+		const placementReason = placementReasonOf(error);
+		const result = await transition(sandboxId, from, (sandbox) =>
+			withState(sandbox, "error", { reason, ...(placementReason === undefined ? {} : { placementReason }) }),
+		).catch(() => undefined);
 		if (result === undefined || !("moved" in result)) return undefined;
 		const next = result.moved;
-		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: from, reason } });
+		await emit("sandbox.error", next.accountId, {
+			sandbox: next,
+			data: { previousState: from, reason, ...(placementReason === undefined ? {} : { placementReason }) },
+		});
 		return next;
 	}
 
@@ -2546,7 +3172,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		actor: Principal | undefined,
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
-	): Promise<{ readonly work: Promise<void> }> {
+	): Promise<{ readonly work: Promise<void>; readonly stopping: StoredSandbox }> {
 		const began = await transition(
 			sandbox.id,
 			sandbox.state,
@@ -2568,17 +3194,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					state: "ready",
 					trigger: "stop",
 					memory: keepMemory,
+					...recordedMachine(sandbox),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
+					...(taken.base === undefined ? {} : { base: taken.base }),
 				};
 				await store.snapshots.put(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
 					withState(current, keepMemory ? "paused" : "stopped", {
 						latestSnapshotId: snapshot.id,
+						latestSnapshotAt: snapshot.createdAt,
 						ports: [],
 						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
+						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
+						reason,
 					}),
 				);
 				if (!("moved" in result)) return;
@@ -2611,7 +3242,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw error;
 			}
 		});
-		return { work };
+		return { work, stopping: began.moved };
 	}
 
 	/** The backend's connected hosts now: the stub's always are. */
@@ -2798,59 +3429,137 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("unavailable", HOST_NOT_REVOCABLE);
 		}
 		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
+		await strandOn(host.id);
 		return hostView(revoked ?? { ...host, state: "revoked" });
 	}
 
 	/**
-	 * Takes the key's claim for `claim`: inserts it, or takes over one whose holder stopped renewing it. Answers the first
-	 * call's answer when there is one, `true` when the claim is now `claim`'s, and refuses with `conflict` while another
-	 * call holds it.
+	 * The sandboxes of a revoked host: it never connects again, so none of them can be reached, run or started there, and
+	 * none is claimed to. Each whose record names the host is `error`, saying so, for its owner to delete, which writes it
+	 * off; one being deleted is left to its delete. A first create or fork under way there doesn't name its host until
+	 * its boot writes `running`: it is found by where its backend placed it (recorded before the host was asked to make
+	 * it), and marked (`strandedOn`) rather than moved, because only its boot knows which host it ends up on. Its boot's
+	 * one move from `starting` is then `error` if that host is marked (`boot`). A boot that writes `running` before the
+	 * scan's write is found here by its host either way.
+	 *
+	 * A lookup or write that fails fails the revocation, which may be made again to finish, its host revoked already.
 	 */
-	async function claimKey(id: string, claim: string): Promise<{ readonly body: string } | true> {
-		const claimed = () => ({ id, createdAt: now(), claim, claimExpiresAt: now() + IDEMPOTENCY_CLAIM_MS });
+	async function strandOn(hostId: string): Promise<void> {
+		const unattributed =
+			backend.placedOn === undefined
+				? []
+				: (await store.sandboxes.list({ state: "starting" })).filter((sandbox) => sandbox.hostId === undefined);
+		const placedHere: StoredSandbox[] = [];
+		for (const sandbox of unattributed) {
+			if ((await backend.placedOn?.(sandbox.id)) === hostId) placedHere.push(sandbox);
+		}
+		for (const sandbox of [...(await store.sandboxes.list({ hostId })), ...placedHere]) {
+			// From whatever it is when written, not as listed: a boot or stop that lands in between is still caught.
+			let previous: SandboxState | undefined;
+			await store.sandboxes.update(sandbox.id, (current) => {
+				previous = undefined;
+				if (current.hostId === hostId && STRANDABLE.includes(current.state)) {
+					previous = current.state;
+					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
+				}
+				if (current.hostId === undefined && current.state === "starting") {
+					if (current.strandedOn?.includes(hostId) === true) return undefined;
+					return { ...current, strandedOn: [...(current.strandedOn ?? []), hostId] };
+				}
+				// Moved on since (deleted, being deleted, on another host now): left.
+				return undefined;
+			});
+			const stranded = previous === undefined ? undefined : await store.sandboxes.get(sandbox.id);
+			if (stranded === undefined || previous === undefined) continue;
+			await emit("sandbox.error", stranded.accountId, {
+				sandbox: stranded,
+				data: { previousState: previous, reason: HOST_REVOKED_REASON },
+			});
+		}
+	}
+
+	/**
+	 * Takes the key's claim for `claim` by inserting it. Answers the first call's stored record when it has answered, and
+	 * `true` when the claim is now `claim`'s. A key kept for a different request (another `fingerprint`) is `refused`,
+	 * whatever its state. A key another call holds is `conflict`: while it works, retry later; once its claim lapsed (its
+	 * gateway stalled or died), for good (`CLAIM_LAPSED`). A lapsed claim is never taken over, because its holder may yet
+	 * go on and do the work too: whether it took effect is the caller's to check, under a new key.
+	 */
+	async function claimKey(id: string, claim: string, fingerprint: string): Promise<StoredIdempotency | true> {
+		const claimed = { id, createdAt: now(), fingerprint, claim, claimExpiresAt: now() + IDEMPOTENCY_CLAIM_MS };
 		// Twice at most: the claim may be released (its call failed) between the insert and the read.
 		for (let attempt = 0; attempt < 2; attempt++) {
-			if (await store.idempotency.insert(claimed())) return true;
-			let answered: string | undefined;
-			let seen = false;
-			const taken = await store.idempotency.update(id, (current) => {
-				seen = true;
-				answered = current.body;
-				if (current.body !== undefined || (current.claimExpiresAt ?? 0) > now()) return undefined;
-				return claimed();
-			});
-			if (answered !== undefined) return { body: answered };
-			if (taken !== undefined) return true;
-			if (seen) break;
+			if (await store.idempotency.insert(claimed)) return true;
+			const found = await store.idempotency.get(id);
+			if (found === undefined) continue;
+			if (!sameRequest(found, fingerprint)) throw keyReused();
+			if (found.body !== undefined) return found;
+			if ((found.claimExpiresAt ?? 0) <= now())
+				throw new KantelError("conflict", CLAIM_LAPSED, { idempotencyKey: "held" });
+			break;
 		}
 		throw new KantelError(
 			"conflict",
-			"A call with this Idempotency-Key is still in progress; retry it once that call has answered",
+			"A call with this Idempotency-Key is still in progress; retry it with the same key once that call has answered",
+			{ idempotencyKey: "in_progress" },
 		);
+	}
+
+	/** The first call's answer again, from its stored record. */
+	async function storedAnswer<T>(record: StoredIdempotency): Promise<T> {
+		const body = record.body as string;
+		if (record.secret === "withheld")
+			throw new KantelError("conflict", ANSWER_WITHHELD, { idempotencyKey: "withheld" });
+		if (record.secret === "sealed") {
+			const opened = await requireSealer().openText(JSON.parse(body) as SealedValue, idempotencyAad(record.id));
+			return JSON.parse(opened) as T;
+		}
+		return JSON.parse(body) as T;
 	}
 
 	/**
 	 * Answers an idempotent call's first answer again for the same caller, operation and key, on every gateway. The key is
 	 * claimed before the work starts, so only one call does it: a call with the same key while it works waits for it on
 	 * this gateway, and is `conflict` on another. The claim is renewed while the work runs and lapses
-	 * `IDEMPOTENCY_CLAIM_MS` after the last renewal, so a gateway that died mid-call frees the key within that. A call that
-	 * fails releases the key, so a retry does the work again.
+	 * `IDEMPOTENCY_CLAIM_MS` after the last renewal: a retry of a call whose gateway stalled or died is then `conflict` for
+	 * good, never done again under the key, since the stalled call may still finish (`claimKey`). A call refused
+	 * before it did anything (`REFUSALS`) releases the key, so a retry does the work; any other failure keeps it, lapsed.
+	 *
+	 * The key is kept with a fingerprint of the request (its path parameters, query and body), so the same key with a
+	 * different request is `refused` rather than answered with another call's answer. An answer that holds a secret
+	 * (`secret`), such as a new API key's, is kept sealed with the deployment's secrets key; where there is none it isn't
+	 * kept at all, and a retry is `conflict`, saying so, rather than doing the work again.
 	 */
 	async function once<T>(
 		principal: Principal,
 		operation: string,
-		key: string | undefined,
+		input: {
+			readonly params?: unknown;
+			readonly query?: unknown;
+			readonly body?: unknown;
+			readonly idempotencyKey?: string;
+		},
 		work: () => Promise<T>,
+		options: {
+			readonly secret?: true;
+			/** Keep no copy of the secret answer, as with no secrets key: for one no retry could sign in to fetch. */
+			readonly withhold?: true;
+		} = {},
 	): Promise<T> {
+		const key = input.idempotencyKey;
 		if (key === undefined) return work();
 		const caller = principal.kind === "key" ? `key:${principal.keyId}` : `user:${principal.userId}`;
 		const id = `${caller}:${operation}:${key}`;
+		const fingerprint = await sha256Hex(canonicalJson({ params: input.params, query: input.query, body: input.body }));
 		const running = inflight.get(id);
-		if (running !== undefined) return running as Promise<T>;
+		if (running !== undefined) {
+			if (running.fingerprint !== fingerprint) throw keyReused();
+			return running.promise as Promise<T>;
+		}
 		const promise = (async () => {
 			const claim = randomId("claim");
-			const held = await claimKey(id, claim);
-			if (held !== true) return JSON.parse(held.body) as T;
+			const held = await claimKey(id, claim, fingerprint);
+			if (held !== true) return storedAnswer<T>(held);
 			const renew = setInterval(() => {
 				void store.idempotency
 					.update(id, (current) =>
@@ -2861,19 +3570,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					.catch(() => undefined);
 			}, IDEMPOTENCY_RENEW_MS);
 			(renew as { unref?: () => void }).unref?.();
+			// Only while the claim is still this call's: one that lapsed (this gateway stalled) and was taken over is the
+			// other call's to answer or release, so this one neither deletes nor overwrites what that one keeps.
+			const holding = (current: StoredIdempotency) => current.claim === claim && current.body === undefined;
 			let answer: T;
 			try {
 				answer = await work();
 			} catch (error) {
 				clearInterval(renew);
-				await store.idempotency.delete(id).catch(() => undefined);
+				// A refusal frees the key, for a retry to do the work. Any other failure may have come after an effect (a write
+				// done, a host call sent and never answered): its key stays held, lapsed, so a retry is `CLAIM_LAPSED`.
+				if (refusedBeforeEffects(error)) await store.idempotency.deleteIf(id, holding).catch(() => undefined);
+				else {
+					await store.idempotency
+						.update(id, (current) => (holding(current) ? { ...current, claimExpiresAt: 0 } : undefined))
+						.catch(() => undefined);
+				}
 				throw error;
 			}
 			clearInterval(renew);
-			await store.idempotency.put({ id, body: JSON.stringify(answer), createdAt: now() });
+			const text = JSON.stringify(answer);
+			const kept: Pick<StoredIdempotency, "body" | "secret"> =
+				options.secret !== true
+					? { body: text }
+					: sealer === undefined || options.withhold === true
+						? { body: "null", secret: "withheld" }
+						: { body: JSON.stringify(await sealer.seal(text, idempotencyAad(id))), secret: "sealed" };
+			await store.idempotency.update(id, (current) =>
+				holding(current) ? { id, ...kept, fingerprint, createdAt: now() } : undefined,
+			);
 			return answer;
 		})();
-		inflight.set(id, promise);
+		inflight.set(id, { fingerprint, promise });
 		try {
 			return await promise;
 		} finally {
@@ -2885,7 +3613,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// A sandbox's 5-minute means go into its record's `samples`, which its sparkline and `points` are read from.
 
 	/**
-	 * Keeps a sandbox's closed 5-minute mean in its record, oldest first, at most `MAX_SAMPLES`. Only a replica that took
+	 * Keeps a sandbox's closed 5-minute mean in its record, oldest first, a day of them and hourly means before it
+	 * (`keptSamples`). Only a replica that took
 	 * some of its readings itself keeps one: one that was only passed them on may have joined part way through. Of two
 	 * for the same 5 minutes (the host moved replica within them, and each kept what it had), the one of more readings.
 	 */
@@ -2893,9 +3622,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (!rollup.local) return;
 		await patchSandbox(sandboxId, (latest) => {
 			if (latest.state === "deleted") return undefined;
-			const sample = { at: rollup.at, cpu: rollup.cpu, memoryMb: rollup.memUsedBytes / MIB, readings: rollup.readings };
+			const sample = sampleOf(rollup);
 			const index = latest.samples.findIndex((each) => each.at >= rollup.at);
-			if (index === -1) return { ...latest, samples: [...latest.samples, sample].slice(-MAX_SAMPLES) };
+			if (index === -1) return { ...latest, samples: keptSamples([...latest.samples, sample]) };
 			const there = latest.samples[index];
 			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return undefined;
 			return { ...latest, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
@@ -2926,6 +3655,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		hostSeries.settle(asOf);
 		for (const { key, rollup } of sandboxSeries.settle(asOf)) await keepRollup(key, rollup).catch(() => undefined);
 		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
+		// A host's backlog is minutes long: an hour without a tick, none of what it would send again is still to come.
+		for (const hostId of takenSeq.keys()) if (!tickArrivedAt.has(hostId)) takenSeq.delete(hostId);
+		for (const hostId of heldUsage.keys()) if (!tickArrivedAt.has(hostId)) heldUsage.delete(hostId);
+		sweepUsageClaims();
 	}
 
 	/**
@@ -2933,12 +3666,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * series before anything is written, so a slow write can't let the next tick in ahead of this one; `recordUsage`
 	 * takes a host's ticks one at a time. `settle`: close what stopped reporting, now and then (not while replaying the
 	 * stub's past ticks, whose later ones would find their 5 minutes already closed). `shared`: it came from the replica
-	 * holding the host, which exports it, so this one doesn't (`UsagePoint.shared`).
+	 * holding the host, which exports it, so this one doesn't (`UsagePoint.shared`). `exports`, instead: asked whether this
+	 * replica exports it (`claimUsage`), once nothing else can stop the tick going in. It throws only before any reading
+	 * is in (the lookup of the host's sandboxes, or `exports`), so a tick that failed can be taken again whole.
 	 */
 	async function ingest(
 		hostId: string,
 		report: ReportedUsage,
-		how: { readonly known?: ReadonlySet<string>; readonly settle?: boolean; readonly shared?: boolean } = {},
+		how: {
+			readonly known?: ReadonlySet<string>;
+			readonly settle?: boolean;
+			readonly shared?: boolean;
+			readonly exports?: () => Promise<boolean>;
+		} = {},
 	): Promise<void> {
 		const meta = { intervalMs: report.intervalMs };
 		// The host's own time, unless its clock runs ahead: a reading stamped in the future would hold back every one after
@@ -2947,6 +3687,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const at = report.at - received > MAX_CLOCK_SKEW_MS ? received : report.at;
 		// Whether the host is reporting goes by when its ticks arrive, not by its clock.
 		tickArrivedAt.set(hostId, received);
+		// A host reports only its own sandboxes: one statement for all of them, not one per sandbox. Read before any
+		// reading goes in, so a tick it fails for has none in.
+		const held = report.sandboxes.length === 0 ? new Set<string>() : (how.known ?? (await sandboxesOn(hostId)));
+		const shared = how.exports === undefined ? how.shared === true : !(await how.exports());
 		hostSeries.add(
 			hostId,
 			{
@@ -2958,36 +3702,171 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			{ ...meta, memTotalBytes: report.host.memTotalBytes, diskTotalBytes: report.host.diskTotalBytes },
 		);
 		if (report.sandboxes.length > 0) {
-			// A host reports only its own sandboxes: one statement for all of them, not one per sandbox.
-			const held = how.known ?? (await sandboxesOn(hostId));
 			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
 			for (const reading of report.sandboxes) {
 				if (!held.has(reading.id)) continue;
+				// The last disk size a reading had: one without (a guest that didn't answer in time) keeps it.
+				const diskTotal = reading.diskTotalBytes ?? sandboxSeries.meta(reading.id)?.diskTotalBytes;
 				const rollup = sandboxSeries.add(
 					reading.id,
 					{
 						at,
 						cpu: reading.cpu,
 						memUsedBytes: reading.memUsedBytes,
-						diskUsedBytes: 0,
-						...(how.shared === true ? { shared: true } : {}),
+						...(reading.diskUsedBytes === undefined
+							? { diskUsedBytes: 0, noDisk: true }
+							: { diskUsedBytes: reading.diskUsedBytes }),
+						...(reading.ioPressure === undefined ? {} : { ioPressure: reading.ioPressure }),
+						...(shared ? { shared: true } : {}),
 					},
-					{ ...meta, memLimitBytes: reading.memLimitBytes },
+					{
+						...meta,
+						memLimitBytes: reading.memLimitBytes,
+						...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
+					},
 				);
 				if (rollup !== undefined) closed.push({ id: reading.id, rollup });
 			}
 			for (const { id, rollup } of closed) await keepRollup(id, rollup).catch(() => undefined);
 		}
-		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage();
+		// The tick is in: settling that fails is tried again with the next.
+		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage().catch(() => undefined);
 	}
 
 	/** Each host's tick being taken, so the next waits for it (`recordUsage`). */
 	const ingesting = new Map<string, Promise<void>>();
 
-	/** Takes a host's tick after the one before it from the same host. */
+	/**
+	 * Whether a numbered tick is one already taken: its run's, at or before the newest taken. A series takes only newer
+	 * points too, but a tick stamped with this process's clock (its host's ran ahead, `MAX_CLOCK_SKEW_MS`) would get a
+	 * new time each time it came, and this doesn't depend on it.
+	 */
+	const takenAlready = (hostId: string, report: ReportedUsage): boolean => {
+		if (report.seq === undefined || report.run === undefined) return false;
+		const taken = takenSeq.get(hostId)?.get(report.run);
+		return taken !== undefined && report.seq <= taken;
+	};
+
+	/** Notes a numbered tick as taken (`takenSeq`), its run as the host's newest. */
+	const noteTaken = (hostId: string, report: NumberedUsage): void => {
+		const runs = takenSeq.get(hostId) ?? new Map<string, number>();
+		const taken = runs.get(report.run);
+		if (taken !== undefined && taken >= report.seq) return;
+		runs.delete(report.run);
+		runs.set(report.run, report.seq);
+		for (const run of runs.keys()) if (runs.size > MAX_RUNS_KEPT) runs.delete(run);
+		takenSeq.set(hostId, runs);
+	};
+
+	/**
+	 * Claims a numbered tick from its host for this process to export (`StoredUsageClaim`), and answers whether the claim
+	 * is its own: made now, or by this process before (a claim written whose answer was lost, tried again). A claim of
+	 * another's means that replica took the tick and exports it.
+	 */
+	async function claimUsage(hostId: string, report: NumberedUsage): Promise<boolean> {
+		const id = usageClaimId(hostId, report.run, report.seq);
+		// While the host could still send it again: its backlog is MAX_HELD_USAGE ticks; twice that, and an hour at least.
+		const keepUntil = now() + Math.max(HOUR_MS, 2 * MAX_HELD_USAGE * report.intervalMs);
+		const claim: StoredUsageClaim = { id, hostId, owner: usageOwner, keepUntil };
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			if (await store.usageClaims.insert(claim)) return true;
+			const current = await store.usageClaims.get(id);
+			// None any more (removed between the two, long past): claim it afresh.
+			if (current !== undefined) return current.owner === usageOwner;
+		}
+		return false;
+	}
+
+	/**
+	 * Removes the claims to ticks no host can send again, at most once an hour (`settleTaken`): in the background, so no
+	 * tick and no export waits for it, a batch at a time, and stopped by `close`.
+	 */
+	function sweepUsageClaims(): void {
+		if (now() - claimsSweptAt < HOUR_MS) return;
+		claimsSweptAt = now();
+		keepGoing(
+			(async () => {
+				const expired = (await store.usageClaims.list()).filter((claim) => claim.keepUntil < now());
+				for (let from = 0; from < expired.length && !closing; from += CLAIM_SWEEP_BATCH) {
+					const batch = expired.slice(from, from + CLAIM_SWEEP_BATCH);
+					await Promise.all(batch.map((claim) => store.usageClaims.delete(claim.id).catch(() => false)));
+					// Room for the ticks' own statements between batches.
+					await new Promise((resolve) => setTimeout(resolve, CLAIM_SWEEP_PAUSE_MS));
+				}
+			})(),
+		);
+	}
+
+	/**
+	 * Takes a numbered tick unless it is taken already: exported here only if this process claims it (`claimUsage`),
+	 * which it does once nothing else can stop the tick going in, so a claim made is a tick in.
+	 */
+	async function takeNumbered(hostId: string, entry: HeldUsage): Promise<void> {
+		if (takenAlready(hostId, entry.report)) return;
+		const exports = async () => {
+			entry.exported ??= await claimUsage(hostId, entry.report);
+			return entry.exported;
+		};
+		await ingest(hostId, entry.report, entry.shared ? { shared: true } : { exports });
+		noteTaken(hostId, entry.report);
+	}
+
+	/** Takes the host's held ticks, oldest first; one that fails again stays, with every one after it. */
+	async function takeHeld(hostId: string): Promise<void> {
+		const held = heldUsage.get(hostId);
+		while (held !== undefined && held.length > 0) {
+			const [next] = held;
+			if (next !== undefined) await takeNumbered(hostId, next);
+			held.shift();
+		}
+		heldUsage.delete(hostId);
+	}
+
+	/** Holds a numbered tick that couldn't be taken, behind those held already, at most MAX_HELD_USAGE of them. */
+	function hold(hostId: string, entry: HeldUsage): void {
+		const held = heldUsage.get(hostId) ?? [];
+		const { run, seq } = entry.report;
+		if (held.some((each) => each.report.run === run && each.report.seq === seq)) return;
+		held.push(entry);
+		if (held.length > MAX_HELD_USAGE) held.splice(0, held.length - MAX_HELD_USAGE);
+		heldUsage.set(hostId, held);
+	}
+
+	/**
+	 * Takes a host's tick after the one before it from the same host. A numbered tick taken already isn't taken again,
+	 * and one that can't be taken (the store failing) is held, with every numbered tick after it, until they can be, in
+	 * order: so a tick's promise resolves only once it and every numbered tick before it from the host are in, which is
+	 * what makes the hub's cumulative `usage.ack` true, and no later point gets into a series ahead of a held one (which
+	 * the series would then refuse as older). The held ones are tried again before each tick and each export.
+	 */
 	function ingestInTurn(hostId: string, report: ReportedUsage, shared: boolean): Promise<void> {
+		return inTurn(hostId, async () => {
+			if (report.seq === undefined || report.run === undefined) {
+				await ingest(hostId, report, { shared });
+				return;
+			}
+			const entry: HeldUsage = { report: { ...report, seq: report.seq, run: report.run }, shared };
+			try {
+				await takeHeld(hostId);
+				await takeNumbered(hostId, entry);
+			} catch (error) {
+				hold(hostId, entry);
+				throw error;
+			}
+		});
+	}
+
+	/** Tries every host's held ticks again, each in its host's turn (before an export). */
+	async function retryHeldUsage(): Promise<void> {
+		await Promise.all(
+			[...heldUsage.keys()].map((hostId) => inTurn(hostId, () => takeHeld(hostId)).catch(() => undefined)),
+		);
+	}
+
+	/** Runs `work` after the host's tick before it, and before its next. */
+	function inTurn(hostId: string, work: () => Promise<void>): Promise<void> {
 		const before = ingesting.get(hostId) ?? Promise.resolve();
-		const turn = before.then(() => ingest(hostId, report, { shared }));
+		const turn = before.then(work);
 		const settled = turn.catch(() => undefined);
 		ingesting.set(hostId, settled);
 		void settled.then(() => {
@@ -3088,7 +3967,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const limit = sandbox.resources?.memoryMb === undefined ? {} : { memLimitBytes: sandbox.resources.memoryMb * MIB };
 		const closed = sandboxSeries.add(
 			sandbox.id,
-			{ at, cpu: reading.cpu, memUsedBytes: reading.memoryBytes, diskUsedBytes: 0 },
+			{ at, cpu: reading.cpu, memUsedBytes: reading.memoryBytes, diskUsedBytes: 0, noDisk: true },
 			{ intervalMs: FALLBACK_INTERVAL_MS, ...limit },
 		);
 		if (closed !== undefined) await keepRollup(sandbox.id, closed);
@@ -3110,10 +3989,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const partial = sandbox.state === "deleted" ? undefined : sandboxSeries.partial(sandbox.id);
 		const last = sandbox.samples[sandbox.samples.length - 1];
 		if (partial === undefined || (last !== undefined && partial.at <= last.at)) return sandbox.samples;
-		return [
-			...sandbox.samples,
-			{ at: partial.at, cpu: partial.cpu, memoryMb: partial.memUsedBytes / MIB, readings: partial.readings },
-		];
+		return [...sandbox.samples, sampleOf(partial)];
+	}
+
+	/** A 5-minute mean as a sandbox's record keeps it. */
+	function sampleOf(rollup: Rollup): StoredSample {
+		return {
+			at: rollup.at,
+			cpu: rollup.cpu,
+			memoryMb: rollup.memUsedBytes / MIB,
+			readings: rollup.readings,
+			...(rollup.noDisk === true
+				? {}
+				: {
+						diskMb: rollup.diskUsedBytes / MIB,
+						...(rollup.diskReadings === rollup.readings ? {} : { diskReadings: rollup.diskReadings }),
+					}),
+			...(rollup.ioPressure === undefined
+				? {}
+				: {
+						io: rollup.ioPressure,
+						...(rollup.ioReadings === rollup.readings ? {} : { ioReadings: rollup.ioReadings }),
+					}),
+		};
 	}
 
 	function hostSparklines(hostId: string): computeSchema.UsageSparklines {
@@ -3348,6 +4246,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					accounts,
 					superAdmin: principal.superAdmin,
 					mode,
+					...deploymentDomain,
 				};
 			}
 			return {
@@ -3356,6 +4255,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				accounts,
 				superAdmin: principal.superAdmin,
 				mode,
+				...deploymentDomain,
 			};
 		},
 
@@ -3364,24 +4264,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: await accountsOf(principal) };
 		},
 
-		createOrganisation: async (principal, { body }) => {
+		createOrganisation: async (principal, { body, idempotencyKey }) => {
 			const person = requirePerson(principal);
-			const account: StoredAccount = {
-				id: randomId("acc"),
-				kind: "organisation",
-				name: body.name,
-				defaultVisibility: body.defaultVisibility ?? "organisation",
-				createdAt: now(),
-			};
-			await store.accounts.put(account);
-			await store.members.put({
-				id: memberId(account.id, person.userId),
-				accountId: account.id,
-				userId: person.userId,
-				role: "owner",
-				joinedAt: now(),
+			return once(principal, "createOrganisation", { body, idempotencyKey }, async () => {
+				const account: StoredAccount = {
+					id: randomId("acc"),
+					kind: "organisation",
+					name: body.name,
+					defaultVisibility: body.defaultVisibility ?? "organisation",
+					createdAt: now(),
+				};
+				await store.accounts.put(account);
+				await store.members.put({
+					id: memberId(account.id, person.userId),
+					accountId: account.id,
+					userId: person.userId,
+					role: "owner",
+					joinedAt: now(),
+				});
+				return accountView(account, "owner");
 			});
-			return accountView(account, "owner");
 		},
 
 		joinOrganisation: async (principal, { body }) => {
@@ -3446,6 +4348,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (sandboxes.length > 0 || saved.length > 0) {
 				throw new KantelError("conflict", "Delete the organisation's sandboxes and saved snapshots first");
 			}
+			// Its templates first, with their versions and cache: nothing is built for it once it has gone.
+			await templates.retireAccount(account.id);
 			for (const member of await store.members.list({ accountId: account.id })) await store.members.delete(member.id);
 			for (const invite of await store.invites.list({ accountId: account.id })) await store.invites.delete(invite.id);
 			for (const key of await store.apiKeys.list({ accountId: account.id })) {
@@ -3525,28 +4429,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: newestFirst(open).map((invite) => inviteView(invite)) };
 		},
 
-		createInvite: async (principal, { params, body }, request) => {
+		createInvite: async (principal, { params, body, idempotencyKey }, request) => {
 			const acting = await accountById(store, principal, params.accountId);
 			requireScope(principal, "account:admin", acting.role);
 			requireOrganisation(acting);
+			// Checked before `once`, so a retry answered the first call's code is held to the caller's role now too.
 			const role = body.role ?? "member";
 			if (role === "owner" && acting.role !== "owner") {
 				throw new KantelError("forbidden", "Only an owner invites an owner");
 			}
-			const email = body.email === undefined ? undefined : inviteEmail(body.email);
-			const code = randomSecret("kji_", 32);
-			const invite: StoredInvite = {
-				id: randomId("inv"),
-				accountId: params.accountId,
-				role,
-				...(email === undefined ? {} : { email }),
-				codeHash: await sha256Hex(code),
-				expiresAt: now() + (body.expiresInHours ?? 168) * 3_600_000,
-				createdAt: now(),
-			};
-			await store.invites.put(invite);
-			const emailed = email === undefined ? false : await mailInvite(principal, invite, email, code, request);
-			return { ...inviteView(invite, code), emailed };
+			// A retry would make a second invite and mail it again; with the key it answers the first, its code sealed.
+			return once(
+				principal,
+				"createInvite",
+				{ params, body, idempotencyKey },
+				async () => {
+					const email = body.email === undefined ? undefined : inviteEmail(body.email);
+					const code = randomSecret("kji_", 32);
+					const invite: StoredInvite = {
+						id: randomId("inv"),
+						accountId: params.accountId,
+						role,
+						...(email === undefined ? {} : { email }),
+						codeHash: await sha256Hex(code),
+						expiresAt: now() + (body.expiresInHours ?? 168) * 3_600_000,
+						createdAt: now(),
+					};
+					await store.invites.put(invite);
+					const emailed = email === undefined ? false : await mailInvite(principal, invite, email, code, request);
+					return { ...inviteView(invite, code), emailed };
+				},
+				{ secret: true },
+			);
 		},
 
 		revokeInvite: async (principal, { params }) => {
@@ -3579,7 +4493,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			return {
-				items: await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				items: await withSnapshotTimes(
+					await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				),
 				nextCursor: page.nextCursor,
 			};
 		},
@@ -3619,9 +4535,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createSandbox: async (principal, { body, idempotencyKey }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "sandboxes:write", role);
-			return once(principal, "createSandbox", idempotencyKey, async () => {
+			return once(principal, "createSandbox", { body, idempotencyKey }, async () => {
 				const from = body.from === undefined ? undefined : await snapshotFrom(principal, account.id, body.from);
-				const type = body.type ?? from?.sandboxType ?? "isolate";
+				const template =
+					body.template === undefined ? undefined : await templates.templateIn(account.id, body.template);
+				if (template !== undefined) {
+					if (from !== undefined)
+						throw new KantelError("invalid", "Make a sandbox from a template or a snapshot, not both");
+					if (body.image !== undefined)
+						throw new KantelError("invalid", "A template names its own image; leave image out");
+					if (body.type === "isolate") throw new KantelError("invalid", "A template makes microVMs, not isolates");
+					// Its setup runs as root with the env this call chooses (a shell reads functions from it) whenever it boots
+					// fresh, which a host may do whatever snapshot it is given: only a caller that may run commands may have it run.
+					if (template.spec.setup !== undefined) requireScope(principal, "exec", role);
+				}
+				const type = body.type ?? from?.sandboxType ?? (template === undefined ? "isolate" : "microvm");
 				if (body.mounts !== undefined && body.mounts.length > 0 && mounts === undefined) {
 					throw new KantelError("not_supported", MOUNTS_OFF);
 				}
@@ -3641,19 +4569,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				// The sandbox's own placeholder for each protected variable, minted now and never changed (a rotation changes
-				// the value it stands for). Its env: the environment's plain variables, then the placeholders, then its own.
+				// the value it stands for). Its env: its template's variables, the environment's plain variables, then the
+				// placeholders, then its own.
 				const placeholders: { [name: string]: string } = {};
 				for (const name of protectedNames) placeholders[name] = newPlaceholder();
-				const env: { [name: string]: string } = {};
+				const env: { [name: string]: string } = { ...template?.spec.env };
 				for (const variable of environment?.variables ?? []) {
 					if (!variable.protected && variable.value !== undefined) env[variable.name] = variable.value;
 				}
 				Object.assign(env, placeholders, body.env);
 				const egressRevision = now();
+				// Its own grants: its template's, if it has one.
+				const grants = template === undefined ? [] : normaliseGrants(template.spec.network?.grants ?? []);
 				const subject: EgressSubject = {
 					...(environment === undefined ? {} : { environmentId: environment.id }),
 					placeholders,
-					grants: [],
+					grants,
 					egressRevision,
 				};
 				// The backend's hosts and the host records, read at once: one round trip, not one each. The backend's hosts
@@ -3663,13 +4594,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A check below may refuse the call before this is awaited.
 				known.catch(() => undefined);
 				const capabilities = await read;
-				if (!capabilities.types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
+				if (!capabilities.types.includes(type)) {
+					// Why, as `requireHosts` would say it: of the hosts the caller may use, and from a snapshot its own host.
+					let reason: PlacementReason = "no_host_for_type";
+					try {
+						requireHosts(
+							await known,
+							account.id,
+							type,
+							{ ...body.hostLabels },
+							from !== undefined,
+							await mayShare(principal),
+						);
+					} catch (error) {
+						reason = placementReasonOf(error) ?? reason;
+					}
+					throw placementError("unavailable", reason, `No host runs ${type} sandboxes`);
+				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
 				if (body.size !== undefined && body.resources !== undefined) {
 					throw new KantelError("invalid", "Give resources or a size, not both");
 				}
 				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
-					throw new KantelError("not_supported", `This deployment doesn't offer the size ${body.size}`);
+					throw placementError(
+						"not_supported",
+						"no_host_offers_size",
+						`This deployment doesn't offer the size ${body.size}`,
+					);
 				}
 				if (account.kind === "personal" && body.visibility === "organisation") {
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
@@ -3684,23 +4635,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 				);
-				// Its shape is checked against the hosts it may go to, as placement will choose among them.
-				const eligible = new Set(hosts);
-				const shape = shapeFor(
-					type,
-					body.resources,
-					capabilities.hosts.filter((host) => eligible.has(host.id)),
-					capabilities.sizes,
-					from === undefined,
-				);
-				// The preset it matches, named, so a host restores that size's template snapshot rather than booting it.
-				const preset =
-					type === "microvm" && shape !== undefined
-						? capabilities.hosts
-								.filter((host) => eligible.has(host.id))
-								.flatMap((host) => host.sizes ?? capabilities.sizes)
-								.find((size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb)?.name
-						: undefined;
+				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
+				// its template's resources (unless it names a size), which a template snapshot was built as.
+				const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
+				const asked =
+					body.resources ?? (template !== undefined && body.size === undefined ? template.spec.resources : undefined);
+				const shape = shapeFor(type, asked, eligible, capabilities.sizes, from === undefined);
+				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
+				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
+				// that size's template snapshot rather than booting it.
+				const machine =
+					type !== "microvm"
+						? undefined
+						: sandboxMachine(
+								template !== undefined
+									? { template: template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES }
+									: from === undefined
+										? undefined
+										: { copies: from },
+								{ ...(body.size === undefined ? {} : { size: body.size }), ...(shape === undefined ? {} : { shape }) },
+								eligible.flatMap((host) => host.sizes ?? capabilities.sizes),
+							);
+				if (type === "microvm" && machine === undefined) {
+					throw placementError(
+						"not_supported",
+						"no_host_offers_size",
+						`No host this sandbox may use offers the size ${body.size}`,
+					);
+				}
+				// From the template's newest ready snapshot built as that machine, on its host, or a fresh boot.
+				const start =
+					template === undefined || machine?.shape === undefined
+						? undefined
+						: await templates.startFor(template, { shape: machine.shape, eligibleHosts: hosts });
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -3708,13 +4675,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					name,
 					subdomain: subdomainFor(name),
 					type,
-					size: type === "microvm" ? (shape === undefined ? (body.size ?? "default") : preset) : undefined,
-					...(shape === undefined ? {} : { shape }),
+					size: machine?.size,
+					...(machine?.shape === undefined ? {} : { shape: machine.shape }),
 					// An isolate's memory is what it asked for (its host has no say); a microVM's is what its host gives it.
 					...(type === "isolate" && shape !== undefined
-						? { resources: { vcpus: 0, memoryMb: shape.memoryMb, diskGb: 0 } }
+						? { shape, resources: { vcpus: 0, memoryMb: shape.memoryMb, diskGb: 0 } }
 						: {}),
-					image: type === "microvm" ? (body.image ?? capabilities.defaultImage) : undefined,
+					image: type === "microvm" ? (start?.image ?? body.image ?? capabilities.defaultImage) : undefined,
 					state: "starting",
 					visibility: account.kind === "personal" ? "private" : (body.visibility ?? account.defaultVisibility),
 					capabilities: type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
@@ -3726,7 +4693,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ownerUserId: principal.userId,
 					env,
 					...(environment === undefined ? {} : { environmentId: environment.id }),
-					grants: [],
+					...(start === undefined
+						? {}
+						: {
+								template: start.record,
+								templateBoot: {
+									...freshBoot(start.boot),
+									// A custom image's holders, which a retry of the create keeps to.
+									...(start.boot.rootfsKey === undefined ? {} : { holders: [...start.eligibleHosts] }),
+								},
+							}),
+					grants,
 					placeholders,
 					egressRevision,
 					hostLabels,
@@ -3765,8 +4742,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 								image: sandbox.image,
 								env: sandbox.env,
-								eligibleHosts: hosts,
+								eligibleHosts: start?.eligibleHosts ?? hosts,
 								fromSnapshot: from?.ref,
+								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
 							}),
@@ -3794,36 +4772,40 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getSandbox: async (principal, { params }) => {
 			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			return withMakerNamed(sandboxView(sandbox, principal));
+			const [view] = await withSnapshotTimes([await withMakerNamed(sandboxView(sandbox, principal))]);
+			return view as Sandbox;
 		},
 
-		updateSandbox: async (principal, { params, body }) => {
+		updateSandbox: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			const current = await settledFor(principal, sandbox.id);
-			const account = await store.accounts.get(current.accountId);
-			if (body.visibility === "organisation" && account?.kind === "personal") {
-				throw new KantelError("invalid", "A personal account's sandboxes are always private");
-			}
-			const updated = await patchSandbox(current.id, (latest) => {
-				let stopsAt = latest.stopsAt;
-				if (body.autoStopMinutes !== undefined && latest.state === "running") {
-					stopsAt = body.autoStopMinutes === null ? undefined : now() + body.autoStopMinutes * 60_000;
+			// `extendMinutes` and `autoStopMinutes` count from now: a retry with the key keeps the first call's stop time.
+			return once(principal, "updateSandbox", { params, body, idempotencyKey }, async () => {
+				const current = await settledFor(principal, sandbox.id);
+				const account = await store.accounts.get(current.accountId);
+				if (body.visibility === "organisation" && account?.kind === "personal") {
+					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
-				if (body.extendMinutes !== undefined) {
-					if (latest.state !== "running") throw new KantelError("conflict", "Only a running sandbox has a stop time");
-					stopsAt = now() + body.extendMinutes * 60_000;
-				}
-				return {
-					...latest,
-					name: body.name ?? latest.name,
-					autoStopMinutes: body.autoStopMinutes === undefined ? latest.autoStopMinutes : body.autoStopMinutes,
-					visibility: body.visibility ?? latest.visibility,
-					labels: body.labels === undefined ? latest.labels : { ...body.labels },
-					stopsAt,
-				};
+				const updated = await patchSandbox(current.id, (latest) => {
+					let stopsAt = latest.stopsAt;
+					if (body.autoStopMinutes !== undefined && latest.state === "running") {
+						stopsAt = body.autoStopMinutes === null ? undefined : now() + body.autoStopMinutes * 60_000;
+					}
+					if (body.extendMinutes !== undefined) {
+						if (latest.state !== "running") throw new KantelError("conflict", "Only a running sandbox has a stop time");
+						stopsAt = now() + body.extendMinutes * 60_000;
+					}
+					return {
+						...latest,
+						name: body.name ?? latest.name,
+						autoStopMinutes: body.autoStopMinutes === undefined ? latest.autoStopMinutes : body.autoStopMinutes,
+						visibility: body.visibility ?? latest.visibility,
+						labels: body.labels === undefined ? latest.labels : { ...body.labels },
+						stopsAt,
+					};
+				});
+				if (updated === undefined) throw notFound("sandbox");
+				return sandboxView(updated, principal);
 			});
-			if (updated === undefined) throw notFound("sandbox");
-			return sandboxView(updated, principal);
 		},
 
 		startSandbox: async (principal, { params, body }) => restart(principal, params.sandboxId, body, "start"),
@@ -3851,7 +4833,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		forkSandbox: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox: source } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			return once(principal, "forkSandbox", idempotencyKey, async () => {
+			return once(principal, "forkSandbox", { params, body, idempotencyKey }, async () => {
 				const current = await settledFor(principal, source.id);
 				const count = body.count ?? 1;
 				let snapshot: StoredSnapshot | undefined;
@@ -3881,6 +4863,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await mayShare(principal),
 				);
 				const forks: StoredSandbox[] = [];
+				// Their machine, as every create decides it (`sandboxMachine`): from a snapshot, that of the sandbox it was taken
+				// of (the source's now, for one from before snapshots kept it) unless `size` names another. Forked live, the
+				// source's own, whatever `size` says: a host copies the running machine as it is.
+				const machine =
+					current.type !== "microvm"
+						? undefined
+						: snapshot === undefined
+							? sandboxMachine({ copies: current }, {}, [])
+							: sandboxMachine(
+									{
+										copies: recordsMachine(snapshot) ? snapshot : current,
+									},
+									body.size === undefined ? {} : { size: body.size },
+									[],
+								);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
 				for (let index = 0; index < count; index++) {
@@ -3904,9 +4901,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						name,
 						subdomain: subdomainFor(name),
 						type: current.type,
-						size: current.type === "microvm" ? (body.size ?? current.size) : undefined,
-						// A fork is its source's shape, unless it names a size.
-						...(current.shape === undefined || body.size !== undefined ? {} : { shape: current.shape }),
+						size: machine?.size,
+						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
+						// An isolate asks for its source's memory.
+						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
 						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
 						image: current.image,
 						state: "starting",
@@ -3991,90 +4989,223 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			});
 		},
 
-		recoverSandbox: async (principal, { params }) => {
+		recoverSandbox: async (principal, { params, idempotencyKey }) => {
 			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			const current = await settledFor(principal, sandbox.id);
-			if (current.state !== "running" && current.state !== "error") {
-				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
-			}
-			const hosts = await hostsToBoot(principal, current);
-			const fromSnapshot = await latestRef(current);
-			const environment = await provisionedAgain(principal, role, current);
-			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
-			// say, still being retried) never equals it, and loses.
-			const began = await transition(current.id, current.state, (latest) =>
-				withState(latest, "starting", {
-					ports: [],
-					egressRevision: later(latest.egressRevision),
-					...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
-				}),
-			);
-			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
-			const starting = began.moved;
-			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-			const egress = await egressFor(starting.accountId, starting);
-			keepGoing(
-				track([current.id], () =>
-					bootProvisioned(
-						current.id,
-						() =>
-							bootAgain(
-								starting,
-								{
-									fromSnapshot,
-									env: current.env,
-									eligibleHosts: hosts,
-									...sizingOf(starting),
-									...egress,
-									...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-								},
-								(options) => backend.recover(current.id, options),
-							),
-						environment,
-						{ egressRevision: starting.egressRevision },
+			// A running sandbox is recovered too, so a retry would restart it again: with the key it answers the first.
+			return once(principal, "recoverSandbox", { params, idempotencyKey }, async () => {
+				const current = await settledFor(principal, sandbox.id);
+				if (current.state !== "running" && current.state !== "error") {
+					throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
+				}
+				const hosts = await hostsToBoot(principal, current);
+				const fromSnapshot = await latestRef(current);
+				requireSetupScope(principal, role, current);
+				const environment = await provisionedAgain(principal, role, current);
+				// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
+				// say, still being retried) never equals it, and loses.
+				const began = await transition(current.id, current.state, (latest) =>
+					withState(latest, "starting", {
+						ports: [],
+						egressRevision: later(latest.egressRevision),
+						...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+					}),
+				);
+				if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+				const starting = began.moved;
+				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+				const egress = await egressFor(starting.accountId, starting);
+				keepGoing(
+					track([current.id], () =>
+						bootProvisioned(
+							current.id,
+							() =>
+								bootAgain(
+									starting,
+									{
+										fromSnapshot,
+										env: current.env,
+										eligibleHosts: hosts,
+										...sizingOf(starting),
+										...egress,
+										...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+									},
+									(options) => backend.recover(current.id, options),
+								),
+							environment,
+							{ egressRevision: starting.egressRevision },
+						),
 					),
-				),
-			);
-			return sandboxView(starting, principal);
+				);
+				return sandboxView(starting, principal);
+			});
 		},
 
-		deleteSandbox: async (principal, { params }) => {
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
-			const current = await settledFor(principal, sandbox.id);
-			if (current.state === "deleted") return sandboxView(current, principal);
-			// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
-			// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
-			// of them writes `deleted`.
-			const began = await transition(current.id, NOT_DELETED, (latest) => withState(latest, "deleting"));
-			if (!("moved" in began)) return sandboxView(began.lost, principal);
-			await track([current.id], async () => {
-				try {
-					await killCommandsOf(current.id);
-					await backend.destroy(current.id);
-					for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
-						if (snapshot.kind === "automatic") {
-							await store.snapshots.delete(snapshot.id);
-							await releaseRef(snapshot.ref);
-						} else {
-							await store.snapshots.put({ ...snapshot, sandboxId: undefined });
-						}
-					}
-					const result = await transition(current.id, "deleting", (latest) =>
-						withState(latest, "deleted", { ports: [], latestSnapshotId: undefined, pausedSnapshotId: undefined }),
-					);
-					if (!("moved" in result)) return;
-					const deleted = result.moved;
-					await emit("sandbox.deleted", deleted.accountId, {
-						sandbox: deleted,
-						data: { previousState: current.state, actor: actorOf(principal) },
-					});
-				} catch (error) {
-					await fail(current.id, error, "deleting");
-					throw error;
+		restartSandboxOnLatest: async (principal, { params, idempotencyKey }) => {
+			requireImagePatching();
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			// Once it is running again, a retry would stop and reboot it a second time: with the key it answers the first.
+			return once(principal, "restartSandboxOnLatest", { params, idempotencyKey }, async () => {
+				// Mid-lifecycle (another restart's boot, a stop, a delete): refused as it is, rather than waited for and then
+				// restarted again over what that work did.
+				if (sandbox.state === "starting" || sandbox.state === "stopping" || sandbox.state === "deleting") {
+					throw new KantelError("conflict", `The sandbox is ${sandbox.state}`);
 				}
+				let current = await settledFor(principal, sandbox.id);
+				if (
+					current.state !== "running" &&
+					current.state !== "stopped" &&
+					current.state !== "paused" &&
+					current.state !== "error"
+				) {
+					throw new KantelError("conflict", `The sandbox is ${current.state}`);
+				}
+				// One never placed is made again from its template (`bootAgain`), its setup run: checked before anything moves.
+				requireSetupScope(principal, role, current);
+				// Its lifecycle as checked here: the stop and the boot below are claimed only while nothing else (another restart, a
+				// recovery, on any gateway) has moved it since, even if it is back in the state read.
+				const unmoved = (seen: StoredSandbox) => (latest: StoredSandbox) =>
+					(latest.lifecycle ?? 0) === (seen.lifecycle ?? 0);
+				// A running one holds its place already; the hosts are checked before it is stopped, so a sandbox no host can
+				// take now is refused as it is, not left stopped.
+				if (current.state !== "running") await requireCapacity(current.accountId, 1);
+				const hosts = requireHosts(
+					await ensureHosts(),
+					current.accountId,
+					current.type,
+					current.hostLabels,
+					true,
+					await mayShare(principal),
+				);
+				// Where it is to land: the host images version the index's `stable` names, whatever base it reported (none, for
+				// one from before image patching); a container's image (a digest) is its backend's to pick. Checked with the
+				// machine its disk is on before anything stops, so a restart that can't get there (no stable host images in the
+				// index, a host that isn't eligible, doesn't patch images, or hasn't taken that version yet) leaves the sandbox
+				// as it is.
+				await refreshBase();
+				const onHostImages = current.base === undefined || baseImageOf(current.base) === HOST_BASE_IMAGE;
+				const rebaseTo = onHostImages && baseIndex !== undefined ? hostImageChannel(baseIndex)?.version : undefined;
+				const prepared = await backend.prepareRebase?.(current.id, {
+					eligibleHosts: hosts,
+					...(rebaseTo === undefined ? {} : { rebaseTo }),
+				});
+				// One recorded as `error` may still be running on its host (a boot that finished after its call gave up): it is
+				// stopped as a running one is, since the host's start would otherwise find it running and not boot it anew.
+				// Once this restart has stopped it, a move it then loses is `aborted` (409 too), not `conflict`: its key stays held
+				// (`once`), so a retry never stops whatever started the sandbox since.
+				let stoppedIt = false;
+				if (current.state === "running" || (current.state === "error" && prepared?.running === true)) {
+					// Its disk is saved first, as a stop saves it (without its memory, which a new base can't take): the boot below
+					// starts from that snapshot. Waited for, as the boot needs it.
+					const { work, stopping } = await beginStop(current, false, undefined, principal, unmoved(current));
+					// Its stop has begun (its commands are ended): from here any failure is `aborted`, which keeps the key.
+					stoppedIt = true;
+					try {
+						await work;
+					} catch (error) {
+						throw new KantelError("aborted", `The restart stopped part way: ${messageOf(error)}`);
+					}
+					current = await mustGetSandbox(current.id);
+					// Stopped by this stop and nothing since: one step on from the `stopping` it wrote.
+					if (current.state !== "stopped" || (current.lifecycle ?? 0) !== (stopping.lifecycle ?? 0) + 1) {
+						throw new KantelError("aborted", `The sandbox is ${current.state}`);
+					}
+				}
+				const fromSnapshot = await latestRef(current);
+				// A boot's egress is read afresh, so it gets a revision of its own, as a recovery's does. A paused sandbox's memory
+				// is let go: the machine boots cold on the new base.
+				const began = await transition(
+					current.id,
+					current.state,
+					(latest) =>
+						withState(latest, "starting", {
+							ports: [],
+							pausedSnapshotId: undefined,
+							egressRevision: later(latest.egressRevision),
+							// Its mounts go with it, as a start's do, each pending until the boot says.
+							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+						}),
+					unmoved(current),
+				);
+				if (!("moved" in began))
+					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
+				const starting = began.moved;
+				const stopped = current;
+				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+				const egress = await egressFor(starting.accountId, starting);
+				keepGoing(
+					track([stopped.id], () =>
+						boot(
+							stopped.id,
+							() =>
+								bootAgain(
+									stopped,
+									{
+										fromSnapshot,
+										env: stopped.env,
+										eligibleHosts: hosts,
+										// Its size and shape as recorded, as a start keeps them: only its base changes.
+										...sizingOf(stopped),
+										...egress,
+										...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+										rebase: true,
+										...(rebaseTo === undefined ? {} : { rebaseTo }),
+									},
+									(options) => backend.start(stopped.id, options),
+								),
+							undefined,
+							{ egressRevision: starting.egressRevision },
+						),
+					),
+				);
+				return sandboxView(starting, principal);
 			});
-			return sandboxView(await mustGetSandbox(current.id), principal);
 		},
+
+		// Without a key, a delete once it is done is `not_found`, as a deleted sandbox is. With one, a retry answers the first
+		// call's answer: the check is inside, as a deleted sandbox isn't found, and the key is the caller's own.
+		deleteSandbox: async (principal, { params, idempotencyKey }) =>
+			once(principal, "deleteSandbox", { params, idempotencyKey }, async () => {
+				const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
+				const current = await settledFor(principal, sandbox.id);
+				if (current.state === "deleted") return sandboxView(current, principal);
+				// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
+				// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
+				// of them writes `deleted`.
+				const began = await transition(current.id, NOT_DELETED, (latest) => withState(latest, "deleting"));
+				if (!("moved" in began)) return sandboxView(began.lost, principal);
+				await track([current.id], async () => {
+					try {
+						await killCommandsOf(current.id);
+						await backend.destroy(current.id);
+						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
+							if (snapshot.kind === "automatic") {
+								await store.snapshots.delete(snapshot.id);
+								await releaseRef(snapshot.ref);
+							} else {
+								await store.snapshots.put({ ...snapshot, sandboxId: undefined });
+							}
+						}
+						const result = await transition(current.id, "deleting", (latest) =>
+							withState(latest, "deleted", {
+								ports: [],
+								latestSnapshotId: undefined,
+								latestSnapshotAt: undefined,
+								pausedSnapshotId: undefined,
+							}),
+						);
+						if (!("moved" in result)) return;
+						const deleted = result.moved;
+						await emit("sandbox.deleted", deleted.accountId, {
+							sandbox: deleted,
+							data: { previousState: current.state, actor: actorOf(principal) },
+						});
+					} catch (error) {
+						await fail(current.id, error, "deleting");
+						throw error;
+					}
+				});
+				return sandboxView(await mustGetSandbox(current.id), principal);
+			}),
 
 		getSandboxUsage: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
@@ -4087,7 +5218,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const since = Math.max(query.since ?? at - DAY_MS, current.createdAt - intervalMs);
 			const rate = rateOf(current);
 			const start = Math.max(since, at - 1000 * intervalMs);
-			const points: { at: number; cpu: number; memoryMb: number; runningSeconds: number; cost: number }[] = [];
+			const points: computeSchema.SandboxUsagePoint[] = [];
 			for (let from = start; from < at; from += intervalMs) {
 				const to = Math.min(from + intervalMs, at);
 				const seconds = runningMs(current.runs, from, to) / 1000;
@@ -4098,6 +5229,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					memoryMb: round(mean.memoryMb),
 					runningSeconds: round(seconds),
 					cost: round((seconds / 3600) * rate),
+					measured: mean.measured,
+					...(mean.diskMb === undefined ? {} : { diskUsedBytes: Math.round(mean.diskMb * MIB) }),
+					...(mean.io === undefined ? {} : { ioPressure: Math.min(1, mean.io) }),
 				});
 			}
 			const seconds = runningMs(current.runs, since, at) / 1000;
@@ -4105,20 +5239,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const memLimit =
 				series.meta?.memLimitBytes ??
 				(current.resources?.memoryMb === undefined ? undefined : current.resources.memoryMb * MIB);
+			// The disk's size as its guest last counted it; else, where it has disk figures kept from before this process
+			// started, its size's.
+			const diskTotal =
+				series.meta?.diskTotalBytes ??
+				(current.resources?.diskGb !== undefined && kept.some((sample) => sample.diskMb !== undefined)
+					? current.resources.diskGb * 1024 * MIB
+					: undefined);
 			return {
 				sandboxId: current.id,
 				intervalSeconds: intervalMs / 1000,
 				points,
 				totals: {
 					runningSeconds: round(seconds),
-					cpuSeconds: round(seconds * meanCpu(current)),
+					cpuSeconds: round(seconds * meanCpu(current, since, at)),
 					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
 				},
 				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
+				...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
 				series: {
 					intervalMs:
 						series.meta?.intervalMs ?? (hostReports(current.hostId) ? USAGE_INTERVAL_MS : FALLBACK_INTERVAL_MS),
-					points: series.points.map((point) => ({ at: point.at, cpu: point.cpu, memUsedBytes: point.memUsedBytes })),
+					points: series.points.map((point) => ({
+						at: point.at,
+						cpu: point.cpu,
+						memUsedBytes: point.memUsedBytes,
+						...(point.noDisk === true ? {} : { diskUsedBytes: point.diskUsedBytes }),
+						...(point.ioPressure === undefined ? {} : { ioPressure: point.ioPressure }),
+					})),
 				},
 			};
 		},
@@ -4127,7 +5275,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		runCommand: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
-			return once(principal, "runCommand", idempotencyKey, async () => {
+			return once(principal, "runCommand", { params, body, idempotencyKey }, async () => {
 				const current = await requireRunning(principal, sandbox.id);
 				if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
 				const detached = body.detached === true;
@@ -4142,44 +5290,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					stderr: "",
 					truncated: false,
 					startedAt: now(),
+					...(detached ? { detached: true } : {}),
 				};
 				await store.commands.put(command);
 				const controller = new AbortController();
 				runningCommands.set(command.id, controller);
-				const finish = async (result: {
-					exitCode: number;
-					stdout: string;
-					stderr: string;
-					timedOut: boolean;
-				}): Promise<StoredCommand> => {
+				const finish = async (result: ExecResult): Promise<StoredCommand> => {
 					runningCommands.delete(command.id);
-					const latest = (await store.commands.get(command.id)) ?? command;
-					if (latest.state !== "running") return latest;
-					const stdout = truncate(result.stdout);
-					const stderr = truncate(result.stderr);
-					const at = now();
-					const ended: StoredCommand = {
-						...latest,
-						state: result.timedOut ? "timed_out" : "exited",
-						exitCode: result.exitCode,
-						stdout: stdout.text,
-						stderr: stderr.text,
-						truncated: stdout.truncated || stderr.truncated,
-						endedAt: at,
-						durationMs: at - latest.startedAt,
-					};
-					await store.commands.put(ended);
-					return ended;
+					return (await endCommand(command.id, result)) ?? command;
 				};
-				const failed = (error: unknown) =>
-					finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
+				const failed = async (error: unknown): Promise<StoredCommand> => {
+					// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
+					// it runs on, and getCommand fetches its end.
+					if (detached && isDetachedWaitEnded(error)) {
+						runningCommands.delete(command.id);
+						return (await store.commands.get(command.id)) ?? command;
+					}
+					return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
+				};
 				const run = backend.exec(current.id, {
 					command: body.command,
 					cwd: command.cwd,
 					env: { ...current.env, ...body.env },
 					stdin: body.stdin,
-					timeoutMs: detached ? undefined : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+					// A detached command has no limit unless the caller gave one.
+					timeoutMs: detached ? body.timeoutMs : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 					signal: controller.signal,
+					commandId: command.id,
+					...(detached ? { detached: true } : {}),
 				});
 				if (detached) {
 					keepGoing(run.then(finish, failed));
@@ -4201,33 +5339,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				query.limit,
 				query.cursor,
 			);
-			return { items: page.items.map(commandView), nextCursor: page.nextCursor };
+			// A detached command no gateway here follows is brought up to date from its backend first, as getCommand does.
+			const items = await Promise.all(page.items.map((command) => fetchedCommand(command)));
+			return { items: items.map(commandView), nextCursor: page.nextCursor };
 		},
 
 		getCommand: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const command = await store.commands.get(params.commandId);
 			if (command === undefined || command.sandboxId !== sandbox.id) throw notFound("command");
-			return commandView(command);
+			return commandView(await fetchedCommand(command));
 		},
 
 		killCommand: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
-			const command = await store.commands.get(params.commandId);
-			if (command === undefined || command.sandboxId !== sandbox.id) throw notFound("command");
+			const stored = await store.commands.get(params.commandId);
+			if (stored === undefined || stored.sandboxId !== sandbox.id) throw notFound("command");
+			// Killed before, but its kill never reached its backend: sent again.
+			if (stored.state === "killed" && stored.killPending === true) {
+				return commandView(await deliverKill(sandbox.id, stored));
+			}
+			// One that ended where no gateway here saw it is answered with its end, not killed.
+			const command = await fetchedCommand(stored);
 			if (command.state !== "running") return commandView(command);
-			runningCommands.get(command.id)?.abort();
-			runningCommands.delete(command.id);
 			const at = now();
-			const killed: StoredCommand = {
-				...command,
+			// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
+			// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
+			// kill is pending from then until its backend takes it, so a gateway that dies before sending it, or a send
+			// that fails, leaves it for the next kill to send.
+			const killed = await settleCommand(command.id, (latest) => ({
+				...latest,
 				state: "killed",
 				exitCode: 137,
 				endedAt: at,
-				durationMs: at - command.startedAt,
-			};
-			await store.commands.put(killed);
-			return commandView(killed);
+				durationMs: at - latest.startedAt,
+				...(backend.killCommand === undefined ? {} : { killPending: true }),
+			}));
+			if (killed === undefined) return commandView((await store.commands.get(command.id)) ?? command);
+			runningCommands.get(command.id)?.abort();
+			runningCommands.delete(command.id);
+			// Its process, which the gateway that started it may not be: the kill goes to its host whichever it is.
+			return commandView(await deliverKill(sandbox.id, killed));
 		},
 
 		readFile: async (principal, { params, query }) => {
@@ -4294,34 +5446,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: [...sandbox.ports] };
 		},
 
-		exposePort: async (principal, { params, body }) => {
+		exposePort: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ports) throw new KantelError("not_supported", "This sandbox can't expose ports");
-			const current = await requireRunning(principal, sandbox.id);
-			const isPublic = body.public === true;
-			const existing = current.ports.find((entry) => entry.port === body.port);
-			// A public port's URL holds no secret, so exposing it again answers it as it is. A gated port's token is shown
-			// once and kept only as a hash, so exposing it again gives it a new one, ending the old.
-			if (existing?.public && isPublic) return existing;
-			const { url } = await backend.exposePort(current.id, body.port, {
-				public: isPublic,
-				subdomain: current.subdomain,
-				grantee: encodeGrantee(principal),
-			});
-			const exposed: computeSchema.ExposedPort = {
-				port: body.port,
-				url,
-				public: isPublic,
-				createdAt: existing?.createdAt ?? now(),
-			};
-			await patchSandbox(current.id, (latest) => ({
-				...latest,
-				ports: [
-					...latest.ports.filter((entry) => entry.port !== body.port),
-					{ ...exposed, url: withoutPortToken(url) },
-				],
-			}));
-			return exposed;
+			// A gated port's URL holds its token, which each expose replaces: its answer is kept sealed.
+			const secret = body.public === true ? {} : { secret: true as const };
+			return once(
+				principal,
+				"exposePort",
+				{ params, body, idempotencyKey },
+				async () => {
+					const current = await requireRunning(principal, sandbox.id);
+					const isPublic = body.public === true;
+					const existing = current.ports.find((entry) => entry.port === body.port);
+					// A public port's URL holds no secret, so exposing it again answers it as it is. A gated port's token is shown
+					// once and kept only as a hash, so exposing it again gives it a new one, ending the old.
+					if (existing?.public && isPublic) return existing;
+					const { url } = await backend.exposePort(current.id, body.port, {
+						public: isPublic,
+						subdomain: current.subdomain,
+						grantee: encodeGrantee(principal),
+					});
+					const exposed: computeSchema.ExposedPort = {
+						port: body.port,
+						url,
+						public: isPublic,
+						createdAt: existing?.createdAt ?? now(),
+					};
+					await patchSandbox(current.id, (latest) => ({
+						...latest,
+						ports: [
+							...latest.ports.filter((entry) => entry.port !== body.port),
+							{ ...exposed, url: withoutPortToken(url) },
+						],
+					}));
+					return exposed;
+				},
+				secret,
+			);
 		},
 
 		hidePort: async (principal, { params }) => {
@@ -4436,8 +5598,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			requireScreen(current, "browser");
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
+			// The browser alone where the machine runs it on its own surface, as the backend finds it there (not the image's
+			// report, which another boot of it made); else the desktop it runs on.
 			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
-			return { url: access.url, cdpUrl: access.cdpUrl, viewOnly, expiresAt: now() + ttlMinutes * 60_000 };
+			return {
+				url: access.url,
+				embedUrl: access.url,
+				cdpUrl: access.cdpUrl,
+				surface: access.surface ?? "desktop",
+				viewOnly,
+				expiresAt: now() + ttlMinutes * 60_000,
+			};
 		},
 
 		// Snapshots.
@@ -4456,91 +5627,113 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: page.items.map(snapshotView), nextCursor: page.nextCursor };
 		},
 
-		takeSnapshot: async (principal, { params, body }) => {
+		takeSnapshot: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "snapshots:write");
-			const current = await requireRunning(principal, sandbox.id);
-			const taken = await backend.takeSnapshot(current.id);
-			const at = now();
-			const snapshot: StoredSnapshot = {
-				id: randomId("snap"),
-				accountId: current.accountId,
-				kind: "automatic",
-				description: body.description,
-				sandboxId: current.id,
-				sandboxType: current.type,
-				state: "ready",
-				trigger: "manual",
-				memory: false,
-				sizeBytes: taken.sizeBytes,
-				createdAt: at,
-				expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
-				ref: taken.ref,
-			};
-			await store.snapshots.put(snapshot);
-			await patchSandbox(current.id, (latest) => ({ ...latest, latestSnapshotId: snapshot.id }));
-			return snapshotView(snapshot);
+			return once(principal, "takeSnapshot", { params, body, idempotencyKey }, async () => {
+				const current = await requireRunning(principal, sandbox.id);
+				const taken = await backend.takeSnapshot(current.id);
+				const at = now();
+				const snapshot: StoredSnapshot = {
+					id: randomId("snap"),
+					accountId: current.accountId,
+					kind: "automatic",
+					description: body.description,
+					sandboxId: current.id,
+					sandboxType: current.type,
+					state: "ready",
+					trigger: "manual",
+					memory: false,
+					...recordedMachine(current),
+					sizeBytes: taken.sizeBytes,
+					createdAt: at,
+					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
+					ref: taken.ref,
+					...(taken.base === undefined ? {} : { base: taken.base }),
+				};
+				await store.snapshots.put(snapshot);
+				await patchSandbox(current.id, (latest) => ({
+					...latest,
+					latestSnapshotId: snapshot.id,
+					latestSnapshotAt: snapshot.createdAt,
+				}));
+				return snapshotView(snapshot);
+			});
 		},
 
-		saveSnapshot: async (principal, { body }) => {
+		saveSnapshot: async (principal, { body, idempotencyKey }) => {
 			const { sandbox } = await sandboxFor(principal, body.sandboxId, "snapshots:write");
-			const current = await settledFor(principal, sandbox.id);
-			const [existing] = await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name });
-			if (existing !== undefined && body.replace !== true) {
-				throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
-			}
-			if (existing === undefined && limits.savedSnapshots !== undefined) {
-				const saved = await store.snapshots.list({ accountId: current.accountId, kind: "saved" });
-				if (saved.length >= limits.savedSnapshots) {
-					throw new KantelError("exhausted", `The account may keep ${limits.savedSnapshots} saved snapshots`);
+			// A retry would be `conflict` on its own name, or with `replace` save it again and delete the first.
+			return once(principal, "saveSnapshot", { body, idempotencyKey }, async () => {
+				const current = await settledFor(principal, sandbox.id);
+				const [existing] = await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name });
+				if (existing !== undefined && body.replace !== true) {
+					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
-			}
-			let ref: string;
-			let sizeBytes: number | undefined;
-			if (body.snapshotId !== undefined) {
-				const source = await store.snapshots.get(body.snapshotId);
-				if (source === undefined || source.sandboxId !== current.id) throw notFound("snapshot of this sandbox");
-				ref = readyRef(source);
-				sizeBytes = source.sizeBytes;
-			} else if (current.state === "running") {
-				const taken = await backend.takeSnapshot(current.id);
-				ref = taken.ref;
-				sizeBytes = taken.sizeBytes;
-			} else {
-				const latest =
-					current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
-				if (latest === undefined) throw new KantelError("conflict", "The sandbox has no state to save yet");
-				ref = readyRef(latest);
-				sizeBytes = latest.sizeBytes;
-			}
-			const snapshot: StoredSnapshot = {
-				id: randomId("snap"),
-				accountId: current.accountId,
-				kind: "saved",
-				name: body.name,
-				description: body.description,
-				sandboxId: current.id,
-				sandboxType: current.type,
-				state: "ready",
-				trigger: "save",
-				memory: false,
-				sizeBytes,
-				createdAt: now(),
-				ref,
-			};
-			await store.snapshots.put(snapshot);
-			if (existing !== undefined) {
-				await store.snapshots.delete(existing.id);
-				await releaseRef(existing.ref);
-				await emit("snapshot.deleted", existing.accountId, {
-					snapshotId: existing.id,
-					data: { name: existing.name, actor: actorOf(principal) },
+				if (existing === undefined && limits.savedSnapshots !== undefined) {
+					const saved = await store.snapshots.list({ accountId: current.accountId, kind: "saved" });
+					if (saved.length >= limits.savedSnapshots) {
+						throw new KantelError("exhausted", `The account may keep ${limits.savedSnapshots} saved snapshots`);
+					}
+				}
+				let ref: string;
+				let sizeBytes: number | undefined;
+				// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
+				let base: string | undefined;
+				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
+				let machine = recordedMachine(current);
+				if (body.snapshotId !== undefined) {
+					const source = await store.snapshots.get(body.snapshotId);
+					if (source === undefined || source.sandboxId !== current.id) throw notFound("snapshot of this sandbox");
+					ref = readyRef(source);
+					sizeBytes = source.sizeBytes;
+					base = source.base;
+					if (recordsMachine(source)) machine = recordedMachine(source);
+				} else if (current.state === "running") {
+					const taken = await backend.takeSnapshot(current.id);
+					ref = taken.ref;
+					sizeBytes = taken.sizeBytes;
+					base = taken.base;
+				} else {
+					const latest =
+						current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
+					if (latest === undefined) throw new KantelError("conflict", "The sandbox has no state to save yet");
+					ref = readyRef(latest);
+					sizeBytes = latest.sizeBytes;
+					base = latest.base;
+					if (recordsMachine(latest)) machine = recordedMachine(latest);
+				}
+				const snapshot: StoredSnapshot = {
+					id: randomId("snap"),
+					accountId: current.accountId,
+					kind: "saved",
+					name: body.name,
+					description: body.description,
+					sandboxId: current.id,
+					sandboxType: current.type,
+					state: "ready",
+					trigger: "save",
+					memory: false,
+					...machine,
+					sizeBytes,
+					createdAt: now(),
+					ref,
+					...(base === undefined ? {} : { base }),
+				};
+				await store.snapshots.put(snapshot);
+				if (existing !== undefined) {
+					await store.snapshots.delete(existing.id);
+					await releaseRef(existing.ref);
+					await emit("snapshot.deleted", existing.accountId, {
+						snapshotId: existing.id,
+						data: { name: existing.name, actor: actorOf(principal) },
+					});
+				}
+				await emit("snapshot.saved", snapshot.accountId, {
+					snapshotId: snapshot.id,
+					data: { name: snapshot.name, actor: actorOf(principal) },
 				});
-			}
-			await emit("snapshot.saved", snapshot.accountId, {
-				snapshotId: snapshot.id,
-				data: { name: snapshot.name, actor: actorOf(principal) },
+				return snapshotView(snapshot);
 			});
-			return snapshotView(snapshot);
 		},
 
 		getSnapshot: async (principal, { params }) =>
@@ -4586,7 +5779,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					),
 				);
 				await patchSandbox(current.id, (latest) =>
-					latest.latestSnapshotId === snapshot.id ? { ...latest, latestSnapshotId: newest?.id } : undefined,
+					latest.latestSnapshotId === snapshot.id
+						? { ...latest, latestSnapshotId: newest?.id, latestSnapshotAt: newest?.createdAt }
+						: undefined,
 				);
 			}
 			if (snapshot.kind === "saved") {
@@ -4608,9 +5803,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 		},
 
-		createApiKey: async (principal, { body }) => {
+		createApiKey: async (principal, { body, idempotencyKey }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
+			// Checked before `once`, so a retry answered the first call's secret is held to what the caller may grant now.
 			const scopes = unique([
 				...(body.scopes ?? []),
 				...(body.preset === undefined ? [] : computeSchema.API_KEY_PRESETS[body.preset]),
@@ -4618,32 +5814,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (scopes.length === 0) throw new KantelError("invalid", "Give scopes or a preset");
 			requireGrantable(principal, scopes);
 			const sandboxIds = grantableSandboxes(principal, body.sandboxIds);
-			const { secret, prefix, hash } = await newApiKeySecret();
-			const key: StoredApiKey = {
-				id: randomId("key"),
-				accountId: account.id,
-				name: body.name,
-				prefix,
-				scopes,
-				sandboxIds,
-				createdBy: actorOf(principal),
-				createdAt: now(),
-				expiresAt: body.expiresInDays === undefined ? undefined : now() + body.expiresInDays * DAY_MS,
-				secretHash: hash,
-				ownerUserId: principal.userId,
-			};
-			await store.apiKeys.put(key);
-			return { key: apiKeyView(key), secret };
+			return once(
+				principal,
+				"createApiKey",
+				{ body, idempotencyKey },
+				async () => {
+					const { secret, prefix, hash } = await newApiKeySecret();
+					const key: StoredApiKey = {
+						id: randomId("key"),
+						accountId: account.id,
+						name: body.name,
+						prefix,
+						scopes,
+						sandboxIds,
+						createdBy: actorOf(principal),
+						createdAt: now(),
+						expiresAt: body.expiresInDays === undefined ? undefined : now() + body.expiresInDays * DAY_MS,
+						secretHash: hash,
+						ownerUserId: principal.userId,
+					};
+					await store.apiKeys.put(key);
+					return { key: apiKeyView(key), secret };
+				},
+				{ secret: true },
+			);
 		},
 
 		getApiKey: async (principal, { params }) =>
 			withMakerNamed(apiKeyView(await apiKeyFor(principal, params.apiKeyId, "account:read"))),
 
-		rotateApiKey: async (principal, { params }) => {
+		rotateApiKey: async (principal, { params, idempotencyKey }) => {
 			const key = await apiKeyFor(principal, params.apiKeyId, "account:admin");
-			if (key.revokedAt !== undefined) throw new KantelError("conflict", "The key is revoked");
 			// Rotating answers the key's new secret, so it is as much as making the key: the caller must be able to grant
-			// everything it holds.
+			// everything it holds. Checked before `once`, so a retry answered the first call's secret is held to it now too.
 			requireGrantable(principal, key.scopes);
 			grantableSandboxes(principal, key.sandboxIds);
 			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined && key.sandboxIds === undefined) {
@@ -4654,12 +5857,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!(await mayShare(principal)) && (await mayShare(keyPrincipal(key)))) {
 				throw new KantelError("forbidden", SHARED_KEY_REFUSED);
 			}
-			const { secret, prefix, hash } = await newApiKeySecret();
-			const rotated = await store.apiKeys.update(key.id, (current) =>
-				current.revokedAt === undefined ? { ...current, prefix, secretHash: hash } : undefined,
+			// A key rotating itself can't sign in to a retry once it is done (its secret has changed), so its answer isn't
+			// kept (`withhold`). Its key still holds the claim, so a retry while it works waits or is `conflict` rather than
+			// rotating it again.
+			const self = principal.kind === "key" && principal.keyId === key.id;
+			// Each rotation ends the secret before: a retry with the key answers the first one's rather than ending it.
+			return once(
+				principal,
+				"rotateApiKey",
+				{ params, idempotencyKey },
+				async () => {
+					if (key.revokedAt !== undefined) throw new KantelError("conflict", "The key is revoked");
+					const { secret, prefix, hash } = await newApiKeySecret();
+					const rotated = await store.apiKeys.update(key.id, (current) =>
+						current.revokedAt === undefined ? { ...current, prefix, secretHash: hash } : undefined,
+					);
+					if (rotated === undefined) throw new KantelError("conflict", "The key is revoked");
+					return { key: apiKeyView(rotated), secret };
+				},
+				{ secret: true, ...(self ? { withhold: true as const } : {}) },
 			);
-			if (rotated === undefined) throw new KantelError("conflict", "The key is revoked");
-			return { key: apiKeyView(rotated), secret };
 		},
 
 		revokeApiKey: async (principal, { params }) => {
@@ -4735,27 +5952,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: await Promise.all(environments.map(environmentView)) };
 		},
 
-		createEnvironment: async (principal, { body }) => {
+		createEnvironment: async (principal, { body, idempotencyKey }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			const environmentId = randomId("env", 8);
-			const at = now();
-			const environment: StoredEnvironment = {
-				id: environmentId,
-				accountId: account.id,
-				name: body.name,
-				...(body.description === undefined || body.description === "" ? {} : { description: body.description }),
-				variables: [],
-				files: [],
-				repos: [],
-				grants: [],
-				secretsVersion: 1,
-				createdAt: at,
-				updatedAt: at,
-			};
-			// An insert: its ID is new, so it never overwrites; the name is the store's to refuse.
-			await naming(body.name, () => store.environments.insert(environment));
-			return environmentView(environment);
+			// Its name is the account's only once: a retry would be `conflict`, though the first call made it.
+			return once(principal, "createEnvironment", { body, idempotencyKey }, async () => {
+				const environmentId = randomId("env", 8);
+				const at = now();
+				const environment: StoredEnvironment = {
+					id: environmentId,
+					accountId: account.id,
+					name: body.name,
+					...(body.description === undefined || body.description === "" ? {} : { description: body.description }),
+					variables: [],
+					files: [],
+					repos: [],
+					grants: [],
+					secretsVersion: 1,
+					createdAt: at,
+					updatedAt: at,
+				};
+				// An insert: its ID is new, so it never overwrites; the name is the store's to refuse.
+				await naming(body.name, () => store.environments.insert(environment));
+				return environmentView(environment);
+			});
 		},
 
 		getEnvironment: async (principal, { params }) =>
@@ -5026,29 +6246,61 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: page.items, nextCursor: page.nextCursor };
 		},
 
+		watchEvents: async (principal, { query }, request) => {
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "sandboxes:read", role);
+			return watchResponse({
+				feed: live,
+				accountId: account.id,
+				now,
+				signal: request.signal,
+				// Each change is checked as `listSandboxes` and `listEvents` check what they answer, against the caller as they
+				// are now: one whose key or sign-in has ended, or who has left the account, watches no more.
+				mayWatch: async (published): Promise<WatchVerdict> => {
+					const current = await watcherNow(principal);
+					if (current === undefined) return "end";
+					const roleNow = await roleIn(store, current, account.id);
+					if (roleNow === undefined) return "end";
+					try {
+						requireScope(current, "sandboxes:read", roleNow);
+					} catch {
+						return "end";
+					}
+					const sandbox = await published.sandbox();
+					const limited = current.kind === "key" && current.limits.sandboxIds !== undefined;
+					// One whose record is gone (a create that failed) stays with the account's admins and unlimited keys.
+					if (sandbox === undefined) return !limited && (roleNow === "owner" || roleNow === "admin") ? "send" : "skip";
+					return (await canSee(current, sandbox, roleNow)) ? "send" : "skip";
+				},
+			});
+		},
+
 		listWebhooks: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:admin", role);
 			return { items: (await store.webhooks.list({ accountId: account.id })).map(webhookView) };
 		},
 
-		createWebhook: async (principal, { body }) => {
+		createWebhook: async (principal, { body, idempotencyKey }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			checkUrl(body.url, "The webhook's URL");
-			const webhook: StoredWebhook = {
-				id: randomId("whk"),
-				accountId: account.id,
-				name: body.name,
-				url: body.url,
-				events: unique(body.events),
-				enabled: true,
-				createdAt: now(),
-				secret: newWebhookSecret(),
-				consecutiveFailures: 0,
-			};
-			await store.webhooks.put(webhook);
-			return { webhook: webhookView(webhook), secret: webhook.secret };
+			// Its signing secret is kept on the webhook as it is (deliveries are signed with it), so not sealed here either.
+			return once(principal, "createWebhook", { body, idempotencyKey }, async () => {
+				checkUrl(body.url, "The webhook's URL");
+				const webhook: StoredWebhook = {
+					id: randomId("whk"),
+					accountId: account.id,
+					name: body.name,
+					url: body.url,
+					events: unique(body.events),
+					enabled: true,
+					createdAt: now(),
+					secret: newWebhookSecret(),
+					consecutiveFailures: 0,
+				};
+				await store.webhooks.put(webhook);
+				return { webhook: webhookView(webhook), secret: webhook.secret };
+			});
 		},
 
 		getWebhook: async (principal, { params }) => webhookView(await webhookFor(principal, params.webhookId)),
@@ -5077,11 +6329,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return undefined;
 		},
 
-		rotateWebhookSecret: async (principal, { params }) => {
+		rotateWebhookSecret: async (principal, { params, idempotencyKey }) => {
 			const webhook = await webhookFor(principal, params.webhookId);
-			const rotated: StoredWebhook = { ...webhook, secret: newWebhookSecret() };
-			await store.webhooks.put(rotated);
-			return { webhook: webhookView(rotated), secret: rotated.secret };
+			return once(principal, "rotateWebhookSecret", { params, idempotencyKey }, async () => {
+				const rotated: StoredWebhook = { ...webhook, secret: newWebhookSecret() };
+				await store.webhooks.put(rotated);
+				return { webhook: webhookView(rotated), secret: rotated.secret };
+			});
 		},
 
 		testWebhook: async (principal, { params }) => {
@@ -5147,9 +6401,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items };
 		},
 
-		createHostJoinToken: async (principal, { body }, request) => {
+		createHostJoinToken: async (principal, { body, idempotencyKey }, request) => {
 			requireScope(principal, "hosts:admin");
-			return mintJoinToken(body, request);
+			return once(principal, "createHostJoinToken", { body, idempotencyKey }, () => mintJoinToken(body, request), {
+				secret: true,
+			});
 		},
 
 		getPublicUrl: async (principal, _input, request) => {
@@ -5180,14 +6436,59 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
 
+		// Base images (image patching, experimental).
+
+		listBaseImages: async (principal) => {
+			const baseImages = requireImagePatching();
+			requireScope(principal, "hosts:admin");
+			let index: BaseImageIndex | undefined;
+			let error: string | undefined;
+			try {
+				index = await baseImages.index();
+			} catch (failure) {
+				error = messageOf(failure);
+			}
+			return {
+				images: (index?.images ?? []).map((image) => {
+					const head = image.channels.stable;
+					const latest = head === undefined ? undefined : image.versions.find((version) => version.digest === head);
+					return {
+						name: image.name,
+						repository: image.repository,
+						channel: "stable" as const,
+						...(latest === undefined ? {} : { latest: baseVersionView(latest) }),
+						// The index keeps them newest first.
+						versions: image.versions.slice(0, BASE_IMAGE_VERSIONS_LISTED).map(baseVersionView),
+					};
+				}),
+				// Templates and their bases come with the templates feature; none until then.
+				templates: [],
+				indexUrl: baseImages.indexUrl,
+				...(index === undefined ? {} : { generatedAt: index.generatedAt }),
+				...(error === undefined ? {} : { error }),
+			};
+		},
+
+		// Templates (experimental): `templates.ts`.
+
+		...templates.handlers,
+
 		// An account's own hosts.
 
-		createAccountJoinToken: async (principal, { body }, request) => {
+		createAccountJoinToken: async (principal, { body, idempotencyKey }, request) => {
 			requireAccountHosts();
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			const made = await mintJoinToken(body, request, { accountId: account.id, createdBy: principal.userId });
-			return { ...made, accountId: account.id };
+			return once(
+				principal,
+				"createAccountJoinToken",
+				{ body, idempotencyKey },
+				async () => {
+					const made = await mintJoinToken(body, request, { accountId: account.id, createdBy: principal.userId });
+					return { ...made, accountId: account.id };
+				},
+				{ secret: true },
+			);
 		},
 
 		listAccountHosts: async (principal, { query }) => {
@@ -5215,6 +6516,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		...(mounts?.handlers ?? MOUNTS_OFF_HANDLERS),
 	};
+
+	// With image patching on, the routes that answer sandboxes or snapshots read the base image index first, so their
+	// views (which answer synchronously) say how far behind each base is. The gateway caches the index; this only asks.
+	if (options.baseImages !== undefined) {
+		const wrapped = handlers as unknown as { [route: string]: (...args: never[]) => Promise<unknown> };
+		for (const route of BASE_ROUTES) {
+			const handler = wrapped[route];
+			if (handler === undefined) continue;
+			wrapped[route] = async (...args) => {
+				await refreshBase();
+				return handler(...args);
+			};
+		}
+	}
 
 	async function idle(): Promise<void> {
 		for (;;) {
@@ -5249,6 +6564,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await requireCapacity(current.accountId, 1);
 		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
+		requireSetupScope(principal, role, current);
 		const environment = await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
@@ -5345,6 +6661,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (sandbox.stopFor === undefined || since === undefined || pending.has(sandbox.id)) continue;
 					if (since + STOP_LEASE_MS > at) continue;
 					const marker = (current: StoredSandbox) =>
+						// One whose host was revoked under its boot (`strandOn`) isn't handed back as running.
+						(current.strandedOn ?? []).length === 0 &&
 						current.stopFor === sandbox.stopFor &&
 						(state === "stopping" ? current.stopClaimedAt : current.stopsAt) === since;
 					await transition(
@@ -5385,10 +6703,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const began = await beginStop(sandbox, false, reason, undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}
+			// Each template's cache, against the hosts' runtimes as they are now, in the background (one pass at a time).
+			keepGoing(templates.reconcileAll());
 		},
+
+		publishTemplateBase: (input) => templates.publishTemplateBase(input),
 
 		async sampleUsage() {
 			await catchUpUsage();
+			// Ticks held while the store failed go in first, so they are in this export, not left for a tick that may not come.
+			await retryHeldUsage();
 			const samples: TelemetryUsageSample[] = [];
 			const running = await store.sandboxes.list({ state: "running" });
 			// The export's own timer is the fallback's pace: one read per flush for a host that doesn't send its own.
@@ -5476,6 +6800,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { version: environment.secretsVersion, entries };
 		},
 
+		async recordBases(hostId, reports) {
+			const valid = (base: unknown): base is string => typeof base === "string" && REPORTED_BASE.test(base);
+			// A report replaces what the record has when the record has no base, or when the host says it put the sandbox on
+			// this base after the time the record has (a boot whose answer was lost); one from before never does.
+			const newer = (current: StoredSandbox, base: string, at: number | undefined) =>
+				current.base === undefined || (at !== undefined && current.base !== base && at > (current.baseAt ?? 0));
+			for (const { sandboxId, base, baseAt } of reports.sandboxes ?? []) {
+				if (typeof sandboxId !== "string" || !valid(base)) continue;
+				const at = typeof baseAt === "number" && Number.isFinite(baseAt) && baseAt > 0 ? baseAt : undefined;
+				const sandbox = await store.sandboxes.get(sandboxId);
+				if (sandbox === undefined || sandbox.hostId !== hostId || !newer(sandbox, base, at)) continue;
+				// Decided again on the record as it is when written (the SQL store's conditional update reruns it): a boot that
+				// recorded a later base meanwhile wins.
+				await store.sandboxes.update(sandboxId, (current) =>
+					current.hostId === hostId &&
+					newer(current, base, at) &&
+					current.state !== "deleted" &&
+					current.state !== "deleting"
+						? { ...current, base, baseAt: at ?? 0 }
+						: undefined,
+				);
+			}
+			// Snapshots by their ref, read in one pass (a host reports every one it has on each connection, and a ref isn't
+			// indexed): only those with no base yet are written.
+			const reported = new Map<string, string>();
+			for (const { ref, base } of reports.snapshots ?? []) {
+				if (typeof ref !== "string" || !ref.startsWith(`${hostId}/`) || !valid(base)) continue;
+				reported.set(ref, base);
+			}
+			if (reported.size === 0) return;
+			for (const snapshot of await store.snapshots.list()) {
+				const base = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
+				if (base === undefined || snapshot.base !== undefined) continue;
+				const { ref } = snapshot;
+				await store.snapshots.update(snapshot.id, (current) =>
+					current.ref === ref && current.base === undefined ? { ...current, base } : undefined,
+				);
+			}
+		},
+
 		async recordEgress(hostId, records) {
 			const bySandbox = new Map<string, ReportedEgress[]>();
 			for (const record of records) {
@@ -5497,7 +6861,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async close() {
+			closing = true;
 			for (const controller of runningCommands.values()) controller.abort();
+			await live.close();
 			await idle();
 		},
 
@@ -5521,6 +6887,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		idle,
 	};
 }
+
+/** A boot's base for the sandbox's record: the base and when it was put on it (0: not said); nothing when not said. */
+function placedBase(placement: Placement): { base?: string; baseAt?: number } {
+	return placement.base === undefined ? {} : { base: placement.base, baseAt: placement.baseAt ?? 0 };
+}
+
+/** What a host says its sandboxes and snapshots are on (`ComputeService.recordBases`). */
+export interface BaseReports {
+	/** `baseAt`: when the host put it on `base` (`HostSandbox.baseAt`), which orders reports; absent from older hosts. */
+	readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string; readonly baseAt?: number }[];
+	/** By the snapshot's ref, `<hostId>/<snapshot ID on the host>`. */
+	readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
+}
+
+/** A base a host may report: a host images version (such as host-images-20261104.812) or an image digest. */
+const REPORTED_BASE = /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,127}|sha256:[0-9a-f]{64})$/;
 
 /** A host's report as a log entry: checked field by field, as a host is trusted with no more than its own sandboxes. */
 function egressEntryFrom(record: ReportedEgress, sandbox: StoredSandbox, at: number): StoredEgressEntry {

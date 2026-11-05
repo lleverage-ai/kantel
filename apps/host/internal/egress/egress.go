@@ -75,6 +75,11 @@ type Rules struct {
 	Intercept []string
 	// Grants apply on top of Allow and Deny (deny wins).
 	Grants []Grant
+	// PublicOnly makes every connection the proxy makes for these rules (its upstream's included) reach public
+	// addresses only: Destinations.Allow, the operator's private ranges for ordinary sandboxes, doesn't apply. A
+	// template's build microVM has it, so nothing it builds or pulls can reach the host's networks whatever the
+	// host allows its sandboxes.
+	PublicOnly bool
 }
 
 // Record is one decision, for the host's log and the control plane's events. It never holds a value or a query.
@@ -142,6 +147,9 @@ type Proxy struct {
 	Dial func(network, address string) (net.Conn, error)
 	// Destinations says which addresses the proxy may connect to for a sandbox, its upstream included.
 	Destinations Destinations
+	// PublicDestinations is where PublicOnly rules' connections may go; nil is Destinations without its Allow
+	// (public addresses only). Tests set it, to stand a loopback address in for a public one.
+	PublicDestinations *Destinations
 	// Secrets swaps protected variables; nil refuses any request that carries a placeholder of a protected sandbox.
 	Secrets Secrets
 	// CAs holds each sandbox's interception CA; nil intercepts nothing.
@@ -153,6 +161,12 @@ type Proxy struct {
 	served        atomic.Int64
 	transport     *http.Transport
 	transportOnce sync.Once
+	// resolver is the one UseResolver set (nil: the host's), which publicDial uses too.
+	resolver *net.Resolver
+	// publicTransport is directTransport for PublicOnly rules: its own pool, so a connection one of them reuses was
+	// made by publicDial, never one an ordinary sandbox's request made to an allowed private range.
+	publicTransport     *http.Transport
+	publicTransportOnce sync.Once
 }
 
 func New(log *slog.Logger) *Proxy {
@@ -169,6 +183,49 @@ func New(log *slog.Logger) *Proxy {
 		DisableCompression: true,
 	}
 	return p
+}
+
+// UseResolver makes the proxy look names up with r rather than the host's resolver (a test's own DNS server), still
+// checking every address it connects to, after DNS, as it connects (control).
+func (p *Proxy) UseResolver(r *net.Resolver) {
+	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second, Control: p.control, Resolver: r}
+	p.Dial = d.Dial
+	p.resolver = r
+}
+
+// publicDial connects as Dial does, but only to public addresses (publicControl): PublicOnly rules' dialer.
+func (p *Proxy) publicDial(network, address string) (net.Conn, error) {
+	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second, Control: p.publicControl, Resolver: p.resolver}
+	return d.Dial(network, address)
+}
+
+// dialFor is how connections for rules leave: publicDial for PublicOnly rules, else Dial.
+func (p *Proxy) dialFor(rules Rules) func(network, address string) (net.Conn, error) {
+	if rules.PublicOnly {
+		return p.publicDial
+	}
+	return p.Dial
+}
+
+// directTransportFor is directTransport, or for PublicOnly rules its own transport over publicDial.
+func (p *Proxy) directTransportFor(rules Rules) *http.Transport {
+	if !rules.PublicOnly {
+		return p.directTransport()
+	}
+	p.publicTransportOnce.Do(func() {
+		p.publicTransport = &http.Transport{
+			Dial:                p.publicDial,
+			TLSHandshakeTimeout: 15 * time.Second,
+			MaxIdleConns:        16,
+			IdleConnTimeout:     30 * time.Second,
+			ForceAttemptHTTP2:   false,
+			DisableCompression:  true,
+		}
+		if p.RootCAs != nil {
+			p.publicTransport.TLSClientConfig = &tls.Config{RootCAs: p.RootCAs}
+		}
+	})
+	return p.publicTransport
 }
 
 // directTransport is the transport for proxy-form requests, trusting RootCAs once they are set.
@@ -686,7 +743,11 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 			refuse(conn, http.StatusBadGateway, "the upstream proxy's URL is invalid")
 			return 0, 0, &upstreamProxyError{}
 		}
-		upstream, err = p.Dial("tcp", u.Host)
+		upstream, err = p.dialFor(rules)("tcp", u.Host)
+		if errors.Is(err, ErrDestination) && rules.PublicOnly {
+			refuse(conn, http.StatusForbidden, "the upstream proxy's address isn't on the public internet, and a template's image build reaches only public addresses")
+			return 0, 0, err
+		}
 		if errors.Is(err, ErrDestination) {
 			refuse(conn, http.StatusForbidden, "the upstream proxy's address isn't one this host may reach (its egressAllowCIDRs)")
 			return 0, 0, err
@@ -763,9 +824,9 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 		return counted.n, down.n, err
 	}
 	if req.Method != http.MethodConnect {
-		return p.direct(conn, req, entries, status)
+		return p.direct(conn, req, rules, entries, status)
 	}
-	upstream, err = p.Dial("tcp", target)
+	upstream, err = p.dialFor(rules)("tcp", target)
 	if errors.Is(err, ErrDestination) {
 		refuse(conn, http.StatusForbidden, target+" isn't on the public internet")
 		return 0, 0, err
@@ -781,8 +842,8 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 
 // direct makes one proxy-form request itself (http or https) and writes the answer back, without Kantel's headers
 // (they're for an upstream).
-func (p *Proxy) direct(conn net.Conn, req *http.Request, entries []protect.Entry, status *int) (int64, int64, error) {
-	return p.roundTrip(conn, req, p.directTransport(), entries, status)
+func (p *Proxy) direct(conn net.Conn, req *http.Request, rules Rules, entries []protect.Entry, status *int) (int64, int64, error) {
+	return p.roundTrip(conn, req, p.directTransportFor(rules), entries, status)
 }
 
 // roundTrip makes one proxy-form request with tr and writes the scrubbed answer back.

@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=display-im7.q16
+# Kantel: plumbing of the desktop, kept out of the apps list.
+NoDisplay=true

@@ -115,6 +115,8 @@ services:
       # override). Gateways sharing one database must share it. Empty, the
       # default above.
       KANTEL_BUNDLES_DIR: ${KANTEL_BUNDLES_DIR:-}
+      # `experimental` turns templates on (built microVM profiles, snapshot-cached).
+      KANTEL_TEMPLATES: ${KANTEL_TEMPLATES:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes:

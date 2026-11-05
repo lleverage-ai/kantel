@@ -8,12 +8,14 @@
  *
  * A microVM is asked for by shape (vCPUs and memory) or, as before shapes, by a size's name. A shape one of the host's
  * named sizes has is that size; another is a custom shape, which a host makes only if it reports `custom-shapes` and
- * has the vCPUs and memory, and which boots from scratch (no template is kept for it).
+ * has the vCPUs and memory. The host restores it from the template it keeps for its vCPU count (or boots it from
+ * scratch while that's being made, or when the host keeps templates per size).
  *
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
  * VM); then the most free memory, the least loaded. Hosts keep no warm pools of running sandboxes, so no host is
  * preferred for having one ready: a create restores a snapshot wherever it lands.
  */
+import type { PlacementReason } from "@kantel/contracts";
 import { HOST_FEATURES, type HostSize, type SandboxTier } from "./protocol.ts";
 import type { HostRecord } from "./store.ts";
 
@@ -51,7 +53,20 @@ export interface Placement {
 	readonly custom: boolean;
 }
 
-export type Refusal = { readonly reason: string };
+/** No host can take it: why, in words, and as a `PlacementReason`. */
+export type Refusal = { readonly reason: string; readonly code: PlacementReason };
+
+/**
+ * How far a host got through the checks before it was turned away, in the order `place` makes them; a refusal is named
+ * after the furthest any host got, the nearest thing to fitting (a host with the size but full says to retry later).
+ */
+const STAGES: readonly PlacementReason[] = [
+	"no_host",
+	"no_host_for_type",
+	"no_host_offers_size",
+	"no_host_with_labels",
+	"insufficient_capacity",
+];
 
 /**
  * What an isolate books on its host. Isolates share their owner's VM, which the host counts in its free memory once it
@@ -119,6 +134,11 @@ const asked = (request: PlacementRequest): string =>
 
 export function place(request: PlacementRequest, candidates: readonly Candidate[]): Placement | Refusal {
 	const reasons = new Set<string>();
+	let stage = 0;
+	const turnedAway = (why: string, reached: PlacementReason) => {
+		reasons.add(why);
+		stage = Math.max(stage, STAGES.indexOf(reached));
+	};
 	const fits: {
 		candidate: Candidate;
 		size: HostSize;
@@ -130,44 +150,45 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		const { host } = candidate;
 		if (host.revoked) continue;
 		if (!candidate.connected) {
-			reasons.add("not connected");
+			turnedAway("not connected", "no_host");
 			continue;
 		}
 		if (host.draining) {
-			reasons.add("draining");
+			turnedAway("draining", "no_host");
 			continue;
 		}
 		const facts = host.facts;
 		const capacity = host.capacity;
 		if (facts === undefined || capacity === undefined) {
-			reasons.add("no report yet");
+			turnedAway("no report yet", "no_host");
 			continue;
 		}
 		if (!facts.tiers.includes(request.tier)) {
-			reasons.add(`no ${request.tier} tier`);
+			turnedAway(`no ${request.tier} tier`, "no_host_for_type");
 			continue;
 		}
 		const shaped = shapeOn(host, request);
 		if (shaped === undefined) {
-			reasons.add(
+			turnedAway(
 				request.shape === undefined
 					? `no size ${request.size ?? "default"}`
 					: makesCustomShapes(host)
 						? "too small for that shape"
 						: "only its named sizes",
+				"no_host_offers_size",
 			);
 			continue;
 		}
 		const { size } = shaped;
 		const labels = { ...facts.labels, ...host.labels };
 		if (Object.entries(request.labels ?? {}).some(([key, value]) => labels[key] !== value)) {
-			reasons.add("labels don't match");
+			turnedAway("labels don't match", "no_host_with_labels");
 			continue;
 		}
 		const freeMemory = capacity.freeMemoryMiB - candidate.reservedMemoryMiB;
 		const freeDisk = capacity.freeDiskGiB - candidate.reservedDiskGiB;
 		if (freeMemory < size.memoryMiB || freeDisk < size.diskGiB) {
-			reasons.add("full");
+			turnedAway("full", "insufficient_capacity");
 			continue;
 		}
 		fits.push({
@@ -180,7 +201,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	}
 	if (fits.length === 0) {
 		const why = reasons.size === 0 ? "no hosts have joined" : [...reasons].sort().join(", ");
-		return { reason: `No host can take ${asked(request)} (${why})` };
+		return { reason: `No host can take ${asked(request)} (${why})`, code: STAGES[stage] ?? "no_host" };
 	}
 	fits.sort(
 		(a, b) =>
@@ -190,7 +211,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			(a.candidate.host.id < b.candidate.host.id ? -1 : 1),
 	);
 	const best = fits[0];
-	if (best === undefined) return { reason: "No host" };
+	if (best === undefined) return { reason: "No host", code: "no_host" };
 	return { host: best.candidate.host, size: best.size, custom: best.custom };
 }
 

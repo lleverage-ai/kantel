@@ -27,6 +27,9 @@ function Scenario({ options, initialView }: { options?: ComputeFixtureOptions; i
 /** An organisation's saved snapshots: microVMs and an isolate, one whose sandbox has since gone. */
 export const Saved: Story = () => <Scenario />;
 
+/** node22-base was saved on an outdated base: sandboxes started from it start on the old one, its badge says. */
+export const BaseOutdated: Story = () => <Scenario />;
+
 /** One sandbox's history: the regular saves while it runs, newest first. */
 export const BySandbox: Story = () => <Scenario initialView={{ name: "sandbox", sandboxId: API_SERVER.id }} />;
 

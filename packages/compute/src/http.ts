@@ -2,7 +2,7 @@
  * The compute plane's HTTP API: `@kantel/api`'s `computeRoutes` under `/v1` (by default), over the service in
  * `service.ts`. It signs the caller in (an API key, or the host's person authenticator) only for a request that is for
  * one of its routes, and resolves `undefined` for any other, so a gateway can chain it before its own routes. Errors
- * answer `{ error: { code, message } }` with `STATUS_BY_CODE`'s status, and 401 `unauthenticated` for a missing or
+ * answer `{ error: { code, message, details? } }` with `STATUS_BY_CODE`'s status, and 401 `unauthenticated` for a missing or
  * bad credential.
  *
  * A signed file URL (`/v1/file-urls/{token}`, with mounts) is answered before any of that, with no credential: its
@@ -21,6 +21,8 @@ import {
 import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
+import type { BaseImages } from "./base-status.ts";
+import type { LiveRelay } from "./live.ts";
 import { FILE_URL_PATH, type MountsOptions } from "./mounts.ts";
 import {
 	type ComputeLimits,
@@ -62,10 +64,14 @@ export interface ComputeApiOptions {
 	/** The control plane's public URL, for host join commands. Default each request's origin. */
 	readonly publicUrl?: string;
 	readonly mode?: "selfhosted" | "hosted";
+	/** The domain sandboxes' addresses are under, which `GET /v1/me` names. Absent, none is named. */
+	readonly sandboxDomain?: string;
 	/** The join command shown with a host join token, with `{url}` and `{token}`. */
 	readonly hostJoinCommand?: string;
 	/** Account hosts' routes (`/v1/hosts`, experimental): accounts add hosts of their own. Default off. */
 	readonly accountHosts?: boolean;
+	/** Templates' routes (`/v1/templates`, experimental): versioned microVM profiles and their snapshots. Default off. */
+	readonly templates?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
@@ -79,10 +85,21 @@ export interface ComputeApiOptions {
 	 * store makes one for the process and a persistent store refuses them. Not a key: `createComputeApi` throws.
 	 */
 	readonly secretsKey?: string;
+	/**
+	 * Image patching (experimental, `KANTEL_IMAGE_PATCHING`): Kantel's base image index, cached by the caller
+	 * (`baseImageIndexReader`). Absent, off: no `base` fields, and its routes answer `not_supported`.
+	 */
+	readonly baseImages?: BaseImages;
 	/** Mounts, bundles and signed file URLs (`KANTEL_MOUNTS=experimental`), with where bundles are kept. Default off. */
 	readonly mounts?: MountsOptions;
 	/** Emails an invite made for an address, with a link to join (`ComputeServiceOptions.invites`); absent, none. */
 	readonly invites?: InviteMailing;
+	/** Sandboxes' changes from the other gateways over one database (`ComputeServiceOptions.liveRelay`); absent, none. */
+	readonly liveRelay?: LiveRelay;
+	/** How long a call waits for a sandbox that is starting (`ComputeServiceOptions.startHoldMs`). Default 60 s. */
+	readonly startHoldMs?: number;
+	/** How often that call reads the sandbox again (`ComputeServiceOptions.startPollMs`). Default 250 ms. */
+	readonly startPollMs?: number;
 }
 
 export interface ComputeApi {
@@ -102,7 +119,11 @@ const json = (body: unknown, status: number, headers: { readonly [name: string]:
 		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
 	});
 
-/** The error response for a failure: a KantelError's code and status, 401 for no valid credential, else 500. */
+/**
+ * The error response for a failure: a KantelError's code, status and details (a placement's `reason`, a
+ * `SandboxNotRunning`), 401 for no valid
+ * credential, else 500.
+ */
 export function computeErrorResponse(error: unknown): Response {
 	if (error instanceof UnauthenticatedError) {
 		return json({ error: { code: "unauthenticated", message: error.message } }, 401, {
@@ -110,7 +131,11 @@ export function computeErrorResponse(error: unknown): Response {
 		});
 	}
 	if (isKantelError(error)) {
-		return json({ error: { code: error.code, message: error.message } }, STATUS_BY_CODE[error.code]);
+		const { details } = error;
+		return json(
+			{ error: { code: error.code, message: error.message, ...(details === undefined ? {} : { details }) } },
+			STATUS_BY_CODE[error.code],
+		);
 	}
 	return json({ error: { code: "unavailable", message: "The compute API failed" } }, 500);
 }
@@ -141,16 +166,22 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		apiBasePath: basePath,
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
+		...(options.sandboxDomain === undefined ? {} : { sandboxDomain: options.sandboxDomain }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
 		...(options.accountHosts === undefined ? {} : { accountHosts: options.accountHosts }),
+		...(options.templates === undefined ? {} : { templates: options.templates }),
 		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.liveRelay === undefined ? {} : { liveRelay: options.liveRelay }),
+		...(options.startHoldMs === undefined ? {} : { startHoldMs: options.startHoldMs }),
+		...(options.startPollMs === undefined ? {} : { startPollMs: options.startPollMs }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

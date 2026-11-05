@@ -11,6 +11,7 @@
  * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
 import type { computeSchema } from "@kantel/api";
+import type { SandboxTemplateBoot } from "./backend.ts";
 import type { StoredE2EEntry } from "./e2e.ts";
 import type { SealedValue } from "./secrets.ts";
 
@@ -103,10 +104,25 @@ export interface StoredSample {
 	 * single reading, as samples were kept before hosts sent ticks.
 	 */
 	readonly readings?: number;
+	/**
+	 * A mean of 5-minute means folded together once they are a day old (`keptSamples`): the time from `at` it covers,
+	 * up to an hour. Absent on a 5-minute mean (it covers `ROLLUP_MS`) and a single reading.
+	 */
+	readonly spanMs?: number;
+	/** The sandbox's own disk in use, in MiB, from a host that sends it; absent from one that doesn't. */
+	readonly diskMb?: number;
+	/** IO pressure, 0 to 1, from a guest with the figures. */
+	readonly io?: number;
+	/**
+	 * Of `readings`, how many had a disk figure and how many IO pressure, where not all of them did (a guest that
+	 * didn't answer in time, one restored from an older snapshot): `diskMb` and `io` are the means of those alone.
+	 */
+	readonly diskReadings?: number;
+	readonly ioReadings?: number;
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
-export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants"> & {
+export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
 	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
@@ -122,6 +138,23 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * `egressRevision`, an update didn't get through (its host away, say), and the sweep sends the egress as it is now.
 	 */
 	readonly egressApplied?: number;
+	/**
+	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
+	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).
+	 */
+	readonly baseAt?: number;
+	/**
+	 * Moves on by one with every change of its state (`withState`), so a lifecycle step that read it earlier can claim
+	 * the next only while nothing else has moved it since, even if it is back in the state it read (a restart in
+	 * between). Absent: 0, a record from before it was kept.
+	 */
+	readonly lifecycle?: number;
+	/**
+	 * Hosts revoked while its boot was under way there, as far as its placement said (`strandOn`): its boot's move from
+	 * `starting` is `error` when the host it ended up on is one of them (`boot`), since only the boot knows for certain
+	 * where its attempt went. Cleared by every change of its state.
+	 */
+	readonly strandedOn?: readonly string[];
 	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
@@ -141,22 +174,44 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly placeholders?: { readonly [name: string]: string };
 	readonly hostLabels: { readonly [key: string]: string };
 	readonly runs: readonly RunPeriod[];
-	/** The newest readings, at most `MAX_SAMPLES`. */
+	/** The newest readings: a day of 5-minute means (`MAX_SAMPLES`), and hourly ones before it (`HOURLY_SAMPLES`). */
 	readonly samples: readonly StoredSample[];
 	readonly ports: readonly computeSchema.ExposedPort[];
 	/** The snapshot its memory was paused into, while `paused`. */
 	readonly pausedSnapshotId?: string;
 	/**
+	 * The base image version its root file system is, as its backend reported it (`Placement.base`): a host images
+	 * version such as `host-images-20261104.812`, or a container image's `sha256:` digest. Answered, with how far behind
+	 * it is, as the API's `base` (image patching on). Absent: not reported.
+	 */
+	readonly base?: string;
+	/**
 	 * What it asked for at create: a microVM's vCPUs and memory, an isolate's memory (`vcpus` 0). Absent: made by a named
 	 * size, or before shapes. A fork asks for the same.
 	 */
 	readonly shape?: { readonly vcpus: number; readonly memoryMb: number };
+	/**
+	 * Made from a template: how a fresh boot of it boots, its base and setup as its create resolved them, so a create
+	 * that failed before placing it (`bootAgain`) is made again the same, whatever its template has become since. No
+	 * snapshot: a retry boots fresh. A custom image's (`rootfsKey`) names the hosts holding it (`holders`), the only ones
+	 * a retry may boot it on, among those the sandbox may use then.
+	 */
+	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
 };
 
-export type StoredCommand = computeSchema.Command & { readonly accountId: string };
+export type StoredCommand = computeSchema.Command & {
+	readonly accountId: string;
+	/** Run detached: its result can be fetched from the backend (`commandResult`) by any gateway. */
+	readonly detached?: boolean;
+	/** Killed, and its kill not yet taken by its backend: a later kill sends it again. */
+	readonly killPending?: boolean;
+};
 
-/** A snapshot and the backend's reference to its bytes (absent until it is ready). */
-export type StoredSnapshot = computeSchema.Snapshot & { readonly ref?: string };
+/**
+ * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
+ * file system is (`TakenSnapshot.base`), answered as the API's `base`.
+ */
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
@@ -244,13 +299,121 @@ export interface StoredEnvironment {
 export const environmentNameKey = (environment: { readonly accountId: string; readonly name: string }) =>
 	JSON.stringify([environment.accountId, environment.name]);
 
-/** A write the store refused because it would give a second record a key another holds (an environment's name). */
+/** A write the store refused because it would give a second record a key another holds (an environment's or template's name). */
 export class UniqueViolation extends Error {
 	constructor(kind: string) {
 		super(`Another ${kind} record has that key`);
 		this.name = "UniqueViolation";
 	}
 }
+
+/** A template: its current version and spec (every default filled in), and its versions beside it. */
+export interface StoredTemplate {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly version: number;
+	readonly spec: computeSchema.TemplateSpec;
+	/**
+	 * Moves on with each rebuild: part of its snapshots' IDs (`templateSnapshotId`), so a rebuild's builds never meet the
+	 * ones it threw away.
+	 */
+	readonly cacheEpoch: number;
+	/** The person it belongs to: its maker, or the person whose key made it. Its builds use the shared hosts they may. */
+	readonly ownerUserId: string;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+	readonly createdBy: computeSchema.Sandbox["createdBy"];
+	/**
+	 * When its retirement (its deletion, or its account's) began: from then it is gone to every caller and every build,
+	 * and its record is kept, last, until its versions and cache entries have gone, so a retirement cut short is
+	 * finished by a sweep.
+	 */
+	readonly retiredAt?: number;
+}
+
+/**
+ * The key no two templates may share, an account's and a name, kept as an environment's is (`environmentNameKey`): the
+ * store refuses a write that would give a second template of the account the name (`UniqueViolation`).
+ */
+export const templateNameKey = (template: { readonly accountId: string; readonly name: string }) =>
+	JSON.stringify([template.accountId, template.name]);
+
+/** One version of a template, never changed; its ID is `<templateId>@<version>`. */
+export interface StoredTemplateVersion {
+	readonly id: string;
+	readonly templateId: string;
+	readonly version: number;
+	readonly spec: computeSchema.TemplateSpec;
+	readonly createdAt: number;
+	readonly createdBy: computeSchema.Sandbox["createdBy"];
+	/** The SQL store's mark of the one write attempt that recorded it, which tells that attempt it was its own. */
+	readonly writeId?: string;
+}
+
+/**
+ * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, and the backend's reference
+ * to its bytes once it is built.
+ */
+export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state"> & {
+	/**
+	 * Its wire states, and `deleting`: thrown away (`discarded` on the wire) with its bytes, at `ref` (or, its build
+	 * never having answered, under its ID on its host), not yet deleted from its host; every sweep tries again until they
+	 * are, whether its template is still there or not.
+	 */
+	readonly state: computeSchema.TemplateSnapshotState | "deleting";
+	readonly accountId: string;
+	readonly ref?: string;
+	/**
+	 * When its host had no room for its build (`exhausted`), which left it `queued` with no gateway working on it: the
+	 * first reconcile `TEMPLATE_BUILD_RETRY_MS` after claims it and tries again.
+	 */
+	readonly deferred?: number;
+	/**
+	 * Thrown away (`deleting`) while it built: when its build's lease ends (`TEMPLATE_BUILD_LEASE_MS` from `startedAt`).
+	 * Until then its bytes are left to its build, which holds them on its host and deletes them when it ends; after, its
+	 * gateway is taken to have died with it, and a sweep deletes them by its ID.
+	 */
+	readonly buildLeaseEnds?: number;
+	/**
+	 * A custom image's: the key's hash it was claimed under, before its build named the image's digest. Its `keyHash`
+	 * covers the digest once its build has answered (`key.imageDigest`); a reconcile wants it by this one. Absent, its
+	 * `keyHash`.
+	 */
+	readonly claimHash?: string;
+	/** A custom image's root filesystem on its host, which a fresh boot there boots (`SandboxTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
+};
+
+/** A template as `TemplateWrites.update` changes it, and the version the change makes when it makes one. */
+export interface TemplateChange {
+	readonly template: StoredTemplate;
+	/** The template's new version (`<templateId>@<version>`), present only when the change moves its version on. */
+	readonly version?: StoredTemplateVersion;
+}
+
+/**
+ * Writes of a template that record a version of it: the template and its version are written together or not at all,
+ * so no template is at a version its history lacks, and no version is recorded that its template never reached. Each
+ * throws `UniqueViolation` for a write that would give the template a name another of its account holds
+ * (`templateNameKey`).
+ */
+export interface TemplateWrites {
+	/** Inserts a new template and its first version; false, writing neither, when a template has its ID. */
+	insert(template: StoredTemplate, version: StoredTemplateVersion): Promise<boolean>;
+	/**
+	 * Changes a template as `Collection.update` does, and records the change's version in the same write when it gives
+	 * one. A version already recorded under that ID is kept as it is.
+	 */
+	update(
+		id: string,
+		change: (current: StoredTemplate) => TemplateChange | undefined,
+	): Promise<StoredTemplate | undefined>;
+}
+
+/** A base image's channel; its ID is `<image>:<channel>`. */
+export type StoredTemplateBase = computeSchema.TemplateBaseChannel & { readonly id: string };
 
 /** One entry of a sandbox's egress log, as its host reported it; the newest `MAX_EGRESS_ENTRIES` are kept per sandbox. */
 export type StoredEgressEntry = computeSchema.EgressEntry & {
@@ -352,6 +515,24 @@ export interface StoredSetting {
 	readonly updatedBy: string;
 }
 
+/**
+ * A gateway replica's claim to export one numbered usage tick: its ID is `usageClaimId` of the host, the tick's `run`
+ * and its `seq`. A replica taking a tick straight from its host claims it (`insert`) once nothing can stop the tick
+ * going into its series, and exports it only if the claim is its own (`owner`, that process's): a tick the host sends
+ * again to another replica after a reconnect, which the first claimed, is only drawn there. So each tick is exported
+ * once however the replicas pass ticks on to each other, and a claim whose answer was lost is still known as its own.
+ * Removed once `keepUntil` has passed, when the host can no longer send it again.
+ */
+export interface StoredUsageClaim {
+	readonly id: string;
+	readonly hostId: string;
+	readonly owner: string;
+	readonly keepUntil: number;
+}
+
+/** The ID of the claim to tick `seq` of `run` from `hostId` (`StoredUsageClaim`). */
+export const usageClaimId = (hostId: string, run: string, seq: number): string => `${hostId}:${run}:${seq}`;
+
 /** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
 export interface StoredDeviceLogin {
 	readonly id: string;
@@ -374,8 +555,15 @@ export interface StoredDeviceLogin {
  */
 export interface StoredIdempotency {
 	readonly id: string;
-	/** The answer's JSON, once the first call has answered; absent while it is still working. */
+	/**
+	 * The answer's JSON, once the first call has answered; absent while it is still working. For an answer that holds a
+	 * secret, the JSON of the answer sealed (`secret: "sealed"`), or `null` when it wasn't kept (`"withheld"`).
+	 */
 	readonly body?: string;
+	/** The answer held a secret: kept sealed with the deployment's secrets key, or, with none, not kept. */
+	readonly secret?: "sealed" | "withheld";
+	/** The SHA-256 of the request it was for (path parameters, query and body); absent on keys kept before. */
+	readonly fingerprint?: string;
 	readonly createdAt: number;
 	/** While it is working: who holds the claim (a random ID), so only the holder renews it. */
 	readonly claim?: string;
@@ -420,6 +608,19 @@ export interface ComputeStore {
 	readonly bucketSources: Collection<StoredBucketSource>;
 	readonly fileUrls: Collection<StoredFileUrl>;
 	readonly settings: Collection<StoredSetting>;
+	/**
+	 * No two with one account and name (`templateNameKey`): a write that would make two throws. A write that makes a
+	 * version goes through `templateWrites`.
+	 */
+	readonly templates: Collection<StoredTemplate>;
+	readonly templateVersions: Collection<StoredTemplateVersion>;
+	/** A template and its version, written together. */
+	readonly templateWrites: TemplateWrites;
+	/** Template snapshots: a cache, apart from `snapshots`, which the template code never reads or writes. */
+	readonly templateSnapshots: Collection<StoredTemplateSnapshot>;
+	readonly templateBases: Collection<StoredTemplateBase>;
+	/** Which replica exports each numbered usage tick (`StoredUsageClaim`). */
+	readonly usageClaims: Collection<StoredUsageClaim>;
 }
 
 /**
@@ -432,11 +633,23 @@ export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
 	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);
 }
 
+/** A memory collection, its records and its unique-key check: for writes over two collections at once. */
+interface MemoryTable<T extends { readonly id: string }> {
+	readonly collection: Collection<T>;
+	readonly records: Map<string, T>;
+	/** Throws `UniqueViolation` when `record` would share its unique key with another record. */
+	check(record: T): void;
+}
+
 /**
  * A collection in a `Map`, copying records in and out. With `unique`, no two records may share its key: a write that
  * would make two throws `UniqueViolation`, as the SQL store's unique index does.
  */
 export function memoryCollection<T extends { readonly id: string }>(unique?: (record: T) => string): Collection<T> {
+	return memoryTable(unique).collection;
+}
+
+function memoryTable<T extends { readonly id: string }>(unique?: (record: T) => string): MemoryTable<T> {
 	const records = new Map<string, T>();
 	const check = (record: T) => {
 		if (unique === undefined) return;
@@ -445,7 +658,7 @@ export function memoryCollection<T extends { readonly id: string }>(unique?: (re
 			if (other.id !== record.id && unique(other) === key) throw new UniqueViolation("compute");
 		}
 	};
-	return {
+	const collection: Collection<T> = {
 		async get(id) {
 			const record = records.get(id);
 			return record === undefined ? undefined : structuredClone(record);
@@ -481,10 +694,44 @@ export function memoryCollection<T extends { readonly id: string }>(unique?: (re
 			return [...records.values()].filter((record) => matches(record, where)).map((record) => structuredClone(record));
 		},
 	};
+	return { collection, records, check };
+}
+
+/** `TemplateWrites` over memory tables: each write is made in one turn, so nothing reads half of it. */
+function memoryTemplateWrites(
+	templates: MemoryTable<StoredTemplate>,
+	versions: MemoryTable<StoredTemplateVersion>,
+): TemplateWrites {
+	const record = (version: StoredTemplateVersion | undefined) => {
+		if (version !== undefined && !versions.records.has(version.id)) {
+			versions.records.set(version.id, structuredClone(version));
+		}
+	};
+	return {
+		async insert(template, version) {
+			if (templates.records.has(template.id)) return false;
+			templates.check(template);
+			templates.records.set(template.id, structuredClone(template));
+			record(version);
+			return true;
+		},
+		async update(id, change) {
+			const current = templates.records.get(id);
+			if (current === undefined) return undefined;
+			const next = change(structuredClone(current));
+			if (next === undefined) return undefined;
+			templates.check(next.template);
+			templates.records.set(id, structuredClone(next.template));
+			record(next.version);
+			return structuredClone(next.template);
+		},
+	};
 }
 
 /** A `ComputeStore` in memory. */
 export function createMemoryStore(): ComputeStore {
+	const templates = memoryTable<StoredTemplate>(templateNameKey);
+	const templateVersions = memoryTable<StoredTemplateVersion>();
 	return {
 		users: memoryCollection(),
 		accounts: memoryCollection(),
@@ -510,6 +757,12 @@ export function createMemoryStore(): ComputeStore {
 		bucketSources: memoryCollection(),
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
+		usageClaims: memoryCollection(),
+		templates: templates.collection,
+		templateVersions: templateVersions.collection,
+		templateWrites: memoryTemplateWrites(templates, templateVersions),
+		templateSnapshots: memoryCollection(),
+		templateBases: memoryCollection(),
 	};
 }
 

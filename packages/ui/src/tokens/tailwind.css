@@ -126,6 +126,11 @@
 	--color-status-approval-line: var(--kt-status-approval-line);
 	--color-status-error-line: var(--kt-status-error-line);
 
+	--color-chart-cpu: var(--kt-chart-cpu);
+	--color-chart-memory: var(--kt-chart-memory);
+	--color-chart-disk: var(--kt-chart-disk);
+	--color-chart-io: var(--kt-chart-io);
+
 	--color-diff-add: var(--kt-diff-add);
 	--color-diff-del: var(--kt-diff-del);
 
@@ -202,6 +207,7 @@
 	/* Measures, for `max-w-*` and `w-*`: `max-w-content`, `w-sidebar`, `w-popover`. */
 	--container-content: var(--kt-content-width);
 	--container-card: var(--kt-card-width);
+	--container-dialog-wide: var(--kt-dialog-wide-width);
 	--container-sidebar: var(--kt-sidebar-width);
 	--container-page: var(--kt-page-width);
 	--container-rail: var(--kt-rail-width);

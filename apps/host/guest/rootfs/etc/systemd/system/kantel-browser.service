@@ -1,13 +1,17 @@
 [Unit]
-Description=Kantel browser: Chromium on the desktop, DevTools (CDP) on 127.0.0.1:9222
-After=kantel-desktop.service
-Wants=kantel-desktop.service
+Description=Kantel browser: Chromium on its own display :2 (or the desktop's), DevTools (CDP) on 127.0.0.1:9222
+# Its own display where the host asks for it (kantel.browser=surface), else the desktop's.
+After=kantel-browser-display.service kantel-desktop.service
+Wants=kantel-browser-display.service kantel-desktop.service
 
 [Service]
 User=user
 Environment=HOME=/home/user XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=-/etc/kantel/desktop.env
 EnvironmentFile=-/etc/kantel/proxy.env
+# Where it runs Chromium (display), for the host's openBrowser: removed when the unit stops, and with /run on a cold boot.
+RuntimeDirectory=kantel-browser
+RuntimeDirectoryPreserve=restart
 ExecStart=/usr/local/bin/kantel-browser
 Restart=always
 RestartSec=1s

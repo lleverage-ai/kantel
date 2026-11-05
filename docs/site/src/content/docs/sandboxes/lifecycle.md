@@ -102,9 +102,37 @@ The fields you can set when you create one:
 | `account` | The organisation to create it in, when you're signed in as a person. A key always uses its own account |
 | `wait` | Answer once it's `running` (or in `error`) |
 
-A create is safe to retry. Send an `Idempotency-Key` header with a value of your own, such as a UUID; a retry with the same key gets the first answer and makes no second sandbox. In the SDK, pass `{ idempotencyKey: crypto.randomUUID() }` as the last argument.
+A create is safe to retry. Send an `Idempotency-Key` header with a value of your own, such as a UUID; a retry with the same key gets the first answer and makes no second sandbox. If the first call failed part way or stopped answering, a retry is `409` `conflict` with `details.idempotencyKey: "held"` and makes none: list your sandboxes (by label, say) to see whether it was made, then use a new key. In the SDK, pass `{ idempotencyKey: crypto.randomUUID() }` as the last argument. Fork, change, recover and delete take a key too; [Safe retries](/api/reference/#safe-retries) lists every call that does, and why the others need none.
 
-If every host is full, the create answers `429` with `exhausted`. If no host can run the type you asked for, such as a microVM on a deployment with no KVM host, it answers `503` with `unavailable`.
+### When it can't be placed
+
+When no host can take the sandbox, Kantel says why with a `reason`. A check it can make before placing it refuses the call, with the reason in `details.reason` beside the error's code and message:
+
+```json
+{
+  "error": {
+    "code": "unavailable",
+    "message": "No host can run a microvm sandbox now",
+    "details": { "reason": "no_host_for_type" }
+  }
+}
+```
+
+Others are found only once a host is being chosen, such as hosts that turn out to be full, or a host that drops off as the sandbox boots. The call then answers as usual and the sandbox goes to `error`, with the reason in its `placementReason` and in the `sandbox.error` event's data; with `wait`, the answer is that sandbox. Any reason can come either way, so check both.
+
+| `reason` | Code (and status, at the call) | What it means | What to do |
+| --- | --- | --- | --- |
+| `no_host` | `503 unavailable` | No host you may use is connected | Try again once one is |
+| `no_host_for_type` | `503 unavailable` | No host runs the type, such as a microVM on a deployment with no KVM host | Ask for the other type |
+| `no_host_with_labels` | `503 unavailable` | No host has every label in `hostLabels` | Ask for other labels, or none |
+| `no_host_offers_size` | `501 not_supported` | No host offers the size or can make the `resources` | Ask for another size; `GET /v1/sandbox-shapes` says what there is |
+| `no_host_enforces_egress` | `501 not_supported` | No host that could take it enforces egress grants or protected variables | Upgrade `kantel-host` |
+| `no_host_for_template` | `501 not_supported` | No host that could take it runs templates, or builds the template's custom image | Create it without the template, or turn a host's template builder on |
+| `insufficient_capacity` | `429 exhausted` | Hosts match, but none has the memory or disk free now | Try again later, or ask for less |
+| `host_unavailable` | `503 unavailable` | The host its disk or snapshot is on is offline, draining or not one you may use now, or it dropped off during the boot | Try again later |
+| `account_limit` | `429 exhausted` | The account runs as many sandboxes as it may | Stop or delete one |
+
+The same goes for a start, resume or fork, and for a create from a snapshot. These run only on the host their disk or snapshot is on, so when that host is offline or isn't one you may use, the reason is `host_unavailable`, whatever other hosts there are. A host that is there can still refuse one for its own reason, such as `insufficient_capacity` or `no_host_enforces_egress`. Other errors have no `reason`.
 
 ## States
 
@@ -153,7 +181,7 @@ A pause keeps the sandbox's memory as well as its disk, so a resume carries on e
 await kantel.stopSandbox("sbx_4kq9x2mt", { keepMemory: true, wait: true }); // paused
 ```
 
-Without `wait`, a stop answers at once with the sandbox in `stopping`.
+Without `wait`, a stop answers at once with the sandbox in `stopping`. A stop is safe to retry without a key: once the first has finished, stopping a stopped sandbox (or pausing a paused one) answers it as it is.
 
 ## Resume or start
 
@@ -180,6 +208,8 @@ curl -s -X PATCH "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt" \
 ```
 
 Set `"autoStopMinutes": null` to turn auto-stop off, so it runs until you stop it. The same call renames a sandbox, replaces its `labels` (send them all: the ones you leave out go) and changes its `visibility`.
+
+`extendMinutes` and `autoStopMinutes` count from when the call arrives, so a retry a minute later moves the stop time a minute on. Send an `Idempotency-Key` to have a retry keep the first call's `stopsAt`.
 
 ## Fork
 
@@ -210,6 +240,8 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/recover" \
 
 A resume also works on a sandbox in `error`, from its newest snapshot.
 
+A running sandbox is recovered too, so a retry would restart it again and end what had started since. Send an `Idempotency-Key` to make a retry answer the first recover instead.
+
 ## Delete permanently
 
 Deleting a sandbox erases it and its automatic snapshots for good. It can't be undone. [Saved snapshots](/snapshots/saved/) taken from it stay. The key needs `sandboxes:delete`, which the `agent` preset leaves out on purpose.
@@ -219,7 +251,7 @@ curl -s -X DELETE "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt" \
   -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
-The answer is the sandbox in `deleting`. It leaves the list once it's gone.
+The answer is the sandbox in `deleting`. It leaves the list once it's gone. A second delete once it's gone is `404` with `not_found`; with an `Idempotency-Key`, a retry gets the first answer instead.
 
 ## Usage and cost
 

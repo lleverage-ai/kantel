@@ -8,6 +8,8 @@ import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
 	HostFacts,
+	HostImages,
+	HostMemorySource,
 	HostMountStatus,
 	HostSandboxUsage,
 	HostSize,
@@ -73,11 +75,38 @@ function labels(value: unknown): { [key: string]: string } {
 	return out;
 }
 
+/**
+ * A host's images (image patching), or undefined when it reports none or none shaped as kantel-host sends them: they are
+ * shown, never placed by, so a malformed report is dropped rather than refused.
+ */
+function images(value: unknown): HostImages | undefined {
+	if (!isObject(value)) return undefined;
+	try {
+		return {
+			version: text(value.version ?? "", "images.version"),
+			firecracker: text(value.firecracker ?? "", "images.firecracker"),
+			autoUpdate: value.autoUpdate === true,
+			signatures: text(value.signatures ?? "", "images.signatures"),
+		};
+	} catch (error) {
+		if (error instanceof FactsError) return undefined;
+		throw error;
+	}
+}
+
+/** A string a host may leave out (Go's `omitempty`): absent when it does, or when it is empty. */
+function optionalText<K extends string>(value: Record<string, unknown>, field: K): { [key in K]?: string } {
+	const found = value[field];
+	if (found === undefined || found === null || found === "") return {};
+	return { [field]: text(found, field) } as { [key in K]?: string };
+}
+
 function facts(value: unknown): HostFacts {
 	if (!isObject(value)) throw new FactsError("facts is an object");
 	const tiers = list(value.tiers, "tiers").map((tier, at) => text(tier, `tiers[${at}]`));
 	const features = list(value.features, "features").map((feature, at) => text(feature, `features[${at}]`));
 	const kept = labels(value.labels);
+	const hostImages = images(value.images);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -96,18 +125,23 @@ function facts(value: unknown): HostFacts {
 		...(Object.keys(kept).length === 0 ? {} : { labels: kept }),
 		egress: text(value.egress, "egress"),
 		...(features.length === 0 ? {} : { features }),
+		...optionalText(value, "firecracker"),
+		...optionalText(value, "guestKernel"),
+		...(hostImages === undefined ? {} : { images: hostImages }),
 	};
 }
 
 function capacity(value: unknown): HostCapacity {
 	if (!isObject(value)) throw new FactsError("capacity is an object");
 	// A host from before warm pools were removed also sends `warm`, its ready pool counts: ignored.
+	const builds = list(value.builds, "builds").map((build, at) => text(build, `builds[${at}]`));
 	return {
 		freeMemoryMiB: count(value.freeMemoryMiB, "freeMemoryMiB"),
 		freeDiskGiB: count(value.freeDiskGiB, "freeDiskGiB"),
 		running: count(value.running, "running"),
 		stopped: count(value.stopped, "stopped"),
 		load1: count(value.load1, "load1"),
+		...(builds.length === 0 ? {} : { builds }),
 	};
 }
 
@@ -131,18 +165,60 @@ function usageTotals(value: unknown): HostUsageTotals {
 	};
 }
 
+const MEMORY_SOURCES: ReadonlySet<string> = new Set<HostMemorySource>(["guest", "rss"]);
+
 /** One sandbox's reading, or undefined for one of a kind this control plane doesn't know (left out, not refused). */
 function sandboxUsage(value: unknown, at: number): HostSandboxUsage | undefined {
 	if (!isObject(value)) throw new FactsError(`usage.sandboxes[${at}] is an object`);
 	const kind = text(value.kind, `usage.sandboxes[${at}].kind`);
 	if (!TIERS.has(kind)) return undefined;
+	// A source this control plane doesn't know (a newer host's) is left out, not refused: the figure still stands.
+	const memSource =
+		typeof value.memSource === "string" && MEMORY_SOURCES.has(value.memSource)
+			? (value.memSource as HostMemorySource)
+			: undefined;
 	return {
 		id: text(value.id, `usage.sandboxes[${at}].id`),
 		kind: kind as SandboxTier,
 		cpu: utilisation(value.cpu, `usage.sandboxes[${at}].cpu`),
 		memUsedBytes: count(value.memUsedBytes, `usage.sandboxes[${at}].memUsedBytes`),
 		memLimitBytes: count(value.memLimitBytes, `usage.sandboxes[${at}].memLimitBytes`),
+		...(memSource === undefined ? {} : { memSource }),
+		...guestFigures(value),
 	};
+}
+
+const figure = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+/**
+ * A microVM's disk and IO pressure, which a host sends from its guest's agent when it has them. Optional, and left out
+ * rather than refused when they make no sense (a used beyond its size, a share outside 0 to 1): the tick's CPU and
+ * memory still stand.
+ */
+function guestFigures(
+	value: Record<string, unknown>,
+): Pick<HostSandboxUsage, "diskUsedBytes" | "diskTotalBytes" | "ioPressure"> {
+	const { diskUsedBytes: used, diskTotalBytes: total, ioPressure } = value;
+	return {
+		...(figure(used) && figure(total) && total > 0 && used <= total
+			? { diskUsedBytes: used, diskTotalBytes: total }
+			: {}),
+		...(figure(ioPressure) && ioPressure <= 1 ? { ioPressure } : {}),
+	};
+}
+
+/** The longest `run` a usage tick may name: kantel-host's are 16 hex digits. */
+const MAX_USAGE_RUN = 64;
+
+/**
+ * A tick's `run` and `seq` (`usage-acks`), both or neither: a `seq` that isn't a whole number from 1, or a `run` that
+ * isn't a short string, leaves the tick as an older host's, taken but never acknowledged.
+ */
+function usageSequence(value: Record<string, unknown>): { readonly seq: number; readonly run: string } | undefined {
+	const { seq, run } = value;
+	if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return undefined;
+	if (typeof run !== "string" || run === "" || run.length > MAX_USAGE_RUN) return undefined;
+	return { seq, run };
 }
 
 function usage(value: unknown): HostUsageReport & { readonly sandboxes: readonly HostSandboxUsage[] } {
@@ -157,6 +233,7 @@ function usage(value: unknown): HostUsageReport & { readonly sandboxes: readonly
 		throw new FactsError(`usage.sandboxes is a list of at most ${MAX_USAGE_SANDBOXES}`);
 	}
 	return {
+		...usageSequence(value),
 		at,
 		intervalMs,
 		host: usageTotals(value.host),

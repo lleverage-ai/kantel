@@ -1,13 +1,16 @@
 package microvm
 
 import (
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -79,18 +82,17 @@ func TestSquashfsImageReadsLiteralNames(t *testing.T) {
 	if out, err := exec.Command("mksquashfs", src, image, "-no-progress", "-quiet").CombinedOutput(); err != nil {
 		t.Fatalf("mksquashfs: %v %s", err, out)
 	}
-	m := &Manager{cfg: Config{Rootfs: image}}
-	entries, found, err := m.imageList("/app")
+	entries, found, err := imageList(image, "/app")
 	if err != nil || !found || len(entries) != 4 {
 		t.Fatalf("/app: %v %v %v", entries, found, err)
 	}
-	if entries, found, err := m.imageList("/app/[slug]"); err != nil || !found || len(entries) != 1 || entries[0].name != "f" {
+	if entries, found, err := imageList(image, "/app/[slug]"); err != nil || !found || len(entries) != 1 || entries[0].name != "f" {
 		t.Errorf("/app/[slug]: %v %v %v", entries, found, err)
 	}
-	if _, found, err := m.imageList("/nope"); err != nil || found {
+	if _, found, err := imageList(image, "/nope"); err != nil || found {
 		t.Errorf("/nope: %v %v", found, err)
 	}
-	got, err := m.imageRead("/app/[ab].txt", dentry{})
+	got, err := imageRead(image, "/app/[ab].txt", dentry{})
 	if err != nil || string(got) != "literal" {
 		t.Errorf("[ab].txt: %q %v", got, err)
 	}
@@ -133,8 +135,7 @@ func TestImageFormat(t *testing.T) {
 		}
 	}
 	// An image this host can't read is an error, never an empty directory.
-	m := &Manager{cfg: Config{Rootfs: filepath.Join(dir, "a.erofs")}}
-	_, found, err := m.imageList("/etc")
+	_, found, err := imageList(filepath.Join(dir, "a.erofs"), "/etc")
 	var perr *proto.Error
 	if found || !errors.As(err, &perr) || perr.Code != proto.ErrUnsupported {
 		t.Errorf("erofs: found %v, err %v", found, err)
@@ -150,15 +151,58 @@ func TestNoteGuestForgetsTheLastReport(t *testing.T) {
 	m := &Manager{cfg: Config{Root: root}}
 	m.noteGuest(dir, &proto.GuestCapabilities{Arch: "x86_64"})
 	for _, d := range []string{dir, root} {
-		if _, err := os.Stat(filepath.Join(d, guestFile)); err != nil || m.guest.Load() == nil {
+		if _, err := os.Stat(filepath.Join(d, guestFile)); err != nil || m.guestOf("") == nil {
 			t.Fatalf("a report isn't kept in %s: %v", d, err)
 		}
 	}
 	// A template with no report (an older agent): nothing of the one before it stays, in the template or the root.
 	m.noteGuest(dir, nil)
 	for _, d := range []string{dir, root} {
-		if _, err := os.Stat(filepath.Join(d, guestFile)); !os.IsNotExist(err) || m.guest.Load() != nil {
-			t.Errorf("the last template's report outlives it in %s: %v, %v", d, err, m.guest.Load())
+		if _, err := os.Stat(filepath.Join(d, guestFile)); !os.IsNotExist(err) || m.guestOf("") != nil {
+			t.Errorf("the last template's report outlives it in %s: %v, %v", d, err, m.guestOf(""))
 		}
+	}
+}
+
+// A snapshot's files are read over the root filesystem a sandbox made from it reads: the template's it records, else
+// the host's image.
+func TestSnapshotFilesReadTheRootfsTheSnapshotRestoresOnto(t *testing.T) {
+	m, _ := testManager(t)
+	templateRootfs, _, err := m.tpl.rootfs.rootfs(context.Background(), testTemplateImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		id, rootfs, want string
+	}{
+		{"snap_template", templateRootfs, templateRootfs},
+		{"snap_old", "", m.cfg.Rootfs},
+	} {
+		dir := m.snapshotDir(c.id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(dir, fc.DiskFile), []byte("disk"), 0o600)
+		raw, _ := json.Marshal(snapshotMeta{SnapshotInfo: proto.SnapshotInfo{ID: c.id}, Size: DefaultSizes[1].Name, Rootfs: c.rootfs})
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		disk, lower, err := m.snapshotLayers(c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if disk != filepath.Join(dir, fc.DiskFile) || lower != c.want {
+			t.Fatalf("%s: layers %s over %s, want %s", c.id, disk, lower, c.want)
+		}
+		origin, err := m.startOf(context.Background(), proto.CreateParams{SandboxID: "sbx_1", From: c.id}, DefaultSizes[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if origin.rootfs != lower || origin.disk != disk {
+			t.Fatalf("%s: a sandbox made from it reads %s over %s; its files are read as %s over %s", c.id, origin.disk, origin.rootfs, disk, lower)
+		}
+	}
+	if _, _, err := m.snapshotLayers("snap_none"); err == nil {
+		t.Fatal("a snapshot that isn't there has layers")
 	}
 }

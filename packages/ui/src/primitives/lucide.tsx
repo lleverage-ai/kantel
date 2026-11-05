@@ -36,6 +36,7 @@ import {
 	KeyRound,
 	Laptop,
 	Layers,
+	LayoutTemplate,
 	Link,
 	ListFilter,
 	LogOut,
@@ -181,6 +182,8 @@ export const StepFailedIcon = lucide(CircleAlert, "StepFailedIcon");
 /** The compute console's pages (src/compute/): sandboxes, snapshots, the egress proxy, webhooks, OpenTelemetry, billing. */
 export const SandboxIcon = lucide(Box, "SandboxIcon");
 export const SnapshotIcon = lucide(Camera, "SnapshotIcon");
+/** Templates (experimental): how a sandbox's machine is made. */
+export const TemplateIcon = lucide(LayoutTemplate, "TemplateIcon");
 export const ProxyIcon = lucide(Network, "ProxyIcon");
 export const WebhookIcon = lucide(Webhook, "WebhookIcon");
 export const TelemetryIcon = lucide(Activity, "TelemetryIcon");

@@ -3,6 +3,11 @@
  * `/v1/hosts/desktop/{ticket}/` on the gateway. As with every tunnel, the gateway reaches the port only through the
  * sandbox's host, which dialled out to it; nothing reaches the sandbox from outside.
  *
+ * The browser alone (`openBrowser`'s `url` on an image whose browser has a display of its own) is the same page with a
+ * ticket for the browser's stream instead, port 6081: Selkies on the browser's display, which the guest agent starts
+ * when the first viewer opens it and stops once nobody has watched for a while. Which stream a page shows is the
+ * ticket's (`STREAM_PORTS`), like its mode, so one route serves both and a URL can't be changed to open the other.
+ *
  * - The page and its scripts are Selkies' web client, and only the files of the version the image ships, byte for
  *   byte (`selkies-web.ts`): the page runs on the gateway's origin, beside the console, so the gateway never serves
  *   what a sandbox could have changed. Each file is fetched from the sandbox once, checked against its SHA-256 and kept.
@@ -20,6 +25,18 @@ import type { DesktopMode, IssuedGrant, TunnelTickets } from "./tunnel.ts";
 export const HOSTS_DESKTOP_PATH = "/v1/hosts/desktop";
 /** Where the guest image's desktop stream (Selkies: its web client and its WebSocket) listens, on loopback. */
 export const DESKTOP_PORT = 6080;
+/**
+ * Where the guest image's browser stream listens, on loopback: Selkies on the browser's own display, with only Chromium
+ * on it, started on demand by the guest agent.
+ */
+export const BROWSER_STREAM_PORT = 6081;
+/** What a stream page shows: the desktop, or the browser alone. */
+export type StreamSurface = "desktop" | "browser";
+/** The streams a stream page may open, by port. Every one is Selkies, so the page and its files are the same. */
+export const STREAM_PORTS: ReadonlyMap<number, StreamSurface> = new Map([
+	[DESKTOP_PORT, "desktop"],
+	[BROWSER_STREAM_PORT, "browser"],
+]);
 /** Selkies' stream socket, under the page. */
 export const DESKTOP_SOCKET = "/api/websockets";
 
@@ -54,6 +71,8 @@ export function parseDesktopPath(pathname: string): { readonly ticket: string; r
 export interface DesktopSocket {
 	readonly sandboxId: string;
 	readonly port: number;
+	/** The desktop's stream, or the browser's alone. */
+	readonly surface: StreamSurface;
 	/** Path and query on the port: Selkies' socket, as its viewer role for a view-only ticket. */
 	readonly path: string;
 	/** Whether a client message may pass; absent, all do. */
@@ -136,7 +155,7 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 
 	async function grantOf(ticket: string): Promise<IssuedGrant | undefined> {
 		const grant = await options.tickets.verify(ticket, now());
-		if (grant?.desktop === undefined || grant.port !== DESKTOP_PORT) return undefined;
+		if (grant?.desktop === undefined || !STREAM_PORTS.has(grant.port)) return undefined;
 		return options.allowed === undefined || (await options.allowed(grant)) ? grant : undefined;
 	}
 
@@ -149,6 +168,7 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 	 */
 	async function fetchFile(
 		sandboxId: string,
+		port: number,
 		file: string,
 		sha256: string,
 		size: number,
@@ -173,9 +193,9 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			const answer = await proxyHttp(
-				(sink) => options.openPort(sandboxId, DESKTOP_PORT, sink),
-				new Request(`http://127.0.0.1:${DESKTOP_PORT}/${file}`),
-				{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}`, headTimeoutMs: fileTimeout, take },
+				(sink) => options.openPort(sandboxId, port, sink),
+				new Request(`http://127.0.0.1:${port}/${file}`),
+				{ host: `127.0.0.1:${port}`, path: `/${file}`, headTimeoutMs: fileTimeout, take },
 			);
 			const declared = answer.headers.get("content-length");
 			if (answer.status !== 200 || answer.body === null || (declared !== null && Number(declared) !== size)) {
@@ -218,10 +238,10 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 			if (known === undefined) return notFound();
 			let bytes = verified.get(known.sha256);
 			if (bytes === undefined) {
-				const key = `${grant.sandboxId}\n${known.sha256}`;
+				const key = `${grant.sandboxId}\n${grant.port}\n${known.sha256}`;
 				let pending = fetching.get(key);
 				if (pending === undefined) {
-					const started = fetchFile(grant.sandboxId, file, known.sha256, known.size)
+					const started = fetchFile(grant.sandboxId, grant.port, file, known.sha256, known.size)
 						.catch(() => undefined)
 						.then((fetched) => {
 							// Only this fetch's own entry is let go of; only checked bytes are kept.
@@ -236,7 +256,8 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 			}
 			if (bytes === undefined) {
 				// Not kept: the next request tries again, perhaps in a sandbox whose desktop is up by then.
-				return new Response(`The sandbox's desktop isn't up, or isn't Selkies ${client.version} as Kantel ships it.`, {
+				const what = STREAM_PORTS.get(grant.port) === "browser" ? "browser stream" : "desktop";
+				return new Response(`The sandbox's ${what} isn't up, or isn't Selkies ${client.version} as Kantel ships it.`, {
 					status: 502,
 					headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
 				});
@@ -259,17 +280,19 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 			if (target === undefined) return undefined;
 			const grant = await grantOf(target.ticket);
 			if (grant === undefined || target.rest !== DESKTOP_SOCKET) return "refused";
+			const surface = STREAM_PORTS.get(grant.port) ?? "desktop";
 			if (grant.desktop === "view") {
 				// The client's own query (a role, a player slot, a token) never reaches Selkies.
 				return {
 					sandboxId: grant.sandboxId,
-					port: DESKTOP_PORT,
+					port: grant.port,
+					surface,
 					path: `${DESKTOP_SOCKET}?role=viewer`,
 					accept: viewerMessage,
 					grant,
 				};
 			}
-			return { sandboxId: grant.sandboxId, port: DESKTOP_PORT, path: `${DESKTOP_SOCKET}${url.search}`, grant };
+			return { sandboxId: grant.sandboxId, port: grant.port, surface, path: `${DESKTOP_SOCKET}${url.search}`, grant };
 		},
 	};
 }
