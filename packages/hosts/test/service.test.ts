@@ -192,6 +192,22 @@ describe("hosts service", () => {
 		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(b.hostId);
 	});
 
+	it("shows a host's free disk as its latest heartbeat reports it, not as it was when it connected", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		// The hello's capacity (400 GiB free), not its facts' 500.
+		expect((await service.get(a.hostId)).capacity.diskGb).toBe(400);
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { freeMemoryMiB: 4_000, freeDiskGiB: 120, running: 0, stopped: 0, load1: 0, warm: {} } },
+		});
+		await tick();
+		expect((await service.get(a.hostId)).capacity.diskGb).toBe(120);
+	});
+
 	it("tells a host that stays connected which images to take, again on a heartbeat every so often", async () => {
 		let now = 1_000_000;
 		const { service, join } = await setup({ now: () => now });
