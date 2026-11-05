@@ -7,6 +7,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	checkShape,
+	HOST_REVOKED_REASON,
 	hourlyRate,
 	type InviteMail,
 	inviteForSomeoneElse,
@@ -42,7 +43,7 @@ function setup(
 	backend: SandboxBackend = createStubBackend(),
 	extra: Pick<
 		Parameters<typeof createComputeApi>[0],
-		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs"
+		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs" | "store"
 	> = {},
 ) {
 	const api = createComputeApi({
@@ -1521,6 +1522,201 @@ describe("hosts", () => {
 		for (const bad of ["https://$(id).example.com", "https://a'b.example.com", "https://a!b.example.com"]) {
 			expect(() => publicOrigin(bad)).toThrow("domain name or an IP address");
 		}
+	});
+
+	it("says a revoked host's sandboxes can't be reached, and lets them be deleted", async () => {
+		const { tom, root } = setup();
+		const running = await tom.createSandbox({ wait: true });
+		const stopped = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(stopped.id, { wait: true });
+		await root.revokeHost(STUB_HOST_ID);
+		for (const id of [running.id, stopped.id]) {
+			const after = await tom.getSandbox(id);
+			expect(after).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		}
+		const deleted = await tom.deleteSandbox(running.id);
+		expect(deleted.state).toBe("deleted");
+	});
+
+	it("doesn't run a first create on a host revoked while the host made it", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Where it is placed while it boots, as a host backend records it before asking the host.
+			placedOn: async () => STUB_HOST_ID,
+			// The host makes it, and before its record names the host, the host is revoked and its sandboxes scanned.
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return placement;
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("error");
+	});
+
+	it("fails a revocation whose sandbox write failed, and finishes it when it is made again", async () => {
+		const store = createMemoryStore();
+		const sandboxes = store.sandboxes;
+		let failNext = false;
+		const { tom, root } = setup(createStubBackend(), {
+			store: {
+				...store,
+				sandboxes: {
+					...sandboxes,
+					async update(id, change, expected) {
+						if (failNext) {
+							failNext = false;
+							throw new Error("The database is away");
+						}
+						return sandboxes.update(id, change, expected);
+					},
+				},
+			},
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		failNext = true;
+		await failure(root.revokeHost(STUB_HOST_ID));
+		// Not claimed done: it still says what it was, and the host is revoked.
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await root.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+		await root.revokeHost(STUB_HOST_ID);
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("runs a first create stranded for a revoked host its boot didn't end up on", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Its placement read as the revoked host (as a template restore's, before it booted fresh elsewhere).
+			placedOn: async () => STUB_HOST_ID,
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return { ...placement, hostId: "host_elsewhere" };
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		expect(sandbox.reason).toBeUndefined();
+	});
+
+	/**
+	 * A stub whose first create is read as placed on `placedOn()` by a revocation, and ends on `endsOn`; with `reconcile`,
+	 * its egress changes while it boots, and the revocation lands while that egress is being sent.
+	 */
+	function revokedMidBoot(options: { endsOn: string; reconcile?: boolean; alsoRevoke?: string; refuse?: boolean }) {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		const delivered: (number | undefined)[] = [];
+		let placedNow = STUB_HOST_ID;
+		let revoke: (hostId: string) => Promise<unknown> = async () => undefined;
+		const revokeAll = async () => {
+			await revoke(STUB_HOST_ID);
+			if (options.alsoRevoke !== undefined) {
+				placedNow = options.alsoRevoke;
+				await revoke(options.alsoRevoke);
+			}
+		};
+		const api = setup(
+			{
+				...stub,
+				async capabilities() {
+					const known = await stub.capabilities();
+					const [only] = known.hosts;
+					return only === undefined || options.alsoRevoke === undefined
+						? known
+						: { ...known, hosts: [...known.hosts, { ...only, id: options.alsoRevoke, name: options.alsoRevoke }] };
+				},
+				placedOn: async () => placedNow,
+				async create(spec) {
+					const placement = await stub.create(spec);
+					if (options.reconcile === true) {
+						// Its egress changes while it starts: its boot has it sent before it may run.
+						await store.sandboxes.update(spec.sandboxId, (current) => ({
+							...current,
+							egressRevision: (current.egressRevision ?? 0) + 1,
+						}));
+					} else {
+						await revokeAll();
+					}
+					return { ...placement, hostId: options.endsOn };
+				},
+				async updateEgress(_sandboxId, _egress, revision) {
+					delivered.push(revision);
+					// The revocation's scan lands while this egress is on its way.
+					if (options.reconcile === true && delivered.length === 1) await revokeAll();
+					// Its host then refuses the egress, which would have it stopped.
+					if (options.refuse === true) throw new KantelError("not_supported", "This host can't enforce it");
+				},
+			},
+			{ store },
+		);
+		revoke = (hostId) => api.root.revokeHost(hostId);
+		return { ...api, store, delivered };
+	}
+
+	it("doesn't run a first create whose host is revoked while its egress is being reconciled", async () => {
+		const { tom, delivered } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(delivered.length).toBeGreaterThan(0);
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("runs, with its egress as it is now, a first create whose egress was reconciled on a host that wasn't revoked", async () => {
+		const { tom, store, delivered } = revokedMidBoot({ endsOn: "host_elsewhere", reconcile: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const stored = await store.sandboxes.get(sandbox.id);
+		expect(delivered).toContain(stored?.egressRevision);
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("ends a first create whose host is revoked before its egress is refused in error, not handed back from a stop", async () => {
+		const { tom } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true, refuse: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("doesn't run a first create that moved to another host revoked too", async () => {
+		const { tom } = revokedMidBoot({ endsOn: "host_elsewhere", alsoRevoke: "host_elsewhere" });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("doesn't strand a boot whose record moved on after its placement was read", async () => {
+		const stub = createStubBackend();
+		const store = createMemoryStore();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		let moveOn: ((sandboxId: string) => Promise<unknown>) | undefined;
+		const { tom, root } = setup(
+			{
+				...stub,
+				// Read as the revoked host; then, before the scan writes, the sandbox moves on (a recovery, say).
+				async placedOn(sandboxId) {
+					await moveOn?.(sandboxId);
+					return STUB_HOST_ID;
+				},
+				async create(spec) {
+					const placement = await stub.create(spec);
+					await revokeMeanwhile?.();
+					return { ...placement, hostId: "host_elsewhere" };
+				},
+			},
+			{ store },
+		);
+		moveOn = (sandboxId) =>
+			store.sandboxes.update(sandboxId, (current) => ({ ...current, lifecycle: (current.lifecycle ?? 0) + 2 }));
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox.state).toBe("running");
+		const events = (await tom.listEvents({ sandboxId: sandbox.id })).items.map((event) => event.type);
+		expect(events).not.toContain("sandbox.error");
 	});
 
 	it("keeps a revocation that lands while a drain is in flight", async () => {
