@@ -101,19 +101,26 @@ func parseInstall(args []string) (installOptions, error) {
 	}, nil
 }
 
-func install(args []string) error {
-	err := runInstall(thisMachine(), args)
+// install is `install`, or with planOnly `plan`: install's options, but only ever the dry run, whatever they say.
+// install.sh --dry-run runs `plan`, so an option that takes "--dry-run" as its value (`--name --dry-run`) can't turn
+// its preview into an install.
+func install(args []string, planOnly bool) error {
+	err := runInstall(thisMachine(), args, planOnly)
 	if errors.Is(err, flag.ErrHelp) {
 		return nil
 	}
 	return err
 }
 
-// runInstall is `install`: its options read in full before anything else, then the plan, printed (--dry-run) or done.
-func runInstall(in *installer, args []string) error {
+// runInstall is `install`: its options read in full before anything else, then the plan, printed (--dry-run, or
+// planOnly) or done.
+func runInstall(in *installer, args []string, planOnly bool) error {
 	o, err := parseInstall(args)
 	if err != nil {
 		return err
+	}
+	if planOnly {
+		o.dryRun = true
 	}
 	plan, err := in.planInstall(o)
 	if err != nil {

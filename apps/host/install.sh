@@ -14,9 +14,9 @@
 #   --no-join     only put the binary in /usr/local/bin (KANTEL_BIN_DIR), without installing the service
 #   --check       only check this machine: run the downloaded binary's `doctor` from a temporary directory, and exit
 #                 with its status (0 only when every required check passes). Nothing is installed
-# --dry-run, anywhere in the options, downloads and checks the binary into a temporary directory and runs its
-# `install --dry-run`, which prints every download, file, directory, unit, command and registration the install would
-# make, and changes nothing (the token isn't used).
+# --dry-run, anywhere in the options, downloads and checks the binary into a temporary directory and runs its `plan`
+# (install with its options, only ever a dry run), which prints every download, file, directory, unit, command and
+# registration the install would make, and changes nothing (the token isn't used).
 # KANTEL_RELEASE_URL downloads from elsewhere: a directory URL holding the release's files, for a mirror or a test.
 #
 # tools/release/pack.sh stamps the release's version below. The whole script is read before anything runs (see the
@@ -70,7 +70,7 @@ main() {
 		*) break ;;
 		esac
 	done
-	# --dry-run can come anywhere, and stays in the options for `kantel-host install --dry-run`. Any value but a false
+	# --dry-run can come anywhere, and stays in the options passed to `kantel-host plan`. Any value but a false
 	# one counts (Go's flags take 1, t, true and more), so a spelling this doesn't know installs nothing.
 	for arg in "$@"; do
 		case "$arg" in
@@ -163,8 +163,10 @@ main() {
 			echo "Dry run: nothing has been changed. Run the same command without --dry-run to install."
 			return 0
 		fi
-		# Its plan has the rest, from putting the binary in place to starting the service.
-		"$work/$asset" install "$@"
+		# Its plan has the rest, from putting the binary in place to starting the service. `plan` is install that only
+		# ever prints its plan, so an option that takes "--dry-run" as its value (--name --dry-run) can't make this an
+		# install. A release from before `plan` refuses it as an unknown command, which installs nothing either.
+		"$work/$asset" plan "$@"
 		return
 	fi
 

@@ -87,15 +87,20 @@ func TestInstallScriptDryRunAndCheck(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "get    file://"+release+"/"+asset+" (sha256 "+digest+", from file://"+release+"/SHA256SUMS)") || !strings.Contains(out, "==> the plan") {
 		t.Errorf("--dry-run: exit %d\n%s", code, out)
 	}
-	if got := recorded(); got != "install --url https://kantel.invalid --dry-run --token kth_x" {
+	if got := recorded(); got != "plan --url https://kantel.invalid --dry-run --token kth_x" {
 		t.Errorf("--dry-run ran: %q", got)
 	}
 	nothingInstalled("--dry-run")
 	// Another way Go's flags spell true: still a dry run, with nothing installed first.
-	if out, code := run(true, "--url", "https://kantel.invalid", "--token", "kth_x", "--dry-run=1"); code != 0 || recorded() != "install --url https://kantel.invalid --token kth_x --dry-run=1" {
+	if out, code := run(true, "--url", "https://kantel.invalid", "--token", "kth_x", "--dry-run=1"); code != 0 || recorded() != "plan --url https://kantel.invalid --token kth_x --dry-run=1" {
 		t.Errorf("--dry-run=1: exit %d, ran %q\n%s", code, recorded(), out)
 	}
 	nothingInstalled("--dry-run=1")
+	// An option that takes "--dry-run" as its value: still plan, which is only ever a dry run.
+	if out, code := run(true, "--name", "--dry-run", "--url", "https://kantel.invalid", "--token", "kth_x"); code != 0 || recorded() != "plan --name --dry-run --url https://kantel.invalid --token kth_x" {
+		t.Errorf("--name --dry-run: exit %d, ran %q\n%s", code, recorded(), out)
+	}
+	nothingInstalled("--name --dry-run")
 
 	// --no-join --dry-run: says where the binary would go, and runs nothing.
 	out, code = run(false, "--no-join", "--dry-run")

@@ -307,13 +307,13 @@ func TestInstallRefusesStrayArguments(t *testing.T) {
 	base := []string{"--url", "https://kantel.example.com", "--token", "kth_secret", "--images", o.images, "--root", o.root, "--config", o.configPath}
 	before := tree(t, m.dir)
 	for _, stray := range [][]string{{"--no-start", "false", "--dry-run"}, {"--", "--dry-run"}, {"builder-1", "--dry-run"}} {
-		err := runInstall(m.in, append(append([]string{}, base...), stray...))
+		err := runInstall(m.in, append(append([]string{}, base...), stray...), false)
 		if err == nil || !strings.Contains(err.Error(), "install takes options only") {
 			t.Errorf("%v: %v", stray, err)
 		}
 	}
 	// The token after the stray operand isn't read, and isn't shown either: it's still unused.
-	if err := runInstall(m.in, []string{"--no-start", "false", "--dry-run", "--url", "https://kantel.example.com", "--token", "kth_secret"}); err == nil || strings.Contains(err.Error(), "kth_secret") {
+	if err := runInstall(m.in, []string{"--no-start", "false", "--dry-run", "--url", "https://kantel.example.com", "--token", "kth_secret"}, false); err == nil || strings.Contains(err.Error(), "kth_secret") {
 		t.Errorf("the error shows the token: %v", err)
 	}
 	after := tree(t, m.dir)
@@ -337,8 +337,32 @@ func TestInstallRefusesStrayArguments(t *testing.T) {
 		}
 	}
 	// The whole command, as a dry run: the plan, and nothing done.
-	if err := runInstall(m.in, append(append([]string{}, base...), "--label", "zone=ams", "--dry-run")); err != nil || len(m.registered) != 0 || !strings.Contains(m.out.String(), "Dry run: nothing has been changed") {
+	if err := runInstall(m.in, append(append([]string{}, base...), "--label", "zone=ams", "--dry-run"), false); err != nil || len(m.registered) != 0 || !strings.Contains(m.out.String(), "Dry run: nothing has been changed") {
 		t.Errorf("a dry run: %v, registered %v\n%s", err, m.registered, m.out.String())
+	}
+}
+
+// `plan` (what install.sh --dry-run runs) is only ever a dry run: even when an option takes "--dry-run" as its value,
+// so install's own --dry-run is never set, nothing is changed and the token isn't used.
+func TestPlanIsAlwaysADryRun(t *testing.T) {
+	m := newFakeMachine(t)
+	o := m.options("")
+	before := tree(t, m.dir)
+	args := []string{"--name", "--dry-run", "--url", "https://kantel.example.com", "--token", "kth_secret", "--images", o.images, "--root", o.root, "--config", o.configPath}
+	if err := runInstall(m.in, args, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.out.String(), `as "--dry-run"`) || !strings.Contains(m.out.String(), "Dry run: nothing has been changed") {
+		t.Errorf("plan didn't print the plan:\n%s", m.out.String())
+	}
+	after := tree(t, m.dir)
+	for p, sum := range before {
+		if after[p] != sum {
+			t.Errorf("plan changed %s", p)
+		}
+	}
+	if len(after) != len(before) || len(m.registered) != 0 || len(m.systemctl) != 0 {
+		t.Errorf("plan did something: %d paths, registered %v, systemctl %v", len(after)-len(before), m.registered, m.systemctl)
 	}
 }
 

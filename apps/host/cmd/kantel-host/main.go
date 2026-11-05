@@ -46,7 +46,9 @@ func main() {
 	case "run":
 		err = run(args)
 	case "install", "join":
-		err = install(args)
+		err = install(args, false)
+	case "plan":
+		err = install(args, true)
 	case "doctor":
 		err = doctor(args)
 	case "status":
@@ -81,6 +83,7 @@ func usage() {
 
   install --url <kantel> --token <kth_…>   install, register with Kantel and start the service (as root)
                                             (--dry-run: print what it would do, and change nothing)
+  plan --url <kantel> --token <kth_…>      what install would do, with install's options: always a dry run
   doctor                                    check what this machine can run (exits 1 unless the required checks pass)
   status                                    the service, its connection and its sandboxes
   update [--version <v>]                    update now (the service also updates itself when Kantel asks)

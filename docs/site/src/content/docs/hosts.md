@@ -218,7 +218,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
   run    systemctl restart kantel-host
 ```
 
-It ends with what install leaves to the service, as above. The real output has the full digests. To read the plan, the dry run downloads only the images' `manifest.json` and Firecracker's digest. It needs root, like the install, to see `/dev/kvm` and the settings as the install would. A dry run fails where the install would, such as with no usable `/dev/kvm` or images it can't reach. The plan and the install come from the same list of steps, and the install prints each line as it does it. `sudo kantel-host install --dry-run …` does the same on a machine that already has `kantel-host`.
+It ends with what install leaves to the service, as above. The real output has the full digests. To read the plan, the dry run downloads only the images' `manifest.json` and Firecracker's digest. It needs root, like the install, to see `/dev/kvm` and the settings as the install would. A dry run fails where the install would, such as with no usable `/dev/kvm` or images it can't reach. The plan and the install come from the same list of steps, and the install prints each line as it does it. On a machine that already has `kantel-host`, `sudo kantel-host install --dry-run …` does the same. So does `sudo kantel-host plan …`, which the installer runs: it takes the same options and only ever prints the plan, even if an option swallows `--dry-run` as its value.
 
 | Flag | What it does |
 | --- | --- |

@@ -121,15 +121,15 @@ PATH="$work/shim:$PATH" KANTEL_RELEASE_URL="file://$work/fake" KANTEL_BIN_DIR="$
 	fail "install.sh ran kantel-host with: $(tr '\n' ' ' <"$work/args")"
 echo "ok      install.sh runs kantel-host install with its options"
 
-# --dry-run runs the downloaded binary's install --dry-run from the temporary directory, and installs nothing.
+# --dry-run runs the downloaded binary's plan (install's options, only ever a dry run) from the temporary directory, and installs nothing.
 rm -f "$work/args"
 PATH="$work/shim:$PATH" KANTEL_RELEASE_URL="file://$work/fake" KANTEL_BIN_DIR="$work/dry-bin" \
 	sh "$github/install.sh" --url https://kantel.invalid --dry-run --token kth_smoke >"$work/out" 2>&1 ||
 	fail "install.sh --dry-run failed with a stand-in kantel-host: $(cat "$work/out")"
-[[ "$(tr '\n' ' ' <"$work/args")" == "install --url https://kantel.invalid --dry-run --token kth_smoke " ]] ||
+[[ "$(tr '\n' ' ' <"$work/args")" == "plan --url https://kantel.invalid --dry-run --token kth_smoke " ]] ||
 	fail "install.sh --dry-run ran kantel-host with: $(tr '\n' ' ' <"$work/args")"
 [[ ! -e "$work/dry-bin/kantel-host" ]] || fail "install.sh --dry-run installed kantel-host"
-echo "ok      install.sh --dry-run runs kantel-host install --dry-run and installs nothing"
+echo "ok      install.sh --dry-run runs kantel-host plan and installs nothing"
 
 # --check runs this release's own doctor, which exits non-zero here: the smoke test isn't root.
 if [[ "$(id -u)" != 0 ]]; then
