@@ -423,7 +423,7 @@ export function UsageGraph({
 				})}
 			</svg>
 			{ends === undefined ? null : (
-				<span className="flex justify-between text-sm text-muted tabular-nums" aria-hidden="true">
+				<span className="flex justify-between text-xs text-muted tabular-nums" aria-hidden="true">
 					<span>{ends[0]}</span>
 					<span>{ends[1]}</span>
 				</span>
@@ -449,13 +449,13 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 /** A heading over a section of a page, with its own actions on the right. */
 /**
  * A label and its value side by side, in a `<dl>`: a phone card's facts, each named, two or so to a line rather than
- * a row per fact.
+ * a row per fact. The value is a weight heavier than its label, so the pairs don't read as one run of grey.
  */
 export function MetaPair({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
 	return (
 		<div className="flex min-w-0 gap-1.5" title={title}>
 			<dt className="text-muted">{label}</dt>
-			<dd className="m-0 min-w-0 truncate text-fg">{children}</dd>
+			<dd className="m-0 min-w-0 truncate font-medium text-fg">{children}</dd>
 		</div>
 	);
 }

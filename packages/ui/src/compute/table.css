@@ -125,6 +125,17 @@
 		content: attr(data-label);
 		margin-right: var(--kt-step-1_5);
 		color: var(--kt-text-muted);
+		font-weight: var(--kt-weight-regular);
+	}
+
+	/* A labelled value a weight heavier than its label, as a key card's facts are, so pairs don't run together. */
+	.kt-table-cards
+		> .kt-compute-table
+		> table
+		> tbody
+		> tr
+		> td[data-label]:not([data-phone~="bare"], [data-phone~="title"], [data-cell="primary"]) {
+		font-weight: var(--kt-weight-medium);
 	}
 
 	/* A value with a second line (a date and who made it, a source and that it's gone) runs on as one phrase. */
