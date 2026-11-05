@@ -137,35 +137,29 @@ export interface RestoredSnapshot extends RecordedMachine {
 
 /**
  * What a create from `snapshot` may ask for (`asked`). A snapshot that holds its sandbox's memory restores only into
- * the machine it was taken of: a size or shape that is another machine is refused (`invalid`) before anything is made,
- * and one that is the same machine is dropped, so the sandbox is the snapshot's machine under the snapshot's own size
- * name, which its host checks. A snapshot of the disk alone boots, so it may be any size; so may one that records no
+ * the machine it was taken of, so a create from one is that machine: an ask for it (its own size by name, or its
+ * recorded vCPUs and memory) is dropped, so the sandbox goes under the snapshot's own size name, which its host checks;
+ * any other ask is refused (`invalid`) before anything is made. Names are never looked up in other hosts' sizes, which
+ * may mean other machines by them. A snapshot of the disk alone boots, so it may be any size; so may one that records no
  * machine (from before sizes), as before.
  */
-export function restoreAsked(
-	snapshot: RestoredSnapshot,
-	asked: AskedMachine,
-	presets: readonly BackendSize[],
-): AskedMachine {
+export function restoreAsked(snapshot: RestoredSnapshot, asked: AskedMachine): AskedMachine {
 	if (!snapshot.memory || !recordsMachine(snapshot)) return asked;
-	const named = (name: string | undefined): BackendShape | undefined => {
-		const size = name === undefined ? undefined : presets.find((each) => each.name === name);
-		return size === undefined ? undefined : { vcpus: size.vcpus, memoryMb: size.memoryMb };
-	};
-	const own: BackendShape | undefined =
-		snapshot.resources === undefined
-			? named(snapshot.size)
-			: { vcpus: snapshot.resources.vcpus, memoryMb: snapshot.resources.memoryMb };
-	if (asked.shape === undefined && asked.size === undefined) return {};
-	// Its own size by name is its machine, whatever another host means by that name.
-	if (asked.shape === undefined && asked.size === snapshot.size) return {};
-	const wanted = asked.shape ?? named(asked.size);
-	// Another name or shape with its very numbers is its machine too, made under its own name.
-	if (own !== undefined && wanted !== undefined && own.vcpus === wanted.vcpus && own.memoryMb === wanted.memoryMb) {
+	if (asked.shape === undefined && (asked.size === undefined || asked.size === snapshot.size)) return {};
+	const own = snapshot.resources;
+	if (
+		asked.shape !== undefined &&
+		(asked.size === undefined || asked.size === snapshot.size) &&
+		own !== undefined &&
+		own.vcpus === asked.shape.vcpus &&
+		own.memoryMb === asked.shape.memoryMb
+	) {
 		return {};
 	}
-	const machine =
-		own === undefined ? `the ${snapshot.size} size` : `${own.vcpus} vCPU and ${own.memoryMb} MB of memory`;
+	const machine = [
+		...(snapshot.size === undefined ? [] : [`size ${snapshot.size}`]),
+		...(own === undefined ? [] : [`${own.vcpus} vCPU and ${own.memoryMb} MB of memory`]),
+	].join(", ");
 	throw new KantelError(
 		"invalid",
 		`Snapshot ${snapshot.id} holds its sandbox's memory, so a sandbox made from it has that sandbox's machine (${machine}). Leave resources and size out, or ask for that machine`,

@@ -10,6 +10,7 @@ import {
 	type SandboxBackend,
 } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { restoreAsked } from "../src/machine.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	checkShape,
@@ -595,6 +596,45 @@ describe("sandboxes", () => {
 		);
 		expect(refused.code).toBe("invalid");
 		expect((await tom.createSandbox({ from: "paused", size: "large", wait: true })).size).toBe("large");
+	});
+
+	it("treats a save made before saves kept memory as holding it when its bytes are a pause's", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup(createStubBackend(), { store });
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
+		// As an older control plane stored it: the pause's bytes, said to hold no memory.
+		const stored = await store.snapshots.get(saved.id);
+		if (stored === undefined) throw new Error("no saved snapshot");
+		await store.snapshots.put({ ...stored, memory: false });
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", from: "old-save", resources: { vcpus: 2, memoryMb: 4096 } }),
+		);
+		expect(refused.code).toBe("invalid");
+	});
+
+	it("checks an ask against a memory snapshot's own record, never another host's sizes", () => {
+		const pause = {
+			id: "snap_p",
+			memory: true,
+			size: "large" as const,
+			resources: { vcpus: 4, memoryMb: 8192, diskGb: 50 },
+		};
+		expect(restoreAsked(pause, {})).toEqual({});
+		expect(restoreAsked(pause, { size: "large" })).toEqual({});
+		expect(restoreAsked(pause, { shape: { vcpus: 4, memoryMb: 8192 } })).toEqual({});
+		expect(restoreAsked(pause, { size: "large", shape: { vcpus: 4, memoryMb: 8192 } })).toEqual({});
+		// Another name is another machine, whatever its numbers somewhere.
+		expect(() => restoreAsked(pause, { size: "default" })).toThrow(/holds its sandbox's memory/);
+		expect(() => restoreAsked(pause, { shape: { vcpus: 4, memoryMb: 16_384 } })).toThrow(/size large, 4 vCPU/);
+		// One recording a size alone can't be checked against numbers: only its name or nothing.
+		const named = { id: "snap_n", memory: true, size: "large" as const };
+		expect(restoreAsked(named, { size: "large" })).toEqual({});
+		expect(() => restoreAsked(named, { shape: { vcpus: 4, memoryMb: 8192 } })).toThrow(/size large\)/);
+		// The disk alone, or no machine recorded: any ask, as before.
+		expect(restoreAsked({ ...pause, memory: false }, { size: "small" })).toEqual({ size: "small" });
+		expect(restoreAsked({ id: "snap_o", memory: true }, { size: "small" })).toEqual({ size: "small" });
 	});
 
 	it("refuses forks of a pause at another size before storing any", async () => {

@@ -3100,6 +3100,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
+	/**
+	 * Whether a snapshot's bytes hold memory: its own say, or that of another snapshot of the same bytes (a save made
+	 * before saves kept the flag shares its pause's ref but says no).
+	 */
+	async function holdsMemory(snapshot: StoredSnapshot): Promise<boolean> {
+		if (snapshot.memory) return true;
+		if (snapshot.ref === undefined) return false;
+		return (await store.snapshots.list({ ref: snapshot.ref })).some((other) => other.memory);
+	}
+
 	async function releaseRef(ref: string | undefined): Promise<void> {
 		if (ref === undefined) return;
 		if ((await store.snapshots.list({ ref })).length > 0) return;
@@ -4907,7 +4917,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(body.size === undefined ? {} : { size: body.size }),
 					...(shape === undefined ? {} : { shape }),
 				};
-				const machineAsked = type === "microvm" && from !== undefined ? restoreAsked(from, wanted, presets) : wanted;
+				const machineAsked =
+					type === "microvm" && from !== undefined
+						? restoreAsked({ ...from, memory: await holdsMemory(from) }, wanted)
+						: wanted;
 				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
@@ -5148,9 +5161,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									},
 									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
 									restoreAsked(
-										{ id: snapshot.id, memory: snapshot.memory, ...recordedMachine(snapshot) },
+										{ id: snapshot.id, memory: await holdsMemory(snapshot), ...recordedMachine(snapshot) },
 										body.size === undefined ? {} : { size: body.size },
-										[],
 									),
 									[],
 								);
@@ -5982,7 +5994,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(source);
 					sizeBytes = source.sizeBytes;
 					base = source.base;
-					memory = source.memory;
+					memory = await holdsMemory(source);
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
 					const taken = await backend.takeSnapshot(current.id);
@@ -5997,7 +6009,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(latest);
 					sizeBytes = latest.sizeBytes;
 					base = latest.base;
-					memory = latest.memory;
+					memory = await holdsMemory(latest);
 					if (recordsMachine(latest)) machine = recordedMachine(latest);
 				}
 				const snapshot: StoredSnapshot = {
