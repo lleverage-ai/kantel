@@ -962,7 +962,7 @@ function VariableDialog({
 					</FormField>
 				) : null}
 				{isProtected ? (
-					<p className="m-0 text-xs text-muted">
+					<p className="m-0 text-sm text-muted">
 						Protected suits a token sent in a header or a request body: GitHub, npm, OpenAI, Anthropic and most HTTP
 						APIs. It can't work for a value that signs requests (AWS SigV4), a database password or an SSH key: give
 						those as plain or short-lived values. A client that pins certificates refuses the proxy.

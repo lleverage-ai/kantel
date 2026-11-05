@@ -55,7 +55,7 @@ const leadingClass =
 	"kt-list-row-leading inline-flex h-[calc(var(--kt-text-md)_*_var(--kt-leading))] min-w-icon-md flex-none items-baseline justify-center text-md leading-normal text-faint *:translate-y-(--kt-on-cap) [&>.kt-icon-md]:-mt-icon-md [&>.kt-icon-sm]:-mt-icon-sm";
 
 /** The overline and the meta: one small faint line each, truncated. */
-const smallLine = "min-w-0 truncate text-xs leading-tight text-faint";
+const smallLine = "min-w-0 truncate text-sm leading-tight text-faint";
 
 const sideDensity = {
 	compact: "items-center",
@@ -115,7 +115,7 @@ export const ListRow = memo(function ListRow({
 	const side =
 		trailing === undefined && actions === undefined ? null : (
 			<span
-				className={`kt-list-row-side relative flex flex-none pr-2.5 text-xs text-faint tabular-nums ${sideDensity[density]}`}
+				className={`kt-list-row-side relative flex flex-none pr-2.5 text-sm text-faint tabular-nums ${sideDensity[density]}`}
 			>
 				{trailing === undefined ? null : (
 					<span className={`kt-list-row-trailing ${hasActions && !isStatic ? trailingGivesWay : ""}`}>{trailing}</span>

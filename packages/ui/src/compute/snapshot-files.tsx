@@ -255,7 +255,7 @@ export function SnapshotFiles({
 					<button
 						type="button"
 						onClick={onBack}
-						className="kt-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-xs text-muted hover:text-fg hover:underline"
+						className="kt-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-sm text-muted hover:text-fg hover:underline"
 					>
 						{backLabel ?? "Back"}
 					</button>
@@ -336,7 +336,7 @@ export function SnapshotFiles({
 						/>
 					)}
 					{folder?.more === true ? (
-						<p className="m-0 text-xs text-muted">The first {entries?.length.toLocaleString("en")} only.</p>
+						<p className="m-0 text-sm text-muted">The first {entries?.length.toLocaleString("en")} only.</p>
 					) : null}
 				</div>
 				{open === undefined ? null : (

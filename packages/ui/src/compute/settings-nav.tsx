@@ -45,11 +45,14 @@ export function SettingsFrame({
 			aria-label={label}
 			className={
 				narrow
-					? "-mx-gutter-narrow flex min-w-0 gap-1 overflow-x-auto px-gutter-narrow"
+					? // On a phone the pages wrap as pills the width of their words, three on the first line and the rest on the
+						// next: every one in sight, none cut or left alone.
+						"flex min-w-0 flex-wrap gap-1"
 					: "sticky top-0 flex w-(--kt-menu-width) flex-none flex-col gap-0.5"
 			}
 		>
-			{items.map((item) => (
+			{items.map((item, index) => [
+				narrow && index === 3 ? <span key="break" className="basis-full" aria-hidden="true" /> : null,
 				<a
 					key={item.id}
 					className={`${link} ${item.selected ? linkState.selected : linkState.idle}`}
@@ -57,8 +60,8 @@ export function SettingsFrame({
 					aria-current={item.selected ? "page" : undefined}
 				>
 					{item.label}
-				</a>
-			))}
+				</a>,
+			])}
 		</nav>
 	);
 	// The same elements in both layouts, only their classes change: crossing the breakpoint (turning a phone) must not
@@ -66,9 +69,7 @@ export function SettingsFrame({
 	return (
 		<div className="flex min-w-0 flex-col gap-5">
 			{titled ? (
-				<header
-					className={`kt-page-header flex min-h-control-md min-w-0 items-center ${narrow ? "" : "border-b border-border pb-3"}`}
-				>
+				<header className="kt-page-header flex min-h-control-md min-w-0 items-center border-b border-border pb-3">
 					<h1 className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}>
 						{label}
 					</h1>
@@ -83,22 +84,23 @@ export function SettingsFrame({
 }
 
 /**
- * A settings page's head: its name and its one action on a line. On a phone the name is for screen readers only, since
- * the selected link over the page says it, and the action keeps the line's end.
+ * A settings page's head: its name and its one action on a line. With no action the name is for screen readers only,
+ * since the selected link beside or over the page says it; with an action, the name stays beside it.
  */
 export function SettingsPageHeader({
 	title,
 	actions,
-	narrow = false,
 	id,
 }: {
 	title: ReactNode;
 	actions?: ReactNode;
+	/** A phone. The head is the same at every width; kept for callers. */
 	narrow?: boolean;
 	/** For a section that labels itself by the title. */
 	id?: string;
 }) {
-	if (narrow && actions === undefined) {
+	// With no action the selected link beside the page already names it, so the heading is for screen readers only.
+	if (actions === undefined) {
 		return (
 			<h2 id={id} className="kt-sr-only">
 				{title}
@@ -107,7 +109,8 @@ export function SettingsPageHeader({
 	}
 	return (
 		<div className="flex min-h-control-md min-w-0 items-center justify-between gap-3">
-			<h2 id={id} className={narrow ? "kt-sr-only" : "m-0 truncate text-md font-strong leading-tight text-fg"}>
+			{/* On a phone with an action, the name stays visible beside it, so the action isn't left on its own. */}
+			<h2 id={id} className="m-0 truncate text-lg font-strong leading-tight text-fg">
 				{title}
 			</h2>
 			{actions === undefined ? null : <div className="ml-auto flex flex-none items-center gap-2">{actions}</div>}

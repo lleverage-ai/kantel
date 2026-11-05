@@ -5,7 +5,7 @@
 // after it; the guard belongs to the sandbox, not to this view, so leaving the tab mid-change doesn't drop it. Every
 // call goes through the `SandboxesSource` the host binds.
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField, CopyButton, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -26,15 +26,13 @@ type PortsSource = Required<Pick<SandboxesSource, "ports" | "exposePort" | "hide
 function Visibility({ isPublic }: { isPublic: boolean }) {
 	return (
 		<span
-			className={`inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-2xs font-medium whitespace-nowrap ${isPublic ? "bg-accent-soft text-accent-text" : "bg-active text-muted"}`}
+			className={`inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-xs font-medium whitespace-nowrap ${isPublic ? "bg-status-approval-soft text-status-approval" : "bg-active text-muted"}`}
 		>
 			{isPublic ? <GlobeIcon size="sm" /> : <LockIcon size="sm" />}
 			{isPublic ? "Public" : "Private"}
 		</span>
 	);
 }
-
-const cell = "border-b border-border px-2 py-2 align-middle";
 
 export type PortChanges = Changes<number>;
 
@@ -112,7 +110,13 @@ export function SandboxPorts({
 				id="sandbox-ports"
 				title="Ports"
 				actions={
-					<Button size="sm" variant="ghost" icon={<PlusIcon size="sm" />} onClick={() => setExposing(true)}>
+					<Button
+						size="sm"
+						variant="ghost"
+						className="-mr-3"
+						icon={<PlusIcon size="sm" />}
+						onClick={() => setExposing(true)}
+					>
 						Expose
 					</Button>
 				}
@@ -149,102 +153,114 @@ export function SandboxPorts({
 			) : state.value.length === 0 ? (
 				<p className="m-0 text-sm text-muted">No ports yet. Expose one to give it an HTTPS URL.</p>
 			) : (
-				<table className={`${table} table-fixed`}>
-					<tbody>
-						{state.value.map((port) => {
-							// A link that opens it: the listed URL for a public port, the one just issued for a private one.
-							const link = port.public ? port.url : issued?.port === port.port ? issued.url : undefined;
-							const address = port.url.replace(/^https:\/\//, "").replace(/\?.*$/, "");
-							const pending = busy.has(port.port);
-							return (
-								<tr key={port.port} data-port={port.port}>
-									<td className={`${cell} w-16 font-mono text-code tabular-nums`}>{port.port}</td>
-									<td className={`${cell} truncate font-mono text-code`}>
-										{link === undefined ? (
-											<span
-												className="kt-selectable text-muted"
-												title="Private: it opens only with a link's token. New link gives it one."
-											>
-												{address}
-											</span>
-										) : (
-											<a
-												className="text-fg no-underline hover:underline"
-												href={link}
-												target="_blank"
-												rel="noopener noreferrer"
-											>
-												{address}
-											</a>
-										)}
-									</td>
-									<td className={`${cell} w-24`}>
-										<Visibility isPublic={port.public} />
-									</td>
-									<td className={`${cell} w-20 text-right`}>
-										<span className="inline-flex items-center gap-0.5">
-											{link === undefined ? null : (
-												<CopyButton
-													text={link}
-													iconOnly
-													size="xs"
-													variant="ghost"
-													label={port.public ? "Copy URL" : "Copy link"}
-												/>
+				// Each port is two lines: its number, visibility and actions over its whole address, never broken mid-host.
+				<div className="rounded-panel border border-border bg-raised px-3 sm:px-4 [&_tr:last-child]:border-b-0">
+					<table className={`${table} block`}>
+						<tbody className="block">
+							{state.value.map((port) => {
+								// A link that opens it: the listed URL for a public port, the one just issued for a private one.
+								const link = port.public ? port.url : issued?.port === port.port ? issued.url : undefined;
+								const address = port.url.replace(/^https:\/\//, "").replace(/\?.*$/, "");
+								const pending = busy.has(port.port);
+								return (
+									<tr
+										key={port.port}
+										data-port={port.port}
+										className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border py-2.5"
+									>
+										<td className="col-start-1 row-start-1 p-0 font-mono text-code font-medium tabular-nums">
+											{port.port}
+										</td>
+										<td className="col-span-3 row-start-2 p-0 font-mono text-code wrap-break-word">
+											{link === undefined ? (
+												<span
+													className="kt-selectable text-muted"
+													title="Private: it opens only with a link's token. New link gives it one."
+												>
+													<Address address={address} />
+												</span>
+											) : (
+												<a
+													className="text-fg no-underline hover:underline"
+													href={link}
+													target="_blank"
+													rel="noopener noreferrer"
+												>
+													<Address address={address} />
+												</a>
 											)}
-											<Menu
-												label={`Actions for port ${port.port}`}
-												icon={<EllipsisIcon />}
-												align="end"
-												entries={[
-													...(port.public
-														? [
-																{
-																	kind: "item" as const,
-																	id: "private",
-																	label: "Make private",
-																	icon: <LockIcon size="sm" />,
-																	disabled: pending,
-																	onSelect: () => change(port, false),
-																},
-															]
-														: [
-																{
-																	kind: "item" as const,
-																	id: "link",
-																	label: "New link",
-																	icon: <NewLinkIcon size="sm" />,
-																	disabled: pending,
-																	onSelect: () => change(port, false),
-																},
-																{
-																	kind: "item" as const,
-																	id: "public",
-																	label: "Make public",
-																	icon: <GlobeIcon size="sm" />,
-																	disabled: pending,
-																	onSelect: () => change(port, true),
-																},
-															]),
-													{ kind: "separator", id: "sep-hide" },
-													{
-														kind: "item",
-														id: "hide",
-														label: "Hide",
-														icon: <TrashIcon />,
-														danger: true,
-														disabled: pending,
-														onSelect: () => hide(port),
-													},
-												]}
-											/>
-										</span>
-									</td>
-								</tr>
-							);
-						})}
-					</tbody>
-				</table>
+										</td>
+										<td className="col-start-2 row-start-1 p-0">
+											<Visibility isPublic={port.public} />
+										</td>
+										<td className="col-start-3 row-start-1 p-0 text-right">
+											<span className="inline-flex items-center gap-0.5">
+												{/* The copy slot is kept on every row, so the menus line up. */}
+												{link === undefined ? (
+													<span className="inline-block size-control-xs" aria-hidden="true" />
+												) : (
+													<CopyButton
+														text={link}
+														iconOnly
+														size="xs"
+														variant="ghost"
+														label={port.public ? "Copy URL" : "Copy link"}
+													/>
+												)}
+												<Menu
+													label={`Actions for port ${port.port}`}
+													icon={<EllipsisIcon />}
+													align="end"
+													entries={[
+														...(port.public
+															? [
+																	{
+																		kind: "item" as const,
+																		id: "private",
+																		label: "Make private",
+																		icon: <LockIcon size="sm" />,
+																		disabled: pending,
+																		onSelect: () => change(port, false),
+																	},
+																]
+															: [
+																	{
+																		kind: "item" as const,
+																		id: "link",
+																		label: "New link",
+																		icon: <NewLinkIcon size="sm" />,
+																		disabled: pending,
+																		onSelect: () => change(port, false),
+																	},
+																	{
+																		kind: "item" as const,
+																		id: "public",
+																		label: "Make public",
+																		icon: <GlobeIcon size="sm" />,
+																		disabled: pending,
+																		onSelect: () => change(port, true),
+																	},
+																]),
+														{ kind: "separator", id: "sep-hide" },
+														{
+															kind: "item",
+															id: "hide",
+															label: "Hide",
+															icon: <TrashIcon />,
+															danger: true,
+															disabled: pending,
+															onSelect: () => hide(port),
+														},
+													]}
+												/>
+											</span>
+										</td>
+									</tr>
+								);
+							})}
+						</tbody>
+					</table>
+				</div>
 			)}
 			<ExposeDialog open={exposing} onClose={() => setExposing(false)} onExpose={expose} />
 		</section>
@@ -320,5 +336,21 @@ function ExposeDialog({
 			</div>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
+	);
+}
+
+/** A port's address with a break opportunity after each dot, so it wraps at its labels rather than mid-word. */
+function Address({ address }: { address: string }) {
+	const parts = address.split(/(?<=\.)/);
+	return (
+		<>
+			{parts.map((part, index) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+				<Fragment key={index}>
+					{part}
+					{index < parts.length - 1 ? <wbr /> : null}
+				</Fragment>
+			))}
+		</>
 	);
 }

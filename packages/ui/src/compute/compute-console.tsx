@@ -2,6 +2,7 @@ import type { ThemePreference } from "@kantel/contracts";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { KantelLockup, KantelMark } from "../brand/kantel.tsx";
 import { Button } from "../primitives/button.tsx";
+import { CopyButton } from "../primitives/controls.tsx";
 import { AlertIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import {
@@ -304,11 +305,15 @@ export interface ComputeConsoleProps {
 	readonly onJoinCodeDone?: () => void;
 }
 
-/** A wide screen: the sidebar beside the page. A phone: the top bar, the page, and the tab bar under it. */
+/**
+ * A wide screen: as the Lleverage app's shell (design-system/LAYOUT.md), a grey ground with the sidebar sitting on it
+ * and the page floating beside it as a rounded panel. A phone: the top bar, the page, and the tab bar under it.
+ */
 const SHELL = "kt-app grid h-dvh";
-const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)]";
+const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)] bg-sunken";
 const SHELL_NARROW = "grid-rows-[auto_minmax(0,1fr)_auto]";
-const MAIN = "min-h-0 min-w-0 overflow-y-auto";
+const MAIN = "min-h-0 min-w-0 overflow-y-auto bg-canvas";
+const MAIN_WIDE = "my-2 mr-2 rounded-panel border border-border";
 
 /**
  * What the strip over the page says about end-to-end encryption in this account, and in which tone; undefined for
@@ -553,7 +558,7 @@ export function ComputeConsole({
 		{
 			id: "environments",
 			label: "Environments",
-			short: "Envs",
+			short: "Environments",
 			icon: <EnvironmentIcon />,
 			on: page === "environments",
 		},
@@ -578,6 +583,7 @@ export function ComputeConsole({
 			compact={compact}
 			{...(name === undefined ? {} : { name })}
 			{...(email === undefined ? {} : { email })}
+			unavailable={failed !== undefined}
 			{...(compact && adminShown && !inAdmin ? { onAdmin: () => navigate(adminHref) } : {})}
 			onProfile={() => navigate(computePath("profile", base))}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
@@ -593,8 +599,15 @@ export function ComputeConsole({
 				onCreate={() => setDialog("create")}
 				onJoin={() => setDialog("join")}
 			/>
+		) : failed === undefined ? (
+			// While the accounts are read, the switcher's shape (its mark and name) and height, so nothing moves when it arrives.
+			<span className="flex h-control-lg items-center gap-2 px-1.5">
+				<span className={`${skeletonClass} size-control-xs flex-none rounded-full`} />
+				<span className={`${skeletonClass} h-(--kt-text-sm) w-24`} />
+			</span>
 		) : (
-			<span className="block h-control-md" />
+			// The accounts couldn't be read: said in the switcher's place, as the account is in the foot.
+			<span className="flex h-control-lg items-center px-2.5 text-sm text-faint">Organisation unavailable</span>
 		);
 	const backToConsole = (
 		<a
@@ -620,6 +633,7 @@ export function ComputeConsole({
 				{failed !== undefined ? (
 					<div className="grid h-full place-items-center p-gutter">
 						<ConsoleUnavailable
+							title={undefined}
 							message={messageOf(failed.error, "Try again in a moment.")}
 							onRetry={() => {
 								viewer.reload();
@@ -686,7 +700,7 @@ export function ComputeConsole({
 				<Sidebar
 					role="complementary"
 					aria-label={inAdmin ? "Admin" : "Compute console"}
-					className="min-h-0"
+					className="min-h-0 border-r-0! bg-transparent!"
 					head={
 						<SidebarBrand>
 							<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
@@ -709,7 +723,7 @@ export function ComputeConsole({
 								{backToConsole}
 								<span className="flex flex-col gap-0.5 px-2.5 leading-tight">
 									<span className="text-sm font-strong">Admin</span>
-									<span className="text-xs text-faint">This whole install</span>
+									<span className="text-sm text-faint">This whole install</span>
 								</span>
 							</div>
 							<SidebarSection label="Admin" heading={false}>
@@ -761,17 +775,17 @@ export function ComputeConsole({
 					)}
 				</Sidebar>
 			)}
-			<main className={MAIN}>
-				{sample ? (
+			<main className={narrow ? MAIN : `${MAIN} ${MAIN_WIDE}`}>
+				{sample && failed === undefined ? (
 					<p
-						className={`kt-sample-banner m-0 border-b border-border bg-status-waiting-soft py-1.5 text-xs text-status-waiting ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+						className={`kt-sample-banner m-0 border-b border-border bg-accent-soft py-1.5 text-sm text-accent-text ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
 					>
 						{source.hosting === "hosted" ? "Hosted demo on sample data." : "Sample data."} Nothing here is real.
 					</p>
 				) : null}
 				{strip === undefined ? null : (
 					<div
-						className={`kt-e2e-strip flex items-center gap-3 border-b border-border py-1.5 text-xs ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+						className={`kt-e2e-strip flex items-center gap-3 border-b border-border py-1.5 text-sm ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
 					>
 						<p className="m-0 min-w-0 flex-1">{strip.text}</p>
 						{strip.setup === undefined ? null : (
@@ -795,8 +809,9 @@ export function ComputeConsole({
 					/>
 				)}
 				{failed !== undefined ? (
-					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
+					<div className={`flex min-h-full flex-col ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<ConsoleUnavailable
+							title={inSettings ? "Settings" : pages.find((each) => each.on)?.label}
 							message={messageOf(failed.error, "Try again in a moment.")}
 							onRetry={() => {
 								viewer.reload();
@@ -1280,70 +1295,124 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 	const rows = narrow ? 6 : 8;
 	return (
 		<div
-			className={`flex flex-col gap-6 ${narrow ? "p-gutter-narrow" : "p-gutter"}`}
+			// The page's own spacing (computePage's gap, the header's height and rule), so nothing moves when it arrives.
+			className={`flex flex-col gap-5 ${narrow ? "p-gutter-narrow" : "p-gutter"}`}
 			role="status"
 			aria-label="Opening the console"
 		>
-			<div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+			<div className="flex min-h-control-md items-center justify-between gap-4 border-b border-border pb-3">
 				{title === undefined ? (
 					<span className={`${skeletonClass} h-(--kt-text-heading) w-32`} />
 				) : (
 					<p className="m-0 truncate text-heading font-strong leading-tight text-fg">{title}</p>
 				)}
-				<span className={`${skeletonClass} h-(--kt-control-md) w-20 rounded-control`} />
+				<span className={`${skeletonClass} h-control-sm w-28 rounded-control`} />
 			</div>
 			<div className={`flex gap-3 ${narrow ? "flex-col" : "items-center justify-between"}`}>
-				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-full`} />
+				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-control`} />
 				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
 			</div>
-			<div className="flex flex-col">
-				{Array.from({ length: rows }, (_, row) => (
-					<div
-						// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
-						key={row}
-						className="flex items-center gap-6 border-b border-border py-4"
-					>
-						<div className="flex min-w-0 flex-1 flex-col gap-2">
-							<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
-							{narrow ? <Skeleton width={`${55 + ((row * 11) % 25)}%`} /> : null}
-						</div>
-						{narrow ? null : (
-							<>
-								<div className="w-24">
-									<Skeleton width="70%" />
-								</div>
-								<div className="w-40">
-									<Skeleton width="80%" />
-								</div>
-								<div className="w-24">
-									<Skeleton width="60%" />
-								</div>
-							</>
-						)}
+			{narrow ? (
+				// The phone list as it loads: Select all over a card of three-line rows, the shape of what replaces it.
+				<div className="flex flex-col gap-2">
+					<div className="flex h-control-sm items-center gap-3">
+						<span className={`${skeletonClass} size-3.5 flex-none`} />
+						<span className={`${skeletonClass} h-(--kt-text-sm) w-20`} />
 					</div>
-				))}
-			</div>
+					<div className="flex flex-col rounded-panel border border-border bg-raised">
+						{Array.from({ length: rows }, (_, row) => (
+							<div
+								// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
+								key={row}
+								className="flex items-start gap-3 border-b border-border px-3 py-3 last:border-b-0"
+							>
+								<span className={`${skeletonClass} mt-1 size-3.5 flex-none`} />
+								<div className="flex min-w-0 flex-1 flex-col gap-2 py-0.5">
+									<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
+									<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
+									{/* The stop time's line, which most loaded rows have. */}
+									<Skeleton width={`${25 + ((row * 7) % 15)}%`} />
+								</div>
+								{/* The state, then its CPU under it, as a loaded row has them on the right. */}
+								<div className="flex w-16 flex-none flex-col items-end gap-2 py-0.5">
+									<Skeleton />
+									<Skeleton width="75%" />
+								</div>
+							</div>
+						))}
+					</div>
+				</div>
+			) : (
+				// Rows of placeholders in the table's card, until the sandboxes list arrives.
+				<div className="flex flex-col rounded-panel border border-border bg-raised">
+					{Array.from({ length: rows }, (_, row) => (
+						<div
+							// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
+							key={row}
+							className="flex items-center gap-6 border-b border-border px-4 py-4 last:border-b-0"
+						>
+							<div className="min-w-0 flex-1">
+								<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
+							</div>
+							<div className="w-24">
+								<Skeleton width="70%" />
+							</div>
+							<div className="w-40">
+								<Skeleton width="80%" />
+							</div>
+							<div className="w-24">
+								<Skeleton width="60%" />
+							</div>
+						</div>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }
 
 /** The console can't read what it needs: what happened, in a sentence, and the one thing to do about it. */
-function ConsoleUnavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
+function ConsoleUnavailable({
+	title,
+	message,
+	onRetry,
+}: {
+	title: string | undefined;
+	message: string;
+	onRetry: () => void;
+}) {
 	return (
-		<div className="flex max-w-md flex-col items-center gap-4 text-center" role="alert">
-			<span className="grid size-12 place-items-center rounded-full bg-status-error-soft text-status-error">
-				<AlertIcon />
-			</span>
-			<div className="flex flex-col gap-1.5">
-				<h1 className="m-0 text-heading font-strong leading-tight text-fg">Kantel can't open the console</h1>
-				<p className="m-0 text-md leading-normal text-muted">{message}</p>
-				<p className="m-0 text-sm leading-normal text-faint">
-					If it keeps happening, check that the Kantel server is running and that this device is online.
-				</p>
+		<div className="flex w-full flex-1 flex-col gap-6">
+			{/* The page keeps its title, so the failure reads as this page's, not a blank takeover. */}
+			{title === undefined ? null : (
+				<p className="m-0 border-b border-border pb-4 text-heading font-strong leading-tight text-fg">{title}</p>
+			)}
+			{/* Centred in the open page, a little above the middle, as one composed stop; its heading at the size a whole-page
+			    state uses (as first run's), a step under the page's title. */}
+			<div className="flex flex-1 flex-col items-center justify-center gap-4 pt-8 pb-24 text-center" role="alert">
+				<span className="grid size-14 place-items-center rounded-full bg-status-error-soft text-status-error">
+					<AlertIcon size="lg" />
+				</span>
+				<div className="flex max-w-card flex-col gap-2">
+					<h1 className="m-0 text-xl font-strong leading-tight text-fg">
+						{title === undefined ? "Can't load the console" : `Can't load ${title.toLowerCase()}`}
+					</h1>
+					<p className="m-0 text-md leading-normal text-muted">
+						{message} Check that the Kantel server is running and that this device is online.
+					</p>
+				</div>
+				{/* Try again, and what to send whoever runs the server: the page, the time and what went wrong. */}
+				<div className="flex flex-wrap items-center justify-center gap-2">
+					<Button variant="primary" size="md" onClick={onRetry}>
+						Try again
+					</Button>
+					<CopyButton
+						text={`${title ?? "Console"}: ${message} (${new Date().toISOString()})`}
+						label="Copy details"
+						size="md"
+					/>
+				</div>
 			</div>
-			<Button variant="primary" onClick={onRetry}>
-				Try again
-			</Button>
 		</div>
 	);
 }

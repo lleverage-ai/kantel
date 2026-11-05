@@ -191,7 +191,7 @@ export function SignInScreen({
 
 /** A line either side of "or", between the providers' buttons and the email form. */
 const divider =
-	"flex items-center gap-3 text-xs text-faint before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
+	"flex items-center gap-3 text-sm text-faint before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
 
 /** The providers' buttons: links to each one's start, which leave the page for the provider's consent screen. */
 function ProviderButtons({ providers }: { providers: readonly SignInProviderLink[] }) {

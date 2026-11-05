@@ -14,8 +14,8 @@ const panelTone = {
 
 /** A panel's header and footer: one short row of small text, a hairline from the body. */
 const panelHeader =
-	"flex min-h-control-md min-w-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted";
-const panelFooter = "flex min-w-0 items-center gap-2 border-t border-border px-3 py-1.5 text-xs text-faint";
+	"flex min-h-control-md min-w-0 items-center gap-2 border-b border-border px-3 py-1.5 text-sm text-muted";
+const panelFooter = "flex min-w-0 items-center gap-2 border-t border-border px-3 py-1.5 text-sm text-faint";
 
 /**
  * A bordered panel on the canvas: the frame for cards, settings groups and detail views. A header row, a body and
@@ -54,7 +54,14 @@ const noticeIcon = {
  * --kt-on-cap).
  */
 const noticeClass =
-	"flex min-w-0 items-start gap-2 rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.kt-icon]:translate-y-(--kt-on-cap) [&>.kt-icon]:self-baseline";
+	"flex min-w-0 items-start gap-2 max-sm:flex-wrap rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.kt-icon]:translate-y-(--kt-on-cap) [&>.kt-icon]:self-baseline";
+
+/**
+ * A notice with an action, on a wide screen: one line of words is as tall as the button and centred in it, so the
+ * words, the icon on their first line and the button share a centre line; longer words wrap and the icon stays on
+ * their first line.
+ */
+const noticeWithAction = "sm:[&>.kt-notice-text]:min-h-control-xs sm:[&>.kt-notice-text]:content-center";
 
 /** Each level's border, words and icon colour. */
 const noticeLevel = {
@@ -84,12 +91,16 @@ export function Notice({
 }) {
 	return (
 		<div
-			className={`kt-notice kt-notice-${level} ${noticeClass} ${noticeLevel[level]}`}
+			// With an action, on a wide screen, the icon, the words and the button share one centre line.
+			className={`kt-notice kt-notice-${level} ${noticeClass} ${noticeLevel[level]}${action === undefined ? "" : ` ${noticeWithAction}`}`}
 			role={announce ? (level === "error" ? "alert" : "status") : undefined}
 		>
 			{noticeIcon[level]}
 			<div className="kt-notice-text min-w-0 flex-1 self-baseline wrap-anywhere">{children}</div>
-			{action === undefined ? null : <div className="kt-notice-action -my-0.5 flex-none">{action}</div>}
+			{/* On a phone the action goes under the words, lined up with them, so the message keeps the notice's width. */}
+			{action === undefined ? null : (
+				<div className="kt-notice-action -my-0.5 flex-none max-sm:my-0 max-sm:basis-full max-sm:pl-5.5">{action}</div>
+			)}
 		</div>
 	);
 }

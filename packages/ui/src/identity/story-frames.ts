@@ -14,4 +14,4 @@ export const storyCode = "font-mono text-md";
 export const sidebarFrame = "flex w-full max-w-sidebar flex-col gap-4";
 /** The sidebar's foot, on the sidebar's panel. */
 export const sidebarFoot =
-	"flex items-center gap-1.5 rounded-panel border border-border bg-panel px-2.5 py-2 text-xs text-muted";
+	"flex items-center gap-1.5 rounded-panel border border-border bg-panel px-2.5 py-2 text-sm text-muted";

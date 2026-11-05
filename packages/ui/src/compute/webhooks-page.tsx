@@ -124,7 +124,7 @@ export function WebhooksPage({ source, account, now: fixedNow, initialOpen, narr
 					warning="Kantel shows this secret only once. If it's lost, delete the endpoint and add it again."
 					onAcknowledge={() => setCreated(undefined)}
 				>
-					<p className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted">
+					<p className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm text-muted">
 						<span>
 							Deliveries are signed as Standard Webhooks are: check the{" "}
 							<code className="font-mono text-code text-fg">webhook-signature</code> header with this secret, or use any
@@ -418,7 +418,7 @@ function Deliveries({ webhook, source, now }: { webhook: Webhook; source: Webhoo
 	}
 	return (
 		<div className="flex min-w-0 flex-col gap-2 py-1">
-			<span className="text-xs font-medium text-muted">Recent deliveries</span>
+			<span className="text-sm font-medium text-muted">Recent deliveries</span>
 			<TableFrame>
 				<table className={table}>
 					<thead>

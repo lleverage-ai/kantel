@@ -89,7 +89,7 @@ export function EgressRulesTable({ rules, narrow = false, scopeHref, onRemove, b
 								<span className="min-w-0 flex-1 truncate font-mono text-code text-fg">{rule.host}</span>
 								<ActionBadge action={rule.action} />
 							</span>
-							<span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
+							<span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted">
 								<span className={methodsAndPaths(rule) === "Any" ? undefined : "font-mono"}>
 									{methodsAndPaths(rule) === "Any" ? "Any request" : methodsAndPaths(rule)}
 								</span>
@@ -189,7 +189,7 @@ export function ProtectedVariablesTable({ variables, narrow = false, environment
 							<span className="min-w-0 truncate font-mono text-code text-fg">{row.name}</span>
 							<span className="flex-none text-sm text-muted">{row.environment.name}</span>
 						</span>
-						<span className="font-mono text-xs text-muted [overflow-wrap:anywhere]">
+						<span className="font-mono text-sm text-muted [overflow-wrap:anywhere]">
 							{row.bindings.map(destinationText).join(", ")}
 						</span>
 					</li>

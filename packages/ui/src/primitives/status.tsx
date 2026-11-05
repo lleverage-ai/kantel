@@ -32,9 +32,21 @@ const statusLabelClass =
  * A status in words with its dot: "Working", "Needs approval". The words default to the status's own label; pass
  * children to say something more specific ("Working for 3m").
  */
-export function StatusLabel({ status, children }: { status: Status; children?: ReactNode }) {
+export function StatusLabel({
+	status,
+	children,
+	quiet = false,
+}: {
+	status: Status;
+	children?: ReactNode;
+	/**
+	 * The dot alone in the status's colour and the words in muted text: for a list where most rows are settled, so the
+	 * colour of the many doesn't drown the one that needs attention.
+	 */
+	quiet?: boolean;
+}) {
 	return (
-		<span className={`kt-status-label kt-status-${status} ${statusLabelClass}`}>
+		<span className={`kt-status-label kt-status-${status} ${statusLabelClass}${quiet ? " text-muted!" : ""}`}>
 			<StatusDot status={status} />
 			<span>{children ?? statusLabel[status]}</span>
 		</span>
@@ -45,7 +57,7 @@ export type BadgeTone = "neutral" | "accent" | Status;
 
 /** The pill. Its words are trimmed to their capitals and centred in it, so they look centred in any font. */
 const badgeBase =
-	"inline-flex h-[calc(var(--kt-control-xs)_-_var(--kt-step-1_5))] flex-none items-center rounded-full px-2 text-2xs font-medium leading-none whitespace-nowrap";
+	"inline-flex h-[calc(var(--kt-control-xs)_-_var(--kt-step-1_5))] flex-none items-center rounded-sm px-2 text-xs font-medium leading-none whitespace-nowrap";
 
 /** Each tone's tint and text colour; a status tone reads its status's colours from the kt-status class. */
 const badgeTones = {

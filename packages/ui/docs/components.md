@@ -26,7 +26,7 @@ component should use one of them:
 ### Button and IconButton
 
 **For** actions. Variants: `primary` (one per surface: Approve, Send, New session), `secondary` (the alternatives:
-Decline, Copy link), `ghost` (inside dense rows and toolbars), `danger` (stopping or refusing something). Sizes `xs`
+Decline, Copy link), `ghost` (inside dense rows and toolbars), `danger` (stopping or refusing something), `danger-quiet` (a destructive action that isn't the page's point, such as Leave: a red outline with no fill, whose confirming dialog has the solid `danger`). Sizes `xs`
 24px, `sm` 28px (default), `md` 32px, `lg` 36px; under a coarse pointer every button is at least 36px.
 `busy` swaps the icon for a spinner and blocks clicks without changing the width.
 
@@ -316,5 +316,5 @@ stopped when nothing listens. `RelativeTime` stops ticking once a time is a day 
 composer's icon-only send button.
 
 New icons come from [lucide](https://lucide.dev) (`lucide-react`, imported one by one so only those used are
-bundled). Give one `className="kt-icon kt-icon-md"` (or `-sm`) so it sizes like the rest, and `aria-hidden` unless it
+bundled). Give one `className="kt-icon kt-icon-md"` (or `-sm`, or `-lg` for a state's mark) so it sizes like the rest, and `aria-hidden` unless it
 carries meaning on its own.

@@ -75,7 +75,7 @@ const projectMain = `kt-sidebar-project-main kt-focusable flex min-w-0 flex-1 it
 
 /** Its first letter in a small square, on the rail only. */
 const projectMark =
-	"kt-sidebar-project-mark hidden size-control-xs place-items-center rounded-sm border bg-raised text-xs font-strong leading-none group-data-collapsed/sidebar:inline-grid";
+	"kt-sidebar-project-mark hidden size-control-xs place-items-center rounded-sm border bg-raised text-sm font-strong leading-none group-data-collapsed/sidebar:inline-grid";
 
 /** The guide line runs down from the chevron's centre, so it's plain which project the sessions belong to. */
 const projectChildren =
@@ -162,7 +162,7 @@ export function SidebarSection({ label, heading = true, children }: SidebarSecti
 			{/* Small and muted, like the session list's group headings: a shelf label, not a banner. Read, not shown, on
 			    the rail. */}
 			{heading ? (
-				<h2 className="kt-sidebar-heading mx-0 mt-0 mb-1 px-2.5 py-0 text-xs font-medium leading-tight text-faint group-data-collapsed/sidebar:sr-only">
+				<h2 className="kt-sidebar-heading mx-0 mt-0 mb-1 px-2.5 py-0 text-sm font-medium leading-tight text-faint group-data-collapsed/sidebar:sr-only">
 					{label}
 				</h2>
 			) : null}
@@ -208,7 +208,7 @@ export function SidebarItem({ icon, label, href, selected = false, trailing }: S
 					{label}
 				</span>
 				{trailing === undefined ? null : (
-					<span className="kt-sidebar-item-trailing flex-none text-xs text-faint tabular-nums group-data-collapsed/sidebar:hidden">
+					<span className="kt-sidebar-item-trailing flex-none text-sm text-faint tabular-nums group-data-collapsed/sidebar:hidden">
 						{trailing}
 					</span>
 				)}

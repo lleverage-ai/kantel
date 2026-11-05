@@ -55,6 +55,8 @@ export const ApiKeysHosted: Story = () => <Scenario page="keys" hosting="hosted"
 export const Egress: Story = () => <Scenario page="egress" />;
 export const EgressHosted: Story = () => <Scenario page="egress" hosting="hosted" />;
 export const Webhooks: Story = () => <Scenario page="webhooks" />;
+/** The account's environments: secrets and variables a sandbox starts with. */
+export const Environments: Story = () => <Scenario page="environments" />;
 export const WebhooksHosted: Story = () => <Scenario page="webhooks" hosting="hosted" />;
 export const Telemetry: Story = () => <Scenario page="telemetry" />;
 export const TelemetryHosted: Story = () => <Scenario page="telemetry" hosting="hosted" />;

@@ -28,7 +28,7 @@ import {
 	SCOPE_PRESETS,
 	untilText,
 } from "./compute-model.ts";
-import { computePage, messageOf, table } from "./parts.tsx";
+import { computePage, MetaPair, messageOf, table, tableFrame } from "./parts.tsx";
 import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface ComputeApiKeysPageProps {
@@ -202,7 +202,7 @@ function KeysSkeleton() {
 }
 
 /** The table: no frame round it, a hairline under the head and under every row. */
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 
 /** The live keys, then the revoked ones folded under a toggle. */
@@ -227,7 +227,7 @@ function KeyList({
 		revoked.length === 0 ? null : (
 			<button
 				type="button"
-				className="kt-focusable inline-flex cursor-pointer items-center gap-1.5 rounded-control border-0 bg-transparent px-2 py-1 text-sm text-muted hover:bg-hover hover:text-fg"
+				className="kt-focusable -ml-2 inline-flex cursor-pointer items-center gap-1.5 rounded-control border-0 bg-transparent px-2 py-1 text-sm text-muted hover:bg-hover hover:text-fg"
 				aria-expanded={open}
 				aria-controls={foldId}
 				onClick={() => setOpen((was) => !was)}
@@ -237,30 +237,29 @@ function KeyList({
 			</button>
 		);
 	if (narrow) {
+		// One card, as on a wide screen: the live keys, then the revoked ones' fold as the card's last row, and the revoked
+		// keys under it when it's open.
 		return (
-			<div className="flex min-w-0 flex-col gap-3">
-				<ul className="kt-key-rows m-0 flex list-none flex-col p-0">
-					{live.map((key) => (
-						<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
-					))}
-				</ul>
-				{fold === null ? null : (
-					<div className="flex flex-col gap-1">
-						<div>{fold}</div>
-						{open ? (
-							<ul id={foldId} className="kt-key-rows m-0 flex list-none flex-col p-0">
-								{revoked.map((key) => (
-									<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
-								))}
-							</ul>
-						) : null}
-					</div>
-				)}
-			</div>
+			<ul className="kt-key-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
+				{live.map((key) => (
+					<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
+				))}
+				{fold === null ? null : <li className="border-b border-border px-3 py-2 last:border-b-0">{fold}</li>}
+				{fold !== null && open ? (
+					<li className="p-0">
+						<ul id={foldId} className="kt-key-rows m-0 flex list-none flex-col p-0">
+							{revoked.map((key) => (
+								<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
+							))}
+						</ul>
+					</li>
+				) : null}
+			</ul>
 		);
 	}
+
 	return (
-		<div className="kt-compute-table min-w-0 overflow-x-auto">
+		<div className={tableFrame}>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -292,7 +291,8 @@ function KeyList({
 				{fold === null ? null : (
 					<tbody id={foldId}>
 						<tr>
-							<td className="px-0 pt-3 pb-1" colSpan={6}>
+							{/* Its own row under a hairline, as the phone card's fold is: the last live row drops its own. */}
+							<td className="border-t border-border py-1.5" colSpan={6}>
 								{fold}
 							</td>
 						</tr>
@@ -343,12 +343,15 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 	const ends = expiry(apiKey, now);
 	const muted = apiKey.revokedAt !== undefined || ends.done;
 	return (
-		<tr className={`kt-key-row ${muted ? "text-muted" : "text-fg"}`} data-key={apiKey.id}>
+		<tr
+			className={`kt-key-row [&>td]:align-baseline [&>td:last-child]:align-middle ${muted ? "text-muted" : "text-fg"}`}
+			data-key={apiKey.id}
+		>
 			<td className={cell}>
 				<span className={`block max-w-(--kt-popover-width) truncate font-medium ${muted ? "text-muted" : "text-fg"}`}>
 					{apiKey.name}
 				</span>
-				<span className="block font-mono text-code text-faint">{apiKey.prefix}…</span>
+				<span className="block font-mono text-code text-muted">{apiKey.prefix}…</span>
 			</td>
 			<td className={cell}>
 				<span title={apiKey.scopes.map(scopeLabel).join(", ")}>{accessText(apiKey.scopes)}</span>
@@ -383,23 +386,47 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevoke: (key: ApiKey) => void }) {
 	const ends = expiry(apiKey, now);
 	const muted = apiKey.revokedAt !== undefined || ends.done;
+	const ending =
+		apiKey.revokedAt !== undefined
+			? { label: "Revoked", value: `${compactAge(apiKey.revokedAt, now)} ago` }
+			: apiKey.expiresAt === undefined
+				? { label: "Expires", value: "Never" }
+				: ends.done
+					? { label: "Expired", value: `${compactAge(apiKey.expiresAt, now)} ago` }
+					: { label: "Expires", value: ends.text };
 	return (
-		<li className="kt-key-row flex min-w-0 items-center gap-2 border-b border-border py-3" data-key={apiKey.id}>
-			<div className="flex min-w-0 flex-1 flex-col gap-1">
-				<span className={`truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>{apiKey.name}</span>
-				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-					<span>{accessText(apiKey.scopes)}</span>
-					{apiKey.lastUsedAt === undefined ? (
-						<span>Never used</span>
-					) : (
-						<span>Used {compactAge(apiKey.lastUsedAt, now)} ago</span>
-					)}
-					{apiKey.revokedAt !== undefined || apiKey.expiresAt !== undefined ? (
-						<span>{ends.done || apiKey.revokedAt !== undefined ? ends.text : `Expires ${ends.text}`}</span>
-					) : null}
+		<li
+			className="kt-key-row flex min-w-0 flex-col gap-1 border-b border-border px-3 py-3 last:border-b-0"
+			data-key={apiKey.id}
+		>
+			{/* The name with its menu on one line, so the action sits with what it acts on. */}
+			<div className="flex min-w-0 items-center gap-2">
+				<span className={`min-w-0 flex-1 truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>
+					{apiKey.name}
+				</span>
+				<span className="-my-1 -mr-1">
+					<KeyMenu apiKey={apiKey} onRevoke={onRevoke} />
 				</span>
 			</div>
-			<KeyMenu apiKey={apiKey} onRevoke={onRevoke} />
+			<span className="font-mono text-code text-muted">{apiKey.prefix}…</span>
+			{/* Two fixed lines on every card, so the cards share one shape: what it may do and when it ends, then when it was
+			    last used and who made it. */}
+			<div className="flex min-w-0 flex-col gap-1 text-sm">
+				{/* Each line its own list, so every name and value pair sits directly in a dl; two equal columns, so the same
+				    fact sits in the same place on every card. */}
+				<dl className="m-0 grid min-w-0 grid-cols-2 gap-x-4">
+					<MetaPair label="Access">{accessText(apiKey.scopes)}</MetaPair>
+					<MetaPair label={ending.label} title={ends.title}>
+						{ending.value}
+					</MetaPair>
+				</dl>
+				<dl className="m-0 grid min-w-0 grid-cols-2 gap-x-4">
+					<MetaPair label="Used">
+						{apiKey.lastUsedAt === undefined ? "Never" : `${compactAge(apiKey.lastUsedAt, now)} ago`}
+					</MetaPair>
+					{apiKey.createdBy === "" ? null : <MetaPair label="By">{apiKey.createdBy}</MetaPair>}
+				</dl>
+			</div>
 		</li>
 	);
 }
@@ -522,7 +549,7 @@ function NewKeyDialog({
 							))}
 						</div>
 					) : (
-						<p className="m-0 pt-1 text-xs text-muted">{scopes.map(scopeLabel).join(", ")}.</p>
+						<p className="m-0 pt-1 text-sm text-muted">{scopes.map(scopeLabel).join(", ")}.</p>
 					)}
 				</FormField>
 				<SelectField

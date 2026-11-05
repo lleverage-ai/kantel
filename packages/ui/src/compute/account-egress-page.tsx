@@ -126,11 +126,10 @@ export function AccountEgressPage({
 		<PageHeader
 			title="Egress"
 			actions={
-				// On a phone, only over the rules: the log and settings keep the screen for themselves.
-				overview === undefined || (narrow && tab !== "rules") ? undefined : (
+				// On every tab and at every width: a rule is what the log most often asks for.
+				overview === undefined ? undefined : (
 					<Button
 						variant="primary"
-						size="md"
 						icon={<PlusIcon size="sm" />}
 						disabled={busy !== undefined}
 						onClick={() => setDialog({ kind: "add" })}
@@ -261,7 +260,8 @@ export function AccountEgressPage({
 	return (
 		<div className={computePage}>
 			{header}
-			<PolicyControl policy={proxy.policy} busy={busy === "policy"} narrow={narrow} onChange={choosePolicy} />
+			{/* The policy is set on Rules, beside the rules it governs; elsewhere it's one line, so the log leads its tab. */}
+			{tab === "rules" ? null : <PolicySummary policy={proxy.policy} onChange={() => show("rules")} />}
 			{proxy.enabled ? null : (
 				<Notice
 					level="warning"
@@ -322,6 +322,7 @@ export function AccountEgressPage({
 					</div>
 				) : tab === "rules" ? (
 					<div className="flex min-w-0 flex-col gap-6">
+						<PolicyControl policy={proxy.policy} busy={busy === "policy"} narrow={narrow} onChange={choosePolicy} />
 						<EgressRulesTable
 							rules={rules}
 							narrow={narrow}
@@ -426,6 +427,22 @@ export function AccountEgressPage({
 export const settingsKey = (proxy: ProxySettings): string =>
 	`${proxy.upstream?.url ?? ""}|${proxy.upstream?.authSet === true}|${proxy.logRequests ?? ""}`;
 
+/** The policy in a sentence, with the way to change it: on the tabs where the policy itself isn't set. */
+function PolicySummary({ policy, onChange }: { policy: EgressPolicy; onChange: () => void }) {
+	const label = POLICIES.find((each) => each.value === policy)?.label ?? policy;
+	return (
+		<p className="m-0 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+			<span>
+				Sandboxes may reach <span className="font-medium text-fg">{label.toLowerCase()}</span>.
+			</span>
+			<Button size="sm" onClick={onChange}>
+				Change
+			</Button>
+			<span className="basis-full">Deny wins. The cloud metadata address is always blocked.</span>
+		</p>
+	);
+}
+
 /** "Sandboxes may reach": the policy, applied the moment it is chosen. */
 function PolicyControl({
 	policy,
@@ -449,9 +466,7 @@ function PolicyControl({
 				Sandboxes may reach
 			</span>
 			<SegmentedControl label="Sandboxes may reach" options={POLICIES} value={policy} onChange={onChange} />
-			{narrow ? null : (
-				<span className="text-sm text-muted">Deny wins. The cloud metadata address is always blocked.</span>
-			)}
+			<span className="text-sm text-muted">Deny wins. The cloud metadata address is always blocked.</span>
 		</div>
 	);
 }
@@ -544,7 +559,7 @@ export function SettingsView({
 					>
 						<TextField
 							label="URL"
-							extra={<span className="text-xs text-faint">optional</span>}
+							extra={<span className="text-sm text-faint">optional</span>}
 							hint="An http or https proxy. Leave it empty to go straight out."
 							value={url}
 							onChange={(event) => setUrl(event.currentTarget.value)}

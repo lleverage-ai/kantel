@@ -1829,6 +1829,12 @@ export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
 	error: "error",
 };
 
+/**
+ * Every state but an error keeps its words quiet beside the coloured dot (a change under way has the dot's pulse), so
+ * colour in words means one thing: something failed.
+ */
+export const quietState = (state: SandboxState): boolean => state !== "error";
+
 export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 	isolate: "Isolate",
 	microvm: "MicroVM",

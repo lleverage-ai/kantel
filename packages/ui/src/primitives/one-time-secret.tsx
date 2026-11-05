@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useRef } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useRef } from "react";
 import { Button } from "./button.tsx";
 import { CopyButton } from "./controls.tsx";
 import { FormActions } from "./form-layout.tsx";
@@ -8,30 +8,102 @@ import { Notice, Panel } from "./surface.tsx";
 
 /** Text to copy, in code's font on the sunken ground: one click selects all of it. */
 const codeFrame =
-	"m-0 min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all wrap-anywhere whitespace-pre-wrap";
+	"m-0 min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all whitespace-pre-wrap wrap-anywhere";
 
 /**
- * A command to run, in code's font, with its own Copy. It wraps anywhere rather than scroll, so the whole command is
- * on screen at 420px.
+ * A command's text inside its field: all of it on screen, wrapping only between words and after a slash (a URL's
+ * parts), never inside a token unless one is longer than the line.
+ */
+/** A command's field: one frame for every command in the console, an install line or a sandbox's SSH. */
+export const commandFrameClass =
+	"flex min-w-0 items-start gap-2 rounded-control border border-border-input bg-sunken py-1 pr-1 pl-2.5";
+
+/** The shell's "$" before a command, quieter than the command and never copied. */
+export const commandPromptClass = "flex-none py-1 font-mono text-code leading-normal text-faint select-none";
+
+export const commandTextClass =
+	"m-0 min-w-0 flex-1 py-1 font-mono text-code leading-normal text-fg whitespace-pre-wrap wrap-break-word";
+
+/**
+ * A command's text with a break opportunity after every slash, so a long URL wraps at its parts ("…/releases/" then
+ * "latest/…") rather than mid-word. What is copied is the command as given; this is only how it is shown.
+ */
+export function BreakableCommand({ command }: { command: string }) {
+	// Each word kept whole (a flag such as --url never splits at its hyphens); a line breaks between words, or after a
+	// single slash between two other characters inside a long one: a path's parts, never inside "https://". A shell
+	// operator stays with the word after it, so "| sh" never leaves "sh" alone on a line.
+	const words: string[] = [];
+	const split = command.split(/( +)/);
+	for (let at = 0; at < split.length; at++) {
+		const word = split[at] ?? "";
+		const space = split[at + 1];
+		const next = split[at + 2];
+		if (/^(\||\|\||&&|;|>|>>)$/.test(word) && space !== undefined && next !== undefined && next !== "") {
+			words.push(`${word}${space}${next}`);
+			at += 2;
+		} else words.push(word);
+	}
+	return (
+		<>
+			{words.map((word, index) => {
+				if (/^ +$/.test(word)) return word;
+				const parts = word.split(/(?<=[^/:]\/)(?=[^/])/);
+				return (
+					// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+					<span key={index} className="whitespace-nowrap">
+						{parts.map((part, at) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+							<Fragment key={at}>
+								{part}
+								{at < parts.length - 1 ? <wbr /> : null}
+							</Fragment>
+						))}
+					</span>
+				);
+			})}
+		</>
+	);
+}
+
+/**
+ * A command to run, in code's font, with its own Copy pinned to the field's corner. All of it is shown, wrapping at
+ * spaces and slashes where it is wider than the field, so it can be read before it is copied. `prompt` puts the
+ * shell's "$" before it, as a sandbox's SSH command has it.
  */
 export function CommandBlock({
 	command,
 	label,
 	copyLabel = "Copy command",
+	prompt = false,
 }: {
 	command: string;
 	/** What the command is for, above it: "For a stdio server". */
 	label?: ReactNode;
 	copyLabel?: string;
+	prompt?: boolean;
 }) {
 	return (
 		<div className="kt-command-block flex min-w-0 flex-col gap-1">
-			{label === undefined ? null : <span className="text-xs text-muted">{label}</span>}
-			<div className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch">
-				<pre className={codeFrame}>
-					<code>{command}</code>
+			{label === undefined ? null : <span className="text-sm text-muted">{label}</span>}
+			{/* One field with Copy pinned inside it, as a sandbox's SSH command has it. */}
+			<div className={commandFrameClass}>
+				{prompt ? (
+					<span className={commandPromptClass} aria-hidden="true">
+						$
+					</span>
+				) : null}
+				<pre className={commandTextClass}>
+					<code className="select-all">
+						<BreakableCommand command={command} />
+					</code>
 				</pre>
-				<CopyButton text={command} label={copyLabel} size="sm" />
+				{/* On a phone Copy is its icon alone, so the command keeps the width and wraps less. */}
+				<span className="max-sm:hidden">
+					<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />
+				</span>
+				<span className="sm:hidden">
+					<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" iconOnly />
+				</span>
 			</div>
 		</div>
 	);

@@ -344,7 +344,7 @@ export function CheckboxField({
 				{label}
 			</label>
 			{hint === undefined ? null : (
-				<span id={`${id}-hint`} className="kt-checkbox-hint col-start-2 text-xs text-faint">
+				<span id={`${id}-hint`} className="kt-checkbox-hint col-start-2 text-sm text-faint">
 					{hint}
 				</span>
 			)}
@@ -360,6 +360,8 @@ export type SegmentOption<T extends string> = {
 	value: T;
 	label: string;
 	count?: number;
+	/** Its count is something to look at (sandboxes in error): the count in the error colour, so it's found from here. */
+	alert?: boolean;
 	disabled?: boolean;
 	tone?: SegmentTone;
 };
@@ -374,10 +376,10 @@ const segmentTone: Record<SegmentTone, string> = {
 };
 
 /** The segments' sunken tray. */
-const segmentedClass = "kt-segmented inline-flex gap-0.5 rounded-full border border-border bg-sunken p-0.5";
+const segmentedClass = "kt-segmented inline-flex gap-0.5 rounded-control border border-border bg-sunken p-0.5";
 
 /** A segment: muted words, lit when it is the chosen one (`segmentLit`, or its tone's tint). */
-const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-control-sm)_-_var(--kt-step-1))] cursor-pointer items-center gap-1.5 rounded-full border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg disabled:cursor-default disabled:text-disabled`;
+const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-control-sm)_-_var(--kt-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-sm text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg disabled:cursor-default disabled:text-disabled`;
 const segmentLit = "aria-checked:bg-active aria-checked:text-fg";
 
 /**
@@ -442,7 +444,11 @@ export function SegmentedControl<T extends string>({
 					>
 						{option.label}
 						{option.count === undefined ? null : (
-							<span className="kt-segment-count text-faint tabular-nums">{option.count}</span>
+							<span
+								className={`kt-segment-count tabular-nums ${option.alert === true ? "text-status-error" : "text-faint"}`}
+							>
+								{option.count}
+							</span>
 						)}
 					</button>
 				);

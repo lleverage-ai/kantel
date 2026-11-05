@@ -6,7 +6,7 @@ import "./icons.css";
 //
 // An icon is decorative by default (aria-hidden). Pass `label` when the icon alone carries meaning, such as a status.
 
-export type IconProps = Omit<SVGProps<SVGSVGElement>, "children"> & { label?: string; size?: "sm" | "md" };
+export type IconProps = Omit<SVGProps<SVGSVGElement>, "children"> & { label?: string; size?: "sm" | "md" | "lg" };
 
 function Svg({ label, size = "md", className, children, ...rest }: IconProps & { children: ReactNode }) {
 	return (

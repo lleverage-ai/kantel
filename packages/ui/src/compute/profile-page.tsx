@@ -21,7 +21,7 @@ export interface ProfilePageProps {
 function Fact({ label, children }: { label: string; children: string }) {
 	return (
 		<div className="flex min-w-0 flex-col gap-1">
-			<dt className="text-xs leading-normal text-muted">{label}</dt>
+			<dt className="text-sm leading-normal text-muted">{label}</dt>
 			<dd className="m-0 truncate text-sm text-fg">{children}</dd>
 		</div>
 	);

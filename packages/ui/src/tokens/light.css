@@ -1,13 +1,14 @@
 /* The light theme's palette: every colour the light theme sets, and the one place to change it. It sets the same
    tokens as dark.css (src/tokens/theme.test.ts holds the two together), so nothing of the dark palette shows through.
 
-   Tom's palette, 3 Nov 2026: the Lleverage web "Crisp" theme. A warm off-white page with white cards on it, deep navy
-   for the primary and the brand's orange as the highlight. Each of his tokens is noted beside the one it sets; values
-   in hsl() are his, as given. The indigo status, the syntax colours and the effects are Kantel's own, fitted to his
-   surfaces. On [data-kt-theme="light"], which src/theme/controller.ts sets on <html> when a person chooses Light, or
+   The Lleverage app's "Crisp" theme as it is since lleverage#9702 (3 Nov 2026): the design system's greys, a near-white
+   page (Grey 25) with white cards on it, Midnight ink, and the product orange (#F26B17) for the one main action and
+   the highlight, as the app's primary button paints it. Each Crisp token is noted beside the one it sets
+   (apps/app/src/styles/globals.css). The plum status, the syntax colours and the effects are Kantel's own, fitted to
+   its surfaces. On [data-kt-theme="light"], which src/theme/controller.ts sets on <html> when a person chooses Light, or
    System on a light device. The doubled attribute outweighs dark.css's :root and portal rules.
 
-   Outside CSS, the light theme-color in apps/console/index.html (#faf9f5, his background) repeats the canvas. */
+   Outside CSS, the light theme-color in apps/console/index.html (#fbfbfa, Crisp's background) repeats the canvas. */
 
 [data-kt-theme="light"][data-kt-theme],
 [data-kt-theme="light"] .kt-theme {
@@ -15,51 +16,61 @@
 
 	/* Surfaces: the canvas, a panel a shade under it (the sidebar, a table's frame), white cards, and a well (a field,
 	   code) a shade under the panel. */
-	--kt-canvas: hsl(48 33% 97%); /* background */
-	--kt-panel: hsl(50 20% 95%); /* surface-subtle */
+	--kt-canvas: hsl(60 11.1% 98.2%); /* background: Grey 25 */
+	--kt-panel: hsl(60 11.1% 96.5%); /* surface-subtle: Grey 50 */
 	--kt-raised: hsl(0 0% 100%); /* card */
-	--kt-sunken: hsl(50 18% 93%); /* muted */
+	--kt-sunken: hsl(60 7.1% 94.5%); /* muted: Grey 100 */
 	--kt-hover: color-mix(in srgb, var(--kt-text) 5%, transparent);
 	--kt-active: color-mix(in srgb, var(--kt-text) 9%, transparent);
 	--kt-selected: color-mix(in srgb, var(--kt-text) 7%, transparent);
-	--kt-user-message: hsl(60 32% 91.4%); /* secondary */
-	--kt-code: hsl(50 18% 93%); /* muted */
+	--kt-user-message: hsl(60 18.2% 91.4%); /* secondary: Sage 200 */
+	--kt-code: hsl(60 7.1% 94.5%); /* muted: Grey 100 */
 	--kt-scrim: hsl(60 10% 10% / 0.28); /* scrim */
 	/* A bar that stays over scrolling content (the phone's top bar), frosted. */
-	--kt-backdrop: hsl(48 20% 97% / 0.8); /* backdrop */
+	--kt-backdrop: hsl(60 11.1% 98.2% / 0.8); /* backdrop */
 
 	/* Filled controls that aren't the primary: a secondary button, and under the pointer. */
-	--kt-secondary: hsl(60 32% 91.4%); /* secondary */
-	--kt-secondary-hover: hsl(60 35% 85%); /* secondary-hover */
+	--kt-secondary: hsl(60 18.2% 91.4%); /* secondary: Sage 200 */
+	--kt-secondary-hover: hsl(60 18.6% 83.1%); /* secondary-hover: Sage 400 */
 
 	/* Lines. */
-	--kt-border: hsl(48 22% 87%); /* border */
-	--kt-border-strong: hsl(48 22% 84%); /* input */
-	--kt-border-input: hsl(48 22% 84%); /* input */
+	--kt-border: hsl(60 6% 83.7%); /* border: Grey 400 */
+	--kt-border-strong: hsl(60 6% 78%); /* a step over the border */
+	--kt-chart-fill: 0.14; /* a usage chart's area under its line: enough to read on white */
+	--kt-skeleton: color-mix(
+		in srgb,
+		var(--kt-border) 70%,
+		transparent
+	); /* a placeholder bar: the border grey, softened */
+	--kt-border-input: hsl(60 6% 83.7%); /* input */
 
 	/* Text. The disabled grey is his muted-fg-subtle, under AA (2.51:1 on the canvas) as disabled text may be; the faint
 	   text a step under the muted is a mix of the two that keeps AA. */
-	--kt-text: hsl(83 11% 14.1%); /* foreground */
-	--kt-text-muted: hsl(60 7% 40%); /* muted-fg */
+	--kt-text: hsl(210 33.3% 11.8%); /* foreground: Midnight */
+	--kt-text-muted: hsl(60 1% 39.2%); /* muted-fg: Grey 700 */
 	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 95%, var(--kt-text-disabled));
-	--kt-text-disabled: hsl(60 7% 60%); /* muted-fg-subtle */
+	--kt-text-disabled: hsl(60 1.8% 56.1%); /* muted-fg-subtle: Grey 600 */
 
 	/* The accent: his highlight, the brand's orange, for what is pointed out rather than pressed (focus, where you are),
 	   with his foreground on it. It is under AA as text on the canvas (2.82:1), so links are a darker cut of the same
 	   hue that passes on the canvas and the panel. */
-	--kt-accent: hsl(24 84% 53.1%); /* highlight */
-	--kt-accent-hover: hsl(24 84% 47%); /* highlight-hover */
-	--kt-accent-fg: hsl(83 11% 14.1%); /* foreground */
-	--kt-accent-text: hsl(24 84% 36%); /* highlight, darkened for text */
-	/* The primary action (one per surface): deep navy, with white on it. */
-	--kt-primary: hsl(230 35% 15%); /* primary */
-	--kt-primary-hover: hsl(230 35% 22%); /* primary-hover */
-	--kt-primary-fg: hsl(0 0% 100%); /* on-primary */
+	--kt-accent: hsl(23 89.4% 52%); /* highlight: the product orange */
+	--kt-accent-hover: hsl(23 89.4% 46%); /* highlight-hover */
+	--kt-accent-fg: hsl(210 33.3% 11.8%); /* foreground: Midnight */
+	--kt-accent-text: hsl(24 84% 33%); /* highlight, darkened for text: AA on its soft ground too */
+	/* The primary action (one per surface): the product orange, as the app's primary button, in both themes. Midnight on
+	   it, not white: white on this orange is 3:1, under AA; Midnight is 5.5:1. */
+	--kt-primary: hsl(23 89.4% 52%); /* highlight */
+	--kt-primary-hover: hsl(23 89.4% 46%); /* highlight-hover */
+	--kt-primary-fg: hsl(210 33.3% 11.8%); /* foreground: Midnight */
 
-	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's indigo for waiting. */
+	/* Status text: Crisp's info, success, warning and destructive, plus Kantel's plum for waiting (the brand has no indigo). */
 	--kt-status-working: hsl(210 45% 45%); /* info */
-	--kt-status-waiting: #5650b8; /* indigo: waiting on an answer from you */
-	--kt-status-approval: hsl(40 70% 30%); /* warning-text */
+	--kt-status-error-soft: color-mix(in srgb, var(--kt-status-error) 10%, transparent); /* the error tint */
+	--kt-status-waiting: hsl(280 30% 42%); /* plum: waiting on an answer from you */
+	--kt-status-approval: hsl(
+		36 80% 32%
+	); /* warning-text, a warmer step off olive so a busy chart reads amber, not tan (5.4:1 on white) */
 	--kt-status-done: hsl(145 35% 35%); /* success */
 	--kt-status-error: hsl(0 55% 40%); /* destructive-text */
 	--kt-status-idle: var(--kt-text-faint); /* nothing happening */

@@ -2,7 +2,8 @@
 // bar. Pages lay out their own tables from these, so the sandboxes, snapshots, keys and hosts tables line up and read
 // alike, and turn into the same stacked cards on a phone.
 
-import { type ComponentProps, type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ComponentProps, type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
+import { ChevronDownIcon } from "../primitives/icons.tsx";
 import "./table.css";
 
 /**
@@ -13,21 +14,23 @@ export const computePage =
 	"kt-compute-page mx-auto flex w-full max-w-page min-w-0 flex-col gap-5 text-md leading-normal text-fg";
 
 /**
- * A table's frame: a hairline round it. Where it's too narrow for its columns it scrolls sideways; in a phone's
- * column (table.css) TableFrame's rows become stacked cards instead. For a placeholder in a table's place (a skeleton);
- * a real table goes in TableFrame.
+ * A table's frame, as the Lleverage app's tables: a white card with a hairline round it, the first and last columns
+ * inset from its edges, hairlines between rows and none under the last. Every list in the console sits in one. Where
+ * it's too narrow for its columns it scrolls sideways; in a phone's column (table.css) TableFrame's rows become list
+ * rows instead. For a placeholder in a table's place (a skeleton); a real table goes in TableFrame.
  */
-export const tableFrame = "kt-compute-table min-w-0 overflow-x-auto rounded-panel border border-border bg-panel";
-export const table = "w-full border-collapse text-left text-sm";
+export const tableFrame =
+	"kt-compute-table min-w-0 overflow-x-auto rounded-panel border border-border bg-raised [&_:is(th,td):first-child]:pl-4 [&_:is(th,td):last-child]:pr-4 [&_tbody>tr:last-child>td]:border-b-0";
+/** A table: body text at the body size, as every list in the console. */
+export const table = "w-full border-collapse text-left text-md";
 /** A header cell: muted, small, on one line. */
 export const th = "h-control-md px-3 py-0 text-sm font-medium whitespace-nowrap text-muted border-b border-border";
-/** A body cell: a hairline under every row but the last. */
-export const td =
-	"px-3 py-2 align-middle whitespace-nowrap [tr:not(:last-child)>&]:border-b [tr:not(:last-child)>&]:border-border";
+/** A body cell: a hairline under every row (the frame drops the last). */
+export const td = "px-3 py-2.5 align-middle whitespace-nowrap border-b border-border";
 /** A row that opens something. */
 export const rowHover = "hover:bg-hover";
 /** A cell's second line: muted, smaller. */
-export const cellSub = "block text-xs text-muted";
+export const cellSub = "block text-sm text-muted";
 /** An id or a command in a cell. */
 export const cellMono = "font-mono text-code text-muted";
 
@@ -155,7 +158,7 @@ export function TableFrame({ children, bar, className, ...rest }: ComponentProps
 export const messageOf = (caught: unknown, fallback: string): string =>
 	caught instanceof Error ? caught.message : fallback;
 
-type LineTone = "done" | "idle" | "working" | "muted" | "error";
+type LineTone = "done" | "idle" | "working" | "muted" | "error" | "warning";
 
 const lineColour: Record<LineTone, string> = {
 	done: "text-status-done",
@@ -163,6 +166,7 @@ const lineColour: Record<LineTone, string> = {
 	muted: "text-muted",
 	working: "text-status-working",
 	error: "text-status-error",
+	warning: "text-status-approval",
 };
 
 /**
@@ -267,7 +271,8 @@ export function Sparkline({
 	label: string;
 	tone?: LineTone;
 	/** `sm`, a row's: 64 by 16. `lg`, a sandbox page's: as wide as its column, 28 high. */
-	size?: "sm" | "lg";
+	/** xs: under a phone row's state, a short line so the row's words keep the width. */
+	size?: "xs" | "sm" | "lg";
 	/** How many values fill it, so a line still filling ends at the right. Default: as many as there are. */
 	slots?: number;
 	/** Live readings' times: each value is drawn where its time is, and `slots` is ignored. */
@@ -288,7 +293,7 @@ export function Sparkline({
 	const colour = lineColour[loading || empty ? "idle" : tone];
 	return (
 		<svg
-			className={`kt-sparkline block flex-none ${size === "lg" ? "h-7 w-full" : "h-4 w-16"} ${colour} ${loading ? breathe : ""}`}
+			className={`kt-sparkline block flex-none ${size === "lg" ? "h-7 w-full" : size === "xs" ? "h-4 w-12" : "h-4 w-16"} ${colour} ${loading ? breathe : ""}`}
 			viewBox={`0 0 ${width} ${height}`}
 			preserveAspectRatio="none"
 			role="img"
@@ -301,8 +306,10 @@ export function Sparkline({
 					points={pointsText(points)}
 					fill="none"
 					stroke="currentColor"
-					strokeWidth="1.25"
+					// A row's line is a hairline beside its figure, which carries the weight; a page's is a step heavier.
+					strokeWidth={size === "lg" ? "1.5" : "1.25"}
 					strokeLinejoin="round"
+					strokeLinecap="round"
 					vectorEffect="non-scaling-stroke"
 					{...(loading ? { strokeDasharray: "2 3" } : {})}
 				/>
@@ -376,7 +383,9 @@ export function UsageGraph({
 				{loading ? (
 					<None className="text-faint" />
 				) : (
-					<span className="truncate text-fg tabular-nums">{value ?? <None className="text-faint" />}</span>
+					<span className={`truncate tabular-nums ${tone === "warning" ? "text-status-approval" : "text-fg"}`}>
+						{value ?? <None className="text-faint" />}
+					</span>
 				)}
 			</figcaption>
 			<svg
@@ -402,7 +411,12 @@ export function UsageGraph({
 					return (
 						<g key={points[0]?.[0] ?? 0}>
 							{area === undefined ? null : (
-								<polygon points={area} fill="currentColor" fillOpacity="0.14" stroke="none" />
+								<polygon
+									points={area}
+									fill="currentColor"
+									style={{ fillOpacity: "var(--kt-chart-fill)" }}
+									stroke="none"
+								/>
 							)}
 							<polyline
 								points={pointsText(points)}
@@ -418,7 +432,7 @@ export function UsageGraph({
 				})}
 			</svg>
 			{ends === undefined ? null : (
-				<span className="flex justify-between text-2xs text-faint tabular-nums" aria-hidden="true">
+				<span className="flex justify-between text-xs text-muted tabular-nums" aria-hidden="true">
 					<span>{ends[0]}</span>
 					<span>{ends[1]}</span>
 				</span>
@@ -433,7 +447,7 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 	const tone = clamped >= 0.9 ? "bg-status-error" : clamped >= 0.75 ? "bg-status-approval" : "bg-status-done";
 	return (
 		<span className="kt-capacity flex min-w-0 flex-col gap-1">
-			<span className="text-xs text-muted">{children}</span>
+			<span className="text-sm text-muted">{children}</span>
 			<span className="block h-1 w-24 overflow-hidden rounded-full bg-active" aria-hidden="true">
 				<span className={`block h-full rounded-full ${tone}`} style={{ width: `${Math.round(clamped * 100)}%` }} />
 			</span>
@@ -442,10 +456,70 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 }
 
 /** A heading over a section of a page, with its own actions on the right. */
+/**
+ * A label and its value side by side, in a `<dl>`: a phone card's facts, each named, two or so to a line rather than
+ * a row per fact. The value is a weight heavier than its label, so the pairs don't read as one run of grey.
+ */
+export function MetaPair({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
+	return (
+		<div className="flex min-w-0 gap-1.5" title={title}>
+			<dt className="text-muted">{label}</dt>
+			<dd className="m-0 min-w-0 truncate font-medium text-fg">{children}</dd>
+		</div>
+	);
+}
+
+/**
+ * A section a phone keeps folded: the heading is the button, with a one-line summary of what's inside while closed, so
+ * a long page ends in short rows rather than every detail at full length. Wide screens use a plain section.
+ */
+export function FoldSection({
+	id,
+	title,
+	summary,
+	children,
+}: {
+	id: string;
+	title: ReactNode;
+	/** What's inside, in a few words, while it's folded. */
+	summary: ReactNode;
+	children: ReactNode;
+}) {
+	const [open, setOpen] = useState(false);
+	const bodyId = useId();
+	return (
+		<section className="flex min-w-0 flex-col gap-3" aria-labelledby={id}>
+			<h2 id={id} className="-mx-2 my-0 text-lg font-strong leading-tight text-fg">
+				<button
+					type="button"
+					className="kt-focusable flex min-h-control-md w-full cursor-pointer items-center gap-3 rounded-control border-0 bg-transparent px-2 text-left text-fg [font-family:inherit] [font-size:inherit] [font-weight:inherit] [line-height:inherit] hover:bg-hover"
+					aria-expanded={open}
+					aria-controls={bodyId}
+					onClick={() => setOpen(!open)}
+				>
+					<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+						<span>{title}</span>
+						{open ? null : <span className="truncate font-normal text-muted text-sm">{summary}</span>}
+					</span>
+					<ChevronDownIcon
+						size="sm"
+						className={`flex-none text-faint transition-transform${open ? " rotate-180" : ""}`}
+					/>
+				</button>
+			</h2>
+			{open ? (
+				<div id={bodyId} className="flex min-w-0 flex-col gap-3">
+					{children}
+				</div>
+			) : null}
+		</section>
+	);
+}
+
 export function SectionHeading({ title, actions, id }: { title: ReactNode; actions?: ReactNode; id?: string }) {
 	return (
 		<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-			<h2 id={id} className="m-0 text-md font-strong leading-tight text-fg">
+			<h2 id={id} className="m-0 text-lg font-strong leading-tight text-fg">
 				{title}
 			</h2>
 			{actions === undefined ? null : <div className="flex flex-wrap items-center gap-2">{actions}</div>}

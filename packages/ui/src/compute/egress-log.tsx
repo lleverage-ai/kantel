@@ -9,8 +9,16 @@ import { Fragment, type ReactNode, useId, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
+
+/** "now" or "3m ago": the log's one way of saying when, at every width. */
+const agoText = (at: number, now: number): string => {
+	const age = compactAge(at, now);
+	return age === "now" ? "now" : `${age} ago`;
+};
+
 import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
-import { Badge } from "../primitives/status.tsx";
+import { BreakableCommand } from "../primitives/one-time-secret.tsx";
+import { StatusLabel } from "../primitives/status.tsx";
 import { bytesText } from "./compute-model.ts";
 import { type DenialFix, denialFixes, type LoggedEntry, type ProtectedVariableRow } from "./egress-overview.ts";
 import { cellMono, TableFrame, table, td, th } from "./parts.tsx";
@@ -96,20 +104,25 @@ export function EgressLog({
 
 	const filters = (
 		<div className="flex min-w-0 flex-wrap items-center gap-2">
-			<SegmentedControl
-				label="Show"
-				options={FILTERS.map((option) => ({
-					...option,
-					...(counts[option.value] === undefined ? {} : { count: counts[option.value] }),
-				}))}
-				value={filter}
-				onChange={setFilter}
-			/>
-			{choosing && !narrow ? (
+			<div className={narrow ? "basis-full" : "contents"}>
+				<SegmentedControl
+					label="Show"
+					options={FILTERS.map((option) => ({
+						...option,
+						...(counts[option.value] === undefined ? {} : { count: counts[option.value] }),
+						// Denials are the log's problems: their count in the error colour, as the sandboxes' Error count is.
+						alert: option.value === "denied" && (counts.denied ?? 0) > 0,
+					}))}
+					value={filter}
+					onChange={setFilter}
+				/>
+			</div>
+			{/* On a phone the sandbox and the search share the line under the filter, so the log starts sooner. */}
+			{choosing ? (
 				<SelectField
 					label="Sandbox"
 					hideLabel
-					width="short"
+					{...(narrow ? { className: "min-w-0 flex-1" } : { width: "short" as const })}
 					value={sandbox}
 					onChange={(event) => setSandbox(event.currentTarget.value)}
 					options={[
@@ -118,19 +131,19 @@ export function EgressLog({
 					]}
 				/>
 			) : null}
-			{narrow ? null : (
+			{
 				<TextField
-					className="ml-auto"
+					className={narrow ? "min-w-0 flex-1" : "ml-auto"}
 					label="Search the log"
 					hideLabel
-					width="short"
+					{...(narrow ? {} : { width: "short" as const })}
 					type="search"
 					placeholder="Host or path"
 					value={query}
 					onChange={(event) => setQuery(event.currentTarget.value)}
 					spellCheck={false}
 				/>
-			)}
+			}
 		</div>
 	);
 
@@ -147,7 +160,7 @@ export function EgressLog({
 		shown.length === 0 ? (
 			<p className="m-0 py-2 text-sm text-muted">{entries.length === 0 ? emptyText : "Nothing matches."}</p>
 		) : narrow ? (
-			<ul className="m-0 flex list-none flex-col p-0">
+			<ul className="m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
 				{shown.map((entry) => (
 					<PhoneEntry
 						key={entry.id}
@@ -179,6 +192,9 @@ export function EgressLog({
 							</th>
 							<th className={th} scope="col">
 								Decision
+							</th>
+							<th className={`${th} text-right`} scope="col">
+								Status
 							</th>
 							<th className={th} scope="col">
 								Swapped
@@ -217,34 +233,76 @@ export function EgressLog({
 const opens = (entry: LoggedEntry): boolean =>
 	entry.decision === "denied" && (entry.reason !== undefined || entry.rule !== undefined);
 
+/** The wide log's longest path line before it's shortened in the middle, in characters. */
+const PATH_CHARS = 26;
+
+/**
+ * A long path shortened in the middle, keeping its first segment and its end, which say where it went:
+ * `/repos/lleverage-ai/kantel/branches/old` reads `/repos/…/branches/old`. The whole path is in the row's title.
+ */
+function middlePath(path: string, chars = PATH_CHARS): string {
+	if (path.length <= chars) return path;
+	const parts = path.split("/");
+	const head = parts.slice(0, 2).join("/");
+	for (let keep = parts.length - 2; keep >= 1; keep -= 1) {
+		const tail = parts.slice(parts.length - keep).join("/");
+		const short = `${head}/…/${tail}`;
+		if (short.length <= chars && keep < parts.length - 2) return short;
+	}
+	return `${head}/…/${parts.at(-1) ?? ""}`;
+}
+
 /** `GET api.github.com/user`: the method muted, the host in full strength, the path muted. */
-function RequestText({ entry }: { entry: LoggedEntry }) {
+function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boolean }) {
+	if (!wrap) {
+		// The wide log: the method and host on the first line, the path under the host on a second, each one line, so
+		// every row is the same height; a long path is shortened in the middle and read whole in the row's title.
+		return (
+			<>
+				<span className="block truncate">
+					<span className="inline-block w-18 text-muted">{entry.method}</span>
+					<span className="font-medium text-fg">{hostText(entry)}</span>
+				</span>
+				{entry.path === undefined || entry.path === "" ? null : (
+					<span className="block truncate pl-18 text-muted">{middlePath(entry.path)}</span>
+				)}
+			</>
+		);
+	}
 	return (
 		<>
-			<span className="text-muted">{entry.method} </span>
-			<span className="text-fg">{hostText(entry)}</span>
-			<span className="text-muted">{entry.path ?? ""}</span>
+			{/* Wrapped, the method and host stay together on one line and the path breaks only after a slash. */}
+			<span className="whitespace-nowrap">
+				<span className="text-muted">{entry.method} </span>
+				<span className="font-medium text-fg">{hostText(entry)}</span>
+			</span>
+			<span className="text-muted">{entry.path === undefined ? null : <BreakableCommand command={entry.path} />}</span>
 		</>
 	);
 }
 
-/** The request, as a button that opens the denial's reason when there is one. */
+/** The request, as a button that opens the denial's reason when there is one. `wrap`: all of it, over lines (a phone). */
 function RequestCell({
 	entry,
 	open,
 	detailId,
 	onToggle,
+	wrap = false,
+	chevron = true,
 }: {
 	entry: LoggedEntry;
 	open: boolean;
 	detailId: string;
 	onToggle: () => void;
+	wrap?: boolean;
+	/** The wide log draws its chevrons at the row's end instead, in a column of their own. */
+	chevron?: boolean;
 }) {
 	const text = `${entry.method} ${hostText(entry)}${entry.path ?? ""}`;
 	if (!opens(entry)) {
 		return (
-			<span className={`${cellMono} block max-w-(--kt-card-width) truncate`} title={text}>
-				<RequestText entry={entry} />
+			<span className={`${cellMono} block ${wrap ? "wrap-break-word" : "min-w-0"}`} title={text}>
+				<RequestText entry={entry} wrap={wrap} />
 			</span>
 		);
 	}
@@ -252,25 +310,52 @@ function RequestCell({
 	return (
 		<button
 			type="button"
-			className="kt-focusable -ml-1 flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent px-1 py-0.5 text-left hover:bg-hover"
+			className={`kt-focusable -ml-1 flex w-full max-w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1 py-0.5 text-left hover:bg-hover`}
 			aria-expanded={open}
 			aria-controls={detailId}
 			title={text}
 			onClick={onToggle}
 		>
-			<span className={`${cellMono} block max-w-(--kt-card-width) min-w-0 truncate`}>
-				<RequestText entry={entry} />
+			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-break-word" : ""}`}>
+				<RequestText entry={entry} wrap={wrap} />
 			</span>
-			<Chevron size="sm" className="flex-none text-faint" />
+			{/* On a phone's card the chevron keeps to the card's right edge, wherever the request ends. */}
+			{chevron ? (
+				<Chevron size="sm" className={`ml-auto flex-none text-faint${wrap ? " mt-0.5 self-start" : ""}`} />
+			) : null}
 		</button>
 	);
 }
 
-function Decision({ entry }: { entry: LoggedEntry }) {
+const statusCode = "text-sm text-muted tabular-nums";
+
+function Decision({
+	entry,
+	code = true,
+	open,
+}: {
+	entry: LoggedEntry;
+	code?: boolean;
+	/** The wide log's chevron for a row that opens, beside the decision it explains rather than past the last column. */
+	open?: boolean;
+}) {
 	return (
-		<span className="flex items-center gap-2">
-			{entry.decision === "allowed" ? <span className="text-fg">Allowed</span> : <Badge tone="error">Denied</Badge>}
-			{entry.status === undefined ? null : <span className="text-muted tabular-nums">{entry.status}</span>}
+		<span className="flex items-baseline gap-2">
+			{/* The sandbox list's status pattern: a dot and the word, the word quiet for Allowed and red for Denied. */}
+			{entry.decision === "allowed" ? (
+				<StatusLabel status="done" quiet>
+					Allowed
+				</StatusLabel>
+			) : (
+				<StatusLabel status="error">Denied</StatusLabel>
+			)}
+			{/* A phone's meta line has the server's status beside the decision; the wide log gives it a column. */}
+			{!code || entry.status === undefined ? null : <span className={statusCode}>{entry.status}</span>}
+			{open === undefined ? null : (
+				<span className="self-center text-faint" aria-hidden="true">
+					{open ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" />}
+				</span>
+			)}
 		</span>
 	);
 }
@@ -294,10 +379,24 @@ function WideEntry({
 	const expanded = open && opens(entry);
 	return (
 		<Fragment>
-			<tr data-egress={entry.id} data-decision={entry.decision} className={expanded ? "bg-hover" : undefined}>
+			{/* A row that opens is one target: a click anywhere on it opens it, as its request button does from the
+			    keyboard, and its chevron sits beside the decision it explains. */}
+			<tr
+				data-egress={entry.id}
+				data-decision={entry.decision}
+				// Every cell on the first line of text of the request, by baseline, so a row with a path under its host reads straight across.
+				className={`[&>td]:align-baseline ${expanded ? "bg-hover" : ""} ${opens(entry) ? "cursor-pointer hover:bg-hover" : ""}`}
+				onClick={
+					opens(entry)
+						? (event) => {
+								if (!(event.target as HTMLElement).closest("button, a")) onToggle();
+							}
+						: undefined
+				}
+			>
 				<td className={td}>
 					<span className="text-muted tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
-						{compactAge(entry.at, now)}
+						{agoText(entry.at, now)}
 					</span>
 				</td>
 				{sandboxColumn ? (
@@ -306,10 +405,18 @@ function WideEntry({
 					</td>
 				) : null}
 				<td className={`${td} w-full max-w-0`}>
-					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} />
+					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} chevron={false} />
 				</td>
 				<td className={td}>
-					<Decision entry={entry} />
+					<Decision entry={entry} code={false} {...(opens(entry) ? { open: expanded } : {})} />
+				</td>
+				{/* The server's answer, apart from Kantel's decision: a dash where the request never reached it. */}
+				<td className={`${td} text-right`}>
+					{entry.status === undefined ? (
+						<span className="text-faint">–</span>
+					) : (
+						<span className={statusCode}>{entry.status}</span>
+					)}
 				</td>
 				<td className={td}>
 					<Swapped names={entry.swapped} />
@@ -322,7 +429,7 @@ function WideEntry({
 				<tr id={detailId} data-egress-detail={entry.id}>
 					{/* Under the request: the when (and sandbox) columns stay empty, so the reason reads as the row's. */}
 					<td className={td} colSpan={sandboxColumn ? 2 : 1} />
-					<td className={`${td} whitespace-normal`} colSpan={4}>
+					<td className={`${td} whitespace-normal`} colSpan={5}>
 						<Detail entry={entry} fixes={fixes} />
 					</td>
 				</tr>
@@ -348,27 +455,50 @@ function PhoneEntry({
 }) {
 	const detailId = useId();
 	const expanded = open && opens(entry);
-	const age = compactAge(entry.at, now);
 	return (
 		<li
-			className="flex min-w-0 flex-col gap-1 border-b border-border py-3"
+			className="flex min-w-0 flex-col gap-1 border-b border-border px-3 py-3 last:border-b-0"
 			data-egress={entry.id}
 			data-decision={entry.decision}
 		>
-			<div className="flex min-w-0 items-center gap-2">
-				<div className="min-w-0 flex-1">
-					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} />
-				</div>
-				{entry.decision === "denied" ? <Badge tone="error">Denied</Badge> : null}
-			</div>
-			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
-				<span title={new Date(entry.at).toLocaleString("en-GB")}>{age === "now" ? "Now" : `${age} ago`}</span>
-				{sandboxColumn ? <span>{entry.sandboxName}</span> : null}
-				{entry.swapped.map((name) => (
-					<span key={name} className="font-mono">
-						{name}
+			{/* Three tiers: the request whole; the outcome on the left and when on the right; then, quieter, which
+			    sandbox, what was swapped in and how much moved. */}
+			{/* The first line: the request, and on the right when it was with the chevron's slot, kept on every card
+			    (empty where nothing opens) so every card's right edge lines up. */}
+			<div className="flex min-w-0 items-start gap-3">
+				<span className="min-w-0 flex-1">
+					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap chevron={false} />
+				</span>
+				<span className="flex flex-none items-center gap-1 pt-0.5 text-sm text-muted">
+					<span className="tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
+						{agoText(entry.at, now)}
 					</span>
-				))}
+					<span className="flex w-4 justify-end text-faint" aria-hidden="true">
+						{opens(entry) ? expanded ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" /> : null}
+					</span>
+				</span>
+			</div>
+			<div className="flex min-w-0 items-baseline gap-3 text-sm text-muted">
+				<Decision entry={entry} />
+			</div>
+			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted empty:hidden">
+				{sandboxColumn ? <span className="text-fg">{entry.sandboxName}</span> : null}
+				{entry.swapped.length === 0 ? null : (
+					<span>
+						Swapped <span className="font-mono text-fg">{entry.swapped.join(", ")}</span>
+					</span>
+				)}
+				{/* What moved, in words; nothing at all is left unsaid rather than shown as dashes. */}
+				{entry.bytesUp === 0 && entry.bytesDown === 0 ? null : (
+					<span className="tabular-nums">
+						{[
+							entry.bytesUp === 0 ? undefined : `${bytesText(entry.bytesUp)} sent`,
+							entry.bytesDown === 0 ? undefined : `${bytesText(entry.bytesDown)} received`,
+						]
+							.filter((part) => part !== undefined)
+							.join(", ")}
+					</span>
+				)}
 			</div>
 			{expanded ? (
 				<div id={detailId} className="pt-1">

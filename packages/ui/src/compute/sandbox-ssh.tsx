@@ -9,7 +9,13 @@ import { Button } from "../primitives/button.tsx";
 import { CopyButton, Disclosure, TextAreaField } from "../primitives/controls.tsx";
 import { clockTime } from "../primitives/format.ts";
 import { DownloadIcon } from "../primitives/lucide.tsx";
-import { CommandBlock } from "../primitives/one-time-secret.tsx";
+import {
+	BreakableCommand,
+	CommandBlock,
+	commandFrameClass,
+	commandPromptClass,
+	commandTextClass,
+} from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { CLI_INSTALL_COMMAND, type SandboxAccess, type SandboxesSource, type SandboxSshKey } from "./compute-model.ts";
@@ -28,23 +34,35 @@ export function publicKeyProblem(text: string): string | undefined {
 }
 
 /**
- * A command in code's font, with a Copy: on one line where it fits, wrapping where it doesn't (a phone), so all of
- * it can be read before it is copied.
+ * A command in code's font, with a Copy pinned to the corner: all of it shown, wrapping at spaces and slashes where it
+ * is wider than its box (a phone), so it can be read before it is copied.
  */
 function CommandLine({ command, copyLabel }: { command: string | undefined; copyLabel: string }) {
 	return (
-		<div className="flex min-h-control-lg min-w-0 items-center gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
-			<span className="flex-none text-faint" aria-hidden="true">
+		<div className={commandFrameClass}>
+			<span className={commandPromptClass} aria-hidden="true">
 				$
 			</span>
 			{command === undefined ? (
-				<span className="flex-1">
+				<span className="flex min-h-control-sm flex-1 items-center">
 					<Skeleton />
 				</span>
 			) : (
-				<code className="kt-selectable min-w-0 flex-1 py-1 leading-normal break-all text-fg">{command}</code>
+				<code className={`kt-selectable ${commandTextClass}`}>
+					<BreakableCommand command={command} />
+				</code>
 			)}
-			{command === undefined ? null : <CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />}
+			{command === undefined ? null : (
+				<>
+					<span className="max-sm:hidden">
+						<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />
+					</span>
+					{/* On a phone Copy is its icon alone, so the command keeps the width. */}
+					<span className="sm:hidden">
+						<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" iconOnly />
+					</span>
+				</>
+			)}
 		</div>
 	);
 }
@@ -206,6 +224,7 @@ export function SandboxSsh({
 	onAccessRetry,
 	now,
 	withoutCliOpen = false,
+	cliSetupOpen = false,
 }: {
 	source: Pick<SandboxesSource, "sshKey">;
 	sandboxId: string;
@@ -214,6 +233,8 @@ export function SandboxSsh({
 	now: number;
 	/** Starts with "Without the Kantel CLI" open, for stories. */
 	withoutCliOpen?: boolean;
+	/** Starts with "Set up the Kantel CLI" open, for stories and tests. */
+	cliSetupOpen?: boolean;
 }) {
 	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
 	const { sshKey } = source;
@@ -235,12 +256,17 @@ export function SandboxSsh({
 			) : (
 				<>
 					<CommandLine command={ready?.ssh} copyLabel="Copy" />
-					<p className="m-0 text-sm text-muted">
-						With the Kantel CLI, which needs Node.js 22 or later.{" "}
-						{ready?.cliLogin === undefined ? "To install it:" : "Install it, then sign it in to this Kantel once:"}
-					</p>
-					<CommandLine command={CLI_INSTALL_COMMAND} copyLabel="Copy" />
-					{ready?.cliLogin === undefined ? null : <CommandLine command={ready.cliLogin} copyLabel="Copy" />}
+					{/* The way in stays in front; setting up the CLI, done once, is folded under it. */}
+					<Disclosure summary="Set up the Kantel CLI" defaultOpen={cliSetupOpen}>
+						<div className="flex min-w-0 flex-col gap-2">
+							<p className="m-0 text-sm text-muted">
+								It needs Node.js 22 or later.{" "}
+								{ready?.cliLogin === undefined ? "To install it:" : "Install it, then sign it in to this Kantel once:"}
+							</p>
+							<CommandLine command={CLI_INSTALL_COMMAND} copyLabel="Copy" />
+							{ready?.cliLogin === undefined ? null : <CommandLine command={ready.cliLogin} copyLabel="Copy" />}
+						</div>
+					</Disclosure>
 					{ready?.sshWithoutCli === true && sshKey !== undefined ? (
 						<Disclosure summary="Without the Kantel CLI" defaultOpen={withoutCliOpen}>
 							<WithoutCli grant={grant} now={now} />

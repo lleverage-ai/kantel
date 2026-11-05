@@ -15,7 +15,6 @@ import { useLoad, useReloadOn } from "../primitives/load.ts";
 import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
-import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import {
@@ -193,7 +192,7 @@ export function SnapshotsPage({
 		<div className={computePage}>
 			<PageHeader
 				title="Snapshots"
-				lede="Saved snapshots have a name and stay until you delete them; new sandboxes start from them. Each sandbox also keeps its own history, taken when it stops and regularly while it runs, for 14 days."
+				lede="Saved snapshots stay until you delete them, and new sandboxes start from them."
 			/>
 			{notice === undefined ? null : (
 				<Notice
@@ -364,7 +363,7 @@ function SavedList({
 								},
 							];
 							return (
-								<tr key={entry.id} className={rowHover} data-snapshot={entry.id}>
+								<tr key={entry.id} className={`${rowHover} [&>td]:align-baseline`} data-snapshot={entry.id}>
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
 										{entry.base?.outdated === true ? (
@@ -373,25 +372,45 @@ function SavedList({
 											</span>
 										) : null}
 									</td>
-									<td className={td}>
+									{/* On a phone (table.css): where it came from on a line of its own, then the type, size and uses,
+									    then when and by whom. */}
+									<td className={td} data-phone="line">
 										<span className="text-fg">{entry.sandboxName}</span>
 										{entry.sandboxId === undefined ? <span className={cellSub}>Since deleted</span> : null}
 									</td>
-									<td className={td}>
-										<Badge tone={entry.kind === "microvm" ? "accent" : "neutral"}>
-											{SANDBOX_KIND_LABELS[entry.kind]}
-										</Badge>
+									{/* Plain words, as the sandboxes list gives a type: a tag here would outweigh the name. On a phone the
+									    type, size and uses carry their column's name before them, as a key card's facts do. */}
+									<td className={td} data-phone="pair">
+										{SANDBOX_KIND_LABELS[entry.kind]}
 									</td>
-									<td className={`${td} text-right tabular-nums`}>{bytesText(entry.sizeBytes)}</td>
-									<td className={td}>
+									<td className={`${td} text-right tabular-nums`} data-phone="pair">
+										{bytesText(entry.sizeBytes)}
+									</td>
+									{/* On a phone, when and by whom on the card's last line, after what it is, its size and its uses. */}
+									<td className={`${td} whitespace-nowrap`} data-phone="bare line last">
 										<span className="text-fg" title={new Date(entry.createdAt).toLocaleString("en-GB")}>
 											{compactAge(entry.createdAt, now)}
 										</span>
 										<span className={cellSub}>by {entry.createdBy}</span>
 									</td>
-									<td className={`${td} text-right tabular-nums`}>{entry.uses.toLocaleString("en-GB")}</td>
-									<td className={`${td} w-0 text-right`}>
-										<Menu label={`Actions for ${entry.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
+									<td className={`${td} text-right tabular-nums`} data-phone="pair">
+										{entry.uses.toLocaleString("en-GB")}
+									</td>
+									<td className={`${td} w-0 pl-6 text-right`}>
+										{/* What a saved snapshot is for, in reach on its row; the rest stays in the menu. A wider gutter keeps
+										    Start apart from the Uses figure before it. */}
+										<span className="inline-flex items-center gap-1">
+											{onStartFrom === undefined ? null : (
+												<Button
+													size="sm"
+													onClick={() => onStartFrom(entry)}
+													aria-label={`Start a sandbox from ${entry.name}`}
+												>
+													Start
+												</Button>
+											)}
+											<Menu label={`Actions for ${entry.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
+										</span>
 									</td>
 								</tr>
 							);
@@ -457,6 +476,8 @@ function BySandbox({
 			<div className="max-w-(--kt-card-width)">
 				<SelectField
 					label="Sandbox"
+					// Where a sandbox's own history is explained: the page's lede keeps to saved snapshots.
+					hint="Taken when it stops and regularly while it runs, and kept for 14 days."
 					value={chosen.id}
 					onChange={(event) => onPick(event.currentTarget.value)}
 					options={list.map((box) => ({

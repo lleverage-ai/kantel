@@ -11,7 +11,7 @@ const bar =
 
 /** A tab: icon over a short label, the width of a thumb, muted until it is the page shown. */
 const tab =
-	"kt-tab-bar-item kt-focusable flex h-(--kt-tabbar-height) min-w-0 flex-col items-center justify-center gap-1 px-1 text-2xs leading-tight no-underline focus-visible:-outline-offset-(--kt-ring)!";
+	"kt-tab-bar-item kt-focusable flex h-(--kt-tabbar-height) min-w-0 flex-col items-center justify-center gap-1 px-1 text-xs leading-tight no-underline focus-visible:-outline-offset-(--kt-ring)!";
 
 const tabState = {
 	selected: "font-medium text-fg [&_.kt-icon]:text-accent-text",

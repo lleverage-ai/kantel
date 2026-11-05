@@ -4,12 +4,13 @@
 // follow it: a warning says so and, for a super-admin, takes the address hosts should use instead, then makes the
 // command again with it.
 
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { Disclosure, TextField } from "../primitives/controls.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { CommandBlock } from "../primitives/one-time-secret.tsx";
-import { Skeleton, Spinner } from "../primitives/spinner.tsx";
+import { Skeleton } from "../primitives/spinner.tsx";
+import { StatusLabel } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { expiresText, type Host, type HostJoin, type HostsSource, type PublicUrl } from "./compute-model.ts";
 import { messageOf } from "./parts.tsx";
@@ -29,6 +30,13 @@ export interface HostJoinCommandProps {
 	readonly onJoined?: (host: Host) => void;
 	/** Stops reading the hosts, for a story whose fixtures never change. */
 	readonly poll?: boolean;
+	/**
+	 * Under the command and what the machine needs, and folded with them while hosts can't reach the console: the wait
+	 * for the host, which only means something once the command can be run.
+	 */
+	readonly after?: ReactNode;
+	/** Whether hosts can't reach the console, so the address is the step's first job: told as it changes. */
+	readonly onBlocked?: (blocked: boolean) => void;
 }
 
 /** `http://127.0.0.1:58090` alone, or an origin: what the public URL field accepts. */
@@ -40,7 +48,15 @@ export function looksLikeOrigin(text: string): boolean {
  * The join command, the loopback warning when it needs one, what the machine needs, and the wait for it. Makes a
  * new command whenever `input` changes or the public URL is set.
  */
-export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll = true }: HostJoinCommandProps) {
+export function HostJoinCommand({
+	source,
+	input,
+	now: fixedNow,
+	onJoined,
+	poll = true,
+	after,
+	onBlocked,
+}: HostJoinCommandProps) {
 	const [made, setMade] = useState<{ readonly join?: HostJoin; readonly error?: string }>({});
 	const [generation, setGeneration] = useState(0);
 	const inputKey = JSON.stringify(input ?? {});
@@ -81,9 +97,10 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	useJoinWait(source, waiting ? baseline.known : undefined, onJoined);
 
 	const now = fixedNow ?? Date.now();
-	// While other machines can't reach the console, the address comes first: the command made for it works only on this
-	// machine, so it waits behind a disclosure rather than looking ready to copy.
+	// While other machines can't reach the console, the command works only on this machine: say so before it, with the
+	// field that fixes it, so the address is set before the command is copied.
 	const unreachable = url?.loopback === true && source.publicUrl !== undefined;
+	useEffect(() => onBlocked?.(unreachable), [onBlocked, unreachable]);
 	const command =
 		baseline.error !== undefined && baseline.known === undefined ? (
 			<Notice level="error">{baseline.error}</Notice>
@@ -103,7 +120,7 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 				<Skeleton lines={2} />
 			</div>
 		) : (
-			<CommandBlock command={made.join.command} copyLabel="Copy" />
+			<CommandBlock command={made.join.command} copyLabel="Copy" prompt />
 		);
 	const requirements = (
 		<p className="m-0 text-sm text-muted">
@@ -113,41 +130,47 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 				: `The token works once and ${expiresText(made.join.expiresAt, now).toLowerCase()}.`}
 		</p>
 	);
+	const warning = unreachable ? (
+		<LoopbackWarning
+			url={url}
+			onSave={async (next) => {
+				const saved = await (source.publicUrl as NonNullable<HostsSource["publicUrl"]>).set(next);
+				setShownUrl(saved);
+				setGeneration((value) => value + 1);
+			}}
+		/>
+	) : null;
 	return (
 		<div className="kt-host-join flex min-w-0 flex-col gap-3">
+			{/* Before the command, not instead of it: it runs as it is on this machine, and the field fixes it for others. */}
+			{warning}
+			{/* While other machines can't reach the console, the address is the one thing to do: the command, which works on
+			    this machine only, waits behind a fold rather than inviting a copy that fails on the host. */}
 			{unreachable ? (
-				<LoopbackWarning
-					url={url}
-					onSave={async (next) => {
-						const saved = await (source.publicUrl as NonNullable<HostsSource["publicUrl"]>).set(next);
-						setShownUrl(saved);
-						setGeneration((value) => value + 1);
-					}}
-				/>
-			) : null}
-			{unreachable ? (
-				<Disclosure summary="The command for a host on this machine">
-					<div className="flex min-w-0 flex-col gap-3 pt-2">
+				<Disclosure summary="Run it on this machine instead">
+					<div className="flex min-w-0 flex-col gap-3">
 						{command}
 						{requirements}
+						{after}
 					</div>
 				</Disclosure>
 			) : (
 				<>
 					{command}
 					{requirements}
+					{after}
 				</>
 			)}
 		</div>
 	);
 }
 
-/** "Waiting for the host", while the wait runs: a spinner and the words, announced politely. */
+/** "Waiting for the host", while the wait runs: a breathing dot and the words, announced politely. */
 export function JoinWaiting() {
 	return (
-		<span className="kt-host-join-waiting flex items-center gap-2 text-sm text-muted" role="status">
-			<Spinner size="sm" />
-			Waiting for the host
+		// The list's "Starting": a breathing dot and the words, so it reads as something under way, not an empty radio.
+		<span className="kt-host-join-waiting text-sm" role="status">
+			<StatusLabel status="working">Waiting for the host</StatusLabel>
 		</span>
 	);
 }
@@ -260,12 +283,13 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 	return (
 		<Notice level="warning">
 			<div className="flex min-w-0 flex-col gap-2">
-				<span>
-					<strong className="font-medium text-fg">Other machines can't reach {url.publicUrl}.</strong> Give the console
-					an address hosts can reach, then copy the command again.
+				{/* A heading line, then the instruction under it: the callout reads as what's wrong, then what to do. */}
+				<span className="flex min-w-0 flex-col gap-0.5">
+					<strong className="font-medium text-fg">Other machines can't reach {url.publicUrl}.</strong>
+					<span>Give the console an address hosts can reach, and the install command will use it.</span>
 				</span>
 				<form
-					className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch"
+					className="flex min-w-0 items-end gap-2 max-sm:flex-col max-sm:items-stretch"
 					onSubmit={(event) => {
 						event.preventDefault();
 						save();
@@ -274,7 +298,6 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 					<TextField
 						className="min-w-0 flex-1"
 						label="Public URL"
-						hideLabel
 						type="url"
 						inputMode="url"
 						placeholder="https://kantel.example.com"
@@ -285,7 +308,7 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 						autoCapitalize="off"
 						{...(error === undefined ? {} : { error })}
 					/>
-					<Button type="submit" size="md" busy={busy} disabled={text.trim() === ""}>
+					<Button type="submit" variant="primary" size="md" busy={busy}>
 						Save
 					</Button>
 				</form>

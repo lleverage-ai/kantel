@@ -1,7 +1,7 @@
 /* An icon's size, as plain CSS rather than utilities because it is a shared hook: icons.tsx and lucide.tsx put these
    classes on their svgs, and so do the raw lucide-react icons drawn elsewhere (documents/, presented/,
    session/provider-icon.tsx), on their own elements. Other stylesheets select on them too (an icon in a card, a
-   menu, a row). Keep the three rules and the class names together; don't add size utilities beside them. */
+   menu, a row). Keep the size rules and the class names together; don't add size utilities beside them. */
 
 .kt-icon {
 	flex: none;
@@ -15,4 +15,9 @@
 .kt-icon-md {
 	width: var(--kt-icon-md);
 	height: var(--kt-icon-md);
+}
+
+.kt-icon-lg {
+	width: var(--kt-icon-lg);
+	height: var(--kt-icon-lg);
 }

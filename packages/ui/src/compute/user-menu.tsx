@@ -10,7 +10,7 @@ import { useThemeMenuEntry } from "../theme/theme-switch.tsx";
 
 /** Your initials in a circle. */
 const avatar =
-	"kt-user-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-2xs font-strong leading-none text-fg";
+	"kt-user-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-xs font-strong leading-none text-fg";
 
 /** The sidebar's row: avatar, name and the chevrons, the width of the sidebar. */
 const rowTrigger =
@@ -24,6 +24,8 @@ export interface UserMenuProps {
 	/** Your name; undefined while it loads. */
 	readonly name?: string;
 	readonly email?: string;
+	/** Who is signed in couldn't be read (the console can't reach Kantel): say so, rather than look still loading. */
+	readonly unavailable?: boolean;
 	/** The avatar alone, for a phone's top bar. */
 	readonly compact?: boolean;
 	/** Opens Admin: shown here on a phone, where the sidebar's Admin isn't. */
@@ -54,8 +56,23 @@ export function UserMenu({
 	onSignOut,
 	onThemeChoose,
 	defaultOpen = false,
+	unavailable = false,
 }: UserMenuProps) {
 	const theme = useThemeMenuEntry(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose });
+	if (name === undefined && unavailable) {
+		return (
+			<div className="flex min-w-0 items-center gap-2 px-1.5 py-1 text-sm text-faint">
+				<span className={`${avatar} text-faint`} aria-hidden="true">
+					<PersonIcon size="sm" />
+				</span>
+				{compact ? (
+					<span className="kt-sr-only">Account unavailable</span>
+				) : (
+					<span className="truncate">Account unavailable</span>
+				)}
+			</div>
+		);
+	}
 	if (name === undefined) {
 		return (
 			<div className="flex min-w-0 items-center gap-2 px-1.5 py-1" aria-busy="true">

@@ -3,7 +3,7 @@ import { Spinner } from "./spinner.tsx";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-quiet";
 export type ButtonSize = "xs" | "sm" | "md" | "lg";
 
 /**
@@ -15,26 +15,30 @@ const buttonBase =
 
 /** Each variant's border colour, background and text colour, and its hover (never while disabled). */
 const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
-	primary: "border-transparent bg-primary text-primary-fg hover:not-disabled:bg-primary-hover",
-	secondary: "border-transparent bg-secondary text-fg hover:not-disabled:bg-secondary-hover",
+	// Semibold: dark words on the orange read firmer a step heavier.
+	primary: "border-transparent bg-primary font-strong! text-primary-fg hover:not-disabled:bg-primary-hover",
+	// A hairline round it, so it keeps its shape on a tinted ground (a failed row, an alert) as well as the page.
+	secondary: "border-border-strong bg-secondary text-fg hover:not-disabled:bg-secondary-hover",
 	ghost: "border-transparent bg-transparent text-muted hover:not-disabled:bg-hover hover:not-disabled:text-fg",
 	danger: "border-transparent bg-destructive text-on-solid hover:not-disabled:bg-destructive/85",
+	/** A destructive action that isn't the page's point (Leave): the secondary ground, in the danger colour. */
+	"danger-quiet": "border-status-error-line bg-transparent text-status-error hover:not-disabled:bg-status-error-soft",
 };
 
-/** Each size's height, inline padding and font size, for a button with words. Every button is fully round. */
+/** Each size's height, inline padding and font size, for a button with words. Every button has the control radius, as the Lleverage app's. */
 const buttonSizes: { readonly [size in ButtonSize]: string } = {
-	xs: "h-control-xs px-2.5 py-0 text-xs rounded-full",
-	sm: "h-control-sm px-3 py-0 text-sm rounded-full",
-	md: "h-control-md px-3.5 py-0 text-sm rounded-full",
-	lg: "h-control-lg px-4.5 py-0 text-md rounded-full",
+	xs: "h-control-xs px-2.5 py-0 text-sm rounded-control",
+	sm: "h-control-sm px-3 py-0 text-sm rounded-control",
+	md: "h-control-md px-3.5 py-0 text-sm rounded-control",
+	lg: "h-control-lg px-4.5 py-0 text-md rounded-control",
 };
 
 /** The same for an icon-only button: round, no padding, and touch-wide as well as touch-tall on a coarse pointer. */
 const iconButtonSizes: { readonly [size in ButtonSize]: string } = {
-	xs: "size-control-xs p-0 text-xs rounded-full pointer-coarse:min-w-control-lg",
-	sm: "size-control-sm p-0 text-sm rounded-full pointer-coarse:min-w-control-lg",
-	md: "size-control-md p-0 text-sm rounded-full pointer-coarse:min-w-control-lg",
-	lg: "size-control-lg p-0 text-md rounded-full pointer-coarse:min-w-control-lg",
+	xs: "size-control-xs p-0 text-sm rounded-control pointer-coarse:min-w-control-lg",
+	sm: "size-control-sm p-0 text-sm rounded-control pointer-coarse:min-w-control-lg",
+	md: "size-control-md p-0 text-sm rounded-control pointer-coarse:min-w-control-lg",
+	lg: "size-control-lg p-0 text-md rounded-control pointer-coarse:min-w-control-lg",
 };
 
 /**

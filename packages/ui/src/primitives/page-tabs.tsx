@@ -60,7 +60,7 @@ export function PageTabs({ label, tabs, onSelect, className }: PageTabsProps) {
 					}}
 				>
 					{item.label}
-					{item.count === undefined ? null : <span className="text-xs text-faint tabular-nums">{item.count}</span>}
+					{item.count === undefined ? null : <span className="text-sm text-faint tabular-nums">{item.count}</span>}
 				</a>
 			))}
 		</nav>

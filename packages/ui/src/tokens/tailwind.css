@@ -89,6 +89,7 @@
 
 	--color-border: var(--kt-border);
 	--color-border-strong: var(--kt-border-strong);
+	--color-skeleton: var(--kt-skeleton);
 	--color-border-input: var(--kt-border-input);
 
 	--color-fg: var(--kt-text);
@@ -142,7 +143,7 @@
 	--color-drop-fill: var(--kt-drop-fill);
 	--color-drop-line: var(--kt-drop-line);
 
-	/* Type: `font-sans`, `font-display`, `font-mono` (tokens.css); `text-2xs` to `text-lg`,
+	/* Type: `font-sans`, `font-display`, `font-mono` (tokens.css); `text-xs` to `text-lg`,
 	   `text-code`, `text-title` and the document sizes; `font-regular`, `font-medium`, `font-strong`; `leading-tight`,
 	   `leading-normal`, `leading-prose`. A size sets only the font-size: line height is its own utility, as in the CSS
 	   it replaces. */
@@ -153,11 +154,11 @@
 	--default-font-family: var(--kt-font-sans);
 	--default-mono-font-family: var(--kt-font-mono);
 
-	--text-2xs: var(--kt-text-2xs);
 	--text-xs: var(--kt-text-xs);
 	--text-sm: var(--kt-text-sm);
 	--text-md: var(--kt-text-md);
 	--text-lg: var(--kt-text-lg);
+	--text-xl: var(--kt-text-xl);
 	--text-heading: var(--kt-text-heading);
 	--text-code: var(--kt-text-code);
 	--text-display: var(--kt-text-display);
@@ -199,6 +200,7 @@
 	--spacing-control-lg: var(--kt-control-lg);
 	--spacing-icon-sm: var(--kt-icon-sm);
 	--spacing-icon-md: var(--kt-icon-md);
+	--spacing-icon-lg: var(--kt-icon-lg);
 	--spacing-dot: var(--kt-dot);
 	--spacing-thumb: var(--kt-thumb);
 

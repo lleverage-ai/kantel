@@ -36,7 +36,7 @@ export function Section({ title, children }: { title: string; children: ReactNod
 export function Row({ children, label }: { children: ReactNode; label?: string }) {
 	return (
 		<div className={row}>
-			{label === undefined ? null : <span className="w-[9em] text-xs text-faint">{label}</span>}
+			{label === undefined ? null : <span className="w-[9em] text-sm text-faint">{label}</span>}
 			<div className={rowItems}>{children}</div>
 		</div>
 	);
@@ -53,7 +53,7 @@ export function Swatch({ name, value, text }: { name: string; value: string; tex
 			<span className={swatchChip} style={text ? { color: value } : { background: value }}>
 				{text ? "Aa" : null}
 			</span>
-			<code className="font-mono text-2xs wrap-anywhere text-muted">{name}</code>
+			<code className="font-mono text-xs wrap-anywhere text-muted">{name}</code>
 		</div>
 	);
 }

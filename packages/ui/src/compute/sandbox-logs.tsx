@@ -13,7 +13,7 @@ import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { Switch } from "../primitives/switch.tsx";
 import type { Sandbox, SandboxCommand, SandboxesSource, SandboxSnapshot } from "./compute-model.ts";
-import { messageOf, table } from "./parts.tsx";
+import { messageOf, table, tableFrame } from "./parts.tsx";
 
 export type LogFilter = "all" | "commands" | "events";
 
@@ -80,7 +80,7 @@ const failed = (entry: LogEntry): boolean =>
 export const outputUnavailable = (entries: readonly LogEntry[], endToEnd: boolean): boolean =>
 	endToEnd && entries.some((entry) => failed(entry) && entry.kind === "command" && entry.command.output === undefined);
 
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2 align-middle";
 
 export function SandboxLogs({
@@ -210,7 +210,7 @@ export function SandboxLogs({
 					))}
 				</ul>
 			) : (
-				<div className="kt-compute-table min-w-0 overflow-x-auto">
+				<div className={tableFrame}>
 					<table className={table}>
 						<thead>
 							<tr>

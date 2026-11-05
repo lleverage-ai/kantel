@@ -29,7 +29,7 @@ import {
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
 import { lineOf, ROW_SPAN_MS, seriesOf } from "./live-usage.ts";
-import { computePage, messageOf, Sparkline } from "./parts.tsx";
+import { computePage, messageOf, Sparkline, table, tableFrame } from "./parts.tsx";
 
 export interface HostsPageProps {
 	readonly source: HostsSource;
@@ -79,7 +79,7 @@ export function parseLabels(text: string): { readonly labels: Record<string, str
 	return { labels };
 }
 
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 /** An opened row's cell: its graphs under it carry the hairline. */
 const cellOpen = "px-2 py-2.5 align-middle whitespace-nowrap";
@@ -217,8 +217,8 @@ export function HostsPage({
 							))}
 						</ul>
 					) : (
-						<div className="kt-compute-table min-w-0 overflow-x-auto">
-							<table className="w-full border-collapse text-left text-sm">
+						<div className={tableFrame}>
+							<table className={table}>
 								<thead>
 									<tr>
 										<th className={head} scope="col">
@@ -393,7 +393,7 @@ function Machine({ host }: { host: Host }) {
 			<span className="text-fg">
 				{host.os} <span className="text-muted">{host.arch}</span>
 			</span>
-			{host.kvm ? null : <span className="text-xs text-muted">No KVM, isolates only</span>}
+			{host.kvm ? null : <span className="text-sm text-muted">No KVM, isolates only</span>}
 		</span>
 	);
 }

@@ -18,6 +18,7 @@ import { EllipsisIcon, RevokeInviteIcon, TrashIcon } from "../primitives/lucide.
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { OneTimeSecret } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
+import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { ACCOUNT_ROLE_LABELS, AccountMark } from "./account-switcher.tsx";
 import type {
@@ -167,7 +168,7 @@ function OrganisationRow({
 	const who = (
 		<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 			<span className="truncate font-medium text-fg">{organisation.name}</span>
-			<span className="min-h-4 truncate text-xs text-muted">{members ?? ""}</span>
+			<span className="min-h-4 truncate text-sm text-muted">{members ?? ""}</span>
 		</span>
 	);
 	// A phone: the whole row switches, with a chevron, as a list of places to go.
@@ -326,7 +327,11 @@ function General({
 	return (
 		<div className={computePage}>
 			<SettingsPageHeader title="General" narrow={narrow} />
-			<NameField account={account} {...(rename === undefined ? {} : { rename })} />
+			{/* Its own section under a heading, as Members and Leave are, so the page reads as three blocks of one kind. */}
+			<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-organisation`}>
+				<SectionHeading id={`${headingId}-organisation`} title="Organisation" />
+				<NameField account={account} {...(rename === undefined ? {} : { rename })} />
+			</section>
 			{invited?.code === undefined ? null : (
 				<OneTimeSecret
 					title={
@@ -358,13 +363,14 @@ function General({
 					{notice.text}
 				</Notice>
 			)}
-			<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-members`}>
+			{/* The same room above it as above Leave, so the three sections sit on one rhythm. */}
+			<section className="flex min-w-0 flex-col gap-2 pt-4" aria-labelledby={`${headingId}-members`}>
 				<SectionHeading
 					id={`${headingId}-members`}
 					title="Members"
 					actions={
 						manager ? (
-							<Button icon={<PlusIcon size="sm" />} onClick={() => setInviting(true)}>
+							<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setInviting(true)}>
 								Invite
 							</Button>
 						) : undefined
@@ -408,11 +414,13 @@ function General({
 			{account.role === "owner" ? null : (
 				<section className="flex min-w-0 flex-col gap-2 pt-4" aria-labelledby={`${headingId}-leave`}>
 					<SectionHeading id={`${headingId}-leave`} title="Leave" />
-					<div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+					{/* A card like the members list above it, so the page ends on a block rather than loose text. */}
+					<div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-panel border border-border bg-raised px-4 py-3">
 						<p className="m-0 min-w-0 text-sm text-muted">
 							You lose access to {account.name}'s sandboxes, snapshots and keys.
 						</p>
-						<Button variant="danger" onClick={() => setLeaving(true)}>
+						{/* Quiet until it's asked for: the confirming dialog has the solid red button. */}
+						<Button variant="danger-quiet" onClick={() => setLeaving(true)}>
 							Leave {account.name}
 						</Button>
 					</div>
@@ -471,7 +479,8 @@ function NameField({ account, rename }: { account: ComputeAccount; rename?: (nam
 	};
 	return (
 		<form
-			className="flex min-w-0 max-w-(--kt-card-width) items-end gap-2"
+			// As wide as the members card under it, so the page's blocks share one right edge.
+			className="flex min-w-0 items-end gap-2"
 			onSubmit={(event) => {
 				event.preventDefault();
 				save();
@@ -480,6 +489,10 @@ function NameField({ account, rename }: { account: ComputeAccount; rename?: (nam
 			<div className="min-w-0 flex-1">
 				<TextField
 					label="Name"
+					// How an edit is kept, since Save shows only once the name changes.
+					{...(rename === undefined
+						? {}
+						: { hint: dirty ? "Save, or press Enter, to rename it." : "Shown to everyone in it." })}
 					value={name}
 					readOnly={rename === undefined}
 					maxLength={100}
@@ -510,7 +523,7 @@ function RowsSkeleton() {
 function PersonMark({ name }: { name: string }) {
 	return (
 		<span
-			className="inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-2xs font-strong leading-none text-fg"
+			className="inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-xs font-strong leading-none text-fg"
 			aria-hidden="true"
 		>
 			{initials(name)}
@@ -605,90 +618,108 @@ function People({
 	const manager = canManage(viewerRole);
 	const rank: Readonly<Record<AccountRole, number>> = { owner: 0, admin: 1, member: 2 };
 	const sorted = [...members].sort((a, b) => rank[a.role] - rank[b.role] || a.name.localeCompare(b.name, "en-GB"));
-	const row = `flex min-w-0 items-center gap-3 border-b border-border py-2.5 text-sm ${narrow ? "" : "px-2"}`;
-	const status = narrow ? "hidden" : "w-32 flex-none text-muted";
+	// In a card at every width, as every list in the console.
+	const row = `flex min-w-0 items-center gap-3 border-b border-border py-2.5 text-sm last:border-b-0 ${narrow ? "px-3" : "px-4"}`;
+	// The role is a fixed column just before the row's menu, under a Role heading on a wide card, so every row ends on the
+	// same edge and the column reads as one.
+	const roleColumn = "flex w-28 flex-none justify-start";
+	// The menu's room, kept on every row (and the heading) so the role column lines up whether a row has a menu or not.
+	const menuColumn = "w-control-xs flex-none pointer-coarse:w-control-lg";
 	return (
-		<ul className="kt-member-rows m-0 flex list-none flex-col p-0">
-			{sorted.map((member) => {
-				const you = member.id === viewerId;
-				const waiting = busy.has(member.id);
-				const removable = manager && !you && !waiting && member.role !== "owner";
-				return (
-					<li key={member.id} className={row} data-member={member.id} aria-busy={waiting || undefined}>
-						<PersonMark name={member.name} />
-						<span
-							className="flex min-w-0 flex-1 flex-col gap-0.5"
-							title={`Joined ${compactAge(member.joinedAt, now)} ago`}
-						>
-							<span className="truncate font-medium text-fg">
-								{member.name}
-								{you ? <span className="font-regular text-muted"> you</span> : null}
+		// In a white card, as every list in the console is.
+		<div className="rounded-panel border border-border bg-raised">
+			{narrow ? null : (
+				// The headings, as a table's: the list's own rows are read with their labels, so this is for the eye.
+				<div
+					className="flex h-control-md items-center gap-3 border-b border-border px-4 text-sm font-medium text-muted"
+					aria-hidden="true"
+				>
+					<span className="flex-1">Name</span>
+					<span className={`${roleColumn} px-1.5`}>Role</span>
+					{manager ? <span className={menuColumn} /> : null}
+				</div>
+			)}
+			<ul className="kt-member-rows m-0 flex list-none flex-col p-0">
+				{sorted.map((member) => {
+					const you = member.id === viewerId;
+					const waiting = busy.has(member.id);
+					const removable = manager && !you && !waiting && member.role !== "owner";
+					return (
+						<li key={member.id} className={row} data-member={member.id} aria-busy={waiting || undefined}>
+							<PersonMark name={member.name} />
+							<span
+								className="flex min-w-0 flex-1 flex-col gap-0.5"
+								title={`Joined ${compactAge(member.joinedAt, now)} ago`}
+							>
+								<span className="flex min-w-0 items-center gap-2">
+									<span className="truncate font-medium text-fg">{member.name}</span>
+									{/* A label, not part of the name. */}
+									{you ? <Badge tone="neutral">You</Badge> : null}
+								</span>
+								{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
 							</span>
-							{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
-						</span>
-						<span className={status} />
-						<span className="flex flex-none justify-end">
-							<RoleControl
-								member={member}
-								viewerRole={viewerRole}
-								{...(you || waiting || onRole === undefined ? {} : { onRole })}
-							/>
-						</span>
-						{manager ? (
-							<RowMenu
-								label={`Actions for ${member.name}`}
-								entries={
-									removable
-										? [
-												{
-													kind: "item",
-													id: "remove",
-													label: "Remove",
-													icon: <TrashIcon />,
-													danger: true,
-													onSelect: () => onRemove(member),
-												},
-											]
-										: []
-								}
-							/>
-						) : null}
-					</li>
-				);
-			})}
-			{invites.map((invite) => {
-				const sent = `Invited ${compactAge(invite.sentAt, now)} ago`;
-				const name = invite.email === "" ? "Anyone with the code" : invite.email;
-				return (
-					<li key={invite.id} className={row} data-invite={invite.id}>
-						<PersonMark name={invite.email === "" ? "?" : invite.email} />
-						<span className="flex min-w-0 flex-1 flex-col gap-0.5">
-							<span className="truncate font-medium text-fg">{name}</span>
-							{narrow ? <span className="truncate text-xs text-muted">{sent}</span> : null}
-						</span>
-						<span className={status}>{narrow ? null : sent}</span>
-						<span className="flex flex-none justify-end">
-							<RoleText role={invite.role} />
-						</span>
-						{manager ? (
-							<RowMenu
-								label={`Actions for the invite to ${name}`}
-								entries={[
-									{
-										kind: "item",
-										id: "revoke",
-										label: "Revoke invite",
-										icon: <RevokeInviteIcon />,
-										danger: true,
-										onSelect: () => onRevoke(invite),
-									},
-								]}
-							/>
-						) : null}
-					</li>
-				);
-			})}
-		</ul>
+							<span className={roleColumn}>
+								<RoleControl
+									member={member}
+									viewerRole={viewerRole}
+									{...(you || waiting || onRole === undefined ? {} : { onRole })}
+								/>
+							</span>
+							{manager ? (
+								<RowMenu
+									label={`Actions for ${member.name}`}
+									entries={
+										removable
+											? [
+													{
+														kind: "item",
+														id: "remove",
+														label: "Remove",
+														icon: <TrashIcon />,
+														danger: true,
+														onSelect: () => onRemove(member),
+													},
+												]
+											: []
+									}
+								/>
+							) : null}
+						</li>
+					);
+				})}
+				{invites.map((invite) => {
+					const sent = `Invited ${compactAge(invite.sentAt, now)} ago`;
+					const name = invite.email === "" ? "Anyone with the code" : invite.email;
+					return (
+						<li key={invite.id} className={row} data-invite={invite.id}>
+							<PersonMark name={invite.email === "" ? "?" : invite.email} />
+							<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+								<span className="truncate font-medium text-fg">{name}</span>
+								<span className="truncate text-sm text-muted">{sent}</span>
+							</span>
+							<span className={roleColumn}>
+								<RoleText role={invite.role} />
+							</span>
+							{manager ? (
+								<RowMenu
+									label={`Actions for the invite to ${name}`}
+									entries={[
+										{
+											kind: "item",
+											id: "revoke",
+											label: "Revoke invite",
+											icon: <RevokeInviteIcon />,
+											danger: true,
+											onSelect: () => onRevoke(invite),
+										},
+									]}
+								/>
+							) : null}
+						</li>
+					);
+				})}
+			</ul>
+		</div>
 	);
 }
 

@@ -48,7 +48,7 @@ const KindIcon = ({ kind }: { kind: AccountKind }) =>
 export function AccountMark({ account }: { account: Pick<ComputeAccount, "kind" | "name"> }) {
 	return (
 		<span
-			className={`kt-account-mark inline-grid size-control-sm flex-none place-items-center border border-border-strong bg-raised text-2xs font-strong leading-none text-fg ${
+			className={`kt-account-mark inline-grid size-control-sm flex-none place-items-center border border-border-strong bg-raised text-xs font-strong leading-none text-fg ${
 				account.kind === "personal" ? "rounded-full" : "rounded-control"
 			}`}
 			aria-hidden="true"
