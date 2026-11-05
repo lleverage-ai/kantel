@@ -250,6 +250,10 @@ await Promise.all(forks.items.map((fork) => kantel.runCommand(fork.id, { command
 
 `count` is 1 by default and at most 50. A fork copies the source's newest snapshot, or the one `snapshotId` names from its history. A running microVM on a host that can fork live is copied with its memory. Each copy gets its own ID and records the source in `source.sandboxId`. Forks are idempotent like creates.
 
+A microVM fork is its source's machine: the same vCPUs, memory and disk, a custom shape included, unless you name another `size` (only from a snapshot of the disk alone). Its `resources` say so from the moment it's made, while it is still `starting`.
+
+A fork also gets the ports its source has exposed when it's forked, once the fork runs: each the same port, public or behind a token as it was, at the fork's own URL (`https://<port>-<fork's subdomain>.<domain>`). A token-gated port's token is new and isn't shown; expose the port again on the fork to get its URL with a token. A stopped source has no exposed ports, so a fork of one has none.
+
 ## Recover
 
 A sandbox that stops answering, or lands in `error`, can be recovered. Kantel restarts its machine on its disk as it is. Anything in memory is lost.

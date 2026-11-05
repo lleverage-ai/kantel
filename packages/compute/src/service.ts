@@ -73,6 +73,7 @@ import { createE2EChains } from "./e2e.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import {
 	type AskedMachine,
+	copiedResources,
 	makesCustom,
 	makesShape,
 	recordedMachine,
@@ -2863,6 +2864,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const patchSandbox = (sandboxId: string, change: (current: StoredSandbox) => StoredSandbox | undefined) =>
 		store.sandboxes.update(sandboxId, change);
 
+	/**
+	 * Exposes a fork's source's ports (`ports`, as the source had them when it was forked) on the fork once it runs, each
+	 * as it was there: the same port, public or behind a token. Each gets its own URL under the fork's subdomain, exposed
+	 * as `grantee` (whoever forked it), so it ends when their access does, as a port they exposed would. A gated port's
+	 * token is shown to no one, as nobody asked for it: exposing the port again gives a new one, as it always does. A port
+	 * that can't be exposed is left off (the fork runs all the same), and one exposed on the fork meanwhile is kept.
+	 */
+	async function copyPorts(
+		fork: StoredSandbox,
+		ports: readonly computeSchema.ExposedPort[],
+		grantee: string,
+	): Promise<void> {
+		if (!fork.capabilities.ports) return;
+		for (const port of ports) {
+			const latest = await store.sandboxes.get(fork.id);
+			if (latest?.state !== "running") return;
+			if (latest.ports.some((entry) => entry.port === port.port)) continue;
+			let url: string;
+			try {
+				({ url } = await backend.exposePort(fork.id, port.port, {
+					public: port.public,
+					subdomain: fork.subdomain,
+					grantee,
+				}));
+			} catch {
+				continue;
+			}
+			const exposed: computeSchema.ExposedPort = {
+				port: port.port,
+				url: withoutPortToken(url),
+				public: port.public,
+				createdAt: now(),
+			};
+			await patchSandbox(fork.id, (latest) =>
+				// Stopped or gone meanwhile (its ports went with it), or the port exposed on it by hand already: as it is.
+				latest.state !== "running" || latest.ports.some((entry) => entry.port === port.port)
+					? undefined
+					: { ...latest, ports: [...latest.ports, exposed] },
+			);
+		}
+	}
+
 	/** The sandbox in a new state, with its run periods, stop time and timestamps kept in step. */
 	function withState(sandbox: StoredSandbox, state: SandboxState, extra: Partial<StoredSandbox> = {}): StoredSandbox {
 		const at = now();
@@ -5323,15 +5366,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Their machine, as every create decides it (`sandboxMachine`): from a snapshot, that of the sandbox it was taken
 				// of (the source's now, for one from before snapshots kept it) unless `size` names another. Forked live, the
 				// source's own, whatever `size` says: a host copies the running machine as it is.
+				const copies = snapshot !== undefined && recordsMachine(snapshot) ? snapshot : current;
 				const machine =
 					current.type !== "microvm"
 						? undefined
 						: snapshot === undefined
 							? sandboxMachine({ copies: current }, {}, [])
 							: sandboxMachine(
-									{
-										copies: recordsMachine(snapshot) ? snapshot : current,
-									},
+									{ copies },
 									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
 									restoreAsked(
 										{ id: snapshot.id, memory: await holdsMemory(snapshot), ...recordedMachine(snapshot) },
@@ -5339,6 +5381,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									),
 									[],
 								);
+				// What they will be given, where that is the machine they copy: on their records from the start, so a fork never
+				// reads as having no machine (shown as the smallest size) while it starts. Their placements then say what they got.
+				const resources = current.type === "microvm" ? copiedResources(copies, machine) : undefined;
+				// The source's exposed ports, as they are now: each fork gets them once it runs (`copyPorts`).
+				const sourcePorts = current.capabilities.ports ? current.ports.map((port) => ({ ...port })) : [];
+				const grantee = encodeGrantee(principal);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
 				for (let index = 0; index < count; index++) {
@@ -5364,6 +5412,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						type: current.type,
 						size: machine?.size,
 						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
+						...(resources === undefined ? {} : { resources: { ...resources } }),
 						// An isolate asks for its source's memory.
 						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
 						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
@@ -5415,7 +5464,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// machine) rather than be taken for never made (`neverPlaced`).
 				const work = track([current.id, ...forks.map((fork) => fork.id)], async () => {
 					for (const fork of forks) {
-						await boot(
+						const booted = await boot(
 							fork.id,
 							async () => {
 								const [placement] = await backend.fork(
@@ -5442,6 +5491,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							undefined,
 							{ egressRevision },
 						);
+						if (booted?.state === "running") await copyPorts(booted, sourcePorts, grantee);
 					}
 				});
 				if (body.wait === true) await work;

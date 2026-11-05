@@ -523,7 +523,9 @@ export const forkSandbox = defineRoute({
 	summary: "Fork a sandbox",
 	description: describe(
 		"Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on",
-		"a host that can fork live is copied with its memory. The source doesn't change.",
+		"a host that can fork live is copied with its memory. The source doesn't change. A microVM fork is its source's",
+		"machine (its `resources` from the start) unless `size` names another, and gets the source's exposed ports, each",
+		"public or gated as it was, at its own URLs once it runs.",
 		scope("sandboxes:write"),
 	),
 	params: SandboxPath,
