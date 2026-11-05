@@ -1,238 +1,59 @@
 /**
- * `KantelStack`: the Durable Object that hosts the stack and its gateway. Its state is durable (#17, step 2):
+ * `KantelStack`: the Durable Object that hosts the stack and its gateway. Its state is durable:
  *
- * - the identity directory, the audit store, skills and memory in D1 (`DB`);
- * - workspaces in R2 (`WORKSPACES`), and skill files' bodies beside them under `skills/`;
- * - the session runtime (`SessionRuntimeDurableObjectCore` from `@kantel/runtime-cloudflare`): its directory,
- *   profiles, host registrations and each session's Pi storage in this object's own SQLite, and its alarm;
+ * - the identity directory and the audit store in D1 (`DB`);
+ * - audit events queued in this object's own SQLite before they drain to D1 (`src/audit-outbox.ts`);
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
- * - the model gateway (`src/models.ts`), calling CLIProxyAPI through the `MODELS` VPC service with the key the vault
- *   object keeps, when the Worker has both; the echo model otherwise;
- * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `KANTEL_ISOLATE_BACKEND` names: `in-process`
- *   in this object, or `dynamic-worker` (`src/dynamic-worker.ts`) through the `LOADER` binding, whose isolates read
- *   the workspace through a port this object passes them as an RPC target;
- * - the vault approval API's vault: the VaultDO (`KantelVault`), over RPC;
- * - the browser (`src/browser.ts`): the broker over brwsr, with the `KANTEL_BRWSR_API_KEY` Worker secret, when the
- *   Worker has it; sessions have no browser tools otherwise;
- * - tool servers (`src/tool-servers.ts`), with `KANTEL_TOOL_SERVERS=experimental`: the registry in D1, and each
- *   server's tunnel in its `KantelTunnel` object (`TUNNELS`), which this object calls and which reports back here
- *   over RPC.
+ * - the compute API's records (`src/compute.ts`), in this object's own SQLite, table `compute_api_records`;
+ * - with email-code sign-in on (KANTEL_PUBLIC_URL), each UTC day's count of mail sent (`src/mail.ts`), in its storage,
+ *   so the daily cap holds across restarts. Codes and sessions are in D1 with the directory.
  *
- * One object serves every session: see the README's "Decisions".
+ * With account hosts on (KANTEL_ACCOUNT_HOSTS=experimental), it also holds each such host's WebSocket
+ * (`GET /v1/hosts/connect`), accepted here and handed to the hub `src/compute.ts` keeps, so the compute API's calls reach
+ * the host over the connection the host opened. The socket isn't hibernated (the hub's calls in flight live in
+ * memory), so the object stays in memory while any host is connected; with account hosts off no socket is ever taken.
+ *
+ * Its SQLite still holds what the agent plane kept there (the session runtime's directory, profiles and each session's
+ * Pi storage, the session homes table); nothing reads it now, and nothing deletes it. The alarm the runtime used to arm
+ * is answered and not armed again.
  */
-
-import { DurableObject, RpcTarget } from "cloudflare:workers";
-import { createR2WorkspaceStore } from "@kantel/cloudflare-workspace";
-import type {
-	ConnectorCredential,
-	ConnectorCredentialRequest,
-	ModelCallScope,
-	SystemContext,
-	Timestamp,
-	ToolServerSnapshot,
-} from "@kantel/contracts";
+import { DurableObject } from "cloudflare:workers";
 import { withKantelEnv } from "@kantel/contracts/env";
-import type { AcceptWebSocket } from "@kantel/runtime/http";
-import type { SessionStore } from "@kantel/runtime/store";
-import { r2ObjectBucket } from "@kantel/skills/sql";
 import { d1Driver } from "@kantel/sql/sqlite";
-import type { ToolServerRef } from "@kantel/tools/links";
-import type { TunnelConnected, TunnelGrant } from "@kantel/tools/service";
-import CODEMODE_BUNDLE from "../generated/codemode.bundle.txt";
-import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
-import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
-import QUICKJS_NODE from "../generated/quickjs-node.wasm";
 import { objectSqlDriver } from "./audit-outbox.ts";
-import { type BrowserObjects, type BrowserVars, browserProviderFrom, projectDefaultsFrom } from "./browser.ts";
-import { type CodemodeSandboxObjects, type CodemodeVars, codemodeLoad, workerLoaderCodemode } from "./codemode.ts";
+import {
+	HOSTS_CONNECT_PATH,
+	hostCredential,
+	onMessages,
+	preOpenBuffer,
+	type StackHosts,
+	tunnelTicket,
+} from "./compute.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
-import { type ConnectionsVars, stackConnectionsFrom } from "./connections.ts";
-import type { SandboxContainer } from "./container-backend.ts";
-import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } from "./dynamic-worker.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
-import type { IsolatePort } from "./isolate/runner.ts";
-import type { Placement } from "./measure.ts";
-import {
-	cpaKey,
-	createGatewayModels,
-	defaultModel,
-	imageModel,
-	type ModelsVars,
-	modelsConfigWarning,
-} from "./models.ts";
-import { type RecallVars, recallRendererFrom } from "./recall-renderer.ts";
-import { homeObject, locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
-import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
-import {
-	createSessionHomes,
-	type SessionHomes,
-	sessionIdOfPath,
-	sessionObjectsOn,
-	stackStoreCall,
-} from "./session-homes.ts";
-import { sessionIdleFrom } from "./session-idle.ts";
+import type { MailCounts, SendEmailBinding } from "./mail.ts";
+import type { PlacementVars } from "./route.ts";
+import type { SignUpRecord } from "./sign-up.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
-import { type SubagentVars, subagentsEnabled } from "./subagent.ts";
-import {
-	stackTunnelRpc,
-	type ToolServersVars,
-	type TunnelAuthentication,
-	type TunnelObjectRpc,
-	toolServersOn,
-} from "./tool-servers.ts";
-import { approvalVaultOver, type VaultVars } from "./vault.ts";
-import type { KantelVault } from "./vault-object.ts";
-import { durableHeadCache } from "./workspace-heads.ts";
 
 export { STACK_NAME } from "./route.ts";
 
-export interface Env
-	extends GatewayVars,
-		VaultVars,
-		ModelsVars,
-		SandboxVars,
-		PlacementVars,
-		BrowserVars,
-		CodemodeVars,
-		SubagentVars,
-		RecallVars,
-		ConnectionsVars,
-		ToolServersVars {
-	/**
-	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
-	 * did before. Anything else (the default) serves both.
-	 */
-	readonly KANTEL_SESSION_WEBSOCKET?: string;
-	/**
-	 * `off` takes the experimental `present_files` tool away (`@kantel/sandbox/present-files`). Anything else (the
-	 * default) offers it, and the console shows the files it presents as cards that open a viewer.
-	 */
-	readonly KANTEL_PRESENT_FILES?: string;
-	/**
-	 * How many seconds a session may sit open with nothing to do (no work, no sleep, nobody watching) before the stack puts
-	 * it away, so the object's memory holds only the sessions at work (`sessionIdleSeconds`). `off` keeps every session
-	 * open until it closes or the object is evicted, as before. Default 120.
-	 */
-	readonly KANTEL_SESSION_IDLE_SECONDS?: string;
-	/**
-	 * `on` turns on saved programs (experimental, `src/programs/service.ts`): code mode programs run through
-	 * `/v1/programs/…` with no model, and the default agent's `save_program`. Needs code mode. Off by default.
-	 */
-	readonly KANTEL_PROGRAMS?: string;
-	/**
-	 * `on` lets program runs pause (experimental, `src/programs/journal.ts`): `waitForInput()` and `agent()` in a program,
-	 * `POST /v1/programs/{id}/runs/{runId}/resume`, and each run's journal, so a resumed run doesn't repeat finished
-	 * calls. Needs `KANTEL_PROGRAMS`. Off by default.
-	 */
-	readonly KANTEL_PROGRAM_WAITS?: string;
-	/**
-	 * `off` stops writing a usage row per model call (`src/usage.ts`,
-	 * docs/site/src/content/docs/api/results-and-usage.md). Anything else (the default) writes them to the object's
-	 * ledger and ships them to `usage_calls` in D1.
-	 */
-	readonly KANTEL_USAGE?: string;
+export interface Env extends GatewayVars, PlacementVars {
 	readonly STACK: DurableObjectNamespace;
-	/** The VaultDO (`KantelVault`, `src/vault-object.ts`). */
-	readonly VAULTS: DurableObjectNamespace<KantelVault>;
-	/** The Workers VPC service to CLIProxyAPI. Absent in `wrangler dev`. */
-	readonly MODELS?: Fetcher;
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;
-	readonly WORKSPACES: R2Bucket;
-	/** Kantel's own browsers (`KantelBrowser`, `src/browser-object.ts`), for `KANTEL_BROWSER_PROVIDER=kantel`. */
-	readonly BROWSERS?: DurableObjectNamespace;
-	readonly KANTEL_BROWSER_SEAL_KEY?: string;
-	readonly KANTEL_BROWSER_RECORDING_DAYS?: string;
-	/** The Worker Loader, for the `dynamic-worker` isolate backend and code mode's isolates. */
-	readonly LOADER?: WorkerLoader;
-	/**
-	 * Code mode's sandbox objects (`KantelCodemodeSandbox` of the separately deployed `kantel-codemode` Worker,
-	 * `src/codemode/worker.ts`): with `KANTEL_CODEMODE_OFFLOAD=on`, each script runs in one of them, off this object.
-	 */
-	readonly CODEMODE_SANDBOXES?: DurableObjectNamespace;
-	/** The sessions' container tier (`KantelSandbox`, `src/sandbox-object.ts`), one object per session. */
-	readonly SANDBOXES?: DurableObjectNamespace;
-	/**
-	 * `on` when the deploy runs the sandbox containers (`KANTEL_SANDBOX_CONTAINERS`, scripts/deploy-config.ts): only then
-	 * do commands escalate to a container. Anything else refuses them `unavailable`, as before.
-	 */
-	readonly KANTEL_SANDBOX_CONTAINERS?: string;
-	/** Tool servers' tunnels (`KantelTunnel`, `src/tunnel-object.ts`), one object per server, by its ID. */
-	readonly TUNNELS?: DurableObjectNamespace;
-	/**
-	 * Session objects (`KantelSession`, `src/session-object.ts`): with `KANTEL_SESSION_OBJECTS=on`, each new session runs
-	 * in its own (`src/session-homes.ts`).
-	 */
-	readonly SESSIONS?: DurableObjectNamespace;
-	/** `on` starts each new session in its own `KantelSession` object (experimental). Anything else, the default, is off. */
-	readonly KANTEL_SESSION_OBJECTS?: string;
+	/** The `send_email` binding sign-in codes and invites go through, limited to KANTEL_SIGN_IN_FROM. */
+	readonly SIGN_IN_MAIL?: SendEmailBinding;
 }
-
-/** Whether this deployment starts new sessions in their own objects: the switch, and the binding they need. */
-export function sessionObjectsActive(env: Pick<Env, "KANTEL_SESSION_OBJECTS" | "SESSIONS">): boolean {
-	return sessionObjectsOn(env) && env.SESSIONS !== undefined;
-}
-
-/**
- * A command's workspace port as an RPC target, so the Dynamic Worker isolate can call it: each call runs here, in the
- * stack object, with the caller's context, which the isolate never sees.
- */
-class IsolatePortTarget extends RpcTarget implements IsolatePort {
-	readonly #port: IsolatePort;
-	constructor(port: IsolatePort) {
-		super();
-		this.#port = port;
-	}
-	cancelled() {
-		return this.#port.cancelled();
-	}
-	entries(version: number) {
-		return this.#port.entries(version);
-	}
-	mountEntries(path: string) {
-		return this.#port.mountEntries(path);
-	}
-	readBlob(digest: string) {
-		return this.#port.readBlob(digest);
-	}
-	readMount(path: string) {
-		return this.#port.readMount(path);
-	}
-}
-
-/** The isolate code's digest, part of every isolate's loader ID. */
-const ISOLATE_BUNDLE_ID = bundleId(ISOLATE_BUNDLE);
-/** The code mode isolate's digest: its code and QuickJS's size, part of every code mode isolate's loader ID. */
-const CODEMODE_BUNDLE_ID = `${bundleId(CODEMODE_BUNDLE)}${QUICKJS_WASM.byteLength.toString(36)}`;
-/** `SELECT 1` queries (and R2 `head`s) the placement probe times. */
-const PLACEMENT_QUERIES = 5;
-/** The key the R2 probe heads: outside the workspace prefix, and never written. */
-const PLACEMENT_R2_KEY = "placement-probe/none";
-
-/** The vault object's RPC methods the model gateway calls (`KantelVault`). */
-interface VaultRpc {
-	cpaItem(): Promise<string>;
-	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential>;
-	assertSessionOpen(ctx: SystemContext, scope: ModelCallScope): Promise<void>;
-}
-
-/**
- * Accepts a session's event socket in this object. Not hibernatable: the socket is fed by a live watch in this object,
- * as the event stream is. The response has no `Sec-WebSocket-Extensions`, so the runtime negotiates `permessage-deflate`
- * with the client itself (the `web_socket_compression` flag, on by this Worker's compatibility date).
- */
-const acceptWebSocket: AcceptWebSocket = () => {
-	const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
-	server.accept();
-	return { socket: server, response: new Response(null, { status: 101, webSocket: client }) };
-};
 
 /** The key the bootstrap record is kept under in this object's storage. */
 const BOOTSTRAP_KEY = "harbour.bootstrap";
-/** Workspace objects live under this prefix in the bucket. */
-const WORKSPACE_PREFIX = "workspaces";
+/** Each UTC day's mail count is kept under this prefix and the day. */
+const MAIL_COUNT_PREFIX = "kantel.mail.";
+/** Each open sign-up's record is kept under this prefix and the user's ID. */
+const SIGN_UP_PREFIX = "kantel.sign-up.";
 
 export abstract class KantelStackBase extends DurableObject<Env> {
 	// A deployment's HARBOUR_* vars and secrets from before the rename still count: every KANTEL_* left unset takes its
@@ -243,288 +64,62 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 
 	/** Starts the stack once; see `startOnce` for what a failed configuration or start does. */
 	readonly #ready = startOnce({
-		// The models are configuration too: a bad KANTEL_DEFAULT_MODEL is answered and retried, not a reset.
-		configure: () => ({
-			config: gatewayConfig(this.env),
-			models: this.stackModels(),
-			isolateBackend: isolateBackendName(this.env),
-			recallRenderer: recallRendererFrom(this.env),
-		}),
-		start: async ({ config, models, isolateBackend, recallRenderer }) => {
+		configure: () => ({ config: gatewayConfig(this.env) }),
+		start: async ({ config }) => {
 			const started = performance.now();
-			const stack = await createStack({
-				...(models === undefined ? {} : { models }),
-				isolateBackend,
-				recallRenderer,
-				...this.stackOptions(),
-				config,
-				storage: this.stackStorage(),
-			});
-			// What a cold start costs, part by part: a session object's is part of its session's create.
+			const stack = await createStack({ ...this.stackOptions(), config, storage: this.stackStorage() });
 			console.log(
-				`kantel: the ${this.objectKind} object started in ${Math.round(performance.now() - started)} ms`,
+				`kantel: the stack object started in ${Math.round(performance.now() - started)} ms`,
 				JSON.stringify(stack.startedIn),
 			);
-			const sockets = (this.env.KANTEL_SESSION_WEBSOCKET ?? "").trim() !== "off";
-			return {
-				stack,
-				gateway: createGateway(stack, {
-					placement: (request) => this.placement(request),
-					...(sockets ? { acceptWebSocket } : {}),
-				}),
-			};
+			return { stack, gateway: createGateway(stack) };
 		},
 		reset: (reason) => this.ctx.abort(reason),
 		onStartError: (error) => console.error("kantel: the stack did not start; resetting the object", error),
 	});
 
-	/** What this object is, for its logs. */
-	protected get objectKind(): string {
-		return "stack";
-	}
-
-	/** How the stack is built; the dev entry point adds a mock Access issuer. */
+	/** How the stack is built beyond its config and storage; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {
-		// The approval API's vault: each call goes to the one VaultDO over RPC, as the person the gateway signed in.
-		const env = this.env;
-		const loader = this.env.LOADER;
-		const browserProvider = browserProviderFrom(env, {
-			...(env.BROWSERS === undefined ? {} : { browsers: env.BROWSERS as unknown as BrowserObjects }),
-			locationHint: locationHint(env),
-		});
-		if (browserProvider === undefined) {
-			console.warn("kantel: the browser provider has no key (KANTEL_BROWSER_PROVIDER); sessions have no browser");
-		}
-		// Connections (epic #322): their secrets in the one VaultDO, over RPC.
-		const connections = stackConnectionsFrom(env, () => namedObject(env.VAULTS, VAULT_NAME, env));
-		const sandboxObjects = env.SANDBOXES;
-		const containersOn = (env.KANTEL_SANDBOX_CONTAINERS ?? "").trim() === "on" && sandboxObjects !== undefined;
-		const tunnelObjects = env.TUNNELS;
-		if (toolServersOn(env) && tunnelObjects === undefined) {
-			console.warn(
-				"kantel: KANTEL_TOOL_SERVERS is on but the Worker has no TUNNELS binding; there are no tool servers",
-			);
-		}
-		return {
-			...(browserProvider === undefined ? {} : { browserProvider }),
-			...(connections === undefined ? {} : { connections }),
-			// Tool servers (experimental): one tunnel object per server, created where the stack is.
-			...(toolServersOn(env) && tunnelObjects !== undefined
-				? {
-						toolServers: {
-							tunnels: (toolServerId: string) =>
-								namedObject(tunnelObjects, toolServerId, env) as unknown as TunnelObjectRpc,
-						},
-					}
-				: {}),
-			presentFiles: (env.KANTEL_PRESENT_FILES ?? "").trim() !== "off",
-			...sessionIdleFrom(env),
-			// One container object per session, beside the stack (the container app's regions place the container itself).
-			...(containersOn
-				? {
-						sandboxContainers: (sessionId: string) =>
-							namedObject(sandboxObjects, `sandbox:${sessionId}`, env) as unknown as SandboxContainer,
-					}
-				: {}),
-			// Code mode, unless KANTEL_CODEMODE is `off` (`src/codemode.ts`): each session's scripts run in its own isolate, with
-			// no bindings and no network, loaded by its first script through the Worker Loader; or, with
-			// KANTEL_CODEMODE_OFFLOAD=on, each script in a new object of the sandbox Worker, off this object's thread.
-			...((load) => (load === undefined ? {} : { codemode: { load, bundleId: CODEMODE_BUNDLE_ID } }))(
-				codemodeLoad(env, {
-					...(loader === undefined
-						? {}
-						: { loader: () => workerLoaderCodemode(loader, CODEMODE_BUNDLE, QUICKJS_WASM) }),
-					...(env.CODEMODE_SANDBOXES === undefined
-						? {}
-						: { sandboxes: env.CODEMODE_SANDBOXES as unknown as CodemodeSandboxObjects }),
-					locationHint: locationHint(env),
-				}),
-			),
-			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
-			...(subagentsEnabled(env) ? { subagents: true } : {}),
-			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `src/programs/service.ts`).
-			...((env.KANTEL_PROGRAMS ?? "").trim() === "on" ? { programs: true } : {}),
-			// Durable pauses for programs, when KANTEL_PROGRAM_WAITS is `on` (experimental, `src/programs/journal.ts`).
-			...((env.KANTEL_PROGRAM_WAITS ?? "").trim() === "on" ? { programWaits: true } : {}),
-			// Browser goal mode's platform defaults (src/browser.ts); each project's settings override them.
-			projectDefaults: projectDefaultsFrom(env),
-			// QuickJS, compiled by wrangler's CompiledWasm rule: `node` runs plain JavaScript in the in-process isolate.
-			nodeEngine: QUICKJS_NODE,
-			vault: approvalVaultOver((method, ctx, args) =>
-				namedObject(env.VAULTS, VAULT_NAME, env).approvalCall(method, ctx, args),
-			),
-			// The dynamic-worker backend, when the Worker has the loader: the measurement can run on it whichever backend
-			// sessions use.
-			...(loader === undefined
-				? {}
-				: {
-						extraIsolateBackends: (workspaces) => ({
-							"dynamic-worker": createDynamicWorkerIsolateBackend(workspaces, {
-								load: workerLoaderIsolates(loader, ISOLATE_BUNDLE),
-								bundleId: ISOLATE_BUNDLE_ID,
-								expose: (port) => new IsolatePortTarget(port),
-							}),
-						}),
-					}),
-		};
+		const binding = this.env.SIGN_IN_MAIL;
+		return binding === undefined
+			? {}
+			: { mail: { binding, counts: this.mailCounts(), defer: (work) => this.ctx.waitUntil(work) } };
 	}
 
-	#objectColo: Promise<string | undefined> | undefined;
-
-	/**
-	 * Where this object runs and how far D1 is from it (the measurement's `placement`). The object's colo is the one its
-	 * own subrequest reaches Cloudflare at, read once per object start; D1's comes from its queries' `meta`. Whatever
-	 * can't be read is left out.
-	 */
-	protected async placement(request: Request): Promise<Placement> {
-		this.#objectColo ??= fetch("https://www.cloudflare.com/cdn-cgi/trace")
-			.then(async (response) => /^colo=(\w+)$/m.exec(await response.text())?.[1])
-			.catch(() => undefined);
-		const queries: { roundTripMs: number; sqlMs?: number }[] = [];
-		let meta: D1Meta | undefined;
-		try {
-			for (let i = 0; i < PLACEMENT_QUERIES; i += 1) {
-				const started = performance.now();
-				const result = await this.env.DB.prepare("SELECT 1").run();
-				const roundTripMs = Math.round((performance.now() - started) * 10) / 10;
-				meta = result.meta;
-				const sqlMs = meta.timings?.sql_duration_ms;
-				queries.push(sqlMs === undefined ? { roundTripMs } : { roundTripMs, sqlMs });
-			}
-		} catch (error) {
-			console.warn("kantel: the D1 placement probe failed", error);
-		}
-		// R2 says nothing of where a bucket lives, so only its round trip: a `head` of a key no workspace uses.
-		const r2: { roundTripMs: number }[] = [];
-		try {
-			for (let i = 0; i < PLACEMENT_QUERIES; i += 1) {
-				const started = performance.now();
-				await this.env.WORKSPACES.head(PLACEMENT_R2_KEY);
-				r2.push({ roundTripMs: Math.round((performance.now() - started) * 10) / 10 });
-			}
-		} catch (error) {
-			console.warn("kantel: the R2 placement probe failed", error);
-		}
-		const objectColo = await this.#objectColo;
-		const edgeColo = (request.cf as { colo?: unknown } | undefined)?.colo;
+	/** Each day's mail count, in this object's storage. */
+	protected mailCounts(): MailCounts {
+		const storage = this.ctx.storage;
 		return {
-			...(objectColo === undefined ? {} : { objectColo }),
-			...(typeof edgeColo === "string" ? { edgeColo } : {}),
-			d1: {
-				...(meta?.served_by_region === undefined ? {} : { region: meta.served_by_region }),
-				...(meta?.served_by_colo === undefined ? {} : { colo: meta.served_by_colo }),
-				...(meta?.served_by_primary === undefined ? {} : { primary: meta.served_by_primary }),
-				queries,
+			get: (day) => storage.get<number>(`${MAIL_COUNT_PREFIX}${day}`),
+			put: (day, count) => storage.put(`${MAIL_COUNT_PREFIX}${day}`, count),
+			async prune(day) {
+				const kept = await storage.list<number>({ prefix: MAIL_COUNT_PREFIX });
+				const old = [...kept.keys()].filter((key) => key < `${MAIL_COUNT_PREFIX}${day}`);
+				if (old.length > 0) await storage.delete(old);
 			},
-			r2: { queries: r2 },
 		};
-	}
-
-	/**
-	 * Sessions on the model gateway when the Worker has the `MODELS` binding and CPA's key; `undefined` (the echo model)
-	 * otherwise. Throws (`invalid`) on a bad `KANTEL_DEFAULT_MODEL` or
-	 * `KANTEL_IMAGE_MODEL`.
-	 */
-	/** How the gateway reaches CPA: the `MODELS` VPC service. The dev entry point can stand a fake in. */
-	protected modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
-		const upstream = this.env.MODELS;
-		return upstream === undefined ? undefined : (request) => upstream.fetch(request);
-	}
-
-	protected stackModels(): StackOptions["models"] {
-		const upstream = this.modelsUpstream();
-		const ignored = modelsConfigWarning(this.env);
-		if (ignored !== undefined) console.warn(ignored);
-		if (upstream === undefined || cpaKey(this.env) === undefined) {
-			console.warn("kantel: no MODELS binding or KANTEL_CPA_API_KEY; sessions run on the echo model");
-			return undefined;
-		}
-		const modelId = defaultModel(this.env);
-		const imageModelId = imageModel(this.env);
-		const vault = namedObject(this.env.VAULTS, VAULT_NAME, this.env) as unknown as VaultRpc;
-		return ({ audit, clock, usage }) =>
-			createGatewayModels({
-				...(usage === undefined ? {} : { usage }),
-				upstream,
-				vault: {
-					cpaItem: () => vault.cpaItem(),
-					// An AbortSignal can't cross RPC, so the read goes without one: it is one call to the vault object.
-					readConnectorCredential: ({ signal: _signal, ...ctx }, request) =>
-						vault.readConnectorCredential(ctx, request),
-					assertSessionOpen: ({ signal: _signal, ...ctx }, scope) => vault.assertSessionOpen(ctx, scope),
-				},
-				audit,
-				clock,
-				modelId,
-				...(imageModelId === undefined ? {} : { imageModelId }),
-			});
-	}
-
-	/** The stack's session store, once it has started: what session objects read and write over RPC. */
-	#sessionStore: SessionStore | undefined;
-	#homes: SessionHomes | undefined;
-
-	/** The stack's table of which session lives in which object (`src/session-homes.ts`). */
-	protected homes(): SessionHomes {
-		this.#homes ??= createSessionHomes(this.ctx.storage.sql);
-		return this.#homes;
 	}
 
 	/** The stack's storage over this object's bindings and its own SQLite. */
 	protected stackStorage(): StackStorage {
 		const storage = this.ctx.storage;
+		const own = objectSqlDriver(storage.sql, (work) => storage.transactionSync(work));
 		return {
-			...this.sharedStorage(),
-			// The runtime lane's session core: its transactions go through the object's async `transaction`, and its
-			// alarm resumes a session this object left mid-run when it was evicted.
-			sessions: {
-				sql: storage.sql,
-				transaction: (work) => storage.transaction(() => work()),
-				setAlarm: (at) => storage.setAlarm(at),
-				getAlarm: () => storage.getAlarm(),
-				// Kept for the session objects' store calls (`sessionStoreCall`).
-				store: (local) => {
-					this.#sessionStore = local;
-					return local;
-				},
+			sql: d1Driver(this.env.DB),
+			// Audit events queue in this object's SQLite and drain to D1 after the answer (src/audit-outbox.ts).
+			auditOutbox: {
+				driver: own,
+				background: (work) => this.ctx.waitUntil(work),
 			},
-			// Heads kept in this object's storage, in front of R2 (src/workspace-heads.ts), while every write goes through
-			// here. With session objects, their sessions write workspaces too, so no object keeps heads: each reads R2's.
-			workspaces: createR2WorkspaceStore({
-				bucket: this.env.WORKSPACES,
-				prefix: WORKSPACE_PREFIX,
-				...(sessionObjectsActive(this.env) ? {} : { headCache: durableHeadCache(storage.kv) }),
-			}),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
 			},
-		};
-	}
-
-	/** The storage a stack object and a session object build alike: D1, R2, and this object's audit queue and ledger. */
-	protected sharedStorage(): Omit<StackStorage, "sessions" | "workspaces" | "bootstrap"> {
-		const storage = this.ctx.storage;
-		return {
-			sql: d1Driver(this.env.DB),
-			// The skills store keys every body `skills/…`, so it shares the workspaces' bucket (and its placement) apart.
-			skillObjects: r2ObjectBucket(this.env.WORKSPACES),
-			// Prompt attachments too, keyed `attachments/…` (src/attachments.ts).
-			attachmentObjects: r2ObjectBucket(this.env.WORKSPACES),
-			// Audit events queue in this object's SQLite and drain to D1 after the answer (src/audit-outbox.ts).
-			auditOutbox: {
-				driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
-				background: (work) => this.ctx.waitUntil(work),
+			compute: own,
+			signUps: {
+				load: (userId) => storage.get<SignUpRecord>(`${SIGN_UP_PREFIX}${userId}`),
+				save: (userId, record) => storage.put(`${SIGN_UP_PREFIX}${userId}`, record),
 			},
-			// One usage row per model call, in this object's SQLite, shipped to D1 after the answer (src/usage.ts).
-			...(this.env.KANTEL_USAGE?.trim() === "off"
-				? {}
-				: {
-						usageLedger: {
-							driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
-							background: (work: Promise<unknown>) => this.ctx.waitUntil(work),
-						},
-					}),
 		};
 	}
 
@@ -533,65 +128,16 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 	}
 
 	/**
-	 * Where a session lives, for the Worker's routing (`src/route.ts`): `{ home }`, its session object's ID; `{ stack:
-	 * true }`, one of this object's own; or `{}`, no such session (yet).
+	 * An alarm an older version armed (a session's wake, a schedule) fires once more after the upgrade: there is nothing
+	 * left to run, so it is answered and not armed again.
 	 */
-	async sessionHome(sessionId: string): Promise<{ home?: string; stack?: true }> {
-		const home = this.homes().homeOf(sessionId);
-		if (home !== undefined) return { home };
-		await this.ready();
-		const stored = await this.#sessionStore?.session(sessionId as Parameters<SessionStore["session"]>[0]);
-		return stored === undefined ? {} : { stack: true };
-	}
-
-	/** A session object's call on the stack's session store (`remoteSessionStore` in `src/session-homes.ts`). */
-	async sessionStoreCall(home: string, method: string, args: readonly unknown[]): Promise<unknown> {
-		await this.ready();
-		const store = this.#sessionStore;
-		if (store === undefined) throw new Error("the stack has no durable session store");
-		return stackStoreCall(store, this.homes(), home, method, args);
-	}
-
-	/** What the bootstrap made, for a session object's stack, which finds the same organisation rather than making one. */
-	async bootstrapRecord(): Promise<BootstrapRecord> {
-		await this.ready();
-		return (await this.ctx.storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {};
-	}
-
-	/** The Worker's check of a tunnel token before it forwards the upgrade (`src/route.ts`). */
-	async authenticateTunnel(serverId: string, secret: string): Promise<TunnelAuthentication> {
-		const { stack } = await this.ready();
-		return stackTunnelRpc(stack.toolServers).authenticateTunnel(serverId, secret);
-	}
-
-	/** A tunnel object's report: its server initialised and listed its tools over a new socket. */
-	async tunnelConnected(grant: TunnelGrant, info: TunnelConnected): Promise<void> {
-		const { stack } = await this.ready();
-		await stackTunnelRpc(stack.toolServers).tunnelConnected(grant, info);
-	}
-
-	/** A tunnel object's report: its server's tools changed. */
-	async tunnelSnapshotChanged(ref: ToolServerRef, snapshot: ToolServerSnapshot): Promise<void> {
-		const { stack } = await this.ready();
-		await stackTunnelRpc(stack.toolServers).tunnelSnapshotChanged(ref, snapshot);
-	}
-
-	/** A tunnel object's report: its current socket closed. */
-	async tunnelDisconnected(ref: ToolServerRef, at: Timestamp): Promise<void> {
-		const { stack } = await this.ready();
-		await stackTunnelRpc(stack.toolServers).tunnelDisconnected(ref, at);
-	}
-
-	/** Resumes every session whose wake is due (a run cut off by eviction, a retry backoff), then arms the next. */
-	override async alarm(): Promise<void> {
-		const { stack } = await this.ready();
-		await stack.alarm();
-	}
+	override async alarm(): Promise<void> {}
 
 	override async fetch(request: Request): Promise<Response> {
 		let gateway: Gateway;
+		let stack: Stack;
 		try {
-			({ gateway } = await this.ready());
+			({ gateway, stack } = await this.ready());
 		} catch (error) {
 			console.error("kantel: the stack did not start", error);
 			return Response.json(
@@ -599,19 +145,166 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				{ status: 503 },
 			);
 		}
-		const home = this.elsewhere(request);
-		const sessions = this.env.SESSIONS;
-		if (home !== undefined && sessions !== undefined) return homeObject(sessions, home, this.env).fetch(request);
+		const url = new URL(request.url);
+		const hosts = stack.compute.hosts;
+		// An exposed port's name (`src/route.ts` sends every one here): only the sandbox's page and its WebSockets answer.
+		if (stack.compute.isPortName(url.hostname)) {
+			if (hosts !== undefined && isWebSocket(request)) return (await relaySocket(hosts, request)) ?? notFound();
+			return stack.compute.servePort(request);
+		}
+		if (hosts !== undefined) {
+			const path = url.pathname;
+			if (path === HOSTS_CONNECT_PATH) return hostConnection(hosts, request);
+			const ticket = tunnelTicket(path);
+			if (ticket !== undefined) return rawTunnel(hosts, ticket, request);
+			// A desktop's stream, a browser's CDP: passed through to the sandbox's port.
+			if (isWebSocket(request)) {
+				const relayed = await relaySocket(hosts, request);
+				if (relayed !== undefined) return relayed;
+			}
+		}
 		return gateway.fetch(request);
 	}
+}
 
-	/**
-	 * The session object a request's session lives in, when it isn't this one: a session that lives in its own object is
-	 * answered there, whoever sent its request here (the Worker sends it there itself). A session object has none.
-	 */
-	protected elsewhere(request: Request): string | undefined {
-		if (this.env.SESSIONS === undefined) return undefined;
-		const sessionId = sessionIdOfPath(new URL(request.url).pathname);
-		return sessionId === undefined ? undefined : this.homes().homeOf(sessionId);
+/**
+ * A host's connection: the WebSocket is accepted first, so a refusal is a close with 4003, which kantel-host reads as
+ * "stop, don't retry" (a plain 401 to an upgrade looks to it like a network fault, and it would retry for ever).
+ */
+async function hostConnection(hosts: StackHosts, request: Request): Promise<Response> {
+	if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+		return Response.json({ error: { code: "invalid", message: "A host connects with a WebSocket" } }, { status: 426 });
 	}
+	const { 0: client, 1: server } = new WebSocketPair();
+	server.accept();
+	const held = await hosts.connect(hostCredential(request), {
+		sendText: (text) => server.send(text),
+		sendBinary: (bytes) => server.send(bytes),
+		close: (code, reason) => server.close(code, reason),
+	});
+	if (held !== undefined) {
+		onMessages(server, (frame) => held.receive(frame));
+		server.addEventListener("close", (event) => held.closed(event.code, event.reason));
+		server.addEventListener("error", () => held.closed(1011, "The host's connection failed"));
+	}
+	return new Response(null, { status: 101, webSocket: client });
+}
+
+const isWebSocket = (request: Request) =>
+	request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() === "websocket";
+
+const notFound = () => Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
+
+/**
+ * A WebSocket passed through to a sandbox's port (`StackHosts.socketTarget`): a desktop's stream, a browser's CDP, an
+ * exposed port's. Accepted first, so a refusal is a close with a code saying why (4003 for a wrong or expired ticket,
+ * 4000 plus the HTTP status for a port's), as self-hosted does. Undefined for an upgrade that is none of these. The
+ * client's subprotocols are offered to the sandbox's server, and the 101 waits for its answer so it carries the one it
+ * chose (a Vite dev server's `vite-hmr`, say).
+ */
+async function relaySocket(hosts: StackHosts, request: Request): Promise<Response | undefined> {
+	let target: Awaited<ReturnType<StackHosts["socketTarget"]>>;
+	try {
+		target = await hosts.socketTarget(request);
+	} catch (error) {
+		console.error("kantel: a WebSocket's target could not be checked", error);
+		target = { refused: { code: 4502, reason: "The gateway could not check the URL" } };
+	}
+	if (target === undefined) return undefined;
+	const { 0: client, 1: server } = new WebSocketPair();
+	server.accept();
+	if ("refused" in target) {
+		server.close(target.refused.code, target.refused.reason);
+		return new Response(null, { status: 101, webSocket: client });
+	}
+	const offered = (request.headers.get("sec-websocket-protocol") ?? "")
+		.split(",")
+		.map((name) => name.trim())
+		.filter((name) => name !== "");
+	const relayed = hosts.relay(
+		target,
+		{
+			send: (data) => server.send(data),
+			close: (code, reason) => server.close(code, reason),
+		},
+		offered,
+	);
+	onMessages(server, (frame) => relayed.send(frame));
+	server.addEventListener("close", () => relayed.close());
+	server.addEventListener("error", () => relayed.close());
+	// Refused, failed or too slow: the client is already closed with why, which it hears once this 101 is taken.
+	const answer = await relayed.ready;
+	const protocol = answer?.protocol;
+	return new Response(null, {
+		status: 101,
+		webSocket: client,
+		...(protocol !== undefined && offered.includes(protocol)
+			? { headers: { "sec-websocket-protocol": protocol } }
+			: {}),
+	});
+}
+
+/** A raw tunnel (SSH's ProxyCommand): the sandbox's port as binary frames, over the host's connection. */
+async function rawTunnel(hosts: StackHosts, ticket: string, request: Request): Promise<Response> {
+	if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+		return Response.json({ error: { code: "invalid", message: "A tunnel is a WebSocket" } }, { status: 426 });
+	}
+	const { 0: client, 1: server } = new WebSocketPair();
+	server.accept();
+	// What the client sends before the port is open waits here, bounded (preOpenBuffer): the one stack object holds
+	// every tunnel, so a client that floods a tunnel whose host never answers is closed rather than kept in memory. It
+	// is let go of however the tunnel ends.
+	const pending = preOpenBuffer();
+	let stream: { write(bytes: Uint8Array): void; close(): void } | undefined;
+	let done = false;
+	const end = () => {
+		done = true;
+		pending.clear();
+		stream?.close();
+	};
+	const shut = (code: number, reason: string) => {
+		done = true;
+		pending.clear();
+		try {
+			server.close(code, reason);
+		} catch {
+			// Already closed.
+		}
+	};
+	onMessages(server, (frame) => {
+		if (done) return;
+		const bytes = typeof frame === "string" ? new TextEncoder().encode(frame) : frame;
+		if (stream !== undefined) return stream.write(bytes);
+		if (!pending.hold(bytes)) {
+			end();
+			shut(1009, "Too much sent before the tunnel opened");
+		}
+	});
+	server.addEventListener("close", end);
+	server.addEventListener("error", end);
+	void hosts
+		.tunnel(ticket, {
+			// The host can send before its port.open reply (SSH's banner), even after the client has gone: dropped then.
+			send: (bytes) => {
+				if (done) return;
+				try {
+					server.send(bytes);
+				} catch {
+					end();
+				}
+			},
+			close: (code, reason) => shut(code, reason),
+		})
+		.then((opened) => {
+			// Refused (the ticket, its grant): closed already, with nothing to write.
+			if (opened === undefined) return pending.clear();
+			stream = opened;
+			if (done) return opened.close();
+			for (const chunk of pending.take()) opened.write(chunk);
+		})
+		.catch((error: unknown) => {
+			console.error("kantel: a tunnel failed", error);
+			shut(1011, "The gateway could not open the tunnel");
+		});
+	return new Response(null, { status: 101, webSocket: client });
 }

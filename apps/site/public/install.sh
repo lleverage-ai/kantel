@@ -13,8 +13,12 @@
 #   3. if that source has its own installer at its root (install.sh), hands over to it with your options, so this
 #      command always installs the way the version you download expects;
 #   4. otherwise keeps the source in ~/.kantel/src and starts the self-hosted Docker Compose stack in deploy/compose,
-#      the path the docs describe (https://kantel.dev/docs/console/getting-started/install/), waits for the console
-#      and opens it.
+#      the path the docs describe (https://kantel.dev/docs/self-hosting/install/), waits for the console
+#      and opens it. The stack is the gateway (the console and the compute plane's API), Postgres and Mailpit;
+#      sandboxes run on the hosts you add from the console. With --upgrade, the new source replaces the old, keeping
+#      deploy/compose/.env (your settings), and the stack is rebuilt and restarted with it; its data stays. Services
+#      the new version no longer has (an older version's agent plane: session hosts, browsers, MinIO, the vault
+#      proxy) are stopped and removed, but not their volumes.
 #
 # The whole script is read before anything runs (see `main` at the end), so a download cut short does nothing.
 # Nothing is interactive and no credentials are asked for.
@@ -47,7 +51,8 @@ Options (each also reads an environment variable, for `| env NAME=value sh`):
   --ref REF          the branch, tag or commit (KANTEL_REF, default main)
   --tarball PATH|URL install from this .tar.gz instead of GitHub (KANTEL_TARBALL)
   --home DIR         where Kantel lives (KANTEL_HOME, default ~/.kantel)
-  --upgrade          download the source again even when it's already there
+  --upgrade          download the source again even when it's already there, and rebuild the stack with it
+                     (deploy/compose/.env, where your settings go, is kept)
   --email ADDRESS    the first admin, who signs in (KANTEL_ADMIN_EMAIL)
   --no-open          don't open the console in a browser (KANTEL_NO_OPEN=1)
   -h, --help         this help
@@ -130,11 +135,20 @@ keep_source() {
 	[ -f "$tmp/src/deploy/compose/compose.yaml" ] || die "the download has no deploy/compose/compose.yaml to start"
 	if [ -f "$SRC/deploy/compose/compose.yaml" ] && [ -z "$opt_upgrade" ]; then
 		ok "keeping the copy already in $SRC (--upgrade replaces it)"
+		# An older copy runs without what the download has: say how to move to it.
+		if ! cmp -s "$tmp/src/deploy/compose/compose.yaml" "$SRC/deploy/compose/compose.yaml"; then
+			say "    note: the download differs from that copy; run again with --upgrade to move to it (your data stays)"
+		fi
 		return
 	fi
 	rm -rf "$SRC.old"
 	[ ! -e "$SRC" ] || mv "$SRC" "$SRC.old"
 	mv "$tmp/src" "$SRC"
+	# Your settings for the stack, kept across upgrades.
+	if [ -f "$SRC.old/deploy/compose/.env" ] && [ ! -e "$SRC/deploy/compose/.env" ]; then
+		cp -p "$SRC.old/deploy/compose/.env" "$SRC/deploy/compose/.env"
+		ok "kept your settings in deploy/compose/.env"
+	fi
 	rm -rf "$SRC.old"
 	ok "unpacked into $SRC"
 }
@@ -158,8 +172,14 @@ run_compose() {
 		export KANTEL_ADMIN_EMAIL
 	fi
 
-	step "Building and starting Kantel (the first build takes a few minutes)"
-	(cd "$SRC" && docker compose -f "$compose_file" up -d --build --wait) ||
+	if [ -n "$opt_upgrade" ]; then
+		step "Rebuilding and restarting Kantel with the new source (your data stays)"
+	else
+		step "Building and starting Kantel (the first build takes a few minutes)"
+	fi
+	# --remove-orphans: an upgrade from a version with more services (the agent plane's session hosts, browsers,
+	# MinIO and vault proxy) stops and removes their containers. Named volumes, and so the data, stay.
+	(cd "$SRC" && docker compose -f "$compose_file" up -d --build --wait --remove-orphans) ||
 		die "the stack didn't start" "See what went wrong with: docker compose -f $compose_file logs"
 
 	console="http://127.0.0.1:$port/"
@@ -187,11 +207,12 @@ On another machine over SSH, forward the ports first: ssh -L $port:127.0.0.1:$po
 Your API key and project are in the gateway's bootstrap file:
   docker compose -f $compose_file exec -T gateway sh -c 'cat /var/lib/*/bootstrap.json'
 
-Once you're signed in, the console asks you to connect inference: CLI Proxy API, LiteLLM, Cloudflare AI
-Gateway or OpenRouter. Enter its address and key, test it and pick a default model. Until then sessions
-answer with an echo model. A provider on this machine is http://host.docker.internal:<port>/v1 to Kantel.
-See https://kantel.dev/docs/console/getting-started/first-steps/ and https://kantel.dev/docs/console/models/
+Sandboxes run on hosts: Linux machines running the Kantel host agent. Once you're signed in, select
+"Add a host" in the console and run the command it shows on the machine. A host on this machine joins at
+$console; for hosts elsewhere, set KANTEL_PUBLIC_URL in deploy/compose/.env to the address they reach it at
+(or run kantel-admin compute enable --public-url <url> --apply). See https://kantel.dev/docs/self-hosting/install/
 
+Upgrade it:         curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
 Stop it:            docker compose -f $compose_file down
 Stop and delete it: docker compose -f $compose_file down -v
 EOF

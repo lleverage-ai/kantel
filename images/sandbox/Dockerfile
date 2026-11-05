@@ -68,6 +68,14 @@ RUN apt-get update \
 		imagemagick pandoc poppler-utils qpdf \
 	&& ln -s /usr/bin/fdfind /usr/local/bin/fd \
 	&& rm -rf /var/lib/apt/lists/*
+# Security updates: the base image is pinned by digest, so its own packages only get Debian's fixes here. The daily
+# build (.github/workflows/sandbox-image.yml) passes today's date, which re-runs this layer even with a warm cache.
+# Before the tools are checked below, so they're checked as upgraded; as root, before the image switches to `sandbox`.
+ARG KANTEL_SECURITY_REFRESH=unset
+RUN echo "security refresh $KANTEL_SECURITY_REFRESH" \
+	&& apt-get update \
+	&& DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends \
+	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=fetch /out/gh /out/linear-cli /usr/local/bin/
 COPY --from=fetch /out/pnpm.tgz /tmp/pnpm.tgz

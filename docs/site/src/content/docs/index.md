@@ -1,35 +1,46 @@
 ---
-title: Kantel
-description: Kantel, by Lleverage, runs AI agents for people and for apps, on Cloudflare or on your own machines.
+title: What Kantel is
+description: Kantel, by Lleverage, gives AI agents sandboxes to work in, on Linux machines you add with one command. Use the hosted control plane at app.kantel.dev, or run all of it yourself.
 ---
 
-Kantel, by Lleverage, runs AI agents. People use them through the console. Apps use them through the API: your app creates a session, sends it messages and follows what the agent does, while Kantel runs the model loop, the sandbox, the tools, the approvals and the audit trail.
+Kantel, by Lleverage, gives AI agents somewhere to run code. You ask it for a sandbox, a Linux environment of the agent's own, and get one back in about a second. The agent runs commands in it, reads and writes its files, opens its desktop or browser, and you stop, resume, fork or delete it when the work is done.
 
-Kantel was called Harbour before it was renamed. Packages are `@kantel/*`, settings `KANTEL_*`, headers `kantel-*` and API keys `ktk_…`. Names from before the rename still work: a setting named `HARBOUR_*` when its `KANTEL_*` one isn't set, a `harbour-*` header and an API key starting `hbr_`.
+Kantel doesn't run the agent. Claude Code, Codex, pi or your own agent loop stays wherever it already runs, and reaches Kantel over the API, the TypeScript SDK, the `kantel` CLI or the MCP server.
 
-## What Kantel gives an agent
+Sandboxes run on **hosts**: Linux machines you add with one command. A host connects out to Kantel, so it needs no open ports.
 
-- **Sessions** with a transcript you can stream, steer and fork. See [Sessions](/console/sessions/).
-- **A workspace and a sandbox** for files and commands. See [Workspace and files](/console/workspace-and-files/).
-- **Browsers** a person allows, which you can watch live and replay. See [Browsers](/console/browsers/).
-- **Connections** to outside services by OAuth or key, with the secrets kept in the vault. See [Connectors](/console/connectors/).
-- **Skills, memory and prompt rules**, set per organisation, project or person. See [Skills](/console/skills/), [Memory](/console/memory/) and [Prompt rules](/console/prompt-rules/).
-- **Schedules** for recurring work. See [Schedules](/console/schedules/).
-- **An audit log** of everything that happened, by whom. See [Audit](/console/audit/).
+## Two ways to run it
 
-Kantel adds no system prompt of its own. What the model is told comes from the prompt rules and agent profiles you write.
+- **Hosted.** Sign in at <https://app.kantel.dev> and add your own machines as hosts. Kantel's control plane, the console and the API, runs for you. Start with the [Quick start](/quickstart/).
+- **Self-hosted.** Run the control plane on your own machine too, with one command, and nothing on kantel.dev. Start with the [Self-host quick start](/self-hosting/quickstart/).
+
+The console, the API, the SDK, the CLI and the MCP server are the same in both: code you write against one works against the other with a different address and key.
+
+## What you get
+
+- **Sandboxes** in two kinds: isolates that start almost at once, and microVMs with their own Linux kernel, root, Docker and nested virtualisation.
+- **Stop, resume and fork.** A stopped sandbox keeps its disk, and a fork copies a sandbox so several agents can start from the same state.
+- **Snapshots.** Every sandbox keeps a history of its disk, and you can save a state under a name to start new sandboxes from.
+- **A desktop, a browser and SSH** for each sandbox, to watch an agent work or step in.
+- **A personal space and organisations.** Your hosts and sandboxes are your own until you share them through an organisation.
+- **Scoped API keys**, so a script or an agent gets only the access it needs.
+- **An [egress proxy](/sandboxes/egress-proxy/)** on every host, which can add credentials on the way out so they never sit inside a sandbox.
+- **Webhooks and OpenTelemetry**, to follow sandboxes from your own systems.
+
+[Concepts](/concepts/) explains each of these once.
 
 ## Where to start
 
 | You want to | Start with |
 | --- | --- |
-| Try Kantel on your machine | [Install Kantel locally](/console/getting-started/install/) |
-| Find your way round the console | [A tour of the console](/console/getting-started/tour/) |
-| Build an app on Kantel | [Concepts](/api/concepts/), then the [quick start](/api/quick-start/) |
-| Run Kantel for your team | [Deployment overview](/deploy/overview/) |
+| Go from nothing to a running microVM | [Quick start](/quickstart/) |
+| Add the machines that run sandboxes | [Hosts](/hosts/) |
+| Share with a team | [Organisations](/accounts/organisations/) |
+| Let Claude Code, Codex or pi use it | [Use from your coding agent](/coding-agents/) |
+| Make and drive a sandbox | [Create and manage sandboxes](/sandboxes/lifecycle/) |
+| Run all of it yourself | [Self-host quick start](/self-hosting/quickstart/) |
+| Look up a route | [API reference](/api/reference/) |
 
-## Status
+Parts still being built carry an **Experimental** badge in the sidebar and a note at the top of the page. [What works today](/what-works-today/) says which parts have run on real machines and which are covered by tests only.
 
-Kantel is young and moving quickly. These pages describe what the code does today; where a feature has limits, its page says so.
-
-<!-- Sources (d031001): README.md:1-3, packages/runtime/src/runtime.ts:598-612 -->
+Kantel was called Harbour, and a few names keep that: `harbour` in some image, database and Worker names, `HARBOUR_*` settings (read when the `KANTEL_*` one isn't set) and API keys starting `hbr_`. Write them as they are.

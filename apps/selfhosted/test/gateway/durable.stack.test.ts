@@ -1,43 +1,27 @@
-// The gateway on its real components (durable.ts), against the compose stack's Postgres and MinIO: the end-to-end pass,
-// then a restart on the same schema that must keep the deployment, its sessions, workspace and audit trail; and a
-// session shaped like a host app's worker that lists its skills, reads one at `/skills`, is given memory and calls its host's
-// tool after a restart.
+// The gateway on its real components (durable.ts), against the compose stack's Postgres: the end-to-end pass, then a
+// restart on the same schema that must keep the deployment and its audit trail, and a start on a schema an older
+// version used that leaves the agent plane's tables as they were.
 //
-// Runs when KANTEL_TEST_POSTGRES_URL and KANTEL_TEST_S3_ENDPOINT are set (bindings.ts sets them in CI). Each run gets
-// fresh schemas and its own object prefix, all removed afterwards.
+// Runs when KANTEL_TEST_POSTGRES_URL is set (bindings.ts sets it in CI). Each run gets fresh schemas, all removed
+// afterwards.
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CallContext, type HostToolCall, systemContext } from "@kantel/contracts";
-import { bearer, createSessionApiClient } from "@kantel/runtime/http";
-import { createScriptedModel } from "@kantel/runtime/testing";
-import { AwsClient } from "aws4fetch";
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { kantelSessionProvider } from "@kantel/identity/otp";
 import pg from "pg";
 import { afterAll, describe, expect, test } from "vitest";
-import { callbackUrlAllowed, parseCallbackOrigins } from "../../src/gateway/callbacks.ts";
 import { type Bootstrap, bootstrap, type GatewayComponents } from "../../src/gateway/components.ts";
+import { gatewayCompute, gatewayRelay } from "../../src/gateway/compute.ts";
 import { createDurableGatewayComponents, type DurableConfig, withSearchPath } from "../../src/gateway/durable.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { listen } from "../../src/gateway/node-http.ts";
 import { runGatewayE2e } from "./e2e.ts";
 
 const databaseUrl = process.env.KANTEL_TEST_POSTGRES_URL ?? "";
-const s3Endpoint = process.env.KANTEL_TEST_S3_ENDPOINT ?? "";
 const run = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
-const prefix = `m1-sh1/${run}`;
-const config: DurableConfig = {
-	databaseUrl,
-	schema: `m1sh_gateway_${run}`,
-	s3: {
-		endpoint: s3Endpoint,
-		bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "harbour-m1-sh1",
-		accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "harbour",
-		secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
-		prefix,
-		skillsPrefix: `${prefix}/skills`,
-	},
-	log: () => {},
-};
+const config: DurableConfig = { databaseUrl, schema: `m1sh_gateway_${run}`, log: () => {} };
 const names = { organisation: "Durable", project: "durable" };
 const schemas: string[] = [];
 
@@ -51,45 +35,14 @@ async function sql(text: string): Promise<pg.QueryResult> {
 	}
 }
 
-/** Deletes this run's objects, and only them. */
-async function deleteRunObjects(): Promise<void> {
-	const client = new AwsClient({
-		accessKeyId: config.s3.accessKeyId,
-		secretAccessKey: config.s3.secretAccessKey,
-		service: "s3",
-		region: "us-east-1",
-	});
-	const bucket = `${s3Endpoint.replace(/\/+$/, "")}/${encodeURIComponent(config.s3.bucket)}`;
-	for (;;) {
-		const listed = await client.fetch(`${bucket}?${new URLSearchParams({ "list-type": "2", prefix: `${prefix}/` })}`);
-		const listing = await listed.text();
-		if (!listed.ok) throw new Error(`listing ${prefix} failed with ${listed.status}`);
-		const keys = [...listing.matchAll(/<Key>([^<]+)<\/Key>/g)]
-			.map((match) => (match[1] ?? "").replaceAll("&amp;", "&"))
-			.filter((key) => key.startsWith(`${prefix}/`));
-		if (keys.length === 0) return;
-		for (const key of keys) {
-			const response = await client.fetch(`${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`, {
-				method: "DELETE",
-			});
-			await response.body?.cancel();
-			if (!response.ok) throw new Error(`deleting ${key} failed with ${response.status}`);
-		}
-	}
-}
-
 /** Components for `schema`, closed when `work` ends however it ends. */
 async function withComponents<T>(
 	schema: string,
 	work: (components: GatewayComponents) => Promise<T>,
-	models?: DurableConfig["models"],
+	extra: Partial<DurableConfig> = {},
 ): Promise<T> {
 	schemas.push(schema);
-	const components = await createDurableGatewayComponents({
-		...config,
-		schema,
-		...(models === undefined ? {} : { models }),
-	});
+	const components = await createDurableGatewayComponents({ ...config, ...extra, schema });
 	try {
 		return await work(components);
 	} finally {
@@ -97,41 +50,52 @@ async function withComponents<T>(
 	}
 }
 
+/** The gateway as `serveGateway` makes it, the compute plane on the stub, listening while `work` runs. */
 async function withGateway<T>(
 	components: GatewayComponents,
 	seeded: Bootstrap,
 	consoleDir: string,
 	work: (target: Parameters<typeof runGatewayE2e>[0]) => Promise<T>,
 ): Promise<T> {
-	const gateway = createGateway({ components, consoleDir });
+	const authenticator = createAuthenticator({
+		identity: components.identity,
+		providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+	});
+	const compute = await gatewayCompute({
+		authenticator,
+		identity: components.identity,
+		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
+	});
+	const gateway = createGateway({ components, authenticator, compute: compute.api, consoleDir });
 	try {
 		const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
 		try {
-			return await work({ baseUrl: server.url, ...seeded });
+			return await work({ baseUrl: server.url, ...seeded, computeKey: compute.superAdminKey });
 		} finally {
 			await server.close();
 		}
 	} finally {
 		await gateway.close();
+		await compute.close();
 	}
 }
 
-describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgres and S3", () => {
+describe.skipIf(databaseUrl === "")("the gateway on Postgres", () => {
 	let scratch: string | undefined;
 
 	afterAll(async () => {
 		if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
 		for (const schema of schemas) await sql(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-		await deleteRunObjects();
 	});
 
-	test("serves every API end to end, and keeps its deployment across a restart", { timeout: 120_000 }, async () => {
+	test("serves the compute plane and identity end to end, and keeps its deployment across a restart", {
+		timeout: 120_000,
+	}, async () => {
 		const consoleDir = await mkdtemp(join(tmpdir(), "kantel-durable-"));
 		scratch = consoleDir;
 		await writeFile(join(consoleDir, "index.html"), '<!doctype html><div id="root"></div>');
 
 		let seeded: Bootstrap | undefined;
-		let sessionsBefore = 0;
 		let auditBefore = 0;
 		const inProject = (deployment: Bootstrap): CallContext => ({
 			actor: { kind: "system", component: "durable-test" },
@@ -140,17 +104,19 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		});
 
 		await withComponents(config.schema, async (first) => {
-			expect(first.bindings).toMatchObject({ identity: "postgres", audit: "postgres", workspaces: "postgres + s3" });
+			expect(first.bindings).toEqual({
+				identity: "postgres",
+				audit: "postgres",
+				signIn: "postgres",
+				computeStore: "postgres",
+			});
 			const deployment = await bootstrap(first, names);
 			seeded = deployment;
 			await withGateway(first, deployment, consoleDir, async (target) => {
 				const checks = await runGatewayE2e(target);
 				expect(checks.filter((check) => !check.ok)).toEqual([]);
 			});
-			const ctx = inProject(deployment);
-			sessionsBefore = (await first.runtime.directory.list(ctx, { projectId: deployment.projectId })).items.length;
-			auditBefore = (await first.audit.query(ctx, { projectId: deployment.projectId }, { limit: 500 })).items.length;
-			expect(sessionsBefore).toBeGreaterThan(0);
+			auditBefore = (await first.audit.query(inProject(deployment), {}, { limit: 500 })).items.length;
 			expect(auditBefore).toBeGreaterThan(0);
 		});
 		if (seeded === undefined) throw new Error("no deployment");
@@ -160,13 +126,10 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		await withComponents(config.schema, async (second) => {
 			const again = await bootstrap(second, names, previous);
 			expect(again).toEqual(previous);
-			const ctx = inProject(again);
-			const sessions = await second.runtime.directory.list(ctx, { projectId: again.projectId });
-			expect(sessions.items.length).toBe(sessionsBefore);
-			const audit = await second.audit.query(ctx, { projectId: again.projectId }, { limit: 500 });
+			// The compute API's records outlast the restart: its super-admin from the first start is still there.
+			expect(await second.computeStore?.users.get("usr_admin")).toMatchObject({ superAdmin: true });
+			const audit = await second.audit.query(inProject(again), {}, { limit: 500 });
 			expect(audit.items.length).toBeGreaterThanOrEqual(auditBefore);
-			// The README went in once: the restart's bootstrap did not commit it again.
-			expect((await second.workspaces.get(ctx, again.workspaceId)).head).toBe(1);
 			await withGateway(second, again, consoleDir, async (target) => {
 				const checks = await runGatewayE2e(target);
 				expect(checks.filter((check) => !check.ok)).toEqual([]);
@@ -187,324 +150,63 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		});
 	});
 
-	test("a host app's tools on a loopback callback still answer after a restart, with nobody registering again", {
+	test("a schema an older version used keeps its agent-plane tables and rows, untouched", {
 		timeout: 60_000,
 	}, async () => {
-		const schema = `${config.schema}_hosts`;
-		const calls: HostToolCall[] = [];
-		// A host app's worker's shape: one callback server on a loopback port the OS picks, a route per host.
-		const endpoints = new Map<string, (request: Request) => Promise<Response>>();
-		const host = await listen(
-			async (request) => {
-				const match = /^\/hosts\/([^/]+)$/.exec(new URL(request.url).pathname);
-				const endpoint = match === null ? undefined : endpoints.get(decodeURIComponent(match[1] as string));
-				return endpoint === undefined ? new Response("not found", { status: 404 }) : endpoint(request);
-			},
-			0,
-			{ host: "127.0.0.1" },
-		);
-		const loopback = callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*"));
-		const serve = async <T>(components: GatewayComponents, work: (baseUrl: string) => Promise<T>) => {
-			const gateway = createGateway({ components, allowCallbackUrl: loopback });
-			const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
-			try {
-				return await work(`${server.url}/v1`);
-			} finally {
-				await gateway.close();
-				await server.close();
-			}
-		};
-		try {
-			let seeded: Bootstrap | undefined;
-			const ctx = (deployment: Bootstrap): CallContext => ({
-				actor: { kind: "service", serviceId: "atlas" },
-				organisationId: deployment.organisationId,
-				projectId: deployment.projectId,
-			});
-			const client = (baseUrl: string, deployment: Bootstrap) =>
-				createSessionApiClient({
-					baseUrl,
-					credentials: bearer(deployment.apiKey),
-					hostCallbacks: {
-						url: (hostId) => `${host.url}/hosts/${encodeURIComponent(hostId)}`,
-						serve: (hostId, endpoint) => {
-							if (endpoint === undefined) endpoints.delete(hostId);
-							else endpoints.set(hostId, endpoint);
-						},
-					},
-				});
-
-			// The first process: the host registers its tool, and the gateway stops.
-			await withComponents(schema, async (first) => {
-				const deployment = await bootstrap(first, names);
-				seeded = deployment;
-				await first.runtime.profiles.put(
-					{ ...ctx(deployment), actor: { kind: "system", component: "durable-test" } },
-					{
-						id: "worker",
-						organisationId: deployment.organisationId,
-						projectId: deployment.projectId,
-						name: "Worker",
-						model: { route: "default" },
-						promptLayers: [],
-						tools: ["ping"],
-						skills: [],
-						sandbox: { tiers: [] },
-						memoryScopes: [],
-						hostId: "atlas",
-					},
-				);
-				await serve(first, (baseUrl) =>
-					client(baseUrl, deployment).hostTools.register(
-						ctx(deployment),
-						"atlas",
-						[{ name: "ping", description: "Answers pong", inputSchema: { type: "object" }, replay: "safe" }],
-						async (call) => {
-							calls.push(call);
-							return { output: "pong" };
-						},
-					),
-				);
-			});
-			if (seeded === undefined) throw new Error("no deployment");
-			const deployment = seeded;
-
-			// The next process on the same schema calls the tool over the stored callback.
-			const { models, script } = createScriptedModel();
-			script.reply({ toolCalls: [{ name: "ping", args: {} }] });
-			script.reply({ text: "The host said pong" });
-			await withComponents(
-				schema,
-				async (second) => {
-					await bootstrap(second, names, deployment);
-					await serve(second, async (baseUrl) => {
-						const api = client(baseUrl, deployment).runtime;
-						const session = await api.create(ctx(deployment), {
-							projectId: deployment.projectId,
-							agentId: "worker",
-						});
-						const prompt = await api.prompt(ctx(deployment), session.id, { text: "Ping the host" });
-						expect(await api.wait(ctx(deployment), session.id, prompt.id)).toMatchObject({
-							status: "answered",
-							answer: "The host said pong",
-						});
-					});
-				},
-				{ models },
-			);
-			expect(calls.map((call) => call.tool)).toEqual(["ping"]);
-			expect(script.requests[1]?.messages.at(-1)).toMatchObject({ role: "tool", text: "pong" });
-		} finally {
-			await host.close();
-		}
+		const schema = `${config.schema}_older`;
+		schemas.push(schema);
+		// What an older version left: tables of the agent plane beside identity's, with a row each.
+		await sql(`CREATE SCHEMA ${schema}`);
+		await sql(`CREATE TABLE ${schema}.sessions (id text PRIMARY KEY, title text NOT NULL)`);
+		await sql(`INSERT INTO ${schema}.sessions VALUES ('ses_older', 'from before the upgrade')`);
+		await sql(`CREATE TABLE ${schema}.vault_items (id text PRIMARY KEY, sealed bytea)`);
+		await sql(`INSERT INTO ${schema}.vault_items VALUES ('vi_older', '\\x00')`);
+		await withComponents(schema, async (components) => {
+			const deployment = await bootstrap(components, names);
+			expect(deployment.organisationId).toMatch(/^org_/);
+		});
+		await withComponents(schema, async (components) => {
+			await bootstrap(components, names);
+		});
+		expect((await sql(`SELECT id, title FROM ${schema}.sessions`)).rows).toEqual([
+			{ id: "ses_older", title: "from before the upgrade" },
+		]);
+		expect((await sql(`SELECT id FROM ${schema}.vault_items`)).rows).toEqual([{ id: "vi_older" }]);
 	});
 
-	test("a session shaped like a host app's worker lists its skills, reads /skills, is given memory and calls its host after a restart", {
-		timeout: 90_000,
+	test("the registry of hosts and the relay go in Postgres when sandboxes run on hosts, and outlast a restart", {
+		timeout: 60_000,
 	}, async () => {
-		const schema = `${config.schema}_atlas`;
-		const atlasNames = { ...names, projects: ["atlas", "dev"] };
-		const calls: HostToolCall[] = [];
-		const endpoints = new Map<string, (request: Request) => Promise<Response>>();
-		const host = await listen(
-			async (request) => {
-				const match = /^\/hosts\/([^/]+)$/.exec(new URL(request.url).pathname);
-				const endpoint = match === null ? undefined : endpoints.get(decodeURIComponent(match[1] as string));
-				return endpoint === undefined ? new Response("not found", { status: 404 }) : endpoint(request);
+		const computeHosts = { publicUrl: "http://127.0.0.1:58090", portsDomain: "kantel-ports.test" };
+		const schema = `${config.schema}_hosts`;
+		const issued = await withComponents(
+			schema,
+			async (components) => {
+				expect(components.bindings.computeHosts).toBe("postgres");
+				expect(components.bindings.computeRelay).toBe("postgres");
+				if (components.computeHosts === undefined || components.relayStore === undefined) throw new Error("no hosts");
+				const relay = gatewayRelay(computeHosts, components.computeHosts, components.relayStore);
+				const ticket = await relay.tickets.issue({ sandboxId: "sbx_1", port: 22, expiresAt: Date.now() + 60_000 });
+				const port = await relay.ports?.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+				return { ticket, url: port?.url ?? "" };
 			},
-			0,
-			{ host: "127.0.0.1" },
+			{ computeHosts },
 		);
-		const loopback = callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*"));
-		const serve = async <T>(components: GatewayComponents, work: (baseUrl: string) => Promise<T>) => {
-			const gateway = createGateway({ components, allowCallbackUrl: loopback });
-			const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
-			try {
-				return await work(`${server.url}/v1`);
-			} finally {
-				await gateway.close();
-				await server.close();
-			}
-		};
-		const skillMd =
-			"---\nname: pr-review\ndescription: Review a pull request\n---\n\n# PR review\n\nRead the diff first.\n";
-		const statement = "Kantel's self-hosted gateway listens on 127.0.0.1:58090 next to Atlas.";
-		const prompt = "You are Atlas's worker.";
-		// The task the session is given: memory is recalled by it, so it names what the concept is about.
-		const task = "Review the PR that moves the gateway port";
-		try {
-			let seeded: Bootstrap | undefined;
-			const inDev = (deployment: Bootstrap): CallContext => ({
-				actor: { kind: "service", serviceId: "atlas" },
-				organisationId: deployment.organisationId,
-				projectId: deployment.projects?.dev ?? "",
-			});
-			const client = (baseUrl: string, deployment: Bootstrap) =>
-				createSessionApiClient({
-					baseUrl,
-					credentials: bearer(deployment.apiKey),
-					hostCallbacks: {
-						url: (hostId) => `${host.url}/hosts/${encodeURIComponent(hostId)}`,
-						serve: (hostId, endpoint) => {
-							if (endpoint === undefined) endpoints.delete(hostId);
-							else endpoints.set(hostId, endpoint);
-						},
-					},
-				});
-
-			// The first process: the bootstrap makes the host app's projects; the organisation's skill and memory are loaded as
-			// a host adapter would; the host app's worker puts its profile and registers its host tool, and the gateway stops.
-			await withComponents(schema, async (first) => {
-				const deployment = await bootstrap(first, atlasNames);
-				seeded = deployment;
-				const dev = deployment.projects?.dev;
-				expect(Object.keys(deployment.projects ?? {}).sort()).toEqual(["atlas", "dev"]);
-				expect(dev).toMatch(/^prj_/);
-				const system: CallContext = {
-					actor: { kind: "system", component: "durable-test" },
-					organisationId: deployment.organisationId,
-				};
-				const owner = { kind: "organisation", organisationId: deployment.organisationId } as const;
-				await first.skills.importRevision(system, {
-					owner,
-					name: "pr-review",
-					description: "Review a pull request",
-					files: [{ path: "SKILL.md", content: skillMd }],
-					source: { sourceId: "team-skills", ref: "r1" },
-				});
-				const space = await first.memory.createSpace(system, { owner, name: "Team memory" });
-				await first.memory.importSnapshot(system, space.id, {
-					sourceId: "team-memory",
-					ref: "m1",
-					concepts: [
-						{
-							id: "projects/kantel/gateway-port",
-							title: "Kantel gateway port",
-							description: "Where the self-hosted gateway listens",
-							statement,
-							scope: { kind: "global" },
-							sources: ["https://github.com/tvdavies/harbour/issues/232"],
-							setBy: "owner",
-							status: "active",
-							updatedAt: 1,
-						},
-					],
-				});
-				await serve(first, async (baseUrl) => {
-					const atlas = client(baseUrl, deployment);
-					await atlas.profiles.put(inDev(deployment), {
-						id: "atlas-worker",
-						organisationId: deployment.organisationId,
-						projectId: dev,
-						name: "Atlas worker",
-						model: { route: "default" },
-						promptLayers: [{ name: "atlas_preamble", text: prompt }],
-						tools: ["read", "ls", "bash", "ping"],
-						skills: ["pr-review"],
-						sandbox: { tiers: ["isolate"] },
-						memoryScopes: [space.id],
-						hostId: "atlas",
-					});
-					await atlas.hostTools.register(
-						inDev(deployment),
-						"atlas",
-						[{ name: "ping", description: "Answers pong", inputSchema: { type: "object" }, replay: "safe" }],
-						async (call) => {
-							calls.push(call);
-							return { output: "pong" };
-						},
-					);
-					// The skill and the space read back through the gateway's routes, with the operator key.
-					const headers = { authorization: `Bearer ${deployment.apiKey}` };
-					const listed = await fetch(`${baseUrl}/skills?projectId=${encodeURIComponent(dev ?? "")}`, { headers });
-					expect(((await listed.json()) as { items: { name: string }[] }).items.map((item) => item.name)).toEqual([
-						"pr-review",
-					]);
-					const recalled = await fetch(`${baseUrl}/memory/recall`, {
-						method: "POST",
-						headers: { ...headers, "content-type": "application/json" },
-						body: JSON.stringify({ spaceIds: [space.id], query: "gateway port" }),
-					});
-					expect(((await recalled.json()) as { text: string }).text).toContain(statement);
-				});
-			});
-			if (seeded === undefined) throw new Error("no deployment");
-			const deployment = seeded;
-
-			// The next process on the same schema: the bootstrap finds the same projects and key, and a session in `dev` lists
-			// its skill, reads it at /skills, is given the memory, sees no credential in its sandbox and calls the host.
-			const { models, script } = createScriptedModel();
-			script.reply(
-				{ toolCalls: [{ name: "read", args: { path: "/skills/pr-review/SKILL.md" } }] },
-				{ toolCalls: [{ name: "bash", args: { command: "env; ls -la /" } }] },
-				{ toolCalls: [{ name: "ping", args: {} }] },
-				{ text: "Reviewed" },
-			);
-			await withComponents(
-				schema,
-				async (second) => {
-					expect(second.bindings).toMatchObject({ skills: "postgres + s3", memory: "postgres" });
-					expect(await bootstrap(second, atlasNames, deployment)).toEqual(deployment);
-					await serve(second, async (baseUrl) => {
-						const api = client(baseUrl, deployment).runtime;
-						const session = await api.create(inDev(deployment), {
-							projectId: deployment.projects?.dev ?? "",
-							agentId: "atlas-worker",
-						});
-						expect(session.workspaceId).toMatch(/^session_/);
-						const submitted = await api.prompt(inDev(deployment), session.id, { text: task });
-						expect(await api.wait(inDev(deployment), session.id, submitted.id)).toMatchObject({
-							status: "answered",
-							answer: "Reviewed",
-						});
-						// The workspace's /skills mount is read-only.
-						const agent: CallContext = {
-							actor: { kind: "agent", agentId: "atlas-worker", sessionId: session.id },
-							organisationId: deployment.organisationId,
-							projectId: session.projectId,
-						};
-						const workspace = await second.workspaces.get(agent, session.workspaceId ?? "");
-						await expect(
-							second.workspaces.commit(agent, workspace.id, {
-								baseVersion: workspace.head,
-								changes: [{ op: "put", path: "/skills/pr-review/SKILL.md", content: "changed" }],
-								message: "try",
-							}),
-						).rejects.toThrow();
-					});
-				},
-				{ models },
-			);
-
-			const [first, afterRead, afterBash, afterPing] = script.requests;
-			// Kantel adds nothing to the system prompt: it is the profile's layer, whole.
-			expect(first?.system).toBe(prompt);
-			// The skills listing and the recall come once, as a user message before the prompt.
-			const given = first?.messages[0]?.text ?? "";
-			expect(first?.messages.map((message) => message.role)).toEqual(["user", "user"]);
-			expect(given).toContain("<available_skills>");
-			expect(given).toContain("<name>pr-review</name>");
-			expect(given).toContain("/skills/pr-review/SKILL.md");
-			expect(given).toContain(statement);
-			expect(first?.messages[1]?.text).toBe(task);
-			expect(afterRead?.messages.at(-1)).toMatchObject({
-				role: "tool",
-				text: expect.stringContaining("Read the diff"),
-			});
-			// No credential in the sandbox: its environment is the shell's own, with neither the operator key, the S3 secret
-			// nor the database's URL, and the skills are there at /skills.
-			const sandbox = afterBash?.messages.at(-1)?.text ?? "";
-			expect(afterBash?.messages.at(-1)?.role).toBe("tool");
-			for (const secret of [deployment.apiKey, config.s3.secretAccessKey, databaseUrl]) {
-				expect(sandbox).not.toContain(secret);
-			}
-			expect(sandbox).not.toMatch(/KANTEL_|AWS_|S3_|PGPASSWORD|DATABASE_URL|API_KEY|SECRET|TOKEN/);
-			expect(sandbox).toMatch(/ skills\n/);
-			expect(afterPing?.messages.at(-1)).toMatchObject({ role: "tool", text: "pong" });
-			expect(calls.map((call) => call.tool)).toEqual(["ping"]);
-		} finally {
-			await host.close();
-		}
+		// Started again over the same schema, the gateway still honours the URLs it gave out.
+		await withComponents(
+			schema,
+			async (components) => {
+				if (components.computeHosts === undefined || components.relayStore === undefined) throw new Error("no hosts");
+				const relay = gatewayRelay(computeHosts, components.computeHosts, components.relayStore);
+				relay.bind(async () => true);
+				expect((await relay.tickets.verify(issued.ticket, Date.now()))?.sandboxId).toBe("sbx_1");
+				expect((await relay.ports?.fetch(new Request(issued.url)))?.status).toBe(303);
+				const bare = new URL(issued.url);
+				bare.search = "";
+				expect((await relay.ports?.fetch(new Request(bare)))?.status).toBe(401);
+			},
+			{ computeHosts },
+		);
 	});
 
 	test("the bootstrap makes its named projects once, and a new name brings a new key over them all", {
@@ -527,58 +229,6 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 				[first.projectId, more.projects?.atlas, more.projects?.dev].sort(),
 			);
 		});
-	});
-
-	test("a session's file tools work on the S3 workspace directly; bash leases an isolate on its first command", {
-		timeout: 60_000,
-	}, async () => {
-		const { models, script } = createScriptedModel();
-		await withComponents(
-			`${config.schema}_tools`,
-			async (components) => {
-				expect(components.bindings.sandboxes).toMatch(/leased on first bash/);
-				const deployment = await bootstrap(components, names);
-				const system = { ...systemContext("durable-test"), organisationId: deployment.organisationId };
-				const key = await components.identity.authenticateApiKey(system, deployment.apiKey);
-				const ctx: CallContext = {
-					actor: key.actor,
-					organisationId: deployment.organisationId,
-					projectId: deployment.projectId,
-				};
-				const { runtime } = components.runtime;
-				const session = await runtime.create(ctx, {
-					projectId: deployment.projectId,
-					agentId: "echo",
-					workspaceId: deployment.workspaceId,
-				});
-				const live = () => components.sandboxes.leases(system, { sessionId: session.id, live: true });
-				const run = async (text: string) => {
-					const prompt = await runtime.prompt(ctx, session.id, { text });
-					return runtime.wait(ctx, session.id, prompt.id);
-				};
-
-				script.reply(
-					{ toolCalls: [{ name: "write", args: { path: "notes/new.md", content: "from the file tool\n" } }] },
-					{ text: "Written" },
-				);
-				expect(await run("Write it")).toMatchObject({ status: "answered", answer: "Written" });
-				const read = await components.workspaces.read(ctx, deployment.workspaceId, "notes/new.md");
-				expect(new TextDecoder().decode(read.content)).toBe("from the file tool\n");
-				expect(await live()).toEqual([]);
-
-				script.reply({ toolCalls: [{ name: "bash", args: { command: "cat notes/new.md" } }] }, { text: "Ran" });
-				expect(await run("Show it")).toMatchObject({ status: "answered", answer: "Ran" });
-				expect(script.requests.at(-1)?.messages.at(-1)).toMatchObject({
-					role: "tool",
-					text: expect.stringContaining("from the file tool"),
-				});
-				expect((await live()).map((lease) => lease.tier)).toEqual(["isolate"]);
-
-				await runtime.close(ctx, session.id);
-				expect(await live()).toEqual([]);
-			},
-			{ models },
-		);
 	});
 
 	test("reads a database URL as node-postgres does, a socket URL with no host included", () => {

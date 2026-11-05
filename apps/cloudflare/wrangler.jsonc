@@ -2,6 +2,11 @@
 	// Kantel on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
 	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
+	//
+	// The agent plane was removed (branch agent-plane-archive, tag agent-plane-archive-2026-11-03, commit e496aeb2). The
+	// Worker now uses only ASSETS, STACK, DB and the Access, admin and location vars. Every other binding, var, rule and
+	// container app below is the agent plane's, left as it was deployed so that no object, table or bucket is deleted:
+	// its Durable Object classes are inert (src/retired.ts), and the src/ files its comments name are in that archive.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "harbour",
 	"main": "src/index.ts",
@@ -16,7 +21,6 @@
 	// compiled, all copied there by the same script.
 	"rules": [
 		{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true },
-		{ "type": "Data", "globs": ["**/*.wasm.bin"], "fallthrough": true },
 		{ "type": "CompiledWasm", "globs": ["**/quickjs-node.wasm"], "fallthrough": true }
 	],
 	"assets": {
@@ -25,13 +29,13 @@
 		// A miss goes to the Worker (src/route.ts `consoleAsset`): a missing /assets/ file is a 404, not the console's page
 		// with a 200, so a tab opened before a deploy can't load the page as a script; any other path gets the page.
 		"not_found_handling": "none",
-		// The API, the health check, the browser viewer page (for its framing headers) and share links' pages always reach
-		// the Worker; every other path is the console.
-		"run_worker_first": ["/v1/*", "/healthz", "/browser/*", "/shared/*"]
+		// Every request reaches the Worker first (src/route.ts), which serves the console's files through this binding. Assets
+		// match by path on every name the Worker is routed, and on an exposed port's name (*.kantel.run) a sandbox's `/` or
+		// `/assets/…` must be the sandbox's, never the console's.
+		"run_worker_first": true
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
-	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so. Code mode loads one per session
-	// that runs a script (src/codemode.ts), unless KANTEL_CODEMODE is `off`.
+	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so.
 	"worker_loaders": [{ "binding": "LOADER" }],
 	// Workers AI: Clef, the decision model browser goal mode uses by default (src/browser-decisions.ts). Deployed only:
 	// `wrangler dev` has none, so a goal run there on Clef is refused.
@@ -54,12 +58,7 @@
 			{ "name": "TUNNELS", "class_name": "KantelTunnel" },
 			// Session objects (src/session-object.ts), one per session and its subagents, each with its own SQLite. Used only
 			// with KANTEL_SESSION_OBJECTS=on; without it no object is ever made.
-			{ "name": "SESSIONS", "class_name": "KantelSession" },
-			// Code mode's sandbox objects, a class of the separately deployed `kantel-codemode` Worker (wrangler.codemode.jsonc,
-			// src/codemode/worker.ts), which the deploy uploads first. Used only with KANTEL_CODEMODE_OFFLOAD=on: one object per
-			// script, so a script that computes holds its own thread, not the stack's. Another Worker's, not this one's: a class
-			// of this Worker could share the stack object's isolate, and so its thread.
-			{ "name": "CODEMODE_SANDBOXES", "class_name": "KantelCodemodeSandbox", "script_name": "kantel-codemode" }
+			{ "name": "SESSIONS", "class_name": "KantelSession" }
 		]
 	},
 	"migrations": [
@@ -93,43 +92,41 @@
 		"KANTEL_ACCESS_AUD": "",
 		// The first admin, invited by email: Access's verified email links them on first sign-in. Empty: nobody is invited.
 		"KANTEL_ADMIN_EMAIL": "",
+		// Experimental, off by default: `experimental` turns on account hosts (src/compute.ts): accounts add machines of
+		// their own, which register at /v1/hosts/register and keep a WebSocket to /v1/hosts/connect on the stack object, and
+		// run only that account's sandboxes. It needs KANTEL_PUBLIC_URL, the origin hosts dial: the public origin, with no
+		// Access in front, or a hostname with an Access bypass for /v1/hosts/register, /v1/hosts/connect,
+		// /v1/hosts/images/* and /v1/hosts/tunnel/* (each checks its own token, credential or ticket). Anything else: no
+		// host routes, the stub for everyone. The deploy sets it from the repository variable of the same name
+		// (scripts/deploy-config.ts); unset there, a deploy leaves account hosts off.
+		"KANTEL_ACCOUNT_HOSTS": "",
+		// Experimental: `experimental` turns on templates (`/v1/templates`, src/compute.ts). Anything else: off, and their
+		// routes answer not_supported. The deploy sets it from the repository variable of the same name.
+		"KANTEL_TEMPLATES": "",
 		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the KANTEL_CPA_API_KEY secret.
 		"KANTEL_DEFAULT_MODEL": "claude-sonnet-5-5",
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or
 		// dynamic-worker, the same shell in a Dynamic Worker per session. The measurement can run on either.
 		"KANTEL_ISOLATE_BACKEND": "in-process",
-		// `off` takes the `codemode` tool away (src/codemode.ts). Anything else offers it to sessions with tools.
-		"KANTEL_CODEMODE": "on",
-		// Experimental: `on` runs each code mode script (a session's `codemode` call, a program run's) in a new object of the
-		// `kantel-codemode` Worker (CODEMODE_SANDBOXES, src/codemode/worker.ts) instead of a Dynamic Worker on the stack (or
-		// session) object's thread, so a script that computes doesn't hold every other call. Tools, approvals, audit and the
-		// journal stay with the calling object. Anything else: the Worker Loader, as before.
-		// On for harbour.myslop.app (TASK-4580): a ~1M-number Collatz program held the stack for 30 s until Cloudflare reset
-		// it with the switch off. `off` and a deploy turns it off.
-		"KANTEL_CODEMODE_OFFLOAD": "on",
 		// Experimental: `off` takes the `present_files` tool away (@kantel/sandbox/present-files). Anything else offers it,
 		// and the console shows the files it presents as cards that open a viewer.
 		"KANTEL_PRESENT_FILES": "on",
 		// How many seconds a session may sit open with nothing to do (no work, no sleep, nobody watching) before the stack puts
 		// it away and frees its memory (src/session-idle.ts); the next call opens it again from SQLite. `off` keeps it open.
 		"KANTEL_SESSION_IDLE_SECONDS": "120",
-		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
+		// `on` offers the experimental `subagent` tool (@kantel/subagents): a session hands a task to a child session, which the
 		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
 		"KANTEL_SUBAGENTS": "on",
-		// Experimental: `on` serves saved programs (src/programs/service.ts, docs/site/.../api/programs.md), code mode programs
-		// run through /v1/programs/{id}/runs with no model, and gives the default agent `save_program`. Needs code mode.
-		// Anything else: no routes, no tool, no tables.
-		"KANTEL_PROGRAMS": "on",
-		// Experimental: `on` lets program runs pause (src/programs/journal.ts): `waitForInput()` and `agent()` in a program,
-		// POST /v1/programs/{id}/runs/{runId}/resume, and each run's journal, so a resumed run doesn't repeat finished calls.
-		// Needs KANTEL_PROGRAMS. Anything else: no waits, no resume route.
-		"KANTEL_PROGRAM_WAITS": "on",
 		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Kantel's own, or sal,
 		// a Sal worker's, for a deployment that serves Sal's memory and should recall what a local Sal worker does.
 		"KANTEL_RECALL_RENDERER": "default",
 		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
 		// them as server-sent events. Anything else serves both, and the console prefers the socket.
 		"KANTEL_SESSION_WEBSOCKET": "on",
+		// `on`: each message a session accepts warms its sandbox in the background while the model writes its first answer,
+		// starting its container before its first command when its profile has `bash` (src/gateway.ts). Anything else:
+		// only POST /v1/sessions/{id}/warm warms. On for harbour.myslop.app (TASK-4486).
+		"KANTEL_WARM_ON_MESSAGE": "on",
 		// `off` stops writing one usage row per model call (src/usage.ts,
 		// docs/site/src/content/docs/api/results-and-usage.md). Anything else writes them to the stack object's ledger
 		// and ships them to `usage_calls` in D1.
@@ -172,7 +169,7 @@
 				"directory": "../console/dist",
 				"binding": "ASSETS",
 				"not_found_handling": "none",
-				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*", "/browser/*", "/shared/*"]
+				"run_worker_first": true
 			},
 			"worker_loaders": [{ "binding": "LOADER" }],
 			"durable_objects": {
@@ -182,10 +179,7 @@
 					{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 					{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
 					{ "name": "TUNNELS", "class_name": "KantelTunnel" },
-					{ "name": "SESSIONS", "class_name": "KantelSession" },
-					// Connected when `pnpm dev:codemode` runs the sandbox Worker beside `pnpm dev` (wrangler's dev registry). Used only
-					// with KANTEL_CODEMODE_OFFLOAD=on, such as `pnpm dev --var KANTEL_CODEMODE_OFFLOAD:on`.
-					{ "name": "CODEMODE_SANDBOXES", "class_name": "KantelCodemodeSandbox", "script_name": "kantel-codemode" }
+					{ "name": "SESSIONS", "class_name": "KantelSession" }
 				]
 			},
 			// Local only: wrangler dev builds images/browser and images/sandbox and runs their containers in local Docker.
@@ -226,9 +220,7 @@
 				"KANTEL_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
 				"KANTEL_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
 				// Subagents, as deployed: the dev model's `delegate a > b > c` errand (src/dev-browser-model.ts) nests them.
-				"KANTEL_SUBAGENTS": "on",
-				"KANTEL_PROGRAMS": "on",
-				"KANTEL_PROGRAM_WAITS": "on"
+				"KANTEL_SUBAGENTS": "on"
 			}
 		}
 	}

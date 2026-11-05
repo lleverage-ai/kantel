@@ -30,130 +30,34 @@ importers:
 
   apps/cloudflare:
     dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-codemode":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@jitl/quickjs-wasmfile-release-sync":
-        specifier: 0.32.0
-        version: 0.32.0
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../../packages/api
       "@kantel/audit":
         specifier: workspace:*
         version: link:../../packages/audit
-      "@kantel/browser":
+      "@kantel/compute":
         specifier: workspace:*
-        version: link:../../packages/browser
-      "@kantel/cloudflare-workspace":
-        specifier: workspace:*
-        version: link:../../targets/cloudflare/workspace
-      "@kantel/connections":
-        specifier: workspace:*
-        version: link:../../packages/connections
+        version: link:../../packages/compute
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
+      "@kantel/hosts":
+        specifier: workspace:*
+        version: link:../../packages/hosts
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../../packages/memory
-      "@kantel/model-gateway":
-        specifier: workspace:*
-        version: link:../model-gateway
-      "@kantel/rules":
-        specifier: workspace:*
-        version: link:../../packages/rules
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      "@kantel/runtime-cloudflare":
-        specifier: workspace:*
-        version: link:../../targets/cloudflare/runtime
-      "@kantel/sandbox":
-        specifier: workspace:*
-        version: link:../../packages/sandbox
-      "@kantel/schedules":
-        specifier: workspace:*
-        version: link:../../packages/schedules
-      "@kantel/sharing":
-        specifier: workspace:*
-        version: link:../../packages/sharing
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../../packages/skills
       "@kantel/sql":
         specifier: workspace:*
         version: link:../../packages/sql
-      "@kantel/tools":
-        specifier: workspace:*
-        version: link:../../packages/tools
-      "@kantel/usage":
-        specifier: workspace:*
-        version: link:../../packages/usage
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
-      "@kantel/vault-cloudflare":
-        specifier: workspace:*
-        version: link:../../targets/cloudflare/vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
-      hast-util-to-html:
-        specifier: 9.0.5
-        version: 9.0.5
-      quickjs-wasi:
-        specifier: 3.6.2
-        version: 3.6.2
-      remark-gfm:
-        specifier: 4.0.1
-        version: 4.0.1
-      remark-parse:
-        specifier: 11.0.0
-        version: 11.0.0
-      remark-rehype:
-        specifier: 11.1.2
-        version: 11.1.2
-      typebox:
-        specifier: 1.3.27
-        version: 1.3.27
-      unified:
-        specifier: 11.0.5
-        version: 11.0.5
-      unpdf:
-        specifier: 1.9.1
-        version: 1.9.1(@napi-rs/canvas@1.0.13)
     devDependencies:
       "@cloudflare/workers-types":
         specifier: 5.20261027.1
         version: 5.20261027.1
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../../packages/protocol
       "@kantel/testing":
         specifier: workspace:*
         version: link:../../packages/testing
-      "@types/hast":
-        specifier: 3.0.4
-        version: 3.0.4
       "@types/node":
         specifier: 24.19.2
         version: 24.19.2
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -169,24 +73,18 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../../packages/api
-      "@kantel/audit":
-        specifier: workspace:*
-        version: link:../../packages/audit
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../../packages/e2e
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../../packages/protocol
       "@kantel/ui":
         specifier: workspace:*
         version: link:../../packages/ui
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
       react:
         specifier: 19.3.1
         version: 19.3.1
@@ -194,21 +92,12 @@ importers:
         specifier: 19.3.1
         version: 19.3.1(react@19.3.1)
     devDependencies:
-      "@kantel/memory":
+      "@kantel/compute":
         specifier: workspace:*
-        version: link:../../packages/memory
-      "@kantel/runtime":
+        version: link:../../packages/compute
+      "@kantel/hosts":
         specifier: workspace:*
-        version: link:../../packages/runtime
-      "@kantel/sandbox":
-        specifier: workspace:*
-        version: link:../../packages/sandbox
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../../packages/skills
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
+        version: link:../../packages/hosts
       "@tailwindcss/vite":
         specifier: 4.3.3
         version: 4.3.3(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -224,9 +113,6 @@ importers:
       "@vitejs/plugin-react":
         specifier: 6.1.2
         version: 6.1.2(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-      axe-core:
-        specifier: 4.11.0
-        version: 4.11.0
       playwright-core:
         specifier: 1.64.1
         version: 1.64.1
@@ -240,117 +126,26 @@ importers:
         specifier: 5.0.5
         version: 5.0.5(@types/node@26.6.5)(msw@2.15.0(@types/node@26.6.5)(typescript@7.0.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
-  apps/model-gateway:
-    dependencies:
-      "@kantel/audit":
-        specifier: workspace:*
-        version: link:../../packages/audit
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/models":
-        specifier: workspace:*
-        version: link:../../packages/models
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
-    devDependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
   apps/selfhosted:
     dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../../packages/api
       "@kantel/audit":
         specifier: workspace:*
         version: link:../../packages/audit
-      "@kantel/browser":
+      "@kantel/compute":
         specifier: workspace:*
-        version: link:../../packages/browser
-      "@kantel/connections":
-        specifier: workspace:*
-        version: link:../../packages/connections
+        version: link:../../packages/compute
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@kantel/environments":
+      "@kantel/hosts":
         specifier: workspace:*
-        version: link:../../packages/environments
+        version: link:../../packages/hosts
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../../packages/memory
-      "@kantel/model-gateway":
-        specifier: workspace:*
-        version: link:../model-gateway
-      "@kantel/models":
-        specifier: workspace:*
-        version: link:../../packages/models
-      "@kantel/rules":
-        specifier: workspace:*
-        version: link:../../packages/rules
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      "@kantel/sandbox":
-        specifier: workspace:*
-        version: link:../../packages/sandbox
-      "@kantel/selfhosted-workspace":
-        specifier: workspace:*
-        version: link:../../targets/selfhosted/workspace
-      "@kantel/sharing":
-        specifier: workspace:*
-        version: link:../../packages/sharing
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../../packages/skills
       "@kantel/sql":
         specifier: workspace:*
         version: link:../../packages/sql
-      "@kantel/tools":
-        specifier: workspace:*
-        version: link:../../packages/tools
-      "@kantel/usage":
-        specifier: workspace:*
-        version: link:../../packages/usage
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
-      "@kantel/vault-selfhosted":
-        specifier: workspace:*
-        version: link:../../targets/selfhosted/vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
-      aws4fetch:
-        specifier: 1.0.20
-        version: 1.0.20
       pg:
         specifier: 8.16.3
         version: 8.16.3
@@ -361,15 +156,9 @@ importers:
         specifier: 8.22.0
         version: 8.22.0
     devDependencies:
-      "@kantel/testing":
+      "@kantel/api":
         specifier: workspace:*
-        version: link:../../packages/testing
-      "@kantel/tunnel":
-        specifier: workspace:*
-        version: link:../../packages/tunnel
-      "@types/bun":
-        specifier: 1.3.1
-        version: 1.3.1(@types/react@19.3.0)
+        version: link:../../packages/api
       "@types/node":
         specifier: 24.19.2
         version: 24.19.2
@@ -386,56 +175,6 @@ importers:
         specifier: 4.1.12
         version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@5.9.3))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
-  apps/vault-proxy:
-    dependencies:
-      pg:
-        specifier: 8.16.3
-        version: 8.16.3
-    devDependencies:
-      "@types/bun":
-        specifier: 1.3.1
-        version: 1.3.1(@types/react@19.3.0)
-      "@types/pg":
-        specifier: 8.15.5
-        version: 8.15.5
-
-  examples/sal-worker:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../../packages/api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../../packages/memory
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../../packages/skills
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../../packages/sql
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
-      ignore:
-        specifier: 7.0.14
-        version: 7.0.14
-      yaml:
-        specifier: 2.9.1
-        version: 2.9.1
-    devDependencies:
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
   images/isolate-host:
     dependencies:
       aws4fetch:
@@ -448,36 +187,24 @@ importers:
         specifier: 1.20261027.1
         version: 1.20261027.1
 
-  images/mirror:
+  packages/admin:
     dependencies:
-      "@kantel/contracts":
+      "@kantel/api":
         specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/workspace":
+        version: link:../api
+      "@kantel/cli":
         specifier: workspace:*
-        version: link:../../packages/workspace
+        version: link:../cli
     devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
 
   packages/api:
     dependencies:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../protocol
       typebox:
         specifier: 1.3.27
         version: 1.3.27
@@ -516,62 +243,47 @@ importers:
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
-      "@kantel/codemode":
-        specifier: workspace:*
-        version: link:../codemode
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../runtime
       "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
-  packages/codemode:
+  packages/cli:
     dependencies:
-      "@kantel/contracts":
+      "@kantel/api":
         specifier: workspace:*
-        version: link:../contracts
+        version: link:../api
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
     devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      playwright-core:
+        specifier: 1.64.1
+        version: 1.64.1
 
-  packages/connections:
+  packages/compute:
     dependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
       "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
+      just-bash:
+        specifier: 3.6.0
+        version: 3.6.0
 
-  packages/contracts:
-    dependencies:
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../protocol
+  packages/contracts: {}
+
+  packages/e2e: {}
 
   packages/environments:
     dependencies:
@@ -591,6 +303,31 @@ importers:
         specifier: workspace:*
         version: link:../sql
 
+  packages/hosts:
+    dependencies:
+      "@kantel/compute":
+        specifier: workspace:*
+        version: link:../compute
+      "@kantel/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      "@kantel/identity":
+        specifier: workspace:*
+        version: link:../identity
+      "@kantel/sql":
+        specifier: workspace:*
+        version: link:../sql
+    devDependencies:
+      "@kantel/api":
+        specifier: workspace:*
+        version: link:../api
+      "@kantel/cli":
+        specifier: workspace:*
+        version: link:../cli
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
+
   packages/identity:
     dependencies:
       "@kantel/contracts":
@@ -606,126 +343,12 @@ importers:
         specifier: 10.1.7
         version: 10.1.7
     devDependencies:
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../runtime
       "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
       smtp-server:
         specifier: 3.20.2
         version: 3.20.2
-
-  packages/memory:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-
-  packages/models:
-    dependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-
-  packages/protocol: {}
-
-  packages/rules:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
-  packages/runtime:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../memory
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../protocol
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../skills
-      jpeg-js:
-        specifier: 0.4.4
-        version: 0.4.4
-    devDependencies:
-      "@kantel/browser":
-        specifier: workspace:*
-        version: link:../browser
-      "@kantel/codemode":
-        specifier: workspace:*
-        version: link:../codemode
-      "@kantel/rules":
-        specifier: workspace:*
-        version: link:../rules
-      "@kantel/sandbox":
-        specifier: workspace:*
-        version: link:../sandbox
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../workspace
 
   packages/sandbox:
     dependencies:
@@ -764,87 +387,6 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
-  packages/schedules:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../runtime
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
-  packages/sharing:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../memory
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../skills
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../workspace
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
-  packages/skills:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
   packages/sql:
     devDependencies:
       "@electric-sql/pglite":
@@ -862,49 +404,12 @@ importers:
 
   packages/testing:
     dependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../protocol
-
-  packages/tools:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-
-  packages/tunnel:
-    dependencies:
-      "@kantel/tools":
-        specifier: workspace:*
-        version: link:../tools
-      ws:
-        specifier: 8.22.0
-        version: 8.22.0
-    devDependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@types/ws":
-        specifier: 8.18.2
-        version: 8.18.2
 
   packages/ui:
     dependencies:
-      "@aiden0z/pptx-renderer":
-        specifier: 1.4.0
-        version: 1.4.0(pdfjs-dist@6.4.299)
       "@fontsource-variable/public-sans":
         specifier: 5.3.0
         version: 5.3.0
@@ -917,73 +422,19 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../protocol
-      "@kantel/schedules":
-        specifier: workspace:*
-        version: link:../schedules
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-      "@tiptap/core":
-        specifier: 3.32.1
-        version: 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/extension-table":
-        specifier: 3.32.1
-        version: 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/markdown":
-        specifier: 3.32.1
-        version: 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/pm":
-        specifier: 3.32.1
-        version: 3.32.1
-      "@tiptap/react":
-        specifier: 3.32.1
-        version: 3.32.1(@floating-ui/dom@1.8.0)(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      "@tiptap/starter-kit":
-        specifier: 3.32.1
-        version: 3.32.1
-      docx-preview:
-        specifier: 0.4.1
-        version: 0.4.1
       highlight.js:
         specifier: 11.12.0
         version: 11.12.0
       lucide-react:
         specifier: 1.64.0
         version: 1.64.0(@types/react@19.3.0)(react@19.3.1)
-      pdfjs-dist:
-        specifier: 6.4.299
-        version: 6.4.299
-      react-markdown:
-        specifier: 10.1.0
-        version: 10.1.0(@types/react@19.3.0)(react@19.3.1)
-      remark-gfm:
-        specifier: 4.0.1
-        version: 4.0.1
       tailwindcss:
         specifier: 4.3.3
         version: 4.3.3
-      virtua:
-        specifier: 0.53.6
-        version: 0.53.6(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      xlsx:
-        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
-        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
     devDependencies:
-      "@kantel/audit":
-        specifier: workspace:*
-        version: link:../audit
       "@kantel/identity":
         specifier: workspace:*
         version: link:../identity
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../memory
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../skills
       "@ladle/react":
         specifier: 5.1.1
         version: 5.1.1(@types/node@26.6.5)(@types/react@19.3.0)(jiti@2.7.0)(lightningcss@1.33.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2)(yaml@2.9.1)
@@ -1043,226 +494,18 @@ importers:
         specifier: 5.20261023.0-beta
         version: 5.20261023.0-beta(@types/node@24.19.2)
 
-  packages/vault:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-
   packages/workspace:
     dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
       isomorphic-git:
         specifier: 1.44.8
         version: 1.44.8
     devDependencies:
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../skills
       "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
-
-  spikes/cloudflare:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/sandbox":
-        specifier: workspace:*
-        version: link:../../packages/sandbox
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
-      just-bash:
-        specifier: 3.6.0
-        version: 3.6.0
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-      wrangler:
-        specifier: 4.153.0
-        version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
-
-  spikes/ready-preload:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/isolate-host":
-        specifier: workspace:*
-        version: link:../../images/isolate-host
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      wrangler:
-        specifier: 4.153.0
-        version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
-
-  targets/cloudflare/runtime:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
-  targets/cloudflare/vault:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../../packages/vault
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
-  targets/cloudflare/workspace:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../../packages/workspace
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-      wrangler:
-        specifier: 4.153.0
-        version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
-
-  targets/selfhosted/runtime:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.11
-        version: 0.5.11
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      "@types/pg":
-        specifier: 8.15.5
-        version: 8.15.5
-      pg:
-        specifier: 8.16.3
-        version: 8.16.3
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
   targets/selfhosted/sandbox:
     dependencies:
@@ -1289,81 +532,7 @@ importers:
         specifier: 4.1.12
         version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
-  targets/selfhosted/vault:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../../packages/vault
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.11
-        version: 0.5.11
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      "@types/pg":
-        specifier: 8.15.5
-        version: 8.15.5
-      pg:
-        specifier: 8.16.3
-        version: 8.16.3
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
-  targets/selfhosted/workspace:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../../packages/workspace
-      aws4fetch:
-        specifier: 1.0.20
-        version: 1.0.20
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      "@types/pg":
-        specifier: 8.15.5
-        version: 8.15.5
-      pg:
-        specifier: 8.16.3
-        version: 8.16.3
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
 packages:
-  "@aiden0z/pptx-renderer@1.4.0":
-    resolution:
-      { integrity: sha512-GUQbdJCYjTfXkJWtSgo5pIYXZYQjOQLlnjfRYE5ycpWgPa8rIK711wQa0kAl71H++vYnFYUp9fjQkKB8K/6ShA== }
-    peerDependencies:
-      pdfjs-dist: ">=5 <7"
-    peerDependenciesMeta:
-      pdfjs-dist:
-        optional: true
-
   "@anthropic-ai/sdk@0.129.0":
     resolution:
       { integrity: sha512-MH7LB20kNpGLUpPTe2OG5XvL/KhX8HUO9XyBaFjgFk6TLS4Xjt0VPIuMKywe7POKKPslX+QxSlVok9e+8kG5Nw== }
@@ -1785,10 +954,6 @@ packages:
       { integrity: sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w== }
     engines: { node: ">=22.19.0" }
 
-  "@electric-sql/pglite@0.5.11":
-    resolution:
-      { integrity: sha512-SWuqsTjA4DDWqgZ05PC1RJaq8e00p5KACxbqaikDFQ8dIGA0SLRzuPniky7IW+q/c5RDNMdEXwv7mFBWIx9Hxw== }
-
   "@electric-sql/pglite@0.5.12":
     resolution:
       { integrity: sha512-IiAxv1ld1V9QP0AWsflliDqrGRo+20O+yXOr2fjk6YzBHsCvTPclwQhCB1uZ7eHtPrxUrSllNzWgqy/Ot76PEw== }
@@ -2161,18 +1326,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  "@floating-ui/core@1.8.0":
-    resolution:
-      { integrity: sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ== }
-
-  "@floating-ui/dom@1.8.0":
-    resolution:
-      { integrity: sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg== }
-
-  "@floating-ui/utils@0.2.12":
-    resolution:
-      { integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww== }
-
   "@fontsource-variable/public-sans@5.3.0":
     resolution:
       { integrity: sha512-AVfkmAt50BMXWpOO21FAntiJFKGX6xTc2dSL8dxtDteONe9IuRXJWGbs0EbG955vAMCq23ENeuopuW87cGWDSQ== }
@@ -2497,93 +1650,6 @@ packages:
     resolution:
       { integrity: sha512-VVPPgHyQ6ShqnrmDWuxjmUIsO9gWyOZFmuOfLd9LfBGQJwZfy0gvv9pbHSJuoFNIYC7ZDX9aoFwowjcdSC4E8w== }
     engines: { node: ">=18" }
-
-  "@napi-rs/canvas-android-arm64@1.0.13":
-    resolution:
-      { integrity: sha512-trn7AaDzQ+yeeA0ezhkC7cB1ZDPtp4UYk0EvB5F8qtYL9jEVWtVrU30WOpI52DszoTxaTsCgf5PP4ZVaOlOIHQ== }
-    engines: { node: ">= 10" }
-    cpu: [arm64]
-    os: [android]
-
-  "@napi-rs/canvas-darwin-arm64@1.0.13":
-    resolution:
-      { integrity: sha512-6Y2djEetL8copxfNK6hg7oig/xqTwOchv19hBOm+zBNdKc/02Z3kjZN5wrLzv/l5O04/bAQS6I/AlQpwBlXgPg== }
-    engines: { node: ">= 10" }
-    cpu: [arm64]
-    os: [darwin]
-
-  "@napi-rs/canvas-darwin-x64@1.0.13":
-    resolution:
-      { integrity: sha512-OZoPwwu4TMMg8GTCFBrg8UFExwQTU/55i3uTC/izDat6PHE+ro9dimyQoOboFf91+NY7Pnn70ScR8f8I8+eZXw== }
-    engines: { node: ">= 10" }
-    cpu: [x64]
-    os: [darwin]
-
-  "@napi-rs/canvas-linux-arm-gnueabihf@1.0.13":
-    resolution:
-      { integrity: sha512-dZSYaKROuswU2eUWG5aBKndNVe68elo1YX93xtRax7q658tj8rYE+HwduovWJgs6qwv1r1/CLR60nDeBbyjvyg== }
-    engines: { node: ">= 10" }
-    cpu: [arm]
-    os: [linux]
-
-  "@napi-rs/canvas-linux-arm64-gnu@1.0.13":
-    resolution:
-      { integrity: sha512-W6FzYE8ADHI93In1vi80KBL6btDtAMuj50Ch5ptkWS8xuntyzbR4h5JDUmXoakxZn2yMInksudTEqVSWoFqFGg== }
-    engines: { node: ">= 10" }
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  "@napi-rs/canvas-linux-arm64-musl@1.0.13":
-    resolution:
-      { integrity: sha512-+6fQ+rR49hkAa4voh2stLIwQ+4t+gmoseM8Bc53/DlMXb73IKymDPWK9A/NtWeqTW4ijWppYuyuxS2hPI8tzNA== }
-    engines: { node: ">= 10" }
-    cpu: [arm64]
-    os: [linux]
-    libc: [musl]
-
-  "@napi-rs/canvas-linux-riscv64-gnu@1.0.13":
-    resolution:
-      { integrity: sha512-17XEMO3t9RW/TtHtSFf2AkaSWuCWdzbPeidz7zrOFawHxoLSJCnpTI1hN5aUvrZNnkNNmt/vZVJCh0ryUaik3A== }
-    engines: { node: ">= 10" }
-    cpu: [riscv64]
-    os: [linux]
-    libc: [glibc]
-
-  "@napi-rs/canvas-linux-x64-gnu@1.0.13":
-    resolution:
-      { integrity: sha512-lc48IwknVHBsNzXn9Xs5OkUsRX38Ml3Z1aOybQ51mMEzZckm8+4A0qROlyYHEoBPzr1kL3IU8ZUAqDb7wtdX8w== }
-    engines: { node: ">= 10" }
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  "@napi-rs/canvas-linux-x64-musl@1.0.13":
-    resolution:
-      { integrity: sha512-bGY1r26S2bs8UNFJcPWcCSNdCFbKep5PATsvtgtC9A5u6SRgr2/jJE/RlhHL5m9ZpixNDhVkLY/5h16Kx5V9YA== }
-    engines: { node: ">= 10" }
-    cpu: [x64]
-    os: [linux]
-    libc: [musl]
-
-  "@napi-rs/canvas-win32-arm64-msvc@1.0.13":
-    resolution:
-      { integrity: sha512-2vRPBZoaIvJrUkDhZTE2Hn0YrnpJRCWVM3EJACoBKjuWI6WgPxGtUoRMsxRviCsyks8bKTSFdyw14CellnG2qA== }
-    engines: { node: ">= 10" }
-    cpu: [arm64]
-    os: [win32]
-
-  "@napi-rs/canvas-win32-x64-msvc@1.0.13":
-    resolution:
-      { integrity: sha512-DUlW3lZPz63kYsf8mxgyyZuevhlH0T3/BGP9l+NazhB0F1+gL6D4hqZdnhZpw24DlWmTpATDcyYSZlJOi+DdfQ== }
-    engines: { node: ">= 10" }
-    cpu: [x64]
-    os: [win32]
-
-  "@napi-rs/canvas@1.0.13":
-    resolution:
-      { integrity: sha512-b87ugZpQ5ViwqVBkjervxpwa0GmJPsKHLBNoZN6GpjWeHzTbDUGryriq+2DYW2XbB+xCqSIINQysC0/I87nPbw== }
-    engines: { node: ">= 10" }
 
   "@napi-rs/lzma-linux-x64-gnu@1.5.1":
     resolution:
@@ -2980,6 +2046,7 @@ packages:
     resolution:
       { integrity: sha512-97imTcCyiPd8k0e9+ts/Sp0W65Dn9Ti357J7M09Ov4tI8Q1JDJVFSoAJtjEVKqfHEr3Pdo2jfolqKCaaiszH0g== }
     engines: { node: ">=18.0.0" }
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   "@smithy/credential-provider-imds@4.5.2":
     resolution:
@@ -3240,198 +2307,6 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  "@tiptap/core@3.32.1":
-    resolution:
-      { integrity: sha512-ImhEufkmqFK1mIbcYAZOhoBColsdy4sepB3Wd6vDPULbonGXL1LliLs79IiVY1hzmqkBksxwyqkyPxlcFMNTdQ== }
-    peerDependencies:
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-blockquote@3.32.1":
-    resolution:
-      { integrity: sha512-R1PSA2kjhTnbL8uw9yBd7E9rqR4mCqcs4jsFELVzbPAzUrvv3zOvfjBotdzTvru28++Y1ptf57EK3kVs4JFzww== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-bold@3.32.1":
-    resolution:
-      { integrity: sha512-mQFAKhUXdOQHjueSfhf1+rsbWORLMxr/UG0L8RhEF83npTxD4a0yq8MaJKLCgFZKp4OULajMxoVg7wTFQT/NUA== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-bubble-menu@3.32.1":
-    resolution:
-      { integrity: sha512-Zt5k0dRgaLiWdnl6p0iXyrsh4HEcnfQjkL5nAHcViURMHun5tqpc8oGNYtNxxkF+9wHKNBhIfYgsUeXTZKQJeg== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-bullet-list@3.32.1":
-    resolution:
-      { integrity: sha512-RoR0oenJ4HSf0UJ4EQKZiFUFCGjGeWrO0ulIh9ziK9T3GPnAo9nrv1uyiZjaHGVc5/TeOvZ2z2xX0fugSsEuPQ== }
-    peerDependencies:
-      "@tiptap/extension-list": 3.32.1
-
-  "@tiptap/extension-code-block@3.32.1":
-    resolution:
-      { integrity: sha512-kK0XTm6xt1qowqX/1AOq9vGIljrou+3tQefi7qV6D6um2opIj/w7y+iFluH3s3F/tLFW44R53xDC+KXbCoAt1Q== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-code@3.32.1":
-    resolution:
-      { integrity: sha512-QVpgbAXqBAd+WWuib8KXfFd2ccbwb1/1gqh4D34pEltknMtFlrLhftpNXnE+1nsHm2dUtY9tbS42tU3yQ32yIA== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-document@3.32.1":
-    resolution:
-      { integrity: sha512-0BkKoRkKniaOLeMfqUGYSD+QIyQ2fa9Md0s77b6ofmGdcUw3Garo70uHKOjV8L0Y4wZZz61E3wvd41Efr9C8vw== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-dropcursor@3.32.1":
-    resolution:
-      { integrity: sha512-xdXH67DAryheNS3RAkt/9WBJ8OZ/oGyedNiyxvUsD9Np7WwS8IZ0d3fUYjiUQ9axdE1nnPCD08XSYd+O53XD8w== }
-    peerDependencies:
-      "@tiptap/extensions": 3.32.1
-
-  "@tiptap/extension-floating-menu@3.32.1":
-    resolution:
-      { integrity: sha512-mbfd7g0O+KcPkUWc/WCmzwQdNIk0egTbj32na2CnB65ZHwBcS0MIULFbgGuEkof6IW0wc5wcI71tPLMT46b9kQ== }
-    peerDependencies:
-      "@floating-ui/dom": ^1.0.0
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-gapcursor@3.32.1":
-    resolution:
-      { integrity: sha512-9+oUUr3MalmJ2XOU8PVJbQPJUTOTO9MrT8Z7wtNiAjyJlpTDSot0jgb3xPGVH/9WloU7K/KzuwQlnAs0K+7+ig== }
-    peerDependencies:
-      "@tiptap/extensions": 3.32.1
-
-  "@tiptap/extension-hard-break@3.32.1":
-    resolution:
-      { integrity: sha512-xx7E4pSwlsXRSxRpXh40SQp5/5Qz7k2efP7CYAWuHQC64DjknlVeGcmnuM7ZUYmT6aa1JFzstBU0Q6iDXlX4eQ== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-heading@3.32.1":
-    resolution:
-      { integrity: sha512-45OuAbyzbgcecd7wZfyGI/9cs2AtvOJFDXsrRG9YFWQKDTe1IuuJMT2/9SRYOE+BJSD1gZWRwQVInEJ6PS0tmQ== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-horizontal-rule@3.32.1":
-    resolution:
-      { integrity: sha512-gdnlsfYs5lvL71xosvWE7EecpZyHagEOuPWiBh+y0z7VX7QRT4eqmt+Im8A7uG+hw9gaPUwxbERPjxP2SvuA9g== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-italic@3.32.1":
-    resolution:
-      { integrity: sha512-AKmJY7JG1DKbF+rXVvK/u3/0S3WXYduVkHCeV85hXd0cT8S2h9AWNo4aufJ6niYGuLnbKl0vaV6Z9Is/81ixlw== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-link@3.32.1":
-    resolution:
-      { integrity: sha512-uYiZvnn11CbEKEsyMFOtwEvD3TGFnMG54XClCO9tR4SILll6X8nJuhTlt4D6BJFIJah3Qq14inMpr/YTplx69w== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-list-item@3.32.1":
-    resolution:
-      { integrity: sha512-MSbpWNDFGY/YPJrzYfxMDJRqcSQiDKIztIvPKlvL8pDXkU+5DWsrqjCfgOLtjys13h7JPCX1kMDupUWCDpNNwA== }
-    peerDependencies:
-      "@tiptap/extension-list": 3.32.1
-
-  "@tiptap/extension-list-keymap@3.32.1":
-    resolution:
-      { integrity: sha512-3C/y5GXCrmXhL9TdbFuPk7KqEwTWlr1iHLn6tvvoLWHEldoRjffvVkLJigoJ2gKpyu9JnCxpKXgPc0yNdXnBTA== }
-    peerDependencies:
-      "@tiptap/extension-list": 3.32.1
-
-  "@tiptap/extension-list@3.32.1":
-    resolution:
-      { integrity: sha512-7OXo4BH0/r3hdzg055/9DxvykYDf8V/fB8Y1YsgVnmkDywnlQhaaqITD1XG3Gx1yioJwQ/2IiFGOwndVLKF9ow== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-ordered-list@3.32.1":
-    resolution:
-      { integrity: sha512-TrEtPv2iM/S/8C9mjU6kT9XOqYNkSpAUZWHJkUgXVQWwIMq8V1+mcBq+FNBsGyieIRdiosWMvngtpKCEw1LIWQ== }
-    peerDependencies:
-      "@tiptap/extension-list": 3.32.1
-
-  "@tiptap/extension-paragraph@3.32.1":
-    resolution:
-      { integrity: sha512-gRUUShNxeg9jUrct1x4npiI/wqgmqkO0lZoTbEXLJjxfU3NM46Q0hBO+tLB+lWvOo0SEo71eoy32uyPkZ11dzg== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-strike@3.32.1":
-    resolution:
-      { integrity: sha512-xduHVV0AilSabWrKXDudQu4kLqL2sCns3hokS7D453e0rgMezOmHglbGqm+AcP8nVQ0a5sw4g1XEHNBPKkr8Vg== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-table@3.32.1":
-    resolution:
-      { integrity: sha512-cugXuQNd/9+I85kstqiMLARDKCyLcCPFb7L+qo09McrL82iF0uUHA4cBnzCWk+8HpWTPCiYjb3E0fqmACSQudw== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-text@3.32.1":
-    resolution:
-      { integrity: sha512-/cM+x4zHjNpceFX/K1nR/DoND5upYPcJnt7PkEyiLbkMKey1xzU86zbsxtKrgVtJpO9aLOnanN5O0d4DVNDDhg== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extension-underline@3.32.1":
-    resolution:
-      { integrity: sha512-GzJaWZS6ADOZWTtNKcmK9sDR4CtVWjnVBsQZbnaPqnc2cUg4mNLX9IBaCJWYE3GjfoEnhoJOtEcolYSNTbKzWA== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-
-  "@tiptap/extensions@3.32.1":
-    resolution:
-      { integrity: sha512-yjFOMinGm4CVTlJn9BqusW/HDR6iCyhZ/OJOeJAPwcTg0S4HudceCgyFFh1N3ulHfWtzh4BNGuK+lyPFrjIUOw== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/markdown@3.32.1":
-    resolution:
-      { integrity: sha512-XHYaqEtJJQQqHUvkrT485l2a6OS/DeD9iti8vKIzZQaFRYswcwdfG25/XONCR0QfvCk+KvPxwESynSxCcSNCNw== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/pm@3.32.1":
-    resolution:
-      { integrity: sha512-xgIcbATKQQiabqOntfTuN2jk+fDXL+zaCIdWfgQL2xpnIDx9rQRf60oljorYuYIEybJ5Uqo6PE7iu8Zq7LJbjQ== }
-
-  "@tiptap/react@3.32.1":
-    resolution:
-      { integrity: sha512-FT5kULD3Lr2F6hPcLkBsqKnHira9vLUR2KILjqLWFrFMfF6+RDqifMh7AHJQiXYPSWIc2gmtg9/vqrFFTRQVXA== }
-    peerDependencies:
-      "@tiptap/core": 3.32.1
-      "@tiptap/pm": 3.32.1
-      "@types/react": ^17.0.0 || ^18.0.0 || ^19.0.0
-      "@types/react-dom": ^17.0.0 || ^18.0.0 || ^19.0.0
-      react: ^17.0.0 || ^18.0.0 || ^19.0.0
-      react-dom: ^17.0.0 || ^18.0.0 || ^19.0.0
-
-  "@tiptap/starter-kit@3.32.1":
-    resolution:
-      { integrity: sha512-/WD75HLZEGk2snYhejdWA/rbpIR/7BEcU4aQfztABNXDJGAOKKwyI8FQOCTHs7YoyYgpDEZoc2RoFOsih2IK2w== }
-
   "@tokenizer/inflate@0.4.1":
     resolution:
       { integrity: sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA== }
@@ -3456,10 +2331,6 @@ packages:
   "@types/babel__traverse@7.28.0":
     resolution:
       { integrity: sha512-8PvcXf70gTDZBgt9ptxJ8elBeBjcLOAcOtoO/mPJjtji1+CdGbHgm77om1GrsPxsiE+uXIpNSK64UYaIwQXd4Q== }
-
-  "@types/bun@1.3.1":
-    resolution:
-      { integrity: sha512-4jNMk2/K9YJtfqwoAa28c8wK+T7nvJFOjxI4h/7sORWcypRNxBpr+TPNaCfVWq70tLCJsqoFwcf0oI0JU/fvMQ== }
 
   "@types/chai@5.2.3":
     resolution:
@@ -3546,10 +2417,6 @@ packages:
   "@types/unist@3.0.3":
     resolution:
       { integrity: sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q== }
-
-  "@types/use-sync-external-store@0.0.6":
-    resolution:
-      { integrity: sha512-zFDAD+tlpf2r4asuHEj0XH6pY6i0g5NeAHPn+15wk3BV6JA69eERFXC1gyGThDkVa1zCyKr5jox1+2LbV/AMLg== }
 
   "@types/ws@8.18.2":
     resolution:
@@ -3935,12 +2802,6 @@ packages:
     resolution:
       { integrity: sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA== }
 
-  bun-types@1.3.1:
-    resolution:
-      { integrity: sha512-NMrcy7smratanWJ2mMXdpatalovtxVggkj11bScuWuiOoXTiKIu2eVS1/7qbyI/4yHedtsn175n4Sm4JcdHLXw== }
-    peerDependencies:
-      "@types/react": ^19
-
   bundle-name@4.1.1:
     resolution:
       { integrity: sha512-DdH81/zPLVS11EUgWq3tEu/xn+EzljlMYooDNdzWEnFha3R3NBMpMV1UqYIpjYHV/SgpFKMIX1Oh7o06SjM/oA== }
@@ -4098,10 +2959,6 @@ packages:
       { integrity: sha512-8BIbcC6tPZMv2/PD4PrB3CtKks7LmAWhA7FRZK/6/b/WJ2RUz00KCga7gq50S4/RhZ22kxefRFGgsuts0v3eoA== }
     engines: { node: ">= 0.8" }
 
-  core-util-is@1.0.3:
-    resolution:
-      { integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ== }
-
   crc-32@1.2.2:
     resolution:
       { integrity: sha512-ROmzCKrTnOwybPcJApAA6WBWij23HVfGVNKqqrZpuyZOHqK2CwHSvpGuyt/UNNvaIjEd8X5IFGp4Mh+Ie1IHJQ== }
@@ -4226,10 +3083,6 @@ packages:
       { integrity: sha512-9S6m9Sukh1cZNknO1CWAr2QAWsbKLafQiyM5gZ7VgXHeuaoUwffKN4q6NC4A/Mf9iiPlOXQEKW/Mv/mh9/3YFA== }
     hasBin: true
 
-  docx-preview@0.4.1:
-    resolution:
-      { integrity: sha512-Dv4g+LeE0swHpPvNC0lAT0YsR5Zq5pAxw7d3vHQ8EChBLgIrqqe9VPL5nVt2HBJap8bEZbXUI0TJob7kBeNU9w== }
-
   dunder-proto@1.0.1:
     resolution:
       { integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A== }
@@ -4238,10 +3091,6 @@ packages:
   ecdsa-sig-formatter@1.0.11:
     resolution:
       { integrity: sha512-nagl3RYrbNv6kQkeJIpt6NJZy8twLB/2vtz6yN9Z4vRKHN4/QZJIEbqohALSgwKdnksuY3k5Addp5lg8sVoVcQ== }
-
-  echarts@6.1.0:
-    resolution:
-      { integrity: sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA== }
 
   ee-first@1.1.1:
     resolution:
@@ -4386,11 +3235,6 @@ packages:
   extend@3.0.2:
     resolution:
       { integrity: sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g== }
-
-  fast-equals@5.4.5:
-    resolution:
-      { integrity: sha512-yKEpcFuRPu/pTQL2VB8YKE2yFldrLlIsoWtJeBnAdqEhvu21OgkFT0C8njf/xYc2LSZGEr3K9JGjthHJxnVLvQ== }
-    engines: { node: ">=6.0.0" }
 
   fast-glob@3.3.3:
     resolution:
@@ -4624,10 +3468,6 @@ packages:
     resolution:
       { integrity: sha512-48+B/rJWAp0jamNbAAf9M7Uf//UVqAoMmgXhBdxTDJLGKY+LRnZ99qcG+Qjl5HfMpYNzS5v4EAwVEF34LeAj7w== }
 
-  hast-util-to-html@9.0.5:
-    resolution:
-      { integrity: sha512-OguPdidb+fbHQSU4Q4ZiLKnzWo8Wwsf5bZfbvu7//a9oTYoqD/fWpe96NuHkoS9h0ccGOTe0C4NGXdtS0iObOw== }
-
   hast-util-to-jsx-runtime@2.3.6:
     resolution:
       { integrity: sha512-zl6s8LwNyo1P9uw+XJGvZtdFF1GdAkOg8ujOw+4Pyb76874fLps4ueHXDhXWdk6YHQ6OgUtinliG7RsYvCbbBg== }
@@ -4660,10 +3500,6 @@ packages:
   history@5.3.0:
     resolution:
       { integrity: sha512-ZqaKwjjrAYUYfLG+htGaIIZ4nioX2L70ZUMIFysS3xvBsSG4x/n1V6TXV3N8ZYNuFGlDirFg32T7B6WOUPDYcQ== }
-
-  html-url-attributes@3.0.1:
-    resolution:
-      { integrity: sha512-ol6UPyBWqsrO6EJySPz2O7ZSr856WDrEzM5zMqp+FJJLGMW35cLYmmZnl0vztAZxRUoNZJFTCohfjuIJ8I4QBQ== }
 
   html-void-elements@3.0.0:
     resolution:
@@ -4707,10 +3543,6 @@ packages:
     resolution:
       { integrity: sha512-wCBiZ77u1tuWde6G/nfOtLaCTYcFDU5yCzARzK10y+rLhzYoL7a7yEemcopcc2Mzow7gZOIjnV2ym1NYmdiJOQ== }
     engines: { node: ">= 4" }
-
-  immediate@3.0.6:
-    resolution:
-      { integrity: sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ== }
 
   inherits@2.0.4:
     resolution:
@@ -4824,10 +3656,6 @@ packages:
       { integrity: sha512-e6rvdUCiQCAuumZslxRJWR/Doq4VpPR82kqclvcS0efgt430SlGIk05vdCN58+VrzgtIcfNODjozVielycD4Sw== }
     engines: { node: ">=16" }
 
-  isarray@1.0.0:
-    resolution:
-      { integrity: sha512-VLghIWNM6ELQzo7zwmcg0NmTVyWKYjvIeM83yjp0wRDTmUnrM678fQbcKBo6n2CJEF0szoG//ytg+TKla89ALQ== }
-
   isarray@2.0.5:
     resolution:
       { integrity: sha512-xHjhDr3cNBK0BzdUJSPXZntQUx/mwMS5Rw4A7lPJ90XGAO6ISP/ePDNuo0vhqOZU+UD5JoodwCAAoZQd3FeAKw== }
@@ -4850,10 +3678,6 @@ packages:
   jose@6.2.13:
     resolution:
       { integrity: sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ== }
-
-  jpeg-js@0.4.4:
-    resolution:
-      { integrity: sha512-WZzeDOEtTOBK4Mdsar0IqEU5sMr3vSV2RqkAIzUEV2BHnUfKGyswWFPFwK5EeDo93K3FohSHbLAjj0s1Wzd+dg== }
 
   js-tokens@4.0.0:
     resolution:
@@ -4879,10 +3703,6 @@ packages:
       { integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg== }
     engines: { node: ">=6" }
     hasBin: true
-
-  jszip@3.10.2:
-    resolution:
-      { integrity: sha512-3l+rb15IOWtUhU0H5MFqES/T6Kh7abYwjosBey/vD6hDt8zoEffkSC5Ws5SGtgVw3gBx2NEbhTeSW1+kWkpyTQ== }
 
   just-bash@3.6.0:
     resolution:
@@ -4921,10 +3741,6 @@ packages:
     resolution:
       { integrity: sha512-3An0GCLDSR34tsCO4H8Tef8Pp2ngtaZDAZnsWJYelqXUK5wyiHvGItgK/xcSkmHLSTn1Jcho1mRQs2ehRzvKKw== }
     engines: { node: ^4.8.4 || ^6.10.1 || ^7.10.1 || >= 8.1.4 }
-
-  lie@3.3.0:
-    resolution:
-      { integrity: sha512-UaiMJzeWRlEujzAuw5LokY1L5ecNQYZKfmyZ9L7wDHb/p5etKaxXhohBcrw0EYby+G/NA52vRSN4N39dxHAIwQ== }
 
   lightningcss-android-arm64@1.32.0:
     resolution:
@@ -5098,10 +3914,6 @@ packages:
       { integrity: sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA== }
     engines: { node: ">= 12.0.0" }
 
-  linkifyjs@4.4.0:
-    resolution:
-      { integrity: sha512-InTexvtbai+2c+dEVGcc6O6P2DMVIiwD9a/i4zFroazOIYLOS6FSVmAJ7kFeumnCMx6/gQqNAkbUvgMubV4+MA== }
-
   lodash.merge@4.6.2:
     resolution:
       { integrity: sha512-0KpjqXRVvrYyCsX1swR/XTK0va6VQkQM6MNo7PqW77ByjAhoARA8EfrP1N4+KlKj8YS0ZUCtRT/YUuhyYDujIQ== }
@@ -5149,12 +3961,6 @@ packages:
   markdown-table@3.0.4:
     resolution:
       { integrity: sha512-wiYz4+JrLyb/DqW2hkFJxP7Vd7JuTDm77fvbM8VfEQdmSMqcImWeeRbHwZjBjIFki/VaMK2BhFi7oUUZeM5bqw== }
-
-  marked@17.0.6:
-    resolution:
-      { integrity: sha512-gB0gkNafnonOw0obSTEGZTT86IuhILt2Wfx0mWH/1Au83kybTayroZ/V6nS25mN7u8ASy+5fMhgB3XPNrOZdmA== }
-    engines: { node: ">= 20" }
-    hasBin: true
 
   math-intrinsics@1.1.0:
     resolution:
@@ -5436,10 +4242,6 @@ packages:
       typescript:
         optional: true
 
-  mtx-decompressor@1.8.0:
-    resolution:
-      { integrity: sha512-suXE376dUmLX4PPxSmVmdWvu09oeesqmlE5NfKjb6XIUpDRjF2Mn47kM8nXWRkHb3l7ac0P+Crp0J0O984imRQ== }
-
   mute-stream@3.0.0:
     resolution:
       { integrity: sha512-dkEJPVvun4FryqBmZ5KhDo0K9iDXAwn08tMLDinNdRBNPcYEDiWYysLcc6k3mjTMlbP9KyylvRpd4wFtwrT9rw== }
@@ -5564,10 +4366,6 @@ packages:
       zod:
         optional: true
 
-  orderedmap@2.1.1:
-    resolution:
-      { integrity: sha512-TvAWxi0nDe1j/rtMcWcIj94+Ffe6n7zhow33h40SKxmsmozs6dz/e+EajymfoFcHd7sxNn8yHM8839uixMOV6g== }
-
   outvariant@1.4.3:
     resolution:
       { integrity: sha512-+Sl2UErvtsoajRDKCE5/dBz4DIvHXQQnAxtQTF04OJxY0+DyZXSo5P5Bb7XYWOh81syohlYL24hbDwxedPUJCA== }
@@ -5624,11 +4422,6 @@ packages:
   pathe@2.0.3:
     resolution:
       { integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w== }
-
-  pdfjs-dist@6.4.299:
-    resolution:
-      { integrity: sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g== }
-    engines: { node: ">=22.13.0 || >=24" }
 
   pg-cloudflare@1.4.1:
     resolution:
@@ -5740,10 +4533,6 @@ packages:
     peerDependencies:
       react: ">=16.0.0"
 
-  process-nextick-args@2.0.1:
-    resolution:
-      { integrity: sha512-3ouUOpQhtgrbOa17J7+uxOTpITYWaGP7/AhoR3+A+/1e9skrzelGi/dXzEYyvbxubEF6Wn2ypscTKiKJFFn1ag== }
-
   process@0.11.10:
     resolution:
       { integrity: sha512-cdGef/drWFoydD1JsMzuFf8100nZl+GT+yacc2bEced5f9Rjk4z+WtFUTBu9PhOi9j/jfmBPu0mMEY4wIdAF8A== }
@@ -5756,58 +4545,6 @@ packages:
   property-information@7.2.0:
     resolution:
       { integrity: sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg== }
-
-  prosemirror-changeset@2.4.4:
-    resolution:
-      { integrity: sha512-Gyuz9jYdrAeA9I7AholyOes9KUmv/lEwsC5O9s5xF5VB3EgTPsXMGUxz4+H1B+wKVPdZbvRcg1Cp3x8qX+8ofA== }
-
-  prosemirror-commands@1.7.2:
-    resolution:
-      { integrity: sha512-q6Q6szxqdu9Xd6EcdKsqXghu5nQdZTpB4Q9yd04WRc7/jt763e/rT60Owh0L1GYY+T46o5rD+9lEN36dZS43tw== }
-
-  prosemirror-dropcursor@1.8.4:
-    resolution:
-      { integrity: sha512-VmKxhcA6a+h5oPSYmfF1ZNeQqPbyYaIxqZsKqeYCyTlPtrjUgNaHL3P8vVaO19oqAV0zuaM/axkowZHrB1P3Tg== }
-
-  prosemirror-gapcursor@1.4.1:
-    resolution:
-      { integrity: sha512-pMdYaEnjNMSwl11yjEGtgTmLkR08m/Vl+Jj443167p9eB3HVQKhYCc4gmHVDsLPODfZfjr/MmirsdyZziXbQKw== }
-
-  prosemirror-history@1.5.1:
-    resolution:
-      { integrity: sha512-onlwnqKvgtFg6srZOmDOAhlAy1FIHQpOExORybX0S+DvJepE5tPALrB9iGet/2sqqqrelSnB10OoiOJqAvu2DA== }
-
-  prosemirror-inputrules@1.5.1:
-    resolution:
-      { integrity: sha512-7wj4uMjKaXWAQ1CDgxNzNtR9AlsuwzHfdFH1ygEHA2KHF2DOEaXl1CJfNPAKCg9qNEh4rum975QLaCiQPyY6Fw== }
-
-  prosemirror-keymap@1.2.3:
-    resolution:
-      { integrity: sha512-4HucRlpiLd1IPQQXNqeo81BGtkY8Ai5smHhKW9jjPKRc2wQIxksg7Hl1tTI2IfT2B/LgX6bfYvXxEpJl7aKYKw== }
-
-  prosemirror-model@1.25.12:
-    resolution:
-      { integrity: sha512-Ue2gTmXMa7EhpLNhC7J+h4+ykD8ha12K6rrZFFKKJHBForfIStw5gJ6Zrf1mqqAa9NmpmEB4wp9bKmA4eUVjWg== }
-
-  prosemirror-schema-list@1.5.1:
-    resolution:
-      { integrity: sha512-927lFx/uwyQaGwJxLWCZRkjXG0p48KpMj6ueoYiu4JX05GGuGcgzAy62dfiV8eFZftgyBUvLx76RsMe20fJl+Q== }
-
-  prosemirror-state@1.4.4:
-    resolution:
-      { integrity: sha512-6jiYHH2CIGbCfnxdHbXZ12gySFY/fz/ulZE333G6bPqIZ4F+TXo9ifiR86nAHpWnfoNjOb3o5ESi7J8Uz1jXHw== }
-
-  prosemirror-tables@1.8.5:
-    resolution:
-      { integrity: sha512-V/0cDCsHKHe/tfWkeCmthNUcEp1IVO3p6vwN8XtwE9PZQLAZJigbw3QoraAdfJPir4NKJtNvOB8oYGKRl+t0Dw== }
-
-  prosemirror-transform@1.12.4:
-    resolution:
-      { integrity: sha512-2/WuPum3pn+O/Vi2vzpi8210ICUe2kIPXdLYjQ09Pv5DtT5bcKWMJhAKPBwvpPjpp5iOYUVwVEr0gOM1BY1Mgw== }
-
-  prosemirror-view@1.42.8:
-    resolution:
-      { integrity: sha512-ftDZjCs9AjAekXmCfJRn2U3IdlRCl0Yc4tZT1/jJWCsz4DiSifEBXtWmpJpw/4f1Rg328uAUQ+u2lCJ0+AVZkw== }
 
   protobufjs@7.6.6:
     resolution:
@@ -5882,13 +4619,6 @@ packages:
     resolution:
       { integrity: sha512-24e6ynE2H+OKt4kqsOvNd8kBpV65zoxbA4BVsEOB3ARVWQki/DHzaUoC5KuON/BiccDaCCTZBuOcfZs70kR8bQ== }
 
-  react-markdown@10.1.0:
-    resolution:
-      { integrity: sha512-qKxVopLT/TyA6BX3Ue5NwabOsAzm0Q7kAPwq6L+wWDwisYs7R8vZ0nRXqq6rkueboxpkjvLGU9fWifiX/ZZFxQ== }
-    peerDependencies:
-      "@types/react": ">=18"
-      react: ">=18"
-
   react-refresh@0.17.0:
     resolution:
       { integrity: sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ== }
@@ -5898,10 +4628,6 @@ packages:
     resolution:
       { integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw== }
     engines: { node: ">=0.10.0" }
-
-  readable-stream@2.3.8:
-    resolution:
-      { integrity: sha512-8p0AUk4XODgIewSi0l8Epjs+EVnWiK7NoDIEGU0HhE7+ZyY8D1IMY7odu5lRrFXGg71L15KG8QrPmum45RTtdA== }
 
   readable-stream@3.6.2:
     resolution:
@@ -5999,10 +4725,6 @@ packages:
     engines: { node: ">=18.0.0", npm: ">=8.0.0" }
     hasBin: true
 
-  rope-sequence@1.3.4:
-    resolution:
-      { integrity: sha512-UT5EDe2cu2E/6O4igUr5PSFs23nvvukicWHx6GnOPlHAiiYbzNuCRQCuiUdHJQcqKalLKlrYJnjY0ySGsXNQXQ== }
-
   run-applescript@7.1.0:
     resolution:
       { integrity: sha512-DPe5pVFaAsinSaV6QjQ6gdiedWDcRCbUuiQfQa2wmWV7+xC9bGulGI8+TdRmoFkAPaBXk8CrAbnlY2ISniJ47Q== }
@@ -6021,10 +4743,6 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
-
-  safe-buffer@5.1.2:
-    resolution:
-      { integrity: sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g== }
 
   safe-buffer@5.2.1:
     resolution:
@@ -6063,10 +4781,6 @@ packages:
     resolution:
       { integrity: sha512-pgRc4hJ4/sNjWCSS9AmnS40x3bNMDTknHgL5UaMBTMyJnU90EgWh1Rz+MC9eFu4BuN/UwZjKQuY/1v3rM7HMfg== }
     engines: { node: ">= 0.4" }
-
-  setimmediate@1.0.5:
-    resolution:
-      { integrity: sha512-MATJdZp8sLqDl/68LfQmbP8zKPLQNV6BIZoIgrscFDQ+RsvK/BxeDQOgyxKKoh0y/8h3BqVFnCqQ/gd+reiIXA== }
 
   setprototypeof@1.2.0:
     resolution:
@@ -6197,10 +4911,6 @@ packages:
     resolution:
       { integrity: sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ== }
     engines: { node: ">=18" }
-
-  string_decoder@1.1.1:
-    resolution:
-      { integrity: sha512-n/ShnvDi6FHbbVfviro+WojiFzv+s8MPMHBczVePfUpDJLwoLT0ht1l4YwBCbi8pJAveEEdnkHyPyTP/mzRfwg== }
 
   string_decoder@1.3.0:
     resolution:
@@ -6352,10 +5062,6 @@ packages:
       typescript:
         optional: true
 
-  tslib@2.3.0:
-    resolution:
-      { integrity: sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg== }
-
   tslib@2.8.1:
     resolution:
       { integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w== }
@@ -6465,16 +5171,6 @@ packages:
     resolution:
       { integrity: sha512-fpsYs/VVoZxfGY9/j3FQpZmN8wdLJaV1Pt38AaJNZu9uKIHcFU3halCdBveEq1HGKO1OEfJY65w1zvoFV1b3qQ== }
 
-  unpdf@1.9.1:
-    resolution:
-      { integrity: sha512-nO1npM2kNyd4hj1fKzUVU6bvnWjDSxI97eycM/DgzI83dYyW+pNRI9NeMQVEfef8fI3Q06i9lkMeE1HxrQqKoA== }
-    engines: { node: ">=22" }
-    peerDependencies:
-      "@napi-rs/canvas": ^0.1.69 || ^1.0.0
-    peerDependenciesMeta:
-      "@napi-rs/canvas":
-        optional: true
-
   until-async@3.0.2:
     resolution:
       { integrity: sha512-IiSk4HlzAMqTUseHHe3VhIGyuFmN90zMTpD3Z3y8jeQbzLIq500MVM7Jq2vUAnTKAFPJrqwkzr6PoTcPhGcOiw== }
@@ -6485,12 +5181,6 @@ packages:
     hasBin: true
     peerDependencies:
       browserslist: ">= 4.21.0"
-
-  use-sync-external-store@1.7.0:
-    resolution:
-      { integrity: sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A== }
-    peerDependencies:
-      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
   util-deprecate@1.0.2:
     resolution:
@@ -6512,33 +5202,6 @@ packages:
   vfile@6.0.3:
     resolution:
       { integrity: sha512-KzIbH/9tXat2u30jf+smMwFCsno4wHVdNmzFyL+T/L3UGqqk6JKfVqOFOZEpZSHADH1k40ab6NUIXZq422ov3Q== }
-
-  virtua@0.53.6:
-    resolution:
-      { integrity: sha512-/vQtSFNDFcp3Yz4klbpe8Z88eQeThSw49cFlgJQdsqh3SUnRlW4jLi6ZYt4YzdwerYGlP6KCgAOXNVO+PmUg7w== }
-    peerDependencies:
-      "@angular/common": ">=20.0.0"
-      "@angular/core": ">=20.0.0"
-      react: ">=16.14.0"
-      react-dom: ">=16.14.0"
-      solid-js: ">=1.0"
-      svelte: ">=5.0"
-      vue: ">=3.2"
-    peerDependenciesMeta:
-      "@angular/common":
-        optional: true
-      "@angular/core":
-        optional: true
-      react:
-        optional: true
-      react-dom:
-        optional: true
-      solid-js:
-        optional: true
-      svelte:
-        optional: true
-      vue:
-        optional: true
 
   vite-tsconfig-paths@5.1.4:
     resolution:
@@ -6718,10 +5381,6 @@ packages:
       jsdom:
         optional: true
 
-  w3c-keyname@2.2.8:
-    resolution:
-      { integrity: sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ== }
-
   web-namespaces@2.0.1:
     resolution:
       { integrity: sha512-bKr1DkiNa2krS7qxNtdrtHAmzuYGFQLiQ13TsorsdT6ULTkPLKuu5+GsFpDlg6JFjUTwX2DyhMPG2be8uPrqsQ== }
@@ -6827,16 +5486,6 @@ packages:
       { integrity: sha512-h3Fbisa2nKGPxCpm89Hk33lBLsnaGBvctQopaBSOW/uIs6FTe1ATyAnKFJrzVs9vpGdsTe73WF3V4lIsk4Gacw== }
     engines: { node: ">=18" }
 
-  xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz:
-    resolution:
-      {
-        integrity: sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==,
-        tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz,
-      }
-    version: 0.20.3
-    engines: { node: ">=0.8" }
-    hasBin: true
-
   xml-naming@0.3.0:
     resolution:
       { integrity: sha512-ghig2TBE/H11aOVgmahA3MhimvkBr6JIYknH/Dhdk10nXwdbIqBJsbfMxpvFPG8bAw77gN29aQWvKpmVoPlvPQ== }
@@ -6885,23 +5534,11 @@ packages:
     resolution:
       { integrity: sha512-rLfVLB4FgQneDr0dv1oddCVZmKjcJ6yX6mS4pU82Mq/Dt9a3cLZQ62pDBL4AUO+uVrCvtWz3ZFUL2HFAFJ/BXQ== }
 
-  zrender@6.1.0:
-    resolution:
-      { integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ== }
-
   zwitch@2.0.4:
     resolution:
       { integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A== }
 
 snapshots:
-  "@aiden0z/pptx-renderer@1.4.0(pdfjs-dist@6.4.299)":
-    dependencies:
-      echarts: 6.1.0
-      jszip: 3.10.2
-      mtx-decompressor: 1.8.0
-    optionalDependencies:
-      pdfjs-dist: 6.4.299
-
   "@anthropic-ai/sdk@0.129.0":
     dependencies:
       json-schema-to-ts: 3.1.1
@@ -7350,8 +5987,6 @@ snapshots:
 
   "@earendil-works/pi-telemetry@1.4.0": {}
 
-  "@electric-sql/pglite@0.5.11": {}
-
   "@electric-sql/pglite@0.5.12": {}
 
   "@emnapi/runtime@1.11.3":
@@ -7513,20 +6148,6 @@ snapshots:
     optional: true
 
   "@esbuild/win32-x64@0.28.2":
-    optional: true
-
-  "@floating-ui/core@1.8.0":
-    dependencies:
-      "@floating-ui/utils": 0.2.12
-    optional: true
-
-  "@floating-ui/dom@1.8.0":
-    dependencies:
-      "@floating-ui/core": 1.8.0
-      "@floating-ui/utils": 0.2.12
-    optional: true
-
-  "@floating-ui/utils@0.2.12":
     optional: true
 
   "@fontsource-variable/public-sans@5.3.0": {}
@@ -7851,54 +6472,6 @@ snapshots:
       is-node-process: 1.2.0
       outvariant: 1.4.3
       strict-event-emitter: 0.5.1
-
-  "@napi-rs/canvas-android-arm64@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-darwin-arm64@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-darwin-x64@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-linux-arm-gnueabihf@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-linux-arm64-gnu@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-linux-arm64-musl@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-linux-riscv64-gnu@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-linux-x64-gnu@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-linux-x64-musl@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-win32-arm64-msvc@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas-win32-x64-msvc@1.0.13":
-    optional: true
-
-  "@napi-rs/canvas@1.0.13":
-    optionalDependencies:
-      "@napi-rs/canvas-android-arm64": 1.0.13
-      "@napi-rs/canvas-darwin-arm64": 1.0.13
-      "@napi-rs/canvas-darwin-x64": 1.0.13
-      "@napi-rs/canvas-linux-arm-gnueabihf": 1.0.13
-      "@napi-rs/canvas-linux-arm64-gnu": 1.0.13
-      "@napi-rs/canvas-linux-arm64-musl": 1.0.13
-      "@napi-rs/canvas-linux-riscv64-gnu": 1.0.13
-      "@napi-rs/canvas-linux-x64-gnu": 1.0.13
-      "@napi-rs/canvas-linux-x64-musl": 1.0.13
-      "@napi-rs/canvas-win32-arm64-msvc": 1.0.13
-      "@napi-rs/canvas-win32-x64-msvc": 1.0.13
-    optional: true
 
   "@napi-rs/lzma-linux-x64-gnu@1.5.1":
     optional: true
@@ -8265,190 +6838,6 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)
 
-  "@tiptap/core@3.32.1(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-blockquote@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-bold@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-bubble-menu@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@floating-ui/dom": 1.8.0
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-    optional: true
-
-  "@tiptap/extension-bullet-list@3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/extension-list": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-code-block@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-code@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-document@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-dropcursor@3.32.1(@tiptap/extensions@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/extensions": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-floating-menu@3.32.1(@floating-ui/dom@1.8.0)(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@floating-ui/dom": 1.8.0
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-    optional: true
-
-  "@tiptap/extension-gapcursor@3.32.1(@tiptap/extensions@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/extensions": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-hard-break@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-heading@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-horizontal-rule@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-italic@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-link@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-      linkifyjs: 4.4.0
-
-  "@tiptap/extension-list-item@3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/extension-list": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-list-keymap@3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/extension-list": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-ordered-list@3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/extension-list": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-paragraph@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-strike@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-table@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/extension-text@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extension-underline@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-
-  "@tiptap/extensions@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-
-  "@tiptap/markdown@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-      marked: 17.0.6
-
-  "@tiptap/pm@3.32.1":
-    dependencies:
-      prosemirror-changeset: 2.4.4
-      prosemirror-commands: 1.7.2
-      prosemirror-dropcursor: 1.8.4
-      prosemirror-gapcursor: 1.4.1
-      prosemirror-history: 1.5.1
-      prosemirror-inputrules: 1.5.1
-      prosemirror-keymap: 1.2.3
-      prosemirror-model: 1.25.12
-      prosemirror-schema-list: 1.5.1
-      prosemirror-state: 1.4.4
-      prosemirror-tables: 1.8.5
-      prosemirror-transform: 1.12.4
-      prosemirror-view: 1.42.8
-
-  "@tiptap/react@3.32.1(@floating-ui/dom@1.8.0)(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-      "@types/react": 19.3.0
-      "@types/react-dom": 19.3.0(@types/react@19.3.0)
-      "@types/use-sync-external-store": 0.0.6
-      fast-equals: 5.4.5
-      react: 19.3.1
-      react-dom: 19.3.1(react@19.3.1)
-      use-sync-external-store: 1.7.0(react@19.3.1)
-    optionalDependencies:
-      "@tiptap/extension-bubble-menu": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/extension-floating-menu": 3.32.1(@floating-ui/dom@1.8.0)(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-    transitivePeerDependencies:
-      - "@floating-ui/dom"
-
-  "@tiptap/starter-kit@3.32.1":
-    dependencies:
-      "@tiptap/core": 3.32.1(@tiptap/pm@3.32.1)
-      "@tiptap/extension-blockquote": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/extension-bold": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-bullet-list": 3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))
-      "@tiptap/extension-code": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-code-block": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/extension-document": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-dropcursor": 3.32.1(@tiptap/extensions@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))
-      "@tiptap/extension-gapcursor": 3.32.1(@tiptap/extensions@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))
-      "@tiptap/extension-hard-break": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-heading": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-horizontal-rule": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/extension-italic": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-link": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/extension-list": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/extension-list-item": 3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))
-      "@tiptap/extension-list-keymap": 3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))
-      "@tiptap/extension-ordered-list": 3.32.1(@tiptap/extension-list@3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1))
-      "@tiptap/extension-paragraph": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-strike": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-text": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extension-underline": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))
-      "@tiptap/extensions": 3.32.1(@tiptap/core@3.32.1(@tiptap/pm@3.32.1))(@tiptap/pm@3.32.1)
-      "@tiptap/pm": 3.32.1
-
   "@tokenizer/inflate@0.4.1":
     dependencies:
       debug: 4.4.3
@@ -8478,12 +6867,6 @@ snapshots:
   "@types/babel__traverse@7.28.0":
     dependencies:
       "@babel/types": 7.29.11
-
-  "@types/bun@1.3.1(@types/react@19.3.0)":
-    dependencies:
-      bun-types: 1.3.1(@types/react@19.3.0)
-    transitivePeerDependencies:
-      - "@types/react"
 
   "@types/chai@5.2.3":
     dependencies:
@@ -8553,8 +6936,6 @@ snapshots:
   "@types/unist@2.0.11": {}
 
   "@types/unist@3.0.3": {}
-
-  "@types/use-sync-external-store@0.0.6": {}
 
   "@types/ws@8.18.2":
     dependencies:
@@ -8818,11 +7199,6 @@ snapshots:
       base64-js: 1.5.1
       ieee754: 1.2.1
 
-  bun-types@1.3.1(@types/react@19.3.0):
-    dependencies:
-      "@types/node": 26.6.5
-      "@types/react": 19.3.0
-
   bundle-name@4.1.1:
     dependencies:
       run-applescript: 7.1.0
@@ -8921,8 +7297,6 @@ snapshots:
       depd: 2.0.0
       keygrip: 1.1.0
 
-  core-util-is@1.0.3: {}
-
   crc-32@1.2.2: {}
 
   cross-spawn@7.0.6:
@@ -8993,10 +7367,6 @@ snapshots:
 
   direction@2.0.1: {}
 
-  docx-preview@0.4.1:
-    dependencies:
-      jszip: 3.10.2
-
   dunder-proto@1.0.1:
     dependencies:
       call-bind-apply-helpers: 1.0.2
@@ -9006,11 +7376,6 @@ snapshots:
   ecdsa-sig-formatter@1.0.11:
     dependencies:
       safe-buffer: 5.2.1
-
-  echarts@6.1.0:
-    dependencies:
-      tslib: 2.3.0
-      zrender: 6.1.0
 
   ee-first@1.1.1: {}
 
@@ -9167,8 +7532,6 @@ snapshots:
   expect-type@1.4.0: {}
 
   extend@3.0.2: {}
-
-  fast-equals@5.4.5: {}
 
   fast-glob@3.3.3:
     dependencies:
@@ -9429,20 +7792,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  hast-util-to-html@9.0.5:
-    dependencies:
-      "@types/hast": 3.0.4
-      "@types/unist": 3.0.3
-      ccount: 2.0.1
-      comma-separated-tokens: 2.0.3
-      hast-util-whitespace: 3.0.0
-      html-void-elements: 3.0.0
-      mdast-util-to-hast: 13.2.1
-      property-information: 7.2.0
-      space-separated-tokens: 2.0.2
-      stringify-entities: 4.0.4
-      zwitch: 2.0.4
-
   hast-util-to-jsx-runtime@2.3.6:
     dependencies:
       "@types/estree": 1.0.9
@@ -9500,8 +7849,6 @@ snapshots:
     dependencies:
       "@babel/runtime": 7.29.10
 
-  html-url-attributes@3.0.1: {}
-
   html-void-elements@3.0.0: {}
 
   http-assert@1.5.0:
@@ -9547,8 +7894,6 @@ snapshots:
   ignore@5.3.2: {}
 
   ignore@7.0.14: {}
-
-  immediate@3.0.6: {}
 
   inherits@2.0.4: {}
 
@@ -9621,8 +7966,6 @@ snapshots:
     dependencies:
       is-inside-container: 1.0.0
 
-  isarray@1.0.0: {}
-
   isarray@2.0.5: {}
 
   isexe@2.0.0: {}
@@ -9645,8 +7988,6 @@ snapshots:
 
   jose@6.2.13: {}
 
-  jpeg-js@0.4.4: {}
-
   js-tokens@4.0.0: {}
 
   jsesc@3.1.0: {}
@@ -9661,13 +8002,6 @@ snapshots:
       ts-algebra: 2.0.0
 
   json5@2.2.3: {}
-
-  jszip@3.10.2:
-    dependencies:
-      lie: 3.3.0
-      pako: 1.0.11
-      readable-stream: 2.3.8
-      setimmediate: 1.0.5
 
   just-bash@3.6.0:
     dependencies:
@@ -9744,10 +8078,6 @@ snapshots:
       vary: 1.1.2
     transitivePeerDependencies:
       - supports-color
-
-  lie@3.3.0:
-    dependencies:
-      immediate: 3.0.6
 
   lightningcss-android-arm64@1.32.0:
     optional: true
@@ -9847,8 +8177,6 @@ snapshots:
       lightningcss-win32-arm64-msvc: 1.33.0
       lightningcss-win32-x64-msvc: 1.33.0
 
-  linkifyjs@4.4.0: {}
-
   lodash.merge@4.6.2: {}
 
   long@5.3.2: {}
@@ -9880,8 +8208,6 @@ snapshots:
   markdown-extensions@2.0.0: {}
 
   markdown-table@3.0.4: {}
-
-  marked@17.0.6: {}
 
   math-intrinsics@1.1.0: {}
 
@@ -10440,8 +8766,6 @@ snapshots:
     transitivePeerDependencies:
       - "@types/node"
 
-  mtx-decompressor@1.8.0: {}
-
   mute-stream@3.0.0: {}
 
   nanoid@3.3.20: {}
@@ -10514,8 +8838,6 @@ snapshots:
       undici: 7.30.1
       ws: 8.22.0
 
-  orderedmap@2.1.1: {}
-
   outvariant@1.4.3: {}
 
   p-retry@4.6.2:
@@ -10554,10 +8876,6 @@ snapshots:
   path-type@6.0.0: {}
 
   pathe@2.0.3: {}
-
-  pdfjs-dist@6.4.299:
-    optionalDependencies:
-      "@napi-rs/canvas": 1.0.13
 
   pg-cloudflare@1.4.1:
     optional: true
@@ -10644,8 +8962,6 @@ snapshots:
       clsx: 2.1.1
       react: 19.3.1
 
-  process-nextick-args@2.0.1: {}
-
   process@0.11.10: {}
 
   prop-types@15.8.1:
@@ -10655,80 +8971,6 @@ snapshots:
       react-is: 16.13.1
 
   property-information@7.2.0: {}
-
-  prosemirror-changeset@2.4.4:
-    dependencies:
-      prosemirror-transform: 1.12.4
-
-  prosemirror-commands@1.7.2:
-    dependencies:
-      prosemirror-model: 1.25.12
-      prosemirror-state: 1.4.4
-      prosemirror-transform: 1.12.4
-
-  prosemirror-dropcursor@1.8.4:
-    dependencies:
-      prosemirror-state: 1.4.4
-      prosemirror-transform: 1.12.4
-      prosemirror-view: 1.42.8
-
-  prosemirror-gapcursor@1.4.1:
-    dependencies:
-      prosemirror-keymap: 1.2.3
-      prosemirror-model: 1.25.12
-      prosemirror-state: 1.4.4
-      prosemirror-view: 1.42.8
-
-  prosemirror-history@1.5.1:
-    dependencies:
-      prosemirror-state: 1.4.4
-      prosemirror-transform: 1.12.4
-      prosemirror-view: 1.42.8
-      rope-sequence: 1.3.4
-
-  prosemirror-inputrules@1.5.1:
-    dependencies:
-      prosemirror-state: 1.4.4
-      prosemirror-transform: 1.12.4
-
-  prosemirror-keymap@1.2.3:
-    dependencies:
-      prosemirror-state: 1.4.4
-      w3c-keyname: 2.2.8
-
-  prosemirror-model@1.25.12:
-    dependencies:
-      orderedmap: 2.1.1
-
-  prosemirror-schema-list@1.5.1:
-    dependencies:
-      prosemirror-model: 1.25.12
-      prosemirror-state: 1.4.4
-      prosemirror-transform: 1.12.4
-
-  prosemirror-state@1.4.4:
-    dependencies:
-      prosemirror-model: 1.25.12
-      prosemirror-transform: 1.12.4
-      prosemirror-view: 1.42.8
-
-  prosemirror-tables@1.8.5:
-    dependencies:
-      prosemirror-keymap: 1.2.3
-      prosemirror-model: 1.25.12
-      prosemirror-state: 1.4.4
-      prosemirror-transform: 1.12.4
-      prosemirror-view: 1.42.8
-
-  prosemirror-transform@1.12.4:
-    dependencies:
-      prosemirror-model: 1.25.12
-
-  prosemirror-view@1.42.8:
-    dependencies:
-      prosemirror-model: 1.25.12
-      prosemirror-state: 1.4.4
-      prosemirror-transform: 1.12.4
 
   protobufjs@7.6.6:
     dependencies:
@@ -10794,37 +9036,9 @@ snapshots:
 
   react-is@16.13.1: {}
 
-  react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.1):
-    dependencies:
-      "@types/hast": 3.0.5
-      "@types/mdast": 4.0.4
-      "@types/react": 19.3.0
-      devlop: 1.1.0
-      hast-util-to-jsx-runtime: 2.3.6
-      html-url-attributes: 3.0.1
-      mdast-util-to-hast: 13.2.1
-      react: 19.3.1
-      remark-parse: 11.0.0
-      remark-rehype: 11.1.2
-      unified: 11.0.5
-      unist-util-visit: 5.2.0
-      vfile: 6.0.3
-    transitivePeerDependencies:
-      - supports-color
-
   react-refresh@0.17.0: {}
 
   react@19.3.1: {}
-
-  readable-stream@2.3.8:
-    dependencies:
-      core-util-is: 1.0.3
-      inherits: 2.0.4
-      isarray: 1.0.0
-      process-nextick-args: 2.0.1
-      safe-buffer: 5.1.2
-      string_decoder: 1.1.1
-      util-deprecate: 1.0.2
 
   readable-stream@3.6.2:
     dependencies:
@@ -10995,8 +9209,6 @@ snapshots:
       "@rollup/rollup-win32-x64-msvc": 4.65.1
       fsevents: 2.3.3
 
-  rope-sequence@1.3.4: {}
-
   run-applescript@7.1.0: {}
 
   run-parallel@1.2.0:
@@ -11006,8 +9218,6 @@ snapshots:
   run@2.1.3(typescript@5.9.3):
     optionalDependencies:
       typescript: 5.9.3
-
-  safe-buffer@5.1.2: {}
 
   safe-buffer@5.2.1: {}
 
@@ -11037,8 +9247,6 @@ snapshots:
       get-intrinsic: 1.3.0
       gopd: 1.2.0
       has-property-descriptors: 1.0.2
-
-  setimmediate@1.0.5: {}
 
   setprototypeof@1.2.0: {}
 
@@ -11149,10 +9357,6 @@ snapshots:
       emoji-regex: 10.6.0
       get-east-asian-width: 1.7.0
       strip-ansi: 7.2.0
-
-  string_decoder@1.1.1:
-    dependencies:
-      safe-buffer: 5.1.2
 
   string_decoder@1.3.0:
     dependencies:
@@ -11266,8 +9470,6 @@ snapshots:
     optionalDependencies:
       typescript: 7.0.2
 
-  tslib@2.3.0: {}
-
   tslib@2.8.1: {}
 
   tsscmp@1.0.6: {}
@@ -11376,10 +9578,6 @@ snapshots:
       unist-util-is: 6.0.1
       unist-util-visit-parents: 6.1.0
 
-  unpdf@1.9.1(@napi-rs/canvas@1.0.13):
-    optionalDependencies:
-      "@napi-rs/canvas": 1.0.13
-
   until-async@3.0.2: {}
 
   update-browserslist-db@1.3.4(browserslist@4.29.5):
@@ -11388,11 +9586,8 @@ snapshots:
       escalade: 3.2.0
       picocolors: 1.1.1
 
-  use-sync-external-store@1.7.0(react@19.3.1):
-    dependencies:
-      react: 19.3.1
-
-  util-deprecate@1.0.2: {}
+  util-deprecate@1.0.2:
+    optional: true
 
   vary@1.1.2: {}
 
@@ -11410,11 +9605,6 @@ snapshots:
     dependencies:
       "@types/unist": 3.0.3
       vfile-message: 4.0.3
-
-  virtua@0.53.6(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
-    optionalDependencies:
-      react: 19.3.1
-      react-dom: 19.3.1(react@19.3.1)
 
   vite-tsconfig-paths@5.1.4(typescript@7.0.2)(vite@6.4.5(@types/node@26.6.5)(jiti@2.7.0)(lightningcss@1.33.0)(yaml@2.9.1)):
     dependencies:
@@ -11545,8 +9735,6 @@ snapshots:
     transitivePeerDependencies:
       - msw
 
-  w3c-keyname@2.2.8: {}
-
   web-namespaces@2.0.1: {}
 
   web-streams-polyfill@3.3.3: {}
@@ -11632,8 +9820,6 @@ snapshots:
     dependencies:
       is-wsl: 3.1.1
 
-  xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz: {}
-
   xml-naming@0.3.0: {}
 
   xtend@4.0.2: {}
@@ -11670,9 +9856,5 @@ snapshots:
       "@speed-highlight/core": 1.2.24
       cookie: 1.1.1
       youch-core: 0.3.3
-
-  zrender@6.1.0:
-    dependencies:
-      tslib: 2.3.0
 
   zwitch@2.0.4: {}

@@ -216,6 +216,27 @@ call's `CallContext` from it with `callContextFor(caller, { projectId, requestId
   that call `authenticate` themselves. Build tests against it with the in-memory directory: issue a key, send it as a
   bearer.
 
+### Cross-site writes and cookies
+
+Credentials come from headers, never from a cookie: a Kantel session (`kts_…`) is a bearer, and no provider reads
+`Cookie`. Browsers still send cookies a gateway didn't set (Cloudflare Access's, or one a same-site page planted with
+`Domain=`), and `SameSite` doesn't stop a same-site page, such as a sandbox's port on a self-hosted install whose ports
+domain shares the console's registrable domain. (Kantel's hosted ports are under `kantel.run`, a registrable domain of
+their own, so a port's page there is never the same site as the hosted console, `app.kantel.dev`.) So both gateways
+put `@kantel/identity/csrf` in front of every route but an exposed port's, same site or not:
+
+- `crossSiteRefusal(request, { origins?, httpsTwin? })` answers 403 (`forbidden`, `CROSS_SITE_REFUSED`) for a request
+  that changes something (any method but GET, HEAD and OPTIONS), has no `Authorization` header, and either has a
+  `Sec-Fetch-Site` other than `same-origin`, an `Origin` that isn't exactly the request's own origin (or one of
+  `origins`, or with `httpsTwin` the request's host over https), or a cookie and no `Origin`. Otherwise it is
+  undefined and the request goes on. `crossSiteReason` says which rule refused it.
+- A bearer passes: the CLI, the SDK, MCP and the console signed in with a code are unchanged. A request with no cookie
+  and no `Origin` passes too (a script, a device sign-in's start): it carries nobody's ambient credential.
+- `@kantel/identity/cookies` is how the console's origin sets a cookie of its own, should it need one:
+  `setConsoleCookie(name, value, { secure, maxAgeSeconds? })` makes a `__Host-` cookie over https (`Secure`,
+  `Path=/`, no `Domain`) and an unprefixed one over plain http, where browsers refuse `__Host-`;
+  `readConsoleCookie` reads only that exact name, so a bare one planted for the whole site is never read.
+
 ### Sign-in providers
 
 `@kantel/identity/jwt` verifies tokens with `jose`. Each provider takes an optional `fetch` (default the global one),

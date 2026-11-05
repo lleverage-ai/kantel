@@ -1,59 +1,26 @@
-/* Kantel design tokens. The only file in @kantel/ui allowed raw colours and sizes: every component reads these
-   custom properties, and `pnpm --filter @kantel/ui lint:tokens` fails on a raw value anywhere else.
+/* Kantel design tokens. With the two themes' palettes it imports, the only files in @kantel/ui allowed raw colours
+   and sizes: every component reads these custom properties, and `pnpm --filter @kantel/ui lint:tokens` fails on a raw
+   value anywhere else.
 
-   Kantel, after the Lleverage brand: a midnight canvas with slightly lifted panels, paper text (never pure white),
+   Kantel, after the Lleverage brand: a dark canvas with slightly lifted panels, paper text (never pure white),
    hairline paper borders, Public Sans with Abhaya Libre for display and Roboto Mono for code, compact 12–14px text.
    The layout and density are after T3 Code's (pingdotgg/t3code@1152e9171a9ce6ede20e0cc1f16ed0dbe103da9b,
-   apps/web/src/index.css). One accent, the brand's orange, which a host app rebrands by setting --kt-accent,
-   --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any ancestor.
+   apps/web/src/index.css). One accent, the brand's orange.
 
-   The colours and fonts here are the Kantel theme's (ID `kantel`), so a page paints in it before any theme is applied. Every other theme
-   (src/tokens/themes/) sets the same colour tokens on [data-kt-theme="<id>"]: see docs/theming.md. A new colour token
-   goes in src/tokens/theme-schema.ts too, and theme.test.ts holds the two together. */
+   Two themes, dark and light (docs/theming.md). Their colours are in dark.css and light.css, one palette each; here
+   are only the formulas built on them (a tint of the accent, the terminal's colours from the status ones), which follow
+   whichever palette is on the page, and everything that is the same in both: type, space, sizes, radius and motion. */
+
+@import "./dark.css";
+@import "./light.css";
 
 :root,
 .kt-theme {
-	color-scheme: dark;
-
-	/* Surfaces: midnight, a panel and a raised card a step lighter, and a well a step darker. */
-	--kt-canvas: #141e28;
-	--kt-panel: #18232e;
-	--kt-raised: #1e2a36;
-	--kt-sunken: #0f1720;
-	--kt-hover: rgb(249 247 240 / 0.05);
-	--kt-active: rgb(249 247 240 / 0.08);
-	--kt-selected: rgb(249 247 240 / 0.07);
-	--kt-user-message: #2c353e; /* the brand's midnight accent: cards on dark surfaces */
-	--kt-code: #101922;
-	--kt-scrim: rgb(8 12 16 / 0.6);
-
-	/* Lines: paper, faint. */
-	--kt-border: rgb(249 247 240 / 0.07);
-	--kt-border-strong: rgb(249 247 240 / 0.12);
-	--kt-border-input: rgb(249 247 240 / 0.13);
-
-	/* Text: paper, never pure white. All pass WCAG AA (4.5:1) on --kt-raised and darker. */
-	--kt-text: #f9f7f0;
-	--kt-text-muted: #bdbbb3;
-	--kt-text-faint: #9d9b94;
-	--kt-text-disabled: #5f656b;
-
-	/* The accent: one colour, rebrandable. The brand's orange, with midnight on it (5.7:1), its warmer shade for hover. */
-	--kt-accent: #ec7523;
-	--kt-accent-hover: #ff9626;
-	--kt-accent-fg: #141e28;
-	--kt-accent-text: #f08a47;
+	/* The accent's tints. */
 	--kt-accent-soft: color-mix(in srgb, var(--kt-accent) 16%, transparent);
 	--kt-focus: color-mix(in srgb, var(--kt-accent-text) 80%, transparent);
 
-	/* Status: the brand's product set (info, success, warning, destructive) lifted to pass AA on midnight, plus indigo.
-	   Text colours pass AA on every surface; soft fills sit behind them. */
-	--kt-status-working: #6aa6dc; /* blue: the agent is working */
-	--kt-status-waiting: #a9a6f0; /* indigo: waiting on an answer from you */
-	--kt-status-approval: #d9b84a; /* ochre: waiting on your approval */
-	--kt-status-done: #5cbf8a; /* green: done */
-	--kt-status-error: #f07c74; /* red: failed */
-	--kt-status-idle: #9d9b94; /* neutral: nothing happening */
+	/* Status: soft fills behind a status's text, and the edge of a card in one. */
 	--kt-status-working-soft: color-mix(in srgb, var(--kt-status-working) 12%, transparent);
 	--kt-status-waiting-soft: color-mix(in srgb, var(--kt-status-waiting) 12%, transparent);
 	--kt-status-approval-soft: color-mix(in srgb, var(--kt-status-approval) 10%, transparent);
@@ -62,27 +29,29 @@
 	--kt-status-approval-line: color-mix(in srgb, var(--kt-status-approval) 35%, transparent);
 	--kt-status-error-line: color-mix(in srgb, var(--kt-status-error) 35%, transparent);
 
-	/* Diff. */
-	--kt-diff-add: #5cbf8a;
-	--kt-diff-del: #f07c74;
+	/* Diff: the done and failed colours, an eighth of the way to the text: they sit on the code well, a shade off the
+	   canvas the status colours are fitted to. */
+	--kt-diff-add: color-mix(in srgb, var(--kt-status-done) 88%, var(--kt-text));
+	--kt-diff-del: color-mix(in srgb, var(--kt-status-error) 88%, var(--kt-text));
 	--kt-diff-add-soft: color-mix(in srgb, var(--kt-diff-add) 10%, transparent);
 	--kt-diff-del-soft: color-mix(in srgb, var(--kt-diff-del) 10%, transparent);
 
 	/* The inline terminal (a bash call): the theme's code surface and text, and the 16 ANSI colours by palette index
-	   (0-7 normal, 8-15 bright) from the theme's own status and text colours (theme-schema.ts says which), so a
-	   command's output follows the theme as highlighted code does. A bright colour is its normal one a quarter of the
-	   way to the text. */
+	   (0-7 normal, 8-15 bright) from the theme's own status and text colours, so a
+	   command's output follows the theme as highlighted code does. On the code well, a shade off the canvas, a normal
+	   colour is its status one an eighth of the way to the text, so it keeps AA there; a bright one is its normal one a
+	   quarter of the way to the text. */
 	--kt-terminal: var(--kt-code);
 	--kt-terminal-text: var(--kt-syntax-text);
-	--kt-terminal-prompt: var(--kt-status-done);
-	--kt-terminal-stderr: var(--kt-status-error);
-	--kt-ansi-0: var(--kt-text-faint);
-	--kt-ansi-1: var(--kt-status-error);
-	--kt-ansi-2: var(--kt-status-done);
-	--kt-ansi-3: var(--kt-status-approval);
-	--kt-ansi-4: var(--kt-status-working);
-	--kt-ansi-5: var(--kt-status-waiting);
-	--kt-ansi-6: color-mix(in srgb, var(--kt-status-working) 50%, var(--kt-status-done));
+	--kt-terminal-prompt: var(--kt-ansi-2);
+	--kt-terminal-stderr: var(--kt-ansi-1);
+	--kt-ansi-0: color-mix(in srgb, var(--kt-text-muted) 88%, var(--kt-text));
+	--kt-ansi-1: color-mix(in srgb, var(--kt-status-error) 88%, var(--kt-text));
+	--kt-ansi-2: color-mix(in srgb, var(--kt-status-done) 88%, var(--kt-text));
+	--kt-ansi-3: color-mix(in srgb, var(--kt-status-approval) 88%, var(--kt-text));
+	--kt-ansi-4: color-mix(in srgb, var(--kt-status-working) 88%, var(--kt-text));
+	--kt-ansi-5: color-mix(in srgb, var(--kt-status-waiting) 88%, var(--kt-text));
+	--kt-ansi-6: color-mix(in srgb, var(--kt-ansi-4) 50%, var(--kt-ansi-2));
 	--kt-ansi-7: var(--kt-text-muted);
 	--kt-ansi-8: var(--kt-text-muted);
 	--kt-ansi-9: color-mix(in srgb, var(--kt-ansi-1) 75%, var(--kt-text));
@@ -93,31 +62,25 @@
 	--kt-ansi-14: color-mix(in srgb, var(--kt-ansi-6) 75%, var(--kt-text));
 	--kt-ansi-15: var(--kt-text);
 
-	/* Syntax: highlighted code (src/code/syntax.css). Each passes AA on --kt-code. */
+	/* Syntax: highlighted code (src/code/syntax.css). The palettes set comments, keywords, strings, numbers, functions,
+	   types, properties, operators and tags; the rest follow from those. */
 	--kt-syntax-text: var(--kt-text);
-	--kt-syntax-comment: #8a929c;
-	--kt-syntax-keyword: #c3a6ff;
-	--kt-syntax-string: #a5d6a7;
-	--kt-syntax-number: #f5b97a;
-	--kt-syntax-function: #8fb4f5;
-	--kt-syntax-type: #6fd3e3;
-	--kt-syntax-property: #f0a6c8;
 	--kt-syntax-variable: var(--kt-syntax-text);
-	--kt-syntax-operator: #bdbbb3;
 	--kt-syntax-punctuation: var(--kt-text-muted);
-	--kt-syntax-tag: #f28b82;
 	--kt-syntax-regexp: var(--kt-syntax-string);
 	--kt-syntax-meta: var(--kt-syntax-keyword);
 	--kt-syntax-inserted: var(--kt-diff-add);
 	--kt-syntax-deleted: var(--kt-diff-del);
 
-	/* The Kantel mark and wordmark (src/brand/): the approved artwork's white on a dark theme, grey 900 on a light one,
-	   and the fulcrum's orange. */
-	--kt-brand-ink: #ffffff;
+	/* The Kantel mark's fulcrum: the approved artwork's orange in both themes. Its ink, --kt-brand-ink, is the palette's. */
 	--kt-brand-fulcrum: #ec7523;
+	/* Google's "G" on Sign in with Google, in the four colours its branding guidelines require, in both themes. */
+	--kt-brand-google-blue: #4285f4;
+	--kt-brand-google-green: #34a853;
+	--kt-brand-google-yellow: #fbbc05;
+	--kt-brand-google-red: #ea4335;
 
-	/* Type: the brand's three faces, self-hosted (fonts.css), each falling back to the system's. Themed: a theme may
-	   set its own (theme-schema.ts, FONT_SANS and the rest, which these match). */
+	/* Type: the brand's three faces, self-hosted (fonts.css), each falling back to the system's. The same in both themes. */
 	--kt-font-sans: Public Sans Variable, Public Sans, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
 	--kt-font-display: Abhaya Libre, Georgia, Times New Roman, serif;
 	--kt-font-mono: Roboto Mono Variable, Roboto Mono, ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, monospace;
@@ -126,6 +89,7 @@
 	--kt-text-sm: 13px;
 	--kt-text-md: 14px;
 	--kt-text-lg: 16px;
+	--kt-text-heading: 20px; /* a page's title, one clear step over everything under it */
 	--kt-text-code: 12.5px;
 	--kt-text-display: 24px; /* binding codes, nothing else */
 	--kt-text-title: 28px; /* a display heading in --kt-font-display: the brand's display face reads small, so a step up */
@@ -205,30 +169,29 @@
 	--kt-presented-image-size: 336px; /* an image's tile in the transcript, alone: the widest it shows */
 	--kt-presented-image-size-many: 176px; /* the same, two or more side by side: four to a row in the content width */
 	--kt-sidebar-width: 300px;
+	--kt-nav-width: 232px; /* the console's sidebar: its five pages, the switcher and your menu */
+	--kt-tabbar-height: 56px; /* the phone's bottom tab bar, without the home indicator's inset */
+	--kt-topbar-height: 56px; /* a page's top bar: its title, and its primary action on the right */
+	/* A console page's column: centred in the room beside the sidebar, its title and actions on its edges, its tables
+	   as wide as it is (after boat.dev's console, Tom, 3 Nov 2026). */
+	--kt-page-width: 1200px;
 	--kt-brand-sm: 20px; /* the Kantel lockup's height in the sidebar's head */
 	--kt-brand-md: 28px; /* the endorsed lockup's height over sign-in */
 	--kt-brand-mark: 40px; /* the mark alone, over a page's welcome */
 	--kt-rail-width: 52px; /* the sidebar collapsed to a rail of icons */
 
-	/* Radius. 10px panels, 8px controls. */
-	--kt-radius: 10px;
-	--kt-radius-control: 8px;
+	/* Radius, Tom's scale (3 Nov 2026): 6px small, 10px controls (r-md), 14px panels and cards (r-lg), 18px bubbles
+	   (r-xl), 20px dialogs (r-2xl). Buttons, pills and tags are fully round (--kt-radius-full). */
+	--kt-radius: 14px;
+	--kt-radius-control: 10px;
 	--kt-radius-sm: 6px;
 	--kt-radius-xs: 4px;
-	--kt-radius-bubble: 16px;
+	--kt-radius-bubble: 18px;
+	--kt-radius-dialog: 20px;
 	--kt-radius-full: 999px;
 
-	/* Elevation, for things that float. Panels in the flow use borders, not shadows. */
-	--kt-shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--kt-border-strong);
-	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
-	/* A service's logo on the Connections page, drawn as itself with no tile: a hairline in the text's colour around it
-	   (a drop-shadow, so it follows the logo's own shape), so a logo's dark square or dark mark keeps an edge on a dark
-	   page and a white one on a light page. */
-	--kt-logo-edge: 0 0 1px color-mix(in srgb, var(--kt-text) 45%, transparent);
-	/* A logo drawn on nothing in one dark or light ink (provider-logo.tsx reads which, when it can): on a theme of the
-	   other kind it is shown with its lightness flipped and its hue kept, so a black mark is light on a dark page. */
-	--kt-logo-dark-mark: invert(1) hue-rotate(180deg);
-	--kt-logo-light-mark: none;
+	/* Elevation, for things that float (--kt-shadow-float, --kt-shadow-composer), and a service logo's edge and ink
+	   (--kt-logo-*), are the palette's: they differ between dark and light. Panels in the flow use borders, not shadows. */
 
 	/* Motion. Nothing moves unless something is happening. */
 	--kt-duration-fast: 120ms;
@@ -259,9 +222,7 @@
 	 * to about nine and then scrolls.
 	 */
 	--kt-glass: color-mix(in srgb, var(--kt-raised) 80%, transparent);
-	--kt-glass-blur: blur(16px) saturate(1.08);
-	--kt-glass-outline: rgb(249 247 240 / 0.08);
-	--kt-glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.03);
+	--kt-glass-blur: blur(16px) saturate(1.08); /* its outline and highlight are the palette's */
 	--kt-composer-leading: 1.625;
 	--kt-composer-field-min: 40px;
 	--kt-composer-field-max: 200px;
@@ -283,9 +244,4 @@
 	--kt-doc-h3: 17px;
 	--kt-menu-width: 12rem; /* a short menu of choices, such as the composer's thinking levels */
 	--kt-picker-min: 6rem; /* the least a composer picker with a name shortens to before its row wraps */
-	--kt-palette-width: 32rem; /* a command palette, such as the theme picker */
-	--kt-palette-top: 12vh; /* how far down the window a command palette opens */
-	--kt-swatch-width: 28px; /* a theme's swatch in the picker */
-	--kt-swatch-height: 16px;
-	--kt-swatch-dot: 2.5px;
 }

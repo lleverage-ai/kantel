@@ -1,7 +1,10 @@
 import {
 	type CallContext,
 	callContextFor,
+	createProjectAccess,
+	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
+	GITHUB_ISSUER,
 	type IdentityDirectory,
 	isKantelError,
 	type Project,
@@ -9,8 +12,6 @@ import {
 } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
-import { createMemoryRuntime } from "@kantel/runtime/memory";
-import { createScriptedModel } from "@kantel/runtime/testing";
 import type { SqlDriver } from "@kantel/sql";
 import { type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
@@ -225,6 +226,31 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
+		it("reads a theme saved before light and dark as the nearer of the two, and keeps it so once changed", async () => {
+			await withDatabase(kind, async (driver) => {
+				const identity = createSqlIdentity({ driver, clock: new ManualClock() });
+				const { founder, admin } = await tenant(identity);
+				// A row kept by a console that had a dozen themes.
+				await driver.query(
+					"INSERT INTO identity_user_preferences (user_id, preferences, updated_at) VALUES (?, ?, ?)",
+					[founder.id, JSON.stringify({ theme: "catppuccin-latte", lastModel: "default" }), 0],
+				);
+				expect(await identity.userPreferences(admin)).toEqual({ theme: "light", lastModel: "default" });
+				// Saving another setting writes the migrated theme back; reading again gives the same.
+				expect(await identity.setUserPreferences(admin, { lastThinking: "low" })).toEqual({
+					theme: "light",
+					lastModel: "default",
+					lastThinking: "low",
+				});
+				const [row] = await driver.query<{ preferences: string }>(
+					"SELECT preferences FROM identity_user_preferences WHERE user_id = ?",
+					[founder.id],
+				);
+				expect(JSON.parse(row?.preferences ?? "{}").theme).toBe("light");
+				expect((await identity.userPreferences(admin)).theme).toBe("light");
+			});
+		});
+
 		it("pages listProjects in creation order, each project once", async () => {
 			await withDatabase(kind, async (driver) => {
 				const identity = createSqlIdentity({ driver, clock: new ManualClock() });
@@ -248,62 +274,35 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
-		it("a host key scoped to alpha cannot reach beta's sessions, though its service could", async () => {
+		it("a host key scoped to alpha cannot act in beta, though its service could", async () => {
 			await withDatabase(kind, async (driver) => {
 				const identity = createSqlIdentity({ driver, clock: new ManualClock() });
-				const { organisation, admin, alpha, beta, service } = await tenant(identity);
-				const { models } = createScriptedModel();
-				// A second directory instance on the same database serves the runtime, as another worker would.
-				const memory = createMemoryRuntime({
-					models,
+				const { admin, alpha, beta, service } = await tenant(identity);
+				// A second directory instance on the same database checks access, as another worker would.
+				const access = createProjectAccess({
 					identity: createSqlIdentity({ driver, clock: new ManualClock() }),
+					sessions: { get: () => Promise.reject(new Error("no sessions")) },
 				});
+				// The service holds operator across the whole organisation; its key is still limited to alpha.
+				await identity.grantRole(admin, { principal: { kind: "service", serviceId: service.id }, role: "operator" });
+				const issued = await identity.issueApiKey(admin, {
+					serviceId: service.id,
+					projectIds: [alpha.id],
+					role: "operator",
+				});
+				const caller = await createAuthenticator({ identity }).authenticate(
+					request({ authorization: `Bearer ${issued.secret}` }),
+				);
+				const ctx = callContextFor(caller);
+				expect(await access.allows(ctx, { projectId: alpha.id, needed: "operator" })).toBe(true);
+				expect(await access.allows(ctx, { projectId: beta.id, needed: "viewer" })).toBe(false);
+				let refused: unknown;
 				try {
-					// The service holds operator across the whole organisation; its key is still limited to alpha.
-					await identity.grantRole(admin, { principal: { kind: "service", serviceId: service.id }, role: "operator" });
-					const issued = await identity.issueApiKey(admin, {
-						serviceId: service.id,
-						projectIds: [alpha.id],
-						role: "operator",
-					});
-					const system = { ...systemContext("test"), organisationId: organisation.id };
-					await memory.profiles.put(system, {
-						id: "worker",
-						organisationId: organisation.id,
-						name: "Worker",
-						model: { route: "default" },
-						promptLayers: [],
-						tools: [],
-						skills: [],
-						sandbox: { tiers: ["isolate"] },
-						memoryScopes: [],
-					});
-					const inAlpha = await memory.runtime.create(system, { projectId: alpha.id, agentId: "worker" });
-					const inBeta = await memory.runtime.create(system, { projectId: beta.id, agentId: "worker" });
-
-					const caller = await createAuthenticator({ identity }).authenticate(
-						request({ authorization: `Bearer ${issued.secret}` }),
-					);
-					const ctx = callContextFor(caller);
-
-					expect((await memory.directory.get(callContextFor(caller, { projectId: alpha.id }), inAlpha.id)).id).toBe(
-						inAlpha.id,
-					);
-					let refused: unknown;
-					try {
-						await memory.directory.get(callContextFor(caller, { projectId: beta.id }), inBeta.id);
-					} catch (error) {
-						refused = error;
-					}
-					expect(isKantelError(refused, "forbidden")).toBe(true);
-					const listed = await memory.directory.list(ctx);
-					expect(listed.items.map((session) => session.id)).toEqual([inAlpha.id]);
-					await expect(memory.runtime.create(ctx, { projectId: beta.id, agentId: "worker" })).rejects.toMatchObject({
-						code: "forbidden",
-					});
-				} finally {
-					await memory.close();
+					await access.require(ctx, { projectId: beta.id, needed: "operator", operation: "test.act" });
+				} catch (error) {
+					refused = error;
 				}
+				expect(isKantelError(refused, "forbidden")).toBe(true);
 			});
 		});
 
@@ -339,6 +338,46 @@ for (const kind of testDatabaseKinds()) {
 				await expect(
 					third.createUser(admin, { name: "Copy", externalSubject: externalSubjectOf(issuer, "ada-sub") }),
 				).rejects.toMatchObject({ code: "conflict" });
+			});
+		});
+
+		it("an email code's first sign-in overlapping GitHub's finds the user GitHub made, and records its subject once", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const directory = createSqlIdentity({ driver, clock });
+				const { admin } = await tenant(directory);
+				await directory.createInvite(admin, { email: "ada@example.test", role: "viewer" });
+				const code = {
+					issuer: EMAIL_OTP_ISSUER,
+					subject: "ada@example.test",
+					email: "ada@example.test",
+					emailVerified: true,
+				};
+				const github = { issuer: GITHUB_ISSUER, subject: "583231", email: "ada@example.test", emailVerified: true };
+
+				// The code's sign-in misses by subject, then waits before looking by email while GitHub's makes the user.
+				const paused = pausing(driver, (sql) => sql.includes("WHERE email_normalised = ? AND (substr"));
+				const byCode = createSqlIdentity({ driver: paused.driver, clock }).signIn(WORKER, code);
+				await paused.reached;
+				const byGitHub = await directory.signIn(WORKER, github);
+				expect(byGitHub.user.externalSubject).toBe(externalSubjectOf(EMAIL_OTP_ISSUER, "ada@example.test"));
+				paused.release();
+				expect((await byCode).user.id).toBe(byGitHub.user.id);
+
+				const aliases = await driver.query<{ external_subject: unknown }>(
+					"SELECT external_subject FROM identity_user_subjects WHERE user_id = ?",
+					[byGitHub.user.id],
+				);
+				expect(aliases.map((row) => String(row.external_subject))).toEqual([
+					externalSubjectOf(GITHUB_ISSUER, "583231"),
+				]);
+				// Codes still go out to them, and both ways still sign them in.
+				expect(await directory.canSignIn(WORKER, code)).toBe(true);
+				expect(await directory.canSignIn(WORKER, github)).toBe(true);
+				expect((await directory.signIn(WORKER, code)).user.id).toBe(byGitHub.user.id);
+				expect((await directory.signIn(WORKER, { issuer: GITHUB_ISSUER, subject: "583231" })).user.id).toBe(
+					byGitHub.user.id,
+				);
 			});
 		});
 

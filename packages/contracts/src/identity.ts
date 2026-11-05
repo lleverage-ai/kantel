@@ -211,6 +211,41 @@ export function normaliseEmail(email: string): string {
  */
 export const EMAIL_OTP_ISSUER = "harbour:email-otp";
 
+/** The `ExternalIdentity.issuer` of Kantel's own sign-in with GitHub. Its subject is the GitHub user's numeric ID. */
+export const GITHUB_ISSUER = "kantel:github";
+
+/** The `ExternalIdentity.issuer` of Kantel's own sign-in with Google. Its subject is the Google account's `sub`. */
+export const GOOGLE_ISSUER = "kantel:google";
+
+/**
+ * The issuers of Kantel's own sign-ins: email codes, GitHub and Google. Each proves the email it carries as well as an
+ * email code does, so `IdentityDirectory.signIn` links one of them by verified email to the person who already signs
+ * in with another (see there). An Access or OIDC provider's issuer is never one of them.
+ */
+export const KANTEL_SIGN_IN_ISSUERS: readonly string[] = [EMAIL_OTP_ISSUER, GITHUB_ISSUER, GOOGLE_ISSUER];
+
+export const isKantelSignInIssuer = (issuer: unknown): boolean =>
+	typeof issuer === "string" && KANTEL_SIGN_IN_ISSUERS.includes(issuer);
+
+/** Whether `externalSubject` (`externalSubjectOf`'s) is one of Kantel's own sign-ins'. */
+export const isKantelSignInSubject = (externalSubject: unknown): boolean =>
+	typeof externalSubject === "string" &&
+	KANTEL_SIGN_IN_ISSUERS.some((issuer) => externalSubject.startsWith(externalSubjectOf(issuer, "")));
+
+/**
+ * The subject a user first made by one of Kantel's own sign-ins is made with, whichever it was: the email code's for the
+ * address it proved (`externalSubjectOf(EMAIL_OTP_ISSUER, email)`, normalised). `external_subject` is UNIQUE, so two
+ * first sign-ins with one email that race (an email code and GitHub, say) meet on it and make one user; the provider's
+ * own subject is linked beside it. Undefined for any other sign-in, or one with no verified email.
+ */
+export function kantelPrimarySubject(identity: ExternalIdentity): string | undefined {
+	if (!isKantelSignInIssuer(identity.issuer) || identity.emailVerified !== true || typeof identity.email !== "string") {
+		return undefined;
+	}
+	const email = normaliseEmail(identity.email);
+	return email === "" ? undefined : externalSubjectOf(EMAIL_OTP_ISSUER, email);
+}
+
 /** A signed-in person's user record and the organisations they may act in. */
 export interface SignIn {
 	readonly user: User;
@@ -414,8 +449,13 @@ export interface IdentityDirectory {
 	/**
 	 * Resolves a person a sign-in provider vouched for to their user. Kantel is invite-only: an admin creates
 	 * the user first, and sign-in never creates one.
-	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person. Issuer and subject compare
-	 *   exactly, case included: OIDC subjects are opaque. `createUser` refuses a subject another user has (`conflict`).
+	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)`, or who was linked to it as below, is that
+	 *   person. Issuer and subject compare exactly, case included: OIDC subjects are opaque. `createUser` refuses a
+	 *   subject another user has (`conflict`).
+	 * - Otherwise, for one of Kantel's own sign-ins (`isKantelSignInIssuer`: an email code, GitHub, Google) with a
+	 *   verified email, the one user with that email who already signs in with another of Kantel's own sign-ins is that
+	 *   person: the subject is linked to them too, once, and audited as `identity.user.linked`. So someone who signed up
+	 *   with an email code and then signs in with GitHub (or the other way round) stays one user, with one space.
 	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` is linked
 	 *   to the subject, once, and audited as `identity.user.linked`. Emails compare trimmed and lower-cased
 	 *   (`normaliseEmail`), on both sides, before deciding there is exactly one.
@@ -519,6 +559,65 @@ export interface IdentityErrorResponse {
 }
 
 /*
+ * Sign-in with GitHub or Google: OAuth 2.0's authorisation code flow with PKCE, run by the gateway, on the same origin
+ * and the same terms as email one-time PIN sign-in (it issues the same Kantel sessions). A provider is on only where
+ * the deployment has its client ID and secret; elsewhere its routes are 404 and the 401's `signIn` doesn't name it.
+ *
+ * - `GET oauthStartPath(provider)` sets a short-lived state cookie (the state and the PKCE verifier) and redirects to
+ *   the provider's consent page.
+ * - The provider redirects back to `GET oauthCallbackPath(provider)`. The gateway checks the state against the cookie,
+ *   exchanges the code with the verifier, reads the person's verified email from the provider, signs them in
+ *   (`IdentityDirectory.signIn` with the provider's issuer and its user ID as subject) and redirects to the console's
+ *   page with `OAUTH_DONE_PARAM`, the new session in a short-lived HttpOnly cookie. Any failure redirects there with
+ *   `OAUTH_ERROR_PARAM` naming an `OAuthSignInError` instead.
+ * - The console then calls `POST OAUTH_SESSION_PATH` (same origin, no body): it answers 200 with `OtpVerifyResponse`
+ *   for the session in that cookie and clears it, or 401 when there is none.
+ */
+
+/** The providers Kantel signs people in with itself, beside email codes. */
+export const OAUTH_PROVIDERS = ["github", "google"] as const;
+export type OAuthProvider = (typeof OAUTH_PROVIDERS)[number];
+
+export const isOAuthProvider = (value: unknown): value is OAuthProvider =>
+	typeof value === "string" && (OAUTH_PROVIDERS as readonly string[]).includes(value);
+
+/** Every OAuth sign-in route is under this. */
+export const OAUTH_PATH_PREFIX = "/auth/oauth/";
+export const oauthStartPath = (provider: OAuthProvider): string => `${OAUTH_PATH_PREFIX}${provider}/start`;
+export const oauthCallbackPath = (provider: OAuthProvider): string => `${OAUTH_PATH_PREFIX}${provider}/callback`;
+export const OAUTH_SESSION_PATH = `${OAUTH_PATH_PREFIX}session`;
+
+/** The query parameter the console's page gets after a successful OAuth sign-in: `?signed_in=github`. */
+export const OAUTH_DONE_PARAM = "signed_in";
+/**
+ * The query parameter the console's page gets when an OAuth sign-in failed, `?sign_in_error=cancelled`, beside
+ * `OAUTH_PROVIDER_PARAM` naming the provider: `&provider=google`.
+ */
+export const OAUTH_ERROR_PARAM = "sign_in_error";
+export const OAUTH_PROVIDER_PARAM = "provider";
+
+/**
+ * Why an OAuth sign-in failed, as the console says it:
+ * - `cancelled`: the person declined (or closed) the provider's consent page;
+ * - `unverified_email`: the provider has no verified email for them (GitHub: no verified primary email);
+ * - `state_mismatch`: the callback's state didn't match this browser's cookie, or the cookie had gone (a stale tab,
+ *   another browser, or a forged link);
+ * - `not_allowed`: the deployment doesn't let this person in (self-hosted is invite-only);
+ * - `failed`: anything else, such as the provider refusing the code or being unreachable.
+ */
+export const OAUTH_SIGN_IN_ERRORS = [
+	"cancelled",
+	"unverified_email",
+	"state_mismatch",
+	"not_allowed",
+	"failed",
+] as const;
+export type OAuthSignInError = (typeof OAUTH_SIGN_IN_ERRORS)[number];
+
+export const isOAuthSignInError = (value: unknown): value is OAuthSignInError =>
+	typeof value === "string" && (OAUTH_SIGN_IN_ERRORS as readonly string[]).includes(value);
+
+/*
  * Who is signed in, and their projects, over HTTP. Both routes are behind the authenticator, so any caller
  * may ask about itself: a person signed in through Access, OIDC or a Kantel session, or a host app's API key.
  *
@@ -537,9 +636,12 @@ export interface IdentityErrorResponse {
 export const ME_PATH = "/v1/me";
 export const PROJECTS_PATH = "/v1/projects";
 
-/** How a person signs in to a deployment: Kantel's email one-time PIN (self-hosted) or Cloudflare Access at the edge. */
-export type SignInMethod = "email_otp" | "cloudflare_access";
-export const SIGN_IN_METHODS: readonly SignInMethod[] = ["email_otp", "cloudflare_access"];
+/**
+ * How a person signs in to a deployment: Kantel's email one-time PIN, Cloudflare Access at the edge, or Kantel's own
+ * sign-in with GitHub or Google (`OAUTH_PROVIDERS`), each only where the deployment has that provider's client.
+ */
+export type SignInMethod = "email_otp" | "cloudflare_access" | OAuthProvider;
+export const SIGN_IN_METHODS: readonly SignInMethod[] = ["email_otp", "cloudflare_access", "github", "google"];
 
 /** A role the caller holds: across the organisation when `projectId` is absent, else on that project. */
 export interface HeldRole {
@@ -565,9 +667,10 @@ export interface MeResponse {
 }
 
 /**
- * A person's own settings. `theme` is the console's theme: a theme's ID, such as `kantel` or `catppuccin-latte`, or
- * `system` to follow the device's light or dark setting. Kantel keeps it as given; the console decides what an ID it
- * doesn't know means (its default theme).
+ * A person's own settings. `theme` is the console's theme: `light`, `dark`, or `system` to follow the device's light or
+ * dark setting (`ThemePreference`). A theme's ID from before the console had only those two (`nord`,
+ * `catppuccin-latte`, a custom theme's) is still accepted, and Kantel keeps and answers it as the nearer of light and
+ * dark, or `system` (`themePreference`).
  *
  * `lastModel` and `lastThinking` are the model (a `ModelOption.id`) and thinking level the person last chose for a
  * session, which the console's New session offers first. Kantel keeps them as given and applies neither itself: a
@@ -622,7 +725,10 @@ export interface ProjectSettingsResponse {
 	readonly defaults: Required<ProjectSettings>;
 }
 
-/** A theme preference: a theme's ID (lower-case letters, digits and dashes, at most 64) or `system`. */
+/**
+ * What a theme preference may be when written: `light`, `dark` or `system`, or, from an older console, a theme's ID
+ * (lower-case letters, digits and dashes, at most 64), which is kept as the nearer of light and dark.
+ */
 export const THEME_PREFERENCE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** The longest `UserPreferences.lastModel` kept, in characters. */

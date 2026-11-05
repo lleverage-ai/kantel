@@ -9,18 +9,18 @@
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
 		"./authenticator": "./src/authenticator.ts",
+		"./cookies": "./src/cookies.ts",
+		"./csrf": "./src/csrf.ts",
 		"./jwt": "./src/jwt.ts",
 		"./sql": "./src/sql.ts",
 		"./otp": "./src/otp.ts",
 		"./otp/http": "./src/otp-http.ts",
+		"./oauth": "./src/oauth.ts",
 		"./http": "./src/http.ts",
 		"./invites": "./src/invites.ts",
 		"./smtp": "./src/smtp.ts",
-		"./passkey": "./src/passkey.ts",
-		"./passkey/http": "./src/passkey-http.ts",
-		"./passkey/testing": "./src/passkey-testing.ts",
-		"./webauthn": "./src/webauthn.ts",
-		"./testing": "./src/testing.ts"
+		"./testing": "./src/testing.ts",
+		"./testing/oauth": "./src/testing-oauth.ts"
 	},
 	"dependencies": {
 		"@kantel/contracts": "workspace:*",
@@ -29,7 +29,6 @@
 		"nodemailer": "10.1.7"
 	},
 	"devDependencies": {
-		"@kantel/runtime": "workspace:*",
 		"@kantel/testing": "workspace:*",
 		"smtp-server": "3.20.2"
 	}

@@ -1,7 +1,7 @@
 # @kantel/ui
 
-Kantel's component library. Every Kantel screen (the session view, the vault page, audit, schedules, skills,
-memory, the inbox) is built from these components and tokens, so the platform looks and behaves as one thing.
+Kantel's component library. Every Kantel screen (the compute console's sandboxes, snapshots, keys, hosts and the
+rest, and sign-in) is built from these components and tokens, so the platform looks and behaves as one thing.
 
 It follows T3 Code's interface closely, in look and in flow: dark neutral surfaces, compact type, quiet tool rows,
 a stateful composer, status colours from T3's sidebar. See [docs/principles.md](docs/principles.md) for the
@@ -27,8 +27,8 @@ Tailwind entry: keep it there, or a production build drops them while the dev se
 components with the utilities mapped from the tokens ([docs/tailwind.md](docs/tailwind.md)); the token lint fails
 on an arbitrary raw value such as `p-[13px]`, as it does on one in CSS.
 
-`apps/console` is the reference host: its `src/ui/session-view.tsx` maps a session client's state onto
-`SessionHeader`, `Transcript` and `Composer`, and lays out its own elements with the same utilities; its one .css
+`apps/console` is the reference host: its `src/compute/compute-app.tsx` binds `ComputeConsole` to the gateway's
+compute API, and lays out its own elements with the same utilities; its one .css
 file, `src/ui/styles.css`, keeps only what they can't say ([docs/tailwind.md](docs/tailwind.md#the-console)). Lint a
 host's CSS and TSX
 with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`), or by hand:
@@ -69,58 +69,40 @@ centred on their text within 1px, and a story for every required state; `--only`
 | Component | For | Not for |
 | --- | --- | --- |
 | `Button`, `IconButton` | Actions | Navigation between pages (use a link) |
-| `StatusLabel`, `StatusDot` | A session's or task's state: working, waiting on an answer, approval, done, failed | Tags on a value (use `Badge`) |
+| `StatusLabel`, `StatusDot` | A sandbox's, host's or task's state: working, waiting, done, failed | Tags on a value (use `Badge`) |
 | `Badge` | A one or two word tag on a value: Proposed, Approved, Read only | Anything clickable |
-| `Breadcrumbs` | Where you are: project / session / subagent, parents muted links back, the current item emphasised | Tabs or switching between peers |
-| `ListRow` | Any row in a list: sessions, skills, schedules, memory, audit events, inbox items | Tables with many columns |
-| `Sidebar`, `SidebarSection`, `SidebarProject`, `SidebarItem`, `SidebarToggle` | An app's main navigation: projects with their sessions nested, page links with icons, collapsing to a rail | Navigation inside a page (use `SegmentedControl` or a list) |
+| `Breadcrumbs` | Where you are: parents muted links back, the current item emphasised | Tabs or switching between peers |
+| `ListRow` | Any row in a list: sandboxes, snapshots, keys, hosts | Tables with many columns |
+| `Sidebar`, `SidebarSection`, `SidebarProject`, `SidebarItem`, `SidebarToggle` | An app's main navigation: page links with icons, collapsing to a rail | Navigation inside a page (use `SegmentedControl` or a list) |
 | `Panel`, `FieldList`, `Field` | Framed content and label and value pairs | Wrapping the whole page |
 | `Notice` | One or two lines of information or warning in the flow | Decisions (use a card) |
 | `EmptyState` | What a list or screen says when it has nothing | Errors that need action (use `Notice`) |
 | `Disclosure` | A summary that shows detail on demand | Navigation |
 | `CopyButton` | Copying a link, code or command | |
-| `PageHeader`, `FormLayout`, `FormSection`, `FormField`, `FormGrid`, `FormActions` | Config pages and their forms: the page title and actions, sections, labelled fields with help, equal tracks for short fields, and the buttons | Filters above a list, session cards |
-| `TextField` | A labelled single-line input | The composer |
-| `TextAreaField` | A labelled multi-line input, such as a scheduled task's prompt | The composer |
-| `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu) |
-| `CheckboxField` | One on/off choice that takes effect with its form or decision, such as "Let agents write" beside Grant | A setting that applies at once (use `Switch`) |
-| `Switch` | An on/off setting that applies the moment it changes, such as a tool server's tool, enabled or not | A choice that waits for a form's Save (use `CheckboxField`) |
-| `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a tunnel token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Kantel can show again (use `Code` or `FieldList`) |
+| `PageHeader`, `FormLayout`, `FormSection`, `FormField`, `FormGrid`, `FormActions` | Config pages and their forms: the page title and actions, sections, labelled fields with help, equal tracks for short fields, and the buttons | Filters above a list |
+| `TextField` | A labelled single-line input | |
+| `TextAreaField` | A labelled multi-line input, such as a webhook's description | |
+| `PageTabs` | A page's own views, each a link with its address (Egress's Log, Rules, Settings) | The app's pages (use `Sidebar` or `TabBar`); filters with no address (use `SegmentedControl`) |
+| `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu); a page's views with their own address (use `PageTabs`) |
+| `CheckboxField` | One on/off choice that takes effect with its form or decision | A setting that applies at once (use `Switch`) |
+| `Switch` | An on/off setting that applies the moment it changes | A choice that waits for a form's Save (use `CheckboxField`) |
+| `SliderField` | A number chosen along a range, with its value beside the label: a sandbox's vCPUs or memory | A few named choices (use `SegmentedControl` or `SelectField`); an exact figure to type (use `TextField`) |
+| `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a host's join token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Kantel can show again (use `Code` or `FieldList`) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
-| `WorkingIndicator` | The agent working on a turn, live: "Working for 12s" with the working dot | A session's status in a header or list (use `StatusLabel`) |
 | `Kbd` | A key or chord in text | |
-| `ThemePicker` | Choosing the page's theme, with a live preview ([docs/theming.md](docs/theming.md)) | Per-component colours (themes are tokens) |
-| `Code` | Code in the theme's syntax colours: a Markdown fence, a tool's arguments, a file it read | Editing code |
+| `ThemeSwitch` | Choosing System, Light or Dark ([docs/theming.md](docs/theming.md)) | Per-component colours (themes are tokens) |
+| `Code` | Code in the theme's syntax colours: a command, a snapshot's file, a webhook's payload | Editing code |
 | `RelativeTime`, `Elapsed` | Times, on one shared clock | |
 | `ClockTime` | A moment in a timeline, by the clock ("16:38") | Ages that should read "4m" (use `RelativeTime`) |
 | Icons | 16px line icons in currentColor | Decoration |
-| `FileTree` | A workspace's files as a keyboard-navigable tree, read-only | Choosing where to write, or flat search results (use `ListRow`) |
-| `FilePreview` | Any file in one panel: Markdown, code, JSON, tables, images, PDF, HTML, media, Office, with Edit for text ([docs/preview.md](docs/preview.md)) | Diffs, or Markdown in a session (use the transcript) |
 
-Session components (the transcript, tool-call chip, composer, session header, session list and approval cards) are
-in `src/session/`, documented in [docs/session-transcript.md](docs/session-transcript.md),
-[docs/session-composer.md](docs/session-composer.md) and [docs/session-list-vault.md](docs/session-list-vault.md).
-Workspace components (the file tree, file viewer and note viewer) are in `src/workspace/`, documented in
-[docs/workspace.md](docs/workspace.md); they are read-only and fed by the host from the workspace read API.
-The schedules, skills and memory pages (`SchedulesPage`, `SkillsPage` with its `SkillEditor`, `MemoryPage`) are in
-`src/schedules/`, `src/skills/` and `src/memory/`, documented in
-[docs/schedules-skills-memory.md](docs/schedules-skills-memory.md); each takes its package's contract calls bound to
-the viewer.
-The identity pages are in `src/identity/`: `SignInScreen`, `ApiKeysPage` for a host app's keys, and `MembersPage`, the
-organisation's people with an admin's passkey reset. Each takes the identity client's calls; stories show their states.
-`ModelsPage` (`src/models/`) is a project's models: the agent's image model, picked from the image models the model
-gateway's connectors offer, and each connector's models with what they take and give (Text, Makes images, Reads
-images, the image API) and a Test generate button on an image model. The host makes every call and passes the states
-in; stories show loading, empty, read-only, a test image and a failed test.
-`ToolServersPage` (`src/tool-servers/`) is the MCP servers an organisation's or a project's agents call for tools:
-the list with each server's status and a day's calls, Add tool server with its
-tunnel token and command shown once, and a server's tools (each with an Enabled `Switch`), tokens, recent calls and
-Remove. It calls a `ToolServersSource` the host binds; `@kantel/ui/tool-servers/fixtures` serves stories and the
-console's recorded mode.
-`AuditView` (`src/audit/`), the filterable audit log, is documented in [docs/audit-view.md](docs/audit-view.md).
-`VaultPage` (`src/vault/`), the connection request page an approver opens from a request card, is documented in
-[docs/connection-request-page.md](docs/connection-request-page.md).
-Themes (the colour tokens, the built-in themes, the picker, and how to add one or load a custom one) are in
+The compute console (`ComputeConsole` and its pages: sandboxes, snapshots, keys, the egress proxy, webhooks,
+OpenTelemetry, the organisation, billing, hosts, base images and the device page) is in `src/compute/`. A sandbox or
+saved snapshot on an outdated base image shows `BaseOutdatedBadge` (`src/compute/base-outdated.tsx`) wherever it's
+listed. It calls a `ComputeSource`
+the host binds; `@kantel/ui/compute/fixtures` serves stories and the console's recorded mode.
+`SignInScreen` and `SignedInAs` are in `src/identity/`; they take the identity client's calls.
+The two themes (the colour tokens, the dark and light palettes, the switch, and how to change a palette) are in
 [docs/theming.md](docs/theming.md).
 
 Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md).

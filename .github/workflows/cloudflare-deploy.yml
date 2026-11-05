@@ -21,10 +21,26 @@ name: Cloudflare deploy
 #            metadata document and CIMD is tried before DCR (#338); unset, CIMD is never offered
 #   optional var KANTEL_OAUTH_CLIENTS: the deployment's own OAuth clients as JSON, such as a public GitHub client for
 #            the device flow (src/connections.ts); a confidential client's secret is a Worker secret, never in the var
+#   optional var KANTEL_COMPUTE_PORTS_DOMAIN: the domain sandboxes' port URLs are under (src/config.ts), routed to the
+#            Worker as *.{domain}/* (its wildcard DNS record is added once outside the deploy, README "Exposed
+#            ports"); unset, the Worker's default, kantel.run, Kantel's hosted ports domain, with no route
+#   optional vars KANTEL_PUBLIC_URL with KANTEL_SIGN_IN_FROM (and KANTEL_SIGN_IN_DAILY_CAP, default 100): email-code
+#            sign-in and open sign-up on a public origin with no Access in front, such as https://app.kantel.dev, sending
+#            from an address on a domain onboarded for Cloudflare Email Sending (the SIGN_IN_MAIL binding). The origin's
+#            custom domain is attached once outside this workflow (apps/cloudflare/README.md, "The public origin")
+#   optional var KANTEL_ACCOUNT_HOSTS: `experimental` lets people add machines of their own, which dial out to
+#            KANTEL_PUBLIC_URL and run only their account's sandboxes; unset or `off`, it stays off. Set either way,
+#            KANTEL_PUBLIC_URL may go without KANTEL_SIGN_IN_FROM, leaving email sign-in off
+#   optional var KANTEL_TEMPLATES: `experimental` turns templates on (microVM profiles built once and restored from a
+#            snapshot); unset or `off`, every template route answers not_supported
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            KANTEL_VAULT_KEY (without it the vault answers 503), KANTEL_VAULT_MODEL_GATEWAY_TOKEN,
 #            KANTEL_VAULT_EGRESS_GATEWAY_TOKEN, KANTEL_CPA_API_KEY, KANTEL_BRWSR_API_KEY (src/browser.ts: without it
 #            sessions have no browser)
+#   optional secrets KANTEL_GITHUB_CLIENT_ID with KANTEL_GITHUB_CLIENT_SECRET, and KANTEL_GOOGLE_CLIENT_ID with
+#            KANTEL_GOOGLE_CLIENT_SECRET: sign-in with GitHub and with Google on KANTEL_PUBLIC_URL (with email sign-in
+#            on), each set on the Worker as a secret of the same name. Each pair goes together or the run fails; unset,
+#            the provider stays off (apps/cloudflare/README.md, "Sign in with GitHub and Google")
 #
 # The token's permissions (apps/cloudflare/README.md explains each):
 #   Account  Workers Scripts: Edit            deploy the Worker, its Durable Objects and static assets
@@ -87,6 +103,16 @@ jobs:
       KANTEL_CONNECTIONS_CIMD: ${{ (vars.KANTEL_CONNECTIONS_CIMD || vars.HARBOUR_CONNECTIONS_CIMD) }}
       # Optional: the deployment's own OAuth clients (JSON), such as a public GitHub client for signing in with a code.
       KANTEL_OAUTH_CLIENTS: ${{ (vars.KANTEL_OAUTH_CLIENTS || vars.HARBOUR_OAUTH_CLIENTS) }}
+      # Optional: the domain port URLs are under (kantel.run for Kantel's own), routed to the Worker when set.
+      KANTEL_COMPUTE_PORTS_DOMAIN: ${{ vars.KANTEL_COMPUTE_PORTS_DOMAIN }}
+      # Optional: email-code sign-in and open sign-up on the public origin, and the address its mail comes from.
+      KANTEL_PUBLIC_URL: ${{ vars.KANTEL_PUBLIC_URL }}
+      KANTEL_SIGN_IN_FROM: ${{ vars.KANTEL_SIGN_IN_FROM }}
+      KANTEL_SIGN_IN_DAILY_CAP: ${{ vars.KANTEL_SIGN_IN_DAILY_CAP }}
+      # Optional, experimental: accounts' own hosts, dialling KANTEL_PUBLIC_URL.
+      KANTEL_ACCOUNT_HOSTS: ${{ vars.KANTEL_ACCOUNT_HOSTS }}
+      # Optional, experimental: templates.
+      KANTEL_TEMPLATES: ${{ vars.KANTEL_TEMPLATES }}
     steps:
       - uses: actions/checkout@v4
 
@@ -139,11 +165,6 @@ jobs:
       - name: Build the console
         run: pnpm --filter @kantel/cloudflare build:console
 
-      # The isolates' code, which the Worker imports for the Worker Loader: the dynamic-worker isolate
-      # (src/dynamic-worker.ts) and code mode's, with QuickJS's WebAssembly (src/codemode.ts).
-      - name: Build the isolates
-        run: pnpm --filter @kantel/cloudflare build:isolate
-
       # Placeholders stand in for unset variables in a dry run; deploy mode refuses to write a config without them.
       - name: Write the deploy config
         working-directory: apps/cloudflare
@@ -168,26 +189,17 @@ jobs:
           # Kantel's own browsers: view links' signing key and the key their profiles and recordings are sealed with.
           KANTEL_BROWSER_VIEW_KEY: ${{ (secrets.KANTEL_BROWSER_VIEW_KEY || secrets.HARBOUR_BROWSER_VIEW_KEY) }}
           KANTEL_BROWSER_SEAL_KEY: ${{ (secrets.KANTEL_BROWSER_SEAL_KEY || secrets.HARBOUR_BROWSER_SEAL_KEY) }}
+          # Sign-in with GitHub and Google on the public origin: each provider's OAuth client (@kantel/identity/oauth).
+          KANTEL_GITHUB_CLIENT_ID: ${{ secrets.KANTEL_GITHUB_CLIENT_ID }}
+          KANTEL_GITHUB_CLIENT_SECRET: ${{ secrets.KANTEL_GITHUB_CLIENT_SECRET }}
+          KANTEL_GOOGLE_CLIENT_ID: ${{ secrets.KANTEL_GOOGLE_CLIENT_ID }}
+          KANTEL_GOOGLE_CLIENT_SECRET: ${{ secrets.KANTEL_GOOGLE_CLIENT_SECRET }}
         run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
 
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.
       - name: wrangler deploy --dry-run
         working-directory: apps/cloudflare
         run: pnpm exec wrangler deploy --dry-run --config wrangler.deploy.json --outdir dist
-
-      # Code mode's sandbox Worker (wrangler.codemode.jsonc, src/codemode/worker.ts), which the main Worker binds as
-      # CODEMODE_SANDBOXES. It names no account, route or hostname, so it needs no deploy config of its own.
-      - name: wrangler deploy --dry-run (code mode's sandbox Worker)
-        working-directory: apps/cloudflare
-        run: pnpm exec wrangler deploy --dry-run --config wrangler.codemode.jsonc --outdir dist/codemode
-
-      # First: the main Worker's CODEMODE_SANDBOXES binding names this Worker's class, which must exist when it uploads.
-      - name: wrangler deploy (code mode's sandbox Worker)
-        if: steps.mode.outputs.mode == 'deploy'
-        working-directory: apps/cloudflare
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: pnpm exec wrangler deploy --config wrangler.codemode.jsonc
 
       - name: wrangler deploy
         if: steps.mode.outputs.mode == 'deploy'

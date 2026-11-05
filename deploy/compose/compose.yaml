@@ -1,88 +1,35 @@
-# Kantel self-hosted, on one machine (the self-hosted spike).
+# Kantel self-hosted, on one machine.
 #
-#   docker compose -f deploy/compose/compose.yaml up -d --build --wait
+#   docker compose -f deploy/compose/compose.yaml up -d --build --wait --remove-orphans
 #
-# Two session hosts (host-a, host-b) share one Postgres lease table, so killing
-# one moves its sessions to the other within a lease TTL. Each sandbox
-# container gets its own internal network, created per command, whose only
-# other member is the vault proxy: nothing a sandbox sends can leave except
-# through the vault, and no sandbox can reach another.
+# `gateway` serves the console and the compute plane's API (sandboxes,
+# snapshots, keys, webhooks and hosts) on KANTEL_GATEWAY_PORT (default 58090),
+# with Kantel's identity: email one-time PIN sign-in, organisations, projects
+# and API keys. Its identity, sign-in codes, audit log and registry of hosts
+# are in Postgres; sign-in codes go to Mailpit.
 #
-# Runtimes: KANTEL_ISOLATE_RUNTIME and KANTEL_SANDBOX_RUNTIME pick the OCI
-# runtime for the workerd isolate host and for sandbox containers. Both
-# default to runc; set them to runsc-kvm (bare metal) or runsc (in a VM) once
-# gVisor is registered with the Docker daemon (see README.md). Production must
-# not run workerd on runc.
+# Sandboxes run on hosts: Linux machines running the Kantel host agent
+# (kantel-host), which you add from the console's Hosts page. A host dials out
+# to the gateway, at its local address here by default (so a host on this
+# machine can join) or at KANTEL_PUBLIC_URL when set, for hosts elsewhere.
 #
-# gVisor cannot reach Docker's embedded DNS (127.0.0.11) on a user-defined
-# network (https://gvisor.dev/docs/user_guide/faq/), so anything that may run
-# on runsc finds its peers by address, not by name: minio and vault-proxy have
-# fixed addresses on `control` (KANTEL_CONTROL_PREFIX, default 10.250.89),
-# and the isolate host gets them as /etc/hosts entries.
-#
-# The isolate host has a fixed address too, for a different reason: the session
-# hosts (Bun) cache DNS answers for 30 s, so if the isolate host is recreated
-# on a new address, a host that isn't recreated with it keeps calling the old
-# one. Docker hands out the other addresses on `control` from .128 up, so they
-# can never take a fixed one.
-#
-# `gateway` serves the APIs (sessions, workspace reads, audit queries)
-# behind the API-key authenticator, and the console, on KANTEL_GATEWAY_PORT
-# (default 58090). The spike's session hosts and their API are unchanged.
+# Upgrading from a version with the agent plane (sessions, models,
+# connections, the vault, browsers): its services are gone from this file, so
+# `--remove-orphans` (the installer passes it) stops and removes their
+# containers. Their data is not touched: the agent plane's tables stay in
+# Postgres, unused, and its volumes (miniodata, vaultca, browserdata) stay
+# until you remove them yourself. See README.md, "Upgrading from the agent
+# plane".
 #
 # A second stack beside this one (another lane's, or CI's) needs its own
-# project name, ports, control prefix, vault container name, sandbox network
-# prefix and image tag; see README.md, "Running a second stack".
+# project name, ports, control prefix and image tag; see README.md, "Running a
+# second stack".
 
 name: harbour
 
-x-host: &host
-  build:
-    context: ../..
-    dockerfile: apps/selfhosted/Dockerfile
-  image: harbour-selfhosted:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
-  restart: unless-stopped
-  depends_on:
-    postgres: { condition: service_healthy }
-    minio: { condition: service_healthy }
-    isolate-host: { condition: service_healthy }
-    vault-proxy: { condition: service_healthy }
-    sandbox-image: { condition: service_completed_successfully }
-  networks: [control]
-  volumes:
-    # The container runner starts sandboxes through the Docker API. Anything
-    # holding this socket is root on the machine: a spike-only shortcut, see
-    # README.md for the production shape.
-    - /var/run/docker.sock:/var/run/docker.sock
-  healthcheck:
-    test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
-    interval: 2s
-    timeout: 2s
-    retries: 30
-  environment: &host-env
-    KANTEL_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
-    KANTEL_LEASE_TTL_MS: ${KANTEL_LEASE_TTL_MS:-${HARBOUR_LEASE_TTL_MS:-10000}}
-    KANTEL_IDLE_CLOSE_MS: ${KANTEL_IDLE_CLOSE_MS:-${HARBOUR_IDLE_CLOSE_MS:-300000}}
-    S3_ENDPOINT: http://minio:9000
-    S3_BUCKET: harbour
-    S3_ACCESS_KEY: harbour
-    S3_SECRET_KEY: harbour-dev-secret
-    KANTEL_ISOLATE_URL: http://isolate-host:8080
-    KANTEL_SANDBOX_IMAGE: harbour-sandbox:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
-    KANTEL_SANDBOX_RUNTIME: ${KANTEL_SANDBOX_RUNTIME:-${HARBOUR_SANDBOX_RUNTIME:-runc}}
-    # Recorded by src/measure.ts beside its numbers.
-    KANTEL_ISOLATE_RUNTIME: ${KANTEL_ISOLATE_RUNTIME:-${HARBOUR_ISOLATE_RUNTIME:-runc}}
-    # Name prefix of the per-command sandbox networks.
-    KANTEL_SANDBOX_NETWORK: ${KANTEL_SANDBOX_NETWORK:-${HARBOUR_SANDBOX_NETWORK:-harbour-sbx}}
-    KANTEL_VAULT_CONTAINER: ${KANTEL_VAULT_CONTAINER:-${HARBOUR_VAULT_CONTAINER:-harbour-vault-proxy}}
-    KANTEL_VAULT_PROXY_URL: http://vault-proxy:3128
-    KANTEL_SPIKE_TOKEN: ${KANTEL_SPIKE_TOKEN:-${HARBOUR_SPIKE_TOKEN:-}}
-
 services:
   # Every long-running service restarts with the Docker daemon, so the stack
-  # comes back whole after the machine reboots (#231). Without it the session
-  # hosts and gateway came back on their own while Postgres and MinIO stayed
-  # stopped.
+  # comes back whole after the machine reboots (#231).
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -99,131 +46,10 @@ services:
       timeout: 2s
       retries: 30
 
-  minio:
-    # MinIO no longer publishes images to Docker Hub or Quay; Chainguard's
-    # build of the same server is public. Pinned by digest.
-    image: cgr.dev/chainguard/minio@sha256:a1d2b3516a41296510f7fb49184c18b88287fa8f35cf3ce5c047289053b94964
-    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
-    restart: unless-stopped
-    environment:
-      MINIO_ROOT_USER: harbour
-      MINIO_ROOT_PASSWORD: harbour-dev-secret
-    ports: ["127.0.0.1:${KANTEL_S3_PORT:-${HARBOUR_S3_PORT:-59000}}:9000"]
-    networks:
-      control: { ipv4_address: "${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.10" }
-    volumes: [miniodata:/data]
-    healthcheck:
-      test: ["CMD", "/usr/bin/minio", "--version"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-
-  isolate-host:
-    build:
-      context: ../..
-      dockerfile: images/isolate-host/Dockerfile
-    image: harbour-isolate-host:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
-    runtime: ${KANTEL_ISOLATE_RUNTIME:-${HARBOUR_ISOLATE_RUNTIME:-runc}}
-    restart: unless-stopped
-    environment:
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: harbour
-      S3_ACCESS_KEY: harbour
-      S3_SECRET_KEY: harbour-dev-secret
-      VAULT_ISOLATE_KEY: ${KANTEL_VAULT_ISOLATE_KEY:-${HARBOUR_VAULT_ISOLATE_KEY:-dev-isolate-key}}
-    ports: ["127.0.0.1:${KANTEL_ISOLATE_PORT:-${HARBOUR_ISOLATE_PORT:-58080}}:8080"]
-    networks:
-      control: { ipv4_address: "${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.12" }
-    # By address: on runsc this container cannot use Docker's DNS.
-    extra_hosts:
-      - "minio:${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.10"
-      - "vault-proxy:${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.11"
-    depends_on:
-      minio: { condition: service_healthy }
-    healthcheck:
-      # No shell tools in the image beyond bash's /dev/tcp.
-      test:
-        [
-          "CMD",
-          "bash",
-          "-c",
-          "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"ok\":true' <&3",
-        ]
-      interval: 1s
-      timeout: 2s
-      retries: 30
-
-  vault-proxy:
-    build:
-      context: ../..
-      dockerfile: apps/vault-proxy/Dockerfile
-    image: harbour-vault-proxy:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
-    # Fixed, because session hosts connect it to each sandbox network by name.
-    container_name: ${KANTEL_VAULT_CONTAINER:-${HARBOUR_VAULT_CONTAINER:-harbour-vault-proxy}}
-    restart: unless-stopped
-    environment:
-      KANTEL_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
-      VAULT_POLICY: /etc/harbour/vault-policy.json
-      VAULT_ISOLATE_KEY: ${KANTEL_VAULT_ISOLATE_KEY:-${HARBOUR_VAULT_ISOLATE_KEY:-dev-isolate-key}}
-      # The canary: injected by the vault, required by the research fixture,
-      # and checked to appear nowhere in sandboxes, transcripts or logs.
-      KANTEL_CANARY_SECRET: ${KANTEL_CANARY_SECRET:-${HARBOUR_CANARY_SECRET:-harbour-canary-0000}}
-    volumes:
-      - ./vault-policy.json:/etc/harbour/vault-policy.json:ro
-      # The CA the vault intercepts sandbox HTTPS with; kept so sandboxes
-      # trust the same CA across vault restarts. Only the vault mounts it.
-      - vaultca:/var/lib/harbour-vault
-    networks:
-      control: { ipv4_address: "${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.11" }
-      upstream: {}
-    depends_on:
-      postgres: { condition: service_healthy }
-      host-migrate: { condition: service_completed_successfully }
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3128/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
-        ]
-      interval: 1s
-      timeout: 2s
-      retries: 30
-
-  research-site:
-    image: oven/bun:1.3.14-alpine
-    command: ["bun", "/srv/server.ts"]
-    restart: unless-stopped
-    environment:
-      KANTEL_CANARY_SECRET: ${KANTEL_CANARY_SECRET:-${HARBOUR_CANARY_SECRET:-harbour-canary-0000}}
-      PORT: "80"
-    volumes:
-      - ../../spike/fixtures/research-site/server.ts:/srv/server.ts:ro
-    networks: [upstream]
-
-  # Builds the sandbox image, then exits. Session hosts start containers from it.
-  sandbox-image:
-    build:
-      context: ../../images/sandbox
-    image: harbour-sandbox:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
-    command: ["true"]
-    restart: "no"
-    network_mode: none
-
-  # Applies sql/ once before anything uses the tables.
-  host-migrate:
-    <<: *host
-    command: ["bun", "src/main.ts", "migrate"]
-    restart: "no"
-    depends_on:
-      postgres: { condition: service_healthy }
-    volumes: []
-    healthcheck: { disable: true }
-
-  # The gateway: the session, workspace read and audit APIs, email one-time
-  # PIN sign-in, and the console. It writes its bootstrap organisation,
-  # project, workspace and API key to KANTEL_BOOTSTRAP_FILE.
+  # The gateway: the console, the compute plane's API and its hosts, email
+  # one-time PIN sign-in, identity and audit. It writes its bootstrap
+  # organisation, project and keys, the compute plane's super-admin key among
+  # them, to KANTEL_BOOTSTRAP_FILE.
   gateway:
     build:
       context: ../..
@@ -242,36 +68,65 @@ services:
       # Invited as an organisation admin, so someone can sign in: Kantel is
       # invite-only. Its codes land in Mailpit.
       KANTEL_ADMIN_EMAIL: ${KANTEL_ADMIN_EMAIL:-${HARBOUR_ADMIN_EMAIL:-admin@harbour.localhost}}
-      # The real components (#18 step 3): runtime, audit, identity,
-      # workspaces, skills and memory (#12) on this Postgres, in their own
-      # schema apart from the session hosts' `kantel`, with workspace trees and skill files
-      # in MinIO under prefixes of their own.
+      # Identity, sign-in, audit and the registry of hosts, in this schema.
       KANTEL_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
       KANTEL_GATEWAY_SCHEMA: harbour_m1
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: harbour
-      S3_ACCESS_KEY: harbour
-      S3_SECRET_KEY: harbour-dev-secret
-      KANTEL_GATEWAY_S3_PREFIX: m1/workspaces/
-      KANTEL_SKILLS_S3_PREFIX: m1/skills/
       # More projects beside the first, by name (comma-separated), all on
-      # the bootstrap's operator key; next-to-sal.yaml names a default set.
+      # the bootstrap's operator key.
       KANTEL_PROJECTS: ${KANTEL_PROJECTS:-${HARBOUR_PROJECTS:-}}
-      # The vault's key, made at the first start and kept on the gateway's
-      # volume, so the console's first-run setup can keep the keys of the
-      # model providers you connect (CLI Proxy API, LiteLLM, Cloudflare AI
-      # Gateway, OpenRouter). KANTEL_VAULT_CIPHER_KEY, where set, wins.
-      KANTEL_VAULT_CIPHER_KEY_FILE: /var/lib/harbour/vault-cipher.key
+      # Where people reach the console, such as https://kantel.example.com
+      # behind a TLS proxy: invites link to it, and hosts on other machines
+      # reach the gateway there.
+      KANTEL_PUBLIC_URL: ${KANTEL_PUBLIC_URL:-}
+      # Sign-in with GitHub and Google beside email codes: an OAuth client
+      # of each, made by you, with its callback at
+      # KANTEL_PUBLIC_URL/auth/oauth/<github|google>/callback. A provider
+      # is on with both its ID and secret and KANTEL_PUBLIC_URL; empty, off.
+      # Invite-only as email codes are.
+      KANTEL_GITHUB_CLIENT_ID: ${KANTEL_GITHUB_CLIENT_ID:-}
+      KANTEL_GITHUB_CLIENT_SECRET: ${KANTEL_GITHUB_CLIENT_SECRET:-}
+      KANTEL_GOOGLE_CLIENT_ID: ${KANTEL_GOOGLE_CLIENT_ID:-}
+      KANTEL_GOOGLE_CLIENT_SECRET: ${KANTEL_GOOGLE_CLIENT_SECRET:-}
+      # The compute plane's API (@kantel/compute), which the console runs
+      # on: sandboxes, snapshots, scoped keys, webhooks and hosts under /v1,
+      # its records in memory for now. Sandboxes run on the machines you add
+      # as hosts (kantel-host), which reach the gateway here: its local
+      # address by default, so a host on this machine can join, or
+      # KANTEL_PUBLIC_URL when set, for hosts elsewhere.
+      # KANTEL_COMPUTE_BACKEND=stub runs them on a stand-in with no hosts.
+      KANTEL_COMPUTE_BACKEND: ${KANTEL_COMPUTE_BACKEND:-}
+      KANTEL_COMPUTE_PUBLIC_URL: ${KANTEL_COMPUTE_PUBLIC_URL:-${KANTEL_PUBLIC_URL:-http://127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}}}
+      KANTEL_COMPUTE_IMAGES: ${KANTEL_COMPUTE_IMAGES:-}
+      KANTEL_HOST_VERSION: ${KANTEL_HOST_VERSION:-}
+      KANTEL_HOST_UPDATE_URL: ${KANTEL_HOST_UPDATE_URL:-}
+      KANTEL_COMPUTE_PORTS_DOMAIN: ${KANTEL_COMPUTE_PORTS_DOMAIN:-}
+      KANTEL_EGRESS_ATTRIBUTION_KEY: ${KANTEL_EGRESS_ATTRIBUTION_KEY:-}
+      # Seals environments' protected values and secret files in the
+      # database: 32 random bytes in base64. Left empty, protected values
+      # and secret files are refused; plain variables still work.
+      KANTEL_SECRETS_KEY: ${KANTEL_SECRETS_KEY:-}
+      KANTEL_ACCOUNT_HOSTS: ${KANTEL_ACCOUNT_HOSTS:-}
+      # `experimental` turns on read-only mounts, bundles, bucket sources and
+      # signed file URLs. Bundles' tars are kept in the gatewaystate volume,
+      # under /var/lib/harbour/bundles.
+      KANTEL_MOUNTS: ${KANTEL_MOUNTS:-}
+      # Where bundles' tars are kept instead: a path in this container, so a
+      # directory elsewhere needs a volume mounted there too (a Compose
+      # override). Gateways sharing one database must share it. Empty, the
+      # default above.
+      KANTEL_BUNDLES_DIR: ${KANTEL_BUNDLES_DIR:-}
+      # `experimental` turns templates on (built microVM profiles, snapshot-cached).
+      KANTEL_TEMPLATES: ${KANTEL_TEMPLATES:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
-    volumes: [gatewaystate:/var/lib/harbour]
-    # A provider on this machine, such as CLIProxyAPI on :8317 or LiteLLM on
-    # :4000, is http://host.docker.internal:<port>/v1 from the gateway.
+    volumes:
+      - gatewaystate:/var/lib/harbour
+    # A webhook or OpenTelemetry endpoint on this machine is
+    # http://host.docker.internal:<port> from the gateway.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       postgres: { condition: service_healthy }
-      minio: { condition: service_healthy }
       mailpit: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
@@ -299,33 +154,16 @@ services:
       timeout: 2s
       retries: 30
 
-  host-a:
-    <<: *host
-    environment:
-      <<: *host-env
-      KANTEL_HOST_ID: host-a
-      KANTEL_HOST_URL: http://host-a:8080
-    ports: ["127.0.0.1:${KANTEL_HOST_A_PORT:-${HARBOUR_HOST_A_PORT:-58081}}:8080"]
-
-  host-b:
-    <<: *host
-    environment:
-      <<: *host-env
-      KANTEL_HOST_ID: host-b
-      KANTEL_HOST_URL: http://host-b:8080
-    ports: ["127.0.0.1:${KANTEL_HOST_B_PORT:-${HARBOUR_HOST_B_PORT:-58082}}:8080"]
-
 networks:
+  # As it was with the agent plane, so an upgrade keeps the network it made:
+  # a fixed subnet per stack (KANTEL_CONTROL_PREFIX), dynamic addresses from
+  # .128 up.
   control:
     ipam:
       config:
         - subnet: "${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.0/24"
-          # Dynamic addresses only; .10-.12 are fixed above.
           ip_range: "${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.128/25"
-  upstream: {}
 
 volumes:
   pgdata: {}
-  miniodata: {}
-  vaultca: {}
   gatewaystate: {}

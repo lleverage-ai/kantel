@@ -1,0 +1,46 @@
+#!/bin/sh
+# The sandbox's browser: Chromium (Debian's build) with its DevTools port (CDP) on loopback port 9222 for
+# connectOverCDP through the host. On a host that boots the guest with kantel.browser=surface it runs on its own
+# display (:2, kantel-browser-display), whose stream (kantel-browser-stream) shows the browser alone, apart from the
+# desktop. Otherwise, on a host from before it (which drops the guest agent's report of that surface, so the browser
+# view is the desktop's page), it runs on the desktop (:1), as it always has. KANTEL_BROWSER_DISPLAY=:1 in
+# /etc/kantel/desktop.env keeps it on the desktop on any host; no other value moves it, since :2 runs only with the
+# boot argument. The guest agent reports the surface only where Chromium is on :2 (a prediction, before services start);
+# the display chosen is recorded in the unit's runtime directory (/run/kantel-browser/display), which the host reads to
+# choose the browser's view for this machine as it is now.
+# Closing its window brings it back (the unit restarts it), so CDP stays reachable.
+# Its proxy is the guest agent's local forwarder, which follows the sandbox's egress proxy through forks and restores
+# (Chromium reads its proxy once, at start). Chrome is looked for first only so that a custom image which installs it
+# gets it; the default image has Chromium alone.
+display=:1
+if [ "${KANTEL_BROWSER_DISPLAY:-}" != :1 ]; then
+	case " $(cat /proc/cmdline 2>/dev/null) " in *" kantel.browser=surface "*) display=:2 ;; esac
+fi
+export DISPLAY="$display"
+for _ in $(seq 200); do [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break; sleep 0.05; done
+if [ -n "${RUNTIME_DIRECTORY:-}" ]; then printf '%s\n' "$DISPLAY" >"$RUNTIME_DIRECTORY/display"; fi
+browser=$(command -v google-chrome-stable || command -v chromium || command -v chromium-browser) || {
+	echo "no browser in this image" >&2
+	exec sleep infinity
+}
+# This unit is the profile's only browser, so a lock left in it is from a boot that's over: the template's (host name
+# localhost) or the one before a stop. Chromium won't take a lock from another host name, and waits on a dialog
+# instead, so a sandbox resumed without its memory would have no browser and no CDP.
+profile=/home/user/.config/kantel-chrome
+rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
+# That boot never exited either: the sandbox was stopped, or snapshotted for the template or a fork, with Chromium
+# running. Chromium takes that for a crash and puts "Restore pages?" on the desktop, with nothing worth restoring.
+# --hide-crash-restore-bubble keeps the bubble off, and so does marking the last run clean here, in case the flag goes.
+prefs="$profile/Default/Preferences"
+if [ -s "$prefs" ] && command -v jq >/dev/null; then
+	if jq -c '.profile.exit_type = "Normal" | .profile.exited_cleanly = true' "$prefs" >"$prefs.kantel"; then
+		mv -f "$prefs.kantel" "$prefs"
+	else
+		rm -f "$prefs.kantel"
+	fi
+fi
+exec "$browser" --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic \
+	--hide-crash-restore-bubble \
+	--disable-features=Translate,MediaRouter --disable-background-networking --disable-component-update \
+	--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 \
+	--user-data-dir="$profile" --start-maximized ${KANTEL_BROWSER_FLAGS:-} about:blank

@@ -70,7 +70,8 @@ has started a container for it since it listed. Needs `network`.
   unreadable) is skipped, reported on the scan's stderr, and taken as unchanged: the command does not fail, an
   unreadable new file is not collected, and the files under an unreadable directory are not taken as deleted. A GET of the whole archive would move the working copy over the
   socket twice per command; hashing in place moves only digests. `.git` and `node_modules` stay local to the container
-  in both directions.
+  in both directions by default (`localOnly`); the self-hosted gateway keeps only `node_modules` local, so a
+  repository is synced like any other files and outlives its container.
 - **Commit on release.** `pending` re-bases, scans and returns the container's changes (puts with content and mode,
   deletes) with a stamp; `committed(stamp)` folds exactly those into the synced state; `pending({ final: true })` fences
   the lease, so any later command on it is refused with `expired`, and kills every process of user 1000 in the container

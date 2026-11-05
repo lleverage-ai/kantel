@@ -3,7 +3,13 @@ import { useState } from "react";
 import { MINUTE } from "../primitives/format.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { SignInScreen } from "./sign-in.tsx";
-import { SIGN_IN_CODE_TTL_MS, type SignInApi, type SignInState } from "./sign-in-model.ts";
+import {
+	type ProviderSignInProblem,
+	SIGN_IN_CODE_TTL_MS,
+	type SignInApi,
+	type SignInProviderLink,
+	type SignInState,
+} from "./sign-in-model.ts";
 import { LiveSignIn } from "./stories-live.tsx";
 import { signInFrame } from "./story-frames.ts";
 
@@ -44,15 +50,39 @@ function codeStep(minutesAgo: number, rest: Partial<Extract<SignInState, { step:
 	};
 }
 
+/** GitHub and Google, as the hosted service offers them. Their links go nowhere in the workbench. */
+const PROVIDERS: readonly SignInProviderLink[] = [
+	{ provider: "github", href: "#github" },
+	{ provider: "google", href: "#google" },
+];
+
 /** The screen as a page, starting in `state`; it carries on from there against the stand-in API. */
-function Screen({ state }: { state: () => SignInState }) {
+function Screen({
+	state,
+	providers,
+	providerProblem,
+	emailCode,
+}: {
+	state: () => SignInState;
+	providers?: readonly SignInProviderLink[];
+	providerProblem?: ProviderSignInProblem;
+	emailCode?: boolean;
+}) {
 	const [initial] = useState(state);
 	return (
 		<div className={signInFrame}>
-			<SignInScreen api={storyApi} initial={initial} />
+			<SignInScreen
+				api={storyApi}
+				initial={initial}
+				{...(providers === undefined ? {} : { providers })}
+				{...(providerProblem === undefined ? {} : { providerProblem })}
+				{...(emailCode === undefined ? {} : { emailCode })}
+			/>
 		</div>
 	);
 }
+
+const start = (): SignInState => ({ step: "email", email: "", busy: false });
 
 export const Default: Story = () => <Screen state={() => ({ step: "email", email: "", busy: false })} />;
 Default.storyName = "Start";
@@ -137,6 +167,49 @@ SignedIn.storyName = "Signed in";
 
 export const Mobile: Story = () => <Screen state={() => codeStep(1, { code: "12" })} />;
 Mobile.meta = { width: 420 };
+
+/** GitHub and Google above the email form, as on app.kantel.dev once their clients are set. */
+export const WithProviders: Story = () => <Screen state={start} providers={PROVIDERS} />;
+WithProviders.storyName = "With GitHub and Google";
+
+export const WithProvidersMobile: Story = () => <Screen state={start} providers={PROVIDERS} />;
+WithProvidersMobile.storyName = "With GitHub and Google, mobile";
+WithProvidersMobile.meta = { width: 420 };
+
+/** Only GitHub set up: one button. */
+export const WithGitHubOnly: Story = () => (
+	<Screen state={start} providers={[{ provider: "github", href: "#github" }]} />
+);
+WithGitHubOnly.storyName = "With GitHub only";
+
+/** No mail to send codes with (self-hosted without SMTP): the providers alone. */
+export const ProvidersOnly: Story = () => <Screen state={start} providers={PROVIDERS} emailCode={false} />;
+ProvidersOnly.storyName = "Providers only";
+
+export const ProviderCancelled: Story = () => (
+	<Screen state={start} providers={PROVIDERS} providerProblem={{ error: "cancelled", provider: "google" }} />
+);
+ProviderCancelled.storyName = "Provider: cancelled";
+
+export const ProviderUnverifiedEmail: Story = () => (
+	<Screen state={start} providers={PROVIDERS} providerProblem={{ error: "unverified_email", provider: "github" }} />
+);
+ProviderUnverifiedEmail.storyName = "Provider: unverified email";
+
+export const ProviderStateMismatch: Story = () => (
+	<Screen state={start} providers={PROVIDERS} providerProblem={{ error: "state_mismatch", provider: "github" }} />
+);
+ProviderStateMismatch.storyName = "Provider: state mismatch";
+
+export const ProviderNotAllowed: Story = () => (
+	<Screen state={start} providers={PROVIDERS} providerProblem={{ error: "not_allowed", provider: "google" }} />
+);
+ProviderNotAllowed.storyName = "Provider: not invited";
+
+export const ProviderFailed: Story = () => (
+	<Screen state={start} providers={PROVIDERS} providerProblem={{ error: "failed", provider: "google" }} />
+);
+ProviderFailed.storyName = "Provider: failed";
 
 /**
  * The screen against the real OTP handler (`@kantel/identity/otp/http`) over an in-memory directory and mailer, in

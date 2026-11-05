@@ -1,42 +1,45 @@
 ---
 title: API reference
-description: Every route in Kantel's public API, generated from the routes themselves, and the routes not in it yet.
+description: Every route in Kantel's public API, generated from the route definitions themselves, and how to get the OpenAPI document.
 sidebar:
   order: 0
   label: Overview
 ---
 
-The public API is defined once, in `packages/api/src/routes.ts`. The OpenAPI document (`packages/api/generated/openapi.json`) and the TypeScript SDK (`packages/api/generated/sdk.ts`) are generated from those definitions, and CI fails when either is stale. The pages in this section are generated from the OpenAPI document by `docs/site/scripts/api-reference.ts`, and CI fails when they are stale too, so the reference can't drift from the routes.
+Kantel's public API is defined once, in `packages/api`. The OpenAPI document (`packages/api/generated/openapi.json`) and the TypeScript SDK (`packages/api/generated/sdk.ts`) are generated from those definitions, and the pages in this section are generated from the OpenAPI document by `docs/site/scripts/api-reference.ts`. CI fails when any of them is out of date, so the reference can't drift from the code.
 
-Every path is under `/v1` on your deployment's origin, such as `https://kantel.example.com/v1/sessions`. Each route names its SDK method.
+Every path is under `/v1` on your control plane's address, such as `http://127.0.0.1:58090/v1` for a local install. Send an API key as a bearer token:
 
-| Page | Covers |
-| --- | --- |
-| [Sessions](/api/reference/sessions/) | Create, list, read, close, abort, fork and warm sessions |
-| [Messages and results](/api/reference/messages/) | Send messages, wait for a run's result, choose models |
-| [Stream and history](/api/reference/stream/) | A session's live stream and its history |
-| [Skills](/api/reference/skills/) | Published skills, revisions and files, and imports |
-| [Prompt rules](/api/reference/rules/) | Prompt rules at each level |
-| [Memory](/api/reference/memory/) | Memory spaces, concepts, search, recall and snapshots |
-| [Schedules](/api/reference/schedules/) | Schedules and their runs |
-| [Browsers](/api/reference/browsers/) | Embedding a session's browser |
-| [File shares](/api/reference/shares/) | Sharing a workspace file |
-| [Resource sharing](/api/reference/sharing/) | Shares, access requests, bindings and policies |
-| [Connections](/api/reference/connections/) | Connecting outside services |
-| [Types](/api/reference/types/) | Every named type |
+```sh
+curl -s "$KANTEL_URL/v1/me" -H "authorization: Bearer $KANTEL_API_KEY"
+```
 
-## Not every route is in it yet
+Each route on these pages names the SDK method that calls it.
 
-Both deployments serve more under `/v1` than the public API defines: who you are, API keys, the audit log, agent profiles, host tools, workspaces' files, the vault's approvals and others. The console uses them, and so can your app, but they aren't in the OpenAPI document or the SDK, and may change without notice. They are listed on [Unlisted routes](/api/reference/unlisted/).
+:::caution[Experimental]
+The compute plane's routes, for sandboxes, snapshots, accounts and organisations, API keys, the proxy, webhooks, OpenTelemetry and hosts, are in the document and on these pages. Every control plane serves them, and their shapes may still change.
+:::
 
-Some public routes aren't served by both deployments either. The self-hosted gateway doesn't serve schedules, file shares or session history yet. See [Deployment overview](/deploy/overview/#features-on-each-target-today).
+## Errors
+
+Every error answers with the same body, an [ErrorBody](/api/reference/types/#errorbody):
+
+```json
+{ "error": { "code": "not_found", "message": "No such sandbox." } }
+```
+
+`code` is one of the values of [ErrorCode](/api/reference/types/#errorcode). A missing or wrong key answers `401` with `unauthenticated`, and a key without the scope a call needs answers `403` with `forbidden`.
+
+Some errors say more in `details`. A call that needs a running sandbox (commands, files, ports, file URLs, archives) answers `409` `conflict` when the sandbox isn't running, with a [SandboxNotRunning](/api/reference/types/#sandboxnotrunning) in `details`: a stable `code` such as `sandbox_stopped` or `sandbox_starting`, the sandbox's `state`, the `stopReason` where Kantel recorded why it stopped, and a `hint` naming the resume call. A call made while the sandbox starts waits for it first, up to 60 seconds. See [When the sandbox isn't running](/sandboxes/commands-and-files/#when-the-sandbox-isnt-running).
 
 ## Get the OpenAPI document
 
-The document is OpenAPI 3.1. Take it from the repository at `packages/api/generated/openapi.json`, or generate it again:
+The document is OpenAPI 3.1. Take it from the repository at `packages/api/generated/openapi.json`, or generate it from a checkout:
 
-```bash
+```sh
 pnpm --filter @kantel/api generate
 ```
 
-<!-- Sources (d031001): packages/api/README.md:1-30, packages/api/package.json:1-20, packages/api/generated/openapi.json, .github/workflows/ci.yml:66-74, docs/site/scripts/api-reference.ts, apps/selfhosted/src/gateway/gateway.ts:1-30 -->
+Any OpenAPI generator can make a client from it in another language.
+
+<!-- Sources (e496aeb): packages/api/README.md:1-30, packages/api/package.json:1-20, packages/api/generated/openapi.json, .github/workflows/ci.yml:60-75, docs/site/scripts/api-reference.ts -->

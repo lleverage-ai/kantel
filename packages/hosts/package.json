@@ -1,0 +1,37 @@
+{
+	"name": "@kantel/hosts",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "The compute plane's control side: the host registry, join tokens, the hosts' connections, placement and sandbox dispatch to kantel-host",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./backend": "./src/backend.ts",
+		"./cluster": "./src/cluster.ts",
+		"./port-http": "./src/port-http.ts",
+		"./port-websocket": "./src/port-websocket.ts",
+		"./ports": "./src/ports.ts",
+		"./desktop": "./src/desktop.ts",
+		"./relay-access": "./src/relay-access.ts",
+		"./relay-store": "./src/relay-store.ts",
+		"./tunnel": "./src/tunnel.ts",
+		"./http": "./src/http.ts",
+		"./hub": "./src/hub.ts",
+		"./protocol": "./src/protocol.ts",
+		"./scheduler": "./src/scheduler.ts",
+		"./service": "./src/service.ts",
+		"./store": "./src/store.ts"
+	},
+	"dependencies": {
+		"@kantel/compute": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/identity": "workspace:*",
+		"@kantel/sql": "workspace:*"
+	},
+	"devDependencies": {
+		"@kantel/api": "workspace:*",
+		"@kantel/cli": "workspace:*",
+		"@kantel/e2e": "workspace:*"
+	}
+}

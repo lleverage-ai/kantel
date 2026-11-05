@@ -67,7 +67,30 @@ const outDir = join(here, "..", "src", "content", "docs", "api", "reference");
 const check = process.argv.includes("--check");
 
 /** Pages in the reference directory written by hand, never by this script. */
-const HAND_WRITTEN = new Set(["index.md", "unlisted.md"]);
+const HAND_WRITTEN = new Set(["index.md"]);
+
+/**
+ * Tags of the agent plane, which the docs no longer cover: their routes may still be served while their code is being
+ * removed, but they get no reference page, and the types page leaves out every schema only they use. Remove a tag from
+ * here once its routes have gone from the OpenAPI document.
+ */
+const NOT_DOCUMENTED = new Set([
+	"sessions",
+	"messages",
+	"stream",
+	"skills",
+	"rules",
+	"memory",
+	"schedules",
+	"browsers",
+	"shares",
+	"sharing",
+	"connections",
+	"projects",
+	"tool-servers",
+	"model-providers",
+	"programs",
+]);
 
 /**
  * Each tag's page: its title, its place in the sidebar and a line about it. A note, when set, says something the
@@ -81,49 +104,86 @@ const TAGS: {
 		readonly note?: string;
 	};
 } = {
-	sessions: { title: "Sessions", order: 1, about: "Create, list, read, close, abort, fork and warm sessions." },
-	messages: {
-		title: "Messages and results",
+	// The compute plane's tags. A tag with no entry still gets a page, titled with the tag itself, after these.
+	accounts: {
+		title: "Accounts",
+		order: 1,
+		about: "Who is calling, personal accounts and organisations, members, invites and usage.",
+	},
+	sandboxes: {
+		title: "Sandboxes",
 		order: 2,
-		about: "Send messages to a session, wait for a run's result and choose models.",
+		about: "Create, start, stop, pause, resume, fork, recover and delete isolates and microVMs.",
 	},
-	stream: { title: "Stream and history", order: 3, about: "A session's live stream and its history in pages." },
-	skills: { title: "Skills", order: 4, about: "Published skills, their revisions and files, and imports from a host." },
-	rules: {
-		title: "Prompt rules",
+	commands: {
+		title: "Commands",
+		order: 3,
+		about: "Run commands in a sandbox, read their output and kill them.",
+	},
+	files: { title: "Files", order: 4, about: "Read, write, delete and list a sandbox's files." },
+	access: {
+		title: "Ports, SSH, desktop and browser",
 		order: 5,
-		about: "Prompt rules for the platform, an organisation, a project or a user.",
+		about: "Public port URLs, SSH, the Linux desktop and the browser's live view and CDP URL.",
 	},
-	memory: { title: "Memory", order: 6, about: "Memory spaces and concepts, search, recall and snapshot imports." },
-	schedules: { title: "Schedules", order: 7, about: "Schedules, their next due times and their runs." },
-	browsers: { title: "Browsers", order: 8, about: "Live and replay links to a session's browsers for an outside app." },
-	shares: { title: "File shares", order: 9, about: "Sharing a workspace file by link or with named people." },
-	sharing: {
-		title: "Resource sharing",
-		order: 10,
-		about: "Shares, access requests, bindings and policies on resources, and what a session used through them.",
+	snapshots: {
+		title: "Snapshots",
+		order: 6,
+		about: "A sandbox's automatic history and named saved snapshots, and the files in them.",
 	},
-	connections: {
-		title: "Connections",
-		order: 11,
-		about: "Connectors to outside services: the catalogue, OAuth and key connections, OAuth clients and uses.",
+	"api-keys": { title: "API keys", order: 7, about: "Scoped API keys: create, rotate and revoke." },
+	auth: {
+		title: "Device sign-in",
+		order: 7.5,
+		about: "Signing the command line in through the browser: `kantel login`'s device code, its poll and its approval.",
 	},
-	projects: {
-		title: "Projects",
-		order: 12,
-		about: "Creating a project in the caller's organisation, as an admin or with an organisation API key.",
-	},
-	"tool-servers": {
-		title: "Tool servers",
-		order: 13,
-		about: "MCP servers Kantel calls for tools: the registry, tunnel tokens and each server's tools.",
-		note: "Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+	proxy: {
+		title: "Proxy",
+		order: 8,
+		about: "Where sandboxes' outbound traffic may go, and through what.",
 	},
 	environments: {
 		title: "Environments",
+		order: 8.5,
+		about:
+			"What new sandboxes inherit: variables (plain and protected), secret files, repositories and egress grants; and a sandbox's egress log.",
+	},
+	templates: {
+		title: "Templates",
+		order: 8.7,
+		about:
+			"Versioned microVM profiles (an image, vCPUs and memory, variables, a setup script and egress) that Kantel builds once and snapshots, so their sandboxes restore instead of booting; and the base channels they follow.",
+		note: "Experimental: a deployment serves these only with `KANTEL_TEMPLATES=experimental`.",
+	},
+	events: { title: "Events", order: 9, about: "The account's events, as webhooks deliver them." },
+	webhooks: {
+		title: "Webhooks",
+		order: 10,
+		about: "Signed event deliveries to your endpoints, with retries.",
+	},
+	telemetry: {
+		title: "OpenTelemetry",
+		order: 11,
+		about: "Exporting sandbox lifecycle spans and usage metrics to an OTLP endpoint.",
+	},
+	hosts: {
+		title: "Hosts",
+		order: 12,
+		about: "The machines that run sandboxes: join tokens, labels, drain and revoke. Super-admins only.",
+	},
+	"account-hosts": {
+		title: "Your hosts",
+		order: 13,
+		about:
+			"An account's own hosts: add a machine to your personal account or an organisation, list, drain and remove them.",
+		note: "Experimental: a deployment serves these only with `KANTEL_ACCOUNT_HOSTS=experimental`.",
+	},
+	mounts: {
+		title: "Mounts",
 		order: 14,
-		about: "Long-lived machines a project's sessions attach to: create, start, stop, grant and destroy.",
-		note: "Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+		about:
+			"What sandboxes mount read-only: bundles (tars stored once, by digest) and bucket sources (object-store buckets, with write-only credentials).",
+		note: "Experimental: a deployment serves these only with `KANTEL_MOUNTS=experimental`.",
 	},
 };
 
@@ -292,13 +352,45 @@ const frontmatter = (title: string, description: string, order: number) => [
 
 const pages = new Map<string, string>();
 
-// One page per tag, its operations in the document's order.
+/** The names of the schemas a schema refers to, directly or through others, added to `into`. */
+function collectRefs(schema: unknown, into: Set<string>): void {
+	if (schema === null || typeof schema !== "object") return;
+	if (Array.isArray(schema)) {
+		for (const each of schema) collectRefs(each, into);
+		return;
+	}
+	const ref = (schema as { $ref?: unknown }).$ref;
+	if (typeof ref === "string") {
+		const name = refName(ref);
+		if (!into.has(name)) {
+			into.add(name);
+			collectRefs(schemas[name], into);
+		}
+	}
+	for (const value of Object.values(schema)) collectRefs(value, into);
+}
+
+// One page per documented tag, its operations in the document's order.
 const byTag = new Map<string, string[]>();
+const usedTypes = new Set<string>(["ErrorBody"]);
+collectRefs(schemas.ErrorBody, usedTypes);
+// The named schemas no route or other schema refers to: those published on their own (`extraSchemas`), such as an
+// error's `details` (SandboxNotRunning).
+const referenced = new Set<string>();
+collectRefs(document.paths, referenced);
+for (const schema of Object.values(schemas)) collectRefs(schema, referenced);
+for (const name of Object.keys(schemas)) {
+	if (referenced.has(name) || usedTypes.has(name)) continue;
+	usedTypes.add(name);
+	collectRefs(schemas[name], usedTypes);
+}
 for (const [path, item] of Object.entries(document.paths)) {
 	for (const method of METHODS) {
 		const operation = item[method];
 		if (operation === undefined) continue;
 		const tag = operation.tags?.[0] ?? "other";
+		if (NOT_DOCUMENTED.has(tag)) continue;
+		collectRefs(operation, usedTypes);
 		const lines = byTag.get(tag) ?? [];
 		lines.push(...operationSection(path, method, operation));
 		byTag.set(tag, lines);
@@ -315,13 +407,13 @@ for (const [tag, sections] of byTag) {
 	pages.set(`${tag}.md`, `${lines.join("\n").trimEnd()}\n`);
 }
 
-// Every named schema, alphabetically.
+// Every named schema the documented routes use, alphabetically.
 const types = [
 	...frontmatter("Types", "Every named type in the public API, as the OpenAPI document defines it.", 98),
-	"Every named schema in the OpenAPI document, alphabetically. Field types link to their own entries.",
+	"Every named schema the routes above use, alphabetically. Field types link to their own entries.",
 	"",
 ];
-for (const name of Object.keys(schemas).sort((a, b) => a.localeCompare(b))) {
+for (const name of [...usedTypes].sort((a, b) => a.localeCompare(b))) {
 	const schema = schemas[name];
 	if (schema !== undefined) types.push(...typeSection(name, schema));
 }

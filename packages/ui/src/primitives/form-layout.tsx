@@ -10,9 +10,12 @@ function withClass(base: string, className: string | undefined): string {
 	return className ? `${base} ${className}` : base;
 }
 
-/** The page's header: title and lede, its actions beside them, over a hairline. */
+/**
+ * The page's header, over a hairline: the title on the left and the actions on the right of one row, at every width,
+ * and the lede under both across the page.
+ */
 const pageHeader =
-	"kt-page-header flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2.5 border-b border-border pb-3";
+	"kt-page-header grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1.5 border-b border-border pb-4";
 
 /** A control that sizes itself (a segmented control) keeps its own width straight in a form or a section. */
 const ownWidth = "[&>.kt-segmented]:max-w-full [&>.kt-segmented]:self-start";
@@ -48,7 +51,7 @@ const actionsRow = "flex min-w-0 flex-wrap items-center gap-2";
 
 /**
  * The header every config page opens with: its title, a line on what the page is for and the page's own actions
- * (New key, Export) on the right. The actions drop under the title when the page is narrow.
+ * (New key, Export) on the right. The title and the actions keep one row on a phone too; the lede goes under them.
  */
 export function PageHeader({
 	title,
@@ -69,19 +72,23 @@ export function PageHeader({
 }) {
 	return (
 		<header className={withClass(pageHeader, className)}>
-			<div className="kt-page-header-text flex min-w-0 flex-[1_1_calc(var(--kt-sidebar-width)_+_var(--kt-step-12))] flex-col gap-1">
-				<Title id={titleId} className="kt-page-header-title m-0 text-md font-strong leading-tight text-fg">
-					{title}
-				</Title>
-				{lede === undefined ? null : (
-					<p className="kt-page-header-lede m-0 text-sm leading-normal text-muted">{lede}</p>
-				)}
-			</div>
-			{/* The actions keep the title's first line: a button, a select or a status beside it, never stretched. */}
+			<Title
+				id={titleId}
+				className="kt-page-header-title col-start-1 row-start-1 m-0 min-w-0 text-heading font-strong leading-tight text-fg [overflow-wrap:anywhere]"
+			>
+				{title}
+			</Title>
+			{/* The actions keep the title's row, on the column's right edge: a button, a select or a status, never
+			    stretched. Several wrap among themselves, right-aligned. */}
 			{actions === undefined ? null : (
-				<div className="kt-page-header-actions flex min-w-0 max-w-full flex-none flex-wrap items-center gap-2">
+				<div className="kt-page-header-actions col-start-2 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-2">
 					{actions}
 				</div>
+			)}
+			{lede === undefined ? null : (
+				<p className="kt-page-header-lede col-span-2 row-start-2 m-0 max-w-content text-sm leading-normal text-muted">
+					{lede}
+				</p>
 			)}
 		</header>
 	);
@@ -125,7 +132,7 @@ export function FormSection({
 				<div className="kt-form-section-text flex min-w-0 flex-auto flex-col gap-1">
 					<Heading
 						id={headingId}
-						className="kt-form-section-title m-0 text-sm font-medium leading-tight text-fg wrap-anywhere focus:outline-none"
+						className="kt-form-section-title m-0 text-md font-strong leading-tight text-fg wrap-anywhere focus:outline-none"
 						ref={headingRef}
 						tabIndex={headingRef ? -1 : undefined}
 					>

@@ -170,8 +170,11 @@ describe("PATCH /v1/me/preferences", () => {
 	it("keeps a person's theme, which GET /v1/me then carries", async () => {
 		const { signIn } = await world();
 		const { client } = await signIn("grace@kantel.test");
-		expect(await client.setPreferences({ theme: "tokyo-night" })).toEqual({ theme: "tokyo-night" });
-		expect((await client.me()).preferences).toEqual({ theme: "tokyo-night" });
+		expect(await client.setPreferences({ theme: "light" })).toEqual({ theme: "light" });
+		expect((await client.me()).preferences).toEqual({ theme: "light" });
+		// A theme from before light and dark, from an older console, is kept as the nearer of the two.
+		expect(await client.setPreferences({ theme: "tokyo-night" })).toEqual({ theme: "dark" });
+		expect((await client.me()).preferences).toEqual({ theme: "dark" });
 		expect(await client.setPreferences({ theme: null })).toEqual({});
 		expect((await client.me()).preferences).toEqual({});
 	});
@@ -194,7 +197,7 @@ describe("PATCH /v1/me/preferences", () => {
 		expect(isKantelError(bad, "invalid")).toBe(true);
 		const url = `${ORIGIN}/v1/me/preferences`;
 		const authorization = `Bearer ${session.token}`;
-		const plain = await serve(url, { method: "PATCH", headers: { authorization }, body: '{"theme":"nord"}' });
+		const plain = await serve(url, { method: "PATCH", headers: { authorization }, body: '{"theme":"dark"}' });
 		expect(plain.status).toBe(415);
 		const get = await serve(url, { headers: { authorization } });
 		expect([get.status, get.headers.get("allow")]).toEqual([405, "PATCH"]);
@@ -209,7 +212,7 @@ describe("PATCH /v1/me/preferences", () => {
 	it("refuses a host app's key: only a person has settings, and its /v1/me has none", async () => {
 		const { clientWith, key } = await world();
 		const client = clientWith({ authorization: `Bearer ${key.secret}` });
-		const error = await refusal(client.setPreferences({ theme: "nord" }));
+		const error = await refusal(client.setPreferences({ theme: "dark" }));
 		expect(isKantelError(error, "forbidden")).toBe(true);
 		expect((await client.me()).preferences).toBeUndefined();
 	});

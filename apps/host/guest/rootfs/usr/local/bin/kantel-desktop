@@ -1,0 +1,17 @@
+#!/bin/sh
+# The sandbox's desktop: TigerVNC's X server on display :1 (VNC on loopback port 5901; the host reaches it over
+# vsock) running an XFCE session. The desktop's stream (kantel-stream, Selkies) attaches to the same display; the
+# sandbox's Chromium (kantel-browser) has a display of its own (kantel-browser-display), unless desktop.env puts it here.
+export DISPLAY=:1
+size=${KANTEL_DESKTOP_SIZE:-1920x1080}
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+Xvnc :1 -geometry "$size" -depth 24 -SecurityTypes None -localhost yes -rfbport 5901 -nolisten tcp \
+	-AlwaysShared -AcceptSetDesktopSize -FrameRate 60 &
+xvnc=$!
+for _ in $(seq 100); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.05; done
+# The session ends with Xvnc, and systemd starts both again.
+dbus-run-session -- xfce4-session &
+session=$!
+wait "$xvnc"
+kill "$session" 2>/dev/null
+exit 1

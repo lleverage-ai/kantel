@@ -3,9 +3,7 @@
 What each component is for, when not to use it, its states and what it costs. Stories for each are in the
 workbench (`pnpm --filter @kantel/ui dev`).
 
-The session components are documented in [session-transcript.md](session-transcript.md),
-[session-composer.md](session-composer.md) and [session-list-vault.md](session-list-vault.md); the workspace
-components in [workspace.md](workspace.md).
+The compute console's pages (`src/compute/`) are built from these primitives.
 
 ## Primitives
 
@@ -36,7 +34,25 @@ Decline, Copy link), `ghost` (inside dense rows and toolbars), `danger` (stoppin
 
 `IconButton` requires `label`, which becomes the accessible name and the tooltip.
 
+The primary variant is drawn in the `primary` tokens, not the accent: navy with white text in the light theme,
+orange with dark text in the dark one.
+
 **Cost:** none beyond the element.
+
+### SplitButton
+
+**For** an action done at once with the defaults, beside a caret for the same action with choices: the console's New
+makes a sandbox at once, and its caret opens New sandbox. Two buttons joined, each a Tab stop with its own name
+(`moreLabel` names the caret).
+
+**Not for** a list of different actions (use a `Menu`), or when the defaults are rarely what someone wants.
+
+### TabBar
+
+**For** a phone's main navigation: up to five pages along the bottom, each an icon over a short label, the page shown
+in full-strength text with its icon in the accent, and `aria-current="page"`. It sits above the home indicator (`env(safe-area-inset-bottom)`).
+
+**Not for** a wide screen (use `Sidebar`), more than five pages, or tabs inside a page (`PageTabs`).
 
 ### StatusLabel and StatusDot
 
@@ -77,24 +93,26 @@ as more than a fill.
 ### Sidebar
 
 **For** an app's main navigation, after T3 Code's sidebar: `Sidebar` frames a head (`SidebarBrand` and
-`SidebarToggle`), a body that scrolls on its own and a foot that stays put. In the body, `SidebarSection` "Projects"
-holds `SidebarProject` rows (chevron, folder, name, an optional action such as New session); the current project's
-sessions (`NewSessionRow`, `SessionList`) are its children, nested on a guide line under its chevron. In the foot,
-`SidebarItem`s link to the pages outside projects, each with a 16px icon, then `SignedInAs`. Every name truncates on
-one line.
+`SidebarToggle`), a body that scrolls on its own and a foot that stays put. In the body, `SidebarSection`s hold
+`SidebarItem`s, each a page link with a 16px icon (the compute console's Sandboxes, Snapshots, Keys and the rest), and
+`SidebarProject` rows (chevron, folder, name, an optional action) whose children nest on a guide line under its
+chevron. In the foot, `SignedInAs`. Every name truncates on one line.
 
 Active state: the page shown (`selected`) is filled, in full-strength text and medium weight, with
 `aria-current="page"`; the project you're in (`current`) is in full-strength text without a fill, so only one row in
 the sidebar is ever filled. `collapsed` makes it a rail `--kt-rail-width` wide: icons, a project's first letter in a
-small square, and the avatar, each keeping its name for screen readers and as a tooltip; sessions and headings are
-hidden. The host owns the state, the width (`--kt-sidebar-width` or `--kt-rail-width`) and the landmark role; the
+small square, and the avatar, each keeping its name for screen readers and as a tooltip; a project's children and
+headings are hidden. The host owns the state, the width (`--kt-sidebar-width` or `--kt-rail-width`) and the landmark role; the
 console remembers it in localStorage and toggles it with Ctrl+B (⌘B on a Mac). `useSidebarCollapsed()` tells a
 component inside whether it is on the rail.
 
-**Not for** navigation inside a page (use `SegmentedControl` or a list), or a file tree (`FileTree`).
+**Not for** navigation inside a page (use `PageTabs`, `SegmentedControl` or a list).
 
-**Cost:** no timers or animation; the rail is a CSS state of the same elements, so collapsing mounts nothing new
-but the rail's New session link.
+The compute console draws it `--kt-nav-width` wide with no rail: its pages, Settings, Admin for a super-admin, and
+the person's own menu (`UserMenu`: who they are, the theme, sign out) in the foot. On a phone it has a top bar and a
+`TabBar` instead.
+
+**Cost:** no timers or animation; the rail is a CSS state of the same elements, so collapsing mounts nothing new.
 
 ### Breadcrumbs
 
@@ -105,7 +123,7 @@ a link. Slashes in the faint colour separate them and are hidden from screen rea
 baseline. The current item takes the room that's left and truncates first; a parent keeps at least a few letters.
 Modelled on T3 Code's `WorkspaceBreadcrumb` and its chat header's project / parent / thread trail.
 
-**Not for** tabs or switching between peers (use `SegmentedControl`), or a path inside a file tree.
+**Not for** tabs or switching between peers (use `PageTabs` or `SegmentedControl`), or a path inside a file tree.
 
 **Cost:** memoised on its props; pass a stable `parents` array.
 
@@ -185,6 +203,17 @@ hint and error as `TextField`; its height follows `rows` and the person can drag
 
 **Not for** the composer, which sends on Enter and has attachments.
 
+### PageTabs
+
+**For** a page's own views, one shown at a time, each with its address: Egress's Log, Rules and Settings. Each tab is
+a link (`href`), so a view can be reloaded, shared and opened in a new tab; the one shown (`selected`) is in
+full-strength text with a bar on the row's hairline and `aria-current="page"`. `onSelect` shows a tab in place of
+following its link (the host navigates); a modified click still follows it. A tab's `count` follows its label. The
+row scrolls sideways when the tabs don't fit, as on a phone.
+
+**Not for** the app's pages (use `Sidebar` or `TabBar`), or filters and views within one view that need no address
+(use `SegmentedControl`).
+
 ### SegmentedControl
 
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches
@@ -194,7 +223,7 @@ option is lit until then, rather than lighting one and moving off it (the Connec
 `tone` (`done`, `approval`, `error`) colours it when it's chosen, for a choice that is itself a status: Allow, Ask,
 Block in a connection's policy grid. The label still says it; the colour only repeats it.
 
-**Not for** more than five options, or for actions.
+**Not for** more than five options, for actions, or for a page's views that each have an address (use `PageTabs`).
 
 ### CheckboxField
 
@@ -219,6 +248,20 @@ several (use a `SegmentedControl`).
 
 **Cost:** none beyond the element; the busy thumb's breathing is an opacity animation, off under reduced motion.
 
+### SliderField
+
+**For** a number chosen along a range, where the position matters more than typing it: a new sandbox's vCPUs and
+memory. The browser's range input, so arrow keys move a step, Page Up and Down further and Home and End to the ends,
+and a screen reader reads `format`'s words ("4 vCPU", "256 MB") as its value. The value shows beside the label, the
+range's ends under the track, and a tick at each of `marks` (the shapes a host offers by name). `onChange` gets a
+value already on a step and within `min` and `max`; the owner may narrow `min` and `max` as other fields change (memory
+follows vCPUs). Its track and thumb are drawn in controls.css, since they are engine pseudo-elements.
+
+**Not for** a few named choices (use a `SegmentedControl` or a `SelectField`), or an exact figure to type (use a
+`TextField`).
+
+**Cost:** none beyond the element.
+
 ### OneTimeSecret and CommandBlock
 
 **For** a secret shown once, when it is made: a tunnel token, an API key. `OneTimeSecret` is a panel in the approval
@@ -231,18 +274,6 @@ than scrolls, and Copy drops under it on a phone.
 **Not for** anything Kantel can show again (use `Code` or a `Field`), or code to read (use `Code`).
 
 **Cost:** none beyond the elements and CopyButton's 1.5 second timer after a copy.
-
-### JsonViewer
-
-**For** a JSON value to read, such as a connection call's answer (`src/code/json-viewer.tsx`): a tree open at its
-first level (`openDepth`, default 1) and folded under it. Each fold is a button with `aria-expanded`, the key and
-what it holds ("3 items", "2 keys"), so Tab, Enter and Space walk and open it; keys, strings, numbers, booleans and
-null take the syntax colours. An array or object shows its first `JSON_PAGE` (100) entries, then "Show N more".
-`label` names it for a screen reader. It wraps long strings; its host gives it a scrolling frame.
-
-**Not for** JSON to copy or edit (use `Code` with `json`), or a value that isn't parsed yet.
-
-**Cost:** an element per shown entry; folded entries render nothing under them until opened.
 
 ### Spinner, Skeleton and Kbd
 
@@ -266,111 +297,4 @@ composer's icon-only send button.
 
 New icons come from [lucide](https://lucide.dev) (`lucide-react`, imported one by one so only those used are
 bundled). Give one `className="kt-icon kt-icon-md"` (or `-sm`) so it sizes like the rest, and `aria-hidden` unless it
-carries meaning on its own. The presented-file cards are the first to use them.
-
-## Workspace
-
-Read-only views of a workspace's files, fed by the host from the workspace read API (`@kantel/workspace/read-api`,
-GET routes only); they never fetch, write or acquire a sandbox. Details, keyboard behaviour and costs are in
-[workspace.md](workspace.md).
-
-- **`FileTree`**: a workspace's files as a WAI-ARIA tree, one Tab stop with arrow-key navigation. Loading, error and
-  empty states for the root, and inline Loading and error rows for a directory.
-- A file opens in **`FilePreview`** (`src/preview/`, [preview.md](preview.md)), the same panel as everywhere else.
-- **`workspace-model.ts`**: the pure helpers behind them (`visibleRows`, `nextFocus`, `sortEntries`, `fileKind`,
-  `formatBytes` and others), exported for hosts.
-
-## Documents
-
-A document the agent writes with `create_document`, after Claude Docs, in `src/documents/`. Presentational: the host
-reads and saves the file and passes the state in.
-
-- A document opens in **`FilePreview`** ([preview.md](preview.md)): while it streams the Markdown so far flows in at
-  a steady pace (`useSmoothText`, at most a render every 48ms) with a caret at the end of its last line, and the
-  header says Writing; once written it opens in Edit, a TipTap (ProseMirror) editor over
-  Markdown with a sticky toolbar (undo, redo, text, headings 1 to 3, bold, italic, strikethrough, code, lists, quote,
-  table, divider), saved as the person types (Saving, Saved, Edited or Couldn't save). The editor is its own chunk,
-  loaded when a document first opens.
-- **`SharePopover`** and **`ShareButton`**: Share and Export tabs, after Claude's. Share invites by email, lists who
-  has access (the owner, then each invite), sets general access (Only you, or Anyone with the link) and copies the
-  link; Export lists the host's exports. Without `sharing` the popover is Export alone.
-- **`exportMarkdown`** and **`printDocument`**: Export's Markdown (a `.md` download) and PDF (the print dialog with
-  only the document on light paper; its "Save as PDF" makes the file).
-- **`draftDocument`** and **`documentSlug`**: the draft the newest answer is streaming, and a title's file name.
-- **`DraftDocumentCard`** (in the transcript, from `AssistantMessage`): the card a streaming document becomes.
-
-## Schedules
-
-The schedule form, in `src/schedules/form/`. The schedules page (list, detail, run history) is in `src/schedules/`
-beside it and opens the form for New schedule and Edit; see [schedules-skills-memory.md](schedules-skills-memory.md).
-
-- **`ScheduleForm`**: creates or edits a task (an agent and a prompt) or a check (a command), repeating every N
-  minutes, hours or days, on weekdays, on chosen days of the week or on a day of the month, or once; with its time
-  zone, an optional limit on runs, a check's re-raise settings, and the next five due times beside it as the person
-  types. Editing offers End after a confirmation. The prompt goes to the agent exactly as written. The preview uses
-  `previewDue` from `@kantel/schedules`, the scheduler's own function, on each render; no timers.
-- **`ScheduleWrites`**: the calls the form makes, `create`, `update` and `end`: the writes of the page's
-  `SchedulesSource` (`bindSchedules`), so the page's source is the form's. The fixtures are the page's
-  (`@kantel/ui/schedules/fixtures`).
-- **Payloads**: a task's is `{ agentId?, prompt }`, as the public API has it (the form always names an agent; without
-  one the runner asks the default), a check's is its argument list (`taskPayload`, `readTaskPayload`,
-  `readCheckPayload`). A schedule whose payload is another shape, extra fields included, has no Edit, so the form never overwrites it.
-
-## Connection sharing and session visibility
-
-Who can use a connection and who can see a session, in `src/connections/connection-sharing.tsx` and
-`src/session/session-visibility.tsx`. Stories: Connections/Sharing.
-
-- **`ConnectionSharingSection`** (on a connection's page, above its rules): where the connection reaches, line by
-  line (sessions, who may see them, unattended runs, agents), and for a person's connection the projects it's shared
-  with. Only its owner shares it, after a confirmation that says what sharing lets happen; the owner or an admin stops
-  a share. An admin looking at someone else's connection sees it all, with a notice that only its owner can use it.
-- **`ConnectionUsesSection`**: its recent uses, newest first: the session and step, who the session acted for, who
-  could see it, and the reason for a refusal or a hold.
-- **`SessionVisibilityButton`** (in the session header's actions) and **`SessionVisibilityDialog`**: Only you, or
-  everyone in the project; the connections the session could use with each choice, with the API's reason for each it
-  couldn't; a warning before a private session becomes shared. `locked` shows the choice read-only, with why.
-
-## What agents may do, and a session's connections
-
-A connection's policy as a grid, in `src/connections/connection-policy.tsx` over
-`connection-policy-model.ts`, and a session's connections in its access menu, in
-`src/session/access-connections.tsx`. Stories: Connections/What agents may do, and Session/Composer's Access menu
-stories.
-
-- **The grid** leads `ConnectionRulesSection` for an API connection: a row per permission group, a column each for
-  read, write and delete, each cell an Allow, Ask or Block `SegmentedControl` (a dash where the group has no such
-  requests, and no option lit, with "Varies" beside it, where the answer varies by request). Then Repositories, for
-  GitHub: every repository it can reach, or only these (chips, and an owner/name field). Then Exceptions: the rules
-  that decide some requests themselves, each saying where it came from. The grid is made of ordinary rules, marked
-  with `GRID_NOTE`; a change runs its plan (create, then update, then remove, one call at a time), says it's saving
-  and takes nothing more meanwhile, then reads the rules again. Advanced, closed by default, holds every rule, the
-  unmatched answer and Add rule. An MCP server's connection has no grid: its tool rules show as before. Without
-  `canManage` each cell shows its answer as a badge, with no controls.
-- **`SessionAccessConnections`**, passed to `Composer`'s `accessConnections` (and from there to `AccessPicker`'s
-  `connections`), lists under the access levels the connections the session can use: logo, name, account and owner,
-  its policy in a line (`accessPolicyLine`: "Reads allowed, writes ask, deletes blocked", read the way the dry run
-  decides), and under it what this session alone was allowed (`sessionAllowances`: rules for this session), with
-  Revoke where the viewer manages the connection. It loads each time the menu opens; loading, none and error states
-  keep the levels usable. The levels stay a radio menu; the connections sit beside it, reached with Tab. Leave it out
-  where there's no session yet.
-
-## GitHub's service page
-
-GitHub's page on the Connections page, in `src/connections/github-page.tsx` with its words and choices in
-`github-page-model.ts`; `ProviderDetail` picks the state. Stories: Connections/GitHub page.
-
-- **Three states, one primary action each** (`gitHubPageState`): not set up (GitHub makes the organisation's GitHub
-  App from Kantel's manifest, through `GuidedSetup`); app made (**`GitHubSetupSteps`**: 1 Install on repositories,
-  2 Connect your account); connected (led by the connection, `leadConnection`: the viewer's own first). The app is
-  called by its name on GitHub (its slug, such as kantel-agent) throughout.
-- **`GitHubOverview`** (connected): the header says who it's connected as and who can use it, with Change to the
-  connection's sharing. Then what it can reach (`ConnectionsSource.reach`: the repositories, whose they are, Show all,
-  and Manage repositories on GitHub; loading, error and can't-be-asked states), what agents may do (`policyLines` over
-  the connection's rules, with Edit what agents may do) and Try it in a session (prompts that open New session in the
-  connection's project, `tryProject`, with the prompt ready to send). Connect another GitHub account is a quiet link.
-- **`GitHubAppPermissions`**: the app's permissions (`GITHUB_APP_PERMISSIONS`), read only. A GitHub App's sign-in
-  gets these whatever it asks for, so the page shows no scope checkboxes for it.
-- Signing in connects a person's own account, so who can use it starts on Just me (`defaultOwner(viewer,
-  "identity")`). Where sessions are their project's, the form warns, and the connected step offers Share it with a
-  project.
+carries meaning on its own.

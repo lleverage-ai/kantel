@@ -1,7 +1,7 @@
 name: CI
 
 # The pull request gate, kept quick for the two self-hosted runners: install, typecheck, lint and the generated API
-# files, no tests. The tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
+# files, no tests, beside the host's Go vet and unit tests (seconds). The TypeScript tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
 # and Sandbox image suites, and deploys only once all three pass. On a branch, `gh workflow run ci.yml --ref <branch>
 # -f tests=true` runs the tests too.
 on:
@@ -75,9 +75,10 @@ jobs:
       # kantel.dev (apps/site) syncs the docs into /docs as it builds and fails on any internal link that doesn't
       # resolve, so a docs page that moves breaks here rather than on the site. It has a lockfile of its own, outside
       # the workspace. About 30 s, most of it images.
-      - name: kantel.dev builds and its install.sh parses
+      - name: kantel.dev builds and its install.sh and cli.sh parse
         run: |
           sh -n apps/site/public/install.sh
+          sh -n packages/cli/install-cli.sh
           pnpm --dir apps/site install --frozen-lockfile --ignore-workspace
           pnpm --dir apps/site build
 
@@ -90,3 +91,28 @@ jobs:
         run: |
           pnpm test
           pnpm -r --if-present test
+
+  host-go:
+    # The host agent and the guest agent (apps/host) are Go, outside the pnpm workspace, so the check above never
+    # builds them. Vet and the unit tests take a few seconds, so they run on every pull request and on main, whatever
+    # changed: a check that's meant to be required can't be skipped by a path filter. The VM tests (the `vmtest` tag,
+    # apps/host/test/) need KVM and stay out of it.
+    name: Go vet and test (apps/host)
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/host
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/host/go.mod
+          cache-dependency-path: apps/host/go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...

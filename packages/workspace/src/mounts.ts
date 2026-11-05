@@ -7,15 +7,12 @@
  * - `createWorkspaceOrgFiles`: the `org-files` source (`/org`), one tree per organisation kept the same way. Its
  *   members read it from any session, organisation or project; only people and services with an organisation-wide
  *   operator role write it.
- * - `createSkillsMountSource`: the `skills` source (`/skills`). It shows the skill revisions a session has pinned as
- *   `/skills/<name>/<file>`, matching `SkillListing.path`, read through the `Skills` contract.
  *
  * Mounts are read-only whatever the source: the workspace refuses a commit under a mount point, and the sandbox tiers
  * mount these paths read-only.
  */
 import {
 	type Actor,
-	type AgentProfiles,
 	type CallContext,
 	type FileEntry,
 	isKantelError,
@@ -24,12 +21,6 @@ import {
 	type OwnerRef,
 	type ProjectAccess,
 	type ProjectId,
-	type SessionDirectory,
-	type SessionId,
-	type SessionSkillPin,
-	type SkillRevision,
-	type Skills,
-	type SkillVisibility,
 	type WorkspaceChange,
 	type WorkspaceId,
 } from "@kantel/contracts";
@@ -248,143 +239,4 @@ function parseVersion(version: string): number {
 		throw new KantelError("not_found", `files version ${String(version)} not found`);
 	}
 	return Number(version);
-}
-
-// ---- skills ----------------------------------------------------------------------------------------------------------
-
-export interface SkillsMountSourceOptions {
-	readonly skills: Pick<Skills, "pinForSession" | "getRevision" | "readFile">;
-	/** Which skills a session may see: its project, and its user when the host has one. */
-	readonly visibility: (ctx: CallContext, sessionId: SessionId) => Promise<SkillVisibility>;
-}
-
-/**
- * A `visibility` for `createSkillsMountSource` from the session directory: the session's own project and, with
- * `profiles`, the skills its agent's profile names (`SkillVisibility.shared`), so a skill shared into the project is
- * pinned whichever of the mount and the runtime pins first.
- */
-export function sessionSkillVisibility(
-	sessions: Pick<SessionDirectory, "get">,
-	profiles?: Pick<AgentProfiles, "get">,
-): (ctx: CallContext, sessionId: SessionId) => Promise<SkillVisibility> {
-	return async (ctx, sessionId) => {
-		const system: CallContext = {
-			actor: { kind: "system", component: "workspace.skills" },
-			organisationId: ctx.organisationId,
-		};
-		const session = await sessions.get(system, sessionId);
-		if (profiles === undefined) return { projectId: session.projectId };
-		const profile = await profiles.get(system, session.agentId);
-		return { projectId: session.projectId, shared: profile.skills };
-	};
-}
-
-const PIN_VERSION_PREFIX = "pins:";
-
-/**
- * The version a skills mount pins: the session's pinned revisions themselves, `pins:<skillId>@<revision>,…` sorted by
- * skill ID, so a version names exactly what it shows and never changes meaning.
- */
-export function skillsMountVersion(pins: readonly Pick<SessionSkillPin, "skillId" | "revision">[]): string {
-	return (
-		PIN_VERSION_PREFIX +
-		[...pins]
-			.sort((left, right) => (left.skillId < right.skillId ? -1 : left.skillId > right.skillId ? 1 : 0))
-			.map((pin) => `${encodeURIComponent(pin.skillId)}@${pin.revision}`)
-			.join(",")
-	);
-}
-
-function parsePins(version: string): { readonly skillId: string; readonly revision: number }[] {
-	const bad = () => new KantelError("not_found", "skills mount version not found");
-	if (typeof version !== "string" || !version.startsWith(PIN_VERSION_PREFIX)) throw bad();
-	const body = version.slice(PIN_VERSION_PREFIX.length);
-	if (body === "") return [];
-	return body.split(",").map((part) => {
-		const at = part.lastIndexOf("@");
-		const revision = Number(part.slice(at + 1));
-		if (at <= 0 || !Number.isInteger(revision) || revision < 1) throw bad();
-		let skillId: string;
-		try {
-			skillId = decodeURIComponent(part.slice(0, at));
-		} catch {
-			throw bad();
-		}
-		return { skillId, revision };
-	});
-}
-
-/**
- * The `skills` source. A mount's `ref` is the session ID. `latestVersion` pins the session's skills (once: later calls
- * return the same pins), so it needs what `Skills.pinForSession` needs: the session's own agent, or an operator on its
- * project. Reads go through `getRevision` and `readFile` as the caller, so the skills store's own access rules apply
- * to every read.
- */
-export function createSkillsMountSource(options: SkillsMountSourceOptions): MountSource {
-	const { skills } = options;
-
-	/** The pinned revisions by mount directory name; a name is unique among a session's listed skills. */
-	async function layout(ctx: CallContext, version: string): Promise<Map<string, SkillRevision>> {
-		const byName = new Map<string, SkillRevision>();
-		for (const pin of parsePins(version)) {
-			const revision = await skills.getRevision(ctx, pin.skillId, pin.revision);
-			byName.set(revision.name, revision);
-		}
-		return byName;
-	}
-
-	function split(path: string): { readonly name: string; readonly rest: string } {
-		const normalized = normalizeWorkspacePath(path);
-		const slash = normalized.indexOf("/");
-		return slash < 0
-			? { name: normalized, rest: "" }
-			: { name: normalized.slice(0, slash), rest: normalized.slice(slash + 1) };
-	}
-
-	return {
-		kind: "skills",
-
-		async latestVersion(ctx, ref) {
-			const visibility = await options.visibility(ctx, ref);
-			return skillsMountVersion(await skills.pinForSession(ctx, ref, visibility));
-		},
-
-		async list(ctx, _ref, version, path) {
-			const byName = await layout(ctx, version);
-			if (path === "") {
-				return [...byName.keys()].map((name) => ({ path: name, kind: "directory", size: 0, version }));
-			}
-			const { name, rest } = split(path);
-			const revision = byName.get(name);
-			if (revision === undefined) throw new KantelError("not_found", `${path} not found`, { path });
-			const prefix = rest === "" ? "" : `${rest}/`;
-			const entries = new Map<string, FileEntry>();
-			for (const file of revision.files) {
-				if (file.path === rest) throw new KantelError("invalid", `${path} is a file`, { path });
-				if (!file.path.startsWith(prefix)) continue;
-				const below = file.path.slice(prefix.length);
-				const slash = below.indexOf("/");
-				const child = `${name}/${prefix}${slash < 0 ? below : below.slice(0, slash)}`;
-				if (!entries.has(child)) {
-					entries.set(
-						child,
-						slash < 0
-							? { path: child, kind: "file", size: file.size, version }
-							: { path: child, kind: "directory", size: 0, version },
-					);
-				}
-			}
-			if (entries.size === 0 && rest !== "") throw new KantelError("not_found", `${path} not found`, { path });
-			return [...entries.values()];
-		},
-
-		async read(ctx, _ref, version, path) {
-			const { name, rest } = split(path);
-			const revision = (await layout(ctx, version)).get(name);
-			if (revision === undefined || !revision.files.some((file) => file.path === rest)) {
-				throw new KantelError("not_found", `${path} not found`, { path });
-			}
-			return toBytes(await skills.readFile(ctx, revision.skillId, revision.revision, rest));
-		},
-	};
 }

@@ -1,18 +1,26 @@
 import {
+	Activity,
 	AppWindow,
 	Archive,
 	ArchiveRestore,
+	ArrowUp,
 	Blocks,
+	BookOpen,
 	Bot,
+	Box,
 	Braces,
 	Building2,
+	Camera,
 	Check,
+	ChevronDown,
 	ChevronLeft,
 	ChevronRight,
 	ChevronsDownUp,
 	ChevronsUpDown,
 	CircleAlert,
-	Container,
+	CircleDot,
+	CreditCard,
+	Download,
 	Ellipsis,
 	ExternalLink,
 	Eye,
@@ -26,9 +34,17 @@ import {
 	FileText,
 	FolderClosed,
 	KeyRound,
+	Laptop,
+	Layers,
+	LayoutTemplate,
+	Link,
 	ListFilter,
+	LogOut,
 	type LucideIcon,
-	Palette,
+	Maximize2,
+	Monitor,
+	Moon,
+	Network,
 	Pause,
 	Pencil,
 	Pin,
@@ -46,12 +62,15 @@ import {
 	SkipForward,
 	SquareCode,
 	SquareTerminal,
+	Sun,
 	Trash2,
 	Unplug,
 	User,
 	UserPlus,
 	UserX,
 	WandSparkles,
+	Webhook,
+	X,
 	Zap,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
@@ -91,7 +110,17 @@ export const RenameIcon = lucide(Pencil, "RenameIcon");
 export const PinIcon = lucide(Pin, "PinIcon");
 export const UnpinIcon = lucide(PinOff, "UnpinIcon");
 export const TrashIcon = lucide(Trash2, "TrashIcon");
-export const PaletteIcon = lucide(Palette, "PaletteIcon");
+/** The theme switch's three choices: follow the device, light, dark. */
+export const SystemThemeIcon = lucide(Laptop, "SystemThemeIcon");
+export const LightThemeIcon = lucide(Sun, "LightThemeIcon");
+export const DarkThemeIcon = lucide(Moon, "DarkThemeIcon");
+/** Your menu: the docs, and signing out. */
+export const DocsIcon = lucide(BookOpen, "DocsIcon");
+export const SignOutIcon = lucide(LogOut, "SignOutIcon");
+/** A split button's caret: more ways to do its action. */
+export const CaretIcon = lucide(ChevronDown, "CaretIcon");
+/** A sandbox's desktop. */
+export const DesktopIcon = lucide(Monitor, "DesktopIcon");
 /** A subagent: the bot in T3 Code's subagent avatar. */
 export const BotIcon = lucide(Bot, "BotIcon");
 // A player's controls (a browser's replay) and a link that opens in a new tab.
@@ -101,6 +130,11 @@ export const ReplayIcon = lucide(RotateCcw, "ReplayIcon");
 export const PreviousStepIcon = lucide(SkipBack, "PreviousStepIcon");
 export const NextStepIcon = lucide(SkipForward, "NextStepIcon");
 export const ExternalLinkIcon = lucide(ExternalLink, "ExternalLinkIcon");
+export const FullScreenIcon = lucide(Maximize2, "FullScreenIcon");
+/** A new link, with a token of its own, to something private: a sandbox's port. */
+export const NewLinkIcon = lucide(Link, "NewLinkIcon");
+/** Something that happened to a sandbox, in its log: started, a snapshot taken, stopped. */
+export const EventIcon = lucide(CircleDot, "EventIcon");
 // File types, for attachment cards (`file-icons.ts`).
 export const LucideFileIcon = lucide(File, "LucideFileIcon");
 export const FileTextIcon = lucide(FileText, "FileTextIcon");
@@ -124,7 +158,7 @@ export const UnplugIcon = lucide(Unplug, "UnplugIcon");
 export const CatalogueIcon = lucide(Blocks, "CatalogueIcon");
 export const ServerIcon = lucide(Server, "ServerIcon");
 // An environment: a long-lived machine sessions attach to (sandbox tier 3).
-export const EnvironmentIcon = lucide(Container, "EnvironmentIcon");
+export const EnvironmentIcon = lucide(Layers, "EnvironmentIcon");
 export const KeyRoundIcon = lucide(KeyRound, "KeyRoundIcon");
 export const AppWindowIcon = lucide(AppWindow, "AppWindowIcon");
 export const LucideSearchIcon = lucide(Search, "LucideSearchIcon");
@@ -145,3 +179,17 @@ export const SettingsIcon = lucide(Settings, "SettingsIcon");
 export const BackIcon = lucide(ChevronLeft, "BackIcon");
 /** A step in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
 export const StepFailedIcon = lucide(CircleAlert, "StepFailedIcon");
+/** The compute console's pages (src/compute/): sandboxes, snapshots, the egress proxy, webhooks, OpenTelemetry, billing. */
+export const SandboxIcon = lucide(Box, "SandboxIcon");
+export const SnapshotIcon = lucide(Camera, "SnapshotIcon");
+/** Templates (experimental): how a sandbox's machine is made. */
+export const TemplateIcon = lucide(LayoutTemplate, "TemplateIcon");
+export const ProxyIcon = lucide(Network, "ProxyIcon");
+export const WebhookIcon = lucide(Webhook, "WebhookIcon");
+export const TelemetryIcon = lucide(Activity, "TelemetryIcon");
+export const BillingIcon = lucide(CreditCard, "BillingIcon");
+/** The file browser (compute/snapshot-files.tsx) and its preview (preview/file-preview.tsx). */
+export const FolderUpIcon = lucide(ArrowUp, "FolderUpIcon");
+export const LucideFolderIcon = lucide(FolderClosed, "LucideFolderIcon");
+export const DownloadIcon = lucide(Download, "DownloadIcon");
+export const CloseIcon = lucide(X, "CloseIcon");

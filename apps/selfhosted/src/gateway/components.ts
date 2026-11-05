@@ -1,71 +1,37 @@
 // The components the self-hosted gateway serves, in memory: what the in-process tests run on, and what the gateway
 // runs without a database. The stack's gateway runs the real implementations instead (durable.ts). Either way they
-// share one audit store and one project-access check, as a real deployment's do.
-
-import { createModels, createProvider } from "@earendil-works/pi-ai/models";
-import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
+// share one audit store and one access check, as a real deployment's do.
+//
+// The gateway serves the compute plane (compute.ts) behind Kantel's identity: who is signed in, their organisation,
+// projects and keys, email one-time PIN sign-in and the audit log. The agent plane (sessions, models, connections,
+// rules and approvals, the vault, skills, memory, browsers) was removed; its tables, on a database an older version
+// used, are left as they are and never read.
 import { createMemoryAuditStore } from "@kantel/audit/memory";
-import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@kantel/browser/session";
-import type { ConnectionsService, Fetch } from "@kantel/connections";
-import { connectionEgress } from "@kantel/connections/egress";
-import { createMemoryConnectionsRepository } from "@kantel/connections/repository";
-import { CONNECTION_TOOL_NAMES } from "@kantel/connections/tools";
-import type { Sandboxes, UsageWriter } from "@kantel/contracts";
+import type { ComputeStore, LiveRelay } from "@kantel/compute";
 import {
-	type AuditSink,
 	type AuditStore,
 	type Authentication,
-	type BrowserProvider,
 	type CallContext,
+	createProjectAccess,
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
 	type IdentityDirectory,
 	KantelError,
-	type Memory,
 	normaliseEmail,
 	type OrganisationId,
 	PLATFORM_ORGANISATION,
 	type Project,
 	type ProjectAccess,
 	type ProjectId,
-	type PromptRules,
-	type Skills,
-	type WorkspaceId,
 } from "@kantel/contracts";
-import { createMemoryEnvironmentStore } from "@kantel/environments/store";
+import { createMemoryRelayStore, type RelayStore } from "@kantel/hosts/relay-store";
+import type { HostsService } from "@kantel/hosts/service";
+import { createMemoryHostStore } from "@kantel/hosts/store";
 import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
-import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
-import { createMemoryMemory } from "@kantel/memory/memory";
-import { createMemoryPromptRules } from "@kantel/rules/memory";
-import type { DurableHosts, SessionRuntimeOptions } from "@kantel/runtime/core";
-import { createMemoryRuntime, type MemoryRuntime } from "@kantel/runtime/memory";
-import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
-import type { SharingStore } from "@kantel/sharing";
-import { createMemorySharing } from "@kantel/sharing/memory";
-import { componentResolvers } from "@kantel/sharing/resolvers";
-import { createMemorySkills } from "@kantel/skills/memory";
-import { createMemoryToolServerRepository } from "@kantel/tools/repository";
-import type { KantelVault } from "@kantel/vault/engine";
-import { createMemoryVault } from "@kantel/vault/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@kantel/workspace/stored";
-import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
-import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
-import { type GatewayEnvironments, type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
-import {
-	createMemoryModelProviderStore,
-	createModelProviders,
-	type ModelProviders,
-	type ModelProvidersGateway,
-} from "./model-providers.ts";
-import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
-import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
-import { type GatewayToolServers, gatewayToolServers } from "./tool-servers.ts";
+import type { GatewayCluster } from "./cluster.ts";
+import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
 
-/**
- * Kantel sets itself up as this system actor: the identity contract lets only `system` create an organisation. Its
- * rows go under the platform organisation, since the deployment's own does not exist yet.
- */
 const BOOTSTRAP: CallContext = {
 	actor: { kind: "system", component: "selfhosted-bootstrap" },
 	organisationId: PLATFORM_ORGANISATION,
@@ -74,140 +40,41 @@ const BOOTSTRAP: CallContext = {
 export interface GatewayComponents {
 	readonly identity: IdentityDirectory;
 	readonly audit: AuditStore;
-	readonly runtime: MemoryRuntime;
-	readonly workspaces: StoredWorkspaces;
-	/** Agent Skills packages and their revisions (#12): listed to sessions and mounted at `/skills` (skills-memory.ts). */
-	readonly skills: Skills;
-	/** Memory spaces and their concepts (#12): recalled for sessions with memory scopes, and their memory tools. */
-	readonly memory: Memory;
-	/** Sharing resources across projects, read by the runtime's access for every resource check. */
-	readonly sharing: SharingStore;
-	/** Prompt rules, layered around a session's profile when it starts. */
-	readonly rules: PromptRules;
-	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
-	readonly sandboxes: Sandboxes;
-	/**
-	 * Where the session API keeps host registrations so they outlive the process: the runtime's `hosts`, when its store
-	 * is durable and it serves stored registrations over their signed callbacks. Absent in memory, where a registration
-	 * lives as long as the gateway.
-	 */
-	readonly hosts?: DurableHosts;
 	/** Email one-time PIN codes and the Kantel sessions they start (@kantel/identity/otp). */
 	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
 	/**
-	 * People's passkeys (#132), kept with identity: the vault page asks for one before an approval once the person has
-	 * registered one, as on Cloudflare.
+	 * The compute plane's hosts (`compute.ts`, @kantel/hosts): machines running `kantel-host` and the sandboxes placed
+	 * on them. Absent on the stub backend (`KANTEL_COMPUTE_BACKEND=stub`, or no address hosts can reach).
 	 */
-	readonly passkeys: Passkeys;
+	readonly computeHosts?: HostsService;
 	/**
-	 * The vault, behind the egress proxy's decisions and the vault page's approval API. Absent on durable stores without a
-	 * cipher key (KANTEL_VAULT_CIPHER_KEY): values sealed under a key that dies with the process would be lost.
+	 * Where the compute API keeps its records (`compute.ts`): Postgres with a database, so they outlast a restart and
+	 * gateways over one database share them. Absent in memory, where the API makes its own.
 	 */
-	readonly vault?: KantelVault;
+	readonly computeStore?: ComputeStore;
 	/**
-	 * The route the bootstrap's `assistant` profile names, when sessions are on the model gateway (`models.ts`). Absent
-	 * on the echo model, where the bootstrap makes only the `echo` profile.
+	 * Carries sandboxes' live changes between gateway replicas over one database (live-relay.ts). Absent in memory,
+	 * where there is one gateway.
 	 */
-	readonly assistantRoute?: string;
+	readonly liveRelay?: LiveRelay;
 	/**
-	 * Model providers (`model-providers.ts`): organisations' own inference, connected at run time as the console's
-	 * onboarding does. Present with the model gateway.
+	 * Tunnel tickets and exposed ports (`@kantel/hosts/relay-store`), with `computeHosts`: Postgres with a database, so
+	 * desktop, browser, SSH and port URLs outlast a restart and work on every gateway over the database.
 	 */
-	readonly modelProviders?: ModelProviders;
+	readonly relayStore?: RelayStore;
 	/**
-	 * The sessions' browser (`browser.ts`): its tools in every session, a person's decisions and the console's links.
-	 * Absent without a browser provider.
+	 * This gateway among the replicas over one database (`cluster.ts`), with `computeHosts` and a database: a call for a
+	 * host connected to another replica goes there. Absent in memory, where there is one gateway.
 	 */
-	readonly browser?: SessionBrowser;
-	/**
-	 * Connections (epic #322, `connections.ts`): outside services and remote MCP servers people connect, their secrets in
-	 * the vault. Absent without `KANTEL_PUBLIC_URL` or a vault.
-	 */
-	readonly connections?: ConnectionsService;
-	/**
-	 * Tool servers (docs/site/src/content/docs/api/tool-servers.md, `tool-servers.ts`): the registry and the tunnels
-	 * this process holds. Absent unless `KANTEL_TOOL_SERVERS=experimental`.
-	 */
-	readonly toolServers?: GatewayToolServers;
-	/**
-	 * Environments (sandbox tier 3, `environments.ts`): long-lived machines sessions reach through `bash`'s `env`.
-	 * Absent unless `KANTEL_ENVIRONMENTS=experimental`.
-	 */
-	readonly environments?: GatewayEnvironments;
+	readonly cluster?: GatewayCluster;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
 }
 
 /**
- * Sessions on the model gateway (`models.ts`), built once the components have made their vault and audit store: the
- * gateway reads CPA's key through the vault and records each call in the audit.
- */
-export interface ModelGatewaySource {
-	/** The route the bootstrap's `assistant` profile names. */
-	readonly route: string;
-	/** Organisations' own connectors on the gateway (`model-providers.ts`); absent on a gateway that takes none. */
-	readonly providers?: ModelProvidersGateway;
-	build(deps: {
-		readonly vault: () => KantelVault | undefined;
-		readonly audit: AuditSink;
-		/** Where each model call's usage row goes: the Postgres usage ledger, on durable components. */
-		readonly usage?: UsageWriter;
-	}): GatewayModels;
-}
-
-type TextContext = { readonly messages: readonly { readonly role: string; readonly content: unknown }[] };
-
-function lastUserText(context: TextContext): string {
-	const content = [...context.messages].reverse().find((message) => message.role === "user")?.content;
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((block): block is { type: "text"; text: string } => block?.type === "text")
-		.map((block) => block.text)
-		.join("");
-}
-
-/**
- * A Pi model collection with one model, `echo`, that answers each prompt with its own text. The model gateway
- * replaces it; until then the session API runs end to end with no provider key on the host.
- */
-export function createEchoModels() {
-	const models = createModels();
-	models.setProvider(echoProvider());
-	return models;
-}
-
-/** The route, and the model, of the echo provider (`echoProvider`). */
-export const ECHO_ROUTE = "echo";
-/** The bootstrap's profile on the model gateway, when sessions are on it: Cloudflare's default profile's ID. */
-export const ASSISTANT_PROFILE = "assistant";
-
-/** The echo model's pi-ai provider, `harbour-echo`, with its one model, `echo`. */
-export function echoProvider() {
-	const core = createFauxCore({ provider: "harbour-echo", models: [{ id: ECHO_ROUTE }] });
-	const reply = (context: TextContext) => fauxAssistantMessage(fauxText(`Echo: ${lastUserText(context)}`));
-	const provider = createProvider({
-		id: core.provider,
-		auth: { apiKey: { name: "Echo", resolve: async () => ({ auth: {} }) } },
-		models: core.models,
-		api: {
-			stream: (model, context, options) => {
-				core.appendResponses([reply]);
-				return core.stream(model, context, options);
-			},
-			streamSimple: (model, context, options) => {
-				core.appendResponses([reply]);
-				return core.streamSimple(model, context, options);
-			},
-		},
-	});
-	return provider;
-}
-
-/**
  * A `ProjectAccess` whose check is supplied later. The audit store takes its check at construction, but the check
- * reads sessions from the runtime, and the runtime needs the audit store as its sink.
+ * reads role bindings from identity, and identity needs the audit store as its sink.
  */
 export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAccess): void } {
 	let target: ProjectAccess | undefined;
@@ -228,200 +95,47 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 	};
 }
 
-/** The model gateway sessions are on: none when they're given models of their own (a test's scripted model). */
-export const modelGatewayOf = (options: {
-	readonly models?: GatewayModels;
-	readonly modelGateway?: ModelGatewaySource;
-}): ModelGatewaySource | undefined => (options.models === undefined ? options.modelGateway : undefined);
-
-/** The sessions' models: a test's scripted model, say. Default the echo model. */
-export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
+/**
+ * The deployment's access check: identity's role bindings and keys. There are no sessions any more, so a check that
+ * names one finds none.
+ */
+export function identityAccess(identity: IdentityDirectory, audit: AuditStore): ProjectAccess {
+	return createProjectAccess({
+		identity,
+		sessions: {
+			get: async () => {
+				throw new KantelError("not_found", "This deployment has no sessions");
+			},
+		},
+		audit,
+	});
+}
 
 export function createGatewayComponents(
 	options: {
-		readonly models?: GatewayModels;
-		readonly modelGateway?: ModelGatewaySource;
-		/** The sessions' browser provider (`browser.ts`). Without it, sessions have no browser. */
-		readonly browserProvider?: BrowserProvider;
-		/** What `/v1/deployment` says backs the browser. */
-		readonly browserBinding?: string;
-		/** Connections (`connections.ts`). Without it, there are none. */
-		readonly connections?: GatewayConnectionsConfig;
-		/** How connections reach providers. Default `publicFetch()`; a test's fake upstream, say. */
-		readonly connectionsFetch?: Fetch;
-		/** Tool servers (`tool-servers.ts`), in memory. Without it, there are none. */
-		readonly toolServers?: boolean;
-		/** Environments (`environments.ts`), in memory. Without it, there are none. */
-		readonly environments?: GatewayEnvironmentsConfig;
-		/** How environments reach boat.dev; a test's fake API. */
-		readonly boatFetch?: typeof fetch;
+		/** The compute plane's hosts (`compute.ts`), their registry in memory. Without it, there are none. */
+		readonly computeHosts?: ComputeHostsConfig;
 	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
 	const audit = createMemoryAuditStore({ access: auditAccess.access });
-	// Built before the runtime, so a session it resumes has the browser's tools; it reaches the access check per call.
-	const browser =
-		options.browserProvider === undefined
-			? undefined
-			: gatewaySessionBrowser({ provider: options.browserProvider, audit, access: auditAccess.access });
 	const identity = createMemoryIdentity({ audit });
-	const gatewaySandboxes = createGatewaySandboxes();
-	// The vault needs the runtime's access check; the model gateway reads it only at its first call.
-	let vault: KantelVault | undefined;
-	const models = options.models ??
-		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
-	// Skills and memory check project access with the runtime's check, which they reach only when called.
-	const skills = createMemorySkills({ audit, access: auditAccess.access });
-	const memory = createMemoryMemory({ audit, access: auditAccess.access });
-	const rules = createMemoryPromptRules({ audit, access: auditAccess.access });
-	let workspaces: StoredWorkspaces | undefined;
-	const sharing = createMemorySharing({
-		audit,
-		access: auditAccess.access,
-		resolvers: componentResolvers(() => ({
-			skills,
-			memory,
-			...(vault === undefined ? {} : { vault }),
-			...(workspaces === undefined ? {} : { workspaces }),
-		})),
-	});
-	const lateWorkspaces = () => {
-		if (workspaces === undefined) throw new KantelError("unavailable", "The gateway's workspaces are not ready");
-		return workspaces;
-	};
-	const linked =
-		options.connections === undefined
-			? undefined
-			: gatewayConnections({
-					config: options.connections,
-					repository: createMemoryConnectionsRepository(),
-					audit,
-					access: () => auditAccess.access,
-					...(options.connectionsFetch === undefined ? {} : { fetch: options.connectionsFetch }),
-				});
-	const toolServers =
-		options.toolServers === true
-			? gatewayToolServers({
-					repository: createMemoryToolServerRepository(),
-					audit,
-					access: () => auditAccess.access,
-				})
-			: undefined;
-	const environments =
-		options.environments === undefined
-			? undefined
-			: gatewayEnvironments({
-					config: options.environments,
-					store: createMemoryEnvironmentStore(),
-					storeName: "memory",
-					audit,
-					access: () => auditAccess.access,
-					...(options.boatFetch === undefined ? {} : { boatFetch: options.boatFetch }),
-				});
-	const ownTools =
-		environments === undefined
-			? gatewaySandboxes.runtimeOptions.tools
-			: environments.withTools(gatewaySandboxes.runtimeOptions.tools);
-	const browserTools = withBrowserTools(ownTools, browser);
-	const runtime = withOwnWorkspaces(
-		createMemoryRuntime({
-			...(toolServers === undefined ? {} : { toolServers: toolServers.runtimeOption }),
-			audit,
-			identity,
-			sharing,
-			...models,
-			...gatewaySandboxes.runtimeOptions,
-			tools: linked === undefined ? browserTools : linked.withTools(browserTools),
-			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
-			rules,
-		}),
-		lateWorkspaces,
-	);
-	// A session's end closes its browsers and ends its grants.
-	if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
-	if (environments !== undefined) runtime.sessionEnd.register("environments", environments.teardown);
-	// Given `identity`, the runtime always builds its check; the components share it.
-	const access = runtime.access;
-	if (access === undefined) throw new Error("the runtime built no project-access check");
-	auditAccess.set(access);
-	workspaces = createStoredWorkspaces({
-		store: createMemoryWorkspaceStore(),
-		audit,
-		access,
-		sources: [
-			skillsMountSource(
-				skills,
-				() => runtime.directory,
-				() => runtime.profiles,
-			),
-		],
-	});
-	vault = createMemoryVault({ audit, access });
-	const memoryVault = vault;
-	const connections = linked?.attach(vault, runtime.directory);
-	const providersGateway = modelGatewayOf(options)?.providers;
-	const modelProviders =
-		providersGateway === undefined
-			? undefined
-			: createModelProviders({
-					store: createMemoryModelProviderStore(),
-					access: () => access,
-					vault: () => memoryVault,
-					gateway: providersGateway,
-				});
-	// Placeholder-gated injection (#331): the isolate's curl reaches a connection's API with its placeholder.
-	const sandboxes = gatewaySandboxes.attach({
-		workspaces,
-		access,
-		audit,
-		...(connections === undefined ? {} : { egress: connectionEgress({ connections }) }),
-	});
-	const heldToolServers = toolServers?.attach(runtime);
-	const heldEnvironments = environments?.attach();
-	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
+	auditAccess.set(identityAccess(identity, audit));
+	const computeHosts =
+		options.computeHosts === undefined ? undefined : gatewayHosts(options.computeHosts, createMemoryHostStore());
 	return {
 		identity,
 		audit,
-		runtime,
-		workspaces,
-		skills,
-		memory,
-		sharing,
-		rules,
-		sandboxes,
 		otp: createMemoryOtpStores(),
-		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),
-		vault,
-		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
-		...(modelProviders === undefined ? {} : { modelProviders }),
-		...(browser === undefined ? {} : { browser }),
-		...(connections === undefined ? {} : { connections }),
-		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
-		...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
+		...(computeHosts === undefined ? {} : { computeHosts, relayStore: createMemoryRelayStore() }),
 		bindings: {
-			browser: options.browserBinding ?? (browser === undefined ? "none" : "given"),
-			connections: connections === undefined ? "off" : "memory",
-			...(heldToolServers === undefined ? {} : { toolServers: "memory (experimental)" }),
-			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments.binding }),
 			identity: "memory",
 			audit: "memory",
-			runtime:
-				options.models !== undefined
-					? "memory"
-					: modelGateway !== undefined
-						? "memory (model gateway)"
-						: "memory (echo model)",
-			workspaces: "memory",
-			skills: "memory",
-			memory: "memory",
-			sandboxes: SANDBOX_BINDING,
 			signIn: "memory",
-			vault: "memory",
+			...(computeHosts === undefined ? {} : { computeHosts: "memory", computeRelay: "memory" }),
 		},
 		close: async () => {
-			await linked?.close();
-			await heldEnvironments?.close();
-			await runtime.close();
+			computeHosts?.close();
 		},
 	};
 }
@@ -429,7 +143,6 @@ export function createGatewayComponents(
 export interface Bootstrap {
 	readonly organisationId: OrganisationId;
 	readonly projectId: ProjectId;
-	readonly workspaceId: WorkspaceId;
 	/** An operator key on the project, for host apps and the end-to-end test. Its secret is shown only here. */
 	readonly apiKey: string;
 	/**
@@ -438,27 +151,28 @@ export interface Bootstrap {
 	 */
 	readonly invitedAdmin?: string;
 	/**
-	 * The fingerprint of the egress grants the first start imported into this deployment's vault (egress.ts). Later starts
-	 * import nothing, so a policy an admin revoked or changed on the vault page stays as they left it.
-	 */
-	readonly egressGrants?: string;
-	/**
-	 * The platform vault item holding CPA's key (models.ts), made for the key named by its hash: the next start reuses it
-	 * while the key is the same, as the vault lists no platform items.
-	 */
-	readonly cpaItem?: { readonly name: string; readonly id: string };
-	/**
-	 * The platform vault items holding each model connector's key (models.ts), by connector ID, made for the key named by
-	 * its hash, as `cpaItem` is for CPA. Written for every connector, CPA's included; `cpaItem` is kept beside it so an
-	 * older gateway started on the same file finds CPA's item.
-	 */
-	readonly modelItems?: { readonly [connectorId: string]: { readonly name: string; readonly id: string } };
-	/**
 	 * The deployment's named projects (`BootstrapNames.projects`, KANTEL_PROJECTS), by name: each made once and found
 	 * again on later starts, and every one on the operator key. `GET /v1/projects` lists them with the key.
 	 */
 	readonly projects?: { readonly [name: string]: ProjectId };
+	/**
+	 * The compute plane's super-admin key (`ksk_…`, every scope): made on the first start, and made again from here on
+	 * each start after, as without a database the compute plane keeps its records in memory.
+	 */
+	readonly computeKey?: string;
+	/**
+	 * What an older version, with the agent plane, wrote beside these: its workspace, vault items and egress grants. No
+	 * longer used, and kept as they were while the deployment is the same, so going back to that version finds its
+	 * deployment again rather than starting a new one.
+	 */
+	readonly workspaceId?: string;
+	readonly egressGrants?: string;
+	readonly cpaItem?: unknown;
+	readonly modelItems?: unknown;
 }
+
+/** The fields of `Bootstrap` an older version wrote and this one keeps but never reads. */
+const LEGACY_FIELDS = ["workspaceId", "egressGrants", "cpaItem", "modelItems"] as const;
 
 /** What the bootstrap names: the organisation, its first project, the admin it invites and the other projects. */
 export interface BootstrapNames {
@@ -591,65 +305,15 @@ async function keyCovering(
 /**
  * Sets up the deployment, or picks up the one `previous` describes when it still exists: one organisation and project,
  * the projects `names.projects` names (made once, found by name after that), a service with an operator key on all of
- * them, an `echo` agent profile and a workspace with a README, so every mounted API has something to answer with. The profile and workspace are ensured every start, so they come back after a restart
- * on in-memory components too.
+ * them, and the admin `names.adminEmail` invites. A bootstrap file an older version wrote (with a workspace, model and
+ * vault items) is read the same way; what it says beyond these is no longer used.
  */
-/**
- * A bootstrap profile's tools: in a session on a workspace, the file tools on the workspace directly, and `bash` in an
- * isolate leased on its first command (`sandboxes.ts`). With a browser, its tools too (`browser.ts`):
- * `browser_request` asks a person for sites first.
- */
-function codingProfile(components: Pick<GatewayComponents, "browser" | "connections">) {
-	return {
-		tools: [
-			...CODING_TOOLS,
-			...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES),
-			...(components.connections === undefined ? [] : CONNECTION_TOOL_NAMES),
-		],
-		skills: [],
-		sandbox: { tiers: ["isolate" as const] },
-		memoryScopes: [],
-	};
-}
-
-/**
- * The bootstrap project's `assistant` profile, on the model gateway's `default` route, as Cloudflare's default profile.
- * Its prompt is the user's alone: one they set is kept. The start makes it, and so does the organisation's first
- * default model (`ModelProviders.onDefault`).
- */
-export async function putAssistantProfile(
-	components: GatewayComponents,
-	organisationId: OrganisationId,
-	projectId: ProjectId,
-): Promise<void> {
-	if (components.assistantRoute === undefined) return;
-	const inProject: CallContext = {
-		actor: { kind: "system", component: "selfhosted-bootstrap" },
-		organisationId,
-		projectId,
-	};
-	const { runtime } = components;
-	const stored = await runtime.profiles.get(inProject, ASSISTANT_PROFILE).catch((error: unknown) => {
-		if (error instanceof KantelError && error.code === "not_found") return undefined;
-		throw error;
-	});
-	await runtime.profiles.put(inProject, {
-		id: ASSISTANT_PROFILE,
-		organisationId,
-		projectId,
-		name: "Assistant",
-		model: { route: components.assistantRoute },
-		promptLayers: stored?.promptLayers ?? [],
-		...codingProfile(components),
-	});
-}
-
 export async function bootstrap(
-	components: GatewayComponents,
+	components: Pick<GatewayComponents, "identity">,
 	names: BootstrapNames,
 	previous?: Bootstrap,
 ): Promise<Bootstrap> {
-	const { identity, runtime, workspaces } = components;
+	const { identity } = components;
 	const deployment = (await previousDeployment(identity, previous)) ?? (await createDeployment(identity, names));
 	const { organisationId, projectId } = deployment;
 	const reused = previous !== undefined && previous.organisationId === organisationId;
@@ -665,49 +329,15 @@ export async function bootstrap(
 	if (invitedAdmin !== undefined && !(reused && previous.invitedAdmin === invitedAdmin)) {
 		await inviteAdmin(identity, organisationId, invitedAdmin);
 	}
-	const inProject: CallContext = {
-		actor: { kind: "system", component: "selfhosted-bootstrap" },
-		organisationId,
-		projectId,
-	};
-	const coding = codingProfile(components);
-	await runtime.profiles.put(inProject, {
-		id: "echo",
-		organisationId,
-		projectId,
-		name: "Echo",
-		model: { route: ECHO_ROUTE },
-		promptLayers: [],
-		...coding,
-	});
-	// Only once sessions have a model to call: before an organisation connects a provider (`model-providers.ts`), the
-	// `echo` profile is the one New session picks.
-	if (
-		components.assistantRoute !== undefined &&
-		(components.modelProviders === undefined || (await components.modelProviders.configured(organisationId)))
-	) {
-		await putAssistantProfile(components, organisationId, projectId);
-	}
-	const workspace = await workspaces.ensure(inProject, `bootstrap_${projectId}`, {
-		owner: { kind: "project", organisationId, projectId },
-	});
-	if (workspace.head === 0) {
-		await workspaces.commit(inProject, workspace.id, {
-			baseVersion: workspace.head,
-			changes: [
-				{
-					op: "put",
-					path: "README.md",
-					content: "# Kantel self-hosted\n\nThe gateway's bootstrap seeded this workspace.\n",
-				},
-			],
-			message: "bootstrap",
-		});
-	}
+	const legacy = reused
+		? Object.fromEntries(
+				LEGACY_FIELDS.filter((field) => previous[field] !== undefined).map((field) => [field, previous[field]]),
+			)
+		: {};
 	return {
+		...legacy,
 		organisationId,
 		projectId,
-		workspaceId: workspace.id,
 		apiKey,
 		...(invitedAdmin === undefined ? {} : { invitedAdmin }),
 		...(Object.keys(projects).length === 0 ? {} : { projects }),

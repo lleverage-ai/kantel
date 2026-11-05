@@ -2,17 +2,15 @@ import {
 	authenticationFailureOf,
 	type CallContext,
 	callContextFor,
+	createProjectAccess,
 	isKantelError,
 	KantelError,
-	systemContext,
 } from "@kantel/contracts";
 import { isApiKeySecret } from "@kantel/identity";
 import { authenticationFailureResponse, createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
 import { cloudflareAccessProvider, oidcProvider } from "@kantel/identity/jwt";
 import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMockAccess, createMockIdp } from "@kantel/identity/testing";
-import { createMemoryRuntime } from "@kantel/runtime/memory";
-import { createScriptedModel } from "@kantel/runtime/testing";
 import { ManualClock } from "@kantel/testing/harness";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startHttpIdp } from "./http-idp.ts";
@@ -448,55 +446,31 @@ describe("withAuthentication", () => {
 });
 
 describe("a host key scoped to one project", () => {
-	it("cannot read another project's sessions, by ID or in a list, though its service could", async () => {
-		const { identity, organisation, admin, alpha, beta, service } = await tenant();
-		const { models } = createScriptedModel();
-		const memory = createMemoryRuntime({ models, identity });
+	it("cannot act in another project, though its service could", async () => {
+		const { identity, admin, alpha, beta, service } = await tenant();
+		const access = createProjectAccess({
+			identity,
+			sessions: { get: () => Promise.reject(new Error("no sessions")) },
+		});
+		// The service holds operator across the whole organisation; its key is still limited to alpha.
+		await identity.grantRole(admin, { principal: { kind: "service", serviceId: service.id }, role: "operator" });
+		const issued = await identity.issueApiKey(admin, {
+			serviceId: service.id,
+			projectIds: [alpha.id],
+			role: "operator",
+		});
+		const caller = await createAuthenticator({ identity }).authenticate(
+			request({ authorization: `Bearer ${issued.secret}` }),
+		);
+		const ctx = callContextFor(caller);
+		expect(await access.allows(ctx, { projectId: alpha.id, needed: "operator" })).toBe(true);
+		expect(await access.allows(ctx, { projectId: beta.id, needed: "viewer" })).toBe(false);
+		let refused: unknown;
 		try {
-			// The service holds operator across the whole organisation; its key is still limited to alpha.
-			await identity.grantRole(admin, { principal: { kind: "service", serviceId: service.id }, role: "operator" });
-			const issued = await identity.issueApiKey(admin, {
-				serviceId: service.id,
-				projectIds: [alpha.id],
-				role: "operator",
-			});
-			const system = { ...systemContext("test"), organisationId: organisation.id };
-			await memory.profiles.put(system, {
-				id: "worker",
-				organisationId: organisation.id,
-				name: "Worker",
-				model: { route: "default" },
-				promptLayers: [],
-				tools: [],
-				skills: [],
-				sandbox: { tiers: ["isolate"] },
-				memoryScopes: [],
-			});
-			const inAlpha = await memory.runtime.create(system, { projectId: alpha.id, agentId: "worker" });
-			const inBeta = await memory.runtime.create(system, { projectId: beta.id, agentId: "worker" });
-
-			const caller = await createAuthenticator({ identity }).authenticate(
-				request({ authorization: `Bearer ${issued.secret}` }),
-			);
-			const ctx = callContextFor(caller);
-
-			expect((await memory.directory.get(callContextFor(caller, { projectId: alpha.id }), inAlpha.id)).id).toBe(
-				inAlpha.id,
-			);
-			let refused: unknown;
-			try {
-				await memory.directory.get(callContextFor(caller, { projectId: beta.id }), inBeta.id);
-			} catch (error) {
-				refused = error;
-			}
-			expect(isKantelError(refused, "forbidden")).toBe(true);
-			const listed = await memory.directory.list(ctx);
-			expect(listed.items.map((session) => session.id)).toEqual([inAlpha.id]);
-			await expect(memory.runtime.create(ctx, { projectId: beta.id, agentId: "worker" })).rejects.toMatchObject({
-				code: "forbidden",
-			});
-		} finally {
-			await memory.close();
+			await access.require(ctx, { projectId: beta.id, needed: "operator", operation: "test.act" });
+		} catch (error) {
+			refused = error;
 		}
+		expect(isKantelError(refused, "forbidden")).toBe(true);
 	});
 });

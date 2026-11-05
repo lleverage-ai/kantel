@@ -1,0 +1,113 @@
+---
+title: Security model
+description: What can reach a sandbox, what a desktop, SSH or port URL grants and for how long, how revoking access ends sessions already open, and what several gateways trust in each other.
+---
+
+This page is the threat model for the control plane's relay: the gateway that carries desktops, browsers, SSH and exposed ports to sandboxes on your hosts. It says what each part protects against and what it assumes.
+
+## Nothing reaches a sandbox directly
+
+A sandbox has no address anyone can reach. Its host dials out to the control plane over one WebSocket, and every connection to a sandbox (a desktop, Chromium's DevTools, SSH, an exposed port) goes through the gateway and down that WebSocket. Sandboxes have no route to each other, your network or the host; the host's firewall and proxy enforce that, and the [egress rules](/sandboxes/egress-proxy/) decide what they may reach outside.
+
+## URLs are bearer grants, kept as hashes
+
+`openDesktop`, `openBrowser` and `openSsh` answer URLs carrying a ticket, `{id}.{secret}`. Exposing a port without `public` answers a URL with a token. Anyone holding one of these URLs can use it, as with any share link, so treat them like passwords.
+
+| Threat | What stops it |
+| --- | --- |
+| Guessing or altering a URL | The secret half is 256 random bits. The gateway looks the ticket up by its ID and compares the secret's SHA-256 in constant time. A wrong or altered secret, another ticket's ID or a malformed ticket is refused with close code `4003` before any sandbox is touched |
+| Reading the database | It holds only the SHA-256 of each ticket's secret and each port's token, never the secret itself, so a copy of the database opens nothing |
+| A stale URL | A ticket may start a connection for 10 minutes by default and 60 at most. Hiding a port, stopping or deleting its sandbox, or exposing it again ends its token |
+| A view-only desktop link used to drive | The mode is in the ticket's row, not its URL. A view-only ticket opens Selkies as a viewer, and the gateway drops every message but the few a viewer needs. A desktop ticket opens only the desktop's route, never a raw tunnel to the port |
+| A sandbox's page attacking the console | Ports are served on their own domain, which can't be the console's or a parent of it. The token and its cookie are taken off before a request reaches the sandbox. The console's session is never a cookie, and a browser's write from any other origin is refused: see [the console and the ports domain](#the-console-and-the-ports-domain) |
+| A sandbox's page attacking another sandbox's | Its requests to another sandbox's port don't carry that port's token cookie, and no page can plant or shadow it. See [the ports domain](#the-ports-domain) for what the Public Suffix List is still needed for |
+
+## Revoking access ends open sessions
+
+Every URL records who it was given to: the API key, or the person and their sign-in. Every relayed session that is open (a desktop stream, a CDP or SSH connection, an exposed port's WebSocket) is checked again every 2 seconds, and every new connection and port request is checked before it starts (with an answer at most 1 second old). Access ends, and an open session is closed with code `4003` ("Access to this sandbox was revoked"), when:
+
+- the API key is revoked or expires
+- the person signs out, or their sign-in ends
+- they are removed from the organisation, or can no longer see the sandbox
+- the sandbox is deleted
+
+The check reads the shared database, so revoking on any gateway ends sessions on every gateway within about 2 seconds, with no message between them. If the check can't be answered (the database is unreachable), the relay refuses: access never outlives a revocation it couldn't check.
+
+## How a WebSocket is refused
+
+The gateway never answers a WebSocket upgrade with an HTTP error status, because Bun, which the gateway's image runs on, drops one. It completes the handshake and closes at once, before reading anything the client sends, so nothing reaches a sandbox. The close code says why:
+
+| Code | Meaning |
+| --- | --- |
+| `4003` | A ticket, host credential or session that is wrong, expired or revoked |
+| `4401` | An exposed port's name without its token, or with its cookie from another sandbox's page or another site (as HTTP `401`) |
+| `4403` | An exposed port whose owner no longer has access (as HTTP `403`) |
+| `4404` | Nothing upgrades at this path, or an unsigned stream between gateways (as HTTP `404`) |
+| `4502` | The gateway couldn't check the request, so it refused it (as HTTP `502`) |
+
+A plain request to an exposed port still gets the HTTP status.
+
+## The ports domain
+
+Each exposed port has its own name under the ports domain (`KANTEL_COMPUTE_PORTS_DOMAIN`), such as `3000-brave-otter-ab12cd.kantel-ports.example`, and its token cookie is set on that one name only. Browsers still treat every name under one registrable domain as the same site: a page one sandbox serves can set a cookie for the whole domain, which other sandboxes' pages then receive, and a sandbox's page is same-site with another's for `SameSite` cookies.
+
+Give ports a domain nothing else uses. Kantel's hosted service uses `kantel.run`, a separate registrable domain from its console's `app.kantel.dev`, so a port's page is never the same site as the console. Each port's name is one level under it, such as `3000-brave-otter-ab12cd.kantel.run`, so the wildcard certificate for `*.kantel.run` covers every port. On your own install, set your own with `KANTEL_COMPUTE_PORTS_DOMAIN`, ideally a registrable domain of its own, such as `kantel-ports.example`.
+
+### The port's own cookie
+
+`SameSite=Lax` doesn't stop a page on one sandbox's port from sending requests to another's with that port's token cookie attached, since to a browser they are the same site. So the gateway doesn't rely on it:
+
+| Threat | What stops it |
+| --- | --- |
+| Another sandbox's page (or another site) calling a port with its cookie: `fetch`, XHR, an image or script, a form, a frame | The cookie counts only when the browser says the request came from the port's own name (`Sec-Fetch-Site: same-origin`), from the person (`Sec-Fetch-Site: none`, a typed URL or bookmark), as a top-level `GET` or `HEAD` navigation (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`, a followed link, as `SameSite=Lax` allows), or from another port of the **same sandbox** by its `Origin`, or its `Referer` when there's no `Origin`. Otherwise the request is answered as if it had no cookie: `401`, and nothing reaches the sandbox |
+| Another sandbox's page opening a WebSocket to a port with its cookie | A browser sends `Origin` with every upgrade. The cookie counts only when it is the port's own name or another port of the same sandbox; otherwise the upgrade is closed with `4401` |
+| A page planting or shadowing the port's cookie | Over HTTPS it is `__Host-kantel_port`: `Secure`, `Path=/`, no `Domain`, `HttpOnly`, `SameSite=Lax`. A browser won't let another name set a `__Host-` cookie. Every cookie of that name is still checked against the token's hash, so a planted one opens nothing and doesn't hide the real one. Over plain http, where browsers refuse `__Host-`, it is `kantel_port`. None of its names, the old `_kantel_port` included, reaches the sandbox |
+| Another sandbox's page reusing an answer the browser cached for the port's own page | Every port name shares one browser cache, since they are one site. A token-gated port's answers are sent with `Cache-Control: private, no-cache`, whatever the app said, so the browser asks the gateway again before reusing one (an `ETag` still saves the body) and the gate decides again. Shared caches don't keep them. A public port keeps the app's own caching |
+
+A frontend on one port calling its API on another port of the same sandbox keeps working, by its `Origin`. A request that says nothing about where it came from (no `Sec-Fetch-Site`, `Origin` or `Referer`) isn't a page's, so a script or test runner can send the cookie itself. The token in the URL (`?_token=...`) is always accepted, from anywhere: it is the credential itself, and no other page knows it. A top-level visit trades it for the cookie and redirects to the address without it; any other request with it, such as a frame, is served directly with the token taken off. A page of one sandbox framing another port of the same sandbox needs the token in the frame's URL, since a frame's request carries no `Origin`.
+
+The cookie was `_kantel_port` before; that name is no longer read. Open the port's URL with its token again, or expose the port again for a new one.
+
+### What only the Public Suffix List fixes
+
+To make each name its own site, as GitHub does for `github.io`, the ports domain must also be on the [Public Suffix List](https://publicsuffix.org/submit/). `kantel.run` isn't on it, so on the hosted service, as on an install whose ports domain isn't listed, the gateway protects its own token cookie (above) but two things remain:
+
+- **Apps' own cookies.** The cookies an app in a sandbox sets for itself are sent to it by other sandboxes' pages (`SameSite` doesn't stop a same-site request), and another sandbox's page can set cookies for the whole ports domain that the app then receives. The gateway makes an app's `Set-Cookie` host-only, so an app can't set one for every port by mistake, but it can't stop a hostile page doing so from the browser. An app that needs its cookies private should use `__Host-` names and check `Origin` or `Sec-Fetch-Site` itself.
+- **Cookie bombs.** A page can set enough large cookies for the whole ports domain that the browser's requests to every port name grow past what servers accept, so they fail until the person clears those cookies. This denies service; it opens nothing.
+
+## The console and the ports domain
+
+On Kantel's hosted service, a port's page (`*.kantel.run`) is cross-site to the console (`app.kantel.dev`): it can't set a cookie the console's origin receives, and browsers treat its requests to the console as cross-site. On your own install, a ports domain under the console's registrable domain, such as `ports.example.com` beside `kantel.example.com`, is the same site as the console while it isn't on the Public Suffix List. A page there can set a cookie with `Domain=example.com`, which the console's origin then receives, and its requests to the console are same-site, so `SameSite` doesn't stop them. Neither gateway relies on cookies, `SameSite` or a separate domain for this:
+
+| Threat | What stops it |
+| --- | --- |
+| A cookie planted for the whole domain, as a session | Kantel's session (`kts_…`) is never a cookie. The console keeps it in the page's own storage, which no other origin can read, and sends it as a bearer in `Authorization`. Neither gateway reads a session from any cookie, whatever its name, so a planted one signs nobody in |
+| A cookie planted to shadow one of the console's | Any cookie the console's origin sets for itself is a `__Host-` cookie over HTTPS: `Secure`, `Path=/` and no `Domain`. A browser won't let another name set one, and the console reads only the prefixed name. Over plain http on a laptop, where browsers refuse `__Host-`, it has no prefix |
+| A page elsewhere, a port's included, making the console's browser change something | Every request that changes something (`POST`, `PUT`, `PATCH`, `DELETE`) and has no `Authorization` header must come from the console's own origin: `Origin` must be exactly the console's (the address the request came to, the same host over HTTPS, or `KANTEL_PUBLIC_URL`), and `Sec-Fetch-Site`, when the browser sends it, must be `same-origin`. One with a cookie and no `Origin` is refused too. Anything else gets `403`. This covers the API, the sign-in routes and approving a device on the console's device page (`/device`, once `/compute/device`). It matters most behind Cloudflare Access, whose cookie signs a browser in by itself |
+| A port's page reading the console's data | The gateway sends no CORS headers, so a page on another origin can't read an answer or send a bearer it doesn't have |
+
+An API key or a session sent as a bearer (the CLI, the SDK, MCP, the console signed in with an email code) is something no other page can attach, so those requests pass as before, with or without an `Origin`. So does a request with neither a cookie nor an `Origin`, such as `kantel login` starting a device sign-in: it carries no one's credential.
+
+On your own install, the simplest choice is a ports domain that is a registrable domain of its own, such as `kantel-ports.example`, not a sibling of the console's name, as the hosted service does with `kantel.run`. Don't put Cloudflare Access in front of a console on the same registrable domain as its ports: a port's page could plant its own Access cookie there. Keep port names one level under the ports domain's zone, as Kantel names them, so one wildcard certificate covers them: Cloudflare's free Universal SSL covers only the first level under a zone.
+
+## Several gateways
+
+With a database, any number of gateways may run behind one load balancer. They share every record: tickets, exposed ports and access in the database, as above. A host's WebSocket is held by one gateway, which records that it holds it, and a request for that host landing on another gateway is forwarded to it.
+
+| Threat | What stops it |
+| --- | --- |
+| A forged request between gateways | Each gateway makes an Ed25519 key when it starts. Only the public half goes into the database; the private half never leaves the process. Every request between gateways is signed over the gateway it is for, the operation, the time, a fresh nonce and the body's SHA-256. Anything unsigned, signed by a key no live gateway registered, or signed for another gateway gets `404` (a WebSocket, close code `4404`), as an unknown path would |
+| Replaying a captured request | A request is good for 30 seconds, once, on the gateway it was signed for |
+| A request bouncing between gateways | A gateway serves a forwarded request only for a host connected to itself |
+| A gateway speaking for a host it doesn't hold | The gateway holding a host passes its usage readings on to the others, so a graph is the same whichever answers. A gateway takes them only from the one the database records as holding that host, and checks them as it checks the host's own |
+| A gateway that died | One not seen for 10 seconds gets nothing forwarded to it, and its hosts reconnect to another |
+| A late disconnect wiping a newer connection | Each claim on a host has an epoch, and a gateway releases only its own |
+| A revoked host | Revoking it on any gateway closes its WebSocket on whichever holds it, and its credential is refused on all of them |
+
+Each gateway needs an address the others can reach, `KANTEL_REPLICA_URL` (by default its first IPv4 address). Requests between gateways are signed but **not encrypted**: they carry commands, files and port traffic for sandboxes. Keep `KANTEL_REPLICA_URL` on a private network, or put TLS in front of it.
+
+## What it assumes
+
+- **The database is trusted.** Write access to it can register a gateway's key, add tickets and change records. Protect it as you protect the console's own data.
+- **The gateway is trusted.** It sees desktop, CDP and port traffic in the clear, though not SSH, which is end to end with host keys pinned per sandbox.
+- **Out of scope:** a guest kernel escaping Firecracker, and whatever a sandbox's egress rules let out.

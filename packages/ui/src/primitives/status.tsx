@@ -26,7 +26,7 @@ export function StatusDot({ status, label }: { status: Status; label?: string })
 
 /** The words with their dot. The dot sits on the words' baseline, then moves up onto the middle of their capitals. */
 const statusLabelClass =
-	"inline-flex min-w-0 items-baseline gap-1.5 text-xs leading-tight whitespace-nowrap text-(--kt-status-current) [&>.kt-status-dot]:translate-y-(--kt-on-cap)";
+	"inline-flex min-w-0 items-baseline gap-1.5 text-sm leading-tight whitespace-nowrap text-(--kt-status-current) [&>.kt-status-dot]:translate-y-(--kt-on-cap)";
 
 /**
  * A status in words with its dot: "Working", "Needs approval". The words default to the status's own label; pass
@@ -45,7 +45,7 @@ export type BadgeTone = "neutral" | "accent" | Status;
 
 /** The pill. Its words are trimmed to their capitals and centred in it, so they look centred in any font. */
 const badgeBase =
-	"inline-flex h-[calc(var(--kt-control-xs)_-_var(--kt-step-1_5))] flex-none items-center rounded-xs px-1.5 text-2xs font-medium leading-none whitespace-nowrap";
+	"inline-flex h-[calc(var(--kt-control-xs)_-_var(--kt-step-1_5))] flex-none items-center rounded-full px-2 text-2xs font-medium leading-none whitespace-nowrap";
 
 /** Each tone's tint and text colour; a status tone reads its status's colours from the kt-status class. */
 const badgeTones = {

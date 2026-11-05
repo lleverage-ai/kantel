@@ -6,7 +6,8 @@ served from Cloudflare Workers static assets.
 | Path | What |
 | --- | --- |
 | `/` | The marketing page, `src/pages/index.astro` |
-| `/install.sh` | The installer, `public/install.sh`, served as is |
+| `/install.sh` | The self-hosted installer, `public/install.sh`, served as is |
+| `/cli.sh`, `/install-cli.sh` | The CLI's installer, `packages/cli/install-cli.sh`, copied in at build time (see below) |
 | `/docs/` | The usage docs in `docs/site`, copied in at build time (see below) |
 
 ## Building it
@@ -33,6 +34,10 @@ Only usage docs are copied: design and planning docs elsewhere in `docs/` aren't
 `scripts/check-links.mjs` runs after the build and fails it when an internal link, on the marketing page or in the
 docs, doesn't resolve to a built page or asset.
 
+`scripts/llms-txt.mjs` runs last and writes the docs for language models: `/docs/llms.txt`, an index of every page
+in sidebar order, `/docs/<page>.md` for each page as plain Markdown, and `/docs/llms-full.txt` with every page in one
+file. See [docs/site/README.md](../../docs/site/README.md#for-agents-llmstxt).
+
 ## The installer
 
 `public/install.sh` is POSIX sh, so `curl -fsSL https://kantel.dev/install.sh | sh` works from bash, zsh and fish. It
@@ -41,11 +46,25 @@ checks for Docker with Compose, downloads the source from GitHub (its `DEFAULT_R
 and then either hands over to the installer at the source's root, when there is one, or starts the self-hosted Compose
 stack in `deploy/compose` itself. The comment at its top and `--help` say the rest.
 
-Until the public repository exists, point it at another with `--repo` (a private one downloads through `gh`):
+It downloads from `lleverage-ai/kantel` unless `--repo` names another repository, such as a fork (a private one
+downloads through `gh`):
 
 ```sh
-curl -fsSL https://kantel.dev/install.sh | sh -s -- --repo tvdavies/harbour
+curl -fsSL https://kantel.dev/install.sh | sh -s -- --repo your-name/kantel
 ```
+
+## The CLI's installer
+
+`curl -fsSL https://kantel.dev/cli.sh | sh` installs `kantel`, the CLI, for the person running it (no sudo; Node.js
+22 or later). `scripts/sync-installers.mjs` copies `packages/cli/install-cli.sh` into `public/` as `cli.sh` and
+`install-cli.sh` before every dev and build, so the site serves the repository's one copy: edit it there. The copies
+are git-ignored, `_headers` serves them as text, and `scripts/check-links.mjs` fails the build if `dist/` doesn't
+hold the same file.
+
+The copy is unstamped (`tools/release/pack.sh` stamps a release's version into the release's own copy), so it
+downloads the latest GitHub Release's `kantel.js` and console files and checks each against that release's
+`SHA256SUMS`. `sh -s -- --admin` adds `kantel-admin`, for self-hosting; the comment at the script's top lists the
+rest. The deploy runs when `packages/cli/install-cli.sh` changes, as for the site's own files.
 
 ## The console mocks
 
@@ -68,5 +87,13 @@ frame under `prefers-reduced-motion`. The comment at its top says how it's tuned
 ## Deploying
 
 `wrangler.jsonc` serves `dist/` as static assets on the `kantel.dev` custom domain, with `_headers` for caching and the
-installer's content type. Nothing deploys it yet: `pnpm --dir apps/site deploy:dry-run` checks the config, and
-`wrangler deploy` from `apps/site`, with an account that holds the `kantel.dev` zone, publishes it.
+installer's content type.
+
+`.github/workflows/site-deploy.yml` builds and deploys it on every push to main that changes `apps/site`, `docs/site`
+or the design tokens. It isn't part of main.yml, which skips pushes that only change Markdown. It deploys once the
+repository has the `KANTEL_SITE_CLOUDFLARE_API_TOKEN` secret (the comment at its top lists the token's permissions);
+without it, it builds and runs `wrangler deploy --dry-run` only. `gh workflow run site-deploy.yml --ref main`
+redeploys main by hand.
+
+By hand, from a clean checkout of main: `pnpm --dir apps/site build`, then `wrangler deploy` from `apps/site` with an
+account that holds the `kantel.dev` zone. `pnpm --dir apps/site deploy:dry-run` checks the config without deploying.

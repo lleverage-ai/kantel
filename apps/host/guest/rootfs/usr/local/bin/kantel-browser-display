@@ -1,0 +1,38 @@
+#!/bin/sh
+# The browser's own display: a TigerVNC X server on display :2 with nothing on it but the sandbox's Chromium
+# (kantel-browser), apart from the desktop on :1. Its stream (kantel-browser-stream, Selkies) shows only the browser.
+#
+# There is no window manager, so nothing else draws on it (no panel, no title bars, nothing to minimise Chromium to).
+# Instead this keeps each of Chromium's browser windows at the screen's full size: when one is mapped or moved, and
+# when the stream's viewer resizes the screen to its own window (RandR), so the browser is sized to whoever watches.
+# Chromium's pop-ups and menus are left where Chromium puts them. Its VNC server is a socket only the sandbox user
+# can open, for debugging; nothing listens on a port.
+export DISPLAY=:2
+size=${KANTEL_BROWSER_SIZE:-1280x800}
+rm -f /tmp/.X2-lock /tmp/.X11-unix/X2
+Xvnc :2 -geometry "$size" -depth 24 -SecurityTypes None -rfbport -1 -rfbunixpath "${XDG_RUNTIME_DIR:-/tmp}/kantel-browser.vnc" \
+	-rfbunixmode 0600 -nolisten tcp -AlwaysShared -AcceptSetDesktopSize -FrameRate 60 &
+xvnc=$!
+for _ in $(seq 100); do [ -e /tmp/.X11-unix/X2 ] && break; sleep 0.05; done
+
+fit() {
+	# shellcheck disable=SC2046 # "width height"
+	set -- $(xdotool getdisplaygeometry 2>/dev/null) || return 0
+	[ $# -eq 2 ] || return 0
+	for window in $(xdotool search --onlyvisible --class '^(chromium|Chromium|google-chrome|Google-chrome)$' 2>/dev/null); do
+		xprop -id "$window" WM_WINDOW_ROLE 2>/dev/null | grep -q '"browser"' || continue
+		case "$(xdotool getwindowgeometry --shell "$window" 2>/dev/null | tr '\n' ' ')" in
+		*"X=0 Y=0 WIDTH=$1 HEIGHT=$2 "*) ;;
+		*) xdotool windowmove "$window" 0 0 windowsize "$window" "$1" "$2" 2>/dev/null ;;
+		esac
+	done
+}
+
+# xev prints the root window's events one per line: a screen resize, and its children being mapped or reconfigured.
+# It ends with the X server, and systemd starts the display again.
+fit
+xev -root -event randr -event substructure 2>/dev/null | while read -r event _; do
+	case "$event" in RRScreenChangeNotify | MapNotify | ConfigureNotify) fit ;; esac
+done &
+wait "$xvnc"
+exit 1

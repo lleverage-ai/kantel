@@ -73,9 +73,15 @@ export type MenuEntry =
 			/** The action destroys something: red, and last. */
 			readonly danger?: boolean;
 			readonly disabled?: boolean;
+			/** A few muted words at the row's end, before any tick: an account's role. */
+			readonly detail?: string;
+			/** Makes the row one of a set where one is current: a tick at its end when true, the slot kept when false. */
+			readonly checked?: boolean;
 			readonly onSelect: () => void;
 	  }
 	| { readonly kind: "separator"; readonly id: string }
+	/** Words that aren't a choice, at the top of a menu: who is signed in, over their own menu. */
+	| { readonly kind: "label"; readonly id: string; readonly label: string; readonly detail?: string }
 	| {
 			readonly kind: "choices";
 			readonly id: string;
@@ -89,8 +95,6 @@ export type MenuEntry =
 export type MenuProps = {
 	/** What the trigger does, for its accessible name and tooltip: "Session actions", "Filter sessions". */
 	label: string;
-	/** The trigger's icon. */
-	icon: ReactNode;
 	entries: readonly MenuEntry[];
 	size?: "xs" | "sm";
 	/** Which edge of the trigger the menu lines up with. */
@@ -99,7 +103,23 @@ export type MenuProps = {
 	onOpenChange?: (open: boolean) => void;
 	/** Open on mount, for a story or a test. */
 	defaultOpen?: boolean;
-};
+} & (
+	| {
+			/** The trigger's icon. */
+			icon: ReactNode;
+			trigger?: undefined;
+			triggerClassName?: undefined;
+	  }
+	| {
+			icon?: undefined;
+			/**
+			 * What the trigger shows in place of the icon button, such as the current account: the trigger is then a plain
+			 * button holding this, styled by `triggerClassName`, and named by what it holds (`label` still names the menu).
+			 */
+			trigger: ReactNode;
+			triggerClassName?: string;
+	  }
+);
 
 /** Room kept between the menu and the window's edges, and between the menu and what opened it. */
 const EDGE = 8;
@@ -138,6 +158,8 @@ const itemsIn = (panel: HTMLElement | null) => [
 export function Menu({
 	label,
 	icon,
+	trigger: triggerContent,
+	triggerClassName,
 	entries,
 	size = "xs",
 	align = "start",
@@ -332,6 +354,16 @@ export function Menu({
 			>
 				{entries.map((entry) => {
 					if (entry.kind === "separator") return <hr key={entry.id} className={separatorClass} />;
+					if (entry.kind === "label") {
+						return (
+							<div key={entry.id} className="kt-menu-label flex min-w-0 flex-col gap-0.5 px-2 pt-1.5 pb-1">
+								<span className="truncate font-strong">{entry.label}</span>
+								{entry.detail === undefined ? null : (
+									<span className="truncate text-sm text-faint">{entry.detail}</span>
+								)}
+							</div>
+						);
+					}
 					if (entry.kind === "choices") {
 						const chosen = entry.choices.find((choice) => choice.value === entry.value);
 						return (
@@ -361,7 +393,8 @@ export function Menu({
 						<button
 							key={entry.id}
 							type="button"
-							role="menuitem"
+							role={entry.checked === undefined ? "menuitem" : "menuitemradio"}
+							{...(entry.checked === undefined ? {} : { "aria-checked": entry.checked })}
 							tabIndex={-1}
 							disabled={entry.disabled}
 							data-entry={entry.id}
@@ -381,10 +414,16 @@ export function Menu({
 								</span>
 							)}
 							<span className={labelClass}>{entry.label}</span>
+							{entry.detail === undefined ? null : (
+								<span className={`kt-menu-item-detail ${endClass}`}>{entry.detail}</span>
+							)}
 							{entry.shortcut === undefined ? null : (
 								<span className={`kt-menu-item-shortcut ${endClass}`} aria-hidden="true">
 									{entry.shortcut.toUpperCase()}
 								</span>
+							)}
+							{entry.checked === undefined ? null : (
+								<span className={checkClass}>{entry.checked ? <MenuCheckIcon /> : null}</span>
 							)}
 						</button>
 					);
@@ -422,21 +461,35 @@ export function Menu({
 		</div>
 	);
 
+	const triggerProps = {
+		ref: trigger,
+		"aria-haspopup": "menu" as const,
+		"aria-expanded": open,
+		...(open ? { "aria-controls": menuId } : {}),
+		onClick: () => setOpen(!open),
+		onKeyDown: onTriggerKey,
+	};
+
 	return (
 		<>
-			<IconButton
-				ref={trigger}
-				variant="ghost"
-				size={size}
-				label={label}
-				icon={icon}
-				className="kt-menu-trigger"
-				aria-haspopup="menu"
-				aria-expanded={open}
-				{...(open ? { "aria-controls": menuId } : {})}
-				onClick={() => setOpen(!open)}
-				onKeyDown={onTriggerKey}
-			/>
+			{triggerContent === undefined ? (
+				<IconButton
+					{...triggerProps}
+					variant="ghost"
+					size={size}
+					label={label}
+					icon={icon}
+					className="kt-menu-trigger"
+				/>
+			) : (
+				<button
+					{...triggerProps}
+					type="button"
+					className={`kt-menu-trigger kt-focusable${triggerClassName ? ` ${triggerClassName}` : ""}`}
+				>
+					{triggerContent}
+				</button>
+			)}
 			{open && typeof document !== "undefined" ? createPortal(menu, document.body) : null}
 		</>
 	);
