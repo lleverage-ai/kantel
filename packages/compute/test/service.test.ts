@@ -8,8 +8,10 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	type SandboxBackend,
+	type SandboxSpec,
 } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { restoreAsked } from "../src/machine.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	checkShape,
@@ -554,6 +556,187 @@ describe("sandboxes", () => {
 		expect(isolate.cost.ratePerHour).toBe(hourlyRate(PLACEHOLDER_RATES, "isolate", { vcpus: 0, memoryMb: 384 }));
 		const plain = await tom.createSandbox({ wait: true });
 		expect(plain.resources).toMatchObject({ memoryMb: 256 });
+	});
+
+	it("makes a sandbox from a snapshot holding memory as the snapshot's machine, refusing another before storing it", async () => {
+		const backend = createStubBackend();
+		const create = vi.spyOn(backend, "create");
+		const { tom } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [paused] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		expect(paused).toMatchObject({ memory: true, size: "large" });
+		const id = paused?.id ?? "";
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+
+		for (const body of [
+			{ resources: { vcpus: 4, memoryMb: 16_384 } },
+			{ resources: { vcpus: 2, memoryMb: 8192 } },
+			{ size: "small" as const },
+		]) {
+			const refused = await failure(tom.createSandbox({ type: "microvm", from: id, ...body }));
+			expect(refused.code).toBe("invalid");
+			expect(refused.message).toContain("holds its sandbox's memory");
+		}
+		// Nothing is stored for a refused create.
+		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
+
+		// Its own machine, asked by its numbers or not at all, is the snapshot's size.
+		const same = await tom.createSandbox({ from: id, resources: { vcpus: 4, memoryMb: 8192 }, wait: true });
+		expect(same).toMatchObject({ size: "large", state: "running" });
+		const plain = await tom.createSandbox({ from: id, wait: true });
+		expect(plain).toMatchObject({ size: "large", state: "running" });
+		// Its backend is asked for the snapshot's own vCPUs and memory, which its host makes as the snapshot's size.
+		const restore = create.mock.calls.find(([spec]) => spec.sandboxId === plain.id)?.[0];
+		expect(restore?.shape).toEqual(
+			paused?.resources && { vcpus: paused.resources.vcpus, memoryMb: paused.resources.memoryMb },
+		);
+	});
+
+	it("keeps a pause's memory when it is saved, so a sandbox made from the save is its machine too", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const saved = await tom.saveSnapshot({ name: "paused", sandboxId: vm.id });
+		expect(saved).toMatchObject({ memory: true, size: "large" });
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", from: "paused", resources: { vcpus: 2, memoryMb: 4096 } }),
+		);
+		expect(refused.code).toBe("invalid");
+		expect((await tom.createSandbox({ from: "paused", size: "large", wait: true })).size).toBe("large");
+	});
+
+	it("treats a save made before saves kept memory as holding it when its bytes are a pause's", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup(createStubBackend(), { store });
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
+		// As an older control plane stored it: the pause's bytes, said to hold no memory.
+		const stored = await store.snapshots.get(saved.id);
+		if (stored === undefined) throw new Error("no saved snapshot");
+		await store.snapshots.put({ ...stored, memory: false });
+		// Reads say what a create from it is held to; a snapshot of the disk alone still says no.
+		expect((await tom.getSnapshot(saved.id)).memory).toBe(true);
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items.find((item) => item.id === saved.id);
+		expect(listed?.memory).toBe(true);
+		const other = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(other.id, { wait: true });
+		const disk = await tom.saveSnapshot({ name: "disk-only", sandboxId: other.id });
+		expect((await tom.getSnapshot(disk.id)).memory).toBe(false);
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", from: "old-save", resources: { vcpus: 2, memoryMb: 4096 } }),
+		);
+		expect(refused.code).toBe("invalid");
+	});
+
+	it("keeps an older save holding memory once the pause it shares bytes with is deleted", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup(createStubBackend(), { store });
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
+		const stored = await store.snapshots.get(saved.id);
+		if (stored === undefined || pause === undefined) throw new Error("no snapshots");
+		await store.snapshots.put({ ...stored, memory: false });
+		// The source resumes, and its pause is deleted: the save is the bytes' last record.
+		await tom.resumeSandbox(vm.id, { wait: true });
+		await tom.deleteSnapshot(pause.id);
+		expect((await store.snapshots.get(saved.id))?.memory).toBe(true);
+		expect((await tom.getSnapshot(saved.id)).memory).toBe(true);
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items.find((item) => item.id === saved.id);
+		expect(listed?.memory).toBe(true);
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", from: "old-save", resources: { vcpus: 2, memoryMb: 4096 } }),
+		);
+		expect(refused.code).toBe("invalid");
+		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
+	});
+
+	it("keeps an older save holding memory when its sandbox is deleted, and its own size when hosts stop naming it", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		let dropLarge = false;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				if (!dropLarge) return read;
+				const offered = <T extends { readonly name: string }>(sizes: readonly T[]) =>
+					sizes.filter((size) => size.name !== "large");
+				return {
+					...read,
+					sizes: offered(read.sizes),
+					hosts: read.hosts.map((host) => ({ ...host, ...(host.sizes ? { sizes: offered(host.sizes) } : {}) })),
+				};
+			},
+		};
+		const { tom } = setup(backend, { store });
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
+		const stored = await store.snapshots.get(saved.id);
+		if (stored === undefined) throw new Error("no saved snapshot");
+		await store.snapshots.put({ ...stored, memory: false });
+		// Deleting the sandbox forgets its pause and detaches the save, which keeps the flag it was just given.
+		await tom.deleteSandbox(vm.id);
+		expect(await store.snapshots.get(saved.id)).toMatchObject({ memory: true });
+		expect((await store.snapshots.get(saved.id))?.sandboxId).toBeUndefined();
+		expect((await tom.getSnapshot(saved.id)).memory).toBe(true);
+		// The hosts stop naming its size: asking for it by name is still its own machine.
+		dropLarge = true;
+		const made = await tom.createSandbox({ type: "microvm", from: "old-save", size: "large", wait: true });
+		expect(made).toMatchObject({ size: "large", state: "running" });
+	});
+
+	it("checks an ask against a memory snapshot's own record, never another host's sizes", () => {
+		const pause = {
+			id: "snap_p",
+			memory: true,
+			size: "large" as const,
+			resources: { vcpus: 4, memoryMb: 8192, diskGb: 50 },
+		};
+		expect(restoreAsked(pause, {})).toEqual({});
+		expect(restoreAsked(pause, { size: "large" })).toEqual({});
+		expect(restoreAsked(pause, { shape: { vcpus: 4, memoryMb: 8192 } })).toEqual({});
+		expect(restoreAsked(pause, { size: "large", shape: { vcpus: 4, memoryMb: 8192 } })).toEqual({});
+		// Another name is another machine, whatever its numbers somewhere.
+		expect(() => restoreAsked(pause, { size: "default" })).toThrow(/holds its sandbox's memory/);
+		expect(() => restoreAsked(pause, { shape: { vcpus: 4, memoryMb: 16_384 } })).toThrow(/size large, 4 vCPU/);
+		// One recording a size alone can't be checked against numbers: only its name or nothing.
+		const named = { id: "snap_n", memory: true, size: "large" as const };
+		expect(restoreAsked(named, { size: "large" })).toEqual({});
+		expect(() => restoreAsked(named, { shape: { vcpus: 4, memoryMb: 8192 } })).toThrow(/size large\)/);
+		// The disk alone, or no machine recorded: any ask, as before.
+		expect(restoreAsked({ ...pause, memory: false }, { size: "small" })).toEqual({ size: "small" });
+		expect(restoreAsked({ id: "snap_o", memory: true }, { size: "small" })).toEqual({ size: "small" });
+	});
+
+	it("refuses forks of a pause at another size before storing any", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+		expect((await failure(tom.forkSandbox(vm.id, { size: "small", count: 2 }))).code).toBe("invalid");
+		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
+		const [fork] = (await tom.forkSandbox(vm.id, { size: "large", wait: true })).items;
+		expect(fork?.size).toBe("large");
+	});
+
+	it("resizes a sandbox made from a snapshot of the disk alone", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { wait: true });
+		const [stopped] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		expect(stopped?.memory).toBe(false);
+		const bigger = await tom.createSandbox({
+			from: stopped?.id ?? "",
+			resources: { vcpus: 4, memoryMb: 16_384 },
+			wait: true,
+		});
+		expect(bigger.resources).toMatchObject({ vcpus: 4, memoryMb: 16_384 });
 	});
 
 	it("refuses a shape it can't make", async () => {
@@ -1767,6 +1950,46 @@ describe("organisations", () => {
 			expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
 		}
 		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
+	});
+
+	it("makes a sandbox from a memory snapshot whose create or fork failed again as the snapshot's machine", async () => {
+		const stub = createStubBackend();
+		let failing = false;
+		const creates: SandboxSpec[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push(spec);
+				return failing ? Promise.reject(new KantelError("unavailable", "The host is full")) : stub.create(spec);
+			},
+			fork: (source, targets) => {
+				creates.push(...targets);
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The host is full"))
+					: stub.fork(source, targets);
+			},
+		};
+		const { api, tom } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		const own = pause?.resources && { vcpus: pause.resources.vcpus, memoryMb: pause.resources.memoryMb };
+		expect(own).toBeDefined();
+		failing = true;
+		const made = await tom.createSandbox({ from: pause?.id ?? "", wait: true });
+		const [fork] = (await tom.forkSandbox(vm.id, { wait: true })).items;
+		expect([made.state, fork?.state]).toEqual(["error", "error"]);
+		failing = false;
+
+		for (const id of [made.id, fork?.id ?? ""]) {
+			await tom.recoverSandbox(id);
+			await api.service.idle();
+			expect((await tom.getSandbox(id)).state).toBe("running");
+			const remade = creates.filter((spec) => spec.sandboxId === id);
+			expect(remade).toHaveLength(2);
+			// The snapshot's own machine each time, which its host makes as the snapshot's size.
+			for (const spec of remade) expect(spec.shape).toEqual(own);
+		}
 	});
 
 	it("makes a plain microVM of its own shape whose create failed again as that shape, on recover, start or resume", async () => {

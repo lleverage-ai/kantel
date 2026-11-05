@@ -71,7 +71,15 @@ import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
-import { makesCustom, makesShape, recordedMachine, recordsMachine, sandboxMachine } from "./machine.ts";
+import {
+	type AskedMachine,
+	makesCustom,
+	makesShape,
+	recordedMachine,
+	recordsMachine,
+	restoreAsked,
+	sandboxMachine,
+} from "./machine.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
 import {
 	backendMounts,
@@ -3092,6 +3100,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
+	/**
+	 * Whether a snapshot's bytes hold memory: its own say, or that of another snapshot of the same bytes (a save made
+	 * before saves kept the flag shares its pause's ref but says no). Reads report it, so a client sees what a create
+	 * from it will be held to.
+	 */
+	async function holdsMemory(snapshot: StoredSnapshot): Promise<boolean> {
+		if (snapshot.memory) return true;
+		if (snapshot.ref === undefined) return false;
+		return (await store.snapshots.list({ ref: snapshot.ref, memory: true })).length > 0;
+	}
+
+	/**
+	 * Deletes a snapshot's record. One that holds memory first passes that on to every other record of its bytes (a save
+	 * made before saves kept the flag says no), so none of them stops saying so once it is gone.
+	 */
+	async function forgetSnapshot(snapshot: StoredSnapshot): Promise<void> {
+		if (snapshot.memory && snapshot.ref !== undefined) {
+			for (const other of await store.snapshots.list({ ref: snapshot.ref, memory: false })) {
+				await store.snapshots.update(other.id, (latest) => (latest.memory ? undefined : { ...latest, memory: true }));
+			}
+		}
+		await store.snapshots.delete(snapshot.id);
+	}
+
 	async function releaseRef(ref: string | undefined): Promise<void> {
 		if (ref === undefined) return;
 		if ((await store.snapshots.list({ ref })).length > 0) return;
@@ -4878,7 +4910,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.size !== undefined && body.resources !== undefined) {
 					throw new KantelError("invalid", "Give resources or a size, not both");
 				}
-				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
+				// A snapshot's own size is its machine, whatever the hosts name now (`restoreAsked` decides a snapshot's).
+				if (
+					body.size !== undefined &&
+					body.size !== from?.size &&
+					!capabilities.sizes.some((size) => size.name === body.size)
+				) {
 					throw placementError(
 						"not_supported",
 						"no_host_offers_size",
@@ -4904,6 +4941,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const asked =
 					body.resources ?? (template !== undefined && body.size === undefined ? template.spec.resources : undefined);
 				const shape = shapeFor(type, asked, eligible, capabilities.sizes, from === undefined);
+				const presets = eligible.flatMap((host) => host.sizes ?? capabilities.sizes);
+				// From a snapshot that holds memory: its own machine, and nothing else (`restoreAsked`), refused here rather than
+				// by its host once the sandbox is stored.
+				const wanted: AskedMachine = {
+					...(body.size === undefined ? {} : { size: body.size }),
+					...(shape === undefined ? {} : { shape }),
+				};
+				const machineAsked =
+					type === "microvm" && from !== undefined
+						? restoreAsked({ ...from, memory: await holdsMemory(from) }, wanted)
+						: wanted;
 				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
@@ -4916,8 +4964,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									: from === undefined
 										? undefined
 										: { copies: from },
-								{ ...(body.size === undefined ? {} : { size: body.size }), ...(shape === undefined ? {} : { shape }) },
-								eligible.flatMap((host) => host.sizes ?? capabilities.sizes),
+								machineAsked,
+								presets,
 							);
 				if (type === "microvm" && machine === undefined) {
 					throw placementError(
@@ -5142,7 +5190,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									{
 										copies: recordsMachine(snapshot) ? snapshot : current,
 									},
-									body.size === undefined ? {} : { size: body.size },
+									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
+									restoreAsked(
+										{ id: snapshot.id, memory: await holdsMemory(snapshot), ...recordedMachine(snapshot) },
+										body.size === undefined ? {} : { size: body.size },
+									),
 									[],
 								);
 				// One for them all, as their egress is read once for them all.
@@ -5447,10 +5499,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						await backend.destroy(current.id);
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
-								await store.snapshots.delete(snapshot.id);
+								await forgetSnapshot(snapshot);
 								await releaseRef(snapshot.ref);
 							} else {
-								await store.snapshots.put({ ...snapshot, sandboxId: undefined });
+								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
+								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
 							}
 						}
 						const result = await transition(current.id, "deleting", (latest) =>
@@ -5901,14 +5954,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "snapshots:read", role);
 			const visible: StoredSnapshot[] = [];
-			for (const snapshot of await store.snapshots.list({ accountId: account.id })) {
+			const all = await store.snapshots.list({ accountId: account.id });
+			// The bytes that hold memory, from the same read (`holdsMemory`): a save shares its source's ref, in its account.
+			const memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			for (const snapshot of all) {
 				if (query.kind !== undefined && snapshot.kind !== query.kind) continue;
 				if (query.sandboxId !== undefined && snapshot.sandboxId !== query.sandboxId) continue;
 				if (snapshot.state === "deleting") continue;
 				if (await canSeeSnapshot(principal, snapshot)) visible.push(snapshot);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
-			return { items: page.items.map(snapshotView), nextCursor: page.nextCursor };
+			const items = page.items.map((snapshot) =>
+				snapshotView({
+					...snapshot,
+					memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
+				}),
+			);
+			return { items, nextCursor: page.nextCursor };
 		},
 
 		takeSnapshot: async (principal, { params, body, idempotencyKey }) => {
@@ -5926,7 +5988,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: current.type,
 					state: "ready",
 					trigger: "manual",
-					memory: false,
+					memory: taken.memory === true,
 					...recordedMachine(current),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
@@ -5963,6 +6025,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let sizeBytes: number | undefined;
 				// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
 				let base: string | undefined;
+				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
+				let memory = false;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
 				let machine = recordedMachine(current);
 				if (body.snapshotId !== undefined) {
@@ -5971,12 +6035,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(source);
 					sizeBytes = source.sizeBytes;
 					base = source.base;
+					memory = await holdsMemory(source);
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
 					const taken = await backend.takeSnapshot(current.id);
 					ref = taken.ref;
 					sizeBytes = taken.sizeBytes;
 					base = taken.base;
+					memory = taken.memory === true;
 				} else {
 					const latest =
 						current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
@@ -5984,6 +6050,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(latest);
 					sizeBytes = latest.sizeBytes;
 					base = latest.base;
+					memory = await holdsMemory(latest);
 					if (recordsMachine(latest)) machine = recordedMachine(latest);
 				}
 				const snapshot: StoredSnapshot = {
@@ -5996,7 +6063,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: current.type,
 					state: "ready",
 					trigger: "save",
-					memory: false,
+					memory,
 					...machine,
 					sizeBytes,
 					createdAt: now(),
@@ -6005,7 +6072,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				await store.snapshots.put(snapshot);
 				if (existing !== undefined) {
-					await store.snapshots.delete(existing.id);
+					await forgetSnapshot(existing);
 					await releaseRef(existing.ref);
 					await emit("snapshot.deleted", existing.accountId, {
 						snapshotId: existing.id,
@@ -6020,8 +6087,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			});
 		},
 
-		getSnapshot: async (principal, { params }) =>
-			snapshotView(await snapshotFor(principal, params.snapshotId, "snapshots:read")),
+		getSnapshot: async (principal, { params }) => {
+			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
+			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) });
+		},
 
 		listSnapshotFiles: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
@@ -6054,7 +6123,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", "A stopped sandbox's newest snapshot is what it resumes from");
 				}
 			}
-			await store.snapshots.delete(snapshot.id);
+			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot.ref);
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
 				const [newest] = newestFirst(

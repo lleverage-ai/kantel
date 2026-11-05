@@ -73,6 +73,8 @@ export class FakeHost {
 	readonly extracts: { readonly archive: string; readonly target: string }[] = [];
 	/** How a create is answered as served (`HostSandbox.source`): `boot` for a template snapshot it couldn't restore. */
 	createSource = "pool";
+	/** For a test: the size a create is answered as made, instead of the one asked for (a restore's own size). */
+	madeSize?: string;
 	/** For a test: a call of a method it answers an error for fails with it. */
 	refuse?: (method: string) => { readonly code: string; readonly message: string } | undefined;
 	/** For a test: what a call of a method it answers a result for is answered, instead of the usual. */
@@ -210,6 +212,9 @@ export class FakeHost {
 			sandboxId: string;
 			tier?: string;
 			size?: string;
+			vcpus?: number;
+			memoryMiB?: number;
+			diskGiB?: number;
 			newId?: string;
 			mounts?: HostMount[];
 		};
@@ -233,10 +238,17 @@ export class FakeHost {
 			case "sandbox.create":
 			case "sandbox.fork": {
 				const id = message.method === "sandbox.fork" ? (params.newId as string) : params.sandboxId;
+				// As a host answers it: the size it made, asked for by name or as a custom shape's numbers.
+				const asked =
+					params.size !== undefined && params.size !== ""
+						? params.size
+						: params.vcpus !== undefined && params.vcpus > 0
+							? `custom-${params.vcpus}c-${params.memoryMiB}m-${params.diskGiB}g`
+							: "default";
 				const sandbox: HostSandbox = {
 					id,
 					tier: "microvm",
-					size: "default",
+					size: message.method === "sandbox.create" ? (this.madeSize ?? asked) : "default",
 					state: "running",
 					createdAt: 1,
 					source: this.createSource,

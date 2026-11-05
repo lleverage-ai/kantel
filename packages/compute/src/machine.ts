@@ -4,6 +4,7 @@
  * its host for. Its host gives the disk, and its placement then says what it got (its `resources`).
  */
 import type { computeSchema } from "@kantel/api";
+import { KantelError } from "@kantel/contracts";
 import {
 	type BackendHost,
 	type BackendShape,
@@ -125,4 +126,42 @@ export function sandboxMachine(
 		}
 	}
 	return { size: asked.size ?? "default" };
+}
+
+/** A snapshot as far as what a sandbox made from it may be goes. */
+export interface RestoredSnapshot extends RecordedMachine {
+	readonly id: string;
+	/** Whether it holds its sandbox's memory, which restores only into the machine it was taken of. */
+	readonly memory: boolean;
+}
+
+/**
+ * What a create from `snapshot` may ask for (`asked`). A snapshot that holds its sandbox's memory restores only into
+ * the machine it was taken of, so a create from one is that machine: an ask for it (its own size by name, or its
+ * recorded vCPUs and memory) is dropped, so the sandbox goes under the snapshot's own size name, which its host checks;
+ * any other ask is refused (`invalid`) before anything is made. Names are never looked up in other hosts' sizes, which
+ * may mean other machines by them. A snapshot of the disk alone boots, so it may be any size; so may one that records no
+ * machine (from before sizes), as before.
+ */
+export function restoreAsked(snapshot: RestoredSnapshot, asked: AskedMachine): AskedMachine {
+	if (!snapshot.memory || !recordsMachine(snapshot)) return asked;
+	if (asked.shape === undefined && (asked.size === undefined || asked.size === snapshot.size)) return {};
+	const own = snapshot.resources;
+	if (
+		asked.shape !== undefined &&
+		(asked.size === undefined || asked.size === snapshot.size) &&
+		own !== undefined &&
+		own.vcpus === asked.shape.vcpus &&
+		own.memoryMb === asked.shape.memoryMb
+	) {
+		return {};
+	}
+	const machine = [
+		...(snapshot.size === undefined ? [] : [`size ${snapshot.size}`]),
+		...(own === undefined ? [] : [`${own.vcpus} vCPU and ${own.memoryMb} MB of memory`]),
+	].join(", ");
+	throw new KantelError(
+		"invalid",
+		`Snapshot ${snapshot.id} holds its sandbox's memory, so a sandbox made from it has that sandbox's machine (${machine}). Leave resources and size out, or ask for that machine`,
+	);
 }

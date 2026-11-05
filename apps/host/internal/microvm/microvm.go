@@ -1691,7 +1691,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 		}
 		if snap.Size != size.Name && snap.Memory {
 			unhold()
-			return sandboxOrigin{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s is of a %s sandbox; a sandbox made from it is that size too", p.From, snap.Size)}
+			return sandboxOrigin{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s holds the memory of a %s sandbox, so a sandbox made from it has to be that machine too, not %s (%d vCPU, %d MiB)", p.From, snap.Size, size.Name, size.VCPUs, size.MemoryMiB)}
 		}
 		sdir := m.snapshotDir(p.From)
 		origin := sandboxOrigin{rootfs: m.snapshotRootfs(snap), disk: filepath.Join(sdir, fc.DiskFile), source: "snapshot", guest: snap.Guest, unhold: unhold}
@@ -1894,7 +1894,29 @@ func (m *Manager) createSize(p proto.CreateParams) (proto.Size, error) {
 		}
 		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
 	}
-	return m.size(sizeName)
+	size, err := m.size(sizeName)
+	if err != nil || p.From == "" {
+		return size, err
+	}
+	return m.restoreSize(p.From, size), nil
+}
+
+// restoreSize is the size a sandbox made from snapshot from is: a snapshot holding memory restores only into the
+// machine it was taken of, so a size of that machine's vCPUs and memory is the snapshot's own, under its own name,
+// whatever name the control plane gave it (another size of the same numbers, or a custom shape whose disk differs). Any
+// other size stays as asked, for startOf to refuse.
+func (m *Manager) restoreSize(from string, size proto.Size) proto.Size {
+	unhold := m.holdBases()
+	snap, err := m.readSnapshot(from)
+	unhold()
+	if err != nil || !snap.Memory || snap.Size == size.Name {
+		return size
+	}
+	own, err := m.size(snap.Size)
+	if err != nil || own.VCPUs != size.VCPUs || own.MemoryMiB != size.MemoryMiB {
+		return size
+	}
+	return own
 }
 
 // sharedPlan is sharedFor when shared templates are on; nothing fits when they're off.

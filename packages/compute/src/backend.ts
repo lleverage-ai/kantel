@@ -340,6 +340,8 @@ export interface TakenSnapshot {
 	readonly sizeBytes: number;
 	/** The base image version its root file system is, as `Placement.base`; absent where the backend doesn't know. */
 	readonly base?: string;
+	/** Whether it holds the sandbox's memory, which restores only into the machine it was taken of. Absent: no. */
+	readonly memory?: boolean;
 }
 
 export interface ExecRequest {
