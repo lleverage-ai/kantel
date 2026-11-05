@@ -8,6 +8,7 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	type SandboxBackend,
+	type SandboxSpec,
 } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { restoreAsked } from "../src/machine.ts";
@@ -1888,6 +1889,43 @@ describe("organisations", () => {
 			expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
 		}
 		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
+	});
+
+	it("makes a sandbox from a memory snapshot whose create or fork failed again as a memory restore of its size", async () => {
+		const stub = createStubBackend();
+		let failing = false;
+		const creates: SandboxSpec[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push(spec);
+				return failing ? Promise.reject(new KantelError("unavailable", "The host is full")) : stub.create(spec);
+			},
+			fork: (source, targets) => {
+				creates.push(...targets);
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The host is full"))
+					: stub.fork(source, targets);
+			},
+		};
+		const { api, tom } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		failing = true;
+		const made = await tom.createSandbox({ from: pause?.id ?? "", wait: true });
+		const [fork] = (await tom.forkSandbox(vm.id, { wait: true })).items;
+		expect([made.state, fork?.state]).toEqual(["error", "error"]);
+		failing = false;
+
+		for (const id of [made.id, fork?.id ?? ""]) {
+			await tom.recoverSandbox(id);
+			await api.service.idle();
+			expect((await tom.getSandbox(id)).state).toBe("running");
+			const remade = creates.filter((spec) => spec.sandboxId === id);
+			expect(remade).toHaveLength(2);
+			for (const spec of remade) expect(spec).toMatchObject({ size: "large", restoresMemory: true });
+		}
 	});
 
 	it("makes a plain microVM of its own shape whose create failed again as that shape, on recover, start or resume", async () => {

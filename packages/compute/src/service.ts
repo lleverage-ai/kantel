@@ -3033,8 +3033,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}
 		}
+		// Made again from a snapshot that holds memory (a failed create or fork from one): its host must make the
+		// snapshot's own size by name, as the create or fork asked, which the sandbox's size is.
+		const source =
+			sandbox.source?.snapshotId === undefined ? undefined : await store.snapshots.get(sandbox.source.snapshotId);
+		const restoresMemory =
+			sandbox.type === "microvm" &&
+			boot.fromSnapshot !== undefined &&
+			source !== undefined &&
+			(await holdsMemory(source));
 		const placement = await backend.create({
 			...boot,
+			...(restoresMemory ? { restoresMemory, ...(sandbox.size === undefined ? {} : { size: sandbox.size }) } : {}),
 			eligibleHosts,
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
