@@ -1861,7 +1861,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<boolean> {
 		const at = now();
 		const due = await patchSandbox(sandboxId, (current) =>
-			current.state === evaluated.state && current.egressRevision === evaluated.egressRevision
+			current.state === evaluated.state &&
+			current.egressRevision === evaluated.egressRevision &&
+			// Its host revoked under its boot (`strandOn`): its boot ends it `error`, not a stop its host can't take.
+			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
 						...current,
 						...(placement === undefined

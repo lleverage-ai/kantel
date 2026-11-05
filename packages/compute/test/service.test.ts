@@ -1610,7 +1610,7 @@ describe("hosts", () => {
 	 * A stub whose first create is read as placed on `placedOn()` by a revocation, and ends on `endsOn`; with `reconcile`,
 	 * its egress changes while it boots, and the revocation lands while that egress is being sent.
 	 */
-	function revokedMidBoot(options: { endsOn: string; reconcile?: boolean; alsoRevoke?: string }) {
+	function revokedMidBoot(options: { endsOn: string; reconcile?: boolean; alsoRevoke?: string; refuse?: boolean }) {
 		const stub = createStubBackend();
 		const store = createMemoryStore();
 		const delivered: (number | undefined)[] = [];
@@ -1651,6 +1651,8 @@ describe("hosts", () => {
 					delivered.push(revision);
 					// The revocation's scan lands while this egress is on its way.
 					if (options.reconcile === true && delivered.length === 1) await revokeAll();
+					// Its host then refuses the egress, which would have it stopped.
+					if (options.refuse === true) throw new KantelError("not_supported", "This host can't enforce it");
 				},
 			},
 			{ store },
@@ -1673,6 +1675,12 @@ describe("hosts", () => {
 		const stored = await store.sandboxes.get(sandbox.id);
 		expect(delivered).toContain(stored?.egressRevision);
 		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("ends a first create whose host is revoked before its egress is refused in error, not handed back from a stop", async () => {
+		const { tom } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true, refuse: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
 	});
 
 	it("doesn't run a first create that moved to another host revoked too", async () => {
