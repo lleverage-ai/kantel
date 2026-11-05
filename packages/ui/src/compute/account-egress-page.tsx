@@ -260,7 +260,8 @@ export function AccountEgressPage({
 	return (
 		<div className={computePage}>
 			{header}
-			<PolicyControl policy={proxy.policy} busy={busy === "policy"} narrow={narrow} onChange={choosePolicy} />
+			{/* The policy is set on Rules, beside the rules it governs; elsewhere it's one line, so the log leads its tab. */}
+			{tab === "rules" ? null : <PolicySummary policy={proxy.policy} onChange={() => show("rules")} />}
 			{proxy.enabled ? null : (
 				<Notice
 					level="warning"
@@ -321,6 +322,7 @@ export function AccountEgressPage({
 					</div>
 				) : tab === "rules" ? (
 					<div className="flex min-w-0 flex-col gap-6">
+						<PolicyControl policy={proxy.policy} busy={busy === "policy"} narrow={narrow} onChange={choosePolicy} />
 						<EgressRulesTable
 							rules={rules}
 							narrow={narrow}
@@ -424,6 +426,21 @@ export function AccountEgressPage({
 /** The settings form starts again from what was saved. Not on `enabled`: turning the proxy on or off keeps the draft. */
 export const settingsKey = (proxy: ProxySettings): string =>
 	`${proxy.upstream?.url ?? ""}|${proxy.upstream?.authSet === true}|${proxy.logRequests ?? ""}`;
+
+/** The policy in a sentence, with the way to change it: on the tabs where the policy itself isn't set. */
+function PolicySummary({ policy, onChange }: { policy: EgressPolicy; onChange: () => void }) {
+	const label = POLICIES.find((each) => each.value === policy)?.label ?? policy;
+	return (
+		<p className="m-0 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+			<span>
+				Sandboxes may reach <span className="font-medium text-fg">{label.toLowerCase()}</span>.
+			</span>
+			<Button size="xs" variant="ghost" onClick={onChange}>
+				Change
+			</Button>
+		</p>
+	);
+}
 
 /** "Sandboxes may reach": the policy, applied the moment it is chosen. */
 function PolicyControl({

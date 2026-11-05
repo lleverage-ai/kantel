@@ -104,21 +104,23 @@ export function EgressLog({
 
 	const filters = (
 		<div className="flex min-w-0 flex-wrap items-center gap-2">
-			<SegmentedControl
-				label="Show"
-				options={FILTERS.map((option) => ({
-					...option,
-					...(counts[option.value] === undefined ? {} : { count: counts[option.value] }),
-				}))}
-				value={filter}
-				onChange={setFilter}
-			/>
-			{/* On a phone the sandbox and the search keep their place, each a line of its own under the filter. */}
+			<div className={narrow ? "basis-full" : "contents"}>
+				<SegmentedControl
+					label="Show"
+					options={FILTERS.map((option) => ({
+						...option,
+						...(counts[option.value] === undefined ? {} : { count: counts[option.value] }),
+					}))}
+					value={filter}
+					onChange={setFilter}
+				/>
+			</div>
+			{/* On a phone the sandbox and the search share the line under the filter, so the log starts sooner. */}
 			{choosing ? (
 				<SelectField
 					label="Sandbox"
 					hideLabel
-					{...(narrow ? { className: "w-full" } : { width: "short" as const })}
+					{...(narrow ? { className: "min-w-0 flex-1" } : { width: "short" as const })}
 					value={sandbox}
 					onChange={(event) => setSandbox(event.currentTarget.value)}
 					options={[
@@ -129,7 +131,7 @@ export function EgressLog({
 			) : null}
 			{
 				<TextField
-					className={narrow ? "w-full" : "ml-auto"}
+					className={narrow ? "min-w-0 flex-1" : "ml-auto"}
 					label="Search the log"
 					hideLabel
 					{...(narrow ? {} : { width: "short" as const })}
@@ -233,7 +235,7 @@ function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boole
 			{/* Wrapped, the method and host stay together on one line and the path breaks only after a slash. */}
 			<span className={wrap ? "whitespace-nowrap" : undefined}>
 				<span className="text-muted">{entry.method} </span>
-				<span className="text-fg">{hostText(entry)}</span>
+				<span className="font-medium text-fg">{hostText(entry)}</span>
 			</span>
 			<span className="text-muted">
 				{wrap && entry.path !== undefined ? <BreakableCommand command={entry.path} /> : (entry.path ?? "")}
