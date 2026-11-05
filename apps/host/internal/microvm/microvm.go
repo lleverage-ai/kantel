@@ -2392,7 +2392,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	t := timings{}
 	start := time.Now()
 	began := start
-	var snapID string
+	var snapID, spooled string
 	live := false
 	src.mu.Lock()
 	switch src.meta.State {
@@ -2402,7 +2402,8 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "forking a running sandbox needs snapshotId"}
 		}
 		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: true, Tier: Tier}
-		if err := m.liveSnapshot(ctx, src, &snap, t); err != nil {
+		var err error
+		if spooled, err = m.liveSnapshot(ctx, src, &snap, t, !m.cfg.KeepForkSnapshots); err != nil {
 			src.mu.Unlock()
 			return proto.SandboxInfo{}, err
 		}
@@ -2440,6 +2441,8 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		if derr := m.DeleteSnapshot(snapID); derr != nil {
 			m.log.Warn("deleting a live fork's snapshot", "snapshot", snapID, "error", derr)
 		}
+		// Its memory, in RAM, was never queued for the disk: the fork maps it, which keeps it until the fork stops.
+		m.spool.cancel(spooled)
 	}
 	if err != nil {
 		return info, err
@@ -2456,16 +2459,19 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 }
 
 // liveSnapshot snapshots a running sandbox (memory and disk) and lets it carry on. Called with s.mu held.
-func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings) error {
+//
+// transient is a snapshot deleted once used (a live fork's): memory spooled to RAM isn't queued for the disk, and its
+// spool file is returned for the caller to cancel once the snapshot has gone.
+func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings, transient bool) (spooled string, err error) {
 	// Before anything is written: the ID is joined under snapshots/, so one such as ../sandboxes/<id>/vm would put this
 	// sandbox's disk into another's.
 	if !validID(snap.ID) {
-		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+		return "", &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
 	}
 	start := time.Now()
 	sdir := m.snapshotDir(snap.ID)
 	if err := os.MkdirAll(sdir, 0o700); err != nil {
-		return err
+		return "", err
 	}
 	_ = s.guest.Sync(ctx)
 	t.step("sync", &start)
@@ -2473,35 +2479,51 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	// with EOF (seen after a live fork). Drop them so the next call dials afresh.
 	s.guest.Close()
 	if err := s.machine.Pause(ctx); err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		_ = s.machine.Resume(context.Background())
 		s.guest.Close()
 		t.step("resume", &start)
 	}()
-	memWrite, memDone := m.memFile(s.meta.Size, filepath.Join(sdir, "mem"))
+	mem := filepath.Join(sdir, "mem")
+	memWrite, memDone := m.memFile(s.meta.Size, mem)
+	if transient && memWrite != mem {
+		spooled = memWrite
+		memDone = func(ok bool) error {
+			if !ok {
+				m.spool.cancel(spooled)
+				return nil
+			}
+			return os.Symlink(spooled, mem)
+		}
+	}
 	if err := s.machine.Snapshot(ctx, filepath.Join(sdir, "state"), memWrite); err != nil {
 		_ = memDone(false)
 		os.RemoveAll(sdir)
-		return err
+		return "", err
+	}
+	fail := func(err error) (string, error) {
+		os.RemoveAll(sdir)
+		m.spool.cancel(spooled)
+		return "", err
 	}
 	if err := memDone(true); err != nil {
-		os.RemoveAll(sdir)
-		return err
+		return fail(err)
 	}
 	t.step("snapshot", &start)
 	if err := copySparse(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile)); err != nil {
-		os.RemoveAll(sdir)
-		return err
+		return fail(err)
 	}
 	if err := keepDrives(s.vmDir(), sdir, s.meta.BundleSlots); err != nil {
-		os.RemoveAll(sdir)
-		return err
+		return fail(err)
 	}
 	t.step("disk", &start)
-	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile)) + diskUsage(filepath.Join(sdir, "mem"))
-	return m.writeSnapshotMeta(s, snap)
+	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile)) + diskUsage(mem)
+	if err := m.writeSnapshotMeta(s, snap); err != nil {
+		return fail(err)
+	}
+	return spooled, nil
 }
 
 type snapshotMeta struct {
@@ -2653,7 +2675,8 @@ func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (pro
 	switch s.meta.State {
 	case proto.StateRunning:
 		snap.Memory = true
-		return snap, m.liveSnapshot(ctx, s, &snap, timings{})
+		_, err := m.liveSnapshot(ctx, s, &snap, timings{}, false)
+		return snap, err
 	case proto.StateStopped:
 		snap.Memory = s.meta.Memory
 		return snap, m.saveSnapshot(s, &snap, false)

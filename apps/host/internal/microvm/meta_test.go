@@ -54,7 +54,7 @@ func TestLiveSnapshotRefusesABadIDBeforeWriting(t *testing.T) {
 	m := &Manager{cfg: Config{Root: root}}
 	for _, id := range []string{"../sandboxes/plain/vm", "a/b", "..", ""} {
 		snap := proto.SnapshotInfo{ID: id}
-		if err := m.liveSnapshot(context.Background(), nil, &snap, timings{}); err == nil {
+		if _, err := m.liveSnapshot(context.Background(), nil, &snap, timings{}, true); err == nil {
 			t.Fatalf("liveSnapshot(%q) took it", id)
 		}
 	}
