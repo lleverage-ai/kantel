@@ -92,7 +92,7 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 				lede="Approve a terminal running kantel login. It gets an API key of its own, in the account below, which you can revoke on the API keys page."
 			/>
 			{looked.status === "idle" || looked.status === "error" ? (
-				<form className="flex max-w-md flex-col gap-3" onSubmit={submit}>
+				<form className="flex max-w-card flex-col gap-3" onSubmit={submit}>
 					<TextField
 						label="Code"
 						hint="The code your terminal shows, such as BCDF-GHJK."
@@ -110,7 +110,7 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 					</div>
 				</form>
 			) : looked.status === "loading" ? (
-				<div className="flex max-w-md flex-col gap-2" aria-busy="true">
+				<div className="flex max-w-card flex-col gap-2" aria-busy="true">
 					<Skeleton width="60%" lines={3} />
 				</div>
 			) : (
@@ -160,7 +160,7 @@ function Decision({
 	const minutes = Math.max(1, Math.round((login.expiresAt - now) / 60_000));
 	const allowed = canApprove(account);
 	return (
-		<section className="flex max-w-xl flex-col gap-4" aria-label="The sign-in">
+		<section className="flex max-w-card flex-col gap-4" aria-label="The sign-in">
 			<dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2">
 				<dt className="text-muted">Device</dt>
 				<dd>{login.clientName}</dd>

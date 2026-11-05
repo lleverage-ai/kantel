@@ -85,12 +85,14 @@
 	--kt-font-mono: Roboto Mono Variable, Roboto Mono, ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, monospace;
 	/*
 	 * Five steps: xs 12 for badges, captions and the tab bar's labels; sm 13 for secondary text, metadata and code; md
-	 * 14 for body text; lg 16 for a section's heading; heading 20 for a page's title. Nothing readable is set below 13.
+	 * 14 for body text; lg 16 for a section's heading; xl 20 for the heading of a whole-page state (an error, a first
+	 * run); heading 24 for a page's title. Nothing readable is set below 13.
 	 */
 	--kt-text-xs: 12px;
 	--kt-text-sm: 13px;
 	--kt-text-md: 14px;
 	--kt-text-lg: 16px;
+	--kt-text-xl: 20px; /* a whole-page state's heading: between a section's and the page's title */
 	--kt-text-heading: 24px; /* a page's title, a clear step over the 16px section headings under it */
 	--kt-text-code: 13px;
 	--kt-text-display: 24px; /* binding codes, nothing else */

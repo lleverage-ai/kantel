@@ -1196,14 +1196,14 @@ function ConsoleUnavailable({
 			{title === undefined ? null : (
 				<p className="m-0 border-b border-border pb-4 text-heading font-strong leading-tight text-fg">{title}</p>
 			)}
-			{/* In the upper third of the open page, under the title: one message to read, with its heading a step under the
-			    page's title so the two don't compete. */}
-			<div className="flex flex-1 flex-col items-center gap-4 pt-16 text-center" role="alert">
+			{/* Centred in the open page, a little above the middle, as one composed stop; its heading at the size a whole-page
+			    state uses (as first run's), a step under the page's title. */}
+			<div className="flex flex-1 flex-col items-center justify-center gap-4 pt-8 pb-24 text-center" role="alert">
 				<span className="grid size-14 place-items-center rounded-full bg-status-error-soft text-status-error">
 					<AlertIcon size="lg" />
 				</span>
-				<div className="flex max-w-md flex-col gap-2">
-					<h1 className="m-0 text-lg font-strong leading-tight text-fg">
+				<div className="flex max-w-card flex-col gap-2">
+					<h1 className="m-0 text-xl font-strong leading-tight text-fg">
 						{title === undefined ? "Can't load the console" : `Can't load ${title.toLowerCase()}`}
 					</h1>
 					<p className="m-0 text-md leading-normal text-muted">

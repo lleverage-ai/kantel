@@ -48,7 +48,7 @@ export function FirstRun({ source, now, onJoined, poll = true }: FirstRunProps) 
 			aria-labelledby="kt-first-run-title"
 		>
 			<div className="flex min-w-0 flex-col gap-2">
-				<h2 id="kt-first-run-title" className="m-0 text-lg font-strong leading-tight text-fg">
+				<h2 id="kt-first-run-title" className="m-0 text-xl font-strong leading-tight text-fg">
 					Add a host to run sandboxes on
 				</h2>
 				<p className="m-0 text-muted">
