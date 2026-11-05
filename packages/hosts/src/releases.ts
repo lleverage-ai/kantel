@@ -1,10 +1,14 @@
 // The newest kantel-host Kantel has released, which the control plane compares each host's version with, so the
 // console can say a host is out of date and offer to update it. Read from Kantel's latest stable GitHub Release (or a
-// mirror answering the same JSON), at most once an hour; a failed read is tried again after a few minutes, and never
-// stops anything: without an answer, no host is said to be out of date.
+// mirror), at most once an hour; a failed read is tried again after a few minutes, and never stops anything: without
+// an answer, no host is said to be out of date.
 
-/** Kantel's latest stable release, as GitHub's API answers it (`tag_name`, such as `v0.4.2`). */
-export const DEFAULT_HOST_RELEASES_URL = "https://api.github.com/repos/lleverage-ai/kantel/releases/latest";
+/**
+ * Kantel's latest stable release: GitHub redirects it to the release's tag (`…/releases/tag/v0.4.2`). Read from the
+ * redirect rather than GitHub's API, whose unauthenticated limit (60 an hour an IP) a Cloudflare Worker shares with
+ * every other tenant on its egress IPs, and so often finds spent.
+ */
+export const DEFAULT_HOST_RELEASES_URL = "https://github.com/lleverage-ai/kantel/releases/latest";
 
 /** Where a host fetches a version of kantel-host: that version's GitHub Release, checked against its SHA256SUMS. */
 export const DEFAULT_HOST_UPDATE_URL =
@@ -100,12 +104,22 @@ export function createHostReleases(options: HostReleasesOptions = {}): HostRelea
 		reading ??= (async () => {
 			try {
 				const response = await fetcher(url, {
-					headers: { accept: "application/vnd.github+json", "user-agent": "kantel-control-plane" },
+					headers: { accept: "application/json", "user-agent": "kantel-control-plane" },
+					// A redirect to a release's tag names its version, so it isn't followed.
+					redirect: "manual",
 					signal: AbortSignal.timeout(Math.max(timeoutMs, 10_000)),
 				});
-				if (!response.ok) throw new Error(`GET ${url}: ${response.status}`);
-				const body = (await response.json()) as { tag_name?: unknown; version?: unknown };
-				const raw = typeof body.tag_name === "string" ? body.tag_name : body.version;
+				const location = response.headers.get("location");
+				let raw: unknown;
+				if (response.status >= 300 && response.status < 400 && location !== null) {
+					raw = /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1];
+					if (raw !== undefined) raw = decodeURIComponent(raw as string);
+				} else {
+					if (!response.ok) throw new Error(`GET ${url}: ${response.status}`);
+					// A mirror's (or GitHub API's) JSON: `{"version"}` or `{"tag_name"}`.
+					const body = (await response.json()) as { tag_name?: unknown; version?: unknown };
+					raw = typeof body.tag_name === "string" ? body.tag_name : body.version;
+				}
 				if (typeof raw !== "string" || compareVersions(raw, raw) === undefined) {
 					throw new Error(`${url} names no release version`);
 				}

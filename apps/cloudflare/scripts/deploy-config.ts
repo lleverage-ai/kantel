@@ -439,7 +439,9 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 			? { accountHosts: accountHostsSwitch }
 			: {}),
 		...(templatesSwitch === "experimental" || templatesSwitch === "off" ? { templates: templatesSwitch } : {}),
-		...(hostReleases === undefined ? {} : { hostReleases: hostReleases.toLowerCase() === "off" ? "off" : hostReleases }),
+		...(hostReleases === undefined
+			? {}
+			: { hostReleases: hostReleases.toLowerCase() === "off" ? "off" : hostReleases }),
 		placeholders: missing,
 	};
 }

@@ -57,25 +57,32 @@ describe("the latest release", () => {
 		return { urls, fetcher };
 	}
 
+	/** GitHub's answer to `…/releases/latest`: a redirect to the release's tag. */
+	const redirect = (tag: string) =>
+		new Response(null, {
+			status: 302,
+			headers: { location: `https://github.com/lleverage-ai/kantel/releases/tag/${tag}` },
+		});
+
 	it("reads GitHub's latest release once an hour, and a failed read again after a few minutes", async () => {
 		let now = 1_000;
 		const logs: string[] = [];
 		const { urls, fetcher } = github([
-			() => Response.json({ tag_name: "v0.4.2" }),
-			() => new Response("rate limited", { status: 403 }),
-			() => Response.json({ tag_name: "v0.4.3" }),
+			() => redirect("v0.4.2"),
+			() => new Response("unavailable", { status: 503 }),
+			() => redirect("v0.4.3"),
 		]);
 		const releases = createHostReleases({ fetch: fetcher, now: () => now, log: (line) => logs.push(line) });
 		expect(releases.known()).toBeUndefined();
 		expect(await releases.latest()).toBe("0.4.2");
-		expect(urls).toEqual(["https://api.github.com/repos/lleverage-ai/kantel/releases/latest"]);
+		expect(urls).toEqual(["https://github.com/lleverage-ai/kantel/releases/latest"]);
 		now += 59 * 60 * 1000;
 		expect(await releases.latest()).toBe("0.4.2");
 		expect(urls).toHaveLength(1);
 		// An hour on, the read fails: what was read is kept, and it's tried again 5 minutes later.
 		now += 2 * 60 * 1000;
 		expect(await releases.latest()).toBe("0.4.2");
-		expect(logs.join("\n")).toMatch(/couldn't read the latest kantel-host: .*403/);
+		expect(logs.join("\n")).toMatch(/couldn't read the latest kantel-host: .*503/);
 		now += 4 * 60 * 1000;
 		expect(await releases.latest()).toBe("0.4.2");
 		expect(urls).toHaveLength(2);
@@ -83,7 +90,9 @@ describe("the latest release", () => {
 		expect(await releases.latest()).toBe("0.4.3");
 	});
 
-	it("takes a mirror's {version}, refuses an answer naming no release, and never waits long", async () => {
+	it("takes a mirror's {version} or GitHub API's {tag_name}, refuses one naming no release, and never waits long", async () => {
+		const api = github([() => Response.json({ tag_name: "v0.5.1" })]);
+		expect(await createHostReleases({ url: "https://api.example/latest", fetch: api.fetcher }).latest()).toBe("0.5.1");
 		const mirror = github([() => Response.json({ version: "0.6.0" })]);
 		expect(await createHostReleases({ url: "https://dl.example/latest.json", fetch: mirror.fetcher }).latest()).toBe(
 			"0.6.0",
