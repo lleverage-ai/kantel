@@ -5148,11 +5148,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									},
 									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
 									restoreAsked(
-										{
-											id: snapshot.id,
-											memory: snapshot.memory,
-											...recordedMachine(recordsMachine(snapshot) ? snapshot : current),
-										},
+										{ id: snapshot.id, memory: snapshot.memory, ...recordedMachine(snapshot) },
 										body.size === undefined ? {} : { size: body.size },
 										[],
 									),
