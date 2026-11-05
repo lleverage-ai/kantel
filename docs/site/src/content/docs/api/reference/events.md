@@ -31,3 +31,21 @@ The account's events, newest first: what webhooks deliver, and a sandbox's histo
 - `200`: [EventPage](/api/reference/types/#eventpage) (`application/json`). A page of events.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Watch sandboxes live
+
+`GET /v1/events/live` (SDK method `watchEvents`)
+
+Server-sent events, one frame each, as the account's sandboxes change state: who changed one makes no difference (the console, the CLI, the API or an SDK, an auto-stop, a host). First a `hello`, then a `sandbox` frame per change, of the sandboxes the caller may see. A comment line every 25 s keeps it open. The server ends it after 10 minutes, or once the caller may no longer watch, and nothing is replayed: reconnect, and read what you show again on each `hello`. A key needs `sandboxes:read`.
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+
+**Answers**
+
+- `200`: [LiveFrame](/api/reference/types/#liveframe) (`text/event-stream`). The account's live changes. Server-sent events, each named after its frame's type with the frame as its JSON data; a comment line is a keep-alive. It takes no WebSocket upgrade.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).

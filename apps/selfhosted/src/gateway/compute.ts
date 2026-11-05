@@ -96,6 +96,7 @@ import {
 	type InviteMailing,
 	imagePatchingSwitch,
 	joinTokenSpender,
+	type LiveRelay,
 	type PersonIdentity,
 	personName,
 	type SandboxBackend,
@@ -521,6 +522,8 @@ export async function gatewayCompute(options: {
 	readonly invites?: InviteMailing;
 	/** Templates (KANTEL_TEMPLATES=experimental). Default off. */
 	readonly templates?: boolean;
+	/** Sandboxes' live changes from the other replicas over the database (live-relay.ts); absent, this gateway's only. */
+	readonly liveRelay?: LiveRelay;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -569,6 +572,7 @@ export async function gatewayCompute(options: {
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(bundleStore === undefined ? {} : { mounts: { bundles: bundleStore } }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.liveRelay === undefined ? {} : { liveRelay: options.liveRelay }),
 	});
 	// Hosts fetch their sandboxes' protected values, bundles and bucket sources, and report what their egress proxies
 	// did, their usage and how their mounts went, over their link. (With mounts off, the service answers nothing for

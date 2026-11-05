@@ -9,6 +9,8 @@
 //   hosts       the compute plane's registry of hosts (@kantel/hosts/store), when it places sandboxes on hosts
 //   relay       tunnel tickets and exposed ports (@kantel/hosts/relay-store), hashed, with hosts
 //   cluster     the live gateway replicas and which holds each host's connection (@kantel/hosts/cluster), with hosts
+//   live        sandboxes' changes for the consoles watching other replicas, NOTIFY'd on the schema's channel
+//               (live-relay.ts); no table
 //
 // Their tables are `audit_*`, `identity_*` and `compute_*`. A database an older version used also holds the agent
 // plane's tables (sessions, workspaces, skills, memory, sharing, connections, the vault and the rest) in this schema
@@ -25,6 +27,7 @@ import { parse } from "pg-connection-string";
 import { createGatewayCluster, type GatewayCluster } from "./cluster.ts";
 import { deferredAccess, type GatewayComponents, identityAccess } from "./components.ts";
 import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
+import { postgresLiveRelay } from "./live-relay.ts";
 
 export interface DurableConfig {
 	readonly databaseUrl: string;
@@ -113,6 +116,15 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			);
 		}
 
+		// Sandboxes' live changes reach the consoles watching any replica over the database (live-relay.ts).
+		const liveRelay = postgresLiveRelay({
+			schema: config.schema,
+			query: (text, values) => pool.query(text, [...values]),
+			connect: () => new pg.Client(withSearchPath(config.databaseUrl, config.schema)),
+			log,
+		});
+		closers.push(async () => liveRelay.stop());
+
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
 		const identity = createSqlIdentity({ driver, audit });
@@ -123,6 +135,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			otp: createSqlOtpStores(driver),
 			computeStore,
+			liveRelay,
 			...(computeHosts === undefined ? {} : { computeHosts, relayStore: createSqlRelayStore(driver) }),
 			...(cluster === undefined ? {} : { cluster }),
 			bindings: {

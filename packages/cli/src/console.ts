@@ -248,6 +248,9 @@ export async function serveLocalConsole(options: LocalConsoleOptions): Promise<L
 		if (options.userAgent !== undefined) headers["user-agent"] = options.userAgent;
 		const method = request.method ?? "GET";
 		const body = method === "GET" || method === "HEAD" ? undefined : await bodyOf(request);
+		// A stream (the live feed) ends upstream when the page's request does.
+		const gone = new AbortController();
+		response.on("close", () => gone.abort());
 		let answer: Response;
 		try {
 			answer = await options.fetch(target, {
@@ -255,6 +258,7 @@ export async function serveLocalConsole(options: LocalConsoleOptions): Promise<L
 				headers,
 				...(body === undefined ? {} : { body: new Uint8Array(body) }),
 				redirect: "manual",
+				signal: gone.signal,
 			});
 		} catch (error) {
 			return sendJson(
@@ -268,12 +272,30 @@ export async function serveLocalConsole(options: LocalConsoleOptions): Promise<L
 			const value = answer.headers.get(name);
 			if (value !== null) out[name] = value;
 		}
+		const type = gatewayType(answer.headers.get("content-type"));
+		if (type.startsWith("text/event-stream") && answer.body !== null) {
+			// Server-sent events are passed on as they come, for as long as either side keeps them open.
+			response.writeHead(answer.status, { ...PAGE_HEADERS, ...out, ...GATEWAY_HEADERS, "content-type": type });
+			response.flushHeaders();
+			const reader = answer.body.getReader();
+			try {
+				for (;;) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					response.write(value);
+				}
+			} catch {
+				// The page left, or the gateway dropped it: either way it ends here.
+			}
+			response.end();
+			return;
+		}
 		const bytes = Buffer.from(await answer.arrayBuffer());
 		response.writeHead(answer.status, {
 			...PAGE_HEADERS,
 			...out,
 			...GATEWAY_HEADERS,
-			"content-type": gatewayType(answer.headers.get("content-type")),
+			"content-type": type,
 		});
 		response.end(bytes);
 	};

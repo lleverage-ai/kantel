@@ -85,6 +85,7 @@ import {
 	ListSandboxesQuery,
 	ListSnapshotsQuery,
 	ListTemplatesQuery,
+	LiveFrame,
 	Member,
 	MemberList,
 	MemberPath,
@@ -1809,7 +1810,27 @@ export const deleteTelemetry = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
-export const eventRoutes = { listEvents } as const;
+export const watchEvents = defineRoute({
+	operationId: "watchEvents",
+	method: "GET",
+	path: "/events/live",
+	tag: "events",
+	summary: "Watch sandboxes live",
+	description: describe(
+		"Server-sent events, one frame each, as the account's sandboxes change state: who changed one makes no difference " +
+			"(the console, the CLI, the API or an SDK, an auto-stop, a host). First a `hello`, then a `sandbox` frame per " +
+			"change, of the sandboxes the caller may see. A comment line every 25 s keeps it open. The server ends it after " +
+			"10 minutes, or once the caller may no longer watch, and nothing is replayed: reconnect, and read what you show " +
+			"again on each `hello`.",
+		scope("sandboxes:read"),
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The account's live changes." },
+	stream: { frame: LiveFrame, eventsOnly: true },
+	errors: ["invalid", "forbidden"],
+});
+
+export const eventRoutes = { listEvents, watchEvents } as const;
 export const webhookRoutes = {
 	listWebhooks,
 	createWebhook,

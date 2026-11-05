@@ -59,6 +59,7 @@ import {
 	type Template,
 	vcpuRangeFor,
 } from "./compute-model.ts";
+import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
@@ -221,6 +222,8 @@ export function SandboxesPage({
 		const timer = setTimeout(reload, pollMs);
 		return () => clearTimeout(timer);
 	}, [moving, reload, pollMs, listed]);
+	// And at once when one changes elsewhere: the CLI, the API, an auto-stop.
+	useFollowSandboxes(source, account.id, reload);
 	useEffect(() => {
 		if (listed === undefined) return;
 		setLocal((current) => {

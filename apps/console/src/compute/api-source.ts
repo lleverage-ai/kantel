@@ -106,6 +106,7 @@ import {
 	sshWithoutCliCommand,
 } from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
+import { type LiveSandboxes, liveSandboxes } from "./live-sandboxes.ts";
 import { liveUsage, withUsage } from "./live-usage.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
@@ -245,6 +246,8 @@ interface Context {
 	readonly local?: LocalBridge;
 	/** This browser as a device of its own, when the gateway serves the page to a person (browser-device.ts). */
 	readonly browser?: BrowserDevice;
+	/** The sandboxes' live changes, one stream per account (live-sandboxes.ts). */
+	readonly live: LiveSandboxes;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -571,6 +574,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 					},
 				}),
 		state: UI_STATES[sandbox.state],
+		...(sandbox.state === "deleted" ? { deleted: true } : {}),
 		createdAt: sandbox.createdAt,
 		createdBy: actorName(sandbox.createdBy),
 		...(sandbox.stopsAt === undefined ? {} : { stopsAt: sandbox.stopsAt }),
@@ -649,6 +653,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 		screens: context.local === undefined ? "console" : "tab",
 		// End to end, the host refuses the gateway's file reads, and the history it keeps carries no output yet.
 		endToEnd: async (id) => (await endToEndHost(context, id)) !== undefined,
+		watch: (accountId, changed) => context.live.watch(accountId, changed),
 		list: async (accountId) => {
 			const sandboxes = await allPages((cursor) =>
 				api.listSandboxes({ account: accountId, all: true, ...after(cursor) }),
@@ -2240,6 +2245,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		bucketSources: new Map(),
 		...(local === undefined ? {} : { local }),
 		...(browser === undefined ? {} : { browser }),
+		live: liveSandboxes(api),
 	};
 	// What the deployment offers beyond the core, each asked once: an account's own hosts, for anyone but a super-admin,
 	// and read-only mounts.

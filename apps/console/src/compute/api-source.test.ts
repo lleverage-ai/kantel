@@ -165,6 +165,9 @@ describe("sandboxes", () => {
 		await source.sandboxes.remove(fork.id);
 		await api.service.idle();
 		expect((await source.sandboxes.list(accountId)).map((sandbox) => sandbox.id)).toEqual([made.id]);
+		// Its page reads it as deleted, as it would after the live feed reconnected having missed the deletion.
+		expect(await source.sandboxes.get(fork.id)).toMatchObject({ id: fork.id, deleted: true });
+		expect(await source.sandboxes.get(made.id)).not.toHaveProperty("deleted");
 	});
 
 	it("reads an E2E sandbox's history from its host through kantel console, and others' from the gateway", async () => {

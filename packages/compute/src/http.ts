@@ -22,6 +22,7 @@ import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
 import type { BaseImages } from "./base-status.ts";
+import type { LiveRelay } from "./live.ts";
 import { FILE_URL_PATH, type MountsOptions } from "./mounts.ts";
 import {
 	type ComputeLimits,
@@ -91,6 +92,8 @@ export interface ComputeApiOptions {
 	readonly mounts?: MountsOptions;
 	/** Emails an invite made for an address, with a link to join (`ComputeServiceOptions.invites`); absent, none. */
 	readonly invites?: InviteMailing;
+	/** Sandboxes' changes from the other gateways over one database (`ComputeServiceOptions.liveRelay`); absent, none. */
+	readonly liveRelay?: LiveRelay;
 	/** How long a call waits for a sandbox that is starting (`ComputeServiceOptions.startHoldMs`). Default 60 s. */
 	readonly startHoldMs?: number;
 	/** How often that call reads the sandbox again (`ComputeServiceOptions.startPollMs`). Default 250 ms. */
@@ -173,6 +176,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.liveRelay === undefined ? {} : { liveRelay: options.liveRelay }),
 		...(options.startHoldMs === undefined ? {} : { startHoldMs: options.startHoldMs }),
 		...(options.startPollMs === undefined ? {} : { startPollMs: options.startPollMs }),
 	});

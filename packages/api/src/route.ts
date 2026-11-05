@@ -63,7 +63,14 @@ export interface RouteDefinition {
 	 * a JSON array of frames, and as server-sent events otherwise, one frame per event. The handler returns the
 	 * `Response` itself, and the SDK's method opens the WebSocket.
 	 */
-	readonly stream?: { readonly frame: TSchema };
+	readonly stream?: {
+		readonly frame: TSchema;
+		/**
+		 * Served as server-sent events only, never upgraded to a WebSocket. The SDK's method reads it over `fetch`, so it
+		 * carries the client's headers as every other call does (a browser can't put a header on a WebSocket).
+		 */
+		readonly eventsOnly?: true;
+	};
 	/** The error codes the route documents, besides `unauthenticated` (401), which every route can answer. */
 	readonly errors: readonly ErrorCode[];
 }

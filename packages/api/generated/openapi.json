@@ -7901,6 +7901,67 @@
 				}
 			}
 		},
+		"/events/live": {
+			"get": {
+				"operationId": "watchEvents",
+				"summary": "Watch sandboxes live",
+				"description": "Server-sent events, one frame each, as the account's sandboxes change state: who changed one makes no difference (the console, the CLI, the API or an SDK, an auto-stop, a host). First a `hello`, then a `sandbox` frame per change, of the sandboxes the caller may see. A comment line every 25 s keeps it open. The server ends it after 10 minutes, or once the caller may no longer watch, and nothing is replayed: reconnect, and read what you show again on each `hello`. A key needs `sandboxes:read`.",
+				"tags": ["events"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The account's live changes. Server-sent events, each named after its frame's type with the frame as its JSON data; a comment line is a keep-alive. It takes no WebSocket upgrade.",
+						"content": {
+							"text/event-stream": {
+								"schema": {
+									"$ref": "#/components/schemas/LiveFrame"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/webhooks": {
 			"get": {
 				"operationId": "listWebhooks",
@@ -13317,6 +13378,62 @@
 					}
 				},
 				"title": "JoinOrganisationBody"
+			},
+			"LiveFrame": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/LiveHello"
+					},
+					{
+						"$ref": "#/components/schemas/LiveSandboxChange"
+					}
+				],
+				"title": "LiveFrame",
+				"description": "One frame of the account's live stream."
+			},
+			"LiveHello": {
+				"type": "object",
+				"required": ["type", "at"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "hello"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "LiveHello",
+				"description": "The stream is open. Read what you show again after each one: changes made while no stream was open (before the first, between a drop and the reconnection) are not sent."
+			},
+			"LiveSandboxChange": {
+				"type": "object",
+				"required": ["type", "sandboxId", "accountId", "state", "at"],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "sandbox"
+					},
+					"sandboxId": {
+						"type": "string"
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"state": {
+						"$ref": "#/components/schemas/SandboxState"
+					},
+					"previousState": {
+						"$ref": "#/components/schemas/SandboxState"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "LiveSandboxChange",
+				"description": "A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, the API or an SDK, its auto-stop, its host). No `previousState`: it was just made. Read the sandbox for the rest."
 			},
 			"Member": {
 				"type": "object",

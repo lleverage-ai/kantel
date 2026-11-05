@@ -34,7 +34,11 @@ export interface StreamHandlers<Frame> {
 	/** The frames of one message, in order: `hello`, then a snapshot or the deltas after `after`, then live deltas. */
 	onFrames(frames: readonly Frame[]): void;
 	onOpen?(): void;
-	/** The socket closed, by either side. Reconnect with `{ after: handle.cursor }` to resume. */
+	/**
+	 * The socket closed, by either side. Reconnect with `{ after: handle.cursor }` to resume. A server-sent events stream
+	 * that Kantel refused closes with 4000 and the HTTP status (4401 for a sign-in that ended), one that ended with 1000,
+	 * and one that failed with 1006.
+	 */
 	onClose?(event: { readonly code: number; readonly reason: string }): void;
 }
 
@@ -95,6 +99,8 @@ export interface ApiCall {
 	readonly headers?: { readonly [name: string]: string | undefined };
 	/** The answer is bytes, such as an image, not JSON: the call resolves with a `Blob`. */
 	readonly binary?: boolean;
+	/** A stream served as server-sent events only: read over `fetch`, never a WebSocket. */
+	readonly events?: boolean;
 }
 
 const queryString = (query: object | undefined): string => {
@@ -189,13 +195,101 @@ function defaultWebSocket(url: string, headers: { readonly [name: string]: strin
 	return Object.keys(headers).length === 0 ? new Socket(url) : new Socket(url, { headers });
 }
 
-/** Opens a stream route's WebSocket and hands each message's frames to `handlers`. */
+/**
+ * The frame of one server-sent event (`data:` lines, joined), or undefined for a comment, a keep-alive or anything
+ * that isn't JSON.
+ */
+function eventFrame(block: string): unknown {
+	const data = block
+		.split("\n")
+		.filter((line) => line.startsWith("data:"))
+		.map((line) => line.slice(line.startsWith("data: ") ? 6 : 5));
+	if (data.length === 0) return undefined;
+	try {
+		return JSON.parse(data.join("\n"));
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Reads a stream route's server-sent events over `fetch`, with the client's headers as any call has them, and hands each
+ * event's frame to `handlers`.
+ */
+function openEvents<Frame>(
+	options: KantelClientOptions,
+	call: ApiCall,
+	handlers: StreamHandlers<Frame>,
+	callOptions: CallOptions,
+): StreamHandle {
+	const aborter = new AbortController();
+	let closed = false;
+	const finish = (code: number, reason: string) => {
+		if (closed) return;
+		closed = true;
+		aborter.abort();
+		handlers.onClose?.({ code, reason });
+	};
+	const handle: StreamHandle = {
+		cursor: undefined,
+		close() {
+			if (closed) return;
+			closed = true;
+			aborter.abort();
+		},
+	};
+	callOptions.signal?.addEventListener("abort", () => handle.close(), { once: true });
+	void (async () => {
+		const headers: { [name: string]: string } = { accept: "text/event-stream" };
+		Object.assign(headers, (await options.headers?.()) ?? {});
+		const token = typeof options.token === "function" ? await options.token() : options.token;
+		if (token !== undefined) headers.authorization = `Bearer ${token}`;
+		if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
+		Object.assign(headers, callOptions.headers ?? {});
+		if (closed) return;
+		const doFetch = options.fetch ?? fetch;
+		const response = await doFetch(`${options.baseUrl.replace(/\/+$/, "")}${call.path}${queryString(call.query)}`, {
+			method: call.method,
+			headers,
+			signal: aborter.signal,
+		});
+		if (!response.ok) {
+			const error = await errorOf(response);
+			return finish(4000 + response.status, error.message);
+		}
+		if (response.body === null) return finish(1006, "The stream had no body");
+		handlers.onOpen?.();
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+			for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+				const frame = eventFrame(buffer.slice(0, end));
+				buffer = buffer.slice(end + 2);
+				if (frame !== undefined && !closed) handlers.onFrames([frame as Frame]);
+			}
+		}
+		finish(1000, "The server ended the stream");
+	})().catch((error: unknown) => {
+		finish(1006, error instanceof Error ? error.message : "The stream failed");
+	});
+	return handle;
+}
+
+/**
+ * Opens a stream route and hands each message's frames to `handlers`: over a WebSocket, or a route served as
+ * server-sent events only (`events`) over `fetch`.
+ */
 export function openStream<Frame>(
 	options: KantelClientOptions,
 	call: ApiCall,
 	handlers: StreamHandlers<Frame>,
 	callOptions: CallOptions = {},
 ): StreamHandle {
+	if (call.events === true) return openEvents(options, call, handlers, callOptions);
 	const base = options.baseUrl.replace(/\/+$/, "");
 	const origin = (globalThis as { location?: { href?: string } }).location?.href;
 	const url = new URL(`${base}${call.path}${queryString(call.query)}`, origin);
