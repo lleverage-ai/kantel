@@ -141,6 +141,10 @@ type MicroVMConfig struct {
 	TemplateMemoryMiB    int `json:"templateMemoryMiB,omitempty"`
 	TemplateMaxMemoryMiB int `json:"templateMaxMemoryMiB,omitempty"`
 	TemplateDiskGiB      int `json:"templateDiskGiB,omitempty"`
+	// MinDiskGiB and MaxDiskGiB bound the disk a sandbox may ask for apart from its vCPUs and memory (kantel new
+	// --disk). Defaults: the smallest named size's disk, and 1024 GiB. A create also needs that much disk free.
+	MinDiskGiB int `json:"minDiskGiB,omitempty"`
+	MaxDiskGiB int `json:"maxDiskGiB,omitempty"`
 }
 
 // SharedTemplates says whether the microVM tier's shared templates are on (the default).

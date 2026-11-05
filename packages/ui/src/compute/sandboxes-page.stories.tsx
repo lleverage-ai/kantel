@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
-import type { HostingMode } from "./compute-model.ts";
+import { DEFAULT_SANDBOX_SHAPES, type HostingMode, type SandboxShapes } from "./compute-model.ts";
 import {
 	type ComputeFixtureOptions,
 	createComputeFixtures,
@@ -25,6 +25,7 @@ function Scenario({
 	usage = "live",
 	filters,
 	metricsOf,
+	shapes,
 }: {
 	filters?: SandboxFilters;
 	metricsOf?: string;
@@ -36,11 +37,15 @@ function Scenario({
 	noHosts?: boolean;
 	/** `live`: the sample's made-up CPU every 5 seconds. `loading`: it never answers. `none`: no live source. */
 	usage?: "live" | "loading" | "none";
+	/** What New sandbox's hosts offer, in place of the sample's. */
+	shapes?: SandboxShapes;
 }) {
 	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
 	const [sandboxes] = useState(() => {
-		if (usage === "live") return source.sandboxes;
-		const { usageSeries: _, ...rest } = source.sandboxes;
+		const offered =
+			shapes === undefined ? source.sandboxes : { ...source.sandboxes, shapes: () => Promise.resolve(shapes) };
+		if (usage === "live") return offered;
+		const { usageSeries: _, ...rest } = offered;
 		const hang = () => new Promise<never>(() => {});
 		return usage === "none" ? rest : { ...rest, usageSeries: hang, usageHistory: hang, processes: hang };
 	});
@@ -127,11 +132,25 @@ export const Personal: Story = () => <Scenario personal />;
  */
 export const BaseOutdated: Story = () => <Scenario />;
 
-/** New's caret: New sandbox, open, with its vCPU and memory sliders. Choose Isolate for its memory slider. */
+/**
+ * New's caret: New sandbox, open, with its vCPU, memory and disk sliders. Choose Isolate for its memory slider. Pick a
+ * saved snapshot in Start from: the disk slider goes, as a sandbox made from a snapshot keeps its disk.
+ */
 export const Create: Story = () => <Scenario creating />;
 
-/** New sandbox on hosted Kantel: the price follows the vCPUs and memory chosen. */
+/** New sandbox on hosted Kantel: the price follows the vCPUs and memory chosen; the disk isn't priced. */
 export const CreateHosted: Story = () => <Scenario hosting="hosted" creating />;
+
+// Older hosts: none takes a disk off its presets.
+const { diskGb: _disk, ...noDisk } = DEFAULT_SANDBOX_SHAPES.microvm;
+
+/** New sandbox where the hosts make any vCPUs and memory but no disk off their presets: no disk slider. */
+export const CreateNoDisk: Story = () => <Scenario creating shapes={{ ...DEFAULT_SANDBOX_SHAPES, microvm: noDisk }} />;
+
+/** New sandbox where the hosts make only their named sizes: a Size list, each size with its own disk. */
+export const CreatePresetsOnly: Story = () => (
+	<Scenario creating shapes={{ ...DEFAULT_SANDBOX_SHAPES, microvm: { ...noDisk, custom: false } }} />
+);
 
 /** New sandbox on a phone. */
 export const CreateMobile: Story = () => <Scenario creating narrow />;

@@ -280,6 +280,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
 		features: ["egress-policy", CUSTOM_SHAPES_FEATURE],
 		sizes: SIZES,
+		// The disk it gives a shape off its sizes, as kantel-host's defaults: its smallest size's, up to 1024 GB.
+		disk: { minGb: 10, maxGb: 1024 },
 		labels: { site: "local" },
 	};
 
@@ -315,14 +317,16 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const placement = (machine: Machine): Placement => {
 		const named = SIZES.find((entry) => entry.name === (machine.size ?? "default"));
 		const shape = machine.shape;
-		// A shape off the sizes gets the disk of the smallest size with at least its memory, as kantel-host's do.
+		// A shape off the sizes gets the disk it asks for, else that of the smallest size with at least its memory, as
+		// kantel-host's do.
 		const shaped =
 			shape === undefined
 				? named
 				: {
 						vcpus: shape.vcpus,
 						memoryMb: shape.memoryMb,
-						diskGb: (SIZES.find((entry) => entry.memoryMb >= shape.memoryMb) ?? SIZES.at(-1))?.diskGb ?? 20,
+						diskGb:
+							shape.diskGb ?? (SIZES.find((entry) => entry.memoryMb >= shape.memoryMb) ?? SIZES.at(-1))?.diskGb ?? 20,
 					};
 		const size = machine.type === "microvm" ? shaped : undefined;
 		return {

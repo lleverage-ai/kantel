@@ -402,7 +402,7 @@ func TestCreateFromATemplateSnapshotRestoresIt(t *testing.T) {
 	if origin.release == nil {
 		t.Fatal("the restore holds no share of the snapshot's lock")
 	}
-	want := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: "tsn_1"}
+	want := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: "tsn_1", templateDiskGiB: kept.DiskGiB}
 	if origin = settled(origin); !reflect.DeepEqual(origin, want) {
 		t.Fatalf("origin %+v, want %+v", origin, want)
 	}
@@ -542,10 +542,16 @@ func TestCreateFromATemplateRestoresOnlyIntoTheMachineItWasBuiltAs(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if origin.templateSnapshot != "tsn_1" || origin.release == nil {
+		// Its disk is the build's (20 GiB), which a bigger one is grown from once it runs.
+		if origin.templateSnapshot != "tsn_1" || origin.release == nil || origin.templateDiskGiB != DefaultSizes[1].DiskGiB {
 			t.Fatalf("%s: origin %+v", size.Name, origin)
 		}
 		origin.release()
+	}
+	// Its vCPUs and memory with a smaller disk than it was built with: a disk can't shrink, so it boots fresh.
+	smaller := proto.Size{Name: CustomSizeName(4, 2048, 10), VCPUs: 4, MemoryMiB: 2048, DiskGiB: 10}
+	if origin, err = m.startOf(context.Background(), proto.CreateParams{SandboxID: "sbx_4", Template: &boot}, smaller); err != nil || origin.release != nil || origin.source != "boot" {
+		t.Fatalf("origin %+v %v", origin, err)
 	}
 }
 

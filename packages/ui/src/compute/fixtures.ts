@@ -2105,8 +2105,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									resources: {
 										vcpus: shape.vcpus,
 										memoryGb: shape.memoryMb / 1024,
-										// As a host gives it: a preset's own, else the smallest preset's with at least its memory.
-										diskGb: input.kind === "isolate" ? 0 : sampleDisk(shape.memoryMb),
+										// The disk chosen, else as a host gives it: a preset's own, else the smallest preset's with
+										// at least its memory.
+										diskGb: input.kind === "isolate" ? 0 : (input.shape?.diskGb ?? sampleDisk(shape.memoryMb)),
 									},
 								}),
 						state: "starting",

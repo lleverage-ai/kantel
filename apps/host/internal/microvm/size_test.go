@@ -82,6 +82,51 @@ func TestSizeRefusesBadCustomShapes(t *testing.T) {
 	}
 }
 
+func TestDiskLimitsDefaultAndClamp(t *testing.T) {
+	for _, c := range []struct {
+		sizes    []proto.Size
+		min, max int
+		want     proto.DiskLimits
+	}{
+		// The smallest named size's disk (the shared templates'), and 1 TiB.
+		{DefaultSizes, 0, 0, proto.DiskLimits{MinGiB: 10, MaxGiB: DefaultMaxDiskGiB}},
+		{nil, 0, 0, proto.DiskLimits{MinGiB: 1, MaxGiB: DefaultMaxDiskGiB}},
+		// The operator's, within 1 to 4096 GiB, the least never above the most.
+		{DefaultSizes, 4, 200, proto.DiskLimits{MinGiB: 4, MaxGiB: 200}},
+		{DefaultSizes, 0, 9999, proto.DiskLimits{MinGiB: 10, MaxGiB: maxCustomDiskGiB}},
+		{DefaultSizes, 300, 200, proto.DiskLimits{MinGiB: 200, MaxGiB: 200}},
+	} {
+		if got := DiskLimits(c.sizes, c.min, c.max); got != c.want {
+			t.Fatalf("DiskLimits(%v, %d, %d) = %+v, want %+v", c.sizes, c.min, c.max, got, c.want)
+		}
+	}
+}
+
+func TestCreateSizeKeepsADiskWithinTheLimits(t *testing.T) {
+	m := &Manager{cfg: Config{Sizes: DefaultSizes, MinDiskGiB: 15, MaxDiskGiB: 100}, hostMemoryMiB: 16384}
+	for _, disk := range []int{15, 64, 100, 10, 50} {
+		// 10 and 50 are named sizes' disks, which a control plane from before disks were chosen asks for.
+		got, err := m.createSize(proto.CreateParams{VCPUs: 2, MemoryMiB: 2048, DiskGiB: disk})
+		if err != nil || got.DiskGiB != disk || got.Name != CustomSizeName(2, 2048, disk) {
+			t.Fatalf("createSize(disk %d) = %+v, %v", disk, got, err)
+		}
+	}
+	for _, disk := range []int{14, 101, 4096} {
+		_, err := m.createSize(proto.CreateParams{VCPUs: 2, MemoryMiB: 2048, DiskGiB: disk})
+		var perr *proto.Error
+		if !errors.As(err, &perr) || perr.Code != proto.ErrInvalid || !strings.Contains(perr.Message, "15 to 100 GiB") {
+			t.Fatalf("createSize(disk %d) = %v, want %s", disk, err, proto.ErrInvalid)
+		}
+	}
+	// A named size, and a sandbox made before (its size by name), whatever the limits.
+	if got, err := m.createSize(proto.CreateParams{Size: "small"}); err != nil || got.DiskGiB != 10 {
+		t.Fatalf("createSize(small) = %+v, %v", got, err)
+	}
+	if got, err := m.size(CustomSizeName(2, 2048, 500)); err != nil || got.DiskGiB != 500 {
+		t.Fatalf("size(custom 500 GiB) = %+v, %v", got, err)
+	}
+}
+
 // A create asking for part of a shape, or a shape the host can't give, is refused before anything is made.
 func TestCreateRefusesABadCustomShape(t *testing.T) {
 	m := &Manager{cfg: Config{Root: t.TempDir(), Sizes: DefaultSizes}, hostMemoryMiB: 16384}

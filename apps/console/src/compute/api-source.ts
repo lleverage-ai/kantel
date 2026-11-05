@@ -510,6 +510,8 @@ export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
 						vcpus: { ...microvm.vcpus },
 						memoryMb: { ...microvm.memoryMb },
 						memoryMbPerVcpu: { ...microvm.memoryMbPerVcpu },
+						// Absent where no host takes a disk off its presets: then no disk may be chosen.
+						...(microvm.diskGb === undefined ? {} : { diskGb: { ...microvm.diskGb } }),
 						presets: microvm.presets.map((preset) => ({ ...preset })),
 						// Older hosts only: then just the presets may be chosen.
 						custom: microvm.custom,
@@ -685,14 +687,21 @@ function sandboxesSource(context: Context): SandboxesSource {
 			const made = await api.createSandbox({
 				account: input.accountId,
 				type: input.kind,
-				// An isolate asks for memory alone: it shares its account's VM's CPU.
+				// An isolate asks for memory alone: it shares its account's VM's CPU. A microVM asks for a disk only where one
+				// was chosen, and never from a snapshot, which keeps its own.
 				...(input.shape === undefined
 					? {}
 					: {
 							resources:
 								input.kind === "isolate"
 									? { memoryMb: input.shape.memoryMb }
-									: { vcpus: input.shape.vcpus, memoryMb: input.shape.memoryMb },
+									: {
+											vcpus: input.shape.vcpus,
+											memoryMb: input.shape.memoryMb,
+											...(input.shape.diskGb === undefined || input.fromSnapshot !== undefined
+												? {}
+												: { diskGb: input.shape.diskGb }),
+										},
 						}),
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),

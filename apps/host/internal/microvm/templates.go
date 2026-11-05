@@ -407,7 +407,8 @@ func (m *Manager) leaseTemplateSnapshot(id string, size proto.Size) (sandboxOrig
 
 // restorableTemplateSnapshot is a template snapshot's origin when it is whole and made with the runtime the tier runs
 // and size's vCPUs and memory: a restore keeps the machine the snapshot was taken of, so another would give the
-// sandbox a machine other than the one it was placed and booted fresh as.
+// sandbox a machine other than the one it was placed and booted fresh as. Its disk is size's or smaller: a smaller
+// one is grown to size's once the sandbox runs (origin.templateDiskGiB), and a bigger one can't be shrunk.
 func (m *Manager) restorableTemplateSnapshot(id string, size proto.Size) (sandboxOrigin, error) {
 	kept, err := m.readTemplateSnapshot(id)
 	if err != nil {
@@ -419,8 +420,11 @@ func (m *Manager) restorableTemplateSnapshot(id string, size proto.Size) (sandbo
 	if kept.VCPUs != size.VCPUs || kept.MemoryMiB != size.MemoryMiB {
 		return sandboxOrigin{}, fmt.Errorf("built as %d vCPUs and %d MiB, not %d and %d", kept.VCPUs, kept.MemoryMiB, size.VCPUs, size.MemoryMiB)
 	}
+	if kept.DiskGiB > size.DiskGiB {
+		return sandboxOrigin{}, fmt.Errorf("built with a %d GiB disk, more than %d", kept.DiskGiB, size.DiskGiB)
+	}
 	dir := m.templateSnapshotDir(id)
-	origin := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: id, guest: kept.Guest}
+	origin := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: id, templateDiskGiB: kept.DiskGiB, guest: kept.Guest}
 	for _, file := range []string{origin.rootfs, origin.state, origin.mem, origin.disk} {
 		if !fileExists(file) {
 			return sandboxOrigin{}, fmt.Errorf("%s is missing", file)

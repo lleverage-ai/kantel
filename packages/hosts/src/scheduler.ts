@@ -6,9 +6,9 @@
  * label asked for, and has the memory and disk free. What it reported in its last heartbeat is reduced by what has
  * been placed on it since, so a burst of creates doesn't all land on the host that looked emptiest a few seconds ago.
  *
- * A microVM is asked for by shape (vCPUs and memory) or, as before shapes, by a size's name. A shape one of the host's
- * named sizes has is that size; another is a custom shape, which a host makes only if it reports `custom-shapes` and
- * has the vCPUs and memory. The host restores it from the template it keeps for its vCPU count (or boots it from
+ * A microVM is asked for by shape (vCPUs and memory, and a disk where one is chosen) or, as before shapes, by a size's
+ * name. A shape one of the host's named sizes has is that size; another is a custom shape, which a host makes only if
+ * it reports `custom-shapes`, has the vCPUs and memory, and gives that disk (`diskLimitsOn`). The host restores it from the template it keeps for its vCPU count (or boots it from
  * scratch while that's being made, or when the host keeps templates per size).
  *
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
@@ -16,14 +16,24 @@
  * preferred for having one ready: a create restores a snapshot wherever it lands.
  */
 import type { PlacementReason } from "@kantel/contracts";
-import { HOST_FEATURES, type HostSize, type SandboxTier } from "./protocol.ts";
+import { HOST_FEATURES, type HostDiskLimits, type HostSize, type SandboxTier } from "./protocol.ts";
 import type { HostRecord } from "./store.ts";
 
-/** What a sandbox asks for: a microVM's vCPUs and memory, or an isolate's memory alone (`vcpus` 0). */
+/**
+ * What a sandbox asks for: a microVM's vCPUs and memory, and its disk where one is chosen (else its host gives the
+ * shape's, `diskFor`), or an isolate's memory alone (`vcpus` 0).
+ */
 export interface Shape {
 	readonly vcpus: number;
 	readonly memoryMiB: number;
+	readonly diskGiB?: number;
 }
+
+/** As a host from before hosts said their disk limits took a custom shape's disk. */
+const LEGACY_DISK_LIMITS: HostDiskLimits = { minGiB: 1, maxGiB: 4096 };
+
+/** The disk `host` gives a custom shape: what it says, else what a host from before it said took. */
+export const diskLimitsOn = (host: HostRecord): HostDiskLimits => host.facts?.disk ?? LEGACY_DISK_LIMITS;
 
 export interface PlacementRequest {
 	readonly tier: SandboxTier;
@@ -94,6 +104,18 @@ export const makesCustomShapes = (host: HostRecord): boolean =>
 	host.facts?.features?.includes(HOST_FEATURES.customShapes) === true;
 
 /**
+ * Whether a disk asked for is outside what `host` gives a custom shape: its limits (`diskLimitsOn`), unless one of its
+ * named sizes has that disk, as kantel-host's checkDisk admits it. A custom shape given a named size's disk by default
+ * (`diskFor`) records that disk, so a copy of it asking for it again goes to the same host.
+ */
+const diskOutside = (host: HostRecord, diskGiB: number | undefined): boolean => {
+	if (diskGiB === undefined) return false;
+	if (host.facts?.sizes.some((size) => size.diskGiB === diskGiB) === true) return false;
+	const limits = diskLimitsOn(host);
+	return diskGiB < limits.minGiB || diskGiB > limits.maxGiB;
+};
+
+/**
  * What `host` would make for the request: a named size it has (by name, or by a shape matching one exactly), a custom
  * shape it can make, or nothing.
  */
@@ -111,11 +133,19 @@ export function shapeOn(
 		return named === undefined ? undefined : { size: named, custom: false };
 	}
 	const named = facts.sizes.find(
-		(candidate) => candidate.vcpus === shape.vcpus && candidate.memoryMiB === shape.memoryMiB,
+		(candidate) =>
+			candidate.vcpus === shape.vcpus &&
+			candidate.memoryMiB === shape.memoryMiB &&
+			(shape.diskGiB === undefined || candidate.diskGiB === shape.diskGiB),
 	);
 	if (named !== undefined) return { size: named, custom: false };
 	if (!makesCustomShapes(host) || shape.vcpus > facts.cpus || shape.memoryMiB > facts.memoryMiB) return undefined;
-	const custom = { vcpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskGiB: diskFor(facts.sizes, shape.memoryMiB) };
+	if (diskOutside(host, shape.diskGiB)) return undefined;
+	const custom = {
+		vcpus: shape.vcpus,
+		memoryMiB: shape.memoryMiB,
+		diskGiB: shape.diskGiB ?? diskFor(facts.sizes, shape.memoryMiB),
+	};
 	return { size: { name: customSizeName(custom), ...custom }, custom: true };
 }
 
@@ -142,7 +172,9 @@ const asked = (request: PlacementRequest): string =>
 		? "an isolate"
 		: request.shape === undefined
 			? `a microVM of size ${request.size ?? "default"}`
-			: `a microVM of ${request.shape.vcpus} vCPU and ${request.shape.memoryMiB} MiB`;
+			: `a microVM of ${request.shape.vcpus} vCPU and ${request.shape.memoryMiB} MiB${
+					request.shape.diskGiB === undefined ? "" : ` with a ${request.shape.diskGiB} GiB disk`
+				}`;
 
 export function place(request: PlacementRequest, candidates: readonly Candidate[]): Placement | Refusal {
 	const reasons = new Set<string>();
@@ -184,9 +216,11 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			turnedAway(
 				request.shape === undefined
 					? `no size ${request.size ?? "default"}`
-					: makesCustomShapes(host)
-						? "too small for that shape"
-						: "only its named sizes",
+					: !makesCustomShapes(host)
+						? "only its named sizes"
+						: diskOutside(host, request.shape.diskGiB)
+							? "no disk that size"
+							: "too small for that shape",
 				"no_host_offers_size",
 			);
 			continue;
@@ -199,8 +233,12 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		}
 		const freeMemory = capacity.freeMemoryMiB - candidate.reservedMemoryMiB;
 		const freeDisk = capacity.freeDiskGiB - candidate.reservedDiskGiB;
-		if (freeMemory < size.memoryMiB || freeDisk < size.diskGiB) {
+		if (freeMemory < size.memoryMiB) {
 			turnedAway("full", "insufficient_capacity");
+			continue;
+		}
+		if (freeDisk < size.diskGiB) {
+			turnedAway(`${Math.max(0, freeDisk)} GiB of disk free`, "insufficient_capacity");
 			continue;
 		}
 		fits.push({
