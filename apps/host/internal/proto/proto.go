@@ -871,6 +871,14 @@ type SandboxUsage struct {
 	// MemSource is where MemUsedBytes came from, MemSourceGuest or MemSourceRSS. A host that predates it sends none
 	// (its figures are all "rss").
 	MemSource string `json:"memSource,omitempty"`
+	// DiskUsedBytes and DiskTotalBytes are a microVM's own disk as its guest counts it (df's used and size), from its
+	// agent; both absent for an isolate, and for a guest whose agent predates them or didn't answer in time.
+	DiskUsedBytes  int64 `json:"diskUsedBytes,omitempty"`
+	DiskTotalBytes int64 `json:"diskTotalBytes,omitempty"`
+	// IOPressure is the share of the interval, 0 to 1, in which at least one of the guest's tasks waited on IO (its
+	// kernel's IO pressure, "some"). Absent when the guest has no pressure figures (a kernel booted without psi=1, an
+	// agent that predates them) or for its first reading.
+	IOPressure *float64 `json:"ioPressure,omitempty"`
 }
 
 // SandboxUsage.MemSource's values.

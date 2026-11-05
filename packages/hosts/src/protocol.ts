@@ -497,6 +497,17 @@ export interface HostSandboxUsage {
 	 * that predates it sends none, and its figures are all `rss`.
 	 */
 	readonly memSource?: HostMemorySource;
+	/**
+	 * A microVM's own disk as its guest counts it (df's used and size), from its agent: both or neither. Neither for an
+	 * isolate, or from a host or guest agent that predates them.
+	 */
+	readonly diskUsedBytes?: number;
+	readonly diskTotalBytes?: number;
+	/**
+	 * The share of the interval, 0 to 1, in which at least one of a microVM's guest tasks waited on IO (its kernel's IO
+	 * pressure, "some"). None from a guest without pressure figures (booted without psi=1) or for its first reading.
+	 */
+	readonly ioPressure?: number;
 }
 
 /** `HostSandboxUsage.memSource`. */

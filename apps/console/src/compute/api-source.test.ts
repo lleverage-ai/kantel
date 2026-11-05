@@ -16,6 +16,7 @@ import { KantelError } from "@kantel/contracts";
 import { type ComputeSource, FilesRefusedError } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED, shapesOf } from "./api-source.ts";
+import { sandboxMeans } from "./live-usage.ts";
 import { localBridge } from "./local.ts";
 
 const ORIGIN = "https://kantel.test";
@@ -1218,6 +1219,60 @@ describe("hosts", () => {
 		}
 		const newest = usage.points.at(-1)?.at ?? 0;
 		expect((await host(STUB_HOST_ID, newest)).points.every((point) => point.at > newest)).toBe(true);
+	});
+
+	it("reads a sandbox's metrics over an hour, a day or a week, leaving out what nothing measured", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, kind: "microvm" });
+		await api.service.idle();
+		const history = source.sandboxes.usageHistory;
+		if (history === undefined) throw new Error("No usage history");
+		// Just made: no readings, so no points, rather than a day of zeros.
+		for (const range of ["1h", "24h", "1w"] as const) expect((await history(made.id, range)).points).toEqual([]);
+		expect((await history(made.id, "24h")).intervalMs).toBe(300_000);
+		expect((await history(made.id, "1w")).intervalMs).toBe(3_600_000);
+	});
+
+	it("maps a day's means for the chart: at each interval's end, a microVM's disk and IO, unmeasured ones left out", () => {
+		const now = 1_000_000;
+		const series = sandboxMeans(
+			{
+				sandboxId: "sbx_a",
+				intervalSeconds: 300,
+				points: [
+					{ at: 100_000, cpu: 0, memoryMb: 0, runningSeconds: 0, cost: 0, measured: false },
+					{
+						at: 400_000,
+						cpu: 0.5,
+						memoryMb: 512,
+						runningSeconds: 300,
+						cost: 0,
+						measured: true,
+						diskUsedBytes: 2 * 1024 ** 3,
+						ioPressure: 0.1,
+					},
+					// From a gateway before `measured`: one it ran in, and one it didn't.
+					{ at: 700_000, cpu: 0.25, memoryMb: 256, runningSeconds: 120, cost: 0 },
+					{ at: 900_000, cpu: 0, memoryMb: 0, runningSeconds: 0, cost: 0 },
+				],
+				totals: { runningSeconds: 0, cpuSeconds: 0, cost: { currency: "USD", total: 0, ratePerHour: 0 } },
+				memLimitBytes: 4 * 1024 ** 3,
+				diskTotalBytes: 20 * 1024 ** 3,
+				series: { intervalMs: 5_000, points: [] },
+			},
+			now,
+		);
+		expect(series).toEqual({
+			intervalMs: 300_000,
+			memLimitBytes: 4 * 1024 ** 3,
+			diskTotalBytes: 20 * 1024 ** 3,
+			points: [
+				{ at: 700_000, cpu: 0.5, memUsedBytes: 512 * 1024 ** 2, diskUsedBytes: 2 * 1024 ** 3, ioPressure: 0.1 },
+				{ at: now, cpu: 0.25, memUsedBytes: 256 * 1024 ** 2 },
+			],
+		});
 	});
 
 	it("has no hosts for someone who isn't a super-admin", async () => {

@@ -826,7 +826,7 @@ export interface SandboxesSource {
 	usageHistory?(id: string, range: UsageRange): Promise<UsageSeries>;
 	/** A running sandbox's busiest processes, by CPU, most first. Absent: the dialog says it can't list them. */
 	processes?(id: string): Promise<readonly SandboxProcess[]>;
-	/** Gives it a new name, which is its subdomain too. Absent: the list offers no rename. */
+	/** Gives it a new name; its address (subdomain) stays as it was. Absent: the list offers no rename. */
 	rename?(id: string, name: string): Promise<Sandbox>;
 	/** Its ports with a URL. Absent where the host can't list them: the page has no Ports. */
 	ports?(id: string): Promise<readonly SandboxPort[]>;

@@ -1,5 +1,5 @@
 // The Sandboxes page (compute console): an account's sandboxes, for finding one and seeing its state. A condensed table
-// on a wide screen, after boat.dev's (Tom, 5 Nov 2026): the name with its address under it (renamed in place), its ID
+// on a wide screen, after boat.dev's (Tom, 5 Nov 2026): the name (renamed in place) with its address under it, its ID
 // to copy, state, when it was made, its type, a countdown to its auto-stop, its latest snapshot, its cost (hosted) and
 // its CPU, RAM, disk and IO as one small chart, which opens its metrics dialog. A search over names, addresses and IDs,
 // and State, Snapshot and Type filters, sit over it. Rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
@@ -924,7 +924,7 @@ function NameCell({
 					}}
 					onBlur={() => void save()}
 				/>
-				<span className="truncate text-xs text-faint">Enter renames it, and its subdomain. Escape doesn't.</span>
+				<span className="truncate text-xs text-faint">Enter renames it; its address stays. Escape doesn't.</span>
 			</span>
 		);
 	const name =

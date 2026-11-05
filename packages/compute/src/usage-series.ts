@@ -46,6 +46,11 @@ export interface ReportedUsage {
 		readonly cpu: number;
 		readonly memUsedBytes: number;
 		readonly memLimitBytes: number;
+		/** A microVM's own disk, from its guest's agent: both or neither (`HostSandboxUsage` in @kantel/hosts). */
+		readonly diskUsedBytes?: number;
+		readonly diskTotalBytes?: number;
+		/** A microVM's guest's IO pressure over the interval, 0 to 1, when its kernel has the figures. */
+		readonly ioPressure?: number;
 	}[];
 }
 
@@ -59,8 +64,12 @@ export interface UsagePoint {
 	/** 0 to 1. */
 	readonly cpu: number;
 	readonly memUsedBytes: number;
-	/** A host's; 0 for a sandbox. */
+	/** A host's; a sandbox's own disk, from its guest. 0 with `noDisk`. */
 	readonly diskUsedBytes: number;
+	/** A sandbox reading without a disk figure (an isolate's; a host's or guest agent's that predates them). */
+	readonly noDisk?: boolean;
+	/** A sandbox's IO pressure over the interval, 0 to 1; absent where its guest has none. */
+	readonly ioPressure?: number;
 	/** Passed on by the gateway replica holding the host, which exports it; not taken here. */
 	readonly shared?: boolean;
 }
@@ -75,7 +84,8 @@ export interface UsageMeta {
 
 /**
  * A 5-minute mean: `at` is its start. `readings`: how many points it is the mean of. `local`: whether any was taken
- * here rather than passed on (`UsagePoint.shared`), so this replica may keep it.
+ * here rather than passed on (`UsagePoint.shared`), so this replica may keep it. Disk and IO pressure are the means of
+ * the points that had them: `noDisk` when none did, no `ioPressure` when none did.
  */
 export type Rollup = Omit<UsagePoint, "shared"> & { readonly readings: number; readonly local: boolean };
 
@@ -110,6 +120,10 @@ interface Bucket {
 	cpu: number;
 	mem: number;
 	disk: number;
+	/** Of `count`, the points with a disk figure, and those with IO pressure (and its sum). */
+	disks: number;
+	ios: number;
+	io: number;
 }
 
 interface Track {
@@ -128,7 +142,9 @@ const mean = (bucket: Bucket): Rollup => ({
 	at: bucket.from,
 	cpu: clamp01(bucket.cpu / bucket.count),
 	memUsedBytes: bytes(bucket.mem / bucket.count),
-	diskUsedBytes: bytes(bucket.disk / bucket.count),
+	diskUsedBytes: bucket.disks === 0 ? 0 : bytes(bucket.disk / bucket.disks),
+	...(bucket.disks === 0 ? { noDisk: true } : {}),
+	...(bucket.ios === 0 ? {} : { ioPressure: clamp01(bucket.io / bucket.ios) }),
 	readings: bucket.count,
 	local: bucket.local > 0,
 });
@@ -178,7 +194,11 @@ export function createUsageSeries(): UsageSeries {
 				at: Math.round(point.at),
 				cpu: clamp01(point.cpu),
 				memUsedBytes: bytes(point.memUsedBytes),
-				diskUsedBytes: bytes(point.diskUsedBytes),
+				diskUsedBytes: point.noDisk === true ? 0 : bytes(point.diskUsedBytes),
+				...(point.noDisk === true ? { noDisk: true } : {}),
+				...(point.ioPressure === undefined || !Number.isFinite(point.ioPressure)
+					? {}
+					: { ioPressure: clamp01(point.ioPressure) }),
 				...(point.shared === true ? { shared: true } : {}),
 			};
 			track.meta = meta;
@@ -191,12 +211,19 @@ export function createUsageSeries(): UsageSeries {
 			// one mean per 5 minutes.
 			const lastRollup = track.rollups[track.rollups.length - 1];
 			if (track.bucket === undefined && lastRollup !== undefined && lastRollup.at >= from) return closed;
-			track.bucket ??= { from, count: 0, local: 0, cpu: 0, mem: 0, disk: 0 };
+			track.bucket ??= { from, count: 0, local: 0, cpu: 0, mem: 0, disk: 0, disks: 0, ios: 0, io: 0 };
 			track.bucket.count += 1;
 			if (clean.shared !== true) track.bucket.local += 1;
 			track.bucket.cpu += clean.cpu;
 			track.bucket.mem += clean.memUsedBytes;
-			track.bucket.disk += clean.diskUsedBytes;
+			if (clean.noDisk !== true) {
+				track.bucket.disk += clean.diskUsedBytes;
+				track.bucket.disks += 1;
+			}
+			if (clean.ioPressure !== undefined) {
+				track.bucket.io += clean.ioPressure;
+				track.bucket.ios += 1;
+			}
 			return closed;
 		},
 		read(key, since) {

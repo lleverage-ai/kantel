@@ -237,6 +237,81 @@ func TestUsageSampleMicroVMGuestMemory(t *testing.T) {
 	}
 }
 
+func TestUsageSampleMicroVMDiskAndIOPressure(t *testing.T) {
+	stats := usage.GuestStats{DiskUsedBytes: 3 << 30, DiskTotalBytes: 10 << 30}
+	var statsErr error
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 1_000, Idle: 500},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 10, Start: 7}},
+		rss:   map[int]int64{100: 600 << 20},
+		vms: []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 2, MemLimitBytes: 2 << 30,
+			ReadStats: func(ctx context.Context) (usage.GuestStats, error) {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("the guest's stats are read with a deadline")
+				}
+				return stats, statsErr
+			}}},
+	}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	tick := 0
+	read := func() proto.SandboxUsage {
+		t.Helper()
+		tick++
+		f.host.Total += 1_000
+		f.host.Idle += 500
+		f.procs[100] = usage.ProcCPU{Ticks: f.procs[100].Ticks + 100, Start: 7}
+		sample, ok := s.sample(t0.Add(time.Duration(tick) * 5 * time.Second))
+		if !ok {
+			t.Fatal("want a sample")
+		}
+		return byID(sample)["sbx_a"]
+	}
+	s.sample(t0)
+	micros := func(v uint64) *uint64 { return &v }
+
+	// A kernel without pressure figures: the disk, and no IO pressure.
+	a := read()
+	if a.DiskUsedBytes != 3<<30 || a.DiskTotalBytes != 10<<30 || a.IOPressure != nil {
+		t.Fatalf("without pressure %+v", a)
+	}
+	// With them, from the second answer: 1.25 s stalled in the 5 s between.
+	stats.IOSomeMicros = micros(2_000_000)
+	if a = read(); a.IOPressure != nil {
+		t.Fatalf("a first pressure reading has nothing to differ from: %v", *a.IOPressure)
+	}
+	stats.IOSomeMicros = micros(3_250_000)
+	if a = read(); a.IOPressure == nil {
+		t.Fatal("no IO pressure")
+	}
+	approx(t, "IO pressure", *a.IOPressure, 0.25)
+
+	// A guest that doesn't answer (an older agent's 404): neither, and its counter waits for the next answer.
+	statsErr = errors.New("guest agent: 404 page not found")
+	if a = read(); a.DiskTotalBytes != 0 || a.IOPressure != nil {
+		t.Fatalf("unanswered %+v", a)
+	}
+	statsErr = nil
+	stats.IOSomeMicros = micros(13_250_000)
+	if a = read(); a.IOPressure == nil {
+		t.Fatal("no IO pressure after a missed answer")
+	}
+	// 10 s stalled over the 10 s since the last answer.
+	approx(t, "IO pressure after a miss", *a.IOPressure, 1)
+
+	// A disk figure that makes no sense isn't sent.
+	stats.DiskUsedBytes = 11 << 30
+	if a = read(); a.DiskTotalBytes != 0 || a.DiskUsedBytes != 0 {
+		t.Fatalf("used beyond its size %+v", a)
+	}
+
+	// On the wire, both are left out when there are none (a host that predates them sends the same).
+	raw, _ := json.Marshal(proto.SandboxUsage{ID: "sbx_a", Kind: "microvm"})
+	if string(raw) != `{"id":"sbx_a","kind":"microvm","cpu":0,"memUsedBytes":0,"memLimitBytes":0}` {
+		t.Fatalf("wire %s", raw)
+	}
+}
+
 func TestUsageSampleIsolatesShareTheirRuntime(t *testing.T) {
 	f := &fakeProc{
 		host:  usage.HostCPU{Total: 1_000, Idle: 500},

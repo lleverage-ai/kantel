@@ -64,6 +64,7 @@ export type {
 	SandboxEgress,
 	SandboxesSource,
 	SandboxImage,
+	SandboxProcess,
 	SandboxShape,
 	SandboxShapes,
 	SandboxSshKey,
@@ -77,6 +78,8 @@ export type {
 	TemplateSpec,
 	TemplatesSource,
 	TemplateVersion,
+	UsageRange,
+	UsageSeries,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
 export {

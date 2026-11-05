@@ -29,6 +29,9 @@ const (
 	// guestMemoryTimeout bounds asking one microVM's Firecracker for its guest's memory, which it answers from what it
 	// holds (it never waits on the guest): past it, that VM's reading is its resident memory.
 	guestMemoryTimeout = time.Second
+	// guestStatsTimeout bounds asking one microVM's agent for its disk and IO (a statfs and a read of
+	// /proc/pressure/io in the guest, over vsock), so a busy or paused guest can't hold up the others' readings.
+	guestStatsTimeout = 500 * time.Millisecond
 )
 
 // usageInterval is how often the host samples usage, 1 s to 5 minutes (the range the control plane takes); 0 is
@@ -189,10 +192,12 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 		}
 		used, source := s.microVMMemory(p)
 		s.taken[p.SandboxID] = p.Owner
-		out = append(out, proto.SandboxUsage{
+		reading := proto.SandboxUsage{
 			ID: p.SandboxID, Kind: microvm.Tier, CPU: usage.Utilisation(grew, over, p.CPUs),
 			MemUsedBytes: used, MemLimitBytes: p.MemLimitBytes, MemSource: source,
-		})
+		}
+		s.guestStats(p, cpu.Epoch(p.Pid), &reading)
+		out = append(out, reading)
 	}
 	return out
 }
@@ -212,6 +217,36 @@ func (s *usageSampler) microVMMemory(p usage.Process) (int64, string) {
 	}
 	rss, _ := s.readRSS(p.Pid)
 	return rss, proto.MemSourceRSS
+}
+
+// guestStats adds a microVM's disk and IO pressure, as its guest's agent has them, to its reading. IO pressure is a
+// difference, so it comes from the second answer of the same VM (epoch, its Firecracker's) on. A guest that doesn't
+// answer in time, or whose agent predates /stats, has neither: its counter is kept, so the next answer still has one
+// to differ from.
+func (s *usageSampler) guestStats(p usage.Process, epoch string, reading *proto.SandboxUsage) {
+	key := "io/" + p.SandboxID
+	if p.ReadStats == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), guestStatsTimeout)
+	st, err := p.ReadStats(ctx)
+	cancel()
+	if err != nil {
+		s.counters.Keep(key)
+		return
+	}
+	if st.DiskTotalBytes > 0 && st.DiskUsedBytes >= 0 && st.DiskUsedBytes <= st.DiskTotalBytes {
+		reading.DiskUsedBytes, reading.DiskTotalBytes = st.DiskUsedBytes, st.DiskTotalBytes
+	}
+	if st.IOSomeMicros == nil {
+		return
+	}
+	grew, over, ok := s.counters.Delta(key, epoch, float64(*st.IOSomeMicros)/1e6, s.now())
+	if ok && over > 0 {
+		// Seconds of stall over seconds of wall time: a share, which a task stalled throughout makes 1.
+		pressure := min(1, max(0, grew/over.Seconds()))
+		reading.IOPressure = &pressure
+	}
 }
 
 // isolates shares out an account's runtime among its running sandboxes: CPU by the time each spent running commands

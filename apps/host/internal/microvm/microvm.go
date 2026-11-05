@@ -319,7 +319,7 @@ func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32) fc.B
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
 	}
-	cfg.BootArgs += browserSurfaceBootArg
+	cfg.BootArgs += browserSurfaceBootArg + psiBootArg
 	if sh.HotplugMiB > 0 {
 		cfg.BootArgs += hotplugBootArgs
 	}
@@ -980,6 +980,12 @@ const templateDevices = " devices=balloon-stats"
 // browser's own stream. A snapshot keeps the command line it booted with, so it is in the template's fingerprint too.
 const browserSurfaceBootArg = " " + guest.BrowserSurfaceBootArg
 
+// psiBootArg turns on the guest kernel's pressure figures, which Firecracker's guest config builds in but leaves off
+// (CONFIG_PSI_DEFAULT_DISABLED): its agent reads /proc/pressure/io for the sandbox's IO pressure (guest.Stats). A
+// sandbox restored from a snapshot made before it keeps its kernel's command line, so has no IO pressure until it is
+// cold-booted. In the template's fingerprint too.
+const psiBootArg = " psi=1"
+
 const bootArgs = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/usr/sbin/kantel-init quiet loglevel=3 systemd.show_status=false"
 
 // Since is a timer for step timings.
@@ -1029,7 +1035,7 @@ func (m *Manager) templateFingerprint(sh shape) string {
 	if m.cfg.Initrd != "" {
 		images = append(images, m.cfg.Initrd)
 	}
-	return fc.Fingerprint(images...) + templateDevices + " boot=" + guest.BrowserSurfaceBootArg + m.shapeKey(sh)
+	return fc.Fingerprint(images...) + templateDevices + " boot=" + guest.BrowserSurfaceBootArg + psiBootArg + m.shapeKey(sh)
 }
 
 // templateReady says whether the shape's template can be restored now without making it: made for these images, or,

@@ -2239,8 +2239,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						)
 					)
 						throw new Error(`This account already has a sandbox called ${name}.`);
-					const [, ...domain] = box.hostname.split(".");
-					return put({ ...box, name, hostname: [name, ...domain].join(".") });
+					// As the API's: the name only, its address stays.
+					return put({ ...box, name });
 				}),
 			ports: (id) => gate(() => [...(ports.get(id) ?? [])].sort((a, b) => a.port - b.port)),
 			exposePort: (id, port, isPublic) =>

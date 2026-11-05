@@ -110,8 +110,11 @@ export function peakOf(key: MetricKey, series: UsageSeries | undefined): number 
 	return peak;
 }
 
-/** "2.0 of 7.8 GB": memory or disk in use of what there is. */
-const ofGb = (used: number, total: number): string => `${gbText(used)} of ${gbText(total)} GB`;
+/** "2.0 of 7.8 GB": memory or disk in use of what there is; in MB where there's under a GB (an isolate's memory). */
+const ofGb = (used: number, total: number): string =>
+	total < 1024 ** 3
+		? `${Math.round(used / 1024 ** 2)} of ${Math.round(total / 1024 ** 2)} MB`
+		: `${gbText(used)} of ${gbText(total)} GB`;
 
 /** What a metric's reading says beside its share: how much of how much, where that's known. */
 function detailOf(key: MetricKey, point: UsagePoint, series: UsageSeries): string | undefined {
@@ -639,14 +642,27 @@ function Stat({
 }
 
 /** What the four say now, from the newest readings. */
-function Stats({ series, running, range }: { series: UsageSeries | undefined; running: boolean; range: UsageRange }) {
+function Stats({
+	series,
+	running,
+	range,
+	kind,
+}: {
+	series: UsageSeries | undefined;
+	running: boolean;
+	range: UsageRange;
+	kind: Sandbox["kind"];
+}) {
 	const latest = latestOf(series);
 	const missing = (key: MetricKey) =>
 		latest[key] !== undefined
 			? undefined
 			: series === undefined || series.points.length === 0
 				? "No readings yet"
-				: "Not measured yet";
+				: // An isolate shares its account's runtime, which can't tell its disk and IO from the others'.
+					kind === "isolate" && (key === "disk" || key === "io")
+					? "Not measured for an isolate"
+					: "Not measured yet";
 	const cpu = latest.cpu;
 	const memory = latest.memory;
 	const disk = latest.disk;
@@ -884,7 +900,7 @@ function MetricsBody({
 					))}
 				</div>
 			) : (
-				<Stats series={series} running={running} range={range} />
+				<Stats series={series} running={running} range={range} kind={sandbox.kind} />
 			)}
 			<div className="flex min-w-0 flex-col gap-3 border-t border-border pt-5">
 				<div className="flex flex-wrap items-center justify-between gap-2">
