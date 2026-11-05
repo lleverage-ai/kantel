@@ -202,9 +202,6 @@ export function EgressLog({
 							<th className={`${th} text-right`} scope="col">
 								Sent, received
 							</th>
-							<th className={`${th} w-0 pl-0`} scope="col">
-								<span className="kt-sr-only">Details</span>
-							</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -244,12 +241,12 @@ function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boole
 		return (
 			<>
 				<span className="block truncate">
-					<span className="inline-block w-20 text-muted">{entry.method}</span>
+					<span className="inline-block w-18 text-muted">{entry.method}</span>
 					<span className="font-medium text-fg">{hostText(entry)}</span>
 				</span>
 				{entry.path === undefined || entry.path === "" ? null : (
 					// The whole path, broken after its slashes where it's longer than the column, never cut off.
-					<span className="block pl-20 whitespace-normal wrap-break-word text-muted">
+					<span className="block pl-18 whitespace-normal wrap-break-word text-muted">
 						<BreakableCommand command={entry.path} />
 					</span>
 				)}
@@ -316,7 +313,16 @@ function RequestCell({
 
 const statusCode = "text-sm text-muted tabular-nums";
 
-function Decision({ entry, code = true }: { entry: LoggedEntry; code?: boolean }) {
+function Decision({
+	entry,
+	code = true,
+	open,
+}: {
+	entry: LoggedEntry;
+	code?: boolean;
+	/** The wide log's chevron for a row that opens, beside the decision it explains rather than past the last column. */
+	open?: boolean;
+}) {
 	return (
 		<span className="flex items-baseline gap-2">
 			{/* The sandbox list's status pattern: a dot and the word, the word quiet for Allowed and red for Denied. */}
@@ -329,6 +335,11 @@ function Decision({ entry, code = true }: { entry: LoggedEntry; code?: boolean }
 			)}
 			{/* A phone's meta line has the server's status beside the decision; the wide log gives it a column. */}
 			{!code || entry.status === undefined ? null : <span className={statusCode}>{entry.status}</span>}
+			{open === undefined ? null : (
+				<span className="self-center text-faint" aria-hidden="true">
+					{open ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" />}
+				</span>
+			)}
 		</span>
 	);
 }
@@ -353,7 +364,7 @@ function WideEntry({
 	return (
 		<Fragment>
 			{/* A row that opens is one target: a click anywhere on it opens it, as its request button does from the
-			    keyboard, and its chevron sits at the row's end. */}
+			    keyboard, and its chevron sits beside the decision it explains. */}
 			<tr
 				data-egress={entry.id}
 				data-decision={entry.decision}
@@ -381,7 +392,7 @@ function WideEntry({
 					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} chevron={false} />
 				</td>
 				<td className={td}>
-					<Decision entry={entry} code={false} />
+					<Decision entry={entry} code={false} {...(opens(entry) ? { open: expanded } : {})} />
 				</td>
 				{/* The server's answer, apart from Kantel's decision: a dash where the request never reached it. */}
 				<td className={`${td} text-right`}>
@@ -397,15 +408,12 @@ function WideEntry({
 				<td className={`${td} text-right text-muted tabular-nums`}>
 					{sizeText(entry.bytesUp)} / {sizeText(entry.bytesDown)}
 				</td>
-				<td className={`${td} w-0 pl-0 text-faint`} aria-hidden="true">
-					{opens(entry) ? expanded ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" /> : null}
-				</td>
 			</tr>
 			{expanded ? (
 				<tr id={detailId} data-egress-detail={entry.id}>
 					{/* Under the request: the when (and sandbox) columns stay empty, so the reason reads as the row's. */}
 					<td className={td} colSpan={sandboxColumn ? 2 : 1} />
-					<td className={`${td} whitespace-normal`} colSpan={6}>
+					<td className={`${td} whitespace-normal`} colSpan={5}>
 						<Detail entry={entry} fixes={fixes} />
 					</td>
 				</tr>
@@ -439,12 +447,23 @@ function PhoneEntry({
 		>
 			{/* Three tiers: the request whole; the outcome on the left and when on the right; then, quieter, which
 			    sandbox, what was swapped in and how much moved. */}
-			<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap />
-			<div className="flex min-w-0 items-baseline justify-between gap-3 text-sm text-muted">
-				<Decision entry={entry} />
-				<span className="flex-none tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
-					{agoText(entry.at, now)}
+			{/* The first line: the request, and on the right when it was with the chevron's slot, kept on every card
+			    (empty where nothing opens) so every card's right edge lines up. */}
+			<div className="flex min-w-0 items-start gap-3">
+				<span className="min-w-0 flex-1">
+					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap chevron={false} />
 				</span>
+				<span className="flex flex-none items-center gap-1 pt-0.5 text-sm text-muted">
+					<span className="tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
+						{agoText(entry.at, now)}
+					</span>
+					<span className="flex w-4 justify-end text-faint" aria-hidden="true">
+						{opens(entry) ? expanded ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" /> : null}
+					</span>
+				</span>
+			</div>
+			<div className="flex min-w-0 items-baseline gap-3 text-sm text-muted">
+				<Decision entry={entry} />
 			</div>
 			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted empty:hidden">
 				{sandboxColumn ? <span className="text-fg">{entry.sandboxName}</span> : null}
