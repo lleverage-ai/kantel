@@ -80,7 +80,28 @@ const (
 	maxCustomVCPUs     = 32
 	minCustomMemoryMiB = 128
 	maxCustomDiskGiB   = 4096
+	// DefaultMaxDiskGiB is the most disk a create may ask for unless the operator sets MaxDiskGiB.
+	DefaultMaxDiskGiB = 1024
 )
+
+// DiskLimits are the disk a create may ask for a custom shape: minGiB and maxGiB where set, else at least the
+// smallest named size's (the disk the shared templates are made with, so a smaller one would cold-boot) and at most
+// DefaultMaxDiskGiB, both within 1 to 4096 GiB and the least never above the most.
+func DiskLimits(sizes []proto.Size, minGiB, maxGiB int) proto.DiskLimits {
+	if minGiB <= 0 {
+		for _, s := range sizes {
+			if s.DiskGiB > 0 && (minGiB <= 0 || s.DiskGiB < minGiB) {
+				minGiB = s.DiskGiB
+			}
+		}
+	}
+	if maxGiB <= 0 {
+		maxGiB = DefaultMaxDiskGiB
+	}
+	maxGiB = min(max(maxGiB, 1), maxCustomDiskGiB)
+	minGiB = min(max(minGiB, 1), maxGiB)
+	return proto.DiskLimits{MinGiB: minGiB, MaxGiB: maxGiB}
+}
 
 // CustomSizeName is the size name of a custom shape.
 func CustomSizeName(vcpus, memoryMiB, diskGiB int) string {
@@ -176,6 +197,10 @@ type Config struct {
 	TemplateMemoryMiB    int
 	TemplateMaxMemoryMiB int
 	TemplateDiskGiB      int
+	// MinDiskGiB and MaxDiskGiB bound the disk a create may ask for a custom shape (DiskLimits says their defaults).
+	// A sandbox made before keeps its disk whatever they say.
+	MinDiskGiB int
+	MaxDiskGiB int
 	// TemplateRegistry is the operator's registry templates' Kantel base images are pulled from by digest, such as
 	// ghcr.io/lleverage-ai (rootfs.go). Empty: templates are made only from Rootfs, the host's own image.
 	TemplateRegistry string
@@ -1885,16 +1910,39 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	return info, nil
 }
 
-// createSize is the size a create asks for: a named one (p.Size), or a custom shape.
+// createSize is the size a create asks for: a named one (p.Size), or a custom shape, whose disk must be within the
+// host's DiskLimits unless it is a named size's.
 func (m *Manager) createSize(p proto.CreateParams) (proto.Size, error) {
 	sizeName := p.Size
 	if sizeName == "" && (p.VCPUs != 0 || p.MemoryMiB != 0 || p.DiskGiB != 0) {
 		if p.VCPUs <= 0 || p.MemoryMiB <= 0 || p.DiskGiB <= 0 {
 			return proto.Size{}, &proto.Error{Code: proto.ErrInvalid, Message: "a custom size needs vcpus, memoryMiB and diskGiB"}
 		}
+		if err := m.checkDisk(p.DiskGiB); err != nil {
+			return proto.Size{}, err
+		}
 		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
 	}
 	return m.size(sizeName)
+}
+
+// DiskLimits are the disk a create may ask for a custom shape on this host.
+func (m *Manager) DiskLimits() proto.DiskLimits {
+	return DiskLimits(m.cfg.Sizes, m.cfg.MinDiskGiB, m.cfg.MaxDiskGiB)
+}
+
+// checkDisk refuses a custom shape's disk outside the host's DiskLimits, unless a named size has it (a control plane
+// from before disks were chosen asks for a named size's disk with a custom vCPU count and memory).
+func (m *Manager) checkDisk(diskGiB int) error {
+	for _, s := range m.cfg.Sizes {
+		if s.DiskGiB == diskGiB {
+			return nil
+		}
+	}
+	if l := m.DiskLimits(); diskGiB < l.MinGiB || diskGiB > l.MaxGiB {
+		return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("a microVM's disk on this host is %d to %d GiB", l.MinGiB, l.MaxGiB)}
+	}
+	return nil
 }
 
 // sharedPlan is sharedFor when shared templates are on; nothing fits when they're off.

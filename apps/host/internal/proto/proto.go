@@ -100,7 +100,10 @@ type Facts struct {
 	// Tiers it runs: "microvm", "isolate".
 	Tiers []string `json:"tiers"`
 	// Sizes it can make, by name.
-	Sizes  []Size            `json:"sizes"`
+	Sizes []Size `json:"sizes"`
+	// Disk is the disk a custom shape may have, with the microVM tier (FeatureCustomShapes); absent from a host from
+	// before it said, which took 1 to 4096 GiB.
+	Disk   *DiskLimits       `json:"disk,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
 	// Egress is how sandboxes reach the internet: "open" (NAT), "proxy" (only through the egress proxy) or "none".
 	Egress string `json:"egress"`
@@ -216,6 +219,13 @@ type TemplateImage struct {
 // it. It answers each mount's status in SandboxInfo.Mounts, and a later change as an EventMounts. Experimental: the
 // control plane sends mounts only behind its switch.
 const FeatureBundleMounts = "mounts-bundle"
+
+// DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
+// MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
+type DiskLimits struct {
+	MinGiB int `json:"minGiB"`
+	MaxGiB int `json:"maxGiB"`
+}
 
 // Size is a sandbox shape.
 type Size struct {
