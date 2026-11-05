@@ -474,7 +474,8 @@ function NameField({ account, rename }: { account: ComputeAccount; rename?: (nam
 	};
 	return (
 		<form
-			className="flex min-w-0 max-w-(--kt-card-width) items-end gap-2"
+			// As wide as the members card under it, so the page's blocks share one right edge.
+			className="flex min-w-0 items-end gap-2"
 			onSubmit={(event) => {
 				event.preventDefault();
 				save();

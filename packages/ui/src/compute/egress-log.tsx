@@ -244,12 +244,12 @@ function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boole
 		return (
 			<>
 				<span className="block truncate">
-					<span className="inline-block w-16 text-muted">{entry.method}</span>
+					<span className="inline-block w-20 text-muted">{entry.method}</span>
 					<span className="font-medium text-fg">{hostText(entry)}</span>
 				</span>
 				{entry.path === undefined || entry.path === "" ? null : (
 					// The whole path, broken after its slashes where it's longer than the column, never cut off.
-					<span className="block pl-16 whitespace-normal wrap-break-word text-muted">
+					<span className="block pl-20 whitespace-normal wrap-break-word text-muted">
 						<BreakableCommand command={entry.path} />
 					</span>
 				)}
