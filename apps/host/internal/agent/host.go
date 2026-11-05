@@ -90,6 +90,8 @@ type Host struct {
 	e2e *e2e.Store
 	// commands is the history of commands devices ran in E2E sessions (history.go).
 	commands *commandLog
+	// runs are the commands with a control plane's ID running, and the detached ones the host ran (commands.go).
+	runs commandRuns
 	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update
 	// or boot arriving late is ignored; kept on disk too (floorDir), across restarts.
 	floorMu sync.Mutex
@@ -274,7 +276,7 @@ func (h *Host) makeFacts() proto.Facts {
 	if reserve == 0 {
 		reserve = max(2048, total/10)
 	}
-	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -753,6 +755,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if h.commands != nil {
 			h.commands.forget(p.SandboxID)
 		}
+		h.runs.forget(p.SandboxID)
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)
@@ -787,7 +790,22 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				onEvent(proto.Event{Kind: "exec.output", Stdout: stdout, Stderr: stderr})
 			}
 		}
+		if p.CommandID != "" {
+			return h.runCommand(ctx, t, p, onOutput)
+		}
 		return t.Exec(ctx, p, onOutput)
+	case proto.MethodExecGet:
+		p, err := decode[proto.ExecRef](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.commandStatus(ctx, p)
+	case proto.MethodExecKill:
+		p, err := decode[proto.ExecRef](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.killCommand(ctx, p)
 	case proto.MethodFileRead:
 		p, err := decode[proto.FileParams](params)
 		if err != nil {

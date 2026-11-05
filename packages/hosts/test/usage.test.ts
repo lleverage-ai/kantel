@@ -53,6 +53,27 @@ describe("parseHostUsage", () => {
 		});
 	});
 
+	it("takes a microVM's disk and IO pressure, and leaves out figures that make no sense without refusing the tick", () => {
+		const reading = { id: "sbx_a", kind: "microvm", cpu: 0.1, memUsedBytes: 2e8, memLimitBytes: 1e9 };
+		const full = { ...reading, diskUsedBytes: 3e9, diskTotalBytes: 1e10, ioPressure: 0.25 };
+		const parsed = parseHostUsage({
+			...TICK,
+			sandboxes: [
+				full,
+				{ ...reading, id: "sbx_d", diskUsedBytes: 2e10, diskTotalBytes: 1e10, ioPressure: 1.5 },
+				{ ...reading, id: "sbx_e", diskUsedBytes: 3e9, ioPressure: -1 },
+				{ ...reading, id: "sbx_f", diskUsedBytes: "3e9", diskTotalBytes: 1e10, ioPressure: Number.NaN },
+			],
+		});
+		expect(parsed).toEqual({
+			ok: true,
+			value: {
+				...TICK,
+				sandboxes: [full, { ...reading, id: "sbx_d" }, { ...reading, id: "sbx_e" }, { ...reading, id: "sbx_f" }],
+			},
+		});
+	});
+
 	it("refuses one that isn't shaped as a tick", () => {
 		const reasons = [
 			{ ...TICK, at: "now" },

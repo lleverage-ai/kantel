@@ -262,6 +262,19 @@
 				"summary": "Create an organisation",
 				"description": "Makes an organisation account with the caller as its owner. People only: a key is refused.",
 				"tags": ["accounts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -305,6 +318,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1075,6 +1108,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"requestBody": {
@@ -1140,6 +1184,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1346,7 +1400,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -1417,6 +1471,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -1603,6 +1667,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"requestBody": {
@@ -1675,6 +1750,16 @@
 								}
 							}
 						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
 					}
 				}
 			},
@@ -1691,6 +1776,17 @@
 						"description": "The sandbox's ID.",
 						"schema": {
 							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
 						}
 					}
 				],
@@ -1747,6 +1843,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2131,7 +2237,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -2210,6 +2316,16 @@
 							}
 						}
 					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"429": {
 						"description": "`exhausted`",
 						"content": {
@@ -2258,6 +2374,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"responses": {
@@ -2313,6 +2440,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2348,7 +2485,7 @@
 			"post": {
 				"operationId": "restartSandboxOnLatest",
 				"summary": "Restart a sandbox on the latest base",
-				"description": "Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"description": "Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -2358,6 +2495,17 @@
 						"description": "The sandbox's ID.",
 						"schema": {
 							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
 						}
 					}
 				],
@@ -2413,7 +2561,17 @@
 						}
 					},
 					"409": {
-						"description": "`conflict`",
+						"description": "`conflict` or `aborted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2550,7 +2708,7 @@
 			"post": {
 				"operationId": "runCommand",
 				"summary": "Run a command",
-				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`.",
+				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless `timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -2566,7 +2724,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -2637,6 +2795,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2751,7 +2919,7 @@
 			"get": {
 				"operationId": "getCommand",
 				"summary": "Get a command",
-				"description": "Its state and its output so far. A key needs `exec`.",
+				"description": "Its state, and once it has ended its exit code and output. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -2829,7 +2997,7 @@
 			"delete": {
 				"operationId": "killCommand",
 				"summary": "Kill a command",
-				"description": "Ends a running command; one that has ended is answered as it is. A key needs `exec`.",
+				"description": "Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -3721,6 +3889,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"requestBody": {
@@ -3786,6 +3965,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -4547,6 +4736,19 @@
 				"summary": "Save a snapshot",
 				"description": "Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`.",
 				"tags": ["snapshots"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -4618,6 +4820,16 @@
 							}
 						}
 					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"429": {
 						"description": "`exhausted`",
 						"content": {
@@ -4665,6 +4877,17 @@
 						"description": "The sandbox's ID.",
 						"schema": {
 							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
 						}
 					}
 				],
@@ -4731,6 +4954,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -5178,6 +5411,19 @@
 				"summary": "Create an API key",
 				"description": "Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`.",
 				"tags": ["api-keys"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -5221,6 +5467,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -5387,6 +5653,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"responses": {
@@ -5442,6 +5719,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -6025,6 +6312,19 @@
 				"summary": "Create an environment",
 				"description": "An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`.",
 				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -6078,6 +6378,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -7118,6 +7428,19 @@
 				"summary": "Create a template",
 				"description": "A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
 				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -7171,6 +7494,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -7621,6 +7954,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"responses": {
@@ -7666,6 +8010,26 @@
 					},
 					"404": {
 						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -8027,6 +8391,19 @@
 				"summary": "Create a webhook",
 				"description": "Its signing secret is answered once. A key needs `account:admin`.",
 				"tags": ["webhooks"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -8070,6 +8447,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -8328,6 +8725,17 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
 					}
 				],
 				"responses": {
@@ -8373,6 +8781,26 @@
 					},
 					"404": {
 						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -8823,6 +9251,19 @@
 				"summary": "Make a host join token",
 				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": false,
 					"content": {
@@ -8866,6 +9307,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -9300,6 +9761,19 @@
 				"summary": "Make a join token for one of your own hosts",
 				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": false,
 					"content": {
@@ -9343,6 +9817,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -10145,6 +10639,19 @@
 				"summary": "Create a bucket source",
 				"description": "A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
 				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
 				"requestBody": {
 					"required": true,
 					"content": {
@@ -10188,6 +10695,26 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -11297,6 +11824,10 @@
 					},
 					"mode": {
 						"$ref": "#/components/schemas/DeploymentMode"
+					},
+					"sandboxDomain": {
+						"type": "string",
+						"description": "The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none."
 					}
 				},
 				"title": "Caller",
@@ -11363,7 +11894,7 @@
 					},
 					"stdout": {
 						"type": "string",
-						"description": "Its output so far, up to 1 MiB; `truncated` says if there was more."
+						"description": "Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more."
 					},
 					"stderr": {
 						"type": "string"
@@ -12994,7 +13525,7 @@
 					},
 					"detail": {
 						"type": "string",
-						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+						"description": "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`."
 					},
 					"reason": {
 						"type": "string",
@@ -13016,7 +13547,7 @@
 					},
 					"detail": {
 						"type": "string",
-						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+						"description": "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`."
 					},
 					"reason": {
 						"type": "string",
@@ -14021,11 +14552,11 @@
 						"type": "integer",
 						"minimum": 1,
 						"maximum": 600000,
-						"description": "Default 30 000; at most 600 000 (10 minutes)."
+						"description": "Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one."
 					},
 					"detached": {
 						"type": "boolean",
-						"description": "Start it and answer at once, with no time limit; read it back by its ID."
+						"description": "Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID."
 					}
 				},
 				"title": "RunCommandBody"
@@ -14124,6 +14655,10 @@
 					"latestSnapshotId": {
 						"type": "string",
 						"description": "The snapshot a resume or fork would use."
+					},
+					"latestSnapshotAt": {
+						"type": "integer",
+						"description": "When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone."
 					},
 					"source": {
 						"$ref": "#/components/schemas/SandboxSource"
@@ -14517,6 +15052,17 @@
 						"type": "integer",
 						"minimum": 0,
 						"description": "Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime."
+					},
+					"diskUsedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it."
+					},
+					"ioPressure": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures."
 					}
 				},
 				"title": "SandboxSeriesPoint"
@@ -14716,6 +15262,11 @@
 						"minimum": 0,
 						"description": "The memory it may use, when its host reports it or its size sets it."
 					},
+					"diskTotalBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Its own disk's size, as its guest counts it, when its host sends disk figures."
+					},
 					"series": {
 						"$ref": "#/components/schemas/SandboxUsageSeries"
 					}
@@ -14744,9 +15295,25 @@
 					},
 					"cost": {
 						"type": "number"
+					},
+					"measured": {
+						"type": "boolean",
+						"description": "Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it."
+					},
+					"diskUsedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The sandbox's own disk in use, its mean over the interval; absent where its host doesn't send it."
+					},
+					"ioPressure": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the interval in which at least one of its tasks waited on IO, its mean; absent where its guest has no pressure figures."
 					}
 				},
-				"title": "SandboxUsagePoint"
+				"title": "SandboxUsagePoint",
+				"description": "One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best."
 			},
 			"SandboxUsageSeries": {
 				"type": "object",

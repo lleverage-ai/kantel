@@ -1,0 +1,13 @@
+[Default Applications]
+x-scheme-handler/http=chromium.desktop
+x-scheme-handler/https=chromium.desktop
+text/html=chromium.desktop
+inode/directory=pcmanfm.desktop
+text/plain=geany.desktop
+text/x-python=geany.desktop
+text/x-shellscript=geany.desktop
+application/json=geany.desktop
+application/x-yaml=geany.desktop
+text/markdown=geany.desktop
+application/javascript=geany.desktop
+text/x-go=geany.desktop

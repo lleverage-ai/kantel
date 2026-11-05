@@ -18,6 +18,12 @@ export interface KantelClientOptions {
 	 * (undici's) takes. A browser can't put a header on a socket, so in a browser the page must be signed in by cookie.
 	 */
 	readonly webSocket?: (url: string, headers: { readonly [name: string]: string }) => WebSocketLike;
+	/**
+	 * Makes the `Idempotency-Key` for each call to a route that takes one and wasn't given one (`options.idempotencyKey`),
+	 * such as `() => crypto.randomUUID()`. It is made once per call, so a `fetch` that retries the request sends the
+	 * same key and the call is done once.
+	 */
+	readonly idempotencyKey?: () => string;
 }
 
 /** The parts of a WHATWG WebSocket a stream uses. */
@@ -56,8 +62,10 @@ export interface CallOptions {
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
-	 * call's answer and does nothing again; while the first call is still working, a retry may be `conflict`. Use a new key,
-	 * such as a UUID, for each new call.
+	 * call's answer and does nothing again. A `conflict` with `details.idempotencyKey` `"in_progress"` means the first call is
+	 * still working (retry with the same key); `"held"` means it didn't finish and is never done again under the key (check,
+	 * then use a new key). The same key with a different request is `refused`. Use a new key, such as a UUID, for each new
+	 * call.
 	 */
 	readonly idempotencyKey?: string;
 	readonly headers?: { readonly [name: string]: string };
@@ -101,6 +109,8 @@ export interface ApiCall {
 	readonly binary?: boolean;
 	/** A stream served as server-sent events only: read over `fetch`, never a WebSocket. */
 	readonly events?: boolean;
+	/** The route takes an `Idempotency-Key`. */
+	readonly idempotent?: boolean;
 }
 
 const queryString = (query: object | undefined): string => {
@@ -149,7 +159,9 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 	if (call.body !== undefined) headers["content-type"] = "application/json";
 	if (call.raw !== undefined) headers["content-type"] = call.raw.type;
 	if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
-	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
+	const idempotencyKey =
+		callOptions.idempotencyKey ?? (call.idempotent === true ? options.idempotencyKey?.() : undefined);
+	if (idempotencyKey !== undefined) headers["idempotency-key"] = idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
 	const doFetch = options.fetch ?? fetch;

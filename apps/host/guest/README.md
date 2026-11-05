@@ -12,9 +12,9 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
 - Docker CE and containerd (pinned versions), with Buildx and Compose
 - git, curl, wget, jq, build-essential, pkg-config, Python 3 with pip and venv, Node and Go (pinned releases,
   checked against their SHA-256)
-- an XFCE session on a TigerVNC X server (display `:1`, 1920x1080), Chromium on that display (Debian 13's build,
-  from `snapshot.debian.org` at the same date; Ubuntu's own Chromium is a snap, and Google Chrome can't be
-  redistributed)
+- a desktop on a TigerVNC X server (display `:1`, 1920x1080 until a viewer resizes it): Openbox with a top bar and a
+  dock ("The desktop" below), and Chromium (Debian 13's build, from `snapshot.debian.org` at the same date; Ubuntu's
+  own Chromium is a snap, and Google Chrome can't be redistributed)
 - Selkies, streaming the desktop to a browser
 - OpenSSH, the guest agent (`kantel-guest`) and `kantel-init`
 
@@ -48,8 +48,46 @@ follows the sandbox's current proxy, so a fork or resume never restarts them (no
 
 Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay that carries a TCP stream carries the
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.
-`/etc/kantel/desktop.env` can set `KANTEL_DESKTOP_SIZE`, `KANTEL_STREAM_ENCODER` (`h264enc`, `h264enc-striped`,
-`jpeg`), `KANTEL_STREAM_FPS` and `KANTEL_STREAM_FLAGS`.
+
+Both streams follow the viewer: its window's size times its device pixel ratio becomes the display's, so the picture
+is one stream pixel per screen pixel, sharp on a HiDPI screen, up to a pixel budget (`kantel-selkies`): 2240x1260's
+worth (2,822,400 pixels), or 1920x1080's on a sandbox of two vCPUs or fewer, about what each encodes at 30 frames a
+second. A larger window gets the budget's size in its own shape, drawn to fill it, and a DPI lowered to match, so the
+desktop's text stays the size of the viewer's own. Selkies sets that DPI as `Xft.dpi`, which Chromium reads as it
+starts, and the desktop session follows it (below). Selkies encodes only what changes (its Turbo mode off), in 4:4:4
+colour (4:2:0 for a browser that can't decode it), with no overlay of its own.
+`/etc/kantel/desktop.env` can set `KANTEL_DESKTOP_SIZE` (the desktop's size until a viewer resizes it),
+`KANTEL_STREAM_ENCODER` (`h264enc`, `h264enc-striped`, `jpeg`), `KANTEL_STREAM_FPS`, `KANTEL_STREAM_MAX_PIXELS` (`0`
+lifts the budget) and `KANTEL_STREAM_FLAGS`, which comes last and so overrides any of Selkies' settings above, such as
+`--video-fullcolor=false`.
+
+### The desktop
+
+`kantel-session` (from `kantel-desktop`) runs Openbox and two tint2 panels: a thin top bar (an Applications button,
+the open windows, the clock) and a dock at the bottom with five launchers, left to right: the apps list (rofi),
+Chromium, a terminal (LXTerminal), a file manager (PCManFM) and an editor (Geany). All are small GTK 3 apps that draw
+on the CPU, so they need no GPU and start in well under a second. The look is dark (Adwaita-dark, DejaVu fonts, a
+Kantel Openbox theme); the settings are in `rootfs/home/user/.config`, the dock's launchers and icons in
+`rootfs/usr/share/kantel/{dock,icons}`. LXTerminal keeps 10,000 lines of scrollback; Geany shows line numbers, its
+One Dark scheme and its file browser in the sidebar.
+
+The session follows the DPI Selkies sets for the viewer (`Xft.dpi`, 96 at a pixel ratio of 1, 144 at 2 on four vCPUs,
+120 on two), live: xsettingsd hands it to the GTK apps, which redraw at it, and a watcher in `kantel-session`
+restarts Openbox in place (window titles, menus; windows stay open) and the two panels at it. tint2 scales by
+`scale_relative_to_dpi`, which `kantel-session` sets in a copy of each panel's file under
+`$XDG_RUNTIME_DIR/kantel-session`, since Xvnc's monitor has no physical size for tint2 to read. xsettingsd reads a
+file of the session's own there with the DPI alone, not the `~/.xsettingsd` Selkies writes, which would also turn
+on subpixel antialiasing and fringe the text in colour on the viewer's screen. A stream restarts with its display
+(`PartOf=`), so a new X server gets the viewer's size and DPI again.
+
+The dock's Chromium (`kantel-chromium`) is the desktop's own: a profile of its own (`~/.config/chromium`, beside the sandbox
+browser's `~/.config/kantel-chrome`) through the guest's proxy, not the sandbox's browser. That one runs on display `:2` with its DevTools port open to
+the session's tools, and the browser view streams it alone; sharing it would put the user's tabs in front of the
+agent's automation and take the browser view's window away. Where desktop.env puts the sandbox's browser on `:1`
+(`KANTEL_BROWSER_DISPLAY=:1`, or a host from before the browser view), the dock raises it instead.
+
+`KANTEL_DESKTOP_SESSION` in `/etc/kantel/desktop.env` runs another session in its place, as a custom image that
+installs XFCE might (`KANTEL_DESKTOP_SESSION=startxfce4`).
 
 ### The browser alone
 

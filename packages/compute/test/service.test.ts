@@ -1,8 +1,14 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { BackendCapabilities, SandboxBackend } from "../src/backend.ts";
+import {
+	type BackendCapabilities,
+	DetachedWaitEnded,
+	type ExecRequest,
+	type ExecResult,
+	type SandboxBackend,
+} from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
@@ -21,7 +27,7 @@ import {
 	SHARED_KEY_REFUSED,
 	shapeFor,
 } from "../src/service.ts";
-import { createMemoryStore } from "../src/store.ts";
+import { createMemoryStore, type StoredCommand } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -145,6 +151,284 @@ describe("sandboxes", () => {
 		expect(ended.stdout).toBe("later\n");
 	});
 
+	it("says when its latest snapshot was taken, from the snapshot, for a snapshot taken while it runs and an older record", async () => {
+		const { api, tom } = setup();
+		const sandbox = await tom.createSandbox({ wait: true });
+		const taken = await tom.takeSnapshot(sandbox.id, {});
+		const running = await tom.getSandbox(sandbox.id);
+		expect(running).toMatchObject({ latestSnapshotId: taken.id, latestSnapshotAt: taken.createdAt });
+		// A record kept before it had the time: the list and the sandbox read it from the snapshot's own record.
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		if (stored === undefined) expect.fail("no sandbox");
+		const { latestSnapshotAt: _, ...older } = stored;
+		await api.store.sandboxes.put(older);
+		expect((await tom.getSandbox(sandbox.id)).latestSnapshotAt).toBe(taken.createdAt);
+		const listed = (await tom.listSandboxes()).items.find((item) => item.id === sandbox.id);
+		expect(listed?.latestSnapshotAt).toBe(taken.createdAt);
+	});
+
+	it("sends a detached command with its ID and no limit but the caller's, and a kill to its backend", async () => {
+		const stub = createStubBackend();
+		const requests: ExecRequest[] = [];
+		const kills: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (id, request) => {
+				requests.push(request);
+				return stub.exec(id, request);
+			},
+			killCommand: async (id, commandId) => {
+				kills.push(commandId);
+				await stub.killCommand?.(id, commandId);
+			},
+		};
+		const { api, tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const free = await tom.runCommand(sandbox.id, { command: "echo free", detached: true });
+		const capped = await tom.runCommand(sandbox.id, { command: "echo capped", detached: true, timeoutMs: 5_000 });
+		await api.service.idle();
+		expect(requests.map(({ commandId, detached, timeoutMs }) => ({ commandId, detached, timeoutMs }))).toEqual([
+			{ commandId: free.id, detached: true, timeoutMs: undefined },
+			{ commandId: capped.id, detached: true, timeoutMs: 5_000 },
+		]);
+		// A foreground command has its ID too (a kill names it), and the default limit.
+		const foreground = await tom.runCommand(sandbox.id, { command: "echo now" });
+		expect(requests.at(-1)).toMatchObject({ commandId: foreground.id, timeoutMs: 30_000 });
+		expect(requests.at(-1)?.detached).toBeUndefined();
+
+		// A kill goes to the backend by the command's ID, once it is recorded killed.
+		const held = await tom.runCommand(sandbox.id, { command: "sleep 600", detached: true });
+		const killed = await tom.killCommand(sandbox.id, held.id);
+		expect(killed).toMatchObject({ state: "killed", exitCode: 137, stderr: "" });
+		expect(kills).toEqual([held.id]);
+		await api.service.idle();
+		expect((await tom.getCommand(sandbox.id, held.id)).state).toBe("killed");
+		// One that has ended isn't killed again.
+		expect((await tom.killCommand(sandbox.id, free.id)).state).toBe("exited");
+		expect(kills).toEqual([held.id]);
+	});
+
+	it("marks a command killed when its backend can't stop it, and says so", async () => {
+		const stub = createStubBackend();
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((resolve) =>
+					request.signal?.addEventListener("abort", () =>
+						resolve({ exitCode: 1, stdout: "", stderr: "", timedOut: false }),
+					),
+				),
+			killCommand: async () => {
+				throw new KantelError("not_supported", "this sandbox's host can't stop a command; upgrade its kantel-host");
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const killed = await tom.killCommand(sandbox.id, held.id);
+		expect(killed.state).toBe("killed");
+		expect(killed.stderr).toBe(
+			"Kantel marked this command killed but couldn't stop it, so it may still be running: this sandbox's host can't stop a command; upgrade its kantel-host\n",
+		);
+		expect((await tom.getCommand(sandbox.id, held.id)).stderr).toBe(killed.stderr);
+	});
+
+	it("fetches a detached command's end from its backend once the gateway that started it has gone", async () => {
+		const stub = createStubBackend();
+		const results = new Map<string, ExecResult | undefined>();
+		const backend: SandboxBackend = {
+			...stub,
+			// The command runs on in the sandbox; only the gateway's wait for it ends.
+			exec: (_id, request) =>
+				new Promise((_resolve, reject) =>
+					request.signal?.addEventListener("abort", () => reject(new DetachedWaitEnded())),
+				),
+			commandResult: async (_id, commandId) => {
+				if (!results.has(commandId)) throw new KantelError("not_found", "no such command");
+				return results.get(commandId);
+			},
+		};
+		const store = createMemoryStore();
+		const first = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		const client = (api: ComputeApi) =>
+			createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+		const sandbox = await client(first).createSandbox({ wait: true });
+		const started = await client(first).runCommand(sandbox.id, { command: "./build", detached: true });
+		results.set(started.id, undefined);
+		// The gateway closes (a restart, or another replica serves the next call): the command isn't failed for it.
+		await first.close();
+		const second = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		opened.push(second);
+		expect((await client(second).getCommand(sandbox.id, started.id)).state).toBe("running");
+		results.set(started.id, { exitCode: 0, stdout: "built\n", stderr: "", timedOut: false });
+		expect(await client(second).getCommand(sandbox.id, started.id)).toMatchObject({
+			state: "exited",
+			exitCode: 0,
+			stdout: "built\n",
+		});
+	});
+
+	it("brings an unfollowed detached command's end in before listing it, killing it or stopping its sandbox", async () => {
+		const stub = createStubBackend();
+		const results = new Map<string, ExecResult | undefined>();
+		const kills: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((_resolve, reject) =>
+					request.signal?.addEventListener("abort", () => reject(new DetachedWaitEnded())),
+				),
+			killCommand: async (_id, commandId) => void kills.push(commandId),
+			commandResult: async (_id, commandId) => results.get(commandId),
+		};
+		const store = createMemoryStore();
+		const first = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		const client = (api: ComputeApi) =>
+			createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+		const sandbox = await client(first).createSandbox({ wait: true });
+		const listed = await client(first).runCommand(sandbox.id, { command: "./a", detached: true });
+		const killed = await client(first).runCommand(sandbox.id, { command: "./b", detached: true });
+		const stopped = await client(first).runCommand(sandbox.id, { command: "./c", detached: true });
+		const running = await client(first).runCommand(sandbox.id, { command: "./d", detached: true });
+		await first.close();
+		const second = createComputeApi({ backend, store, authenticatePerson: async () => PEOPLE["tom-token"] });
+		opened.push(second);
+		const tom = client(second);
+		const built = { exitCode: 0, stdout: "built\n", stderr: "", timedOut: false };
+		// Each ends just before the call that has to bring its end in, so each call is what does.
+		results.set(listed.id, built);
+		const items = (await tom.listCommands(sandbox.id)).items;
+		expect(items.find((item) => item.id === listed.id)).toMatchObject({ state: "exited", stdout: "built\n" });
+		expect(items.find((item) => item.id === killed.id)?.state).toBe("running");
+		expect(items.find((item) => item.id === running.id)?.state).toBe("running");
+		// Ended already: a kill answers its end, and sends nothing.
+		results.set(killed.id, built);
+		expect(await tom.killCommand(sandbox.id, killed.id)).toMatchObject({ state: "exited", stdout: "built\n" });
+		expect(kills).toEqual([]);
+		// A stop keeps the end of one that ended, and marks the one still running killed.
+		expect((await store.commands.get(stopped.id))?.state).toBe("running");
+		results.set(stopped.id, built);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		expect(await tom.getCommand(sandbox.id, stopped.id)).toMatchObject({ state: "exited", stdout: "built\n" });
+		expect((await tom.getCommand(sandbox.id, running.id)).state).toBe("killed");
+	});
+
+	it("sends a kill again when the first never reached the backend, until it does", async () => {
+		const stub = createStubBackend();
+		const kills: string[] = [];
+		let reachable = false;
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((resolve) =>
+					request.signal?.addEventListener("abort", () =>
+						resolve({ exitCode: 137, stdout: "", stderr: "", timedOut: false }),
+					),
+				),
+			killCommand: async (_id, commandId) => {
+				kills.push(commandId);
+				if (!reachable) throw new KantelError("unavailable", "the host disconnected");
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const first = await tom.killCommand(sandbox.id, held.id);
+		expect(first.state).toBe("killed");
+		expect(first.stderr).toContain("may still be running: the host disconnected; kill it again to retry");
+		// The host is back: the next kill sends it again, and says nothing more.
+		reachable = true;
+		const again = await tom.killCommand(sandbox.id, held.id);
+		expect(again.state).toBe("killed");
+		expect(kills).toEqual([held.id, held.id]);
+		// Delivered: a third kill sends nothing.
+		await tom.killCommand(sandbox.id, held.id);
+		expect(kills).toEqual([held.id, held.id]);
+	});
+
+	it("doesn't reopen a delivered kill when an older attempt fails after it", async () => {
+		const stub = createStubBackend();
+		const deliveries: { resolve: () => void; reject: (error: Error) => void }[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((_resolve, reject) =>
+					request.signal?.addEventListener("abort", () => reject(new DetachedWaitEnded())),
+				),
+			killCommand: () =>
+				new Promise<void>((resolve, reject) => {
+					deliveries.push({ resolve, reject });
+				}),
+		};
+		const { api, tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		// Two kills at once: the first marks it killed, pending; the second retries the pending kill.
+		const first = tom.killCommand(sandbox.id, held.id);
+		await vi.waitFor(() => expect(deliveries).toHaveLength(1));
+		const second = tom.killCommand(sandbox.id, held.id);
+		await vi.waitFor(() => expect(deliveries).toHaveLength(2));
+		// The second is delivered, then the first fails.
+		deliveries[1]?.resolve();
+		expect((await second).stderr).toBe("");
+		deliveries[0]?.reject(new KantelError("unavailable", "the host disconnected"));
+		const late = await first;
+		expect(late.stderr).toBe("");
+		const stored = await api.store.commands.get(held.id);
+		expect(stored?.killPending).toBeUndefined();
+		expect(stored?.stderr).toBe("");
+		// Delivered: another kill sends nothing.
+		await tom.killCommand(sandbox.id, held.id);
+		expect(deliveries).toHaveLength(2);
+	});
+
+	it("keeps an end recorded while a kill was on its way, and sends that kill nowhere", async () => {
+		const stub = createStubBackend();
+		const kills: string[] = [];
+		const backend: SandboxBackend = { ...stub, killCommand: async (_id, commandId) => void kills.push(commandId) };
+		const store = createMemoryStore();
+		// The kill reads the command while it still runs; its end lands before the kill writes.
+		let stale: StoredCommand | undefined;
+		const commands = {
+			...store.commands,
+			get: async (id: string) => {
+				const read = stale?.id === id ? stale : await store.commands.get(id);
+				stale = undefined;
+				return read;
+			},
+		};
+		const api = createComputeApi({
+			backend,
+			store: { ...store, commands },
+			authenticatePerson: async () => PEOPLE["tom-token"],
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		const ran = await tom.runCommand(sandbox.id, { command: "echo done" });
+		expect(ran.state).toBe("exited");
+		stale = { ...((await store.commands.get(ran.id)) as StoredCommand), state: "running" };
+		const answer = await tom.killCommand(sandbox.id, ran.id);
+		expect(answer).toMatchObject({ state: "exited", exitCode: 0, stdout: "done\n" });
+		expect((await store.commands.get(ran.id))?.state).toBe("exited");
+		expect(kills).toEqual([]);
+	});
+
 	it("stops with a history snapshot and resumes with its files", async () => {
 		const { tom } = setup();
 		const sandbox = await tom.createSandbox({ wait: true });
@@ -157,6 +441,7 @@ describe("sandboxes", () => {
 		expect(history.items).toHaveLength(1);
 		expect(history.items[0]).toMatchObject({ kind: "automatic", trigger: "stop", sandboxId: sandbox.id });
 		expect(stopped.latestSnapshotId).toBe(history.items[0]?.id);
+		expect(stopped.latestSnapshotAt).toBe(history.items[0]?.createdAt);
 		expect((await failure(tom.runCommand(sandbox.id, { command: "true" }))).code).toBe("conflict");
 		expect((await tom.listSandboxes()).items.map((item) => item.id)).not.toContain(sandbox.id);
 		expect((await tom.listSandboxes({ all: true })).items.map((item) => item.id)).toContain(sandbox.id);

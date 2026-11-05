@@ -5,7 +5,7 @@ import type { UsagePoint, UsageSeries } from "./compute-model.ts";
 
 export const STUB_INTERVAL_MS = 5_000;
 
-/** The most points one read returns: an hour at 5 seconds. */
+/** The most points one read returns: an hour at 5 seconds, or a week at an hour and a day at 5 minutes. */
 const MOST = 720;
 
 /** A number from 0 to 1 for a string and a step: the same every time. */
@@ -30,8 +30,12 @@ export interface StubUsageOptions {
 	/** And up to this one. */
 	readonly now: number;
 	readonly memLimitBytes: number;
-	/** A host's disk: with it, each point has the disk in use. */
+	/** A host's or a sandbox's disk: with it, each point has the disk in use. */
 	readonly diskTotalBytes?: number;
+	/** Each point has how much of it waited on IO, as a sandbox's host that reads its pressure says. */
+	readonly io?: boolean;
+	/** The points' interval: 5 seconds, as live readings come, or the means a longer range is read in. */
+	readonly intervalMs?: number;
 	/** How busy its CPU is on average, 0 to 1. Default from the id. */
 	readonly busy?: number;
 	/** How much of its memory it uses on average, 0 to 1. Default from the id. */
@@ -57,15 +61,19 @@ export function stubUsage(id: string, options: StubUsageOptions): UsageSeries {
 	const busy = options.busy ?? 0.08 + noise(seed, 1) * 0.4;
 	const memory = options.memory ?? 0.2 + noise(seed, 2) * 0.4;
 	const disk = options.disk ?? 0.2 + noise(seed, 3) * 0.5;
-	const last = Math.floor(options.now / STUB_INTERVAL_MS);
-	const first = Math.max(Math.floor(options.since / STUB_INTERVAL_MS) + 1, last - MOST + 1);
+	const interval = options.intervalMs ?? STUB_INTERVAL_MS;
+	// Longer means are smoother: the same waves, on steps of the interval rather than of 5 seconds.
+	const scale = interval / STUB_INTERVAL_MS;
+	const last = Math.floor(options.now / interval);
+	const first = Math.max(Math.floor(options.since / interval) + 1, last - MOST + 1);
 	const points: UsagePoint[] = [];
-	for (let step = first; step <= last; step += 1) {
+	for (let tick = first; tick <= last; tick += 1) {
+		const step = scale === 1 ? tick : Math.round(tick * Math.min(scale, 6));
 		const cpu = cpuAt(seed, step, busy);
 		// Memory follows the CPU a little and drifts slowly; it doesn't jump about as CPU does.
 		const share = clamp(memory + Math.sin(step / 90 + (seed % 31)) * 0.06 + cpu * 0.08, 0.02, 0.98);
 		points.push({
-			at: step * STUB_INTERVAL_MS,
+			at: tick * interval,
 			cpu: Math.round(cpu * 1000) / 1000,
 			memUsedBytes: Math.round(options.memLimitBytes * share),
 			...(options.diskTotalBytes === undefined
@@ -75,10 +83,17 @@ export function stubUsage(id: string, options: StubUsageOptions): UsageSeries {
 							options.diskTotalBytes * clamp(disk + Math.sin(step / 400 + (seed % 7)) * 0.001, 0, 1),
 						),
 					}),
+			// IO waits come with bursts of work, and are otherwise near none.
+			...(options.io === true
+				? {
+						ioPressure:
+							Math.round(clamp(cpu > busy * 1.6 ? cpu * 0.35 : noise(seed + 2, step) * 0.03, 0, 1) * 1000) / 1000,
+					}
+				: {}),
 		});
 	}
 	return {
-		intervalMs: STUB_INTERVAL_MS,
+		intervalMs: interval,
 		memLimitBytes: options.memLimitBytes,
 		...(options.diskTotalBytes === undefined ? {} : { diskTotalBytes: options.diskTotalBytes }),
 		points,

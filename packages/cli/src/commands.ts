@@ -4,6 +4,7 @@
  * directory as options, so tests drive it with no globals.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
@@ -564,9 +565,45 @@ function exitCodeOf(command: Command): number {
 
 // The client.
 
+/**
+ * How long to wait before each retry of a call that carries an `Idempotency-Key`, when Kantel couldn't be reached or a
+ * proxy in front of it failed (`RETRIED_STATUSES`, with no answer of Kantel's own). The key makes a retry safe: one that
+ * reached Kantel the first time gets that call's answer, or a 409 saying its outcome is unknown, which isn't retried.
+ */
+export const RETRY_DELAYS_MS: readonly number[] = [500, 2_000];
+const RETRIED_STATUSES = new Set([502, 503, 504]);
+/**
+ * The calls retried: those every control plane that takes keys has kept the promise on (creating and forking a
+ * sandbox, running a command). The others are sent with a key but once, since an older control plane, or an old
+ * gateway mid-upgrade, ignores the key on them and would do them again.
+ */
+const RETRIED_CALLS: readonly RegExp[] = [
+	/^POST \/v1\/sandboxes$/,
+	/^POST \/v1\/sandboxes\/[^/]+\/fork$/,
+	/^POST \/v1\/sandboxes\/[^/]+\/commands$/,
+];
+
+/** Whether a response is Kantel's own error, `{ "error": { "code": … } }`, rather than a proxy's page. Reads a copy. */
+async function answeredByKantel(response: Response): Promise<boolean> {
+	if (!(response.headers.get("content-type") ?? "").includes("application/json")) return false;
+	try {
+		const body = (await response.clone().json()) as { error?: { code?: unknown } } | null;
+		return typeof body?.error?.code === "string";
+	} catch {
+		return false;
+	}
+}
+
+function retried(input: string | URL | Request, init: RequestInit | undefined): boolean {
+	if (!new Headers(init?.headers).has("idempotency-key")) return false;
+	const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+	const call = `${(init?.method ?? "GET").toUpperCase()} ${url.pathname.replace(/^.*(?=\/v1\/)/, "")}`;
+	return RETRIED_CALLS.some((pattern) => pattern.test(call));
+}
+
 function makeClient(io: Io, config: ResolvedConfig): KantelClient {
 	const base = io.fetch;
-	const guarded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+	const reach = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		try {
 			return await base(input, init);
 		} catch (error) {
@@ -576,11 +613,32 @@ function makeClient(io: Io, config: ResolvedConfig): KantelClient {
 			throw new CliError(`couldn't reach Kantel at ${originOf(config.url)}: ${reason}`);
 		}
 	};
+	const guarded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+		const keyed = retried(input, init);
+		for (let attempt = 0; ; attempt++) {
+			const delay = keyed ? RETRY_DELAYS_MS[attempt] : undefined;
+			try {
+				const response = await reach(input, init);
+				// Kantel's own answer (its JSON error) is the call's outcome, even a 503: the call's key is held then, and a
+				// retry would only be told so. Only a proxy's failure, which never said what Kantel did, is sent again. A 409,
+				// such as a key still in use or held, is never retried.
+				if (delay === undefined || !RETRIED_STATUSES.has(response.status) || (await answeredByKantel(response))) {
+					return response;
+				}
+				await response.body?.cancel();
+			} catch (error) {
+				if (delay === undefined || !(error instanceof CliError)) throw error;
+			}
+			await io.sleep(delay);
+		}
+	};
 	return createKantelClient({
 		baseUrl: config.url,
 		token: config.apiKey,
 		fetch: guarded,
 		headers: () => ({ "user-agent": `kantel-cli/${VERSION}` }),
+		// One key per call, which its retries share.
+		idempotencyKey: () => randomUUID(),
 	});
 }
 

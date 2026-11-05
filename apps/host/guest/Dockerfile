@@ -1,5 +1,5 @@
 # The microVM sandbox's default image: Ubuntu 26.04 LTS with systemd, SSH, Docker and containerd, git, curl, jq,
-# build tools, Node, Python and Go, an XFCE desktop on a TigerVNC display, Chromium with its DevTools port on a display
+# build tools, Node, Python and Go, an Openbox desktop on a TigerVNC display, Chromium with its DevTools port on a display
 # of its own, and Selkies streaming the desktop and, on demand, the browser alone, plus Kantel's guest agent.
 # apps/host/guest/rootfs.sh turns it into a read-only ext4 image that every sandbox on a host shares; each sandbox
 # writes to its own disk through an overlay (kantel-init). apps/host/guest/README.md says what listens where and how custom images layer on top.
@@ -35,6 +35,10 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 # arm64's ports.ubuntu.com only by the Origin of a Release file it already holds, so after the lists are cleared an
 # update would read the live archive and then look for the packages under the snapshot. The host's mapping fixes that:
 # snapshot.ubuntu.com/ubuntu carries every architecture.
+# The desktop is Openbox with two tint2 panels (a top bar and a dock), rofi for the app list, and small GTK 3 apps
+# that need no GPU: LXTerminal, PCManFM and Geany. hsetroot draws the background as a root pixmap, which tint2 and
+# rofi show through their rounded corners without a compositor; librsvg2-common lets GTK and rofi draw SVG icons;
+# xsettingsd hands the GTK apps the DPI a viewer's pixel ratio asks for (kantel-session).
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
 	&& echo "APT::Snapshot \"$UBUNTU_SNAPSHOT\";" > /etc/apt/apt.conf.d/50kantel-snapshot \
 	&& echo 'Acquire::Snapshots::URI::Host::ports.ubuntu.com "https://snapshot.ubuntu.com/ubuntu/@SNAPSHOTID@/";' \
@@ -45,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 		ca-certificates curl wget gnupg git openssh-server sudo less nano vim-tiny jq unzip zip xz-utils file \
 		python3 python3-pip python3-venv python3-dev build-essential pkg-config e2fsprogs \
 		tigervnc-standalone-server tigervnc-tools dbus-x11 x11-utils x11-xserver-utils xdotool xclip xauth \
-		xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf thunar xfce4-terminal \
+		openbox tint2 rofi hsetroot xsettingsd lxterminal pcmanfm geany librsvg2-common \
 		adwaita-icon-theme fonts-dejavu-core fonts-liberation fonts-noto-color-emoji imagemagick \
 	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -124,12 +128,14 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
 	&& passwd -d root && passwd -l root
 
 # Staged, then copied with modes made readable: COPY keeps the build context's modes, and a checkout made under a
-# strict umask (077) would otherwise leave /usr and /etc/... unreadable to the sandbox user.
+# strict umask (077) would otherwise leave /usr and /etc/... unreadable to the sandbox user. Geany's settings name its
+# file browser plugin by a path with the architecture in it, filled in here and checked.
 COPY dist/kantel-guest-${TARGETARCH} /usr/local/bin/kantel-guest
 COPY guest/rootfs/ /tmp/kantel-rootfs/
 RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& cp -a /tmp/kantel-rootfs/. / && rm -rf /tmp/kantel-rootfs \
-	&& cp /etc/xdg/xfce4/panel/default.xml /home/user/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml \
+	&& sed -i "s|@MULTIARCH@|$(dpkg-architecture -qDEB_HOST_MULTIARCH)|" /home/user/.config/geany/geany.conf \
+	&& test -f "$(sed -n 's|^active_plugins=\(.*\);$|\1|p' /home/user/.config/geany/geany.conf)" \
 	&& chown -R 1000:1000 /home/user && mkdir -p /etc/kantel \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor
 

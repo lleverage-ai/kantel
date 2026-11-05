@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { type Command, createKantelClient, type Sandbox } from "@kantel/api/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { run } from "../src/commands.ts";
-import { clipOutput, createMcpServer, PROTOCOL_VERSIONS, serveStdio, TOOL_DEFINITIONS } from "../src/mcp.ts";
+import {
+	clipOutput,
+	commandResult,
+	createMcpServer,
+	PROTOCOL_VERSIONS,
+	serveStdio,
+	TOOL_DEFINITIONS,
+} from "../src/mcp.ts";
 
 interface Call {
 	readonly method: string;
@@ -106,6 +113,17 @@ const ROUTES: {
 		Response.json({ ...RUNNING, state: "killed", exitCode: 137 }),
 	"GET /v1/sandboxes/sbx_gone": () =>
 		Response.json({ error: { code: "not_found", message: "No such sandbox" } }, { status: 404 }),
+	"POST /v1/sandboxes/sbx_held/commands": () =>
+		Response.json(
+			{
+				error: {
+					code: "conflict",
+					message: "A call with this Idempotency-Key didn't finish, so whether it took effect is unknown",
+					details: { idempotencyKey: "held" },
+				},
+			},
+			{ status: 409 },
+		),
 	"POST /v1/sandboxes/sbx_stopped/commands": () =>
 		Response.json(
 			{
@@ -170,6 +188,8 @@ const ROUTES: {
 
 function fakeKantel() {
 	const calls: Call[] = [];
+	/** Each call's `Idempotency-Key`, or null. */
+	const keys: (string | null)[] = [];
 	const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 		const method = init?.method ?? "GET";
@@ -181,6 +201,7 @@ function fakeKantel() {
 			body,
 			authorization: new Headers(init?.headers).get("authorization"),
 		});
+		keys.push(new Headers(init?.headers).get("idempotency-key"));
 		const route = ROUTES[`${method} ${url.pathname}`];
 		if (route === undefined) {
 			const error = { code: "not_found", message: `No route ${method} ${url.pathname}` };
@@ -188,7 +209,7 @@ function fakeKantel() {
 		}
 		return route(body, init?.signal, url);
 	};
-	return { fetch, calls };
+	return { fetch, calls, keys };
 }
 
 function server(timing: { readonly pollIntervalMs?: number } = {}) {
@@ -197,6 +218,7 @@ function server(timing: { readonly pollIntervalMs?: number } = {}) {
 	return {
 		mcp: createMcpServer({ client, version: "1.2.3", progressIntervalMs: 20, pollIntervalMs: 5, ...timing }),
 		calls: api.calls,
+		keys: api.keys,
 	};
 }
 
@@ -301,6 +323,32 @@ describe("the MCP server", () => {
 		expect(ran.structuredContent).toMatchObject({ exitCode: 0, stdout: "hi\n", state: "exited" });
 		expect(ran.content[0]?.text).toContain("exited with code 0");
 		expect(calls[1]).toMatchObject({ path: "/v1/sandboxes/sbx_mcp1/commands", body: { command: "echo hi" } });
+	});
+
+	it("sends a new Idempotency-Key with each sandbox_exec call, so a retried request runs it once", async () => {
+		const { mcp, keys } = server();
+		const exec = (id: number) =>
+			mcp.handle(
+				request(id, "tools/call", { name: "sandbox_exec", arguments: { sandboxId: "sbx_mcp1", command: "ls" } }),
+			);
+		await exec(1);
+		await exec(2);
+		expect(keys).toHaveLength(2);
+		expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(keys[1]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(keys[1]).not.toBe(keys[0]);
+	});
+
+	it("says to check before calling again when an exec's key is held, not to resume the sandbox", async () => {
+		const { mcp } = server();
+		const held = resultOf(
+			await mcp.handle(
+				request(11, "tools/call", { name: "sandbox_exec", arguments: { sandboxId: "sbx_held", command: "make" } }),
+			),
+		);
+		expect(held.isError).toBe(true);
+		expect(held.content[0]?.text).toContain("may have taken effect");
+		expect(held.content[0]?.text).not.toContain("sandbox_resume");
 	});
 
 	it("answers Kantel's errors as tool results with isError, and a hint where it helps", async () => {
@@ -509,7 +557,8 @@ describe("the MCP server", () => {
 		expect(started.structuredContent).toEqual({ commandId: "cmd_long", state: "running" });
 		expect(started.content[0]?.text).toContain("command_get");
 		expect(calls[0]?.body).toEqual({ command: "make", detached: true });
-		const both = resultOf(
+		// A detached command may have a limit of its own.
+		const capped = resultOf(
 			await mcp.handle(
 				request(34, "tools/call", {
 					name: "sandbox_exec",
@@ -517,12 +566,14 @@ describe("the MCP server", () => {
 				}),
 			),
 		);
-		expect(both.isError).toBe(true);
-		expect(both.content[0]?.text).toContain("takes no timeoutMs");
-		// What a host does today: a detached command is still ended, and a kill may not stop its process.
+		expect(capped.isError).toBeUndefined();
+		expect(calls[1]?.body).toEqual({ command: "make", timeoutMs: 1000, detached: true });
+		// No limit and a kill that stops it, but the old limits on a host from before exec-control, said as such.
 		const described = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool.description]));
-		expect(described.get("sandbox_exec")).toContain("about 2 minutes on a microVM (30 s on an isolate)");
-		expect(described.get("command_kill")).toContain("its process may keep running");
+		expect(described.get("sandbox_exec")).toContain("no time limit unless you give it a timeoutMs");
+		expect(described.get("sandbox_exec")).toContain("predates exec-control still ends it after about 2 minutes");
+		expect(described.get("command_kill")).toContain("Kill a running command and the processes it started");
+		expect(described.get("command_kill")).toContain("predates exec-control it is only marked killed");
 	});
 
 	it("gets a command, waiting for it to end with waitMs", async () => {
@@ -602,7 +653,7 @@ describe("the MCP server", () => {
 			),
 		);
 		expect(killed.structuredContent).toMatchObject({ state: "killed" });
-		expect(killed.content[0]?.text).toContain("marked killed, but its process may still run");
+		expect(killed.content[0]?.text).toContain("The command was killed, and the processes it started with it.");
 		expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
 			"GET /v1/sandboxes/sbx_mcp1/commands",
 			"DELETE /v1/sandboxes/sbx_mcp1/commands/cmd_long",
@@ -715,5 +766,29 @@ describe("serving on stdio", () => {
 		expect(answers.find((answer) => answer.id === 2)?.result.structuredContent?.id).toBe("sbx_mcp1");
 		expect(api.calls[0]?.authorization).toBe("Bearer ksk_agent");
 		expect(err.join("")).toBe("");
+	});
+});
+
+describe("a killed command's answer", () => {
+	it("says the process may run on only when its host couldn't stop it", () => {
+		const base: Command = {
+			id: "cmd_k",
+			sandboxId: "sbx_mcp1",
+			command: "./serve",
+			state: "killed",
+			exitCode: 137,
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: 1,
+		};
+		const text = (command: Command) => commandResult(command).content[0]?.text ?? "";
+		expect(text(base)).toContain("The command was killed, and the processes it started with it.");
+		const old = {
+			...base,
+			stderr: "Kantel marked this command killed but couldn't stop it, so it may still be running: upgrade\n",
+		};
+		expect(text(old)).toContain("its host couldn't stop it");
+		expect(text(old)).toContain("pkill -f");
 	});
 });

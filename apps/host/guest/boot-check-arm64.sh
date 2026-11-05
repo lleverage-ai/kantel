@@ -85,7 +85,9 @@ check stream wait_for 600 "curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_
 check browser-display wait_for 300 "systemctl is-active kantel-browser-display.service && test -e /tmp/.X11-unix/X2 && runuser -u user -- env DISPLAY=:2 xdotool search --onlyvisible --class chromium | head -n 1"
 check browser-stream wait_for 300 "systemctl start kantel-browser-stream.service && curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6081/"
 check kvm sh -c "if [ -e /dev/kvm ]; then echo /dev/kvm present; else echo no /dev/kvm, as expected on arm64; fi"
-# The desktop as drawn: X is up before XFCE paints it (black, two colours), so wait for a picture with more in it.
+# The desktop as drawn: X is up before Openbox and the panels paint it (black, two colours), so wait for a picture
+# with more in it, after Openbox and both panels (the top bar and the dock).
+check session wait_for 300 "pgrep -x openbox >/dev/null && pgrep -x xsettingsd >/dev/null && test \$(pgrep -c -x tint2) -ge 2 && echo openbox, xsettingsd and \$(pgrep -c -x tint2) panels"
 check screenshot wait_for 300 "runuser -u user -- env DISPLAY=:1 import -window root /var/tmp/boot-check.png && test \$(identify -format %k /var/tmp/boot-check.png) -gt 64 && cp /var/tmp/boot-check.png /disk/boot-check.png && identify -format \"%wx%h, %k colours\" /disk/boot-check.png"
 check failed-units sh -c "n=\$(systemctl --failed --no-legend | grep -v kantel-boot-check | wc -l); systemctl --failed --no-legend; test \$n = 0 && echo none"
 echo "BOOTCHECK done fails=$fails uptime=$(cut -d" " -f1 /proc/uptime)s"

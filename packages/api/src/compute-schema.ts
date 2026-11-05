@@ -128,6 +128,14 @@ export const Caller = Type.Object(
 			title: "DeploymentMode",
 			description: "`selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans.",
 		}),
+		sandboxDomain: Type.Optional(
+			Type.String({
+				description:
+					"The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports " +
+					"`<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the " +
+					"deployment names none.",
+			}),
+		),
 	},
 	{ title: "Caller", description: "Who is calling, the accounts they may act in, and the deployment's mode." },
 );
@@ -417,7 +425,7 @@ export const GuestFeature = Type.Object(
 	{
 		available: Type.Boolean(),
 		detail: Type.Optional(
-			Type.String({ description: "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`." }),
+			Type.String({ description: "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`." }),
 		),
 		reason: Type.Optional(
 			Type.String({ description: "Why it isn't available, in words, such as `No desktop in this image`." }),
@@ -796,6 +804,12 @@ export const Sandbox = Type.Object(
 			Type.Integer({ description: "When it will stop by itself, while running; the console's stops-in." }),
 		),
 		latestSnapshotId: Type.Optional(Type.String({ description: "The snapshot a resume or fork would use." })),
+		latestSnapshotAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone.",
+			}),
+		),
 		source: Type.Optional(
 			Type.Object(
 				{
@@ -976,8 +990,36 @@ export const SandboxUsagePoint = Type.Object(
 		memoryMb: Type.Number(),
 		runningSeconds: Type.Number(),
 		cost: Type.Number(),
+		measured: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), " +
+					"and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it.",
+			}),
+		),
+		diskUsedBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The sandbox's own disk in use, its mean over the interval; absent where its host doesn't send it.",
+			}),
+		),
+		ioPressure: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The share of the interval in which at least one of its tasks waited on IO, its mean; absent where its guest " +
+					"has no pressure figures.",
+			}),
+		),
 	},
-	{ title: "SandboxUsagePoint" },
+	{
+		title: "SandboxUsagePoint",
+		description:
+			"One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an " +
+			"interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.",
+	},
 );
 
 export const SandboxSeriesPoint = Type.Object(
@@ -995,6 +1037,23 @@ export const SandboxSeriesPoint = Type.Object(
 				"counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory " +
 				"the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime.",
 		}),
+		diskUsedBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the " +
+					"host or the guest's agent doesn't send it.",
+			}),
+		),
+		ioPressure: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its " +
+					"guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures.",
+			}),
+		),
 	},
 	{ title: "SandboxSeriesPoint" },
 );
@@ -1026,6 +1085,12 @@ export const SandboxUsage = Type.Object(
 		totals: Type.Object({ runningSeconds: Type.Number(), cpuSeconds: Type.Number(), cost: Cost }),
 		memLimitBytes: Type.Optional(
 			Type.Integer({ minimum: 0, description: "The memory it may use, when its host reports it or its size sets it." }),
+		),
+		diskTotalBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description: "Its own disk's size, as its guest counts it, when its host sends disk figures.",
+			}),
 		),
 		series: SandboxUsageSeries,
 	},
@@ -1079,10 +1144,18 @@ export const RunCommandBody = Type.Object(
 		env: Type.Optional(Type.Record(Type.String(), Type.String())),
 		stdin: Type.Optional(Type.String()),
 		timeoutMs: Type.Optional(
-			Type.Integer({ minimum: 1, maximum: 600_000, description: "Default 30 000; at most 600 000 (10 minutes)." }),
+			Type.Integer({
+				minimum: 1,
+				maximum: 600_000,
+				description:
+					"Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one.",
+			}),
 		),
 		detached: Type.Optional(
-			Type.Boolean({ description: "Start it and answer at once, with no time limit; read it back by its ID." }),
+			Type.Boolean({
+				description:
+					"Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID.",
+			}),
 		),
 	},
 	{ title: "RunCommandBody" },
@@ -1101,7 +1174,10 @@ export const Command = Type.Object(
 		cwd: Type.Optional(Type.String()),
 		state: CommandState,
 		exitCode: Type.Optional(Type.Integer()),
-		stdout: Type.String({ description: "Its output so far, up to 1 MiB; `truncated` says if there was more." }),
+		stdout: Type.String({
+			description:
+				"Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more.",
+		}),
 		stderr: Type.String(),
 		truncated: Type.Boolean(),
 		startedAt: Timestamp,
@@ -3130,6 +3206,7 @@ export type Host = Static<typeof Host>;
 export type HostUsage = Static<typeof HostUsage>;
 export type HostUsagePoint = Static<typeof HostUsagePoint>;
 export type SandboxUsage = Static<typeof SandboxUsage>;
+export type SandboxUsagePoint = Static<typeof SandboxUsagePoint>;
 export type SandboxSeriesPoint = Static<typeof SandboxSeriesPoint>;
 export type UsageSparklines = Static<typeof UsageSparklines>;
 export type HostState = Static<typeof HostState>;

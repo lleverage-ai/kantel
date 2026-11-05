@@ -189,6 +189,59 @@ func TestRulesAndUnknownSources(t *testing.T) {
 	}
 }
 
+// A name the rules would judge as one host and Go's client would dial as another (its IDNA form) is refused, whether
+// it comes in a proxy-form request or a CONNECT, and nothing is dialled for it (LLE-17617, CVE-2026-39821).
+func TestNonASCIIHostsAreRefused(t *testing.T) {
+	rules := Rules{SandboxID: "sbx_idn", Mode: "proxy", Allow: []string{"*.example.com"}, Deny: []string{"bad.example.com"}, DefaultDeny: true}
+	for _, host := range []string{
+		"\uff42ad.example.com",        // fullwidth b: UTS 46 maps it to bad.example.com
+		"b\u00adad.example.com",       // a soft hyphen, which UTS 46 drops
+		"\u00fc.xn--bad-.example.com", // CVE-2026-39821: Go before 1.26.6 dials xn--tda.bad.example.com
+	} {
+		for _, connect := range []bool{false, true} {
+			p := startProxy(t, map[netip.Addr]Rules{loopback: rules})
+			var mu sync.Mutex
+			var dialed []string
+			p.Dial = func(network, address string) (net.Conn, error) {
+				mu.Lock()
+				dialed = append(dialed, address)
+				mu.Unlock()
+				return nil, fmt.Errorf("no dialling in this test")
+			}
+			conn, r := dial(t, p)
+			method := http.MethodGet
+			if connect {
+				method = http.MethodConnect
+				fmt.Fprintf(conn, "CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\n\r\n", host, host)
+			} else {
+				fmt.Fprintf(conn, "GET http://%s/ HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+			}
+			res, err := http.ReadResponse(r, &http.Request{Method: method})
+			if err != nil || res.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s %q: got %v %v, want 400", method, host, res, err)
+			}
+			mu.Lock()
+			if len(dialed) != 0 {
+				t.Fatalf("%s %q: dialled %q", method, host, dialed)
+			}
+			mu.Unlock()
+		}
+	}
+	// The ASCII names are judged as before: the xn-- form of an allowed name goes on, the denied name doesn't.
+	for _, c := range []struct {
+		host   string
+		status int
+	}{{"xn--ad-ez3n.example.com", http.StatusBadGateway}, {"bad.example.com", http.StatusForbidden}} {
+		p := startProxy(t, map[netip.Addr]Rules{loopback: rules})
+		p.Dial = func(string, string) (net.Conn, error) { return nil, fmt.Errorf("no dialling in this test") }
+		conn, r := dial(t, p)
+		fmt.Fprintf(conn, "GET http://%s/ HTTP/1.1\r\nHost: %s\r\n\r\n", c.host, c.host)
+		if res, err := http.ReadResponse(r, nil); err != nil || res.StatusCode != c.status {
+			t.Fatalf("%s: got %v %v, want %d", c.host, res, err, c.status)
+		}
+	}
+}
+
 func TestKeepAliveCantSlipPastTheRules(t *testing.T) {
 	up := newUpstream(t)
 	p := startProxy(t, map[netip.Addr]Rules{loopback: {SandboxID: "sbx_4", Mode: "proxy", Upstream: "http://" + up.l.Addr().String(), Allow: []string{"ok.example.com"}, DefaultDeny: true}})

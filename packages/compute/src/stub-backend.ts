@@ -58,6 +58,8 @@ export interface StubBackendOptions {
 /** The stub host's memory and disk, as its usage reports them. */
 const STUB_HOST_MEMORY_BYTES = 256 * 1024 ** 3;
 const STUB_HOST_DISK_BYTES = 2048 * 1024 ** 3;
+/** What a stub microVM's disk holds before its own files: its image's writable layer, as a guest would count it. */
+const STUB_GUEST_DISK_BYTES = 1.5 * 1024 ** 3;
 /** What the stub host itself uses, besides its sandboxes. */
 const STUB_HOST_BASE_BYTES = 2 * 1024 ** 3;
 const MIB = 1024 * 1024;
@@ -258,6 +260,9 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const machines = new Map<string, Machine>();
 	/** Sandboxes a create is making now (booting, restoring, running a template's setup). */
 	const creating = new Set<string>();
+	/** The commands running now with an ID, by sandbox and ID: what ends each (`killCommand`). */
+	const killers = new Map<string, () => void>();
+	const commandKey = (sandboxId: string, commandId: string) => `${sandboxId}\u0000${commandId}`;
 	const snapshots = new Map<string, Tree>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
@@ -511,15 +516,18 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 				);
 			}
 			const signal = request.signal;
-			if (signal !== undefined) {
+			// A stub's command runs in this process, so it ends with its wait (its signal) as with a kill.
+			const key = request.commandId === undefined ? undefined : commandKey(sandboxId, request.commandId);
+			if (signal !== undefined || key !== undefined) {
 				races.push(
 					new Promise<ExecResult>((resolve) => {
 						onAbort = () => {
 							controller.abort();
 							resolve({ exitCode: 137, stdout: "", stderr: "killed\n", timedOut: false });
 						};
-						if (signal.aborted) onAbort();
-						else signal.addEventListener("abort", onAbort, { once: true });
+						if (key !== undefined) killers.set(key, onAbort);
+						if (signal?.aborted) onAbort();
+						else signal?.addEventListener("abort", onAbort, { once: true });
 					}),
 				);
 			}
@@ -528,7 +536,12 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			} finally {
 				if (timer !== undefined) clearTimeout(timer);
 				if (signal !== undefined && onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+				if (key !== undefined && killers.get(key) === onAbort) killers.delete(key);
 			}
+		},
+
+		async killCommand(sandboxId, commandId) {
+			killers.get(commandKey(sandboxId, commandId))?.();
 		},
 
 		async readFile(sandboxId, path, range) {
@@ -724,7 +737,16 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 					.map((machine) => {
 						const reading = stubReading(machine.id, at, bases.get(machine.id) ?? 0);
 						// Its limit is the shape it runs as, as its placement says: a custom shape's, else its named size's.
-						const memoryMb = placement(machine).resources?.memoryMb;
+						const { memoryMb, diskGb } = placement(machine).resources ?? {};
+						// A microVM's guest also counts its disk (its files, on a base) and its IO pressure, as a host's does.
+						const guest =
+							machine.type === "microvm" && diskGb !== undefined
+								? {
+										diskUsedBytes: Math.min(diskGb * 1024 * MIB, STUB_GUEST_DISK_BYTES + (bases.get(machine.id) ?? 0)),
+										diskTotalBytes: diskGb * 1024 * MIB,
+										ioPressure: Math.round(Math.max(0, reading.cpu - 0.15) * 0.3 * 1000) / 1000,
+									}
+								: {};
 						return {
 							id: machine.id,
 							kind: machine.type,
@@ -732,6 +754,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 							memUsedBytes: reading.memUsedBytes,
 							memLimitBytes:
 								machine.type === "microvm" && memoryMb !== undefined ? memoryMb * MIB : ISOLATE_MEMORY_BYTES,
+							...guest,
 						};
 					});
 				const ambient = stubReading(STUB_HOST_ID, at, STUB_HOST_BASE_BYTES);

@@ -123,13 +123,19 @@ The account's bucket sources, oldest first. A key needs `account:read`. Experime
 
 A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Body**: [CreateBucketSourceBody](/api/reference/types/#createbucketsourcebody)
 
 **Answers**
 
 - `201`: [BucketSource](/api/reference/types/#bucketsource) (`application/json`). The bucket source.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a bucket source
 

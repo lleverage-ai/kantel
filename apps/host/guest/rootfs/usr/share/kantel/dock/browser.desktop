@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Chromium
+Comment=The desktop's web browser
+Exec=kantel-chromium
+Icon=chromium
+Terminal=false
+NoDisplay=true

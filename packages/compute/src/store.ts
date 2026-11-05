@@ -104,6 +104,21 @@ export interface StoredSample {
 	 * single reading, as samples were kept before hosts sent ticks.
 	 */
 	readonly readings?: number;
+	/**
+	 * A mean of 5-minute means folded together once they are a day old (`keptSamples`): the time from `at` it covers,
+	 * up to an hour. Absent on a 5-minute mean (it covers `ROLLUP_MS`) and a single reading.
+	 */
+	readonly spanMs?: number;
+	/** The sandbox's own disk in use, in MiB, from a host that sends it; absent from one that doesn't. */
+	readonly diskMb?: number;
+	/** IO pressure, 0 to 1, from a guest with the figures. */
+	readonly io?: number;
+	/**
+	 * Of `readings`, how many had a disk figure and how many IO pressure, where not all of them did (a guest that
+	 * didn't answer in time, one restored from an older snapshot): `diskMb` and `io` are the means of those alone.
+	 */
+	readonly diskReadings?: number;
+	readonly ioReadings?: number;
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
@@ -165,7 +180,7 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly placeholders?: { readonly [name: string]: string };
 	readonly hostLabels: { readonly [key: string]: string };
 	readonly runs: readonly RunPeriod[];
-	/** The newest readings, at most `MAX_SAMPLES`. */
+	/** The newest readings: a day of 5-minute means (`MAX_SAMPLES`), and hourly ones before it (`HOURLY_SAMPLES`). */
 	readonly samples: readonly StoredSample[];
 	readonly ports: readonly computeSchema.ExposedPort[];
 	/** The snapshot its memory was paused into, while `paused`. */
@@ -190,7 +205,13 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
 };
 
-export type StoredCommand = computeSchema.Command & { readonly accountId: string };
+export type StoredCommand = computeSchema.Command & {
+	readonly accountId: string;
+	/** Run detached: its result can be fetched from the backend (`commandResult`) by any gateway. */
+	readonly detached?: boolean;
+	/** Killed, and its kill not yet taken by its backend: a later kill sends it again. */
+	readonly killPending?: boolean;
+};
 
 /**
  * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
@@ -540,8 +561,15 @@ export interface StoredDeviceLogin {
  */
 export interface StoredIdempotency {
 	readonly id: string;
-	/** The answer's JSON, once the first call has answered; absent while it is still working. */
+	/**
+	 * The answer's JSON, once the first call has answered; absent while it is still working. For an answer that holds a
+	 * secret, the JSON of the answer sealed (`secret: "sealed"`), or `null` when it wasn't kept (`"withheld"`).
+	 */
 	readonly body?: string;
+	/** The answer held a secret: kept sealed with the deployment's secrets key, or, with none, not kept. */
+	readonly secret?: "sealed" | "withheld";
+	/** The SHA-256 of the request it was for (path parameters, query and body); absent on keys kept before. */
+	readonly fingerprint?: string;
 	readonly createdAt: number;
 	/** While it is working: who holds the claim (a random ID), so only the holder renews it. */
 	readonly claim?: string;

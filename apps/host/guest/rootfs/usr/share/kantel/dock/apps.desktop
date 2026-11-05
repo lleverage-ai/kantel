@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=All apps
+Comment=Every app on this desktop
+Exec=kantel-apps
+Icon=/usr/share/kantel/icons/apps.svg
+Terminal=false
+NoDisplay=true

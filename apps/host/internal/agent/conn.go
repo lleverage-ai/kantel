@@ -272,7 +272,13 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error
-	callCtx, done, err := s.host.gatewayGuard(ctx, m.Method, m.Params)
+	// A detached command the host runs itself holds its guard until it ends (startDetached): past the call, and past this
+	// session, so its guard isn't ended by the connection going.
+	guarded := ctx
+	if detachedExec(m.Method, m.Params) {
+		guarded = context.WithoutCancel(ctx)
+	}
+	callCtx, done, err := s.host.gatewayGuard(guarded, m.Method, m.Params)
 	if err != nil {
 		reply.Error = toError(err)
 		if err := s.send(ctx, reply); err != nil {
@@ -308,6 +314,9 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		result = map[string]bool{"ok": err == nil}
 		done()
 	default:
+		// What outlives the call (a detached command the host runs) may take over the guard's release.
+		var rel *callRelease
+		callCtx, rel = withRelease(callCtx, done)
 		result, err = s.host.Call(callCtx, m.Method, m.Params, func(e proto.Event) {
 			if callCtx.Err() != nil {
 				return
@@ -319,7 +328,7 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		if callCtx.Err() != nil && ctx.Err() == nil {
 			result, err = nil, &proto.Error{Code: proto.ErrConflict, Message: "this call was ended: its sandbox's space turned E2E on, or the sandbox is being replaced"}
 		}
-		done()
+		rel.release()
 	}
 	if err != nil {
 		reply.Error = toError(err)

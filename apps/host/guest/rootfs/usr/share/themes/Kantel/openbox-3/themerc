@@ -1,0 +1,75 @@
+# Kantel's Openbox theme: flat and dark, the same greys as the desktop's background, top bar and dock (tint2),
+# GTK's Adwaita dark and the terminal. No gradients or shadows: flat colours encode smaller in the stream.
+
+border.width: 1
+padding.width: 6
+padding.height: 4
+window.handle.width: 0
+window.client.padding.width: 0
+window.client.padding.height: 0
+menu.overlap.x: 0
+menu.overlap.y: 0
+menu.border.width: 1
+menu.separator.width: 1
+menu.separator.padding.width: 6
+menu.separator.padding.height: 4
+
+window.active.border.color: #3a3f4b
+window.inactive.border.color: #2a2e36
+window.active.client.color: #22252c
+window.inactive.client.color: #22252c
+window.active.title.separator.color: #2a2e36
+window.inactive.title.separator.color: #22252c
+
+window.active.title.bg: flat solid
+window.active.title.bg.color: #2a2e36
+window.inactive.title.bg: flat solid
+window.inactive.title.bg.color: #1e2127
+
+window.label.text.justify: center
+window.active.label.bg: parentrelative
+window.active.label.text.color: #e6e8ec
+window.inactive.label.bg: parentrelative
+window.inactive.label.text.color: #7d828d
+
+window.*.button.*.bg: parentrelative
+window.active.button.*.image.color: #c3c7cf
+window.inactive.button.*.image.color: #5c616b
+window.active.button.disabled.image.color: #4a4f59
+window.inactive.button.disabled.image.color: #3a3f4b
+window.active.button.*.hover.bg: flat solid
+window.active.button.*.hover.bg.color: #3a3f4b
+window.active.button.*.hover.image.color: #ffffff
+window.active.button.close.hover.bg: flat solid
+window.active.button.close.hover.bg.color: #d9534f
+window.active.button.*.pressed.bg: flat solid
+window.active.button.*.pressed.bg.color: #4a90e2
+window.active.button.*.pressed.image.color: #ffffff
+window.inactive.button.*.hover.bg: parentrelative
+window.inactive.button.*.pressed.bg: parentrelative
+
+menu.border.color: #3a3f4b
+menu.title.bg: flat solid
+menu.title.bg.color: #22252c
+menu.title.text.color: #7d828d
+menu.title.text.justify: left
+menu.items.bg: flat solid
+menu.items.bg.color: #22252c
+menu.items.text.color: #e6e8ec
+menu.items.disabled.text.color: #5c616b
+menu.items.justify: left
+menu.items.active.bg: flat solid
+menu.items.active.bg.color: #4a90e2
+menu.items.active.text.color: #ffffff
+menu.separator.color: #3a3f4b
+
+osd.border.width: 1
+osd.border.color: #3a3f4b
+osd.bg: flat solid
+osd.bg.color: #22252c
+osd.label.bg: parentrelative
+osd.label.text.color: #e6e8ec
+osd.hilight.bg: flat solid
+osd.hilight.bg.color: #4a90e2
+osd.unhilight.bg: flat solid
+osd.unhilight.bg.color: #3a3f4b

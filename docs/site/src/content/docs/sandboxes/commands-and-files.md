@@ -54,16 +54,18 @@ Check `exitCode`, not the HTTP status: a command that fails still answers `200`,
 | `cwd` | The directory to run in. Default the sandbox user's home |
 | `env` | More environment variables, for this command only |
 | `stdin` | Text to send to its standard input |
-| `timeoutMs` | How long to wait. Default 30,000 (30 seconds), at most 600,000 (10 minutes) |
+| `timeoutMs` | How long to wait. Default 30,000 (30 seconds), at most 600,000 (10 minutes). A detached command has no limit unless you give one |
 | `detached` | Start it and answer at once. See [below](#long-commands-and-servers) |
 
 A command still running at `timeoutMs` is killed, and the answer has `state: "timed_out"`. `stdout` and `stderr` each hold up to 1 MiB; when there was more, `truncated` is `true`. For big output, write it to a file in the command and [read the file](#read-a-file).
 
-Commands are safe to retry with an `Idempotency-Key` header: a retry with the same key answers the first run and doesn't run it again.
+Commands are safe to retry with an `Idempotency-Key` header: a retry with the same key answers the first run and doesn't run it again, detached or not. The same key with another command is `422` with `refused`. If the first call failed part way or stopped answering, the command may have run: a retry with the same key is `409` `conflict` with `details.idempotencyKey: "held"`, and doesn't run it. List the sandbox's commands to see, then use a new key. Without a key, a retry that reached Kantel the first time runs the command twice, so send one with anything that isn't safe to run twice. The `kantel` CLI and its MCP server send one with every command. See [Safe retries](/api/reference/#safe-retries).
+
+Writing a file needs no key: writing the same content again leaves the same file.
 
 ## Long commands and servers
 
-A detached command answers at once, in `state: "running"`, and runs with no time limit. Use it for a dev server, a long build or an agent's own loop:
+A detached command answers at once, in `state: "running"`, and runs with no time limit unless you give it a `timeoutMs`. Use it for a dev server, a long build or an agent's own loop:
 
 ```sh
 curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/commands" \
@@ -72,7 +74,7 @@ curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/commands" \
   -d '{"command": "cd app && npm run dev -- --host 0.0.0.0 --port 3000", "detached": true}' | jq -r .id
 ```
 
-Read it back by its ID for its state and its output so far, and kill it when you're done:
+Read it back by its ID for its state, and once it has ended its exit code and output (up to 1 MiB of each stream, as for any command). Kill it when you're done:
 
 ```ts
 const server = await kantel.runCommand("sbx_4kq9x2mt", {
@@ -84,7 +86,13 @@ console.log(now.state, now.stdout);
 await kantel.killCommand("sbx_4kq9x2mt", server.id); // state: "killed"
 ```
 
-Killing a command that has already ended answers it as it is. A stop ends every running command, so after a resume from a stop, start your servers again. A paused sandbox's programs carry on when it resumes.
+A kill ends the command and every process it started. Killing a command that has already ended answers it as it is. A stop ends every running command, so after a resume from a stop, start your servers again. A paused sandbox's programs carry on when it resumes.
+
+A detached command doesn't keep its sandbox running: the sandbox still stops at its `stopsAt` (see [auto-stop](/sandboxes/lifecycle/#auto-stop-and-extending)), so give a long job a sandbox with a later stop time, or none.
+
+An isolate on a kantel-host runs a command in its own shell rather than as a process, so a command there stops after 30 seconds unless its `timeoutMs` says otherwise, detached or not.
+
+On a self-hosted host, detached commands with no limit and kills that stop the process need a kantel-host that has them. On an older one, a detached command still stops at that host's own limit (2 minutes on a microVM), and a kill marks the command killed but can't stop its process. The command's `stderr` says so in either case. Upgrade the host's kantel-host to fix both.
 
 ## Command history
 

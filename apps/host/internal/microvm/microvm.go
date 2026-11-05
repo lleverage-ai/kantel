@@ -345,7 +345,7 @@ func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, driv
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
 	}
-	cfg.BootArgs += browserSurfaceBootArg
+	cfg.BootArgs += browserSurfaceBootArg + psiBootArg
 	if sh.HotplugMiB > 0 {
 		cfg.BootArgs += hotplugBootArgs
 	}
@@ -1083,6 +1083,12 @@ const templateDevices = " devices=balloon-stats"
 // browser's own stream. A snapshot keeps the command line it booted with, so it is in the template's fingerprint too.
 const browserSurfaceBootArg = " " + guest.BrowserSurfaceBootArg
 
+// psiBootArg turns on the guest kernel's pressure figures, which Firecracker's guest config builds in but leaves off
+// (CONFIG_PSI_DEFAULT_DISABLED): its agent reads /proc/pressure/io for the sandbox's IO pressure (guest.Stats). A
+// sandbox restored from a snapshot made before it keeps its kernel's command line, so has no IO pressure until it is
+// cold-booted. In the template's fingerprint too.
+const psiBootArg = " psi=1"
+
 const bootArgs = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/usr/sbin/kantel-init quiet loglevel=3 systemd.show_status=false"
 
 // Since is a timer for step timings.
@@ -1136,7 +1142,7 @@ func (m *Manager) templateFingerprint(sh shape) string {
 	if m.cfg.Initrd != "" {
 		images = append(images, m.cfg.Initrd)
 	}
-	return fc.Fingerprint(images...) + templateDevices + " boot=" + guest.BrowserSurfaceBootArg + m.shapeKey(sh)
+	return fc.Fingerprint(images...) + templateDevices + " boot=" + guest.BrowserSurfaceBootArg + psiBootArg + m.shapeKey(sh)
 }
 
 // templateReady says whether the shape's template can be restored now without making it: made for these images, or,
@@ -2690,10 +2696,8 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	if err != nil {
 		return proto.ExecResult{}, err
 	}
-	req := guest.ExecRequest{Command: p.Command, Argv: p.Argv, Cwd: p.Cwd, Env: p.Env, User: p.User, TimeoutMs: p.TimeoutMs, Stdin: p.Stdin, Detached: p.Detached}
-	if p.Attribution != "" {
-		req.ProxyUser = "sandbox-" + sanitizeUser(p.Attribution)
-	}
+	req := execRequest(p)
+	req.Detached = p.Detached
 	if !p.Stream || onOutput == nil {
 		res, err := client.Exec(ctx, req)
 		return proto.ExecResult(res), err
@@ -2715,6 +2719,72 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	})
 	result.DurationMs = time.Since(started).Milliseconds()
 	return result, err
+}
+
+func execRequest(p proto.ExecParams) guest.ExecRequest {
+	req := guest.ExecRequest{Command: p.Command, Argv: p.Argv, Cwd: p.Cwd, Env: p.Env, User: p.User, TimeoutMs: p.TimeoutMs, Stdin: p.Stdin, ID: p.CommandID}
+	if p.Attribution != "" {
+		req.ProxyUser = "sandbox-" + sanitizeUser(p.Attribution)
+	}
+	return req
+}
+
+// StartCommand starts a command with its CommandID in the guest's background, where it outlives the call, the host's
+// connection and the host's own restarts, and answers its pid. A guest agent from before is unsupported (the host then
+// runs the command itself).
+func (m *Manager) StartCommand(ctx context.Context, p proto.ExecParams) (int, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, err
+	}
+	res, err := client.StartCommand(ctx, execRequest(p))
+	switch {
+	case err == nil:
+		return res.Pid, nil
+	case guest.IsUnknownRoute(err):
+		return 0, &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's guest agent predates detached commands"}
+	case guest.IsRefused(err):
+		return 0, &proto.Error{Code: proto.ErrInvalid, Message: guest.RefusalMessage(err)}
+	case guest.IsConflict(err):
+		return 0, &proto.Error{Code: proto.ErrConflict, Message: guest.RefusalMessage(err)}
+	}
+	return 0, err
+}
+
+// CommandStatus is a command the guest keeps by its ID, waiting up to wait for it to end. One the guest doesn't know
+// (or a guest from before) is not_found.
+func (m *Manager) CommandStatus(ctx context.Context, sandboxID, commandID string, wait time.Duration) (proto.ExecStatus, error) {
+	client, err := m.running(sandboxID)
+	if err != nil {
+		return proto.ExecStatus{}, err
+	}
+	status, err := client.CommandStatus(ctx, commandID, wait)
+	if err != nil {
+		if guest.IsUnknownRoute(err) {
+			return proto.ExecStatus{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no command %s in sandbox %s", commandID, sandboxID)}
+		}
+		return proto.ExecStatus{}, err
+	}
+	out := proto.ExecStatus{CommandID: commandID, State: status.State}
+	if status.Result != nil {
+		r := proto.ExecResult(*status.Result)
+		out.Result = &r
+	}
+	return out, nil
+}
+
+// KillCommand kills a command the guest knows by its ID, and its process group, saying whether it was running. One the
+// guest doesn't know, or a guest from before, is not killed.
+func (m *Manager) KillCommand(ctx context.Context, sandboxID, commandID string) (bool, error) {
+	client, err := m.running(sandboxID)
+	if err != nil {
+		return false, err
+	}
+	killed, err := client.KillCommand(ctx, commandID)
+	if guest.IsUnknownRoute(err) {
+		return false, nil
+	}
+	return killed, err
 }
 
 func sanitizeUser(s string) string {

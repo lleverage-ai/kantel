@@ -184,6 +184,26 @@ function sandboxUsage(value: unknown, at: number): HostSandboxUsage | undefined 
 		memUsedBytes: count(value.memUsedBytes, `usage.sandboxes[${at}].memUsedBytes`),
 		memLimitBytes: count(value.memLimitBytes, `usage.sandboxes[${at}].memLimitBytes`),
 		...(memSource === undefined ? {} : { memSource }),
+		...guestFigures(value),
+	};
+}
+
+const figure = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+/**
+ * A microVM's disk and IO pressure, which a host sends from its guest's agent when it has them. Optional, and left out
+ * rather than refused when they make no sense (a used beyond its size, a share outside 0 to 1): the tick's CPU and
+ * memory still stand.
+ */
+function guestFigures(
+	value: Record<string, unknown>,
+): Pick<HostSandboxUsage, "diskUsedBytes" | "diskTotalBytes" | "ioPressure"> {
+	const { diskUsedBytes: used, diskTotalBytes: total, ioPressure } = value;
+	return {
+		...(figure(used) && figure(total) && total > 0 && used <= total
+			? { diskUsedBytes: used, diskTotalBytes: total }
+			: {}),
+		...(figure(ioPressure) && ioPressure <= 1 ? { ioPressure } : {}),
 	};
 }
 

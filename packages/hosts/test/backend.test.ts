@@ -497,7 +497,7 @@ describe("the compute API on kantel-host hosts", () => {
 			libc: "glibc",
 			shell: "/bin/bash",
 			init: "systemd",
-			desktop: has("Xtigervnc, xfce4-session, Selkies"),
+			desktop: has("Xtigervnc, Openbox, Selkies"),
 			browser: has("Chromium"),
 			browserSurface: has("Xtigervnc, Selkies"),
 			docker: { ...has("dockerd"), kvm: false },

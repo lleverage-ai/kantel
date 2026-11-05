@@ -346,8 +346,34 @@ export interface ExecRequest {
 	readonly stdin?: string;
 	/** Kill it after this long; absent, no limit. */
 	readonly timeoutMs?: number;
-	/** Kills it when aborted. */
+	/**
+	 * Stops waiting for it when aborted. Whether the command itself stops too is the backend's: `killCommand` is what
+	 * stops it, and a backend with one may leave a detached command running.
+	 */
 	readonly signal?: AbortSignal;
+	/** The compute API's ID for it, which `killCommand` and `commandResult` name it by. */
+	readonly commandId?: string;
+	/**
+	 * Started to run in the background, so its end, not one call, is what `exec` waits for: it runs with no limit but
+	 * `timeoutMs`, and `commandResult` can fetch its result later, from any gateway, where the backend keeps it.
+	 */
+	readonly detached?: boolean;
+}
+
+/**
+ * What a backend's `exec` of a detached command rejects with when its `signal` ended the wait while the command runs
+ * on where `commandResult` can fetch it: the compute API then leaves it `running`, for `getCommand` to fetch its end,
+ * rather than recording a failure. Any other rejection is the command's end.
+ */
+export class DetachedWaitEnded extends Error {
+	constructor() {
+		super("Kantel stopped waiting for the command; it runs on, and its end can be fetched");
+		this.name = "DetachedWaitEnded";
+	}
+}
+
+export function isDetachedWaitEnded(error: unknown): boolean {
+	return error instanceof Error && error.name === "DetachedWaitEnded";
 }
 
 export interface ExecResult {
@@ -481,6 +507,16 @@ export interface SandboxBackend {
 	placedOn?(sandboxId: string): Promise<string | undefined>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
+	/**
+	 * Kills a running command by its `ExecRequest.commandId`, and what it started. It throws `not_supported` where the
+	 * sandbox can't stop a command (a host too old). Absent, a command is stopped only by its `signal`.
+	 */
+	killCommand?(sandboxId: string, commandId: string): Promise<void>;
+	/**
+	 * A detached command's result once it has ended, `undefined` while it runs; `not_found` once the backend no longer
+	 * knows it. Absent, or `not_supported`, a detached command's result is only what its `exec` answers.
+	 */
+	commandResult?(sandboxId: string, commandId: string): Promise<ExecResult | undefined>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
 	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */

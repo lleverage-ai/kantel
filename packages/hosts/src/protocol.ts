@@ -178,7 +178,68 @@ export const HOST_FEATURES = {
 	 * it is never sent a `HostTemplateImage`, in a build or a create.
 	 */
 	templateImages: "template-image-build",
+	/**
+	 * Commands by Kantel's ID (`HostExecParams.commandId`): `sandbox.exec.kill` stops one that is running, with its whole
+	 * process group, and a `detached` one is answered at once and runs past any call (and the host's connection),
+	 * with no limit but its own `timeoutMs`, its result kept for `sandbox.exec.get`. Without it Kantel can't stop a
+	 * host's command, and a detached one runs as a foreground one, to the guest's default limit (120 s; an isolate's
+	 * 30 s).
+	 */
+	execControl: "exec-control",
 } as const;
+
+/**
+ * `sandbox.exec`'s params (the Go side's `ExecParams`). The host fills in `sandboxId`; `stdin` is base64. With no
+ * `timeoutMs` a foreground command has the tier's default limit (the guest's 120 s, an isolate's 30 s).
+ */
+export interface HostExecParams {
+	readonly command: string;
+	readonly cwd?: string;
+	readonly env?: { readonly [name: string]: string };
+	readonly stdin?: string;
+	readonly timeoutMs?: number;
+	/** Kantel's command ID (`execControl`): what `sandbox.exec.kill` and `sandbox.exec.get` name it by. */
+	readonly commandId?: string;
+	/**
+	 * With `commandId` (`execControl`): answered at once with a `HostExecStatus` (`running`); the command runs with no
+	 * limit but `timeoutMs` (an isolate's has its default), and its result is `sandbox.exec.get`'s once it ends.
+	 */
+	readonly detached?: boolean;
+}
+
+/** What a command ended with: `sandbox.exec`'s answer, and an ended `HostExecStatus`'s `result`. */
+export interface HostExecResult {
+	readonly exitCode: number;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly truncated?: boolean;
+	readonly timedOut?: boolean;
+	readonly durationMs?: number;
+}
+
+/** `sandbox.exec.get`'s and `sandbox.exec.kill`'s params: a command by Kantel's ID. */
+export interface HostExecRef {
+	readonly commandId: string;
+	/** For a get: hold the answer up to this long (at most `HOST_EXEC_MAX_WAIT_MS`) for a running command to end. */
+	readonly waitMs?: number;
+}
+
+/** The longest a host holds a `sandbox.exec.get` for its command to end (the Go side's `ExecMaxWaitMs`). */
+export const HOST_EXEC_MAX_WAIT_MS = 60_000;
+
+/** A command by its ID: a detached `sandbox.exec`'s answer, and `sandbox.exec.get`'s. */
+export interface HostExecStatus {
+	readonly commandId: string;
+	readonly state: "running" | "exited";
+	readonly pid?: number;
+	/** Once it has ended. */
+	readonly result?: HostExecResult;
+	/**
+	 * On a detached start: the sandbox didn't answer it, so whether the command started is unknown. Kantel follows it by
+	 * its ID as any; `sandbox.exec.get`'s `not_found` then means it never started.
+	 */
+	readonly unconfirmed?: boolean;
+}
 
 /**
  * How far either end of a file stream may get ahead of the other's `stream.ack`: a write's sender (Kantel) of what
@@ -502,6 +563,17 @@ export interface HostSandboxUsage {
 	 * that predates it sends none, and its figures are all `rss`.
 	 */
 	readonly memSource?: HostMemorySource;
+	/**
+	 * A microVM's own disk as its guest counts it (df's used and size), from its agent: both or neither. Neither for an
+	 * isolate, or from a host or guest agent that predates them.
+	 */
+	readonly diskUsedBytes?: number;
+	readonly diskTotalBytes?: number;
+	/**
+	 * The share of the interval, 0 to 1, in which at least one of a microVM's guest tasks waited on IO (its kernel's IO
+	 * pressure, "some"). None from a guest without pressure figures (booted without psi=1) or for its first reading.
+	 */
+	readonly ioPressure?: number;
 }
 
 /** `HostSandboxUsage.memSource`. */
@@ -622,6 +694,13 @@ export const HostMethods = {
 	get: "sandbox.get",
 	list: "sandbox.list",
 	exec: "sandbox.exec",
+	/** `HostExecRef` (`execControl`): a command's `HostExecStatus`, or `not_found` once the host no longer knows it. */
+	execGet: "sandbox.exec.get",
+	/**
+	 * `HostExecRef` (`execControl`): kills a running command and its process group; answered `{ killed }`, false for one
+	 * that had already ended.
+	 */
+	execKill: "sandbox.exec.kill",
 	fileRead: "sandbox.files.read",
 	fileWrite: "sandbox.files.write",
 	fileDelete: "sandbox.files.delete",

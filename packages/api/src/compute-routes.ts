@@ -197,6 +197,7 @@ export const createOrganisation = defineRoute({
 	summary: "Create an organisation",
 	description: describe("Makes an organisation account with the caller as its owner. People only: a key is refused."),
 	body: CreateOrganisationBody,
+	idempotent: true,
 	answer: { status: 201, description: "The organisation.", schema: Account },
 	errors: ["invalid", "forbidden", "exhausted"],
 });
@@ -322,6 +323,7 @@ export const createInvite = defineRoute({
 	),
 	params: AccountPath,
 	body: CreateInviteBody,
+	idempotent: true,
 	answer: { status: 201, description: "The invite, with its code.", schema: Invite },
 	errors: changeErrors,
 });
@@ -453,6 +455,7 @@ export const updateSandbox = defineRoute({
 	),
 	params: SandboxPath,
 	body: UpdateSandboxBody,
+	idempotent: true,
 	answer: { status: 200, description: "The sandbox.", schema: Sandbox },
 	errors: changeErrors,
 });
@@ -539,6 +542,7 @@ export const recoverSandbox = defineRoute({
 		scope("sandboxes:write"),
 	),
 	params: SandboxPath,
+	idempotent: true,
 	answer: { status: 200, description: "The sandbox, starting.", schema: Sandbox },
 	errors: lifecycleErrors,
 });
@@ -557,13 +561,15 @@ export const restartSandboxOnLatest = defineRoute({
 		"Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is",
 		"stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so",
 		"are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`)",
-		"moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`.",
+		"moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call",
+		"moves after this restart has stopped it is `aborted`.",
 		scope("sandboxes:write"),
 		IMAGE_PATCHING,
 	),
 	params: SandboxPath,
+	idempotent: true,
 	answer: { status: 200, description: "The sandbox, starting.", schema: Sandbox },
-	errors: [...lifecycleErrors, "exhausted"],
+	errors: [...lifecycleErrors, "exhausted", "aborted"],
 });
 
 export const deleteSandbox = defineRoute({
@@ -577,6 +583,7 @@ export const deleteSandbox = defineRoute({
 		scope("sandboxes:delete"),
 	),
 	params: SandboxPath,
+	idempotent: true,
 	answer: { status: 200, description: "The sandbox, deleting.", schema: Sandbox },
 	errors: changeErrors,
 });
@@ -625,9 +632,10 @@ export const runCommand = defineRoute({
 	summary: "Run a command",
 	description: describe(
 		"Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at",
-		"`timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A",
-		"call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped,",
-		"paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first.",
+		"`timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless",
+		"`timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from",
+		"`timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it",
+		"first.",
 		scope("exec"),
 	),
 	params: SandboxPath,
@@ -656,7 +664,7 @@ export const getCommand = defineRoute({
 	path: "/sandboxes/{sandboxId}/commands/{commandId}",
 	tag: "commands",
 	summary: "Get a command",
-	description: describe("Its state and its output so far.", scope("exec")),
+	description: describe("Its state, and once it has ended its exit code and output.", scope("exec")),
 	params: CommandPath,
 	answer: { status: 200, description: "The command.", schema: Command },
 	errors: readErrors,
@@ -668,7 +676,11 @@ export const killCommand = defineRoute({
 	path: "/sandboxes/{sandboxId}/commands/{commandId}",
 	tag: "commands",
 	summary: "Kill a command",
-	description: describe("Ends a running command; one that has ended is answered as it is.", scope("exec")),
+	description: describe(
+		"Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's",
+		"kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running.",
+		scope("exec"),
+	),
 	params: CommandPath,
 	answer: { status: 200, description: "The command.", schema: Command },
 	errors: readErrors,
@@ -838,6 +850,7 @@ export const exposePort = defineRoute({
 	),
 	params: SandboxPath,
 	body: ExposePortBody,
+	idempotent: true,
 	answer: { status: 201, description: "The port's URL.", schema: ExposedPort },
 	errors: [...changeErrors, "not_supported"],
 });
@@ -990,6 +1003,7 @@ export const takeSnapshot = defineRoute({
 	),
 	params: SandboxPath,
 	body: TakeSnapshotBody,
+	idempotent: true,
 	answer: { status: 201, description: "The snapshot, being taken.", schema: Snapshot },
 	errors: lifecycleErrors,
 });
@@ -1006,6 +1020,7 @@ export const saveSnapshot = defineRoute({
 		scope("snapshots:write"),
 	),
 	body: SaveSnapshotBody,
+	idempotent: true,
 	answer: { status: 201, description: "The saved snapshot.", schema: Snapshot },
 	errors: [...lifecycleErrors, "exhausted"],
 });
@@ -1100,6 +1115,7 @@ export const createApiKey = defineRoute({
 		scope("account:admin"),
 	),
 	body: CreateApiKeyBody,
+	idempotent: true,
 	answer: { status: 201, description: "The key and its secret.", schema: IssuedApiKey },
 	errors: ["invalid", "forbidden"],
 });
@@ -1124,6 +1140,7 @@ export const rotateApiKey = defineRoute({
 	summary: "Rotate an API key",
 	description: describe("Replaces its secret; the old one stops working at once.", scope("account:admin")),
 	params: ApiKeyPath,
+	idempotent: true,
 	answer: { status: 200, description: "The key and its new secret.", schema: IssuedApiKey },
 	errors: changeErrors,
 });
@@ -1286,6 +1303,7 @@ export const createEnvironment = defineRoute({
 		scope("account:admin"),
 	),
 	body: CreateEnvironmentBody,
+	idempotent: true,
 	answer: { status: 201, description: "The environment.", schema: Environment },
 	errors: ["invalid", "forbidden", "conflict"],
 });
@@ -1511,6 +1529,7 @@ export const createTemplate = defineRoute({
 		TEMPLATES,
 	),
 	body: CreateTemplateBody,
+	idempotent: true,
 	answer: { status: 201, description: "The template.", schema: Template },
 	errors: ["invalid", "forbidden", "conflict", "not_supported"],
 });
@@ -1604,6 +1623,7 @@ export const rebuildTemplate = defineRoute({
 		TEMPLATES,
 	),
 	params: TemplatePath,
+	idempotent: true,
 	answer: { status: 200, description: "The template, building.", schema: Template },
 	errors: [...readErrors, "not_supported"],
 });
@@ -1689,6 +1709,7 @@ export const createWebhook = defineRoute({
 	summary: "Create a webhook",
 	description: describe("Its signing secret is answered once.", scope("account:admin")),
 	body: CreateWebhookBody,
+	idempotent: true,
 	answer: { status: 201, description: "The webhook and its signing secret.", schema: WebhookWithSecret },
 	errors: ["invalid", "forbidden", "exhausted"],
 });
@@ -1741,6 +1762,7 @@ export const rotateWebhookSecret = defineRoute({
 		scope("account:admin"),
 	),
 	params: WebhookPath,
+	idempotent: true,
 	answer: { status: 200, description: "The webhook and its new secret.", schema: WebhookWithSecret },
 	errors: readErrors,
 });
@@ -1910,6 +1932,7 @@ export const createHostJoinToken = defineRoute({
 		SUPER_ADMIN,
 	),
 	body: CreateHostJoinTokenBody,
+	idempotent: true,
 	answer: { status: 201, description: "The token and its command.", schema: HostJoinToken },
 	errors: ["invalid", "forbidden"],
 });
@@ -2017,6 +2040,7 @@ export const createAccountJoinToken = defineRoute({
 		ACCOUNT_HOSTS,
 	),
 	body: CreateAccountJoinTokenBody,
+	idempotent: true,
 	answer: { status: 201, description: "The token and its command.", schema: AccountJoinToken },
 	errors: ["invalid", "forbidden", "not_supported"],
 });
@@ -2177,6 +2201,7 @@ export const createBucketSource = defineRoute({
 		MOUNTS,
 	),
 	body: CreateBucketSourceBody,
+	idempotent: true,
 	answer: { status: 201, description: "The bucket source.", schema: BucketSource },
 	errors: ["invalid", "forbidden", "not_supported"],
 });

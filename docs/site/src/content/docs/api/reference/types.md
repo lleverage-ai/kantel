@@ -318,6 +318,7 @@ Who is calling, the accounts they may act in, and the deployment's mode.
 | `accounts` | [Account](/api/reference/types/#account)[] | yes |  |
 | `superAdmin` | boolean | yes | Whether the caller may manage the deployment's hosts. |
 | `mode` | [DeploymentMode](/api/reference/types/#deploymentmode) | yes |  |
+| `sandboxDomain` | string | no | The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. |
 
 ### CallerApiKey
 
@@ -347,7 +348,7 @@ The key the call was signed in with, when it was a key.
 | `cwd` | string | no |  |
 | `state` | [CommandState](/api/reference/types/#commandstate) | yes |  |
 | `exitCode` | integer | no |  |
-| `stdout` | string | yes | Its output so far, up to 1 MiB; `truncated` says if there was more. |
+| `stdout` | string | yes | Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. |
 | `stderr` | string | yes |  |
 | `truncated` | boolean | yes |  |
 | `startedAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -871,7 +872,7 @@ What a microVM's image has, as its guest agent found it when it last started: it
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `available` | boolean | yes |  |
-| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. |
 | `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
 | `kvm` | boolean | yes | `/dev/kvm` opens inside, so containers and VMs in it can nest. |
 
@@ -882,7 +883,7 @@ One thing a microVM's image has or lacks.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `available` | boolean | yes |  |
-| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. |
 | `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
 
 ### GuestOs
@@ -1213,8 +1214,8 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `cwd` | string | no | Default: the sandbox user's home. |
 | `env` | Record&lt;string, string&gt; | no |  |
 | `stdin` | string | no |  |
-| `timeoutMs` | integer | no | Default 30 000; at most 600 000 (10 minutes). (minimum 1, maximum 600000) |
-| `detached` | boolean | no | Start it and answer at once, with no time limit; read it back by its ID. |
+| `timeoutMs` | integer | no | Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one. (minimum 1, maximum 600000) |
+| `detached` | boolean | no | Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID. |
 
 ### Sandbox
 
@@ -1238,6 +1239,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `autoStopMinutes` | integer or null | yes | How long after a start or resume it stops by itself; `null` never. |
 | `stopsAt` | integer | no | When it will stop by itself, while running; the console's stops-in. |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
+| `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
 | `environmentId` | string | no | The environment it was made from. |
 | `template` | [SandboxTemplate](/api/reference/types/#sandboxtemplate) | no |  |
@@ -1390,6 +1392,8 @@ A protected variable as one sandbox has it: never its value.
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 | `cpu` | number | yes | CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs. (minimum 0, maximum 1) |
 | `memUsedBytes` | integer | yes | Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. (minimum 0) |
+| `diskUsedBytes` | integer | no | A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it. (minimum 0) |
+| `ioPressure` | number | no | The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. (minimum 0, maximum 1) |
 
 ### SandboxShapeInput
 
@@ -1458,9 +1462,12 @@ One of: `"isolate"` or `"microvm"`.
 | `points` | [SandboxUsagePoint](/api/reference/types/#sandboxusagepoint)[] | yes |  |
 | `totals` | object | yes |  |
 | `memLimitBytes` | integer | no | The memory it may use, when its host reports it or its size sets it. (minimum 0) |
+| `diskTotalBytes` | integer | no | Its own disk's size, as its guest counts it, when its host sends disk figures. (minimum 0) |
 | `series` | [SandboxUsageSeries](/api/reference/types/#sandboxusageseries) | yes |  |
 
 ### SandboxUsagePoint
+
+One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1469,6 +1476,9 @@ One of: `"isolate"` or `"microvm"`.
 | `memoryMb` | number | yes |  |
 | `runningSeconds` | number | yes |  |
 | `cost` | number | yes |  |
+| `measured` | boolean | no | Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. |
+| `diskUsedBytes` | integer | no | The sandbox's own disk in use, its mean over the interval; absent where its host doesn't send it. (minimum 0) |
+| `ioPressure` | number | no | The share of the interval in which at least one of its tasks waited on IO, its mean; absent where its guest has no pressure figures. (minimum 0, maximum 1) |
 
 ### SandboxUsageSeries
 

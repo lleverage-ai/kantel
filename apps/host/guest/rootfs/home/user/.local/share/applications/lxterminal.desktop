@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+GenericName=Terminal
+# Kantel: the dock's name and icon for it, so the apps list matches the dock.
+Comment=LXTerminal
+TryExec=lxterminal
+Exec=lxterminal
+Icon=/usr/share/kantel/icons/terminal.svg
+Terminal=false
+Categories=GTK;System;TerminalEmulator;
+Keywords=console;command line;shell;

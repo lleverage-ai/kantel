@@ -102,10 +102,7 @@ While a call waits, the server sends the client a progress notification every 15
 
 For a command that might outlast the client's tool timeout, the agent runs `sandbox_exec` with `detached`, which answers the command's ID at once. `command_get` with `waitMs` then waits up to that long for it to end, and answers its exit code and output. If it's still running, the answer says so and tells the agent to call `command_get` again. `command_list` finds a command whose call the client gave up on.
 
-For now, two limits apply on a Kantel host:
-
-- A detached command has no `timeoutMs`, but the host still ends it after about 2 minutes on a microVM, or 30 seconds on an isolate. A longer job runs without `detached`, with a `timeoutMs` of up to 10 minutes, and needs the client's tool timeout raised to match.
-- `command_kill` marks the command killed, but its process may keep running. To be sure it has stopped, end it with `sandbox_exec` too, such as `pkill -f`.
+A detached command has no time limit unless `sandbox_exec` gives it a `timeoutMs`, and `command_kill` stops it and every process it started. On a host whose kantel-host predates `exec-control`, the old limits still apply: a detached command ends after about 2 minutes on a microVM, and `command_kill` only marks it killed, so end it with `sandbox_exec` too, such as `pkill -f`. The command's stderr says when that happened. An isolate runs a command for at most 30 seconds unless its `timeoutMs` says otherwise, detached or not.
 
 ## Check it by hand
 

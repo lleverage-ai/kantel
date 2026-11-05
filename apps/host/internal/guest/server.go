@@ -54,6 +54,8 @@ type Server struct {
 	identity *Identity
 	// upstream is the host proxy LocalProxyAddr forwards to (a string, host:port or "").
 	upstream atomic.Value
+	// commands are those run with an ID (commands.go).
+	commands commands
 }
 
 func (s *Server) Handler() http.Handler {
@@ -62,8 +64,12 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /capabilities", s.capabilities)
+	mux.HandleFunc("GET /stats", s.stats)
 	mux.HandleFunc("POST /identity", s.setIdentity)
 	mux.HandleFunc("POST /exec", s.exec)
+	mux.HandleFunc("POST /exec/start", s.startCommand)
+	mux.HandleFunc("GET /exec/{id}", s.commandStatus)
+	mux.HandleFunc("POST /exec/{id}/kill", s.killCommand)
 	mux.HandleFunc("POST /sync", s.sync)
 	mux.HandleFunc("POST /disk/grow", s.growDisk)
 	mux.HandleFunc("GET /files", s.readFile)
@@ -556,8 +562,8 @@ func (s *Server) buildCommand(ctx context.Context, req *ExecRequest) (*exec.Cmd,
 		attr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}
 	}
 	cmd.SysProcAttr = attr
-	// Kill the whole process group on timeout, not just bash.
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// Kill the whole process group on timeout or a kill, not just bash.
+	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }
 	cmd.WaitDelay = 2 * time.Second
 	if req.Stdin != "" {
 		raw, err := base64.StdEncoding.DecodeString(req.Stdin)
@@ -591,6 +597,18 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	}
 	b.buf = append(b.buf, p...)
 	return len(p), nil
+}
+
+func (b *cappedBuffer) bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf
+}
+
+func (b *cappedBuffer) cut() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
 }
 
 func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
@@ -629,6 +647,9 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
+	// The rest of the body read, so the server notices the host closing the request (its context ends, and with it
+	// the command): a host stops a command of an older guest, which has no kill route, that way.
+	_, _ = io.Copy(io.Discard, r.Body)
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	cmd, err := s.buildCommand(ctx, &req)
@@ -636,8 +657,34 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
+	// With an ID it can be killed (POST /exec/{id}/kill) while it runs.
+	var run *command
+	if req.ID != "" {
+		if !validCommandID(req.ID) {
+			fail(w, 400, errors.New("a command's id is letters, digits, _, - and ."))
+			return
+		}
+		run = &command{cancel: cancel, done: make(chan struct{})}
+		if !s.commands.add(req.ID, run) {
+			fail(w, 409, errors.New("a command with this id is already known"))
+			return
+		}
+		defer func() {
+			if run != nil {
+				s.commands.end(req.ID, run, ExecResult{})
+			}
+		}()
+	}
+	killed := func() bool {
+		if run == nil {
+			return false
+		}
+		s.commands.mu.Lock()
+		defer s.commands.mu.Unlock()
+		return run.killed
+	}
 	if req.Stream {
-		s.execStream(ctx, w, cmd)
+		s.execStream(ctx, w, cmd, killed)
 		return
 	}
 	max := req.MaxOutputBytes
@@ -649,7 +696,9 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	err = cmd.Run()
 	result := ExecResult{Stdout: string(stdout.buf), Stderr: string(stderr.buf), Truncated: stdout.truncated || stderr.truncated, DurationMs: time.Since(started).Milliseconds()}
 	result.ExitCode = exitCode(err)
-	if ctx.Err() == context.DeadlineExceeded {
+	if killed() {
+		result.ExitCode = 137
+	} else if ctx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
 		result.ExitCode = 124
 	} else if err != nil && result.ExitCode == -1 {
@@ -705,7 +754,7 @@ func (p *streamPipe) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd) {
+func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd, killed func() bool) {
 	w.Header().Set("content-type", "application/x-ndjson")
 	w.WriteHeader(200)
 	flusher, _ := w.(http.Flusher)
@@ -714,6 +763,11 @@ func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exe
 	cmd.Stderr = &streamPipe{events: events, stderr: true}
 	err := cmd.Run()
 	code := exitCode(err)
+	if killed() {
+		code = 137
+		events.emit(ExecEvent{Exit: &code})
+		return
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		code = 124
 		events.emit(ExecEvent{Exit: &code, TimedOut: true})

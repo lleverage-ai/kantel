@@ -80,6 +80,13 @@ export interface MountsDeps {
 	readonly requireRunning: (principal: Principal, sandboxId: string) => Promise<StoredSandbox>;
 	/** `requireRunning` (a starting sandbox waited for) for a call a signed file URL authorises, with no principal. */
 	readonly requireRunningByToken: (sandboxId: string) => Promise<StoredSandbox>;
+	/** Does `work` once for the call's `Idempotency-Key` and request, answering a retry the first answer (the service's). */
+	readonly once: <T>(
+		principal: Principal,
+		operation: string,
+		input: { readonly body?: unknown; readonly idempotencyKey?: string },
+		work: () => Promise<T>,
+	) => Promise<T>;
 }
 
 /**
@@ -713,48 +720,51 @@ export function createMounts(deps: MountsDeps) {
 			return undefined;
 		},
 
-		createBucketSource: async (principal, { body }) => {
+		createBucketSource: async (principal, { body, idempotencyKey }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			if (body.endpoint !== undefined) {
-				let url: URL | undefined;
-				try {
-					url = new URL(body.endpoint);
-				} catch {
-					url = undefined;
+			// Each call makes another source (names needn't differ): a retry with the key answers the first.
+			return deps.once(principal, "createBucketSource", { body, idempotencyKey }, async () => {
+				if (body.endpoint !== undefined) {
+					let url: URL | undefined;
+					try {
+						url = new URL(body.endpoint);
+					} catch {
+						url = undefined;
+					}
+					if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) {
+						throw new KantelError("invalid", "endpoint must be an http(s) URL");
+					}
 				}
-				if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) {
-					throw new KantelError("invalid", "endpoint must be an http(s) URL");
+				if (body.provider === "gcs" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
+					try {
+						JSON.parse(body.credentials.serviceAccountKey);
+					} catch {
+						throw new KantelError("invalid", "serviceAccountKey must be the service account's JSON key");
+					}
 				}
-			}
-			if (body.provider === "gcs" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
-				try {
-					JSON.parse(body.credentials.serviceAccountKey);
-				} catch {
-					throw new KantelError("invalid", "serviceAccountKey must be the service account's JSON key");
+				if (body.provider === "s3" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
+					throw new KantelError("invalid", "An S3 bucket source takes an access key, not a service account key");
 				}
-			}
-			if (body.provider === "s3" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
-				throw new KantelError("invalid", "An S3 bucket source takes an access key, not a service account key");
-			}
-			const id = randomId("bks", 8);
-			const credentials =
-				body.credentials === undefined
-					? undefined
-					: await deps.sealer().seal(JSON.stringify(body.credentials), credentialsAad(id));
-			const source: StoredBucketSource = {
-				id,
-				accountId: account.id,
-				name: body.name,
-				provider: body.provider,
-				bucket: body.bucket,
-				...(body.endpoint === undefined ? {} : { endpoint: body.endpoint }),
-				...(body.region === undefined ? {} : { region: body.region }),
-				...(credentials === undefined ? {} : { credentials }),
-				createdAt: now(),
-			};
-			await store.bucketSources.put(source);
-			return bucketView(source);
+				const id = randomId("bks", 8);
+				const credentials =
+					body.credentials === undefined
+						? undefined
+						: await deps.sealer().seal(JSON.stringify(body.credentials), credentialsAad(id));
+				const source: StoredBucketSource = {
+					id,
+					accountId: account.id,
+					name: body.name,
+					provider: body.provider,
+					bucket: body.bucket,
+					...(body.endpoint === undefined ? {} : { endpoint: body.endpoint }),
+					...(body.region === undefined ? {} : { region: body.region }),
+					...(credentials === undefined ? {} : { credentials }),
+					createdAt: now(),
+				};
+				await store.bucketSources.put(source);
+				return bucketView(source);
+			});
 		},
 
 		listBucketSources: async (principal, { query }) => {

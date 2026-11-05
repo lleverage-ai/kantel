@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Editor
+GenericName=Text and code editor
+# Kantel: the dock's name and icon for it, so the apps list matches the dock.
+Comment=Geany
+Exec=geany %F
+Icon=/usr/share/kantel/icons/editor.svg
+Terminal=false
+StartupNotify=true
+Categories=GTK;Development;IDE;TextEditor;
+Keywords=Text;Editor;Code;
+MimeType=text/plain;text/x-chdr;text/x-csrc;text/x-c++hdr;text/x-c++src;text/x-java;text/x-python;text/x-go;text/x-shellscript;text/markdown;application/json;application/x-yaml;application/xml;application/javascript;text/css;text/x-sql;text/x-diff;
