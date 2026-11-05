@@ -455,6 +455,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						timedOut: false,
 					};
 				}
+				// Asked again only while the host is out of reach (`unavailable`), or busy with the sandbox (`conflict`),
+				// or for a peer replica's plain error: any other refusal (`not_supported` once its space turns E2E on,
+				// `forbidden`, `invalid`) is final, and ends the command with it rather than leave it running.
+				if (isKantelError(error) && error.code !== "unavailable" && error.code !== "conflict") throw error;
 				await pause(backoff, signal);
 				backoff = Math.min(backoff * 2, EXEC_RETRY_MAX_MS);
 				continue;

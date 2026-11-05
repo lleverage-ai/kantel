@@ -2966,18 +2966,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Stops a command's process on its backend (`killCommand`), once its record says it was killed. What went wrong, for
-	 * its stderr: the host too old to stop one, or out of reach; `undefined` when it was stopped, or the backend has no
-	 * way to but the command's signal.
+	 * Sends a killed command's kill to its backend (`killCommand`), the record's `killPending` until it is done: the
+	 * backend took it, or can't ever (`not_supported`, an older host). One that failed otherwise (its host out of reach)
+	 * stays pending, its stderr saying so, and the next kill of it, on any gateway, sends it again.
 	 */
-	async function stopOnBackend(sandboxId: string, commandId: string): Promise<string | undefined> {
-		if (backend.killCommand === undefined) return undefined;
+	async function deliverKill(sandboxId: string, command: StoredCommand): Promise<StoredCommand> {
+		if (backend.killCommand === undefined) return command;
+		let failure: unknown;
+		let delivered = false;
 		try {
-			await backend.killCommand(sandboxId, commandId);
-			return undefined;
+			await backend.killCommand(sandboxId, command.id);
+			delivered = true;
 		} catch (error) {
-			return `Kantel marked this command killed but couldn't stop it, so it may still be running: ${messageOf(error)}\n`;
+			failure = error;
 		}
+		const final = delivered || (failure instanceof KantelError && failure.code === "not_supported");
+		const note = delivered
+			? undefined
+			: `Kantel marked this command killed but couldn't stop it, so it may still be running: ${messageOf(failure)}${
+					final ? "" : "; kill it again to retry"
+				}\n`;
+		const written = await store.commands.update(command.id, (latest) => {
+			if (latest.state !== "killed") return undefined;
+			const stderr =
+				note === undefined || latest.stderr.includes(note) ? latest.stderr : truncate(`${latest.stderr}${note}`).text;
+			if (!final) return { ...latest, stderr, killPending: true };
+			const { killPending: _, ...done } = latest;
+			return { ...done, stderr };
+		});
+		return written ?? command;
 	}
 
 	/**
@@ -5317,29 +5334,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const stored = await store.commands.get(params.commandId);
 			if (stored === undefined || stored.sandboxId !== sandbox.id) throw notFound("command");
+			// Killed before, but its kill never reached its backend: sent again.
+			if (stored.state === "killed" && stored.killPending === true) {
+				return commandView(await deliverKill(sandbox.id, stored));
+			}
 			// One that ended where no gateway here saw it is answered with its end, not killed.
 			const command = await fetchedCommand(stored);
 			if (command.state !== "running") return commandView(command);
 			const at = now();
 			// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
-			// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill.
+			// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
+			// kill is pending from then until its backend takes it, so a gateway that dies before sending it, or a send
+			// that fails, leaves it for the next kill to send.
 			const killed = await settleCommand(command.id, (latest) => ({
 				...latest,
 				state: "killed",
 				exitCode: 137,
 				endedAt: at,
 				durationMs: at - latest.startedAt,
+				...(backend.killCommand === undefined ? {} : { killPending: true }),
 			}));
 			if (killed === undefined) return commandView((await store.commands.get(command.id)) ?? command);
 			runningCommands.get(command.id)?.abort();
 			runningCommands.delete(command.id);
 			// Its process, which the gateway that started it may not be: the kill goes to its host whichever it is.
-			const note = await stopOnBackend(sandbox.id, command.id);
-			if (note === undefined) return commandView(killed);
-			const noted = await store.commands.update(command.id, (latest) =>
-				latest.state === "killed" ? { ...latest, stderr: truncate(`${latest.stderr}${note}`).text } : undefined,
-			);
-			return commandView(noted ?? killed);
+			return commandView(await deliverKill(sandbox.id, killed));
 		},
 
 		readFile: async (principal, { params, query }) => {

@@ -203,6 +203,8 @@ export type StoredCommand = computeSchema.Command & {
 	readonly accountId: string;
 	/** Run detached: its result can be fetched from the backend (`commandResult`) by any gateway. */
 	readonly detached?: boolean;
+	/** Killed, and its kill not yet taken by its backend: a later kill sends it again. */
+	readonly killPending?: boolean;
 };
 
 /**

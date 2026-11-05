@@ -323,6 +323,39 @@ describe("sandboxes", () => {
 		expect((await tom.getCommand(sandbox.id, running.id)).state).toBe("killed");
 	});
 
+	it("sends a kill again when the first never reached the backend, until it does", async () => {
+		const stub = createStubBackend();
+		const kills: string[] = [];
+		let reachable = false;
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((resolve) =>
+					request.signal?.addEventListener("abort", () =>
+						resolve({ exitCode: 137, stdout: "", stderr: "", timedOut: false }),
+					),
+				),
+			killCommand: async (_id, commandId) => {
+				kills.push(commandId);
+				if (!reachable) throw new KantelError("unavailable", "the host disconnected");
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const first = await tom.killCommand(sandbox.id, held.id);
+		expect(first.state).toBe("killed");
+		expect(first.stderr).toContain("may still be running: the host disconnected; kill it again to retry");
+		// The host is back: the next kill sends it again, and says nothing more.
+		reachable = true;
+		const again = await tom.killCommand(sandbox.id, held.id);
+		expect(again.state).toBe("killed");
+		expect(kills).toEqual([held.id, held.id]);
+		// Delivered: a third kill sends nothing.
+		await tom.killCommand(sandbox.id, held.id);
+		expect(kills).toEqual([held.id, held.id]);
+	});
+
 	it("keeps an end recorded while a kill was on its way, and sends that kill nowhere", async () => {
 		const stub = createStubBackend();
 		const kills: string[] = [];

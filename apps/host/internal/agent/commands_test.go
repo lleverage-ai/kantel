@@ -69,6 +69,8 @@ type runnerTier struct {
 	holding chan struct{}
 	// lostAnswer: the guest starts the command but its answer is lost (a transport error).
 	lostAnswer bool
+	// killErr: the guest fails to take a kill.
+	killErr error
 }
 
 func (r *runnerTier) StartCommand(_ context.Context, p proto.ExecParams) (int, error) {
@@ -105,6 +107,17 @@ func (r *runnerTier) CommandStatus(_ context.Context, _, id string, _ time.Durat
 func (r *runnerTier) KillCommand(_ context.Context, _, id string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.killErr != nil {
+		return false, r.killErr
+	}
+	// Only a command it started is killed, as a guest's (one it doesn't know isn't).
+	known := false
+	for _, p := range r.begun {
+		known = known || p.CommandID == id
+	}
+	if !known {
+		return false, nil
+	}
 	r.killed = append(r.killed, id)
 	return true, nil
 }
@@ -319,8 +332,30 @@ func TestAForegroundCallKeepsItsOwnGuard(t *testing.T) {
 	}
 }
 
-// While the guest is still registering a detached start, the host answers a get for it as running (never unknown),
-// and keeps a kill for it, which reaches the guest once it has the command.
+// killAsync sends a kill and answers its outcome when it comes: a kill of a command still starting waits for the start.
+func killAsync(t *testing.T, h *Host, sandboxID, commandID string) <-chan error {
+	out := make(chan error, 1)
+	go func() {
+		killed, err := callCmd[proto.ExecKilled](t, h, context.Background(), proto.MethodExecKill, proto.ExecRef{SandboxID: sandboxID, CommandID: commandID})
+		if err == nil && !killed.Killed {
+			err = errors.New("not killed")
+		}
+		out <- err
+	}()
+	return out
+}
+
+func noAnswerYet(t *testing.T, ch <-chan error) {
+	t.Helper()
+	select {
+	case err := <-ch:
+		t.Fatalf("answered while the start was in flight: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// While the guest is still registering a detached start, the host answers a get for it as running (never unknown);
+// a kill waits for the start, then kills the guest's command and answers how that went.
 func TestAGuestStartInFlightIsKnownAndKillable(t *testing.T) {
 	tier := &runnerTier{heldTier: newHeldTier(), hold: make(chan struct{}), holding: make(chan struct{})}
 	h := hostWith(t, tier)
@@ -334,13 +369,14 @@ func TestAGuestStartInFlightIsKnownAndKillable(t *testing.T) {
 	if err != nil || status.State != proto.ExecRunning {
 		t.Fatalf("get while it starts: %+v, %v", status, err)
 	}
-	killed, err := callCmd[proto.ExecKilled](t, h, context.Background(), proto.MethodExecKill, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_s"})
-	if err != nil || !killed.Killed {
-		t.Fatalf("kill while it starts: %+v, %v", killed, err)
-	}
+	kill := killAsync(t, h, "sbx_1", "cmd_s")
+	noAnswerYet(t, kill)
 	close(tier.hold)
 	if err := <-started; err != nil {
 		t.Fatal(err)
+	}
+	if err := <-kill; err != nil {
+		t.Fatalf("kill after the start: %v", err)
 	}
 	tier.mu.Lock()
 	defer tier.mu.Unlock()
@@ -352,8 +388,24 @@ func TestAGuestStartInFlightIsKnownAndKillable(t *testing.T) {
 	}
 }
 
-// An older guest answers unsupported after a get and a kill came for the start: the get saw it running, and the host-run
-// fallback that takes the reservation's place takes its kill too.
+// A kill that waited for a guest start, whose guest then fails to take the kill, answers that failure: the caller
+// knows it may run on, and can kill it again.
+func TestAKillTheGuestDidntTakeIsReportedNotForgotten(t *testing.T) {
+	tier := &runnerTier{heldTier: newHeldTier(), hold: make(chan struct{}), holding: make(chan struct{}), killErr: errors.New("vsock: connection reset")}
+	h := hostWith(t, tier)
+	go func() {
+		_, _ = callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "./serve", Detached: true, CommandID: "cmd_f"})
+	}()
+	<-tier.holding
+	kill := killAsync(t, h, "sbx_1", "cmd_f")
+	close(tier.hold)
+	if err := <-kill; err == nil {
+		t.Fatal("a kill the guest didn't take was answered done")
+	}
+}
+
+// An older guest answers unsupported after a get and a kill came for the start: the get saw it running, and the kill,
+// which waited for the start, kills the host-run fallback that took the reservation's place.
 func TestAKillDuringAnOlderGuestsStartReachesTheFallback(t *testing.T) {
 	tier := &runnerTier{heldTier: newHeldTier(), old: true, hold: make(chan struct{}), holding: make(chan struct{})}
 	h := hostWith(t, tier)
@@ -366,12 +418,14 @@ func TestAKillDuringAnOlderGuestsStartReachesTheFallback(t *testing.T) {
 	if status, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_o"}); err != nil || status.State != proto.ExecRunning {
 		t.Fatalf("get while it starts: %+v, %v", status, err)
 	}
-	if killed, err := callCmd[proto.ExecKilled](t, h, context.Background(), proto.MethodExecKill, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_o"}); err != nil || !killed.Killed {
-		t.Fatalf("kill while it starts: %+v, %v", killed, err)
-	}
+	kill := killAsync(t, h, "sbx_1", "cmd_o")
+	noAnswerYet(t, kill)
 	close(tier.hold)
 	if err := <-started; err != nil {
 		t.Fatal(err)
+	}
+	if err := <-kill; err != nil {
+		t.Fatalf("kill after the fallback started: %v", err)
 	}
 	ended, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_o", WaitMs: 5000})
 	if err != nil || ended.State != proto.ExecEnded || ended.Result.ExitCode != 137 {
@@ -395,34 +449,67 @@ func TestAGuestStartWhoseAnswerWasLostIsAskedFor(t *testing.T) {
 	}
 }
 
-func TestAKillThatOvertakesItsStartStillStopsIt(t *testing.T) {
-	tier := newHeldTier()
-	h := hostWith(t, tier)
-	// The kill is handled first: it finds nothing.
-	killed, err := callCmd[proto.ExecKilled](t, h, context.Background(), proto.MethodExecKill, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_e"})
-	if err != nil || killed.Killed {
-		t.Fatalf("kill: %+v, %v", killed, err)
+// A kill that overtakes its start (calls are handled concurrently) makes the start refused: the command never runs.
+func TestAKillThatOvertakesItsStartKeepsItFromRunning(t *testing.T) {
+	held := newHeldTier()
+	guest := &runnerTier{heldTier: newHeldTier()}
+	for name, tier := range map[string]Tier{"host-run": held, "guest": guest} {
+		t.Run(name, func(t *testing.T) {
+			h := hostWith(t, tier)
+			killed, err := callCmd[proto.ExecKilled](t, h, context.Background(), proto.MethodExecKill, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_e"})
+			if err != nil || killed.Killed {
+				t.Fatalf("kill: %+v, %v", killed, err)
+			}
+			for _, detached := range []bool{true, false} {
+				_, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "sleep 600", Detached: detached, CommandID: "cmd_e"})
+				var pe *proto.Error
+				if !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+					t.Fatalf("detached %v: the overtaken start wasn't refused: %v", detached, err)
+				}
+			}
+		})
 	}
-	if _, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "sleep 600", Detached: true, CommandID: "cmd_e"}); err != nil {
-		t.Fatal(err)
-	}
-	ended, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_e", WaitMs: 5000})
-	if err != nil || ended.State != proto.ExecEnded || ended.Result.ExitCode != 137 {
-		t.Fatalf("the overtaken start: %+v, %v", ended, err)
+	if len(held.execs) != 0 || len(guest.begun) != 0 || len(guest.execs) != 0 {
+		t.Fatalf("ran %d, started %d in the guest, ran %d there", len(held.execs), len(guest.begun), len(guest.execs))
 	}
 }
 
-func TestAKillThatOvertakesAGuestsStartStillStopsIt(t *testing.T) {
-	tier := &runnerTier{heldTier: newHeldTier()}
+// A host-run detached command that ends before its start is answered doesn't release its call's guard (which would end
+// the call's context and turn the answer into a conflict): the guard goes only once the call and the run have both let
+// go.
+func TestAShortDetachedRunDoesntEndItsCallFirst(t *testing.T) {
+	tier := newHeldTier()
 	h := hostWith(t, tier)
-	if _, err := callCmd[proto.ExecKilled](t, h, context.Background(), proto.MethodExecKill, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_e"}); err != nil {
+	guard, end := context.WithCancel(context.Background())
+	defer end()
+	var mu sync.Mutex
+	releases := 0
+	ctx, rel := withRelease(guard, func() {
+		mu.Lock()
+		releases++
+		mu.Unlock()
+		end()
+	})
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return releases
+	}
+	tier.release <- proto.ExecResult{ExitCode: 0, Stdout: "quick"}
+	if _, err := callCmd[proto.ExecStatus](t, h, ctx, proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "true", Detached: true, CommandID: "cmd_q"}); err != nil {
 		t.Fatal(err)
 	}
-	before := len(tier.killed)
-	if _, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "./serve", Detached: true, CommandID: "cmd_e"}); err != nil {
-		t.Fatal(err)
+	ended, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_q", WaitMs: 5000})
+	if err != nil || ended.State != proto.ExecEnded || ended.Result.Stdout != "quick" {
+		t.Fatalf("the run: %+v, %v", ended, err)
 	}
-	if len(tier.killed) != before+1 || tier.killed[len(tier.killed)-1] != "cmd_e" {
-		t.Fatalf("the guest's command wasn't killed once started: %v", tier.killed)
+	time.Sleep(20 * time.Millisecond)
+	// The run has ended and let go; the call hasn't yet, so its context is still live and the guard held.
+	if guard.Err() != nil || count() != 0 {
+		t.Fatalf("the run's end released the call's guard (released %d)", count())
+	}
+	rel.release()
+	if count() != 1 || guard.Err() == nil {
+		t.Fatalf("the guard wasn't released once both let go (released %d)", count())
 	}
 }

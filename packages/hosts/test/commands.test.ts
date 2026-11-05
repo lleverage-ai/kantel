@@ -47,6 +47,8 @@ class CommandHost {
 	 * `lost` before.
 	 */
 	dropOnStart?: "started" | "lost";
+	/** Set: every status get is refused with it, as once its space turns E2E on. */
+	refuseGets?: { code: string; message: string };
 	private receive?: (text: string) => void;
 	private closed?: (code: number, reason: string) => void;
 
@@ -128,6 +130,7 @@ class CommandHost {
 			}
 			case "sandbox.exec.get": {
 				if (!this.controls) return fail("unsupported", "unknown method sandbox.exec.get");
+				if (this.refuseGets !== undefined) return fail(this.refuseGets.code, this.refuseGets.message);
 				const command = this.commands.get(String(p.commandId));
 				if (command === undefined) return fail("not_found", "no such command");
 				const status = (ended: Running["ended"]) =>
@@ -250,6 +253,16 @@ describe("commands on kantel-host hosts", () => {
 		expect(again.id).toBe(first.id);
 		expect(callsOf(host, "sandbox.exec")).toHaveLength(1);
 		expect(callsOf(host, "sandbox.exec")[0]?.params.commandId).toBe(first.id);
+	});
+
+	it("ends a detached command whose host refuses for good to say how it went, rather than leave it running", async () => {
+		const { root, host, sandbox } = await setup(true);
+		host.refuseGets = { code: "unsupported", message: "its space is end-to-end encrypted" };
+		const started = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, started.id)).state).toBe("exited"));
+		const ended = await root.getCommand(sandbox.id, started.id);
+		expect(ended).toMatchObject({ exitCode: 1 });
+		expect(ended.stderr).toContain("end-to-end encrypted");
 	});
 
 	it("honours a detached command's own limit", async () => {
