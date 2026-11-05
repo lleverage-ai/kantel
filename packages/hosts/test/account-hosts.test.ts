@@ -231,6 +231,17 @@ describe("Account hosts", () => {
 		expect(shared.sandboxes.has(rootOwn.id)).toBe(true);
 		expect(await root.getSandbox(rootOwn.id)).toMatchObject({ hostId: shared.hostId, hostName: "shared" });
 
+		// From a snapshot, only the host holding it may be named: another is refused before anything is made.
+		const source = await tom.createSandbox({ type: "microvm", host: "tom-one", wait: true });
+		const saved = await tom.saveSnapshot({ name: "on-one", sandboxId: source.id });
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+		const elsewhere = await failure(tom.createSandbox({ type: "microvm", from: saved.id, host: "tom-two" }));
+		expect(elsewhere).toMatchObject({ code: "unavailable", reason: "host_unavailable" });
+		expect(elsewhere.message).toContain("tom-one");
+		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
+		const there = await tom.createSandbox({ type: "microvm", from: saved.id, host: "tom-one", wait: true });
+		expect(first.sandboxes.has(there.id)).toBe(true);
+
 		// The shapes a sandbox pinned to a host may be come from that host; one Tom may not name is not_found.
 		expect((await tom.getSandboxShapes({ host: "tom-one" })).microvm).toBeDefined();
 		expect((await failure(tom.getSandboxShapes({ host: shared.hostId }))).code).toBe("not_found");

@@ -1925,6 +1925,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * The host a snapshot's disk is on, where its backend's ref says (a host backend's is `{hostId}/{snapshotId}`);
+	 * undefined where the ref names no known host.
+	 */
+	function snapshotHolder(ref: string, hosts: readonly StoredHost[]): StoredHost | undefined {
+		const [hostId] = ref.split("/");
+		return hosts.find((host) => host.id === hostId);
+	}
+
+	/**
 	 * Whether `principal` may be told that `host` exists, and which of an account's sandboxes run on it: a super-admin any
 	 * host, anyone else only a host of the account the sandbox is in (account hosts).
 	 */
@@ -4921,6 +4930,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// fleet runs.
 				const hostPin =
 					body.host === undefined ? undefined : pinnableHost(principal, account.id, await known, body.host).id;
+				// From a snapshot, a pin can only be the host that holds it: refused now, before anything is stored, rather than
+				// left as a sandbox that can never start.
+				if (hostPin !== undefined && from?.ref !== undefined) {
+					const holder = snapshotHolder(from.ref, await known);
+					if (holder !== undefined && holder.id !== hostPin) {
+						throw placementError(
+							"unavailable",
+							"host_unavailable",
+							`The snapshot is on another host (${mayKnowHost(principal, holder, account.id) ? holder.name : "not one you can name"}): a sandbox made from it runs only there`,
+						);
+					}
+				}
 				if (!capabilities.types.includes(type)) {
 					// Why, as `requireHosts` would say it: of the hosts the caller may use, and from a snapshot its own host.
 					let reason: PlacementReason = "no_host_for_type";

@@ -1934,7 +1934,13 @@ const SECTIONS: readonly Section[] = [
 					ctx.emit(page, () => {
 						if (page.items.length === 0)
 							return all ? "No sandboxes." : "No running sandboxes; --all shows stopped ones.";
-						return `${sandboxTable(page.items)}${more(page.nextCursor, "kantel list")}`;
+						// The next page's command keeps this one's filters: the cursor is an offset into the same filtered list.
+						const filters = [
+							...(all ? ["--all"] : []),
+							...ctx.list("label").flatMap((label) => ["--label", shellQuote(label)]),
+							...(ctx.string("on") === undefined ? [] : ["--on", shellQuote(ctx.string("on") ?? "")]),
+						];
+						return `${sandboxTable(page.items)}${more(page.nextCursor, ["kantel list", ...filters].join(" "))}`;
 					});
 				},
 			},
