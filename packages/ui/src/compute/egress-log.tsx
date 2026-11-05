@@ -238,17 +238,29 @@ const opens = (entry: LoggedEntry): boolean =>
 
 /** `GET api.github.com/user`: the method muted, the host in full strength, the path muted. */
 function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boolean }) {
+	if (!wrap) {
+		// The wide log: the method and host on the first line, the path under the host on a second, so a long path is
+		// read rather than cut at the column's edge.
+		return (
+			<>
+				<span className="block truncate">
+					<span className="inline-block w-16 text-muted">{entry.method}</span>
+					<span className="font-medium text-fg">{hostText(entry)}</span>
+				</span>
+				{entry.path === undefined || entry.path === "" ? null : (
+					<span className="block truncate pl-16 text-muted">{entry.path}</span>
+				)}
+			</>
+		);
+	}
 	return (
 		<>
 			{/* Wrapped, the method and host stay together on one line and the path breaks only after a slash. */}
-			<span className={wrap ? "whitespace-nowrap" : undefined}>
-				{/* In the wide log the method has a fixed width, so every host starts on one line down the column. */}
-				<span className={`text-muted${wrap ? "" : " inline-block w-16"}`}>{entry.method} </span>
+			<span className="whitespace-nowrap">
+				<span className="text-muted">{entry.method} </span>
 				<span className="font-medium text-fg">{hostText(entry)}</span>
 			</span>
-			<span className="text-muted">
-				{wrap && entry.path !== undefined ? <BreakableCommand command={entry.path} /> : (entry.path ?? "")}
-			</span>
+			<span className="text-muted">{entry.path === undefined ? null : <BreakableCommand command={entry.path} />}</span>
 		</>
 	);
 }
@@ -273,10 +285,7 @@ function RequestCell({
 	const text = `${entry.method} ${hostText(entry)}${entry.path ?? ""}`;
 	if (!opens(entry)) {
 		return (
-			<span
-				className={`${cellMono} block ${wrap ? "wrap-break-word" : "max-w-(--kt-card-width) truncate"}`}
-				title={text}
-			>
+			<span className={`${cellMono} block ${wrap ? "wrap-break-word" : "min-w-0"}`} title={text}>
 				<RequestText entry={entry} wrap={wrap} />
 			</span>
 		);
@@ -291,7 +300,7 @@ function RequestCell({
 			title={text}
 			onClick={onToggle}
 		>
-			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-break-word" : "max-w-(--kt-card-width) truncate"}`}>
+			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-break-word" : ""}`}>
 				<RequestText entry={entry} wrap={wrap} />
 			</span>
 			{/* On a phone's card the chevron keeps to the card's right edge, wherever the request ends. */}
