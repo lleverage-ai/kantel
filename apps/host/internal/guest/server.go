@@ -679,7 +679,13 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	// With an ID it can be killed (POST /exec/{id}/kill) while it runs.
+	max := req.MaxOutputBytes
+	if max <= 0 {
+		max = 1 << 20
+	}
+	stdout, stderr := &cappedBuffer{max: max}, &cappedBuffer{max: max}
+	// With an ID it can be killed (POST /exec/{id}/kill) while it runs, and its status (GET /exec/{id}) has its output
+	// so far, as a detached one's has: what attach shows of a command whose call outlived its host's connection.
 	var run *command
 	if req.ID != "" {
 		if !validCommandID(req.ID) {
@@ -687,6 +693,9 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		run = &command{cancel: cancel, done: make(chan struct{})}
+		if !req.Stream {
+			run.stdout, run.stderr = stdout, stderr
+		}
 		if !s.commands.add(req.ID, run) {
 			fail(w, 409, errors.New("a command with this id is already known"))
 			return
@@ -709,11 +718,6 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		s.execStream(ctx, w, cmd, killed)
 		return
 	}
-	max := req.MaxOutputBytes
-	if max <= 0 {
-		max = 1 << 20
-	}
-	stdout, stderr := &cappedBuffer{max: max}, &cappedBuffer{max: max}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err = cmd.Run()
 	result := ExecResult{Stdout: string(stdout.buf), Stderr: string(stderr.buf), Truncated: stdout.truncated || stderr.truncated, DurationMs: time.Since(started).Milliseconds()}

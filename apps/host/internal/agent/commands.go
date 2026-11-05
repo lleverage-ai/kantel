@@ -441,7 +441,11 @@ func (h *Host) commandStatus(ctx context.Context, p proto.ExecRef) (any, error) 
 			}
 			timer.Stop()
 		}
-		return h.runs.status(p.CommandID, run), nil
+		status := h.runs.status(p.CommandID, run)
+		if status.State == proto.ExecRunning && !run.reserved {
+			status = h.outputSoFar(ctx, p, status)
+		}
+		return status, nil
 	}
 	t, err := h.tierOf(p.SandboxID)
 	if err != nil {
@@ -451,6 +455,32 @@ func (h *Host) commandStatus(ctx context.Context, p proto.ExecRef) (any, error) 
 		return runner.CommandStatus(ctx, p.SandboxID, p.CommandID, wait)
 	}
 	return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no command %s in sandbox %s on this host", p.CommandID, p.SandboxID)}
+}
+
+// guestStatusTimeout bounds asking a guest for a running command's output so far.
+const guestStatusTimeout = 5 * time.Second
+
+// outputSoFar adds a running run's output so far to its status, from the sandbox where it runs when that keeps
+// commands by ID (the microVM tier's guest agent keeps a foreground command's output while it runs too): what attach
+// shows of a foreground command whose call outlived its connection. Where the sandbox can't say (an isolate, a guest
+// from before, a guest out of reach), the status is as it was: running, with no output.
+func (h *Host) outputSoFar(ctx context.Context, p proto.ExecRef, status proto.ExecStatus) proto.ExecStatus {
+	t, err := h.tierOf(p.SandboxID)
+	if err != nil {
+		return status
+	}
+	runner, ok := t.(CommandRunner)
+	if !ok {
+		return status
+	}
+	ask, cancel := context.WithTimeout(ctx, guestStatusTimeout)
+	defer cancel()
+	guest, err := runner.CommandStatus(ask, p.SandboxID, p.CommandID, 0)
+	if err != nil || guest.State != proto.ExecRunning {
+		return status
+	}
+	status.Stdout, status.Stderr, status.Truncated = guest.Stdout, guest.Stderr, guest.Truncated
+	return status
 }
 
 // killCommand is sandbox.exec.kill: the run here ended, and the sandbox's own command killed with its process group.
