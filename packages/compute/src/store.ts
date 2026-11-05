@@ -549,8 +549,15 @@ export interface StoredDeviceLogin {
  */
 export interface StoredIdempotency {
 	readonly id: string;
-	/** The answer's JSON, once the first call has answered; absent while it is still working. */
+	/**
+	 * The answer's JSON, once the first call has answered; absent while it is still working. For an answer that holds a
+	 * secret, the JSON of the answer sealed (`secret: "sealed"`), or `null` when it wasn't kept (`"withheld"`).
+	 */
 	readonly body?: string;
+	/** The answer held a secret: kept sealed with the deployment's secrets key, or, with none, not kept. */
+	readonly secret?: "sealed" | "withheld";
+	/** The SHA-256 of the request it was for (path parameters, query and body); absent on keys kept before. */
+	readonly fingerprint?: string;
 	readonly createdAt: number;
 	/** While it is working: who holds the claim (a random ID), so only the holder renews it. */
 	readonly claim?: string;

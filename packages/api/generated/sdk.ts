@@ -2288,6 +2288,12 @@ export interface KantelClientOptions {
 	 * (undici's) takes. A browser can't put a header on a socket, so in a browser the page must be signed in by cookie.
 	 */
 	readonly webSocket?: (url: string, headers: { readonly [name: string]: string }) => WebSocketLike;
+	/**
+	 * Makes the `Idempotency-Key` for each call to a route that takes one and wasn't given one (`options.idempotencyKey`),
+	 * such as `() => crypto.randomUUID()`. It is made once per call, so a `fetch` that retries the request sends the
+	 * same key and the call is done once.
+	 */
+	readonly idempotencyKey?: () => string;
 }
 
 /** The parts of a WHATWG WebSocket a stream uses. */
@@ -2326,8 +2332,10 @@ export interface CallOptions {
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
-	 * call's answer and does nothing again; while the first call is still working, a retry may be `conflict`. Use a new key,
-	 * such as a UUID, for each new call.
+	 * call's answer and does nothing again. A `conflict` with `details.idempotencyKey` `"in_progress"` means the first call is
+	 * still working (retry with the same key); `"held"` means it didn't finish and is never done again under the key (check,
+	 * then use a new key). The same key with a different request is `refused`. Use a new key, such as a UUID, for each new
+	 * call.
 	 */
 	readonly idempotencyKey?: string;
 	readonly headers?: { readonly [name: string]: string };
@@ -2371,6 +2379,8 @@ export interface ApiCall {
 	readonly binary?: boolean;
 	/** A stream served as server-sent events only: read over `fetch`, never a WebSocket. */
 	readonly events?: boolean;
+	/** The route takes an `Idempotency-Key`. */
+	readonly idempotent?: boolean;
 }
 
 const queryString = (query: object | undefined): string => {
@@ -2419,7 +2429,9 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 	if (call.body !== undefined) headers["content-type"] = "application/json";
 	if (call.raw !== undefined) headers["content-type"] = call.raw.type;
 	if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
-	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
+	const idempotencyKey =
+		callOptions.idempotencyKey ?? (call.idempotent === true ? options.idempotencyKey?.() : undefined);
+	if (idempotencyKey !== undefined) headers["idempotency-key"] = idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
 	const doFetch = options.fetch ?? fetch;
@@ -2628,7 +2640,7 @@ export interface KantelClient {
 	getCaller(options?: CallOptions): Promise<Caller>;
 	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. `GET /accounts` */
 	listAccounts(options?: CallOptions): Promise<AccountList>;
-	/** Create an organisation. Makes an organisation account with the caller as its owner. People only: a key is refused. `POST /accounts` */
+	/** Create an organisation. Makes an organisation account with the caller as its owner. People only: a key is refused. Idempotent with `options.idempotencyKey`. `POST /accounts` */
 	createOrganisation(body: CreateOrganisationBody, options?: CallOptions): Promise<Account>;
 	/** Join an organisation. Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`. `POST /accounts/join` */
 	joinOrganisation(body: JoinOrganisationBody, options?: CallOptions): Promise<Account>;
@@ -2648,7 +2660,7 @@ export interface KantelClient {
 	removeMember(accountId: string, userId: string, options?: CallOptions): Promise<void>;
 	/** List an organisation's open invites. Codes are not shown again. A key needs `account:admin`. `GET /accounts/{accountId}/invites` */
 	listInvites(accountId: string, options?: CallOptions): Promise<InviteList>;
-	/** Invite someone to an organisation. Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. `POST /accounts/{accountId}/invites` */
+	/** Invite someone to an organisation. Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /accounts/{accountId}/invites` */
 	createInvite(accountId: string, body?: CreateInviteBody, options?: CallOptions): Promise<Invite>;
 	/** Revoke an invite. A key needs `account:admin`. `DELETE /accounts/{accountId}/invites/{inviteId}` */
 	revokeInvite(accountId: string, inviteId: string, options?: CallOptions): Promise<void>;
@@ -2660,7 +2672,7 @@ export interface KantelClient {
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Change a sandbox. Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. `PATCH /sandboxes/{sandboxId}` */
+	/** Change a sandbox. Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `PATCH /sandboxes/{sandboxId}` */
 	updateSandbox(sandboxId: string, body?: UpdateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Start a sandbox. Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/start` */
 	startSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
@@ -2670,11 +2682,11 @@ export interface KantelClient {
 	resumeSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
-	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/recover` */
+	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). `POST /sandboxes/{sandboxId}/restart-on-latest` */
+	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/restart-on-latest` */
 	restartSandboxOnLatest(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. `DELETE /sandboxes/{sandboxId}` */
+	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. Idempotent with `options.idempotencyKey`. `DELETE /sandboxes/{sandboxId}` */
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox's usage. CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
 	getSandboxUsage(sandboxId: string, query?: UsageQuery, options?: CallOptions): Promise<SandboxUsage>;
@@ -2707,7 +2719,7 @@ export interface KantelClient {
 	): Promise<ExtractedArchive>;
 	/** List a sandbox's public ports. A key needs `access`. `GET /sandboxes/{sandboxId}/ports` */
 	listPorts(sandboxId: string, options?: CallOptions): Promise<ExposedPortList>;
-	/** Expose a port. Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. `POST /sandboxes/{sandboxId}/ports` */
+	/** Expose a port. Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/ports` */
 	exposePort(sandboxId: string, body: ExposePortBody, options?: CallOptions): Promise<ExposedPort>;
 	/** Hide a port. Its URL stops working at once. A key needs `access`. `DELETE /sandboxes/{sandboxId}/ports/{port}` */
 	hidePort(sandboxId: string, port: string, options?: CallOptions): Promise<void>;
@@ -2725,9 +2737,9 @@ export interface KantelClient {
 	appendE2EChain(accountId: string, body: E2EChainAppend, options?: CallOptions): Promise<E2EChain>;
 	/** List snapshots. The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. `GET /snapshots` */
 	listSnapshots(query?: ListSnapshotsQuery, options?: CallOptions): Promise<SnapshotPage>;
-	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. `POST /sandboxes/{sandboxId}/snapshots` */
+	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/snapshots` */
 	takeSnapshot(sandboxId: string, body?: TakeSnapshotBody, options?: CallOptions): Promise<Snapshot>;
-	/** Save a snapshot. Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. `POST /snapshots` */
+	/** Save a snapshot. Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. Idempotent with `options.idempotencyKey`. `POST /snapshots` */
 	saveSnapshot(body: SaveSnapshotBody, options?: CallOptions): Promise<Snapshot>;
 	/** Get a snapshot. A key needs `snapshots:read`. `GET /snapshots/{snapshotId}` */
 	getSnapshot(snapshotId: string, options?: CallOptions): Promise<Snapshot>;
@@ -2739,11 +2751,11 @@ export interface KantelClient {
 	deleteSnapshot(snapshotId: string, options?: CallOptions): Promise<void>;
 	/** List API keys. The account's keys, revoked ones included. A key needs `account:read`. `GET /api-keys` */
 	listApiKeys(query?: AccountScopedQuery, options?: CallOptions): Promise<ApiKeyList>;
-	/** Create an API key. Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. `POST /api-keys` */
+	/** Create an API key. Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /api-keys` */
 	createApiKey(body: CreateApiKeyBody, options?: CallOptions): Promise<IssuedApiKey>;
 	/** Get an API key. A key needs `account:read`. `GET /api-keys/{apiKeyId}` */
 	getApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
-	/** Rotate an API key. Replaces its secret; the old one stops working at once. A key needs `account:admin`. `POST /api-keys/{apiKeyId}/rotate` */
+	/** Rotate an API key. Replaces its secret; the old one stops working at once. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /api-keys/{apiKeyId}/rotate` */
 	rotateApiKey(apiKeyId: string, options?: CallOptions): Promise<IssuedApiKey>;
 	/** Revoke an API key. It stops working at once. A key needs `account:admin`. `DELETE /api-keys/{apiKeyId}` */
 	revokeApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
@@ -2767,7 +2779,7 @@ export interface KantelClient {
 	putProxySettings(body: PutProxySettingsBody, options?: CallOptions): Promise<ProxySettings>;
 	/** List environments. The account's environments, oldest first. A key needs `account:read`. `GET /environments` */
 	listEnvironments(query?: AccountScopedQuery, options?: CallOptions): Promise<EnvironmentList>;
-	/** Create an environment. An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`. `POST /environments` */
+	/** Create an environment. An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /environments` */
 	createEnvironment(body: CreateEnvironmentBody, options?: CallOptions): Promise<Environment>;
 	/** Get an environment. Never a protected variable's value nor a secret file's contents. A key needs `account:read`. `GET /environments/{environmentId}` */
 	getEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
@@ -2806,7 +2818,7 @@ export interface KantelClient {
 	putSandboxGrants(sandboxId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<SandboxEgress>;
 	/** List templates. The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates` */
 	listTemplates(query?: ListTemplatesQuery, options?: CallOptions): Promise<TemplateList>;
-	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates` */
+	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). Idempotent with `options.idempotencyKey`. `POST /templates` */
 	createTemplate(body: CreateTemplateBody, options?: CallOptions): Promise<Template>;
 	/** Get a template. With its build, and how far behind a pinned base is. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}` */
 	getTemplate(templateId: string, options?: CallOptions): Promise<Template>;
@@ -2818,7 +2830,7 @@ export interface KantelClient {
 	listTemplateVersions(templateId: string, options?: CallOptions): Promise<TemplateVersionList>;
 	/** List a template's snapshots. Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates/{templateId}/snapshots` */
 	listTemplateSnapshots(templateId: string, options?: CallOptions): Promise<TemplateSnapshotList>;
-	/** Rebuild a template. Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready, or, for a Dockerfile or image reference, wait for its image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `POST /templates/{templateId}/rebuild` */
+	/** Rebuild a template. Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready, or, for a Dockerfile or image reference, wait for its image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). Idempotent with `options.idempotencyKey`. `POST /templates/{templateId}/rebuild` */
 	rebuildTemplate(templateId: string, options?: CallOptions): Promise<Template>;
 	/** List base images' channels. Every base channel templates may follow, with the digests it has published. Any signed-in caller. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /template-bases` */
 	listTemplateBases(options?: CallOptions): Promise<TemplateBaseList>;
@@ -2830,7 +2842,7 @@ export interface KantelClient {
 	watchEvents(handlers: StreamHandlers<LiveFrame>, query?: AccountScopedQuery, options?: CallOptions): StreamHandle;
 	/** List webhooks. A key needs `account:admin`. `GET /webhooks` */
 	listWebhooks(query?: AccountScopedQuery, options?: CallOptions): Promise<WebhookList>;
-	/** Create a webhook. Its signing secret is answered once. A key needs `account:admin`. `POST /webhooks` */
+	/** Create a webhook. Its signing secret is answered once. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /webhooks` */
 	createWebhook(body: CreateWebhookBody, options?: CallOptions): Promise<WebhookWithSecret>;
 	/** Get a webhook. A key needs `account:admin`. `GET /webhooks/{webhookId}` */
 	getWebhook(webhookId: string, options?: CallOptions): Promise<Webhook>;
@@ -2838,7 +2850,7 @@ export interface KantelClient {
 	updateWebhook(webhookId: string, body?: UpdateWebhookBody, options?: CallOptions): Promise<Webhook>;
 	/** Delete a webhook. Its queued deliveries are dropped. A key needs `account:admin`. `DELETE /webhooks/{webhookId}` */
 	deleteWebhook(webhookId: string, options?: CallOptions): Promise<void>;
-	/** Rotate a webhook's signing secret. Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. `POST /webhooks/{webhookId}/rotate` */
+	/** Rotate a webhook's signing secret. Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /webhooks/{webhookId}/rotate` */
 	rotateWebhookSecret(webhookId: string, options?: CallOptions): Promise<WebhookWithSecret>;
 	/** Send a test delivery. Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`. `POST /webhooks/{webhookId}/test` */
 	testWebhook(webhookId: string, options?: CallOptions): Promise<WebhookDelivery>;
@@ -2858,7 +2870,7 @@ export interface KantelClient {
 	listBaseImages(options?: CallOptions): Promise<BaseImageList>;
 	/** List hosts. Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts` */
 	listHosts(options?: CallOptions): Promise<HostList>;
-	/** Make a host join token. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/join-tokens` */
+	/** Make a host join token. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). Idempotent with `options.idempotencyKey`. `POST /admin/hosts/join-tokens` */
 	createHostJoinToken(body?: CreateHostJoinTokenBody, options?: CallOptions): Promise<HostJoinToken>;
 	/** Get a host. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}` */
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
@@ -2872,7 +2884,7 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
-	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/join-tokens` */
+	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). Idempotent with `options.idempotencyKey`. `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
 	listAccountHosts(query?: AccountScopedQuery, options?: CallOptions): Promise<HostList>;
@@ -2892,7 +2904,7 @@ export interface KantelClient {
 	getBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<Bundle>;
 	/** Delete a bundle. Removes it from the account. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included, since they mount it again when they start: delete those sandboxes first. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bundles/{digest}` */
 	deleteBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
-	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bucket-sources` */
+	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). Idempotent with `options.idempotencyKey`. `POST /bucket-sources` */
 	createBucketSource(body: CreateBucketSourceBody, options?: CallOptions): Promise<BucketSource>;
 	/** List bucket sources. The account's bucket sources, oldest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources` */
 	listBucketSources(query?: AccountScopedQuery, options?: CallOptions): Promise<BucketSourceList>;
@@ -2918,7 +2930,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		createProject: (body, callOptions) => send(options, { method: "POST", path: "/projects", body }, callOptions),
 		getCaller: (callOptions) => send(options, { method: "GET", path: "/whoami" }, callOptions),
 		listAccounts: (callOptions) => send(options, { method: "GET", path: "/accounts" }, callOptions),
-		createOrganisation: (body, callOptions) => send(options, { method: "POST", path: "/accounts", body }, callOptions),
+		createOrganisation: (body, callOptions) =>
+			send(options, { method: "POST", path: "/accounts", body, idempotent: true }, callOptions),
 		joinOrganisation: (body, callOptions) =>
 			send(options, { method: "POST", path: "/accounts/join", body }, callOptions),
 		getAccount: (accountId, callOptions) =>
@@ -2950,7 +2963,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listInvites: (accountId, callOptions) =>
 			send(options, { method: "GET", path: `/accounts/${encodeURIComponent(accountId)}/invites` }, callOptions),
 		createInvite: (accountId, body = {}, callOptions) =>
-			send(options, { method: "POST", path: `/accounts/${encodeURIComponent(accountId)}/invites`, body }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/accounts/${encodeURIComponent(accountId)}/invites`, body, idempotent: true },
+				callOptions,
+			),
 		revokeInvite: (accountId, inviteId, callOptions) =>
 			send(
 				options,
@@ -2963,11 +2980,16 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listSandboxes: (query, callOptions) => send(options, { method: "GET", path: "/sandboxes", query }, callOptions),
 		getSandboxShapes: (query, callOptions) =>
 			send(options, { method: "GET", path: "/sandbox-shapes", query }, callOptions),
-		createSandbox: (body = {}, callOptions) => send(options, { method: "POST", path: "/sandboxes", body }, callOptions),
+		createSandbox: (body = {}, callOptions) =>
+			send(options, { method: "POST", path: "/sandboxes", body, idempotent: true }, callOptions),
 		getSandbox: (sandboxId, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}` }, callOptions),
 		updateSandbox: (sandboxId, body = {}, callOptions) =>
-			send(options, { method: "PATCH", path: `/sandboxes/${encodeURIComponent(sandboxId)}`, body }, callOptions),
+			send(
+				options,
+				{ method: "PATCH", path: `/sandboxes/${encodeURIComponent(sandboxId)}`, body, idempotent: true },
+				callOptions,
+			),
 		startSandbox: (sandboxId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/start`, body }, callOptions),
 		stopSandbox: (sandboxId, body = {}, callOptions) =>
@@ -2975,23 +2997,35 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		resumeSandbox: (sandboxId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/resume`, body }, callOptions),
 		forkSandbox: (sandboxId, body = {}, callOptions) =>
-			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/fork`, body }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/fork`, body, idempotent: true },
+				callOptions,
+			),
 		recoverSandbox: (sandboxId, callOptions) =>
-			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/recover` }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/recover`, idempotent: true },
+				callOptions,
+			),
 		restartSandboxOnLatest: (sandboxId, callOptions) =>
 			send(
 				options,
-				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/restart-on-latest` },
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/restart-on-latest`, idempotent: true },
 				callOptions,
 			),
 		deleteSandbox: (sandboxId, callOptions) =>
-			send(options, { method: "DELETE", path: `/sandboxes/${encodeURIComponent(sandboxId)}` }, callOptions),
+			send(
+				options,
+				{ method: "DELETE", path: `/sandboxes/${encodeURIComponent(sandboxId)}`, idempotent: true },
+				callOptions,
+			),
 		getSandboxUsage: (sandboxId, query, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/usage`, query }, callOptions),
 		runCommand: (sandboxId, body, callOptions) =>
 			send(
 				options,
-				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/commands`, body },
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/commands`, body, idempotent: true },
 				callOptions,
 			),
 		listCommands: (sandboxId, query, callOptions) =>
@@ -3060,7 +3094,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listPorts: (sandboxId, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/ports` }, callOptions),
 		exposePort: (sandboxId, body, callOptions) =>
-			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/ports`, body }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/ports`, body, idempotent: true },
+				callOptions,
+			),
 		hidePort: (sandboxId, port, callOptions) =>
 			send(
 				options,
@@ -3087,10 +3125,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		takeSnapshot: (sandboxId, body = {}, callOptions) =>
 			send(
 				options,
-				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/snapshots`, body },
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/snapshots`, body, idempotent: true },
 				callOptions,
 			),
-		saveSnapshot: (body, callOptions) => send(options, { method: "POST", path: "/snapshots", body }, callOptions),
+		saveSnapshot: (body, callOptions) =>
+			send(options, { method: "POST", path: "/snapshots", body, idempotent: true }, callOptions),
 		getSnapshot: (snapshotId, callOptions) =>
 			send(options, { method: "GET", path: `/snapshots/${encodeURIComponent(snapshotId)}` }, callOptions),
 		listSnapshotFiles: (snapshotId, query, callOptions) =>
@@ -3100,11 +3139,16 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		deleteSnapshot: (snapshotId, callOptions) =>
 			send(options, { method: "DELETE", path: `/snapshots/${encodeURIComponent(snapshotId)}` }, callOptions),
 		listApiKeys: (query, callOptions) => send(options, { method: "GET", path: "/api-keys", query }, callOptions),
-		createApiKey: (body, callOptions) => send(options, { method: "POST", path: "/api-keys", body }, callOptions),
+		createApiKey: (body, callOptions) =>
+			send(options, { method: "POST", path: "/api-keys", body, idempotent: true }, callOptions),
 		getApiKey: (apiKeyId, callOptions) =>
 			send(options, { method: "GET", path: `/api-keys/${encodeURIComponent(apiKeyId)}` }, callOptions),
 		rotateApiKey: (apiKeyId, callOptions) =>
-			send(options, { method: "POST", path: `/api-keys/${encodeURIComponent(apiKeyId)}/rotate` }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/api-keys/${encodeURIComponent(apiKeyId)}/rotate`, idempotent: true },
+				callOptions,
+			),
 		revokeApiKey: (apiKeyId, callOptions) =>
 			send(options, { method: "DELETE", path: `/api-keys/${encodeURIComponent(apiKeyId)}` }, callOptions),
 		startDeviceLogin: (body = {}, callOptions) =>
@@ -3126,7 +3170,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listEnvironments: (query, callOptions) =>
 			send(options, { method: "GET", path: "/environments", query }, callOptions),
 		createEnvironment: (body, callOptions) =>
-			send(options, { method: "POST", path: "/environments", body }, callOptions),
+			send(options, { method: "POST", path: "/environments", body, idempotent: true }, callOptions),
 		getEnvironment: (environmentId, callOptions) =>
 			send(options, { method: "GET", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
 		updateEnvironment: (environmentId, body = {}, callOptions) =>
@@ -3181,7 +3225,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		putSandboxGrants: (sandboxId, body, callOptions) =>
 			send(options, { method: "PUT", path: `/sandboxes/${encodeURIComponent(sandboxId)}/grants`, body }, callOptions),
 		listTemplates: (query, callOptions) => send(options, { method: "GET", path: "/templates", query }, callOptions),
-		createTemplate: (body, callOptions) => send(options, { method: "POST", path: "/templates", body }, callOptions),
+		createTemplate: (body, callOptions) =>
+			send(options, { method: "POST", path: "/templates", body, idempotent: true }, callOptions),
 		getTemplate: (templateId, callOptions) =>
 			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}` }, callOptions),
 		updateTemplate: (templateId, body = {}, callOptions) =>
@@ -3193,7 +3238,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listTemplateSnapshots: (templateId, callOptions) =>
 			send(options, { method: "GET", path: `/templates/${encodeURIComponent(templateId)}/snapshots` }, callOptions),
 		rebuildTemplate: (templateId, callOptions) =>
-			send(options, { method: "POST", path: `/templates/${encodeURIComponent(templateId)}/rebuild` }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/templates/${encodeURIComponent(templateId)}/rebuild`, idempotent: true },
+				callOptions,
+			),
 		listTemplateBases: (callOptions) => send(options, { method: "GET", path: "/template-bases" }, callOptions),
 		publishTemplateBase: (body, callOptions) =>
 			send(options, { method: "POST", path: "/template-bases", body }, callOptions),
@@ -3201,7 +3250,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		watchEvents: (handlers, query, callOptions) =>
 			openStream(options, { method: "GET", path: "/events/live", query, events: true }, handlers, callOptions),
 		listWebhooks: (query, callOptions) => send(options, { method: "GET", path: "/webhooks", query }, callOptions),
-		createWebhook: (body, callOptions) => send(options, { method: "POST", path: "/webhooks", body }, callOptions),
+		createWebhook: (body, callOptions) =>
+			send(options, { method: "POST", path: "/webhooks", body, idempotent: true }, callOptions),
 		getWebhook: (webhookId, callOptions) =>
 			send(options, { method: "GET", path: `/webhooks/${encodeURIComponent(webhookId)}` }, callOptions),
 		updateWebhook: (webhookId, body = {}, callOptions) =>
@@ -3209,7 +3259,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		deleteWebhook: (webhookId, callOptions) =>
 			send(options, { method: "DELETE", path: `/webhooks/${encodeURIComponent(webhookId)}` }, callOptions),
 		rotateWebhookSecret: (webhookId, callOptions) =>
-			send(options, { method: "POST", path: `/webhooks/${encodeURIComponent(webhookId)}/rotate` }, callOptions),
+			send(
+				options,
+				{ method: "POST", path: `/webhooks/${encodeURIComponent(webhookId)}/rotate`, idempotent: true },
+				callOptions,
+			),
 		testWebhook: (webhookId, callOptions) =>
 			send(options, { method: "POST", path: `/webhooks/${encodeURIComponent(webhookId)}/test` }, callOptions),
 		listWebhookDeliveries: (webhookId, query, callOptions) =>
@@ -3225,7 +3279,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listBaseImages: (callOptions) => send(options, { method: "GET", path: "/admin/hosts/images" }, callOptions),
 		listHosts: (callOptions) => send(options, { method: "GET", path: "/admin/hosts" }, callOptions),
 		createHostJoinToken: (body = {}, callOptions) =>
-			send(options, { method: "POST", path: "/admin/hosts/join-tokens", body }, callOptions),
+			send(options, { method: "POST", path: "/admin/hosts/join-tokens", body, idempotent: true }, callOptions),
 		getHost: (hostId, callOptions) =>
 			send(options, { method: "GET", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getHostUsage: (hostId, query, callOptions) =>
@@ -3237,7 +3291,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
-			send(options, { method: "POST", path: "/hosts/join-tokens", body }, callOptions),
+			send(options, { method: "POST", path: "/hosts/join-tokens", body, idempotent: true }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),
 		getAccountHost: (hostId, callOptions) =>
 			send(options, { method: "GET", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
@@ -3255,7 +3309,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		deleteBundle: (digest, query, callOptions) =>
 			send(options, { method: "DELETE", path: `/bundles/${encodeURIComponent(digest)}`, query }, callOptions),
 		createBucketSource: (body, callOptions) =>
-			send(options, { method: "POST", path: "/bucket-sources", body }, callOptions),
+			send(options, { method: "POST", path: "/bucket-sources", body, idempotent: true }, callOptions),
 		listBucketSources: (query, callOptions) =>
 			send(options, { method: "GET", path: "/bucket-sources", query }, callOptions),
 		getBucketSource: (bucketSourceId, callOptions) =>

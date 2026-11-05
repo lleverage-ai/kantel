@@ -134,6 +134,7 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 		...(raw === undefined ? [] : [raw]),
 		...(binary ? ["binary: true"] : []),
 		...(route.stream?.eventsOnly === true ? ["events: true"] : []),
+		...(route.idempotent === true ? ["idempotent: true"] : []),
 	].join(", ");
 	const summary = [
 		route.summary,

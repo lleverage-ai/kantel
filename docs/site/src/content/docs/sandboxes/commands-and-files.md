@@ -59,7 +59,9 @@ Check `exitCode`, not the HTTP status: a command that fails still answers `200`,
 
 A command still running at `timeoutMs` is killed, and the answer has `state: "timed_out"`. `stdout` and `stderr` each hold up to 1 MiB; when there was more, `truncated` is `true`. For big output, write it to a file in the command and [read the file](#read-a-file).
 
-Commands are safe to retry with an `Idempotency-Key` header: a retry with the same key answers the first run and doesn't run it again.
+Commands are safe to retry with an `Idempotency-Key` header: a retry with the same key answers the first run and doesn't run it again, detached or not. The same key with another command is `422` with `refused`. If the first call failed part way or stopped answering, the command may have run: a retry with the same key is `409` `conflict` with `details.idempotencyKey: "held"`, and doesn't run it. List the sandbox's commands to see, then use a new key. Without a key, a retry that reached Kantel the first time runs the command twice, so send one with anything that isn't safe to run twice. The `kantel` CLI and its MCP server send one with every command. See [Safe retries](/api/reference/#safe-retries).
+
+Writing a file needs no key: writing the same content again leaves the same file.
 
 ## Long commands and servers
 

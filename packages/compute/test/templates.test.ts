@@ -350,6 +350,32 @@ describe("templateCacheKey", () => {
 	});
 });
 
+describe("retrying with an Idempotency-Key", () => {
+	it("creates a template and rebuilds it once for one key, and refuses the key for another request", async () => {
+		const { api, tom, root, build, builds } = setup();
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		const body = { name: "web", spec: SPEC };
+		const made = await tom.createTemplate(body, { idempotencyKey: "tpl-1" });
+		// Without the key the retry would be `conflict` on its name.
+		expect((await tom.createTemplate(body, { idempotencyKey: "tpl-1" })).id).toBe(made.id);
+		expect((await tom.listTemplates()).items.filter((item) => item.name === "web")).toHaveLength(1);
+		await expect(tom.createTemplate({ ...body, name: "other" }, { idempotencyKey: "tpl-1" })).rejects.toMatchObject({
+			code: "refused",
+		});
+
+		(await build(0)).release();
+		await api.service.idle();
+		const rebuilt = await tom.rebuildTemplate(made.id, { idempotencyKey: "rebuild-1" });
+		(await build(1)).release();
+		await api.service.idle();
+		// A second rebuild would set the first one's build aside and start another.
+		expect(await tom.rebuildTemplate(made.id, { idempotencyKey: "rebuild-1" })).toEqual(rebuilt);
+		await api.service.idle();
+		expect(builds).toHaveLength(2);
+		expect((await tom.getTemplate(made.id)).build.state).toBe("ready");
+	});
+});
+
 describe("rebuilding", () => {
 	it("builds a new version in the background, keeping the old snapshot stale until the new one is ready", async () => {
 		const { api, tom, root, build, builds, deletedTemplateSnapshots } = setup();

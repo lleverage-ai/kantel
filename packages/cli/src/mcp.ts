@@ -319,6 +319,18 @@ const HINTS: { readonly [code: string]: string } = {
 	conflict: "If the sandbox is stopped or paused, resume it with sandbox_resume first.",
 };
 
+/**
+ * What to do about a 409 over an Idempotency-Key, by its `details.idempotencyKey`. Each tool call sends a new key, so
+ * calling the tool again never meets the same key: these say whether that is safe.
+ */
+const IDEMPOTENCY_HINTS: { readonly [state: string]: string } = {
+	in_progress: "The same call is still running: check its result (command_list for a command) before calling again.",
+	held:
+		"The first call didn't finish, so it may have taken effect: check (command_list, sandbox_list) before calling the " +
+		"tool again.",
+	withheld: "The call was done, but its secret isn't kept for a retry: look the record up instead.",
+};
+
 /** What to do about a sandbox that can't be placed, by its `reason`. */
 const PLACEMENT_HINTS: { readonly [reason: string]: string } = {
 	no_host: "No host is connected to run it. Try again once one is, or tell the user.",
@@ -499,6 +511,7 @@ const TOOLS: readonly Tool[] = [
 			if (detached && args.timeoutMs !== undefined) {
 				throw new ArgumentError("a detached command takes no timeoutMs: leave it out");
 			}
+			// One key per tool call, whatever client this is given: a retry of the request runs the command once.
 			const command = await client.runCommand(
 				text(args, "sandboxId"),
 				{
@@ -508,7 +521,7 @@ const TOOLS: readonly Tool[] = [
 					env: optionalStrings(args, "env"),
 					...(detached ? { detached: true } : {}),
 				},
-				{ signal },
+				{ signal, idempotencyKey: crypto.randomUUID() },
 			);
 			if (!detached || command.state !== "running") return commandResult(command);
 			return json({ commandId: command.id, state: command.state }, `Started ${command.id}. ${pickUp(command)}`);
@@ -859,10 +872,13 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 				const reason = error.reason;
 				// A sandbox that isn't running: its stable code, state and why, so the agent can resume it or call again.
 				const notRunning = notRunningOf(error);
+				const held = error.details?.idempotencyKey;
 				const hint =
 					notRunning?.code === "sandbox_starting"
 						? "The sandbox is still starting: call the tool again in a moment."
-						: ((reason === undefined ? undefined : PLACEMENT_HINTS[reason]) ?? HINTS[error.code]);
+						: typeof held === "string"
+							? IDEMPOTENCY_HINTS[held]
+							: ((reason === undefined ? undefined : PLACEMENT_HINTS[reason]) ?? HINTS[error.code]);
 				const message = `${error.code}${reason === undefined ? "" : ` (${reason})`}: ${error.message}${hint === undefined ? "" : `\n${hint}`}`;
 				return success(
 					id,

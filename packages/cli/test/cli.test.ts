@@ -38,6 +38,8 @@ const kantelError = (status: number, code: string, message: string): Response =>
 /** A fake Kantel: routes by `METHOD /v1/path`, answering what the route returns (a Response as it is, else JSON). */
 function fakeKantel(routes: { readonly [route: string]: Route }) {
 	const calls: Call[] = [];
+	/** Each call's `Idempotency-Key`, or null. */
+	const keys: (string | null)[] = [];
 	const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 		const method = init?.method ?? "GET";
@@ -45,13 +47,14 @@ function fakeKantel(routes: { readonly [route: string]: Route }) {
 		const authorization = new Headers(init?.headers).get("authorization");
 		const call: Call = { method, url: url.href, path: url.pathname, query: url.searchParams, body, authorization };
 		calls.push(call);
+		keys.push(new Headers(init?.headers).get("idempotency-key"));
 		const route = routes[`${method} ${url.pathname}`];
 		if (route === undefined) return kantelError(404, "not_found", `No route ${method} ${url.pathname}`);
 		const answer = await route(call);
 		if (answer instanceof Response) return answer;
 		return answer === undefined ? new Response(null, { status: 204 }) : json(answer);
 	};
-	return { fetch, calls };
+	return { fetch, calls, keys };
 }
 
 function capture(isTTY = false) {
@@ -174,7 +177,7 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 			slept.push(ms);
 		},
 	});
-	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls, opened, slept };
+	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls, keys: api.keys, opened, slept };
 }
 
 describe("parsing", () => {
@@ -328,6 +331,97 @@ describe("parsing", () => {
 		const version = await kantel(["--version"]);
 		expect(version.code).toBe(0);
 		expect(version.stdout).toMatch(/^\d+\.\d+\.\d+/);
+	});
+});
+
+describe("retries", () => {
+	it("sends a call that takes an Idempotency-Key again with the same key when Kantel can't be reached", async () => {
+		let attempts = 0;
+		const result = await kantel(["exec", "sbx_test1", "--", "make"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => {
+					attempts++;
+					if (attempts === 1) throw new TypeError("fetch failed");
+					if (attempts === 2) return new Response("Bad gateway", { status: 502 });
+					return command({ exitCode: 0, stdout: "built\n" });
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("built\n");
+		expect(result.calls).toHaveLength(3);
+		expect(result.keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(new Set(result.keys)).toEqual(new Set([result.keys[0]]));
+		expect(result.slept).toEqual([500, 2_000]);
+	});
+
+	it("gives each invocation its own key, and gives up after the last retry", async () => {
+		const routes = { "POST /v1/sandboxes/sbx_test1/commands": () => command({}) };
+		const first = await kantel(["exec", "sbx_test1", "--", "true"], { routes });
+		const second = await kantel(["exec", "sbx_test1", "--", "true"], { routes });
+		expect(first.keys[0]).not.toBe(second.keys[0]);
+
+		const down = await kantel(["exec", "sbx_test1", "--", "true"], {
+			routes: { "POST /v1/sandboxes/sbx_test1/commands": () => new Response("Unavailable", { status: 503 }) },
+		});
+		expect(down.code).not.toBe(0);
+		expect(down.calls).toHaveLength(3);
+	});
+
+	it("sends a keyed call once when Kantel itself answers, even a 503, and never loops on a held key's 409", async () => {
+		for (const answer of [
+			() => kantelError(503, "unavailable", "The host didn't answer the command; its outcome is unknown"),
+			() =>
+				json(
+					{
+						error: {
+							code: "conflict",
+							message: "A call with this Idempotency-Key didn't finish: check, then use a new key",
+							details: { idempotencyKey: "held" },
+						},
+					},
+					409,
+				),
+		]) {
+			const result = await kantel(["exec", "sbx_test1", "--", "make"], {
+				routes: { "POST /v1/sandboxes/sbx_test1/commands": answer },
+			});
+			expect(result.code).not.toBe(0);
+			expect(result.calls).toHaveLength(1);
+			expect(result.slept).toEqual([]);
+		}
+	});
+
+	it("sends a newer keyed call with its key but once, as an older control plane would do it again", async () => {
+		// A control plane from before this route took keys: the save happened, and only its answer was lost.
+		let saves = 0;
+		const result = await kantel(["snapshot", "save", "sbx_test1", "base"], {
+			routes: {
+				"POST /v1/snapshots": () => {
+					saves++;
+					return new Response("Bad gateway", { status: 502 });
+				},
+			},
+		});
+		expect(result.code).not.toBe(0);
+		expect(saves).toBe(1);
+		expect(result.keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(result.slept).toEqual([]);
+	});
+
+	it("sends a call that takes no key once, however it fails", async () => {
+		const result = await kantel(["stop", "sbx_test1"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/stop": () => {
+					throw new TypeError("fetch failed");
+				},
+			},
+		});
+		expect(result.code).not.toBe(0);
+		expect(result.stderr).toContain("couldn't reach Kantel");
+		expect(result.calls).toHaveLength(1);
+		expect(result.keys).toEqual([null]);
+		expect(result.slept).toEqual([]);
 	});
 });
 

@@ -106,6 +106,17 @@ const ROUTES: {
 		Response.json({ ...RUNNING, state: "killed", exitCode: 137 }),
 	"GET /v1/sandboxes/sbx_gone": () =>
 		Response.json({ error: { code: "not_found", message: "No such sandbox" } }, { status: 404 }),
+	"POST /v1/sandboxes/sbx_held/commands": () =>
+		Response.json(
+			{
+				error: {
+					code: "conflict",
+					message: "A call with this Idempotency-Key didn't finish, so whether it took effect is unknown",
+					details: { idempotencyKey: "held" },
+				},
+			},
+			{ status: 409 },
+		),
 	"POST /v1/sandboxes/sbx_stopped/commands": () =>
 		Response.json(
 			{
@@ -170,6 +181,8 @@ const ROUTES: {
 
 function fakeKantel() {
 	const calls: Call[] = [];
+	/** Each call's `Idempotency-Key`, or null. */
+	const keys: (string | null)[] = [];
 	const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 		const method = init?.method ?? "GET";
@@ -181,6 +194,7 @@ function fakeKantel() {
 			body,
 			authorization: new Headers(init?.headers).get("authorization"),
 		});
+		keys.push(new Headers(init?.headers).get("idempotency-key"));
 		const route = ROUTES[`${method} ${url.pathname}`];
 		if (route === undefined) {
 			const error = { code: "not_found", message: `No route ${method} ${url.pathname}` };
@@ -188,7 +202,7 @@ function fakeKantel() {
 		}
 		return route(body, init?.signal, url);
 	};
-	return { fetch, calls };
+	return { fetch, calls, keys };
 }
 
 function server(timing: { readonly pollIntervalMs?: number } = {}) {
@@ -197,6 +211,7 @@ function server(timing: { readonly pollIntervalMs?: number } = {}) {
 	return {
 		mcp: createMcpServer({ client, version: "1.2.3", progressIntervalMs: 20, pollIntervalMs: 5, ...timing }),
 		calls: api.calls,
+		keys: api.keys,
 	};
 }
 
@@ -301,6 +316,32 @@ describe("the MCP server", () => {
 		expect(ran.structuredContent).toMatchObject({ exitCode: 0, stdout: "hi\n", state: "exited" });
 		expect(ran.content[0]?.text).toContain("exited with code 0");
 		expect(calls[1]).toMatchObject({ path: "/v1/sandboxes/sbx_mcp1/commands", body: { command: "echo hi" } });
+	});
+
+	it("sends a new Idempotency-Key with each sandbox_exec call, so a retried request runs it once", async () => {
+		const { mcp, keys } = server();
+		const exec = (id: number) =>
+			mcp.handle(
+				request(id, "tools/call", { name: "sandbox_exec", arguments: { sandboxId: "sbx_mcp1", command: "ls" } }),
+			);
+		await exec(1);
+		await exec(2);
+		expect(keys).toHaveLength(2);
+		expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(keys[1]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(keys[1]).not.toBe(keys[0]);
+	});
+
+	it("says to check before calling again when an exec's key is held, not to resume the sandbox", async () => {
+		const { mcp } = server();
+		const held = resultOf(
+			await mcp.handle(
+				request(11, "tools/call", { name: "sandbox_exec", arguments: { sandboxId: "sbx_held", command: "make" } }),
+			),
+		);
+		expect(held.isError).toBe(true);
+		expect(held.content[0]?.text).toContain("may have taken effect");
+		expect(held.content[0]?.text).not.toContain("sandbox_resume");
 	});
 
 	it("answers Kantel's errors as tool results with isError, and a hint where it helps", async () => {

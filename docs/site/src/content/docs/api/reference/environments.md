@@ -33,13 +33,19 @@ The account's environments, oldest first. A key needs `account:read`.
 
 An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`.
 
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
 **Body**: [CreateEnvironmentBody](/api/reference/types/#createenvironmentbody)
 
 **Answers**
 
 - `201`: [Environment](/api/reference/types/#environment) (`application/json`). The environment.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get an environment
 

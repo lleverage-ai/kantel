@@ -49,7 +49,10 @@ describe("OpenAPI document", () => {
 			expect(responses["401"]).toBeDefined();
 		}
 		const remove = paths["/sandboxes/{sandboxId}"]?.delete as Json;
-		expect(Object.keys(remove.responses as Json).sort()).toEqual(["200", "400", "401", "403", "404", "409"]);
+		// Idempotent: a retry can also be `conflict` (409) or `refused` (422).
+		expect(Object.keys(remove.responses as Json).sort()).toEqual(["200", "400", "401", "403", "404", "409", "422"]);
+		const stop = paths["/sandboxes/{sandboxId}/stop"]?.post as Json;
+		expect(Object.keys(stop.responses as Json)).not.toContain("422");
 	});
 
 	it("documents the Idempotency-Key header on idempotent routes only", () => {
