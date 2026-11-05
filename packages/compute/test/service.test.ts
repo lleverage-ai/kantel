@@ -1606,34 +1606,79 @@ describe("hosts", () => {
 		expect(sandbox.reason).toBeUndefined();
 	});
 
-	it("sends a reclaimed boot the egress as it is now, at a revision of its own, before it runs", async () => {
+	/**
+	 * A stub whose first create is read as placed on `placedOn()` by a revocation, and ends on `endsOn`; with `reconcile`,
+	 * its egress changes while it boots, and the revocation lands while that egress is being sent.
+	 */
+	function revokedMidBoot(options: { endsOn: string; reconcile?: boolean; alsoRevoke?: string }) {
 		const stub = createStubBackend();
 		const store = createMemoryStore();
 		const delivered: (number | undefined)[] = [];
-		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
-		const { tom, root } = setup(
+		let placedNow = STUB_HOST_ID;
+		let revoke: (hostId: string) => Promise<unknown> = async () => undefined;
+		const revokeAll = async () => {
+			await revoke(STUB_HOST_ID);
+			if (options.alsoRevoke !== undefined) {
+				placedNow = options.alsoRevoke;
+				await revoke(options.alsoRevoke);
+			}
+		};
+		const api = setup(
 			{
 				...stub,
-				placedOn: async () => STUB_HOST_ID,
+				async capabilities() {
+					const known = await stub.capabilities();
+					const [only] = known.hosts;
+					return only === undefined || options.alsoRevoke === undefined
+						? known
+						: { ...known, hosts: [...known.hosts, { ...only, id: options.alsoRevoke, name: options.alsoRevoke }] };
+				},
+				placedOn: async () => placedNow,
 				async create(spec) {
 					const placement = await stub.create(spec);
-					await revokeMeanwhile?.();
-					return { ...placement, hostId: "host_elsewhere" };
+					if (options.reconcile === true) {
+						// Its egress changes while it starts: its boot has it sent before it may run.
+						await store.sandboxes.update(spec.sandboxId, (current) => ({
+							...current,
+							egressRevision: (current.egressRevision ?? 0) + 1,
+						}));
+					} else {
+						await revokeAll();
+					}
+					return { ...placement, hostId: options.endsOn };
 				},
 				async updateEgress(_sandboxId, _egress, revision) {
 					delivered.push(revision);
+					// The revocation's scan lands while this egress is on its way.
+					if (options.reconcile === true && delivered.length === 1) await revokeAll();
 				},
 			},
 			{ store },
 		);
-		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		revoke = (hostId) => api.root.revokeHost(hostId);
+		return { ...api, store, delivered };
+	}
+
+	it("doesn't run a first create whose host is revoked while its egress is being reconciled", async () => {
+		const { tom, delivered } = revokedMidBoot({ endsOn: STUB_HOST_ID, reconcile: true });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(delivered.length).toBeGreaterThan(0);
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
+	it("runs, with its egress as it is now, a first create whose egress was reconciled on a host that wasn't revoked", async () => {
+		const { tom, store, delivered } = revokedMidBoot({ endsOn: "host_elsewhere", reconcile: true });
 		const sandbox = await tom.createSandbox({ wait: true });
 		expect(sandbox.state).toBe("running");
 		const stored = await store.sandboxes.get(sandbox.id);
-		// Moved on from what its create sent, delivered, and taken as applied.
-		expect(stored?.egressRevision).toBeDefined();
 		expect(delivered).toContain(stored?.egressRevision);
 		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("doesn't run a first create that moved to another host revoked too", async () => {
+		const { tom } = revokedMidBoot({ endsOn: "host_elsewhere", alsoRevoke: "host_elsewhere" });
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
 	});
 
 	it("doesn't strand a boot whose record moved on after its placement was read", async () => {

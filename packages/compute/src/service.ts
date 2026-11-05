@@ -2813,27 +2813,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Running only if its egress is what its backend has (what the boot sent, at first), on every move to running:
 		// the usual case, in one write.
 		const upToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
-		let result = await transition(sandboxId, "starting", toRunning, upToDate, written);
-		// Stranded for a revoked host it isn't on (its placement there read while this attempt was on its way elsewhere,
-		// as a template's fresh boot after its snapshot's host had no room): made on a host that is there, it runs.
-		const strandedElsewhere = (current: StoredSandbox) =>
-			current.state === "error" &&
-			current.hostId === undefined &&
-			current.strandedOn !== undefined &&
-			current.strandedOn !== placement.hostId;
-		if ("lost" in result && strandedElsewhere(result.lost)) {
-			const stranded = result.lost;
-			// Back to `starting`, then on as any boot. Its egress gets a revision of its own, as a recovery's does: changes
-			// made while it was `error` (its environment's, the proxy settings) skip an errored sandbox, so the egress as it
-			// is now is sent, by the rounds below, before it runs.
-			const back = await transition(
-				sandboxId,
-				"error",
-				(current) => withState(current, "starting", { egressRevision: later(current.egressRevision) }),
-				(current) => strandedElsewhere(current) && current.lifecycle === stranded.lifecycle,
-			);
-			if ("moved" in back) result = await transition(sandboxId, "starting", toRunning, upToDate);
-		}
+		// Its host revoked while it booted, by a scan that found it placed there (`strandOn`): its own move from `starting`
+		// is its outcome, `error`, whenever it comes (now, or after its egress is reconciled), and its egress isn't waited
+		// for. A host another attempt was placed on, or this one before it moved, isn't its host and doesn't count.
+		const revokedUnder = (sandbox: StoredSandbox) => sandbox.strandedOn?.includes(placement.hostId) === true;
+		const publish = (sandbox: StoredSandbox) =>
+			revokedUnder(sandbox)
+				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
+				: toRunning(sandbox);
+		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
+		let result = await transition(sandboxId, "starting", publish, ready, written);
 		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
 		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
 		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
@@ -2843,7 +2832,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (round >= BOOT_RECONCILE_ROUNDS) {
 				const reason = "Its egress couldn't be applied to it while it started";
 				if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
-				result = await transition(sandboxId, "starting", toRunning, upToDate);
+				result = await transition(sandboxId, "starting", publish, ready);
 				continue;
 			}
 			try {
@@ -2857,10 +2846,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A call that didn't get through: tried again, a moment on.
 				await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
 			}
-			result = await transition(sandboxId, "starting", toRunning, upToDate);
+			result = await transition(sandboxId, "starting", publish, ready);
 		}
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
+		if (next.state === "error") {
+			await emit("sandbox.error", next.accountId, {
+				sandbox: next,
+				data: { previousState: "starting", reason: HOST_REVOKED_REASON },
+			});
+			return undefined;
+		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
 		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
@@ -3161,47 +3157,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * The sandboxes of a revoked host: it never connects again, so none of them can be reached, run or started there, and
-	 * none is claimed to. Each is `error`, saying so, for its owner to delete, which writes it off. One being deleted is
-	 * left to its delete.
+	 * none is claimed to. Each whose record names the host is `error`, saying so, for its owner to delete, which writes it
+	 * off; one being deleted is left to its delete. A first create or fork under way there doesn't name its host until
+	 * its boot writes `running`: it is found by where its backend placed it (recorded before the host was asked to make
+	 * it), and marked (`strandedOn`) rather than moved, because only its boot knows which host it ends up on. Its boot's
+	 * one move from `starting` is then `error` if that host is marked (`boot`). A boot that writes `running` before the
+	 * scan's write is found here by its host either way.
+	 *
+	 * A lookup or write that fails fails the revocation, which may be made again to finish, its host revoked already.
 	 */
 	async function strandOn(hostId: string): Promise<void> {
-		// Its own, by their record; and a first create or fork whose boot hasn't written the host into it yet (that comes
-		// with `running`), by where its backend placed it, recorded before the host is asked to make it. A boot that
-		// writes `running` before this scan is in the first list; one that writes it after finds it `error` already.
 		const unattributed =
 			backend.placedOn === undefined
 				? []
 				: (await store.sandboxes.list({ state: "starting" })).filter((sandbox) => sandbox.hostId === undefined);
-		// A lookup that fails fails the revocation, which may be made again: none is taken as "placed elsewhere".
 		const placedHere: StoredSandbox[] = [];
 		for (const sandbox of unattributed) {
 			if ((await backend.placedOn?.(sandbox.id)) === hostId) placedHere.push(sandbox);
 		}
 		for (const sandbox of [...(await store.sandboxes.list({ hostId })), ...placedHere]) {
-			// From whatever live state it is in when written, not as listed: a boot or stop that lands in between doesn't
-			// leave it running or stopped on a host that is gone. One its boot has put on another host since is left.
-			let previous: SandboxState = sandbox.state;
-			const result = await transition(
-				sandbox.id,
-				STRANDABLE,
-				(current) => {
+			// From whatever it is when written, not as listed: a boot or stop that lands in between is still caught.
+			let previous: SandboxState | undefined;
+			await store.sandboxes.update(sandbox.id, (current) => {
+				previous = undefined;
+				if (current.hostId === hostId && STRANDABLE.includes(current.state)) {
 					previous = current.state;
-					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [], strandedOn: hostId });
-				},
-				// Its own record says this host; or it names none yet, and is still the boot attempt whose placement said
-				// so (a recovery since, perhaps onto another host, moves `lifecycle` on).
-				(current) =>
-					current.hostId === hostId ||
-					(current.hostId === undefined && (current.lifecycle ?? 0) === (sandbox.lifecycle ?? 0)),
-			).catch((error: unknown) => {
-				// Gone since it was listed (a delete finished) needs nothing; a write that failed fails the revocation, which
-				// may be made again to finish, its host revoked already.
-				if (error instanceof KantelError && error.code === "not_found") return undefined;
-				throw error;
+					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
+				}
+				if (current.hostId === undefined && current.state === "starting") {
+					if (current.strandedOn?.includes(hostId) === true) return undefined;
+					return { ...current, strandedOn: [...(current.strandedOn ?? []), hostId] };
+				}
+				// Moved on since (deleted, being deleted, on another host now): left.
+				return undefined;
 			});
-			if (result === undefined || !("moved" in result)) continue;
-			await emit("sandbox.error", result.moved.accountId, {
-				sandbox: result.moved,
+			const stranded = previous === undefined ? undefined : await store.sandboxes.get(sandbox.id);
+			if (stranded === undefined || previous === undefined) continue;
+			await emit("sandbox.error", stranded.accountId, {
+				sandbox: stranded,
 				data: { previousState: previous, reason: HOST_REVOKED_REASON },
 			});
 		}
@@ -6184,6 +6177,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (sandbox.stopFor === undefined || since === undefined || pending.has(sandbox.id)) continue;
 					if (since + STOP_LEASE_MS > at) continue;
 					const marker = (current: StoredSandbox) =>
+						// One whose host was revoked under its boot (`strandOn`) isn't handed back as running.
+						(current.strandedOn ?? []).length === 0 &&
 						current.stopFor === sandbox.stopFor &&
 						(state === "stopping" ? current.stopClaimedAt : current.stopsAt) === since;
 					await transition(
