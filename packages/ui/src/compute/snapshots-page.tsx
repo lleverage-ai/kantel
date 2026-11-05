@@ -380,7 +380,7 @@ function SavedList({
 										{bytesText(entry.sizeBytes)}
 									</td>
 									{/* On a phone, when and by whom on the card's last line, after what it is, its size and its uses. */}
-									<td className={td} data-phone="bare line last">
+									<td className={`${td} whitespace-nowrap`} data-phone="bare line last">
 										<span className="text-fg" title={new Date(entry.createdAt).toLocaleString("en-GB")}>
 											{compactAge(entry.createdAt, now)}
 										</span>

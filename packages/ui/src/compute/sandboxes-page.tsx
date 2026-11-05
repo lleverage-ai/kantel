@@ -972,6 +972,14 @@ function SandboxPhoneRow({
 }) {
 	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
+	// Where it runs and when it stops as one phrase ("backend-dev, stops in 52m"), so they don't read as one name.
+	const stopText = stops === "–" ? undefined : stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`;
+	const whereWhen = [
+		sandbox.environment?.name,
+		stopText === undefined || sandbox.environment === undefined ? stopText : stopText.toLowerCase(),
+	]
+		.filter((part) => part !== undefined)
+		.join(", ");
 	// Two columns: what it is on the left (its name, then its machine, environment and stop time), and how it is on the
 	// right (its state, then its CPU), so every healthy card stays two lines and the figures line up down the list.
 	const body = (
@@ -986,12 +994,7 @@ function SandboxPhoneRow({
 						<span className="truncate">
 							{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
 						</span>
-						<span className="flex min-w-0 gap-x-3 empty:hidden">
-							{sandbox.environment === undefined ? null : <span className="truncate">{sandbox.environment.name}</span>}
-							{stops === "–" ? null : (
-								<span className="flex-none">{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>
-							)}
-						</span>
+						{whereWhen === "" ? null : <span className="truncate">{whereWhen}</span>}
 					</span>
 				)}
 			</div>
