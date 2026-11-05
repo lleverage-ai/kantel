@@ -385,7 +385,21 @@ function SavedList({
 									</td>
 									<td className={`${td} text-right tabular-nums`}>{entry.uses.toLocaleString("en-GB")}</td>
 									<td className={`${td} w-0 text-right`}>
-										<Menu label={`Actions for ${entry.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
+										{/* What a saved snapshot is for, in reach on its row; the rest stays in the menu. */}
+										<span className="inline-flex items-center gap-1">
+											{onStartFrom === undefined ? null : (
+												<Button
+													size="sm"
+													variant="ghost"
+													icon={<PlusIcon size="sm" />}
+													onClick={() => onStartFrom(entry)}
+													aria-label={`Start a sandbox from ${entry.name}`}
+												>
+													Start
+												</Button>
+											)}
+											<Menu label={`Actions for ${entry.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
+										</span>
 									</td>
 								</tr>
 							);
