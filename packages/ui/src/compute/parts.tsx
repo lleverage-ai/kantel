@@ -306,8 +306,10 @@ export function Sparkline({
 					points={pointsText(points)}
 					fill="none"
 					stroke="currentColor"
-					strokeWidth="1.5"
+					// A row's line is a hairline beside its figure, which carries the weight; a page's is a step heavier.
+					strokeWidth={size === "lg" ? "1.5" : "1.25"}
 					strokeLinejoin="round"
+					strokeLinecap="round"
 					vectorEffect="non-scaling-stroke"
 					{...(loading ? { strokeDasharray: "2 3" } : {})}
 				/>
