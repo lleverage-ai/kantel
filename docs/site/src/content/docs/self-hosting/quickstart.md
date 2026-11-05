@@ -63,7 +63,7 @@ A host runs `kantel-host`, which boots every sandbox from a kernel and a disk im
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --no-join
 ```
 
-The installer picks the binary for the machine and checks it against the release's `SHA256SUMS`. The kernel and images are published too: the installer fetches them in the next step and checks each one's SHA-256. The default sandbox is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH. The published set is for x86_64; on an aarch64 machine, build your own, as [Hosts](/hosts/#get-kantel-host-and-the-images) shows, and add `--images ~/kantel-images` to the install.
+The installer picks the binary for the machine and checks it against the release's `SHA256SUMS`. The kernel and images are published too: the installer fetches them in the next step and checks each one's SHA-256. The default sandbox is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH. They're published for x86_64 and arm64, and the installer takes the ones for the machine. The arm64 ones are boot-checked in emulation, not yet on arm64 hardware. To use images of your own, build them as [Hosts](/hosts/#get-kantel-host-and-the-images) shows and add `--images ~/kantel-images` to the install.
 
 Check that the machine can run sandboxes:
 
