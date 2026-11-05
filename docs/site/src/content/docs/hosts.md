@@ -87,7 +87,7 @@ cd kantel
 
 Add `GOARCH=arm64` to build it for an aarch64 host on an x86_64 machine, copy `apps/host/dist/kantel-host` to the host, and run `sudo ./kantel-host install --url … --token …` there in place of the join command.
 
-A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 and arm64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches the ones for the host's architecture from there by default, so there's nothing to build. The arm64 images are boot-checked in emulation before they're published, not yet on arm64 hardware. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
+A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 and arm64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches the ones for the host's architecture from there by default, so there's nothing to build. The arm64 images are boot-checked in emulation before they're published, not yet on arm64 hardware. The sandbox image is Ubuntu 26.04 with Docker, an Openbox desktop with a dock, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
 
 The installer gets the images from one of two places:
 
@@ -198,7 +198,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 ==> Install kantel-host 0.3.0
   copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
 ==> Fetch Firecracker and the sandbox images
-  check  images host-images-20261103.1 from https://kantel.example.com/v1/hosts/images/manifest.json
+  check  images host-images-20261105 from https://kantel.example.com/v1/hosts/images/manifest.json
   mkdir  /var/lib/kantel-host (mode 0755)
   mkdir  /var/lib/kantel-host/bin (mode 0755)
   get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
