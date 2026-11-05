@@ -4,7 +4,7 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHostBackend } from "../src/backend.ts";
+import { BROWSER_SURFACE_MARK, createHostBackend } from "../src/backend.ts";
 import { createPortRouter } from "../src/ports.ts";
 import type { HostFacts, HostGuest, HostMessage, HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
@@ -44,6 +44,8 @@ class FakeHost {
 	images?: string;
 	/** What its images' guest agent reports; absent, a host from before the guest agent said. */
 	guest: HostGuest | undefined;
+	/** Whether its machines run Chromium on its own display (booted with kantel.browser=surface, the display up). */
+	ownBrowserDisplay = true;
 	receive!: (text: string) => void;
 
 	constructor(
@@ -136,10 +138,12 @@ class FakeHost {
 					return answer({ exitCode: 0, stdout: "--kantel-host-key--\nSHA256:injected\n", stderr: "" });
 				}
 				const command = String(p.command);
-				if (command.startsWith("curl") && command.includes("9222/json/version")) {
+				if (command.includes("curl -fsS --max-time 5 http://127.0.0.1:9222/json/version")) {
+					const checked = command.includes("kantel.browser=surface /proc/cmdline");
+					const mark = checked && this.ownBrowserDisplay ? BROWSER_SURFACE_MARK : "";
 					return answer({
 						exitCode: 0,
-						stdout: JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/abc-123" }),
+						stdout: `${mark}${JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/abc-123" })}`,
 						stderr: "",
 					});
 				}
@@ -512,6 +516,14 @@ describe("the compute API on kantel-host hosts", () => {
 		// The desktop is still the desktop.
 		const desktop = await root.openDesktop(sandbox.id, {});
 		expect(await tickets.verify(ticketOf(desktop.url), Date.now())).toMatchObject({ port: 6080 });
+
+		// A machine whose boot put Chromium on the desktop (paused under an older host, say), whatever its image's report
+		// says: the desktop, which shows it.
+		host.ownBrowserDisplay = false;
+		const onDesktop = await root.openBrowser(sandbox.id, {});
+		expect(onDesktop.surface).toBe("desktop");
+		expect(await tickets.verify(ticketOf(onDesktop.url), Date.now())).toMatchObject({ port: 6080, desktop: "control" });
+		expect(onDesktop.cdpUrl).toMatch(/\/devtools\/browser\/abc-123$/);
 	});
 
 	it("gives a microVM what its image's guest agent reports, and refuses the desktop and browser an image lacks", async () => {

@@ -64,6 +64,15 @@ export { BROWSER_STREAM_PORT, DESKTOP_PORT } from "./desktop.ts";
 /** Where the guest image's Chromium (CDP) and sshd listen; its desktop stream is `DESKTOP_PORT`. */
 export const BROWSER_PORT = 9222;
 export const SSH_PORT = 22;
+/**
+ * Printed before Chromium's DevTools version by `openBrowser`'s command when the machine runs Chromium on its own
+ * display: booted (or restored from memory booted) with the argument a host that forwards the browser surface gives
+ * (apps/host/internal/microvm), with the display up. A sandbox paused under an older host keeps its boot through an
+ * upgrade, and Chromium on the desktop with it, though its image's report says it has a surface.
+ */
+export const BROWSER_SURFACE_MARK = "kantel-browser-surface\n";
+const BROWSER_SURFACE_CHECK =
+	"grep -qwF kantel.browser=surface /proc/cmdline && [ -S /tmp/.X11-unix/X2 ] && printf 'kantel-browser-surface\\n'; ";
 
 const PUBLIC_KEY =
 	/^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$/;
@@ -964,13 +973,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async openBrowser(sandboxId, { ttlMinutes, viewOnly, grantee, surface }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no browser");
-			// Chromium's browser-wide DevTools target, passed through the tunnel with its path.
+			// Chromium's browser-wide DevTools target, passed through the tunnel with its path. Asked for the browser alone,
+			// the same command says whether this machine runs Chromium on its own display: the image's report (`surface`)
+			// is its version's, but the display follows the boot this machine's memory comes from (BROWSER_SURFACE_CHECK).
 			const version = await call<{ exitCode: number; stdout: string }>(sandboxId, "sandbox.exec", {
-				command: "curl -fsS --max-time 5 http://127.0.0.1:9222/json/version",
+				command: `${surface === "browser" ? BROWSER_SURFACE_CHECK : ""}curl -fsS --max-time 5 http://127.0.0.1:9222/json/version`,
 			});
+			const ownDisplay = version.stdout.startsWith(BROWSER_SURFACE_MARK);
 			let target: string | undefined;
 			try {
-				const parsed = JSON.parse(version.stdout) as { webSocketDebuggerUrl?: unknown };
+				const json = ownDisplay ? version.stdout.slice(BROWSER_SURFACE_MARK.length) : version.stdout;
+				const parsed = JSON.parse(json) as { webSocketDebuggerUrl?: unknown };
 				if (typeof parsed.webSocketDebuggerUrl === "string") target = new URL(parsed.webSocketDebuggerUrl).pathname;
 			} catch {
 				target = undefined;
@@ -981,7 +994,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes, grantee)}${target}`;
 			// People watch and drive Chromium where it runs: on its own display, whose stream the guest starts for the first
 			// viewer, or, in an image without one, on the desktop.
-			if (surface === "browser") {
+			if (surface === "browser" && ownDisplay) {
 				const url = await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee, BROWSER_STREAM_PORT);
 				return { url, cdpUrl, surface };
 			}

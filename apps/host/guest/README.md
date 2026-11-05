@@ -70,9 +70,12 @@ The host asks for this by booting the guest with `kantel.browser=surface` on its
 `kantel-host` from this change on does (and the display's and stream's units have as their condition). A host from
 before it would drop the guest agent's report of the surface, so the control plane would open the desktop's page for
 the browser: booted without the argument, the image keeps Chromium on the desktop, where that page shows it. Any image
-works on any host; the browser alone needs both to be new.
+works on any host; the browser alone needs both to be new. A machine keeps the command line it booted with through a
+pause and resume, so `openBrowser` checks the sandbox's own `/proc/cmdline` and display rather than trust its image's
+report alone, and answers the desktop's page for a sandbox paused under an older host.
 
-`KANTEL_BROWSER_DISPLAY=:1` in `desktop.env` puts Chromium back on the desktop, as before: the guest agent then reports
+`KANTEL_BROWSER_DISPLAY=:1` in `desktop.env` puts Chromium back on the desktop, as before (no other value moves it):
+the guest agent then reports
 no browser surface and `openBrowser` answers the desktop's page. `KANTEL_BROWSER_SIZE` sets `:2`'s size until a viewer
 resizes it (1280x800), and `KANTEL_BROWSER_STREAM_FLAGS` adds Selkies flags. Another streaming stack would take the
 place of `kantel-browser-stream` on the same port, behind the same relay route.

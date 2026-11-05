@@ -102,6 +102,14 @@ func TestDetectBrowserSurface(t *testing.T) {
 			t.Errorf("an older host (%q): browser %+v, surface %+v", env, c.Browser, c.BrowserSurface)
 		}
 	}
+	// Only :1 moves it; another value leaves it on its own display.
+	other := map[string]string{"etc/kantel/desktop.env": "KANTEL_BROWSER_DISPLAY=:3\n"}
+	for path, content := range files {
+		other[path] = content
+	}
+	if c := Detect(image(t, other), "v", "systemd", false); !c.BrowserSurface.Available {
+		t.Errorf("KANTEL_BROWSER_DISPLAY=:3: surface %+v", c.BrowserSurface)
+	}
 
 	// Its own display doesn't need the desktop.
 	noDesktop := map[string]string{}
