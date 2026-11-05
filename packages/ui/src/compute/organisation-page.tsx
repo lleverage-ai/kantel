@@ -363,7 +363,8 @@ function General({
 					{notice.text}
 				</Notice>
 			)}
-			<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-members`}>
+			{/* The same room above it as above Leave, so the three sections sit on one rhythm. */}
+			<section className="flex min-w-0 flex-col gap-2 pt-4" aria-labelledby={`${headingId}-members`}>
 				<SectionHeading
 					id={`${headingId}-members`}
 					title="Members"

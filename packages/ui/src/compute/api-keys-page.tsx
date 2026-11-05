@@ -343,7 +343,10 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 	const ends = expiry(apiKey, now);
 	const muted = apiKey.revokedAt !== undefined || ends.done;
 	return (
-		<tr className={`kt-key-row [&>td]:align-baseline ${muted ? "text-muted" : "text-fg"}`} data-key={apiKey.id}>
+		<tr
+			className={`kt-key-row [&>td]:align-baseline [&>td:last-child]:align-middle ${muted ? "text-muted" : "text-fg"}`}
+			data-key={apiKey.id}
+		>
 			<td className={cell}>
 				<span className={`block max-w-(--kt-popover-width) truncate font-medium ${muted ? "text-muted" : "text-fg"}`}>
 					{apiKey.name}
