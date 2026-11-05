@@ -370,7 +370,8 @@ export function SandboxPage({
 	// A screen's page has no console around it, so no padding either: these states bring their own.
 	const early = isScreen(asked) ? `${computePage} p-gutter` : computePage;
 
-	if (deleted) {
+	// Deleted while this page watched, or found deleted by a read (one after the feed reconnected, which missed it).
+	if (deleted || sandbox?.deleted === true) {
 		return (
 			<div className={early}>
 				{crumbs(<span>{sandbox?.name ?? sandboxId}</span>)}

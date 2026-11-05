@@ -54,15 +54,22 @@ describe.skipIf(databaseUrl === "")("relays over Postgres", () => {
 		await pool.end();
 	});
 
-	const relay = (schema: string, clients: pg.Client[] = []) => {
+	/** A relay on `schema`; its first `unreachable` listening connections go nowhere. */
+	const relay = (schema: string, clients: pg.Client[] = [], unreachable = 0) => {
 		const received: SandboxChange[] = [];
 		const probes: string[] = [];
 		let resyncs = 0;
+		let connections = 0;
 		const made = postgresLiveRelay({
 			schema,
 			query: (text, values) => pool.query(text, [...values]),
 			connect: () => {
-				const client = new pg.Client({ connectionString: databaseUrl });
+				connections += 1;
+				const client = new pg.Client(
+					connections <= unreachable
+						? { host: "127.0.0.1", port: 1, connectionTimeoutMillis: 200 }
+						: { connectionString: databaseUrl },
+				);
 				clients.push(client);
 				return client;
 			},
@@ -133,17 +140,28 @@ describe.skipIf(databaseUrl === "")("relays over Postgres", () => {
 		const one = relay(schema, clients);
 		const two = relay(schema);
 		await listening(one, two);
-		expect(one.resyncs).toBe(0);
+		// Its first LISTEN says so too, though nobody watched yet.
+		expect(one.resyncs).toBe(1);
 
 		// The database ends the listening connection, as a restart or failover would.
 		const listener = clients[0] as pg.Client & { processID?: number };
 		await pool.query("SELECT pg_terminate_backend($1)", [listener.processID]);
-		await until(() => one.resyncs === 1, "the resync");
+		await until(() => one.resyncs === 2, "the resync");
 		await listening(one, two);
 		two.relay.send(change);
 		await until(() => one.received.length === 1, "a change after the drop");
 		expect(one.received).toEqual([change]);
 		expect(clients.length).toBeGreaterThanOrEqual(2);
+	});
+
+	test("say the watchers may have missed some once a first LISTEN that failed to open gets in", async () => {
+		const schema = `live_${crypto.randomUUID().slice(0, 8)}`;
+		const clients: pg.Client[] = [];
+		const one = relay(schema, clients, 2);
+		const two = relay(schema);
+		await listening(one, two);
+		expect(clients.length).toBe(3);
+		expect(one.resyncs).toBe(1);
 	});
 
 	test("send nothing and stop listening once stopped", async () => {

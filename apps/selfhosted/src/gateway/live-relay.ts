@@ -76,7 +76,6 @@ export function postgresLiveRelay(options: PostgresLiveRelayOptions): LiveRelay 
 				.catch((error: unknown) => options.log(`[gateway] live: NOTIFY failed: ${(error as Error).message}`));
 		},
 		start(receive, resync) {
-			let listened = false;
 			const listen = async () => {
 				if (stopped) return;
 				const own = options.connect();
@@ -117,9 +116,9 @@ export function postgresLiveRelay(options: PostgresLiveRelayOptions): LiveRelay 
 					return;
 				}
 				failures = 0;
-				// What came while nobody was listening is lost: the watchers read again.
-				if (listened) resync();
-				listened = true;
+				// What came while nobody was listening is lost: the watchers read again. The first LISTEN too, as watchers may
+				// have come while it failed to open; with none yet, it tells nobody anything.
+				resync();
 			};
 			void listen();
 		},

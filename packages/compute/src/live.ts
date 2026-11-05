@@ -34,7 +34,10 @@ export interface SandboxChange {
 /** A change as a watcher gets it, with the sandbox's record as it is now, read once however many watch. */
 export interface PublishedChange {
 	readonly change: SandboxChange;
-	/** The record now; undefined once it is gone (a create that failed is deleted outright). */
+	/**
+	 * The record now; undefined once it is gone (a create that failed is deleted outright). Rejects when it couldn't be
+	 * read, which is not "gone": a watcher that can't tell whether it may see the sandbox is sent nothing.
+	 */
 	sandbox(): Promise<StoredSandbox | undefined>;
 }
 
@@ -86,7 +89,7 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
 		const published: PublishedChange = {
 			change,
 			sandbox: () => {
-				read ??= options.read(change.sandboxId).catch(() => undefined);
+				read ??= options.read(change.sandboxId);
 				return read;
 			},
 		};

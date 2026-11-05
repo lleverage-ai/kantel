@@ -179,6 +179,47 @@ describe("the live feed", () => {
 		expect(limited.states(mine.id)).toEqual([]);
 	});
 
+	it("sends nothing of a sandbox it couldn't read, not even to an admin, and carries on", async () => {
+		// The sandboxes' reads fail from the moment one is stopped, as a database blip would.
+		const store = createMemoryStore();
+		const sandboxes = store.sandboxes;
+		let armed = false;
+		let failReads = false;
+		const { api, tom, ann } = setup({
+			store: {
+				...store,
+				sandboxes: {
+					...sandboxes,
+					get: (id) => (failReads ? Promise.reject(new Error("the database is away")) : sandboxes.get(id)),
+					async update(id, change, expected) {
+						const written = await sandboxes.update(id, change, expected);
+						if (armed && written?.state === "stopped") failReads = true;
+						return written;
+					},
+				},
+			},
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "admin" })).code ?? "" });
+		const mine = await tom.createSandbox({ account: org.id, visibility: "private", wait: true });
+		const annWatch = watch(ann, org.id);
+		await annWatch.until(() => hellos(annWatch) === 1, "the hello");
+
+		armed = true;
+		await tom.stopSandbox(mine.id, {}).catch(() => undefined);
+		// The stop ends after the call answers.
+		await annWatch.until(() => failReads, "the stop");
+		await api.service.idle();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		failReads = false;
+		armed = false;
+		const shared = await tom.createSandbox({ account: org.id, visibility: "organisation", wait: true });
+		await annWatch.until(() => annWatch.states(shared.id).includes("running"), "the shared one");
+		// Ann, an admin, may not see Tom's private sandbox: a read that failed doesn't let it through.
+		expect(annWatch.states(mine.id)).toEqual([]);
+		expect(annWatch.closed).toBeUndefined();
+	});
+
 	it("refuses an account the caller isn't in, and ends once they leave it or their key is revoked", async () => {
 		const { tom, ann, client } = setup();
 		const refused = watch(ann, (await tom.getCaller()).accounts[0]?.id);

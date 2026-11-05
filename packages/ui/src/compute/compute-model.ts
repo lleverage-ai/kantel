@@ -296,6 +296,11 @@ export interface Sandbox {
 	/** What its host gave it, where that's known: the page shows this rather than its size's usual figures. */
 	readonly resources?: { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number };
 	readonly state: SandboxState;
+	/**
+	 * It was deleted: the API keeps its record a while, and a read of it says so (its `state` is then `stopped`). A
+	 * sandbox's page shows it as deleted, however it learnt of it.
+	 */
+	readonly deleted?: boolean;
 	readonly createdAt: number;
 	/** Who made it. */
 	readonly createdBy: string;
