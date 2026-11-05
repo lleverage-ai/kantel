@@ -2,14 +2,15 @@
 // on a wide screen, after boat.dev's (Tom, 5 Nov 2026): the name (renamed in place) with its address under it, its ID
 // to copy, state, when it was made, its type, a countdown to its auto-stop, its latest snapshot, its cost (hosted) and
 // its CPU, RAM, disk and IO as one small chart, which opens its metrics dialog. A search over names, addresses and IDs,
-// and State, Snapshot and Type filters, sit over it. Rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
-// running microVM's row under the pointer and open in the console, Recover on a failed one's, and ⋯ has Stop, Fork,
-// Save snapshot, Auto-stop, Restart on latest base (beside the state, a sandbox on an outdated base says so) and
-// Delete. New makes a sandbox at once with the defaults (a medium
-// microVM that stops after an hour); its caret opens New sandbox to choose. Either way the new row shows at once,
-// starting, at the top, and the page follows it until it's running. Rows can be ticked (Select all is the table's head,
-// or over a phone's rows) to stop or delete several at once. Every call goes through the `SandboxesSource` the host
-// binds; stories bind it to fixtures.
+// and State, Snapshot, Type and Created by filters, sit over it. In an organisation, or where more than one person or
+// API key made them, each row says who made it under when ("You" for the viewer). Rows on a phone; each row opens the
+// sandbox's page. Browser and Desktop show on a running microVM's row under the pointer and open in the console,
+// Recover on a failed one's, and ⋯ has Stop, Fork, Save snapshot, Auto-stop, Restart on latest base (beside the state,
+// a sandbox on an outdated base says so) and Delete. New makes a sandbox at once with the defaults (a medium microVM
+// that stops after an hour); its caret opens New sandbox to choose. Either way the new row shows at once, starting, at
+// the top, and the page follows it until it's running. Rows can be ticked (Select all is the table's head, or over a
+// phone's rows) to stop or delete several at once. Every call goes through the `SandboxesSource` the host binds;
+// stories bind it to fixtures.
 
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button, buttonClass, buttonLabelClass, IconButton } from "../primitives/button.tsx";
@@ -76,6 +77,9 @@ import {
 	useSandboxMenu,
 } from "./sandbox-actions.tsx";
 import {
+	creatorCount,
+	creatorFilters,
+	creatorText,
 	filterCounts,
 	filtered,
 	NO_FILTERS,
@@ -99,6 +103,8 @@ export type SandboxRowView = "overview" | "desktop" | "browser";
 export interface SandboxesPageProps {
 	readonly source: SandboxesSource;
 	readonly account: ComputeAccount;
+	/** The signed-in person's ID: their sandboxes say "You", and Created by offers them first. */
+	readonly viewerId?: string;
 	readonly hosting: HostingMode;
 	/** Saved snapshots a new sandbox can start from, and saving one from a sandbox. */
 	readonly snapshots?: {
@@ -192,6 +198,7 @@ function useTick(on: boolean, ms: number): void {
 export function SandboxesPage({
 	source,
 	account,
+	viewerId,
 	hosting,
 	snapshots,
 	sandboxHref,
@@ -288,6 +295,7 @@ export function SandboxesPage({
 			state: "starting",
 			createdAt: Date.now(),
 			createdBy: "",
+			...(viewerId === undefined ? {} : { creator: { kind: "user", id: viewerId } }),
 			usage: [],
 		};
 		change(placeholder, pendingId);
@@ -306,6 +314,11 @@ export function SandboxesPage({
 	};
 
 	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filters, now);
+	// Who made each one tells apart only where others can make them too.
+	const creatorOf =
+		sandboxes !== undefined && (account.kind === "organisation" || creatorCount(sandboxes) > 1)
+			? (box: Sandbox) => creatorText(box, viewerId)
+			: undefined;
 	const metricsBox = metricsId === undefined ? undefined : sandboxes?.find((box) => box.id === metricsId);
 
 	// With no host anywhere, nothing could run a new sandbox: no New until one is added.
@@ -384,9 +397,17 @@ export function SandboxesPage({
 				</EmptyState>
 			) : (
 				<>
-					<SandboxToolbar sandboxes={sandboxes} filters={filters} now={now} narrow={narrow} onChange={setFilters} />
+					<SandboxToolbar
+						sandboxes={sandboxes}
+						filters={filters}
+						viewerId={viewerId}
+						now={now}
+						narrow={narrow}
+						onChange={setFilters}
+					/>
 					<SandboxList
 						sandboxes={shown ?? []}
+						{...(creatorOf === undefined ? {} : { creatorOf })}
 						hosting={hosting}
 						now={now}
 						fixedNow={fixedNow !== undefined}
@@ -465,24 +486,33 @@ function FilterMenu<V extends string>({
 	);
 }
 
-/** Over the table: the search, then the State, Snapshot and Type filters, and Clear while any narrows the list. */
+/**
+ * Over the table: the search, then the State, Snapshot, Type and Created by filters, and Clear while any narrows the
+ * list.
+ */
 function SandboxToolbar({
 	sandboxes,
 	filters,
+	viewerId,
 	now,
 	narrow,
 	onChange,
 }: {
 	sandboxes: readonly Sandbox[];
 	filters: SandboxFilters;
+	viewerId: string | undefined;
 	now: number;
 	narrow: boolean;
 	onChange: (filters: SandboxFilters) => void;
 }) {
-	const counts = <K extends "state" | "snapshot" | "type">(key: K, options: readonly { value: SandboxFilters[K] }[]) =>
-		filterCounts(sandboxes, filters, key, options, now);
-	// Type tells apart only where there are both.
+	const counts = <K extends "state" | "snapshot" | "type" | "creator">(
+		key: K,
+		options: readonly { value: NonNullable<SandboxFilters[K]> }[],
+	) => filterCounts(sandboxes, filters, key, options, now);
+	// Type tells apart only where there are both, and Created by where more than one person or key made them.
 	const types = new Set(sandboxes.map((box) => box.kind)).size > 1;
+	const creator = filters.creator ?? "all";
+	const creators = creatorCount(sandboxes) > 1 || creator !== "all" ? creatorFilters(sandboxes, viewerId) : undefined;
 	return (
 		<div className="kt-sandbox-toolbar flex flex-wrap items-center gap-2">
 			<div className={narrow ? "w-full" : "w-(--kt-popover-width) max-w-full"}>
@@ -518,11 +548,20 @@ function SandboxToolbar({
 					onChange={(type) => onChange({ ...filters, type })}
 				/>
 			) : null}
+			{creators === undefined ? null : (
+				<FilterMenu
+					name="Created by"
+					value={creator}
+					options={creators}
+					counts={counts("creator", creators)}
+					onChange={(value) => onChange({ ...filters, creator: value })}
+				/>
+			)}
 			{filtered({ ...filters, search: "" }) ? (
 				<Button
 					size="sm"
 					variant="ghost"
-					onClick={() => onChange({ ...filters, state: "all", snapshot: "all", type: "all" })}
+					onClick={() => onChange({ ...filters, state: "all", snapshot: "all", type: "all", creator: "all" })}
 				>
 					Clear filters
 				</Button>
@@ -563,6 +602,7 @@ function SandboxList({
 	narrow,
 	filtered: narrowed,
 	onClearFilters,
+	creatorOf,
 	onMetrics,
 	source,
 	save,
@@ -581,6 +621,8 @@ function SandboxList({
 	/** Something narrows the list, so an empty one says so and offers to clear it. */
 	filtered: boolean;
 	onClearFilters: () => void;
+	/** Who made a sandbox, as its row says it under when; without it rows don't say. */
+	creatorOf?: (box: Sandbox) => string;
 	/** Where a sandbox's changes have got to, for `onChange` from an answer that may be overtaken. */
 	asked: (id: string) => number;
 } & RowCalls) {
@@ -644,6 +686,7 @@ function SandboxList({
 				<SandboxPhoneRow
 					key={box.id}
 					sandbox={box}
+					{...(creatorOf === undefined ? {} : { creator: creatorOf(box) })}
 					now={now}
 					calls={calls}
 					ticked={ticked.has(box.id)}
@@ -675,7 +718,7 @@ function SandboxList({
 							State
 						</th>
 						<th className={head} scope="col">
-							Created
+							{creatorOf === undefined ? "Created" : "Created / by"}
 						</th>
 						<th className={head} scope="col">
 							Type
@@ -715,6 +758,7 @@ function SandboxList({
 						<SandboxRow
 							key={box.id}
 							sandbox={box}
+							{...(creatorOf === undefined ? {} : { creator: creatorOf(box) })}
 							hosting={hosting}
 							now={now}
 							fixedNow={fixedNow}
@@ -1114,6 +1158,7 @@ const onHover =
 
 function SandboxRow({
 	sandbox,
+	creator,
 	hosting,
 	now,
 	fixedNow,
@@ -1122,6 +1167,8 @@ function SandboxRow({
 	onTick,
 }: {
 	sandbox: Sandbox;
+	/** Who made it, said under when it was made; absent, the row doesn't say. */
+	creator?: string;
 	hosting: HostingMode;
 	now: number;
 	fixedNow: boolean;
@@ -1169,7 +1216,16 @@ function SandboxRow({
 				)}
 			</td>
 			<td className={cell}>
-				<When at={sandbox.createdAt} now={now} />
+				{creator === undefined ? (
+					<When at={sandbox.createdAt} now={now} />
+				) : (
+					<span className="flex flex-col">
+						<When at={sandbox.createdAt} now={now} />
+						<span className={`max-w-40 truncate text-sm ${creator === "You" ? "text-fg" : "text-muted"}`}>
+							{creator}
+						</span>
+					</span>
+				)}
 			</td>
 			<td className={cell}>
 				<Tooltip
@@ -1259,12 +1315,15 @@ function SandboxRow({
  */
 function SandboxPhoneRow({
 	sandbox,
+	creator,
 	now,
 	calls,
 	ticked,
 	onTick,
 }: {
 	sandbox: Sandbox;
+	/** Who made it, said with the machine; absent, the row doesn't say. */
+	creator?: string;
 	now: number;
 	calls: RowCalls;
 	ticked: boolean;
@@ -1284,6 +1343,9 @@ function SandboxPhoneRow({
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>{sandboxMachineText(sandbox)}</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
+					{creator === undefined || creator === "" ? null : (
+						<span>{creator === "You" ? "Yours" : `By ${creator}`}</span>
+					)}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
 					<BaseOutdatedBadge base={sandbox.base} now={now} />
 				</span>

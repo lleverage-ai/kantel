@@ -1010,6 +1010,7 @@ function PageFor({
 					source={source.sandboxes}
 					snapshots={source.snapshots}
 					account={account}
+					viewerId={viewer.id}
 					hosting={source.hosting}
 					sandboxHref={(sandboxId, view) => sandboxViewPath(base, sandboxId, view ?? "overview", screenQuery)}
 					navigate={navigate}

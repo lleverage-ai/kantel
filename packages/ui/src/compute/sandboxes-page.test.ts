@@ -13,7 +13,15 @@ import {
 } from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 import { IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
-import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
+import {
+	creatorFilters,
+	creatorText,
+	filterCounts,
+	filtered,
+	NO_FILTERS,
+	type SandboxFilters,
+	TYPE_FILTERS,
+} from "./sandbox-filters.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
 import {
@@ -259,6 +267,55 @@ describe("the sandboxes list", () => {
 			["all", 2],
 			["microvm", 1],
 			["isolate", 1],
+		]);
+	});
+
+	it("filters by who made it, offering You first, and says You for the viewer's and names an API key", () => {
+		const made = (name: string, kind: "user" | "api_key", id: string, by: string): Sandbox => ({
+			...box(name, "running"),
+			createdBy: by,
+			creator: { kind, id },
+		});
+		const all = [
+			made("mine", "user", "usr_me", "Tom Davies"),
+			made("theirs", "user", "usr_ada", "Ada Lovelace"),
+			made("ci", "api_key", "key_ci", "ci-runner"),
+			made("also-mine", "user", "usr_me", "Tom Davies"),
+		];
+		const names = (creator: string) => sandboxesShown(all, { ...NO_FILTERS, creator }, 0).map((each) => each.name);
+		expect(names("all")).toEqual(["mine", "theirs", "ci", "also-mine"]);
+		expect(names("usr_me")).toEqual(["mine", "also-mine"]);
+		expect(names("key_ci")).toEqual(["ci"]);
+		expect(filtered({ ...NO_FILTERS, creator: "usr_me" })).toBe(true);
+		// A story's filters from before Created by leave it out: anyone.
+		const { creator: _, ...older } = NO_FILTERS;
+		expect(filtered(older)).toBe(false);
+		expect(sandboxesShown(all, older, 0)).toHaveLength(4);
+
+		expect(creatorText(all[0] as Sandbox, "usr_me")).toBe("You");
+		expect(creatorText(all[1] as Sandbox, "usr_me")).toBe("Ada Lovelace");
+		expect(creatorText(all[2] as Sandbox, "usr_me")).toBe("ci-runner (API key)");
+		// Without the viewer, a person's own are named like anyone's.
+		expect(creatorText(all[0] as Sandbox, undefined)).toBe("Tom Davies");
+
+		const options = creatorFilters(all, "usr_me");
+		expect(options).toEqual([
+			{ value: "all", label: "Anyone" },
+			{ value: "usr_me", label: "You" },
+			{ value: "usr_ada", label: "Ada Lovelace" },
+			{ value: "key_ci", label: "ci-runner (API key)" },
+		]);
+		expect([...filterCounts(all, NO_FILTERS, "creator", options, 0)]).toEqual([
+			["all", 4],
+			["usr_me", 2],
+			["usr_ada", 1],
+			["key_ci", 1],
+		]);
+		// You stays an option where the viewer made none, so it can say none are theirs.
+		expect(creatorFilters([all[1] as Sandbox], "usr_me").map((option) => option.label)).toEqual([
+			"Anyone",
+			"You",
+			"Ada Lovelace",
 		]);
 	});
 

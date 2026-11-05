@@ -1,7 +1,14 @@
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import type { HostingMode } from "./compute-model.ts";
-import { type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW, LLEVERAGE, PERSONAL } from "./fixtures.ts";
+import {
+	type ComputeFixtureOptions,
+	createComputeFixtures,
+	FIXTURE_NOW,
+	LLEVERAGE,
+	PERSONAL,
+	VIEWER,
+} from "./fixtures.ts";
 import type { SandboxFilters } from "./sandbox-filters.ts";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 
@@ -42,6 +49,7 @@ function Scenario({
 			source={sandboxes}
 			snapshots={source.snapshots}
 			account={personal ? PERSONAL : LLEVERAGE}
+			viewerId={VIEWER.id}
 			hosting={hosting}
 			now={FIXTURE_NOW}
 			sandboxHref={(id, view) => `#sandbox/${id}${view === undefined || view === "overview" ? "" : `/${view}`}`}
@@ -70,6 +78,11 @@ export const NoLiveUsage: Story = () => <Scenario usage="none" />;
 /** Searched and filtered: running microVMs with "dev" in their name, address or ID, and Clear filters. */
 export const Filtered: Story = () => (
 	<Scenario filters={{ state: "running", snapshot: "all", type: "microvm", search: "dev" }} />
+);
+
+/** Only the viewer's own: Created by You, the others' left out. Each row says who made it under when. */
+export const CreatedByYou: Story = () => (
+	<Scenario filters={{ state: "all", snapshot: "all", type: "all", creator: VIEWER.id, search: "" }} />
 );
 
 /** Filters that leave nothing: says so, and offers to clear them. */
