@@ -209,12 +209,16 @@ describe("parsing", () => {
 		expect(() => parseArgs(["-x"], specs)).toThrow(/unknown flag -x/);
 	});
 
-	it("takes a word that starts with one dash as an argument, since aliases are one letter", () => {
+	it("takes a word that starts with one dash as an argument when asked, since aliases are one letter", () => {
 		// A base64url genesis starts with "-" one time in 64 (this one failed Main CI as "unknown flag -qWbW…").
 		const genesis = "-qWbW7snP-gnS05KGEXLZGvxASDaweXJ8s3WBAU8llQ";
-		const parsed = parseArgs(["org_1", genesis, "--all", "-h", "-5", "--name", "-n-"], specs);
+		const argv = ["org_1", genesis, "--all", "-h", "-5", "--name", "-n-"];
+		const parsed = parseArgs(argv, specs, { dashArguments: true });
 		expect(parsed.positionals).toEqual(["org_1", genesis, "-5"]);
 		expect(parsed.flags).toEqual({ all: true, help: true, name: "-n-" });
+		expect(() => parseArgs(["-x"], specs, { dashArguments: true })).toThrow(/unknown flag -x/);
+		// Otherwise it is an unknown flag, as before.
+		expect(() => parseArgs(argv, specs)).toThrow(`unknown flag ${genesis}`);
 		// One that starts with "--" goes after --.
 		expect(parseArgs(["org_1", "--", `-${genesis}`], specs).rest).toEqual([`-${genesis}`]);
 	});
@@ -233,13 +237,24 @@ describe("parsing", () => {
 		expect(JSON.parse(after.stdout)).toMatchObject({ space: "org_2", genesis: dashes });
 		const help = await kantel(["help", "e2e", "join"]);
 		expect(help.stdout).toContain("kantel e2e join <space> -- <genesis>");
-		// A mistyped flag isn't pinned as the genesis, nor taken as one argument too many.
+		// A mistyped flag isn't pinned as the genesis, nor taken as the space or one argument too many.
 		const typo = await kantel(["e2e", "join", "org_3", "-json"], { routes });
 		expect(typo.code).toBe(2);
 		expect(typo.stderr).toContain(`"-json" isn't a genesis`);
-		const extra = await kantel(["e2e", "join", "org_3", genesis, "-json"], { routes });
-		expect(extra.code).toBe(2);
-		expect(extra.stderr).toContain("unknown flag -json");
+		for (const argv of [
+			["e2e", "join", "org_3", genesis, "-json"],
+			["e2e", "join", "-json", genesis],
+		]) {
+			const refused = await kantel(argv, { routes });
+			expect(refused.code, argv.join(" ")).toBe(2);
+			expect(refused.stderr).toContain("unknown flag -json");
+		}
+		// A command with no such argument still refuses one before it calls Kantel.
+		const info = await kantel(["info", "sbx_test1", "-json"]);
+		expect(info.code).toBe(2);
+		expect(info.stderr).toContain("unknown flag -json");
+		expect(info.calls).toEqual([]);
+		expect(await readFile(join(configDir, "e2e", "spaces", "org_3.json"), "utf8").catch(() => "none")).toBe("none");
 	});
 
 	it("quotes several words after -- for the shell, and keeps one as a command line", () => {

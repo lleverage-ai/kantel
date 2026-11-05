@@ -281,6 +281,8 @@ interface Arg {
 	readonly optional?: boolean;
 	/** It takes the rest of the words. */
 	readonly variadic?: boolean;
+	/** It may start with "-", as a base64url value may: a word such as `-qWbW…` here is it, not an unknown flag. */
+	readonly dash?: boolean;
 }
 
 interface CommandSpec {
@@ -1186,7 +1188,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 	{
 		name: "e2e join",
 		summary: "Trust an organisation's chain from the genesis an admin gave you",
-		args: [{ name: "space" }, { name: "genesis" }],
+		args: [{ name: "space" }, { name: "genesis", dash: true }],
 		flags: {
 			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
 		},
@@ -3627,7 +3629,11 @@ function createContext(
 }
 
 async function execute(command: CommandSpec, argv: readonly string[], io: Io): Promise<number> {
-	const parsed = parseArgs(argv, { ...GLOBAL_FLAGS, ...command.flags });
+	const args = command.args ?? [];
+	// An argument such as a genesis may start with "-". Then a word after one dash is taken as an argument, and
+	// refused below, before the command runs, unless it lands on one that may.
+	const dashArguments = args.some((arg) => arg.dash === true);
+	const parsed = parseArgs(argv, { ...GLOBAL_FLAGS, ...command.flags }, { dashArguments });
 	if (booleanFlag(parsed, "help") === true) {
 		io.stdout.write(`${commandHelp(command)}\n`);
 		return 0;
@@ -3636,15 +3642,16 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 	const takesRest = command.rest !== undefined;
 	const positionals =
 		takesRest || parsed.rest === undefined ? parsed.positionals : [...parsed.positionals, ...parsed.rest];
-	const args = command.args ?? [];
+	if (dashArguments) {
+		const last = args.at(-1);
+		const argAt = (index: number): Arg | undefined => args[index] ?? (last?.variadic === true ? last : undefined);
+		const dashed = parsed.positionals.find((token, index) => /^-[^\d-]/.test(token) && argAt(index)?.dash !== true);
+		if (dashed !== undefined) throw new UsageError(`unknown flag ${dashed}`);
+	}
 	const missing = args.slice(positionals.length).filter((arg) => arg.optional !== true);
 	if (missing.length > 0) throw new UsageError(`${command.name} needs ${missing.map(argUsage).join(" ")}`);
 	const variadic = args.at(-1)?.variadic === true;
 	if (!variadic && positionals.length > args.length) {
-		// A word after one dash is taken as an argument (a base64url genesis may start with "-"), so one argument too
-		// many is most likely a mistyped flag: name it.
-		const dashed = parsed.positionals.findLast((token) => /^-[^\d-]/.test(token));
-		if (dashed !== undefined) throw new UsageError(`unknown flag ${dashed}`);
 		const extra = positionals[args.length] ?? "";
 		throw new UsageError(takesRest ? `put the ${command.rest} after --` : `${command.name} takes no "${extra}"`);
 	}
