@@ -247,6 +247,54 @@ func TestKillEndsAForegroundCommandByItsID(t *testing.T) {
 	}
 }
 
+// A running foreground command with an ID has its output so far in its status too, as a detached one does: what attach
+// shows of a command whose call outlived its connection. Its answer then has the whole of it.
+func TestARunningForegroundCommandShowsItsOutputSoFar(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	ctx := context.Background()
+	gate := filepath.Join(t.TempDir(), "go")
+	cmd := "echo 'Reading package lists...'; echo warn >&2; while [ ! -e " + gate + " ]; do sleep 0.05; done; echo Done"
+	answered := make(chan ExecResult, 1)
+	failed := make(chan error, 1)
+	go func() {
+		res, err := client.Exec(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_fo", Command: cmd, TimeoutMs: 30_000})
+		if err != nil {
+			failed <- err
+			return
+		}
+		answered <- res
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	var status ExecStatus
+	for time.Now().Before(deadline) {
+		var err error
+		status, err = client.CommandStatus(ctx, "cmd_fo", 0)
+		if err == nil && status.Stdout != "" && strings.Contains(status.Stderr, "warn\n") {
+			break
+		}
+		if err != nil && !IsNotFound(err) {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status.State != ExecRunning || status.Stdout != "Reading package lists...\n" || !strings.HasSuffix(status.Stderr, "warn\n") || status.Result != nil {
+		t.Fatalf("while it runs: %+v", status)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case res := <-answered:
+		if res.ExitCode != 0 || res.Stdout != "Reading package lists...\nDone\n" {
+			t.Fatalf("answer %+v", res)
+		}
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the command wasn't answered")
+	}
+}
+
 func TestClosingAForegroundRequestEndsItsCommand(t *testing.T) {
 	client := clientFor(t, (&Server{}).Handler())
 	pidFile := filepath.Join(t.TempDir(), "child.pid")

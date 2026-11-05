@@ -73,12 +73,15 @@ import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageCha
 import { createE2EChains } from "./e2e.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import {
+	type AskedMachine,
 	copiedOn,
+	copiedResources,
 	diskLimitsOf,
 	makesCustom,
 	makesShape,
 	recordedMachine,
 	recordsMachine,
+	restoreAsked,
 	sandboxMachine,
 } from "./machine.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
@@ -1931,6 +1934,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 *
 	 * `shared`: whether the caller may use the shared hosts at all (`ComputeServiceOptions.sharedHosts`); without, only
 	 * the account's own.
+	 *
+	 * `pin`: the one host it was asked to go on (`CreateSandboxBody.host`), whether or not the account has hosts of its
+	 * own; `host_unavailable` when that host can't take it now.
 	 */
 	function requireHosts(
 		hosts: readonly StoredHost[],
@@ -1939,6 +1945,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		labels: { readonly [key: string]: string },
 		affine: boolean,
 		shared: boolean,
+		pin?: string,
+	): string[] {
+		if (pin !== undefined) {
+			const pinned = hosts.find((host) => host.id === pin);
+			const eligible =
+				pinned === undefined ? [] : requireHostsOrNone([pinned], accountId, type, labels, affine, shared);
+			if (eligible.length === 0) {
+				throw placementError(
+					"unavailable",
+					"host_unavailable",
+					`The host ${pinned?.name ?? pin} can't run ${article(type)} ${type} sandbox now: it is offline, draining, doesn't run ${type} sandboxes or lacks the host labels asked for`,
+				);
+			}
+			return eligible;
+		}
+		return requireHostsOrNone(hosts, accountId, type, labels, affine, shared, true);
+	}
+
+	/** `requireHosts` without a pin: the eligible hosts, or with `refuse` an `unavailable` error when there are none. */
+	function requireHostsOrNone(
+		hosts: readonly StoredHost[],
+		accountId: string,
+		type: SandboxType,
+		labels: { readonly [key: string]: string },
+		affine: boolean,
+		shared: boolean,
+		refuse = false,
 	): string[] {
 		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none.
 		const up = hosts
@@ -1951,7 +1984,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const own = qualifying.filter((host) => host.accountId === accountId);
 		const common = shared ? qualifying.filter((host) => host.accountId === undefined) : [];
 		const eligible = (affine ? [...own, ...common] : own.length > 0 ? own : common).map((host) => host.id);
-		if (eligible.length === 0) {
+		if (eligible.length === 0 && refuse) {
 			// Bound to its disk or snapshot, it can go only on that one host, whatever else the fleet has: that host is the
 			// reason, as it is when the boot finds it gone with other hosts up.
 			const reason: PlacementReason = affine
@@ -1980,6 +2013,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function mayShare(principal: Principal): Promise<boolean> {
 		if (options.sharedHosts === undefined || principal.superAdmin) return true;
 		return options.sharedHosts(principal.userId);
+	}
+
+	/**
+	 * The host a snapshot's disk is on, where its backend's ref says (a host backend's is `{hostId}/{snapshotId}`);
+	 * undefined where the ref names no known host.
+	 */
+	function snapshotHolder(ref: string, hosts: readonly StoredHost[]): StoredHost | undefined {
+		const [hostId] = ref.split("/");
+		return hosts.find((host) => host.id === hostId);
+	}
+
+	/**
+	 * Whether `principal` may be told that `host` exists, and which of an account's sandboxes run on it: a super-admin any
+	 * host, anyone else only a host of the account the sandbox is in (account hosts).
+	 */
+	const mayKnowHost = (principal: Principal, host: StoredHost, accountId: string): boolean =>
+		principal.superAdmin || (host.accountId !== undefined && host.accountId === accountId);
+
+	/**
+	 * The host `ref` (an ID or a name) names, for a sandbox of `accountId` to be pinned to (or, with `revoked`, for its
+	 * sandboxes to be listed by): one of the account's own hosts, or for a super-admin a shared one. Another account's host, and for anyone else a shared host, is `not_found`,
+	 * as `accountHostFor` answers, so a host's existence isn't given away.
+	 */
+	function pinnableHost(
+		principal: Principal,
+		accountId: string,
+		hosts: readonly StoredHost[],
+		ref: string,
+		{ revoked = false }: { readonly revoked?: boolean } = {},
+	): StoredHost {
+		const known = hosts.filter(
+			(host) =>
+				(revoked || host.state !== "revoked") &&
+				(host.accountId === undefined ? principal.superAdmin : host.accountId === accountId),
+		);
+		const byId = known.find((host) => host.id === ref);
+		if (byId !== undefined) return byId;
+		const named = known.filter((host) => host.name === ref);
+		if (named.length > 1) throw new KantelError("invalid", `${named.length} hosts are named ${ref}: give its ID`);
+		const [host] = named;
+		if (host === undefined) throw notFound("host");
+		return host;
 	}
 
 	// Views: what the API answers for a record.
@@ -2014,7 +2089,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			: { idleStopMinutes: minutes, lastActiveAt: last, idleStopsAt: last + minutes * 60_000 };
 	}
 
-	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
+	/**
+	 * The host a sandbox is on, as `principal` may be told it (`mayKnowHost`): its ID and name, or nothing. `hosts` keeps
+	 * the host records read for one answer, so a page of sandboxes on a few hosts reads each once.
+	 */
+	async function hostOfView(
+		sandbox: StoredSandbox,
+		principal: Principal,
+		hosts: Map<string, Promise<StoredHost | undefined>> = new Map(),
+	): Promise<Pick<Sandbox, "hostId" | "hostName">> {
+		const id = sandbox.hostId;
+		if (id === undefined) return {};
+		let read = hosts.get(id);
+		if (read === undefined) {
+			read = store.hosts.get(id);
+			hosts.set(id, read);
+		}
+		const host = await read;
+		// A super-admin is shown the ID of a host it has no record of, as before hosts were recorded.
+		if (host === undefined) return principal.superAdmin ? { hostId: id } : {};
+		return mayKnowHost(principal, host, sandbox.accountId) ? { hostId: id, hostName: host.name } : {};
+	}
+
+	async function sandboxView(
+		sandbox: StoredSandbox,
+		principal: Principal,
+		hosts?: Map<string, Promise<StoredHost | undefined>>,
+	): Promise<Sandbox> {
+		const host = await hostOfView(sandbox, principal, hosts);
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
 		const rate = rateOf(sandbox);
 		return {
@@ -2024,6 +2126,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			subdomain: sandbox.subdomain,
 			type: sandbox.type,
 			size: sandbox.size,
+			// What it asked for, so a sandbox of a shape no size names reads as that shape while it starts.
+			shape: sandbox.shape === undefined ? undefined : { ...sandbox.shape },
 			resources: sandbox.resources,
 			image: sandbox.image,
 			state: sandbox.state,
@@ -2055,7 +2159,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
 				...sparklines(sandbox),
 			},
-			hostId: principal.superAdmin ? sandbox.hostId : undefined,
+			...host,
 			base: baseView(sandbox.base),
 		};
 	}
@@ -2820,9 +2924,67 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return { lost: seen };
 	}
 
+	/** Whether `principal` may make calls that need `scope` where they have `role` (`requireScope`), without refusing. */
+	const mayUse = (principal: Principal, scope: computeSchema.ApiKeyScope, role: MemberRole): boolean => {
+		try {
+			requireScope(principal, scope, role);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
 	/** Changes a sandbox's fields other than its state with `update`, so it never writes over a newer state. */
 	const patchSandbox = (sandboxId: string, change: (current: StoredSandbox) => StoredSandbox | undefined) =>
 		store.sandboxes.update(sandboxId, change);
+
+	/**
+	 * Exposes a fork's source's ports (`ports`, as the source had them when it was forked) on the fork once it runs, each
+	 * as it was there: the same port, public or behind a token. Each gets its own URL under the fork's subdomain, exposed
+	 * as `grantee` (whoever forked it), so it ends when their access does, as a port they exposed would. A gated port's
+	 * token is shown to no one, as nobody asked for it: exposing the port again gives a new one, as it always does. A port
+	 * that can't be exposed is left off (the fork runs all the same).
+	 *
+	 * A port exposed on the fork by hand meanwhile wins, whichever lands first: each copy is made only where the port
+	 * isn't exposed at all (`ifAbsent`, one step in the relay's store, shared by every replica), so it never replaces an
+	 * exposure (its access, token and grantee), and its record is added only where the fork's record has none for it.
+	 */
+	async function copyPorts(
+		fork: StoredSandbox,
+		ports: readonly computeSchema.ExposedPort[],
+		grantee: string,
+	): Promise<void> {
+		if (!fork.capabilities.ports) return;
+		for (const port of ports) {
+			const latest = await store.sandboxes.get(fork.id);
+			if (latest?.state !== "running") return;
+			if (latest.ports.some((entry) => entry.port === port.port)) continue;
+			let url: string;
+			try {
+				({ url } = await backend.exposePort(fork.id, port.port, {
+					public: port.public,
+					subdomain: fork.subdomain,
+					grantee,
+					ifAbsent: true,
+				}));
+			} catch {
+				// Exposed by hand meanwhile (`conflict`), or it couldn't be: left as it is.
+				continue;
+			}
+			const exposed: computeSchema.ExposedPort = {
+				port: port.port,
+				url: withoutPortToken(url),
+				public: port.public,
+				createdAt: now(),
+			};
+			await patchSandbox(fork.id, (latest) =>
+				// Stopped or gone meanwhile (its ports went with it), or the port exposed on it by hand already: as it is.
+				latest.state !== "running" || latest.ports.some((entry) => entry.port === port.port)
+					? undefined
+					: { ...latest, ports: [...latest.ports, exposed] },
+			);
+		}
+	}
 
 	/** The sandbox in a new state, with its run periods, stop time and timestamps kept in step. */
 	function withState(sandbox: StoredSandbox, state: SandboxState, extra: Partial<StoredSandbox> = {}): StoredSandbox {
@@ -3059,6 +3221,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sandbox.hostLabels,
 			!neverPlaced(sandbox) || sandbox.source !== undefined,
 			await mayShare(principal),
+			sandbox.hostPin,
 		);
 	}
 
@@ -3160,6 +3323,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
+	/**
+	 * Whether a snapshot's bytes hold memory: its own say, or that of another snapshot of the same bytes (a save made
+	 * before saves kept the flag shares its pause's ref but says no). Reads report it, so a client sees what a create
+	 * from it will be held to.
+	 */
+	async function holdsMemory(snapshot: StoredSnapshot): Promise<boolean> {
+		if (snapshot.memory) return true;
+		if (snapshot.ref === undefined) return false;
+		return (await store.snapshots.list({ ref: snapshot.ref, memory: true })).length > 0;
+	}
+
+	/**
+	 * Deletes a snapshot's record. One that holds memory first passes that on to every other record of its bytes (a save
+	 * made before saves kept the flag says no), so none of them stops saying so once it is gone.
+	 */
+	async function forgetSnapshot(snapshot: StoredSnapshot): Promise<void> {
+		if (snapshot.memory && snapshot.ref !== undefined) {
+			for (const other of await store.snapshots.list({ ref: snapshot.ref, memory: false })) {
+				await store.snapshots.update(other.id, (latest) => (latest.memory ? undefined : { ...latest, memory: true }));
+			}
+		}
+		await store.snapshots.delete(snapshot.id);
+	}
+
 	async function releaseRef(ref: string | undefined): Promise<void> {
 		if (ref === undefined) return;
 		if ((await store.snapshots.list({ ref })).length > 0) return;
@@ -3211,16 +3398,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A running detached command as its backend has it now: its output so far (what `attach` shows while it runs), and
-	 * ended once the backend says so. One no gateway here is waiting for (the one that started it closed, or is another
-	 * replica) is lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
+	 * A running command as its backend has it now: its output so far (what `attach` shows while it runs), and ended once
+	 * the backend says so. One no gateway here is waiting for (the one that started it closed, or is another replica) is
+	 * lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
 		if (command.state !== "running" || backend.commandResult === undefined) return command;
 		const followed = runningCommands.has(command.id);
-		// A foreground one a gateway here waits for is answered by that wait; one none here does outlived its gateway (on a
-		// backend that runs commands on past their call) or is another replica's, and is asked for as a detached one is.
-		if (command.detached !== true && followed) return command;
+		// A foreground one a gateway here waits for is ended by that wait, and only its output so far is recorded; one none
+		// here does outlived its gateway (on a backend that runs commands on past their call) or is another replica's, and
+		// is asked for as a detached one is.
+		if (command.detached !== true && followed) return progressOf(command);
 		let result: ExecResult | CommandProgress | undefined;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
@@ -3244,6 +3432,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (result === undefined) return command;
 		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
 		return (await endCommand(command.id, result)) ?? command;
+	}
+
+	/**
+	 * A running foreground command's output so far, from its backend, for one a gateway here waits for: recorded, while
+	 * its end is left to that wait (the backend's answer to it has the whole of its output). A backend that can't say
+	 * leaves it as it is.
+	 */
+	async function progressOf(command: StoredCommand): Promise<StoredCommand> {
+		const result = await backend.commandResult?.(command.sandboxId, command.id).catch(() => undefined);
+		if (result === undefined || !isCommandProgress(result)) return command;
+		return (await recordProgress(command.id, result)) ?? command;
 	}
 
 	/**
@@ -4805,9 +5004,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:read", role);
 			const active: readonly SandboxState[] = ["starting", "running", "stopping"];
+			const hosts = new Map<string, Promise<StoredHost | undefined>>();
+			const onHost =
+				query.host === undefined
+					? undefined
+					: pinnableHost(principal, account.id, await ensureHosts(), query.host, { revoked: true }).id;
 			const visible: StoredSandbox[] = [];
 			for (const sandbox of await store.sandboxes.list({ accountId: account.id })) {
 				if (sandbox.state === "deleted") continue;
+				if (onHost !== undefined && sandbox.hostId !== onHost) continue;
 				const wanted =
 					query.state !== undefined
 						? sandbox.state === query.state
@@ -4820,7 +5025,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			return {
 				items: await withSnapshotTimes(
-					await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+					await withMakersNamed(await Promise.all(page.items.map((sandbox) => sandboxView(sandbox, principal, hosts)))),
 				),
 				nextCursor: page.nextCursor,
 			};
@@ -4832,10 +5037,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const read = backend.capabilities();
 			const [records, capabilities, shared] = await Promise.all([ensureHosts(read), read, mayShare(principal)]);
 			const byId = new Map(capabilities.hosts.map((host) => [host.id, host]));
-			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones.
-			const running = records.filter((record) => record.state === "online" && record.tiers.includes("microvm"));
+			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones; or the one host
+			// a sandbox is to be pinned to.
+			const pinned = query.host === undefined ? undefined : pinnableHost(principal, account.id, records, query.host).id;
+			const running = records.filter(
+				(record) =>
+					record.state === "online" &&
+					record.tiers.includes("microvm") &&
+					(pinned === undefined || record.id === pinned),
+			);
 			const own = running.filter((record) => record.accountId === account.id);
-			const usable = own.length > 0 ? own : shared ? running.filter((record) => record.accountId === undefined) : [];
+			const usable =
+				pinned !== undefined
+					? running
+					: own.length > 0
+						? own
+						: shared
+							? running.filter((record) => record.accountId === undefined)
+							: [];
 			const hosts = usable.flatMap((record) => {
 				const host = byId.get(record.id);
 				return host === undefined ? [] : [host];
@@ -4920,6 +5139,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A check below may refuse the call before this is awaited.
 				known.catch(() => undefined);
 				const capabilities = await read;
+				// The host it was asked to go on, resolved first: a host the caller may not name is `not_found` whatever the
+				// fleet runs.
+				const hostPin =
+					body.host === undefined ? undefined : pinnableHost(principal, account.id, await known, body.host).id;
+				// From a snapshot, a pin can only be the host that holds it: refused now, before anything is stored, rather than
+				// left as a sandbox that can never start.
+				if (hostPin !== undefined && from?.ref !== undefined) {
+					const holder = snapshotHolder(from.ref, await known);
+					if (holder !== undefined && holder.id !== hostPin) {
+						throw placementError(
+							"unavailable",
+							"host_unavailable",
+							`The snapshot is on another host (${mayKnowHost(principal, holder, account.id) ? holder.name : "not one you can name"}): a sandbox made from it runs only there`,
+						);
+					}
+				}
 				if (!capabilities.types.includes(type)) {
 					// Why, as `requireHosts` would say it: of the hosts the caller may use, and from a snapshot its own host.
 					let reason: PlacementReason = "no_host_for_type";
@@ -4931,6 +5166,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							{ ...body.hostLabels },
 							from !== undefined,
 							await mayShare(principal),
+							hostPin,
 						);
 					} catch (error) {
 						reason = placementReasonOf(error) ?? reason;
@@ -4952,7 +5188,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						"A sandbox made from a snapshot keeps the snapshot's disk; leave out diskGb",
 					);
 				}
-				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
+				// A snapshot's own size is its machine, whatever the hosts name now (`restoreAsked` decides a snapshot's).
+				if (
+					body.size !== undefined &&
+					body.size !== from?.size &&
+					!capabilities.sizes.some((size) => size.name === body.size)
+				) {
 					throw placementError(
 						"not_supported",
 						"no_host_offers_size",
@@ -4971,6 +5212,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					hostLabels,
 					from !== undefined,
 					await mayShare(principal),
+					hostPin,
 				);
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
 				// its template's resources (unless it names a size), which a template snapshot was built as.
@@ -4984,6 +5226,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					(diskAlone === undefined ? body.resources : undefined) ??
 					(template !== undefined && body.size === undefined ? template.spec.resources : undefined);
 				const shape = shapeFor(type, asked, eligible, capabilities.sizes, from === undefined);
+				const presets = eligible.flatMap((host) => host.sizes ?? capabilities.sizes);
+				// From a snapshot that holds memory: its own machine, and nothing else (`restoreAsked`), refused here rather than
+				// by its host once the sandbox is stored.
+				const wanted: AskedMachine = {
+					...(body.size === undefined ? {} : { size: body.size }),
+					...(shape === undefined ? {} : { shape }),
+					...(diskAlone === undefined ? {} : { diskGb: diskAlone }),
+				};
+				const machineAsked =
+					type === "microvm" && from !== undefined
+						? restoreAsked({ ...from, memory: await holdsMemory(from) }, wanted)
+						: wanted;
 				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
@@ -5005,12 +5259,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 													capabilities.sizes,
 												),
 											},
-								{
-									...(body.size === undefined ? {} : { size: body.size }),
-									...(shape === undefined ? {} : { shape }),
-									...(diskAlone === undefined ? {} : { diskGb: diskAlone }),
-								},
-								eligible.flatMap((host) => host.sizes ?? capabilities.sizes),
+								machineAsked,
+								presets,
 							);
 				if (type === "microvm" && machine === undefined) {
 					throw placementError(
@@ -5074,6 +5324,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					placeholders,
 					egressRevision,
 					hostLabels,
+					...(hostPin === undefined ? {} : { hostPin }),
 					runs: [],
 					samples: [],
 					ports: [],
@@ -5125,21 +5376,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 					return booted;
 				});
+				// Its host's record from those read for placement, not read again.
+				const placedOn = new Map((await known).map((host) => [host.id, Promise.resolve<StoredHost | undefined>(host)]));
 				if (body.wait !== true) {
 					keepGoing(work);
 					// As written: it is starting.
-					return sandboxView(sandbox, principal);
+					return sandboxView(sandbox, principal, placedOn);
 				}
 				// As the boot wrote it (`running` or `error`), unless something else moved it meanwhile, such as a delete.
 				const booted = await work;
-				return sandboxView(booted ?? (await mustGetSandbox(sandbox.id)), principal);
+				return sandboxView(booted ?? (await mustGetSandbox(sandbox.id)), principal, placedOn);
 			});
 		},
 
 		getSandbox: async (principal, { params }) => {
 			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			const [view] = await withSnapshotTimes([await withMakerNamed(sandboxView(sandbox, principal))]);
+			const [view] = await withSnapshotTimes([await withMakerNamed(await sandboxView(sandbox, principal))]);
 			return view as Sandbox;
 		},
 
@@ -5202,7 +5455,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		resumeSandbox: async (principal, { params, body }) => restart(principal, params.sandboxId, body, "resume"),
 
 		forkSandbox: async (principal, { params, body, idempotencyKey }) => {
-			const { sandbox: source } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			const { sandbox: source, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			return once(principal, "forkSandbox", { params, body, idempotencyKey }, async () => {
 				const current = await settledFor(principal, source.id);
 				const count = body.count ?? 1;
@@ -5231,11 +5484,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					current.hostLabels,
 					true,
 					await mayShare(principal),
+					current.hostPin,
 				);
 				const forks: StoredSandbox[] = [];
 				// Their machine, as every create decides it (`sandboxMachine`): from a snapshot, that of the sandbox it was taken
 				// of (the source's now, for one from before snapshots kept it) unless `size` names another. Forked live, the
 				// source's own, whatever `size` says: a host copies the running machine as it is.
+				const copies = snapshot !== undefined && recordsMachine(snapshot) ? snapshot : current;
 				const machine =
 					current.type !== "microvm"
 						? undefined
@@ -5243,7 +5498,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							? sandboxMachine({ copies: current }, {}, [])
 							: sandboxMachine(
 									{
-										copies: recordsMachine(snapshot) ? snapshot : current,
+										copies,
 										// Its snapshot is on the source's host, which another size is then made as: its preset, keeping a
 										// copied disk bigger than the preset's own.
 										on: await backend.capabilities().then((capabilities) =>
@@ -5253,9 +5508,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											),
 										),
 									},
-									body.size === undefined ? {} : { size: body.size },
+									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
+									restoreAsked(
+										{ id: snapshot.id, memory: await holdsMemory(snapshot), ...recordedMachine(snapshot) },
+										body.size === undefined ? {} : { size: body.size },
+									),
 									[],
 								);
+				// What they will be given, where that is the machine they copy: on their records from the start, so a fork never
+				// reads as having no machine (shown as the smallest size) while it starts. Their placements then say what they got.
+				const resources = current.type === "microvm" ? copiedResources(copies, machine) : undefined;
+				// The source's exposed ports, as they are now: each fork gets them once it runs (`copyPorts`).
+				// Only for a caller who may open them (`access`): a port is exposed as its caller, and stops working once they
+				// may not (`stillAllowed`), so one copied for a key without the scope would be listed but refuse everyone. Such a
+				// key still forks; its forks get no ports.
+				const sourcePorts =
+					current.capabilities.ports && mayUse(principal, "access", role)
+						? current.ports.map((port) => ({ ...port }))
+						: [];
+				const grantee = encodeGrantee(principal);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
 				for (let index = 0; index < count; index++) {
@@ -5281,6 +5552,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						type: current.type,
 						size: machine?.size,
 						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
+						...(resources === undefined ? {} : { resources: { ...resources } }),
 						// An isolate asks for its source's memory.
 						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
 						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
@@ -5301,6 +5573,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						placeholders,
 						egressRevision,
 						hostLabels: { ...current.hostLabels },
+						...(current.hostPin === undefined ? {} : { hostPin: current.hostPin }),
 						runs: [],
 						samples: [],
 						ports: [],
@@ -5331,7 +5604,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// machine) rather than be taken for never made (`neverPlaced`).
 				const work = track([current.id, ...forks.map((fork) => fork.id)], async () => {
 					for (const fork of forks) {
-						await boot(
+						const booted = await boot(
 							fork.id,
 							async () => {
 								const [placement] = await backend.fork(
@@ -5358,12 +5631,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							undefined,
 							{ egressRevision },
 						);
+						// Best effort, as each port is: a failure here (its records' store down, say) leaves this fork running without
+						// them, and never stops the batch's other forks booting.
+						if (booted?.state === "running") await copyPorts(booted, sourcePorts, grantee).catch(() => undefined);
 					}
 				});
 				if (body.wait === true) await work;
 				else keepGoing(work);
 				const items: Sandbox[] = [];
-				for (const fork of forks) items.push(sandboxView(await mustGetSandbox(fork.id), principal));
+				for (const fork of forks) items.push(await sandboxView(await mustGetSandbox(fork.id), principal));
 				return { items };
 			});
 		},
@@ -5454,6 +5730,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					current.hostLabels,
 					true,
 					await mayShare(principal),
+					current.hostPin,
 				);
 				// Where it is to land: the host images version the index's `stable` names, whatever base it reported (none, for
 				// one from before image patching); a container's image (a digest) is its backend's to pick. Checked with the
@@ -5558,10 +5835,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						await backend.destroy(current.id);
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
-								await store.snapshots.delete(snapshot.id);
+								await forgetSnapshot(snapshot);
 								await releaseRef(snapshot.ref);
 							} else {
-								await store.snapshots.put({ ...snapshot, sandboxId: undefined });
+								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
+								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
 							}
 						}
 						const result = await transition(current.id, "deleting", (latest) =>
@@ -6012,14 +6290,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "snapshots:read", role);
 			const visible: StoredSnapshot[] = [];
-			for (const snapshot of await store.snapshots.list({ accountId: account.id })) {
+			const all = await store.snapshots.list({ accountId: account.id });
+			// The bytes that hold memory, from the same read (`holdsMemory`): a save shares its source's ref, in its account.
+			const memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			for (const snapshot of all) {
 				if (query.kind !== undefined && snapshot.kind !== query.kind) continue;
 				if (query.sandboxId !== undefined && snapshot.sandboxId !== query.sandboxId) continue;
 				if (snapshot.state === "deleting") continue;
 				if (await canSeeSnapshot(principal, snapshot)) visible.push(snapshot);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
-			return { items: page.items.map(snapshotView), nextCursor: page.nextCursor };
+			const items = page.items.map((snapshot) =>
+				snapshotView({
+					...snapshot,
+					memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
+				}),
+			);
+			return { items, nextCursor: page.nextCursor };
 		},
 
 		takeSnapshot: async (principal, { params, body, idempotencyKey }) => {
@@ -6037,7 +6324,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: current.type,
 					state: "ready",
 					trigger: "manual",
-					memory: false,
+					memory: taken.memory === true,
 					...recordedMachine(current),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
@@ -6074,6 +6361,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let sizeBytes: number | undefined;
 				// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
 				let base: string | undefined;
+				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
+				let memory = false;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
 				let machine = recordedMachine(current);
 				if (body.snapshotId !== undefined) {
@@ -6082,12 +6371,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(source);
 					sizeBytes = source.sizeBytes;
 					base = source.base;
+					memory = await holdsMemory(source);
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
 					const taken = await backend.takeSnapshot(current.id);
 					ref = taken.ref;
 					sizeBytes = taken.sizeBytes;
 					base = taken.base;
+					memory = taken.memory === true;
 				} else {
 					const latest =
 						current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
@@ -6095,6 +6386,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref = readyRef(latest);
 					sizeBytes = latest.sizeBytes;
 					base = latest.base;
+					memory = await holdsMemory(latest);
 					if (recordsMachine(latest)) machine = recordedMachine(latest);
 				}
 				const snapshot: StoredSnapshot = {
@@ -6107,7 +6399,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: current.type,
 					state: "ready",
 					trigger: "save",
-					memory: false,
+					memory,
 					...machine,
 					sizeBytes,
 					createdAt: now(),
@@ -6116,7 +6408,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				await store.snapshots.put(snapshot);
 				if (existing !== undefined) {
-					await store.snapshots.delete(existing.id);
+					await forgetSnapshot(existing);
 					await releaseRef(existing.ref);
 					await emit("snapshot.deleted", existing.accountId, {
 						snapshotId: existing.id,
@@ -6131,8 +6423,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			});
 		},
 
-		getSnapshot: async (principal, { params }) =>
-			snapshotView(await snapshotFor(principal, params.snapshotId, "snapshots:read")),
+		getSnapshot: async (principal, { params }) => {
+			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
+			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) });
+		},
 
 		listSnapshotFiles: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
@@ -6165,7 +6459,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", "A stopped sandbox's newest snapshot is what it resumes from");
 				}
 			}
-			await store.snapshots.delete(snapshot.id);
+			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot.ref);
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
 				const [newest] = newestFirst(

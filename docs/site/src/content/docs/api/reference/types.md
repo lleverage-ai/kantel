@@ -349,7 +349,7 @@ The key the call was signed in with, when it was a key.
 | `cwd` | string | no |  |
 | `state` | [CommandState](/api/reference/types/#commandstate) | yes |  |
 | `exitCode` | integer | no |  |
-| `stdout` | string | yes | Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. |
+| `stdout` | string | yes | Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere. |
 | `stderr` | string | yes |  |
 | `truncated` | boolean | yes |  |
 | `startedAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -471,6 +471,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
 | `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
+| `host` | string | no | Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
 
@@ -1241,6 +1242,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `subdomain` | string | yes | Its name under the deployment's sandbox domain, which its public port URLs start with. |
 | `type` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `shape` | [SandboxShape](/api/reference/types/#sandboxshape) | no |  |
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
 | `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
@@ -1268,7 +1270,8 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `stoppedAt` | integer | no | Epoch milliseconds, UTC. |
 | `cost` | [Cost](/api/reference/types/#cost) | yes |  |
 | `usage` | [UsageSummary](/api/reference/types/#usagesummary) | yes |  |
-| `hostId` | string | no | The host it runs on; only a super-admin is shown it. |
+| `hostId` | string | no | The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. |
+| `hostName` | string | no | That host's name, with `hostId`. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 
 ### SandboxBase
@@ -1411,6 +1414,15 @@ A protected variable as one sandbox has it: never its value.
 | `memUsedBytes` | integer | yes | Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. (minimum 0) |
 | `diskUsedBytes` | integer | no | A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it. (minimum 0) |
 | `ioPressure` | number | no | The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. (minimum 0, maximum 1) |
+
+### SandboxShape
+
+The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes | vCPUs: 0 for an isolate, which shares its account's VM's CPU. |
+| `memoryMb` | integer | yes |  |
 
 ### SandboxShapeInput
 

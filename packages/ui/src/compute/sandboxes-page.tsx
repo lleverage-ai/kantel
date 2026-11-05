@@ -37,6 +37,7 @@ import {
 	type Environment,
 	fitDisk,
 	fitMemory,
+	type HostChoice,
 	type HostingMode,
 	memoryRangeFor,
 	memoryText,
@@ -54,6 +55,7 @@ import {
 	type SandboxState,
 	type SavedSnapshot,
 	sandboxActions,
+	sandboxMachineText,
 	sandboxMoving,
 	sandboxScreen,
 	sandboxSpec,
@@ -414,7 +416,8 @@ export function SandboxesPage({
 				open={newOpen}
 				account={account}
 				hosting={hosting}
-				{...(source.shapes === undefined ? {} : { shapes: () => readShapes(source, account.id) })}
+				{...(source.shapes === undefined ? {} : { shapes: (hostId) => readShapes(source, account.id, hostId) })}
+				{...(source.hosts === undefined ? {} : { hosts: () => source.hosts?.(account.id) ?? Promise.resolve([]) })}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
 				{...(environments === undefined ? {} : { environments: () => environments(account.id) })}
 				{...(templates === undefined ? {} : { templates: () => templates(account.id) })}
@@ -1178,7 +1181,7 @@ function SandboxRow({
 			</td>
 			<td className={cell}>
 				<Tooltip
-					content={`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(spec)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
+					content={`${sandboxMachineText(sandbox)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
 				>
 					<span className="relative z-1 flex flex-col">
 						<span>{SANDBOX_KIND_LABELS[sandbox.kind]}</span>
@@ -1287,9 +1290,7 @@ function SandboxPhoneRow({
 				<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-					<span>
-						{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandboxSpec(sandbox))}
-					</span>
+					<span>{sandboxMachineText(sandbox)}</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
 					<BaseOutdatedBadge base={sandbox.base} now={now} />
@@ -1423,9 +1424,9 @@ function SelectionBar({
 	);
 }
 
-/** The account's shapes from its source; the dialog asks only where the source can say. */
-const readShapes = (source: SandboxesSource, accountId: string): Promise<SandboxShapes> =>
-	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId);
+/** The account's shapes from its source, or one host's; the dialog asks only where the source can say. */
+const readShapes = (source: SandboxesSource, accountId: string, hostId?: string): Promise<SandboxShapes> =>
+	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId, hostId);
 
 /**
  * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold, then its
@@ -1647,36 +1648,77 @@ export interface NewSandboxForm {
 	/** Whether the sliders were moved from the template's own vCPUs, memory and disk. */
 	readonly shapeChosen: boolean;
 	readonly from: string;
+	/** Whether the snapshot it starts from holds memory, so the sandbox is that snapshot's machine. */
+	readonly fromMemory?: boolean;
 	readonly environment: string;
 	/** The template a microVM is made from, resolved by `requestedTemplate`. */
 	readonly template?: Template;
 	readonly autoStop: string;
 	/** Minutes unused before its idle stop, or `never`; absent: none. */
 	readonly idleStop?: string;
+	/** The host it goes on; absent or empty: Kantel picks. */
+	readonly host?: string;
 }
 
 /**
  * The create New sandbox sends. A microVM from a template whose sliders weren't moved names no shape, so the
  * template's own vCPUs and memory apply; moved, the shape overrides them, and the sandbox boots fresh (a template's
- * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one. A disk
- * goes only with a microVM that doesn't start from a saved snapshot: one that does keeps the snapshot's disk.
+ * snapshot restores only into its own machine). A template's sandbox starts from its snapshot, not a saved one. One
+ * from a saved snapshot that holds memory names no shape either: it restores only into the machine it was saved from.
+ * A disk goes only with a microVM that doesn't start from a saved snapshot: one that does keeps the snapshot's disk.
  */
 export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
 	const template = form.kind === "microvm" ? form.template : undefined;
 	const from = form.from === "" || template !== undefined ? undefined : form.from;
+	const keepsMachine = form.kind === "microvm" && from !== undefined && form.fromMemory === true;
 	const { diskGb, ...withoutDisk } = form.shape;
 	const shape = diskGb === undefined || form.kind === "isolate" || from !== undefined ? withoutDisk : form.shape;
 	return {
 		accountId: form.accountId,
 		...(form.name === "" ? {} : { name: form.name }),
 		kind: form.kind,
-		...(template !== undefined && !form.shapeChosen ? {} : { shape }),
+		...((template !== undefined && !form.shapeChosen) || keepsMachine ? {} : { shape }),
 		...(from === undefined ? {} : { fromSnapshot: from }),
 		...(form.environment === "" ? {} : { environmentId: form.environment }),
 		...(template === undefined ? {} : { templateId: template.id }),
 		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
 		...(form.idleStop === undefined || form.idleStop === "never" ? {} : { idleStopMinutes: Number(form.idleStop) }),
+		...(form.host === undefined || form.host === "" ? {} : { hostId: form.host }),
 	};
+}
+
+/**
+ * The host picker's options: Kantel's pick, then each host that can take the type now. One that can't is listed only
+ * while it is the one picked, with why, so a choice never silently changes.
+ */
+export function hostOptions(
+	hosts: readonly HostChoice[],
+	kind: SandboxKind,
+	picked: string,
+): { value: string; label: string }[] {
+	const why = (host: HostChoice) =>
+		host.state !== "online" ? host.state : host.kinds.includes(kind) ? undefined : `no ${kind}s`;
+	const label = (host: HostChoice) => {
+		const reason = why(host);
+		const name = host.shared ? `${host.name} (shared)` : host.name;
+		return reason === undefined ? name : `${name}: ${reason}`;
+	};
+	return [
+		{ value: "", label: "Any host" },
+		...hosts
+			.filter((host) => why(host) === undefined || host.id === picked)
+			.map((host) => ({ value: host.id, label: label(host) })),
+	];
+}
+
+/** Why the picked host can't take a sandbox of `kind` now, or undefined when it can (or none is picked). */
+export function hostProblem(hosts: readonly HostChoice[], kind: SandboxKind, picked: string): string | undefined {
+	if (picked === "") return undefined;
+	const host = hosts.find((each) => each.id === picked);
+	if (host === undefined) return "That host is gone. Pick another.";
+	if (host.state !== "online") return `${host.name} is ${host.state}, so it takes no new sandboxes.`;
+	if (!host.kinds.includes(kind)) return `${host.name} doesn't run ${kind}s.`;
+	return undefined;
 }
 
 /**
@@ -1733,6 +1775,7 @@ export function NewSandboxDialog({
 	environments,
 	templates,
 	template: initialTemplate,
+	hosts: loadHosts,
 	now,
 	onClose,
 	onCreate,
@@ -1740,7 +1783,10 @@ export function NewSandboxDialog({
 	open: boolean;
 	account: ComputeAccount;
 	hosting: HostingMode;
-	shapes?: () => Promise<SandboxShapes>;
+	/** What the hosts offer: all the account may use, or with `hostId` that one host's. */
+	shapes?: (hostId?: string) => Promise<SandboxShapes>;
+	/** The hosts it may be put on (`SandboxesSource.hosts`); absent or none, no picker. */
+	hosts?: () => Promise<readonly HostChoice[]>;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
 	environments?: () => Promise<readonly Environment[]>;
 	templates?: () => Promise<readonly Template[]>;
@@ -1763,6 +1809,8 @@ export function NewSandboxDialog({
 	const [environment, setEnvironment] = useState("");
 	const [saved, setSaved] = useState<readonly SavedSnapshot[]>([]);
 	const [envs, setEnvs] = useState<readonly Environment[]>([]);
+	const [hostList, setHostList] = useState<readonly HostChoice[]>([]);
+	const [host, setHost] = useState("");
 	// A source that says what its hosts offer: nothing may be chosen or created until it has, so a create never goes
 	// with the sample's figures. One that can't say keeps the defaults.
 	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
@@ -1771,39 +1819,51 @@ export function NewSandboxDialog({
 	// Whether the sliders were moved from a picked template's own vCPUs, memory and disk.
 	const [shapeChosen, setShapeChosen] = useState(false);
 	const asked = useRef(false);
-	const readShapesNow = useCallback(() => {
-		if (loadShapes === undefined) return;
-		setShapesRead("reading");
-		loadShapes().then(
-			(read) => {
-				// Set once, before any slider can move: the controls show only once this lands.
-				const presets = read.microvm.presets;
-				const cpus = vcpuRangeFor(read).default;
-				const start = customShapes(read)
-					? { vcpus: cpus, memoryMb: fitMemory(read, cpus, read.microvm.memoryMb.default) }
-					: (presets.find(
-							(preset) =>
-								preset.vcpus === read.microvm.vcpus.default && preset.memoryMb === read.microvm.memoryMb.default,
-						) ?? presets[0]);
-				setShapes(read);
-				if (start !== undefined) {
-					setVcpus(start.vcpus);
-					setMemoryMb(start.memoryMb);
-				}
-				setDiskGb(fitDisk(read));
-				setIsolateMb(onGrid(read.isolate.memoryMb, read.isolate.memoryMb.default));
-				setShapesRead("ready");
-			},
-			() => setShapesRead("failed"),
-		);
-	}, [loadShapes]);
+	// The newest read of the shapes: one for a host picked before it lands is dropped.
+	const shapesReads = useRef(0);
+	const readShapesNow = useCallback(
+		(hostId?: string) => {
+			if (loadShapes === undefined) return;
+			const read = ++shapesReads.current;
+			setShapesRead("reading");
+			loadShapes(hostId === undefined || hostId === "" ? undefined : hostId).then(
+				(shapesOf) => {
+					if (read !== shapesReads.current) return;
+					// Set on each read, before any slider can move: the controls show only once this lands.
+					const presets = shapesOf.microvm.presets;
+					const cpus = vcpuRangeFor(shapesOf).default;
+					const start = customShapes(shapesOf)
+						? { vcpus: cpus, memoryMb: fitMemory(shapesOf, cpus, shapesOf.microvm.memoryMb.default) }
+						: (presets.find(
+								(preset) =>
+									preset.vcpus === shapesOf.microvm.vcpus.default &&
+									preset.memoryMb === shapesOf.microvm.memoryMb.default,
+							) ?? presets[0]);
+					setShapes(shapesOf);
+					if (start !== undefined) {
+						setVcpus(start.vcpus);
+						setMemoryMb(start.memoryMb);
+					}
+					setDiskGb(fitDisk(shapesOf));
+					setIsolateMb(onGrid(shapesOf.isolate.memoryMb, shapesOf.isolate.memoryMb.default));
+					setShapesRead("ready");
+				},
+				() => {
+					if (read === shapesReads.current) setShapesRead("failed");
+				},
+			);
+		},
+		[loadShapes],
+	);
 	useEffect(() => {
 		if (!open || asked.current) return;
 		asked.current = true;
 		savedSnapshots?.().then(setSaved, () => setSaved([]));
 		environments?.().then(setEnvs, () => setEnvs([]));
+		// Hosts it can't read leave Kantel to pick, as with none.
+		loadHosts?.().then(setHostList, () => setHostList([]));
 		readShapesNow();
-	}, [open, savedSnapshots, environments, readShapesNow]);
+	}, [open, savedSnapshots, environments, loadHosts, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
 	const type = newSandboxType(chosenKind, !noMicrovms);
@@ -1817,6 +1877,10 @@ export function NewSandboxDialog({
 	// A sandbox from a saved snapshot keeps the snapshot's disk, so none is asked for; a template's takes no saved one.
 	const diskKept = from !== "" && picked === undefined;
 	const disk = diskKept || diskGb === undefined ? {} : { diskGb };
+	// A saved snapshot that holds memory restores only into the machine it was saved from: no slider can change it.
+	const startFrom =
+		kind === "microvm" && picked === undefined ? fromOptions.find((entry) => entry.id === from) : undefined;
+	const keepsMachine = startFrom?.memory === true;
 	const shape: SandboxShape =
 		kind === "isolate"
 			? { vcpus: 0, memoryMb: isolateMb }
@@ -1825,10 +1889,12 @@ export function NewSandboxDialog({
 					{ vcpus: picked.spec.vcpus, memoryMb: picked.spec.memoryMb }
 				: { vcpus, memoryMb, ...disk };
 	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds, and any disk in range.
+	const hostError = hostProblem(hostList, kind, host);
 	const ready =
 		valid &&
+		hostError === undefined &&
 		shapesRead === "ready" &&
-		(ownShape || shapeCreatable(shapes, kind, shape)) &&
+		(ownShape || keepsMachine || shapeCreatable(shapes, kind, shape)) &&
 		!requested.pending &&
 		requested.problem === undefined;
 	const submit = () => {
@@ -1841,10 +1907,12 @@ export function NewSandboxDialog({
 				shape,
 				shapeChosen,
 				from,
+				fromMemory: keepsMachine,
 				environment,
 				...(picked === undefined ? {} : { template: picked }),
 				autoStop,
 				idleStop,
+				host,
 			}),
 		);
 		setName("");
@@ -1934,13 +2002,20 @@ export function NewSandboxDialog({
 					<Notice
 						level="error"
 						action={
-							<Button size="sm" onClick={readShapesNow}>
+							<Button size="sm" onClick={() => readShapesNow(host)}>
 								Try again
 							</Button>
 						}
 					>
 						Kantel couldn't read what the hosts offer, so a size can't be chosen yet.
 					</Notice>
+				) : keepsMachine ? (
+					<p className="text-xs text-muted">
+						This snapshot holds its sandbox's memory, so the new sandbox is the machine it was saved from
+						{startFrom?.machine === undefined
+							? "."
+							: `: ${startFrom.machine.vcpus} vCPU, ${memoryText(startFrom.machine.memoryMb)} memory.`}
+					</p>
 				) : (
 					<ShapeFields
 						kind={kind}
@@ -1975,6 +2050,22 @@ export function NewSandboxDialog({
 							setVcpus(next.vcpus);
 							setMemoryMb(next.memoryMb);
 						}}
+					/>
+				)}
+				{hostList.length === 0 ? null : (
+					<SelectField
+						label="Host"
+						value={host}
+						onChange={(event) => {
+							const picked = event.currentTarget.value;
+							setHost(picked);
+							// What that host offers, or every host's again: the sliders start over from its defaults.
+							setShapeChosen(false);
+							readShapesNow(picked);
+						}}
+						options={hostOptions(hostList, kind, host)}
+						hint="It stays on the host it starts on."
+						{...(hostError === undefined ? {} : { error: hostError })}
 					/>
 				)}
 				{envs.length === 0 ? null : (

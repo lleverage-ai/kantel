@@ -2,7 +2,15 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
-import { idleStopText, type Sandbox, type SandboxState, stoppedByText, type Template } from "./compute-model.ts";
+import {
+	type HostChoice,
+	idleStopText,
+	type Sandbox,
+	type SandboxState,
+	sandboxMachineText,
+	stoppedByText,
+	type Template,
+} from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 import { IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
 import { filterCounts, NO_FILTERS, type SandboxFilters, TYPE_FILTERS } from "./sandbox-filters.ts";
@@ -10,6 +18,8 @@ import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
 import {
 	countdownText,
+	hostOptions,
+	hostProblem,
 	newSandboxInput,
 	newSandboxType,
 	QUICK_SANDBOX,
@@ -261,6 +271,26 @@ describe("the sandboxes list", () => {
 		expect(countdownText({ state: "stopped", stopsAt: 5 * MINUTE }, 0)).toBe("–");
 	});
 
+	it("lists a starting sandbox as the machine it asked for, never the sample small's 2 vCPU and 4 GB", () => {
+		const { size: _, ...unnamed } = box("dev", "starting");
+		// A custom 4 vCPU, 16 GB microVM while it starts: no size names it, and its host hasn't said.
+		const custom: Sandbox = { ...unnamed, shape: { vcpus: 4, memoryGb: 16 } };
+		expect(sandboxMachineText(custom)).toBe("MicroVM, 4 vCPU, 16 GB");
+		// A fork of it while it starts: its source's machine, recorded from the moment it was made.
+		const fork: Sandbox = {
+			...custom,
+			id: "sbx_fork",
+			forkedFrom: custom.id,
+			resources: { vcpus: 4, memoryGb: 16, diskGb: 50 },
+		};
+		expect(sandboxMachineText(fork)).toBe("MicroVM, 4 vCPU, 16 GB");
+		// Nothing known yet (a named size its host hasn't placed): unknown, not a size's sample figures.
+		expect(sandboxMachineText(box("named", "starting"))).toBe("MicroVM, –");
+		for (const each of [custom, fork, box("named", "starting"), unnamed]) {
+			expect(sandboxMachineText(each)).not.toContain("2 vCPU, 4 GB");
+		}
+	});
+
 	it("shortens a long ID to its start and end, and leaves a short one whole", () => {
 		expect(shortId("sbx_9f2k7d1qzz4m")).toBe("sbx_9f2k…zz4m");
 		expect(shortId("sbx_33aa")).toBe("sbx_33aa");
@@ -313,6 +343,39 @@ describe("New sandbox", () => {
 		);
 	});
 
+	it("puts it on the host picked, and leaves Kantel to pick without one", () => {
+		expect(newSandboxInput({ ...form, host: "hst_home" }).hostId).toBe("hst_home");
+		expect("hostId" in newSandboxInput({ ...form, host: "" })).toBe(false);
+		expect("hostId" in newSandboxInput(form)).toBe(false);
+	});
+
+	it("offers the hosts that can take the type now, and keeps a picked one that can't with why", () => {
+		const hosts: HostChoice[] = [
+			{ id: "hst_a", name: "box-a", state: "online", kinds: ["microvm", "isolate"], shared: false },
+			{ id: "hst_b", name: "box-b", state: "draining", kinds: ["microvm", "isolate"], shared: false },
+			{ id: "hst_c", name: "box-c", state: "online", kinds: ["isolate"], shared: true },
+		];
+		expect(hostOptions(hosts, "microvm", "")).toEqual([
+			{ value: "", label: "Any host" },
+			{ value: "hst_a", label: "box-a" },
+		]);
+		expect(hostOptions(hosts, "isolate", "").map((option) => option.label)).toEqual([
+			"Any host",
+			"box-a",
+			"box-c (shared)",
+		]);
+		// Picked for an isolate, then the type changed: it stays, with why, and the create waits for another.
+		expect(hostOptions(hosts, "microvm", "hst_c").at(-1)).toEqual({
+			value: "hst_c",
+			label: "box-c (shared): no microvms",
+		});
+		expect(hostProblem(hosts, "microvm", "hst_c")).toBe("box-c doesn't run microvms.");
+		expect(hostProblem(hosts, "microvm", "hst_b")).toBe("box-b is draining, so it takes no new sandboxes.");
+		expect(hostProblem(hosts, "microvm", "hst_gone")).toBe("That host is gone. Pick another.");
+		expect(hostProblem(hosts, "microvm", "hst_a")).toBeUndefined();
+		expect(hostProblem(hosts, "microvm", "")).toBeUndefined();
+	});
+
 	it("keeps a sandbox's own idle stop in its dialog when no preset matches it, so an untouched Save keeps it", () => {
 		// Below, between and above the presets, as the CLI or API may set them.
 		for (const [minutes, label] of [
@@ -344,6 +407,21 @@ describe("New sandbox", () => {
 		// Beside auto-stop, which stays as chosen.
 		expect(newSandboxInput({ ...form, autoStop: "never", idleStop: "15" })).toMatchObject({ idleStopMinutes: 15 });
 		expect("autoStopMinutes" in newSandboxInput({ ...form, autoStop: "never", idleStop: "15" })).toBe(false);
+	});
+
+	it("names no shape from a saved snapshot that holds memory, which restores only into its own machine", () => {
+		const fromMemory = newSandboxInput({ ...form, from: "ssn_dev_stack_warm", fromMemory: true });
+		expect(fromMemory).toEqual({
+			accountId: LLEVERAGE.id,
+			kind: "microvm",
+			fromSnapshot: "ssn_dev_stack_warm",
+			autoStopMinutes: 60,
+		});
+		// A snapshot of the disk alone boots, so it takes the sliders' shape.
+		expect(newSandboxInput({ ...form, from: "ssn_node22_base", fromMemory: false })).toMatchObject({
+			fromSnapshot: "ssn_node22_base",
+			shape: { vcpus: 2, memoryMb: 4096 },
+		});
 	});
 
 	it("keeps a requested template until the list is read, and says so when it can't be had", () => {

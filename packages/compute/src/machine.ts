@@ -5,6 +5,7 @@
  * placement then says what it got (its `resources`).
  */
 import type { computeSchema } from "@kantel/api";
+import { KantelError } from "@kantel/contracts";
 import {
 	type BackendHost,
 	type BackendShape,
@@ -280,4 +281,65 @@ function machineOf(
 	if (copiedMachine !== undefined && (asked.size === undefined || asked.size === copied?.size)) return copiedMachine;
 	// Another size: that size on its host, with the copied disk where it is bigger than the size's own.
 	return keepingDisk({ size: asked.size ?? "default" }, copiedDisk, on);
+}
+
+/**
+ * What a new microVM that copies a machine (`copies`: a source forked live, or the sandbox a snapshot was taken of) will
+ * be given, known before its host says: that machine's resources, disk included (its disk is a copy of that one), when
+ * its sizing (`machine`, from `sandboxMachine`) is that machine's. Undefined when it asks for another size, or the
+ * machine it copies records no resources, so its host's placement is the first to say.
+ *
+ * A fork's record carries these from the moment it is made, so it never reads as having no machine while it starts (the
+ * console showed one with neither a size nor resources as its smallest size, 2 vCPU and 4 GB, until it ran).
+ */
+export function copiedResources(
+	copies: RecordedMachine & { readonly shape?: BackendShape },
+	machine: SandboxMachine | undefined,
+): MachineResources | undefined {
+	const own = copies.resources;
+	if (machine === undefined || own === undefined) return undefined;
+	const shape = machine.shape;
+	const same =
+		shape === undefined
+			? machine.size !== undefined && machine.size === copies.size
+			: shape.vcpus === own.vcpus && shape.memoryMb === own.memoryMb;
+	return same ? { vcpus: own.vcpus, memoryMb: own.memoryMb, diskGb: own.diskGb } : undefined;
+}
+
+/** A snapshot as far as what a sandbox made from it may be goes. */
+export interface RestoredSnapshot extends RecordedMachine {
+	readonly id: string;
+	/** Whether it holds its sandbox's memory, which restores only into the machine it was taken of. */
+	readonly memory: boolean;
+}
+
+/**
+ * What a create from `snapshot` may ask for (`asked`). A snapshot that holds its sandbox's memory restores only into
+ * the machine it was taken of, so a create from one is that machine: an ask for it (its own size by name, or its
+ * recorded vCPUs and memory) is dropped, so the sandbox goes under the snapshot's own size name, which its host checks;
+ * any other ask is refused (`invalid`) before anything is made. Names are never looked up in other hosts' sizes, which
+ * may mean other machines by them. A snapshot of the disk alone boots, so it may be any size; so may one that records no
+ * machine (from before sizes), as before.
+ */
+export function restoreAsked(snapshot: RestoredSnapshot, asked: AskedMachine): AskedMachine {
+	if (!snapshot.memory || !recordsMachine(snapshot)) return asked;
+	if (asked.shape === undefined && (asked.size === undefined || asked.size === snapshot.size)) return {};
+	const own = snapshot.resources;
+	if (
+		asked.shape !== undefined &&
+		(asked.size === undefined || asked.size === snapshot.size) &&
+		own !== undefined &&
+		own.vcpus === asked.shape.vcpus &&
+		own.memoryMb === asked.shape.memoryMb
+	) {
+		return {};
+	}
+	const machine = [
+		...(snapshot.size === undefined ? [] : [`size ${snapshot.size}`]),
+		...(own === undefined ? [] : [`${own.vcpus} vCPU and ${own.memoryMb} MB of memory`]),
+	].join(", ");
+	throw new KantelError(
+		"invalid",
+		`Snapshot ${snapshot.id} holds its sandbox's memory, so a sandbox made from it has that sandbox's machine (${machine}). Leave resources and size out, or ask for that machine`,
+	);
 }

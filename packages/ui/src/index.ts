@@ -52,6 +52,7 @@ export type {
 	EnvironmentVariable,
 	FilePart,
 	FileRange,
+	HostChoice,
 	HostingMode,
 	HostsSource,
 	ImageBuildReason,

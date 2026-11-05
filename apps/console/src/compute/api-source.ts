@@ -75,6 +75,7 @@ import type {
 	EnvironmentsSource,
 	FilePart,
 	FileRange,
+	HostChoice,
 	HostingMode,
 	HostsSource,
 	ProxySource,
@@ -562,9 +563,13 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		hostname: `${sandbox.subdomain}.${context.domain()}`,
 		accountId: sandbox.accountId,
 		kind: sandbox.type,
-		// Isolates have no size in the API; the smallest stands in.
-		size: sandbox.size === undefined ? "small" : UI_SIZES[sandbox.size],
-		// What the host gave it, which the backend decides: the page shows this rather than the sample's figures.
+		// Isolates and shapes no size names have none: nothing stands in, since the page shows only the figures below.
+		...(sandbox.size === undefined ? {} : { size: UI_SIZES[sandbox.size] }),
+		// What it asked for, so one that is starting (a custom shape, or a fork) shows that rather than nothing.
+		...(sandbox.shape === undefined
+			? {}
+			: { shape: { vcpus: sandbox.shape.vcpus, memoryGb: sandbox.shape.memoryMb / 1024 } }),
+		// What the host gave it, which the backend decides: the page shows this first.
 		...(sandbox.resources === undefined
 			? {}
 			: {
@@ -600,6 +605,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(context.hosting === "hosted" ? { costCents: Math.round(sandbox.cost.total * 100) } : {}),
 		usage: sandbox.usage.recentCpu,
 		...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
+		...(sandbox.hostName === undefined ? {} : { hostName: sandbox.hostName }),
 		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
@@ -673,7 +679,9 @@ function sandboxesSource(context: Context): SandboxesSource {
 			]);
 			return sandboxes.map(view);
 		},
-		shapes: async (accountId) => shapesOf(await api.getSandboxShapes({ account: accountId })),
+		shapes: async (accountId, hostId) =>
+			shapesOf(await api.getSandboxShapes({ account: accountId, ...(hostId === undefined ? {} : { host: hostId }) })),
+		hosts: (accountId) => hostChoices(context, accountId),
 		create: async (input) => {
 			const made = await api.createSandbox({
 				account: input.accountId,
@@ -705,6 +713,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 				// The UI's absent auto-stop is always on, the API's `null`.
 				autoStopMinutes: input.autoStopMinutes ?? null,
 				...(input.idleStopMinutes === undefined ? {} : { idleStopMinutes: input.idleStopMinutes }),
+				...(input.hostId === undefined ? {} : { host: input.hostId }),
 			});
 			await learnEnvironmentNames(context, made.accountId, [made]);
 			return view(made);
@@ -1126,6 +1135,10 @@ function savedSnapshotOf(snapshot: Snapshot, sandboxName: string): UiSavedSnapsh
 		// The API doesn't count the sandboxes started from a snapshot.
 		uses: 0,
 		...baseFieldOf(snapshot),
+		memory: snapshot.memory,
+		...(snapshot.resources === undefined
+			? {}
+			: { machine: { vcpus: snapshot.resources.vcpus, memoryMb: snapshot.resources.memoryMb } }),
 	};
 }
 
@@ -1782,6 +1795,31 @@ const UI_HOST_STATES: Readonly<Record<Host["state"], UiHostState>> = {
 	unreachable: "offline",
 	revoked: "offline",
 };
+
+/**
+ * The hosts New sandbox may put an account's sandbox on: a super-admin's every host that is the account's own or shared,
+ * anyone else's the account's own (none where the deployment has no account hosts, or they may not see them).
+ */
+async function hostChoices({ api, caller }: Context, accountId: string): Promise<readonly HostChoice[]> {
+	let hosts: readonly Host[];
+	try {
+		hosts = caller.superAdmin
+			? (await api.listHosts()).items.filter((host) => host.accountId === undefined || host.accountId === accountId)
+			: (await api.listAccountHosts({ account: accountId })).items;
+	} catch (caught) {
+		if (caught instanceof KantelApiError && (caught.code === "not_supported" || caught.code === "forbidden")) return [];
+		throw caught;
+	}
+	return hosts
+		.filter((host) => host.state !== "revoked")
+		.map((host) => ({
+			id: host.id,
+			name: host.name,
+			state: UI_HOST_STATES[host.state],
+			kinds: host.tiers,
+			shared: host.accountId === undefined,
+		}));
+}
 
 function hostOf(host: Host): UiHost {
 	const total = host.allocated.sandboxes;

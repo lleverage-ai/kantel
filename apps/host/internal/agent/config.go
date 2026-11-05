@@ -98,6 +98,9 @@ type Config struct {
 	UsageIntervalSeconds int `json:"usageIntervalSeconds,omitempty"`
 	// MicroVM holds the microVM tier's template settings.
 	MicroVM MicroVMConfig `json:"microvm,omitempty"`
+	// ControlSocket is the Unix socket the daemon answers `kantel-host sandboxes` and `status` on: read-only, root
+	// only (default DefaultControlSocket; "off" serves none).
+	ControlSocket string `json:"controlSocket,omitempty"`
 
 	// ImagePatching is the switch for versioned host images (experimental, default off): the host keeps each version
 	// of the kernel and images side by side under ImagesDir, takes new ones from the control plane's image channel,
@@ -151,6 +154,9 @@ func (c MicroVMConfig) SharedTemplates() bool {
 
 const DefaultRoot = "/var/lib/kantel-host"
 
+// DefaultControlSocket is where the daemon's control socket is unless the config says otherwise.
+const DefaultControlSocket = "/run/kantel-host/agent.sock"
+
 func LoadConfig(path string) (Config, error) {
 	var cfg Config
 	raw, err := os.ReadFile(path)
@@ -202,6 +208,7 @@ func (c *Config) Defaults() {
 	set(&c.ImageIssuer, images.DefaultIssuer)
 	set(&c.Cosign, filepath.Join(c.Root, "bin", "cosign"))
 	set(&c.ImagesDir, imageDir)
+	set(&c.ControlSocket, DefaultControlSocket)
 }
 
 func (c *Config) autoUpdate() bool { return c.AutoUpdate == nil || *c.AutoUpdate }

@@ -480,6 +480,54 @@ describe("sandboxes", () => {
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
 	});
 
+	it("shows a custom-shape microVM and a fork as their shape while they start, never a sample size", async () => {
+		const stub = createStubBackend();
+		// Creates and forks are held as a host restoring or copying a big machine holds them, so they're read while they start.
+		let holding = false;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const backend: SandboxBackend = {
+			...stub,
+			create: async (spec) => {
+				if (holding) await held;
+				return stub.create(spec);
+			},
+			fork: async (source, targets) => {
+				await held;
+				return stub.fork(source, targets);
+			},
+		};
+		const { api, fetchApi } = setup({ backend });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const big = { vcpus: 4, memoryMb: 16_384 };
+		const running = await source.sandboxes.create({ accountId, kind: "microvm", shape: big });
+		await api.service.idle();
+		holding = true;
+		try {
+			const made = await source.sandboxes.create({ accountId, kind: "microvm", shape: big });
+			const fork = await source.sandboxes.fork(running.id);
+			const listed = await source.sandboxes.list(accountId);
+			const starting = listed.find((box) => box.id === made.id);
+			// No size names 4 vCPU and 16 GB, and its host hasn't said: its shape, not the sample small's 2 vCPU and 4 GB.
+			expect(starting).toMatchObject({ state: "starting", shape: { vcpus: 4, memoryGb: 16 } });
+			expect(starting).not.toHaveProperty("size");
+			expect(starting).not.toHaveProperty("resources");
+			// A fork has its source's machine, disk and all, from the moment it's made.
+			const forked = listed.find((box) => box.id === fork.id);
+			expect(forked).toMatchObject({ state: "starting", resources: { vcpus: 4, memoryGb: 16 } });
+			expect(forked).not.toHaveProperty("size");
+		} finally {
+			release();
+		}
+		await api.service.idle();
+		for (const box of await source.sandboxes.list(accountId)) {
+			expect(box).toMatchObject({ state: "running", resources: { vcpus: 4, memoryGb: 16 } });
+		}
+	});
+
 	it("keeps whether hosts make shapes off the presets, as the API says", () => {
 		const microvm = {
 			vcpus: { min: 1, max: 8, step: 1, default: 2 },

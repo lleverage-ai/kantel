@@ -33,6 +33,7 @@
  * every port's name. The store keeps the SHA-256 of a token, never the token: the URL with it is shown once, when the
  * port is exposed.
  */
+import { KantelError } from "@kantel/contracts";
 import { consoleCookieName, setConsoleCookie } from "@kantel/identity/cookies";
 import { closeReason, type PortSink, type PortStream } from "./hub.ts";
 import { PortHttpError, proxyHttp } from "./port-http.ts";
@@ -102,11 +103,19 @@ export type PortUpgrade =
 
 export interface PortRouter {
 	readonly domain: string;
-	/** The URL, with its token unless public: the only time the token is shown. */
+	/**
+	 * The URL, with its token unless public: the only time the token is shown. `ifAbsent`: only when the port isn't
+	 * exposed already, which is then left as it is and refused (`conflict`), so its token and grantee survive.
+	 */
 	expose(
 		sandboxId: string,
 		port: number,
-		options: { readonly public: boolean; readonly subdomain: string; readonly grantee?: string },
+		options: {
+			readonly public: boolean;
+			readonly subdomain: string;
+			readonly grantee?: string;
+			readonly ifAbsent?: boolean;
+		},
 	): Promise<{ url: string }>;
 	hide(sandboxId: string, port: number): Promise<void>;
 	/** Ends every port of a sandbox (deleted, stopped). */
@@ -257,18 +266,22 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 
 	return {
 		domain,
-		async expose(sandboxId, port, { public: isPublic, subdomain, grantee }) {
+		async expose(sandboxId, port, { public: isPublic, subdomain, grantee, ifAbsent }) {
 			const label = `${port}-${subdomain.toLowerCase()}`;
 			if (!/^[a-z0-9-]+$/.test(subdomain)) throw new Error("A sandbox's subdomain is letters, digits and dashes");
 			const token = isPublic ? undefined : base64url(crypto.getRandomValues(new Uint8Array(32)));
-			await store.putExposure({
-				label,
-				sandboxId,
-				port,
-				createdAt: now(),
-				...(token === undefined ? {} : { tokenHash: await sha256Hex(token) }),
-				...(grantee === undefined ? {} : { grantee }),
-			});
+			const written = await store.putExposure(
+				{
+					label,
+					sandboxId,
+					port,
+					createdAt: now(),
+					...(token === undefined ? {} : { tokenHash: await sha256Hex(token) }),
+					...(grantee === undefined ? {} : { grantee }),
+				},
+				{ ifAbsent: ifAbsent === true },
+			);
+			if (!written) throw new KantelError("conflict", `Port ${port} is exposed already`);
 			const url = `${scheme}://${label}.${domain}/`;
 			return { url: token === undefined ? url : `${url}?${PORT_TOKEN_PARAM}=${token}` };
 		},

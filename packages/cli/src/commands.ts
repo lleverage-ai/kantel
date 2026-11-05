@@ -482,14 +482,20 @@ const stateOf = (sandbox: Sandbox): string => {
 	return sandbox.reason === undefined ? state : `${state}: ${sandbox.reason}`;
 };
 
+/** The host a sandbox is on, by name, as far as the caller is shown it. */
+const hostOf = (sandbox: Sandbox): string | undefined => sandbox.hostName ?? sandbox.hostId;
+
 function sandboxTable(sandboxes: readonly Sandbox[]): string {
+	// A host column only when the caller is shown any: hosts it can't see would leave it empty.
+	const hosts = sandboxes.some((sandbox) => hostOf(sandbox) !== undefined);
 	return table(
-		["ID", "NAME", "TYPE", "STATE", "CREATED", "STOPS"],
+		["ID", "NAME", "TYPE", "STATE", ...(hosts ? ["HOST"] : []), "CREATED", "STOPS"],
 		sandboxes.map((sandbox) => [
 			sandbox.id,
 			sandbox.name,
 			kindOf(sandbox),
 			sandbox.state,
+			...(hosts ? [hostOf(sandbox) ?? ""] : []),
 			ago(sandbox.createdAt),
 			sandbox.stopsAt === undefined ? "" : until(sandbox.stopsAt),
 		]),
@@ -521,6 +527,12 @@ function describeSandbox(sandbox: Sandbox): string {
 		["image", sandbox.image],
 		["state", stateOf(sandbox)],
 		["health", sandbox.health === "degraded" ? "degraded" : undefined],
+		[
+			"host",
+			sandbox.hostName === undefined || sandbox.hostId === undefined
+				? sandbox.hostId
+				: `${sandbox.hostName} (${sandbox.hostId})`,
+		],
 		["visibility", sandbox.visibility],
 		["labels", labels.join(", ")],
 		["auto-stop", sandbox.stopsAt === undefined ? autoStop : `${autoStop} (stops ${until(sandbox.stopsAt)})`],
@@ -765,6 +777,19 @@ function killed(ctx: Context, command: Command): number {
 const FOLLOW_RETRY_MS = 120_000;
 /** How long one look at a followed command may take before it counts as Kantel out of reach. */
 const FOLLOW_LOOK_MS = 30_000;
+/**
+ * A plain `exec`'s limit when `--timeout` gives none, in seconds: the API's default. Kantel enforces it, as it does any
+ * detached command's `timeoutMs` (#683).
+ */
+const EXEC_DEFAULT_SECONDS = 30;
+
+/** How `follow` follows a command. */
+interface FollowOptions {
+	/** Say at the start how to follow it again (`exec --timeout 0`). */
+	readonly announce?: boolean;
+	/** Its limit in seconds, said when it timed out. */
+	readonly limitSeconds?: number;
+}
 
 /**
  * A failure to reach Kantel, or Kantel unable to answer for now, that asking again may get past: why, or undefined for
@@ -789,10 +814,10 @@ function hasCode(value: unknown): boolean {
 }
 
 /**
- * Follows a detached command: prints what it has written since the last look, every second or so, until it ends, and
+ * Follows a command by its ID: prints what it has written since the last look, every second or so, until it ends, and
  * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show. Kantel out of
- * reach for a while (a gateway restarting, a network blip) is asked again; given up on, it says the command may still
- * be running and how to follow it again.
+ * reach for a while (a gateway restarting, a network blip, this connection reset) is asked again; given up on, it says
+ * the command may still be running and how to follow it again.
  */
 async function follow(
 	ctx: Context,
@@ -800,9 +825,11 @@ async function follow(
 	sandboxId: string,
 	commandId: string,
 	first?: Command,
+	options: FollowOptions = {},
 ): Promise<number> {
 	let shown = { stdout: 0, stderr: 0 };
-	let wait = 250;
+	// Soon after its start, so a short command's end comes quickly, then every second.
+	let wait = 100;
 	const again = `kantel attach ${sandboxId} ${commandId}`;
 	const fetch = async (): Promise<Command> => {
 		// An outage's time so far: from the start of its first failed look, each look's time and each wait's. (The waits are
@@ -835,7 +862,7 @@ async function follow(
 		}
 	};
 	let command = first ?? (await fetch());
-	if (!ctx.json && first !== undefined) {
+	if (!ctx.json && options.announce === true) {
 		ctx.note(`kantel: started ${command.id}; Ctrl-C leaves it running, and ${again} follows it again`);
 	}
 	for (;;) {
@@ -854,8 +881,10 @@ async function follow(
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {
 		if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
-		if (command.state === "killed") ctx.note("kantel: the command was killed");
-		if (command.state === "timed_out") ctx.note("kantel: the command timed out and was killed");
+		if (command.state === "timed_out") {
+			const after = options.limitSeconds === undefined ? "" : ` after ${options.limitSeconds} s`;
+			ctx.note(`kantel: the command timed out${after} and was killed`);
+		} else if (command.state === "killed") ctx.note("kantel: the command was killed");
 	}
 	return exitCodeOf(command);
 }
@@ -1842,6 +1871,17 @@ const SECTIONS: readonly Section[] = [
 						value: "<port[:public]>",
 						description: "Give this port an HTTPS URL once it runs; repeat it",
 					},
+					on: {
+						type: "string",
+						value: "<host>",
+						description: "Run it on this host, its name or ID (kantel hosts list shows them)",
+					},
+					"host-label": {
+						type: "string",
+						multiple: true,
+						value: "<k=v>",
+						description: "Run it only on a host with this label; repeat for more",
+					},
 					"no-wait": noWait,
 				},
 				details:
@@ -1853,7 +1893,9 @@ const SECTIONS: readonly Section[] = [
 					"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
 					"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
 					"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
-					"page saying it is stopped and why: it doesn't wake it.",
+					"page saying it is stopped and why: it doesn't wake it.\n\n" +
+					"--on puts it on one host: one of the account's own hosts, or for a super-admin any host. It stays there,\n" +
+					"as every sandbox stays on the host it was placed on. Without it, Kantel picks the host.",
 				async run(ctx) {
 					const hosts = ctx.list("host").map(hostedPort);
 					const type = choice(ctx.string("type"), SANDBOX_TYPES, "--type");
@@ -1887,6 +1929,8 @@ const SECTIONS: readonly Section[] = [
 							envs.filter((item) => item.includes("=")),
 							"--env",
 						),
+						host: ctx.string("on"),
+						hostLabels: pairs(ctx.list("host-label"), "--host-label"),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
@@ -1913,6 +1957,7 @@ const SECTIONS: readonly Section[] = [
 				flags: {
 					all: { type: "boolean", description: "Include stopped, paused and errored ones" },
 					label: { type: "string", multiple: true, value: "<k=v>", description: "Only those with this label" },
+					on: { type: "string", value: "<host>", description: "Only those on this host, its name or ID" },
 					cursor: cursorFlag,
 				},
 				async run(ctx) {
@@ -1922,12 +1967,19 @@ const SECTIONS: readonly Section[] = [
 						account: config.account,
 						all: all ? true : undefined,
 						label: pairs(ctx.list("label"), "--label"),
+						host: ctx.string("on"),
 						cursor: ctx.string("cursor"),
 					});
 					ctx.emit(page, () => {
 						if (page.items.length === 0)
 							return all ? "No sandboxes." : "No running sandboxes; --all shows stopped ones.";
-						return `${sandboxTable(page.items)}${more(page.nextCursor, "kantel list")}`;
+						// The next page's command keeps this one's filters: the cursor is an offset into the same filtered list.
+						const filters = [
+							...(all ? ["--all"] : []),
+							...ctx.list("label").flatMap((label) => ["--label", shellQuote(label)]),
+							...(ctx.string("on") === undefined ? [] : ["--on", shellQuote(ctx.string("on") ?? "")]),
+						];
+						return `${sandboxTable(page.items)}${more(page.nextCursor, ["kantel list", ...filters].join(" "))}`;
 					});
 				},
 			},
@@ -2086,7 +2138,9 @@ const SECTIONS: readonly Section[] = [
 					"One word is a shell command line: kantel exec <id> 'make && make test'. Several are a command and its\n" +
 					"arguments, quoted for the shell; put them after -- when they have flags of their own:\n" +
 					"kantel exec <id> -- ls -la. Its stdout and stderr come out on ours, and kantel exits with its exit\n" +
-					"code (124 when it timed out). A server or a long job: --detach, then kantel attach <id> <command>.",
+					"code (124 when it timed out). Its output comes as it is written, and kantel follows it on through a\n" +
+					"reconnect; if it can't reach Kantel for two minutes it prints the command's ID and how to attach.\n" +
+					"A server or a long job: --detach, then kantel attach <id> <command>.",
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
 					const client = await ctx.client();
@@ -2100,28 +2154,33 @@ const SECTIONS: readonly Section[] = [
 					if (words.length === 0) throw new UsageError("give the command: kantel exec <id> -- <command…>");
 					const seconds = whole(ctx.string("timeout"), "--timeout", 0);
 					const unlimited = seconds === 0;
-					const detached = ctx.boolean("detach") || unlimited;
-					const timeoutMs = seconds === undefined || unlimited ? undefined : seconds * 1000;
+					const detach = ctx.boolean("detach");
+					// Every command is started detached, so its ID comes back at once, and followed by it unless --detach: a
+					// plain one with its limit (Kantel's default unless --timeout gives one), --timeout 0 with none. Its output
+					// comes as it is written, and a reconnect or a reset connection on the way loses neither it nor its ID.
+					const limitSeconds = detach || unlimited ? undefined : (seconds ?? EXEC_DEFAULT_SECONDS);
 					const body = {
 						command: commandLine(words),
 						cwd: ctx.string("cwd"),
 						env: pairs(ctx.list("env"), "--env"),
-						timeoutMs: detached ? undefined : timeoutMs,
-						detached: detached ? true : undefined,
+						timeoutMs: limitSeconds === undefined ? undefined : limitSeconds * 1000,
+						detached: true,
 						stdin: ctx.boolean("stdin") ? new TextDecoder().decode(await readAll(ctx.io.stdin())) : undefined,
 					};
-					const result = await client.runCommand(sandboxId, body);
-					if (unlimited && result.state === "running") return follow(ctx, client, sandboxId, result.id, result);
-					// A foreground command Kantel stopped waiting for (its gateway restarting), which runs on: not its end.
-					const stopped = !detached && result.state === "running";
-					const why = `Kantel stopped waiting for ${result.id}, which may still be running: kantel attach ${sandboxId} ${result.id}`;
+					let result: Command;
+					try {
+						result = await client.runCommand(sandboxId, body);
+					} catch (error) {
+						// Sent, and retried under its key, with no answer: whether it started is unknown, and its ID with it.
+						const why = transient(error);
+						if (why === undefined) throw error;
+						throw new CliError(`${why}; it may have started: kantel ps ${sandboxId} lists it`);
+					}
+					if (!detach) return follow(ctx, client, sandboxId, result.id, result, { announce: unlimited, limitSeconds });
 					if (ctx.json) {
 						ctx.out(JSON.stringify(result, null, 2));
-						if (!stopped) return exitCodeOf(result);
-						ctx.note(`kantel: ${why}`);
-						return 1;
+						return exitCodeOf(result);
 					}
-					if (stopped) throw new CliError(why);
 					if (result.state === "running") {
 						ctx.out(result.id);
 						ctx.note(

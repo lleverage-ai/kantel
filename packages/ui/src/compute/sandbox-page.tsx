@@ -766,7 +766,7 @@ function Overview({
 				<dt className={dt}>Size</dt>
 				<dd className={dd}>
 					{sizeText(spec)}
-					{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
+					{spec?.diskGb !== undefined && spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
 				</dd>
 				{sandbox.base === undefined ? null : (
 					<>
@@ -804,7 +804,14 @@ function Overview({
 				{sandbox.hostId === undefined ? null : (
 					<>
 						<dt className={dt}>Host</dt>
-						<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
+						{sandbox.hostName === undefined ? (
+							<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
+						) : (
+							<dd className={`${dd} flex min-w-0 flex-wrap items-baseline gap-x-2`}>
+								<span className="truncate">{sandbox.hostName}</span>
+								<span className="truncate font-mono text-code text-muted">{sandbox.hostId}</span>
+							</dd>
+						)}
 					</>
 				)}
 			</dl>
@@ -952,7 +959,9 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 	// Without a live source, its recent CPU as listed, untimed.
 	const cpu = series !== undefined ? liveCpu.values : live.status === "off" ? sandbox.usage : [];
 	const memory = liveMemory.values;
-	const limit = series?.memLimitBytes ?? gbBytes(spec.memoryGb);
+	// Its memory as its machine says, else what it was given; neither while it starts with no shape known.
+	const limit = series?.memLimitBytes ?? (spec === undefined ? undefined : gbBytes(spec.memoryGb));
+	const ofLimit = limit === undefined ? "" : ` of ${gbText(limit)}`;
 	const latestCpu = cpu.at(-1);
 	const latestMemory = memory.at(-1);
 	const peak = Math.round(Math.max(0, ...cpu) * 100);
@@ -993,15 +1002,15 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
 				/>
 				{live.status === "off" ? (
-					now?.memoryGb === undefined ? null : (
+					now?.memoryGb === undefined || spec === undefined ? null : (
 						meter("Memory", now.memoryGb, spec.memoryGb)
 					)
 				) : (
 					<UsageGraph
 						title="Memory"
-						{...(latestMemory === undefined ? {} : { value: `${gbText(latestMemory)} of ${gbText(limit)} GB` })}
+						{...(latestMemory === undefined ? {} : { value: `${gbText(latestMemory)}${ofLimit} GB` })}
 						values={memory}
-						max={limit}
+						max={limit ?? Math.max(1, ...memory)}
 						timed={liveMemory.timed}
 						tone="working"
 						loading={loading}
@@ -1009,12 +1018,14 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 						label={
 							latestMemory === undefined
 								? "No memory readings yet"
-								: `Memory over the last 10 minutes, ${gbText(latestMemory)} of ${gbText(limit)} GB now`
+								: `Memory over the last 10 minutes, ${gbText(latestMemory)}${ofLimit} GB now`
 						}
 					/>
 				)}
-				{/* No disk of its own (an isolate's is 0): nothing to measure against, as Details says. */}
-				{now?.diskGb === undefined || spec.diskGb <= 0 ? null : meter("Disk", now.diskGb, spec.diskGb)}
+				{/* No disk of its own (an isolate's is 0), or none its host has said yet: nothing to measure against, as Details says. */}
+				{now?.diskGb === undefined || spec?.diskGb === undefined || spec.diskGb <= 0
+					? null
+					: meter("Disk", now.diskGb, spec.diskGb)}
 			</div>
 		</section>
 	);

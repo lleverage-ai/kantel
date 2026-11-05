@@ -87,7 +87,7 @@ cd kantel
 
 Add `GOARCH=arm64` to build it for an aarch64 host on an x86_64 machine, copy `apps/host/dist/kantel-host` to the host, and run `sudo ./kantel-host install --url … --token …` there in place of the join command.
 
-A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 and arm64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches the ones for the host's architecture from there by default, so there's nothing to build. The arm64 images are boot-checked in emulation before they're published, not yet on arm64 hardware. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
+A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 and arm64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches the ones for the host's architecture from there by default, so there's nothing to build. The arm64 images are boot-checked in emulation before they're published, not yet on arm64 hardware. The sandbox image is Ubuntu 26.04 with Docker, an Openbox desktop with a dock, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
 
 The installer gets the images from one of two places:
 
@@ -198,7 +198,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 ==> Install kantel-host 0.3.0
   copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
 ==> Fetch Firecracker and the sandbox images
-  check  images host-images-20261103.1 from https://kantel.example.com/v1/hosts/images/manifest.json
+  check  images host-images-20261105 from https://kantel.example.com/v1/hosts/images/manifest.json
   mkdir  /var/lib/kantel-host (mode 0755)
   mkdir  /var/lib/kantel-host/bin (mode 0755)
   get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
@@ -255,10 +255,12 @@ On the host:
 
 ```sh
 sudo kantel-host status
+sudo kantel-host sandboxes
+sudo kantel-host sandboxes show sbx_…
 journalctl -u kantel-host -f
 ```
 
-`status` prints the agent's version, the control plane it's registered with, its host ID and whether the service is active. The journal has the connection, each sandbox the host starts, and the [egress proxy's](/sandboxes/egress-proxy/#what-a-refusal-looks-like) decisions.
+`status` prints the agent's version, the control plane it's registered with, its host ID, whether the service is active and how many sandboxes it holds in each state. `sandboxes` lists them: ID, type, size, state, the account that owns each, its base image version, its address on the host and when it was made. `sandboxes show` prints one in full, and `--json` gives either as JSON. Both read the running service over a socket only root can use (`/run/kantel-host/agent.sock`; `controlSocket` in the config moves it, `"off"` turns it off), and they only read: stop or delete a sandbox through Kantel (`kantel stop`, or the console), which keeps the record of every sandbox. The journal has the connection, each sandbox the host starts, and the [egress proxy's](/sandboxes/egress-proxy/#what-a-refusal-looks-like) decisions.
 
 From anywhere, with a key that has `hosts:admin`:
 
@@ -300,7 +302,15 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes" \
   -d '{"type": "microvm", "hostLabels": {"zone": "ams"}}'
 ```
 
-The `kantel` command has no flag for this yet. When no host can take a sandbox, Kantel says why: the create answers `503` with `unavailable` and `details.reason` `no_host_with_labels` when no host has the labels, and a sandbox whose matching hosts are all full goes to `error` with `placementReason` `insufficient_capacity`. [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed) lists them.
+To put it on one host, give the create `host`, the host's ID or name. A super-admin may name any host; anyone else may name one of the account's [own hosts](/own-hosts/), and naming any other host answers `not_found`. When that host is offline, draining, doesn't run the type or lacks a label in `hostLabels`, the create answers `503` `unavailable` with `details.reason` `host_unavailable`, rather than placing the sandbox elsewhere. From the command line, and in the console's New sandbox under Host:
+
+```sh
+kantel create --type microvm --on builder-1
+kantel create --type microvm --host-label zone=ams
+kantel list --on builder-1
+```
+
+A sandbox's `hostId` and `hostName` say where it runs, as `kantel info` and its page in the console do. A super-admin is shown every sandbox's host; anyone else is shown it when it is one of the account's own hosts. `kantel list --on <host>` (the API's `host` query) lists only the sandboxes on one host. When no host can take a sandbox, Kantel says why: the create answers `503` with `unavailable` and `details.reason` `no_host_with_labels` when no host has the labels, and a sandbox whose matching hosts are all full goes to `error` with `placementReason` `insufficient_capacity`. [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed) lists them.
 
 A host offers three microVM sizes unless its settings say otherwise:
 
@@ -310,7 +320,7 @@ A host offers three microVM sizes unless its settings say otherwise:
 | `default` | 4 | 2 GiB | 20 GiB |
 | `large` | 4 | 8 GiB | 50 GiB |
 
-A create can also ask for any vCPUs and memory with `resources`, such as `{"type": "microvm", "resources": {"vcpus": 3, "memoryMb": 6144}}`. A shape that matches a size goes as that size; any other goes only to a host whose `kantel-host` makes custom shapes. Its disk is the smallest size's with at least its memory, unless it asks for one or starts from a snapshot, which keeps that snapshot's disk; the sandbox's `resources` say what it got. `GET /v1/sandbox-shapes` says what the hosts you may use offer.
+A create can also ask for any vCPUs and memory with `resources`, such as `{"type": "microvm", "resources": {"vcpus": 3, "memoryMb": 6144}}`. A shape that matches a size goes as that size; any other goes only to a host whose `kantel-host` makes custom shapes. Its disk is the smallest size's with at least its memory, unless it asks for one or starts from a snapshot, which keeps that snapshot's disk; the sandbox's `resources` say what it got. A snapshot that holds its sandbox's memory (a pause) restores only into the machine it was taken of, so a create from one leaves `resources` and `size` out, or asks for that machine; another is refused (`invalid`) before anything is made. `GET /v1/sandbox-shapes` says what the hosts you may use offer.
 
 A microVM's disk can be chosen apart from its vCPUs and memory: `resources.diskGb`, with them or alone (`{"type": "microvm", "size": "large", "resources": {"diskGb": 60}}`), or `kantel new --type microvm --disk 60`. A host gives a disk off its sizes from `microvm.minDiskGiB` to `microvm.maxDiskGiB`, and only when it has that much disk free; `GET /v1/sandbox-shapes` says the range (`microvm.diskGb`), at most the most disk any host you may use had free when it last said. A host keeps a sandbox's disk through a stop, a start and a fork, and a disk is never shrunk.
 

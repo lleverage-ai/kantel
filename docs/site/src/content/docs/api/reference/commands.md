@@ -64,7 +64,7 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 `GET /v1/sandboxes/{sandboxId}/commands/{commandId}` (SDK method `getCommand`)
 
-Its state, and once it has ended its exit code and output. A key needs `exec`.
+Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox reports it (a microVM on a current kantel-host), detached or not. A key needs `exec`.
 
 **Path parameters**
 

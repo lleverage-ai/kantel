@@ -43,8 +43,11 @@ export interface RelayStore {
 	getTicket(id: string): Promise<TicketRecord | undefined>;
 	/** Forgets tickets that expired before `before`. */
 	sweepTickets(before: number): Promise<void>;
-	/** Inserts or replaces the exposure with its label. */
-	putExposure(exposure: ExposureRecord): Promise<void>;
+	/**
+	 * Inserts or replaces the exposure with its label, and answers whether it was written. `ifAbsent`: only when no exposure
+	 * has that label, in one step, so an exposure already there (with its token and grantee) is never replaced.
+	 */
+	putExposure(exposure: ExposureRecord, options?: { readonly ifAbsent?: boolean }): Promise<boolean>;
 	getExposure(label: string): Promise<ExposureRecord | undefined>;
 	exposuresOf(sandboxId: string): Promise<ExposureRecord[]>;
 	/** Removes a sandbox's exposures of `port`, or all of them without one. */
@@ -66,8 +69,10 @@ export function createMemoryRelayStore(): RelayStore {
 		async sweepTickets(before) {
 			for (const [id, ticket] of tickets) if (ticket.expiresAt < before) tickets.delete(id);
 		},
-		async putExposure(exposure) {
+		async putExposure(exposure, options) {
+			if (options?.ifAbsent === true && exposures.has(exposure.label)) return false;
 			exposures.set(exposure.label, { ...exposure });
+			return true;
 		},
 		async getExposure(label) {
 			const exposure = exposures.get(label);
@@ -178,20 +183,28 @@ export function createSqlRelayStore(driver: SqlDriver): RelayStore {
 		async sweepTickets(before) {
 			await driver.query("DELETE FROM compute_relay_tickets WHERE expires_at < ?", [before]);
 		},
-		async putExposure(exposure) {
+		async putExposure(exposure, options) {
+			const values = [
+				exposure.label,
+				exposure.sandboxId,
+				exposure.port,
+				exposure.tokenHash ?? null,
+				exposure.createdAt,
+				exposure.grantee ?? null,
+			];
+			const insert =
+				"INSERT INTO compute_port_exposures (label, sandbox_id, port, token_hash, created_at, grantee) VALUES (?, ?, ?, ?, ?, ?)";
+			if (options?.ifAbsent === true) {
+				const rows = await driver.query(`${insert} ON CONFLICT (label) DO NOTHING RETURNING label`, values);
+				return rows.length > 0;
+			}
 			await driver.query(
-				`INSERT INTO compute_port_exposures (label, sandbox_id, port, token_hash, created_at, grantee) VALUES (?, ?, ?, ?, ?, ?)
+				`${insert}
 				ON CONFLICT (label) DO UPDATE SET sandbox_id = excluded.sandbox_id, port = excluded.port,
 					token_hash = excluded.token_hash, created_at = excluded.created_at, grantee = excluded.grantee`,
-				[
-					exposure.label,
-					exposure.sandboxId,
-					exposure.port,
-					exposure.tokenHash ?? null,
-					exposure.createdAt,
-					exposure.grantee ?? null,
-				],
+				values,
 			);
+			return true;
 		},
 		async getExposure(label) {
 			const [row] = await driver.query("SELECT * FROM compute_port_exposures WHERE label = ?", [label]);

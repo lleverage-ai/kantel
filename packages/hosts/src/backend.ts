@@ -224,6 +224,8 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 interface HostSnapshot {
 	readonly id: string;
 	readonly sizeBytes: number;
+	/** Whether it holds the sandbox's memory: a live save does, as does a save of a paused sandbox. */
+	readonly memory?: boolean;
 	/** The host images version its root file system is (image patching); absent when unknown. */
 	readonly base?: string;
 }
@@ -233,6 +235,7 @@ const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
 	ref: `${hostId}/${snap.id}`,
 	sizeBytes: snap.sizeBytes,
 	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
+	...(snap.memory === true ? { memory: true } : {}),
 });
 
 interface HostFileEntry {
@@ -646,7 +649,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				tier: spec.type,
 				...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
 				// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
-				// custom shape; a template's snapshot is restored only where it was built as that shape.
+				// custom shape; a template's snapshot is restored only where it was built as that shape. A memory snapshot's
+				// host makes it as the snapshot's own size wherever the shape is that machine's, whatever name it resolves to.
 				...(spec.shape === undefined
 					? {}
 					: {
@@ -1157,7 +1161,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : parseRef(bytes.ref);
 			await hosts.templates.delete(hostId, id);
 		},
-		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee }) {
+		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee, ifAbsent }) {
 			const { tier } = await tierOf(sandboxId);
 			if (options.ports === undefined || tier !== "microvm") {
 				throw new KantelError("not_supported", "This control plane has no name for exposed ports");
@@ -1166,6 +1170,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				public: isPublic,
 				subdomain,
 				...(grantee === undefined ? {} : { grantee }),
+				...(ifAbsent === true ? { ifAbsent } : {}),
 			});
 		},
 		async hidePort(sandboxId, port) {

@@ -179,6 +179,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly placeholders?: { readonly [name: string]: string };
 	readonly hostLabels: { readonly [key: string]: string };
+	/**
+	 * The one host its create asked for (`CreateSandboxBody.host`), which a boot that has to place it again keeps to.
+	 * Absent: any host it may use.
+	 */
+	readonly hostPin?: string;
 	readonly runs: readonly RunPeriod[];
 	/** The newest readings: a day of 5-minute means (`MAX_SAMPLES`), and hourly ones before it (`HOURLY_SAMPLES`). */
 	readonly samples: readonly StoredSample[];

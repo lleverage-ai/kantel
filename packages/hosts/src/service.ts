@@ -52,7 +52,16 @@ import {
 	type SandboxTier,
 } from "./protocol.ts";
 import { DEFAULT_HOST_UPDATE_URL, type HostReleases, needsUpdate, plainVersion } from "./releases.ts";
-import { type Candidate, isRefusal, makesCustomShapes, place, type Shape, shapeOn, sizeOn } from "./scheduler.ts";
+import {
+	type Candidate,
+	hostSizeNamed,
+	isRefusal,
+	makesCustomShapes,
+	place,
+	type Shape,
+	shapeOn,
+	sizeOn,
+} from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
@@ -733,8 +742,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const bases: { sandboxId: string; base: string; baseAt?: number }[] = [];
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
-			const state = sandbox?.state ?? "lost";
-			if (state !== placement.state) await store.putPlacement({ ...placement, state, updatedAt: now });
+			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
+			if (latest !== placement) await store.putPlacement(latest);
 			// What its disk is on, where the host says (one without image patching doesn't, and nothing is erased).
 			if (typeof sandbox?.base === "string" && sandbox.base !== "") {
 				bases.push({ sandboxId: placement.sandboxId, base: sandbox.base, ...baseAtOf(sandbox) });
@@ -831,10 +840,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
 						});
 					}
-					// The call that caused the event usually recorded the state already (a create's `running`).
-					if (sandbox.state === placement.state) return;
-					if (sandbox.state === "deleted") await store.removePlacement(sandbox.id);
-					else await store.putPlacement({ ...placement, state: sandbox.state, updatedAt: clock.now() });
+					// The call that caused the event usually recorded it already (a create's `running`).
+					if (sandbox.state === "deleted") {
+						await store.removePlacement(sandbox.id);
+						return;
+					}
+					const latest = asReported(placement, sandbox, await store.getHost(hostId), clock.now());
+					if (latest !== placement) await store.putPlacement(latest);
 				})(),
 			);
 		},
@@ -1060,8 +1072,40 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 	};
 
-	const settle = async (placement: PlacementRecord, sandbox: HostSandbox): Promise<PlacementRecord> => {
-		const settled = { ...placement, state: sandbox.state, updatedAt: clock.now() };
+	/**
+	 * A placement as its host reports it, however the report comes (a create's or fork's answer, an event, a hello, a
+	 * call's result): its state, and the size the host made where that isn't the one placement chose (a memory snapshot
+	 * restores as its own size, another name for the same vCPUs and memory, whose disk may differ), resolved by the
+	 * host's own sizes or a custom size's name, so its resources are what the host made. The one place a report changes
+	 * a placement.
+	 */
+	const asReported = (
+		placement: PlacementRecord,
+		report: { readonly state: string; readonly size?: unknown },
+		host: HostRecord | undefined,
+		now: number,
+	): PlacementRecord => {
+		const made =
+			typeof report.size === "string" && report.size !== "" && report.size !== placement.size
+				? hostSizeNamed(host, report.size)
+				: undefined;
+		if (made === undefined && report.state === placement.state) return placement;
+		return {
+			...placement,
+			...(made === undefined
+				? {}
+				: { size: made.name, vcpus: made.vcpus, memoryMiB: made.memoryMiB, diskGiB: made.diskGiB }),
+			state: report.state,
+			updatedAt: now,
+		};
+	};
+
+	const settle = async (
+		placement: PlacementRecord,
+		sandbox: HostSandbox,
+		host?: HostRecord,
+	): Promise<PlacementRecord> => {
+		const settled = { ...asReported(placement, sandbox, host, clock.now()), updatedAt: clock.now() };
 		await store.putPlacement(settled);
 		return settled;
 	};
@@ -1450,7 +1494,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						template === undefined ? undefined : { timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS },
 						chosen.host,
 					);
-					const settled = await settle(placement, sandbox);
+					const settled = await settle(placement, sandbox, chosen.host);
 					const statuses = mounts.status(sandbox);
 					return {
 						sandbox,
@@ -1521,7 +1565,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					typeof state === "string" &&
 					(method === HostMethods.stop || (result as { id?: unknown }).id === sandboxId)
 				) {
-					await store.putPlacement({ ...placement, state, updatedAt: clock.now() });
+					const size = (result as { size?: unknown } | undefined)?.size;
+					await store.putPlacement({
+						...asReported(placement, { state, size }, await store.getHost(placement.hostId), clock.now()),
+						updatedAt: clock.now(),
+					});
 				}
 				return result;
 			},

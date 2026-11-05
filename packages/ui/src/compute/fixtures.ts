@@ -187,6 +187,19 @@ const sampleDisk = (memoryMb: number): number => {
 	return (presets.find((preset) => preset.memoryMb >= memoryMb) ?? presets.at(-1))?.diskGb ?? 0;
 };
 
+/**
+ * The sample's figures for one of its sandboxes: what its host said, else its size's in `SANDBOX_SIZES`, which are this
+ * sample's sizes (and no real host's: the console never shows them for a real sandbox).
+ */
+const sampleSpec = (box: Sandbox): { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number } =>
+	box.resources ?? sizeSpec(box.size ?? "medium");
+
+/** A sample microVM's machine, as its host would say: its size's figures. */
+const sampleResources = (size: SandboxSize) => {
+	const { vcpus, memoryGb, diskGb } = sizeSpec(size);
+	return { vcpus, memoryGb, diskGb };
+};
+
 const sandbox = (
 	fields: Omit<Sandbox, "hostname" | "usage" | "createdBy"> &
 		Partial<Pick<Sandbox, "usage" | "createdBy">> & { readonly slug: string },
@@ -195,6 +208,10 @@ const sandbox = (
 	return {
 		createdBy: "Tom Davies",
 		usage: rest.state === "running" ? usageSeries(rest.id.length + rest.name.length) : flat(),
+		// What its host gave it, as a real one says: the page shows only that (or the shape it asked for).
+		...(rest.kind === "microvm" && rest.resources === undefined && rest.size !== undefined
+			? { resources: sampleResources(rest.size) }
+			: {}),
 		...rest,
 		hostname: `${rest.name}.${slug}.kantel.example.com`,
 	};
@@ -292,6 +309,7 @@ export const API_SERVER = sandbox({
 	costCents: 31,
 	usage: usageSeries(4, 0.8),
 	hostId: "hst_hetzner_1",
+	hostName: "hetzner-fsn1-01",
 	shared: true,
 	createdBy: "Alex Kemp",
 	environment: { id: "env_backend", name: "backend-dev" },
@@ -334,6 +352,7 @@ export const DEV_STACK = sandbox({
 	costCents: 1094,
 	usage: usageSeries(9, 0.6),
 	hostId: "hst_hetzner_1",
+	hostName: "hetzner-fsn1-01",
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
@@ -369,6 +388,7 @@ export const ALPINE_WORKER = sandbox({
 	costCents: 1,
 	usage: usageSeries(3, 0.3),
 	hostId: "hst_hetzner_1",
+	hostName: "hetzner-fsn1-01",
 	shared: true,
 	createdBy: "Dean Smit",
 	image: ALPINE_IMAGE,
@@ -392,6 +412,7 @@ export const DEBIAN_CI = sandbox({
 	costCents: 8,
 	usage: usageSeries(6, 0.5),
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	shared: true,
 	createdBy: "ci-runner",
 	image: DEBIAN_DOCKER_IMAGE,
@@ -411,6 +432,7 @@ export const SCRATCH = sandbox({
 	costCents: 0.2,
 	usage: usageSeries(2, 0.2),
 	hostId: "hst_home",
+	hostName: "home-server",
 	createdBy: "ci-runner",
 });
 
@@ -429,6 +451,7 @@ export const RENDER = sandbox({
 	snapshot: { id: "snp_render_1", takenAt: FIXTURE_NOW - 20 * HOUR },
 	costCents: 412,
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	shared: true,
 	createdBy: "Bethan Price",
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.11.02.811", { days: 2, versions: 1 }),
@@ -446,6 +469,7 @@ export const BROWSER_AGENT = sandbox({
 	snapshot: { id: "snp_browser_3", takenAt: FIXTURE_NOW - 40 * MINUTE },
 	costCents: 33,
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	shared: true,
 });
 
@@ -461,6 +485,7 @@ export const EVAL_RUNNER = sandbox({
 	snapshot: { id: "snp_eval_2", takenAt: FIXTURE_NOW - 12 * MINUTE },
 	costCents: 3,
 	hostId: "hst_home",
+	hostName: "home-server",
 	error: "The machine stopped answering. Its disk is safe: recover it, or resume it on another host.",
 	forkedFrom: DEV_STACK.id,
 	environment: { id: "env_evals", name: "evals" },
@@ -479,6 +504,7 @@ export const NEW_ONE = sandbox({
 	stopsAt: FIXTURE_NOW + HOUR,
 	costCents: 0,
 	hostId: "hst_home",
+	hostName: "home-server",
 });
 
 export const PERSONAL_BOX = sandbox({
@@ -495,6 +521,7 @@ export const PERSONAL_BOX = sandbox({
 	costCents: 2,
 	usage: usageSeries(1, 0.4),
 	hostId: "hst_home",
+	hostName: "home-server",
 });
 
 export const PERSONAL_OLD = sandbox({
@@ -509,6 +536,7 @@ export const PERSONAL_OLD = sandbox({
 	snapshot: { id: "snp_wine_4", takenAt: FIXTURE_NOW - 5 * DAY },
 	costCents: 96,
 	hostId: "hst_hetzner_2",
+	hostName: "hetzner-fsn1-02",
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.23.803", { days: 12, versions: 9 }),
 });
 
@@ -550,6 +578,8 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Tom Davies",
 		sizeBytes: 11.8 * 1024 ** 3,
 		uses: 37,
+		memory: true,
+		machine: { vcpus: 16, memoryMb: 32_768 },
 	},
 	{
 		id: "ssn_playwright",
@@ -656,7 +686,7 @@ function historyFor(box: Sandbox): readonly SandboxSnapshot[] {
 			sandboxId: box.id,
 			takenAt,
 			reason: at === 0 && box.state !== "running" ? "stop" : at === count - 1 && box.forkedFrom ? "fork" : "periodic",
-			sizeBytes: Math.round((sizeSpec(box.size).diskGb * 1024 ** 3 * (0.08 + at * 0.004)) / 1024) * 1024,
+			sizeBytes: Math.round((sampleSpec(box).diskGb * 1024 ** 3 * (0.08 + at * 0.004)) / 1024) * 1024,
 			expiresAt: takenAt + 14 * DAY,
 		});
 	}
@@ -1659,7 +1689,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	/** A sandbox's made-up readings between two times: none while it isn't running, its disk and IO where measured. */
 	const sandboxUsage = (id: string, since: number, to: number, intervalMs?: number, history = false): UsageSeries => {
 		const box = find(sandboxes, id, "sandbox");
-		const spec = box.resources ?? sizeSpec(box.size);
+		const spec = sampleSpec(box);
 		const memLimitBytes = spec.memoryGb * 1024 ** 3;
 		const disk = allMetrics && box.kind === "microvm" ? { diskTotalBytes: spec.diskGb * 1024 ** 3 } : {};
 		// A stopped one has its history up to when it stopped; the live read has nothing for it.
@@ -1896,7 +1926,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			sandboxId: box.id,
 			takenAt: now(),
 			reason,
-			sizeBytes: Math.round(sizeSpec(box.size).diskGb * 1024 ** 3 * 0.09),
+			sizeBytes: Math.round(sampleSpec(box).diskGb * 1024 ** 3 * 0.09),
 			expiresAt: now() + 14 * DAY,
 		};
 		history.set(box.id, [snap, ...(history.get(box.id) ?? [])]);
@@ -2022,6 +2052,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						? { rates: DEFAULT_SANDBOX_SHAPES.rates }
 						: {}),
 				})),
+			// The sample's hosts as a super-admin sees them: each one shared, so any account may be put on one.
+			hosts: () =>
+				gate(() =>
+					HOSTS.map((host) => ({
+						id: host.id,
+						name: host.name,
+						state: host.state,
+						kinds: host.kvm ? (["microvm", "isolate"] as const) : (["isolate"] as const),
+						shared: true,
+					})),
+				),
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
@@ -2047,7 +2088,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								? "medium"
 								: ((presetOf(DEFAULT_SANDBOX_SHAPES, shape)?.name ?? "medium") as SandboxSize),
 						...(shape === undefined
-							? {}
+							? input.kind === "isolate"
+								? {}
+								: { resources: sampleResources("medium") }
 							: {
 									resources: {
 										vcpus: shape.vcpus,
@@ -2066,7 +2109,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							: { idleStopMinutes: input.idleStopMinutes, idleStopsAt: now() + input.idleStopMinutes * MINUTE }),
 						usage: flat(),
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
-						hostId: input.kind === "isolate" ? "hst_home" : "hst_hetzner_1",
+						// The host asked for, else where the sample's placement puts each type.
+						...((input.hostId ?? (input.kind === "isolate" ? "hst_home" : "hst_hetzner_1")) === "hst_home"
+							? { hostId: "hst_home", hostName: "home-server" }
+							: input.hostId === undefined || input.hostId === "hst_hetzner_1"
+								? { hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01" }
+								: {
+										hostId: input.hostId,
+										hostName: HOSTS.find((host) => host.id === input.hostId)?.name ?? input.hostId,
+									}),
 						shared: input.accountId !== PERSONAL.id,
 						...(input.environmentId === undefined
 							? {}
@@ -2240,7 +2291,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			usageNow: (id) =>
 				gate(() => {
 					const box = find(sandboxes, id, "sandbox");
-					const spec = box.resources ?? sizeSpec(box.size);
+					const spec = sampleSpec(box);
 					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
 				}),
 			// Live on this browser's clock, whatever time the rest is at: the graphs move.
@@ -2327,7 +2378,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						kind: box.kind,
 						createdAt: now(),
 						createdBy: VIEWER.name,
-						sizeBytes: Math.round(sizeSpec(box.size).diskGb * 1024 ** 3 * 0.1),
+						sizeBytes: Math.round(sampleSpec(box).diskGb * 1024 ** 3 * 0.1),
 						uses: 0,
 						// Saved on the base the sandbox is on now.
 						...(box.base === undefined ? {} : { base: box.base }),

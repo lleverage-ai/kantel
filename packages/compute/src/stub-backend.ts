@@ -673,8 +673,11 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			templateSnapshots.delete(bytes.ref ?? `${STUB_TEMPLATE_REF_PREFIX}${bytes.snapshotId}`);
 		},
 
-		async exposePort(sandboxId, port, { subdomain }) {
+		async exposePort(sandboxId, port, { subdomain, ifAbsent }) {
 			const machine = running(sandboxId);
+			if (ifAbsent === true && machine.ports.has(port)) {
+				throw new KantelError("conflict", `Port ${port} is exposed already`);
+			}
 			const url = `http://${port}-${subdomain}.${domain}`;
 			machine.ports.set(port, url);
 			return { url };

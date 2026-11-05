@@ -457,6 +457,20 @@ export const SandboxResources = Type.Object(
 	{ title: "SandboxResources" },
 );
 
+export const SandboxShape = Type.Object(
+	{
+		vcpus: Type.Integer({ description: "vCPUs: 0 for an isolate, which shares its account's VM's CPU." }),
+		memoryMb: Type.Integer(),
+	},
+	{
+		title: "SandboxShape",
+		description:
+			"The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its " +
+			"host places it, what it runs as. Known from the moment it's made, before its host says what it got " +
+			"(`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes.",
+	},
+);
+
 export const GuestFeature = Type.Object(
 	{
 		available: Type.Boolean(),
@@ -816,6 +830,7 @@ export const Sandbox = Type.Object(
 		}),
 		type: SandboxType,
 		size: Type.Optional(SandboxSizeName),
+		shape: Type.Optional(SandboxShape),
 		resources: Type.Optional(SandboxResources),
 		image: Type.Optional(
 			Type.String({ description: "The base image a microVM was made from, such as `ubuntu-24.04`." }),
@@ -891,7 +906,14 @@ export const Sandbox = Type.Object(
 		stoppedAt: Type.Optional(Timestamp),
 		cost: Cost,
 		usage: UsageSummary,
-		hostId: Type.Optional(Type.String({ description: "The host it runs on; only a super-admin is shown it." })),
+		hostId: Type.Optional(
+			Type.String({
+				description:
+					"The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it " +
+					"is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else.",
+			}),
+		),
+		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
 		base: Type.Optional(SandboxBase),
 	},
 	{ title: "Sandbox" },
@@ -910,6 +932,12 @@ export const ListSandboxesQuery = Type.Object(
 		),
 		label: Type.Optional(
 			Type.Record(Type.String(), Type.String(), { description: "Only those with each label: `label.ticket=PROJ-12`." }),
+		),
+		host: Type.Optional(
+			Type.String({
+				description:
+					"Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host.",
+			}),
 		),
 		limit,
 		cursor,
@@ -977,6 +1005,17 @@ export const CreateSandboxBody = Type.Object(
 		hostLabels: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description: 'Place it only on a host with each label, such as `{ site: "home" }`.',
+			}),
+		),
+		host: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared " +
+					"one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. " +
+					"`unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a " +
+					"`hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host " +
+					"placement picks.",
 			}),
 		),
 		mounts: Type.Optional(
@@ -1247,7 +1286,7 @@ export const Command = Type.Object(
 		exitCode: Type.Optional(Type.Integer()),
 		stdout: Type.String({
 			description:
-				"Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more.",
+				"Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere.",
 		}),
 		stderr: Type.String(),
 		truncated: Type.Boolean(),
@@ -1903,6 +1942,20 @@ export const PutProxySettingsBody = Type.Object(
 );
 
 export const AccountScopedQuery = Type.Object({ account: accountQuery }, { title: "AccountScopedQuery" });
+
+export const SandboxShapesQuery = Type.Object(
+	{
+		account: accountQuery,
+		host: Type.Optional(
+			Type.String({
+				description:
+					"The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host " +
+					"alone. Default: from every host the account's sandboxes may use.",
+			}),
+		),
+	},
+	{ title: "SandboxShapesQuery" },
+);
 
 // Environments: what a sandbox starts with. And a sandbox's egress.
 
@@ -3242,6 +3295,7 @@ export type GuestCapabilities = Static<typeof GuestCapabilities>;
 export type GuestFeature = Static<typeof GuestFeature>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
+export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;
 export type MountSource = Static<typeof MountSource>;

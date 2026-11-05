@@ -328,8 +328,14 @@ export interface Sandbox {
 	readonly hostname: string;
 	readonly accountId: string;
 	readonly kind: SandboxKind;
-	readonly size: SandboxSize;
-	/** What its host gave it, where that's known: the page shows this rather than its size's usual figures. */
+	/** The size it was made as, by name. Absent: a shape no size names, or an isolate. Never what the page shows. */
+	readonly size?: SandboxSize;
+	/**
+	 * The vCPUs and memory it asked for (a fork, its source's), known from the moment it's made: the page shows this until
+	 * its host says what it got (`resources`).
+	 */
+	readonly shape?: { readonly vcpus: number; readonly memoryGb: number };
+	/** What its host gave it, where that's known: the page shows this first. */
 	readonly resources?: { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number };
 	readonly state: SandboxState;
 	/**
@@ -359,8 +365,13 @@ export interface Sandbox {
 	readonly costCents?: number;
 	/** CPU use over the last hour, 0 to 1, oldest first: the row's sparkline. */
 	readonly usage: readonly number[];
-	/** The host it runs on, for a super-admin. */
+	/**
+	 * The host it runs on (or last ran on), where the viewer may know it: a super-admin any host, anyone else one of the
+	 * account's own hosts.
+	 */
 	readonly hostId?: string;
+	/** That host's name, with `hostId`. */
+	readonly hostName?: string;
 	/** What went wrong, when it's in `error`. */
 	readonly error?: string;
 	/** Shared with the organisation it belongs to (an organisation's sandboxes are shared unless made private). */
@@ -636,6 +647,19 @@ export interface CreateSandboxInput {
 	readonly environmentId?: string;
 	/** The template it is made from (experimental): its newest built snapshot, or a fresh boot of its image. */
 	readonly templateId?: string;
+	/** The host it goes on, which it then stays on. Absent: Kantel picks. */
+	readonly hostId?: string;
+}
+
+/** A host New sandbox may put a sandbox on: one of the account's own, or for a super-admin a shared one. */
+export interface HostChoice {
+	readonly id: string;
+	readonly name: string;
+	readonly state: HostState;
+	/** The sandbox types it runs. */
+	readonly kinds: readonly SandboxKind[];
+	/** One of the deployment's shared hosts, rather than the account's own. */
+	readonly shared: boolean;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -828,10 +852,16 @@ export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
 
 export interface SandboxesSource {
 	/**
-	 * What New sandbox's sliders may choose, from the hosts the account may use, and what each costs. Absent:
+	 * What New sandbox's sliders may choose, from the hosts the account may use (or with `hostId` that one host), and
+	 * what each costs. Absent:
 	 * `DEFAULT_SANDBOX_SHAPES`.
 	 */
-	shapes?(accountId: string): Promise<SandboxShapes>;
+	shapes?(accountId: string, hostId?: string): Promise<SandboxShapes>;
+	/**
+	 * The hosts New sandbox may put a sandbox on, for its host picker: the account's own, and for a super-admin the
+	 * shared ones. Absent, or none: no picker, and Kantel picks.
+	 */
+	hosts?(accountId: string): Promise<readonly HostChoice[]>;
 	list(accountId: string): Promise<readonly Sandbox[]>;
 	/**
 	 * Follows the account's sandboxes live: `changed` with a sandbox's ID each time one changes state, whoever changed it
@@ -945,6 +975,13 @@ export interface SavedSnapshot {
 	 * from a sandbox restarted on the latest refreshes it.
 	 */
 	readonly base?: SandboxBase;
+	/**
+	 * Whether it holds its sandbox's memory as well as its disk. A sandbox made from one that does is the machine it was
+	 * saved from, whatever New sandbox's sliders say.
+	 */
+	readonly memory?: boolean;
+	/** The vCPUs and memory of the microVM it was saved from, where the source says. */
+	readonly machine?: { readonly vcpus: number; readonly memoryMb: number };
 }
 
 /** A file or folder in a snapshot. */
@@ -1909,24 +1946,45 @@ export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 export const sizeSpec = (size: SandboxSize): SandboxSizeSpec =>
 	SANDBOX_SIZES.find((spec) => spec.size === size) ?? (SANDBOX_SIZES[1] as SandboxSizeSpec);
 
-/**
- * What a sandbox was given: what its host said, else its size's usual figures. An isolate made before shapes says
- * nothing and has no size, so it counts as the default isolate (shared CPU, 256 MB, no disk), as Kantel bills it.
- */
-export const sandboxSpec = (
-	sandbox: Pick<Sandbox, "kind" | "size" | "resources">,
-): { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number } =>
-	sandbox.resources ??
-	(sandbox.kind === "isolate"
-		? { vcpus: 0, memoryGb: ISOLATE_MEMORY.default / 1024, diskGb: 0 }
-		: sizeSpec(sandbox.size));
+/** A sandbox's machine as the page shows it. No `diskGb`: its host hasn't said yet (a disk is the host's to give). */
+export interface SandboxSpecFigures {
+	readonly vcpus: number;
+	readonly memoryGb: number;
+	readonly diskGb?: number;
+}
 
-/** "4 vCPU, 8 GB" ("Shared CPU, 256 MB" for an isolate): a size, or what a sandbox was given, in a line. */
-export const sizeText = (size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number }): string => {
+/**
+ * What a sandbox was given: what its host said, else the shape it asked for (no disk yet). An isolate made before shapes
+ * says nothing, so it counts as the default isolate (shared CPU, 256 MB, no disk), as Kantel bills it. Undefined for a
+ * microVM that says neither, such as one made by a named size that hasn't started yet: never `SANDBOX_SIZES`' sample
+ * figures, which are no host's, so the page shows its size as unknown until its host says.
+ */
+export const sandboxSpec = (sandbox: Pick<Sandbox, "kind" | "shape" | "resources">): SandboxSpecFigures | undefined => {
+	if (sandbox.resources !== undefined) return sandbox.resources;
+	if (sandbox.kind === "isolate") {
+		return sandbox.shape === undefined
+			? { vcpus: 0, memoryGb: ISOLATE_MEMORY.default / 1024, diskGb: 0 }
+			: { vcpus: 0, memoryGb: sandbox.shape.memoryGb, diskGb: 0 };
+	}
+	return sandbox.shape === undefined ? undefined : { vcpus: sandbox.shape.vcpus, memoryGb: sandbox.shape.memoryGb };
+};
+
+/**
+ * "4 vCPU, 8 GB" ("Shared CPU, 256 MB" for an isolate): a size, or what a sandbox was given, in a line. "–" where it isn't
+ * known yet (`sandboxSpec` undefined).
+ */
+export const sizeText = (
+	size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number } | undefined,
+): string => {
+	if (size === undefined) return "–";
 	const spec = typeof size === "string" ? sizeSpec(size) : size;
 	const memory = memoryText(Math.round(spec.memoryGb * 1024));
 	return spec.vcpus === 0 ? `Shared CPU, ${memory}` : `${spec.vcpus} vCPU, ${memory}`;
 };
+
+/** "MicroVM, 4 vCPU, 16 GB": a sandbox's type and machine, as its row in the list says them ("MicroVM, –" until known). */
+export const sandboxMachineText = (sandbox: Pick<Sandbox, "kind" | "shape" | "resources">): string =>
+	`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(sandboxSpec(sandbox))}`;
 
 /** A sandbox is between states, so the page reads it again soon. */
 export const sandboxMoving = (state: SandboxState): boolean => state === "starting" || state === "stopping";

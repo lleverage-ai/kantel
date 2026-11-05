@@ -367,7 +367,7 @@ export interface Command {
 	readonly cwd?: string;
 	readonly state: CommandState;
 	readonly exitCode?: number;
-	/** Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more. */
+	/** Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere. */
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly truncated: boolean;
@@ -527,6 +527,8 @@ export interface CreateSandboxBody {
 	readonly hostLabels?: {
 		readonly [key: string]: string;
 	};
+	/** Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. */
+	readonly host?: string;
 	/** Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
 	readonly mounts?: readonly Mount[];
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
@@ -1158,6 +1160,8 @@ export interface ListSandboxesQuery {
 	readonly label?: {
 		readonly [key: string]: string;
 	};
+	/** Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host. */
+	readonly host?: string;
 	/** At most this many; default 50. */
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
@@ -1423,6 +1427,8 @@ export interface Sandbox {
 	readonly type: SandboxType;
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
+	/** The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes. */
+	readonly shape?: SandboxShape;
 	readonly resources?: SandboxResources;
 	/** The base image a microVM was made from, such as `ubuntu-24.04`. */
 	readonly image?: string;
@@ -1476,8 +1482,10 @@ export interface Sandbox {
 	/** What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them. */
 	readonly cost: Cost;
 	readonly usage: UsageSummary;
-	/** The host it runs on; only a super-admin is shown it. */
+	/** The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. */
 	readonly hostId?: string;
+	/** That host's name, with `hostId`. */
+	readonly hostName?: string;
 	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
 	readonly base?: SandboxBase;
 }
@@ -1625,6 +1633,13 @@ export interface SandboxSeriesPoint {
 	readonly ioPressure?: number;
 }
 
+/** The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes. */
+export interface SandboxShape {
+	/** vCPUs: 0 for an isolate, which shares its account's VM's CPU. */
+	readonly vcpus: number;
+	readonly memoryMb: number;
+}
+
 /** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
 export interface SandboxShapeInput {
 	/** A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. */
@@ -1642,6 +1657,13 @@ export interface SandboxShapes {
 	readonly microvm?: MicrovmShapes;
 	/** What an hour costs, per vCPU and GB; absent where it is free. */
 	readonly rates?: ShapeRates;
+}
+
+export interface SandboxShapesQuery {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use. */
+	readonly host?: string;
 }
 
 /** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
@@ -2695,8 +2717,8 @@ export interface KantelClient {
 	revokeInvite(accountId: string, inviteId: string, options?: CallOptions): Promise<void>;
 	/** List sandboxes. The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`. `GET /sandboxes` */
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
-	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
-	getSandboxShapes(query?: AccountScopedQuery, options?: CallOptions): Promise<SandboxShapes>;
+	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. With `host`, from that host alone. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
+	getSandboxShapes(query?: SandboxShapesQuery, options?: CallOptions): Promise<SandboxShapes>;
 	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
@@ -2709,7 +2731,7 @@ export interface KantelClient {
 	stopSandbox(sandboxId: string, body?: StopSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Resume a sandbox. Carries on a paused sandbox from its memory, or starts a stopped one from its newest snapshot, on the same size or the one given. Same ID; a new machine. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/resume` */
 	resumeSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
-	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
+	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A microVM fork is its source's machine (its `resources` from the start) unless `size` names another, and gets the source's exposed ports, each public or gated as it was, at its own URLs once it runs (only for a caller with `access`, as they are exposed as the caller). A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
 	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
@@ -2723,7 +2745,7 @@ export interface KantelClient {
 	runCommand(sandboxId: string, body: RunCommandBody, options?: CallOptions): Promise<Command>;
 	/** List a sandbox's commands. Its commands, newest first, also while it is stopped. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands` */
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
-	/** Get a command. Its state, and once it has ended its exit code and output. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Get a command. Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox reports it (a microVM on a current kantel-host), detached or not. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
 	/** Kill a command. Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;

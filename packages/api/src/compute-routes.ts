@@ -109,6 +109,7 @@ import {
 	SandboxPage,
 	SandboxPath,
 	SandboxShapes,
+	SandboxShapesQuery,
 	SandboxUsage,
 	SaveSnapshotBody,
 	SetEnvironmentFileBody,
@@ -388,7 +389,7 @@ export const listSandboxes = defineRoute({
 	),
 	query: ListSandboxesQuery,
 	answer: { status: 200, description: "A page of sandboxes.", schema: SandboxPage },
-	errors: ["invalid", "forbidden"],
+	errors: ["invalid", "forbidden", "not_found"],
 });
 
 export const getSandboxShapes = defineRoute({
@@ -399,12 +400,12 @@ export const getSandboxShapes = defineRoute({
 	summary: "Get the shapes a sandbox may be",
 	description: describe(
 		"What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and",
-		"memory, the hosts' presets and what an hour costs.",
+		"memory, the hosts' presets and what an hour costs. With `host`, from that host alone.",
 		scope("sandboxes:read"),
 	),
-	query: AccountScopedQuery,
+	query: SandboxShapesQuery,
 	answer: { status: 200, description: "The shapes.", schema: SandboxShapes },
-	errors: ["invalid", "forbidden"],
+	errors: ["invalid", "forbidden", "not_found"],
 });
 
 export const createSandbox = defineRoute({
@@ -522,7 +523,10 @@ export const forkSandbox = defineRoute({
 	summary: "Fork a sandbox",
 	description: describe(
 		"Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on",
-		"a host that can fork live is copied with its memory. The source doesn't change.",
+		"a host that can fork live is copied with its memory. The source doesn't change. A microVM fork is its source's",
+		"machine (its `resources` from the start) unless `size` names another, and gets the source's exposed ports, each",
+		"public or gated as it was, at its own URLs once it runs (only for a caller with `access`, as they are exposed as",
+		"the caller).",
 		scope("sandboxes:write"),
 	),
 	params: SandboxPath,
@@ -665,7 +669,11 @@ export const getCommand = defineRoute({
 	path: "/sandboxes/{sandboxId}/commands/{commandId}",
 	tag: "commands",
 	summary: "Get a command",
-	description: describe("Its state, and once it has ended its exit code and output.", scope("exec")),
+	description: describe(
+		"Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox",
+		"reports it (a microVM on a current kantel-host), detached or not.",
+		scope("exec"),
+	),
 	params: CommandPath,
 	answer: { status: 200, description: "The command.", schema: Command },
 	errors: readErrors,
