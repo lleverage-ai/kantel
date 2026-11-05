@@ -39,6 +39,12 @@ export type HostErrorCode =
 export interface HostError {
 	readonly code: HostErrorCode | string;
 	readonly message: string;
+	/**
+	 * Kantel's own mark, never the host's: the call was sent and no answer came (its link dropped, it timed out or was
+	 * aborted, the replica holding the host lost it), so whether the host carried it out is unknown. Absent, the host
+	 * answered, or the call never left.
+	 */
+	readonly unanswered?: boolean;
 }
 
 export type SandboxTier = "microvm" | "isolate";

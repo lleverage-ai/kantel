@@ -141,6 +141,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly lifecycle?: number;
 	/**
+	 * Hosts revoked while its boot was under way there, as far as its placement said (`strandOn`): its boot's move from
+	 * `starting` is `error` when the host it ended up on is one of them (`boot`), since only the boot knows for certain
+	 * where its attempt went. Cleared by every change of its state.
+	 */
+	readonly strandedOn?: readonly string[];
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */

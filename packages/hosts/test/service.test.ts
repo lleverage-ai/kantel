@@ -345,7 +345,7 @@ describe("hosts service", () => {
 		expect(host.sent.filter((message) => message.type === "welcome")).toHaveLength(1);
 	});
 
-	it("says host_unavailable when the host goes while it boots a sandbox, and nothing for other calls", async () => {
+	it("says host_unavailable for a boot that never reached its host, and nothing for one it may have done or other calls", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");
 		let host = new FakeHost(service, a.hostId);
@@ -370,12 +370,19 @@ describe("hosts service", () => {
 			await tick();
 			return answer;
 		};
+		// Sent, and its host gone while it waited: it may have been done there, so it isn't said to have been refused.
 		expect(await dropped("sandbox.create", () => service.sandboxes.create({ tier: "microvm" }))).toBe(
-			"unavailable host_unavailable",
+			"unavailable undefined",
 		);
 		expect(await dropped("sandbox.start", () => service.sandboxes.call("sbx-held", "sandbox.start"))).toBe(
-			"unavailable host_unavailable",
+			"unavailable undefined",
 		);
+		// Never sent, its host not connected: refused for its host.
+		service.hub.disconnect(a.hostId, 1001, "gone");
+		expect(await reasonOf(service.sandboxes.call("sbx-held", "sandbox.start"))).toBe("unavailable host_unavailable");
+		host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
 		// Not a boot: its host going is an ordinary `unavailable`.
 		expect(
 			await dropped("sandbox.exec", () => service.sandboxes.call("sbx-held", "sandbox.exec", { command: "true" })),

@@ -69,11 +69,17 @@ export class HostCallError extends Error {
 	 * and a timeout, isn't this.
 	 */
 	readonly disconnected: boolean;
+	/**
+	 * Sent, and never answered: whether the host carried it out is unknown (`HostError.unanswered`). A call that never
+	 * left (not connected) is `disconnected` only; one whose host went while it waited is both.
+	 */
+	readonly unanswered: boolean;
 	constructor(error: HostError, how: { readonly disconnected?: boolean } = {}) {
 		super(error.message);
 		this.name = "HostCallError";
 		this.code = error.code;
 		this.disconnected = how.disconnected === true;
+		this.unanswered = error.unanswered === true;
 	}
 }
 
@@ -341,7 +347,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		for (const [id, pending] of connection.pending) {
 			clearTimeout(pending.timer);
 			pending.reject(
-				new HostCallError({ code: "unavailable", message: `The host disconnected: ${reason}` }, { disconnected: true }),
+				new HostCallError(
+					{ code: "unavailable", message: `The host disconnected: ${reason}`, unanswered: true },
+					{ disconnected: true },
+				),
 			);
 			connection.pending.delete(id);
 		}
@@ -706,7 +715,13 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				const timeoutMs = callOptions.timeoutMs ?? callTimeout;
 				const timer = setTimeout(() => {
 					connection.pending.delete(id);
-					reject(new HostCallError({ code: "timeout", message: `${method} took longer than ${timeoutMs} ms` }));
+					reject(
+						new HostCallError({
+							code: "timeout",
+							message: `${method} took longer than ${timeoutMs} ms`,
+							unanswered: true,
+						}),
+					);
 				}, timeoutMs);
 				connection.pending.set(id, {
 					resolve: resolve as (value: unknown) => void,
@@ -719,7 +734,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 					() => {
 						if (!connection.pending.delete(id)) return;
 						clearTimeout(timer);
-						reject(new HostCallError({ code: "timeout", message: `${method} was aborted` }));
+						reject(new HostCallError({ code: "timeout", message: `${method} was aborted`, unanswered: true }));
 					},
 					{ once: true },
 				);

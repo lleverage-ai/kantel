@@ -800,7 +800,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async placedOn(sandboxId) {
 			const placement = await hosts.sandboxes.placement(sandboxId);
-			return placement === undefined || placement.state === "deleted" ? undefined : placement.hostId;
+			// A lost one is an earlier attempt its host said it doesn't have: not where it is placed now.
+			return placement === undefined || placement.state === "deleted" || placement.state === "lost"
+				? undefined
+				: placement.hostId;
 		},
 		async writeFileStream(sandboxId, path, body, mode) {
 			await streamingHost(sandboxId);
