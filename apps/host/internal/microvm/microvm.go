@@ -2410,6 +2410,8 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info.Timings = t
 	info.Source = "fork"
+	// At info: the control plane keeps no host timings, so a host's log is where a slow fork can be taken apart.
+	m.log.Info("fork", "sandbox", p.NewID, "from", p.SandboxID, "size", src.meta.Size, "timings", t)
 	return info, nil
 }
 
