@@ -140,7 +140,7 @@ kantel kill sbx_g2yy5jhyqr "$cmd"
 
 `attach` exits with the command's exit code once it ends. Kantel keeps the first 1 MiB of each of a command's streams, so send a chatty job's output to a file and copy the file out.
 
-A command keeps running when its sandbox's host reconnects to Kantel, and `exec --timeout 0` and `attach` carry on following it. If `kantel` can't reach Kantel for two minutes it stops following and prints the command's ID, which may still be running: `kantel attach <id> <command>` picks it up again, from its output so far. A host on a kantel-host from before this ends its commands when it reconnects, and says so in the command's stderr.
+A command keeps running when its sandbox's host reconnects to Kantel, and `exec --timeout 0` and `attach` carry on following it. If `kantel` can't reach Kantel for two minutes it stops following and prints the command's ID, which may still be running: `kantel attach <id> <command>` picks it up again, from its output so far. A plain `kantel exec` whose wait Kantel ends (its gateway restarting) exits `1` with the same: the command's ID and the `attach` to follow it. A host on a kantel-host from before this ends its commands when it reconnects, and says so in the command's stderr.
 
 When Kantel itself refuses, `kantel` prints `kantel: <code>: <message>`, such as `kantel: conflict: …` for a stopped sandbox, and exits `1`. A command line `kantel` can't make sense of exits `2`.
 
