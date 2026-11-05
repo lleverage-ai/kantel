@@ -3,6 +3,9 @@ package guest
 import (
 	"bufio"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,5 +75,33 @@ func TestLocalProxyFollowsTheIdentity(t *testing.T) {
 	s.upstream.Store(second)
 	if got := ask(); got != "second:hello\n" {
 		t.Fatalf("after a fork: got %q", got)
+	}
+}
+
+// apt goes through the local proxy forwarder whatever its environment (sudo drops HTTP_PROXY), in an image with apt;
+// the file goes when the identity has no proxy, and nothing is made where there's no apt.
+func TestAptProxyFollowsTheIdentity(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "apt.conf.d")
+	path := filepath.Join(dir, "90kantel-proxy")
+	writeAptProxy(path, true)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("written with no apt: %v", err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAptProxy(path, true)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`Acquire::http::Proxy "http://127.0.0.1:3128";`, `Acquire::https::Proxy "http://127.0.0.1:3128";`} {
+		if !strings.Contains(string(raw), want+"\n") {
+			t.Errorf("%q lacks %q", raw, want)
+		}
+	}
+	writeAptProxy(path, false)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("kept with no proxy: %v", err)
 	}
 }

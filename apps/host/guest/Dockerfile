@@ -139,6 +139,15 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& chown -R 1000:1000 /home/user && mkdir -p /etc/kantel \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor
 
+# What a sandbox installs: Ubuntu's live archive (archive.ubuntu.com and security.ubuntu.com, ports.ubuntu.com on
+# arm64), as any Ubuntu machine, and not the snapshot: snapshot.ubuntu.com failed for hours on 5 Nov 2026
+# (lleverage-ai/kantel#706), and a 4xx from it fails `apt-get update` outright, so a fallback under it isn't enough.
+# APT::Snapshot moves to /etc/kantel/apt-snapshot.conf, which records UBUNTU_SNAPSHOT, and Debian's Chromium source
+# reads deb.debian.org under its pin. Written last, so the steps above read only what they did before (the snapshot, and
+# the live archive in the security refresh alone): the build stays reproducible, and still fails loudly when the
+# snapshot does. kantel-apt-sources says how.
+RUN /usr/local/sbin/kantel-apt-sources
+
 # No serial getty (the console is Firecracker's stdout), no units that wait for hardware a microVM doesn't have or
 # fetch things on a timer, and SSH keys only per sandbox (the guest agent makes them after every create and fork).
 # sshd runs as a plain service rather than Ubuntu's socket activation (see ssh.service.d/kantel.conf).

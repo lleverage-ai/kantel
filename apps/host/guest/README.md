@@ -27,6 +27,15 @@ Google Chrome, nothing from Ubuntu's `restricted` or `multiverse`), and update t
 The sandbox user is `user` (uid 1000): passwordless sudo, and in the `docker` and `kvm` groups, so it runs
 containers and nested VMs without root.
 
+The build reads only the snapshot, so it is reproducible and fails when `snapshot.ubuntu.com` does. apt in a sandbox,
+and in a custom image's build, reads Ubuntu's live archive instead (`archive.ubuntu.com` and `security.ubuntu.com`,
+`ports.ubuntu.com` on arm64), as any Ubuntu machine does, so it doesn't depend on the snapshot service (#706: it
+answered 503, 502 and 401 for hours, and a 4xx fails `apt-get update` outright, however the sources are pinned).
+`kantel-apt-sources` writes those sources last and moves `APT::Snapshot` to `/etc/kantel/apt-snapshot.conf`, which
+records the snapshot the image was built from; Debian's Chromium source then reads `deb.debian.org`, still limited to
+Chromium's packages. The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so a plain
+`sudo apt-get update` works too: sudo drops `HTTP_PROXY`, and a sandbox has no other way out.
+
 ## What listens where
 
 Everything is on the guest's loopback; the host reaches it over vsock (`GET /ports/{port}` on the guest agent) and
