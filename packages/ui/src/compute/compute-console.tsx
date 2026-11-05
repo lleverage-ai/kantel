@@ -2,6 +2,7 @@ import type { ThemePreference } from "@kantel/contracts";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { KantelLockup, KantelMark } from "../brand/kantel.tsx";
 import { Button } from "../primitives/button.tsx";
+import { CopyButton } from "../primitives/controls.tsx";
 import { AlertIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import {
@@ -547,8 +548,11 @@ export function ComputeConsole({
 				onJoin={() => setDialog("join")}
 			/>
 		) : failed === undefined ? (
-			// While the accounts are read, the switcher's shape and height, so the pages under it don't move when it arrives.
-			<span className={`${skeletonClass} h-control-lg w-full rounded-control`} />
+			// While the accounts are read, the switcher's shape (its mark and name) and height, so nothing moves when it arrives.
+			<span className="flex h-control-lg items-center gap-2 px-1.5">
+				<span className={`${skeletonClass} size-control-xs flex-none rounded-full`} />
+				<span className={`${skeletonClass} h-(--kt-text-sm) w-24`} />
+			</span>
 		) : (
 			// The accounts couldn't be read: said in the switcher's place, as the account is in the foot.
 			<span className="flex h-control-lg items-center px-2.5 text-sm text-faint">Organisation unavailable</span>
@@ -1195,7 +1199,7 @@ function ConsoleUnavailable({
 			{/* In the middle of the open page, a little above centre, where the eye goes when the page is otherwise empty. */}
 			<div className="flex flex-1 flex-col items-center justify-center gap-4 pt-8 pb-24 text-center" role="alert">
 				<span className="grid size-14 place-items-center rounded-full bg-status-error-soft text-status-error">
-					<AlertIcon size="md" />
+					<AlertIcon size="lg" />
 				</span>
 				<div className="flex max-w-md flex-col gap-2">
 					<h1 className="m-0 text-heading font-strong leading-tight text-fg">
@@ -1205,9 +1209,17 @@ function ConsoleUnavailable({
 						{message} Check that the Kantel server is running and that this device is online.
 					</p>
 				</div>
-				<Button variant="primary" size="md" onClick={onRetry}>
-					Try again
-				</Button>
+				{/* Try again, and what to send whoever runs the server: the page, the time and what went wrong. */}
+				<div className="flex flex-wrap items-center justify-center gap-2">
+					<Button variant="primary" size="md" onClick={onRetry}>
+						Try again
+					</Button>
+					<CopyButton
+						text={`${title ?? "Console"}: ${message} (${new Date().toISOString()})`}
+						label="Copy details"
+						size="md"
+					/>
+				</div>
 			</div>
 		</div>
 	);
