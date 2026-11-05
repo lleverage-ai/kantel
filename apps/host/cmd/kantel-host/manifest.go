@@ -23,7 +23,7 @@ func manifestCmd(args []string) error {
 		return err
 	}
 	known := func(name string) bool {
-		for _, prefix := range []string{"vmlinux-", "sandbox-", "isolate-", "workerd-", "kantel-host-"} {
+		for _, prefix := range []string{"vmlinux-", "sandbox-", "isolate-", "workerd-", "kantel-host-", "kantel-guest-"} {
 			if strings.HasPrefix(name, prefix) {
 				return true
 			}

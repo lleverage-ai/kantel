@@ -147,6 +147,58 @@ export class KantelError extends Error {
 	}
 }
 
+/**
+ * Why a sandbox couldn't be placed on a host, carried as `details.reason` on the error (and as a sandbox's
+ * `placementReason` when its boot failed for it), so a caller can decide to retry, ask for something else or give up:
+ *
+ * - `no_host`: no host it may use is connected and reporting.
+ * - `no_host_for_type`: none runs its type, such as a microVM with no KVM host.
+ * - `no_host_with_labels`: none carries every label it asked for (`hostLabels`).
+ * - `no_host_offers_size`: none offers its size or can make its shape.
+ * - `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables.
+ * - `no_host_for_template`: none that could take it runs templates, or builds the template's custom image.
+ * - `insufficient_capacity`: hosts match, but none has the memory or disk free now. Retry later.
+ * - `host_unavailable`: the host its disk or snapshot is on is offline, draining or not one it may use now, or went
+ *   during the boot.
+ * - `account_limit`: the account runs as many sandboxes as it may.
+ */
+export type PlacementReason =
+	| "no_host"
+	| "no_host_for_type"
+	| "no_host_with_labels"
+	| "no_host_offers_size"
+	| "no_host_enforces_egress"
+	| "no_host_for_template"
+	| "insufficient_capacity"
+	| "host_unavailable"
+	| "account_limit";
+
+export const PLACEMENT_REASONS: readonly PlacementReason[] = [
+	"no_host",
+	"no_host_for_type",
+	"no_host_with_labels",
+	"no_host_offers_size",
+	"no_host_enforces_egress",
+	"no_host_for_template",
+	"insufficient_capacity",
+	"host_unavailable",
+	"account_limit",
+];
+
+const PLACEMENT_REASON_SET: ReadonlySet<string> = new Set(PLACEMENT_REASONS);
+
+/** A refused placement: `code` and `message` as before, with `reason` in `details.reason`. */
+export function placementError(code: ErrorCode, reason: PlacementReason, message: string): KantelError {
+	return new KantelError(code, message, { reason });
+}
+
+/** The placement reason `error` carries in `details.reason`, if it is a KantelError with one. */
+export function placementReasonOf(error: unknown): PlacementReason | undefined {
+	if (!isKantelError(error)) return undefined;
+	const reason = (error as { details?: { reason?: unknown } }).details?.reason;
+	return typeof reason === "string" && PLACEMENT_REASON_SET.has(reason) ? (reason as PlacementReason) : undefined;
+}
+
 /** Whether `error` is a KantelError, optionally with `code`. Works across package copies by checking the shape. */
 export function isKantelError(error: unknown, code?: ErrorCode): error is KantelError {
 	if (typeof error !== "object" || error === null) return false;

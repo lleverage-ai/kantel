@@ -5,6 +5,8 @@
  *                                               token is the authority)
  *   GET    /v1/hosts/e2e/chain?space=…          with the host's credential: a space's E2E chain, and the host's own
  *   POST   /v1/hosts/e2e/chain                  host.add to it (`kantel-host e2e join`)
+ *   GET    /v1/hosts/bundles/{digest}?sandboxId=…  with the host's credential: a bundle's tar, for a sandbox on that
+ *                                               host that mounts it
  *   GET    /v1/admin/hosts                      the operator's: hosts, join tokens, drain and revoke, as in
  *   POST   /v1/admin/hosts/join-tokens          docs/site/src/content/docs/api/reference/hosts.md
  *   GET    /v1/admin/hosts/{id}
@@ -24,6 +26,9 @@ import type { HostsService } from "./service.ts";
 export const HOSTS_REGISTER_PATH = "/v1/hosts/register";
 export const HOSTS_E2E_CHAIN_PATH = "/v1/hosts/e2e/chain";
 export const HOSTS_CONNECT_PATH = "/v1/hosts/connect";
+/** `GET /v1/hosts/bundles/{digest}?sandboxId=…`: a bundle's tar, for a host that mounts it in one of its sandboxes. */
+export const HOSTS_BUNDLES_PATH = "/v1/hosts/bundles";
+const BUNDLE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 /** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches from the control plane. */
 export const HOSTS_IMAGES_PATH = "/v1/hosts/images";
 
@@ -124,6 +129,9 @@ export function createHostsApi(options: HostsApiOptions) {
 				const name = optional(input.name, isString, "name");
 				const labels = optional(input.labels, isRecord, "labels");
 				const draining = optional(input.draining, isBoolean, "draining");
+				if (input.pools !== undefined && input.pools !== null) {
+					throw new KantelError("invalid", "Hosts keep no warm pools: a create restores a snapshot");
+				}
 				return json(
 					await hosts.update(hostId, {
 						...(name === undefined ? {} : { name }),
@@ -140,6 +148,8 @@ export function createHostsApi(options: HostsApiOptions) {
 			if (tier !== "microvm" && tier !== "isolate") throw new KantelError("invalid", "tier is microvm or isolate");
 			const sandboxId = optional(input.sandboxId, isString, "sandboxId");
 			const size = optional(input.size, isString, "size");
+			const vcpus = optional(input.vcpus, isNumber, "vcpus");
+			const memoryMiB = optional(input.memoryMiB, isNumber, "memoryMiB");
 			const owner = optional(input.owner, isString, "owner");
 			const labels = optional(input.labels, isRecord, "labels");
 			const env = optional(input.env, isRecord, "env");
@@ -150,6 +160,7 @@ export function createHostsApi(options: HostsApiOptions) {
 					tier: tier as SandboxTier,
 					...(sandboxId === undefined ? {} : { sandboxId }),
 					...(size === undefined ? {} : { size }),
+					...(memoryMiB === undefined ? {} : { shape: { vcpus: vcpus ?? 0, memoryMiB } }),
 					...(owner === undefined ? {} : { owner }),
 					...(labels === undefined ? {} : { labels }),
 					...(env === undefined ? {} : { env }),
@@ -198,13 +209,17 @@ export function createHostsApi(options: HostsApiOptions) {
 				isString((entry as { payload?: unknown }).payload) &&
 				isString((entry as { sig?: unknown }).sig),
 		);
+	/** The host whose credential the request carries, unless it is unknown or revoked. */
+	const hostOf = async (request: Request) => {
+		const credential = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+		return credential === undefined ? undefined : await hosts.authenticate(credential);
+	};
+	const noHost = () => json({ error: { code: "unauthenticated", message: "This needs a host's credential" } }, 401);
+
 	/** The chain routes, for the host whose credential the request carries. */
 	const chain = async (request: Request): Promise<Response> => {
-		const credential = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
-		const host = credential === undefined ? undefined : await hosts.authenticate(credential);
-		if (host === undefined) {
-			return json({ error: { code: "unauthenticated", message: "This needs a host's credential" } }, 401);
-		}
+		const host = await hostOf(request);
+		if (host === undefined) return noHost();
 		if (request.method === "GET") {
 			const space = new URL(request.url).searchParams.get("space");
 			if (space === null || space === "") throw new KantelError("invalid", "space is required");
@@ -218,6 +233,37 @@ export function createHostsApi(options: HostsApiOptions) {
 			return json({ entries: await hosts.appendE2EChain(host.id, input.space, input.from, input.entries) });
 		}
 		return json({ error: { code: "invalid", message: "GET or POST" } }, 405);
+	};
+
+	/**
+	 * A bundle's tar, streamed, for the host whose credential the request carries: only for a sandbox on that host that
+	 * mounts it (the compute plane decides), so a host learns nothing of another's bundles.
+	 */
+	const bundle = async (request: Request, path: string): Promise<Response> => {
+		const host = await hostOf(request);
+		if (host === undefined) return noHost();
+		if (request.method !== "GET") return json({ error: { code: "invalid", message: "GET only" } }, 405);
+		let digest: string;
+		try {
+			digest = decodeURIComponent(path.slice(HOSTS_BUNDLES_PATH.length + 1));
+		} catch {
+			digest = "";
+		}
+		if (!BUNDLE_DIGEST.test(digest)) throw new KantelError("invalid", "A bundle's digest is sha256: and 64 hex digits");
+		const sandboxId = new URL(request.url).searchParams.get("sandboxId");
+		if (sandboxId === null || sandboxId === "") throw new KantelError("invalid", "sandboxId is required");
+		const found = await hosts.bundle(host.id, sandboxId, digest);
+		if (found === undefined) {
+			return json({ error: { code: "not_found", message: "No such bundle for this sandbox on this host" } }, 404);
+		}
+		return new Response(found.body, {
+			status: 200,
+			headers: {
+				"content-type": "application/x-tar",
+				"content-length": String(found.sizeBytes),
+				"cache-control": "no-store",
+			},
+		});
 	};
 
 	return {
@@ -243,6 +289,7 @@ export function createHostsApi(options: HostsApiOptions) {
 					);
 				}
 				if (path === HOSTS_E2E_CHAIN_PATH) return await chain(request);
+				if (path.startsWith(`${HOSTS_BUNDLES_PATH}/`)) return await bundle(request, path);
 				if (!isHostsPath(path)) return undefined;
 				return await admin(request, path);
 			} catch (error) {

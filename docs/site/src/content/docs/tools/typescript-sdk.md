@@ -111,7 +111,7 @@ try {
 }
 ```
 
-The codes are listed under [ErrorCode](/api/reference/types/#errorcode). The ones to plan for are `conflict` (a sandbox in the wrong state, such as running a command in a stopped one), `exhausted` (a limit, or every host full: wait and try again) and `unavailable` (no host can take the call now). A call that never reaches Kantel, such as when the address is wrong, rejects with `fetch`'s own error instead.
+The codes are listed under [ErrorCode](/api/reference/types/#errorcode). The ones to plan for are `conflict` (a sandbox in the wrong state, such as running a command in a stopped one), `exhausted` (a limit, or every host full: wait and try again) and `unavailable` (no host can take the call now). When a sandbox can't be placed, `error.reason` says why, such as `no_host_for_type` (one found only as it boots, such as `insufficient_capacity`, is in the sandbox's `placementReason` instead); see [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed). A call that never reaches Kantel, such as when the address is wrong, rejects with `fetch`'s own error instead.
 
 ## Types
 

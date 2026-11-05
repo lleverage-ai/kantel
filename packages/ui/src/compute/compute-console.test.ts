@@ -7,7 +7,19 @@ import {
 	parseComputePath,
 	pathAfterAccountSwitch,
 	sandboxPath,
+	screenSearch,
 } from "./compute-console.tsx";
+
+describe("a screen's page in a new tab", () => {
+	it("carries what this tab runs on and the address's theme, and nothing of the page's own", () => {
+		expect(screenSearch("")).toBe("");
+		expect(screenSearch("?theme=dark&path=/home/user&file=a.md&new", "source=recorded")).toBe(
+			"?source=recorded&theme=dark",
+		);
+		// What the tab runs on, not what the address says now: it was chosen once, when the app started.
+		expect(screenSearch("?hosting=hosted", "hosting=self-hosted&data=sample")).toBe("?hosting=self-hosted&data=sample");
+	});
+});
 
 describe("Egress's tabs", () => {
 	it("names every tab in the address, Log too, keeping the rest of the query", () => {

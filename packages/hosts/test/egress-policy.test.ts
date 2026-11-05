@@ -102,6 +102,7 @@ describe("a host that doesn't report enforcing egress policy", () => {
 		const refused = await root.createSandbox({ environment: environment.id, wait: true });
 		expect(refused.state).toBe("error");
 		expect(refused.reason).toMatch(/enforces egress grants or protected variables/);
+		expect(refused.placementReason).toBe("no_host_enforces_egress");
 		expect(JSON.stringify(refused)).not.toContain(SECRET);
 		expect(host.calls.filter((call) => call.method === "sandbox.create")).toEqual([]);
 
@@ -131,6 +132,26 @@ describe("a host that doesn't report enforcing egress policy", () => {
 		expect([kept.grants, kept.variables.map((variable) => variable.name)]).toEqual([[], ["LOG_LEVEL"]]);
 		// A plain variable needs nothing of the host.
 		await root.setEnvironmentVariable(open.id, "MODE", { value: "dev" });
+	});
+});
+
+describe("a stopped sandbox given grants its host can't enforce", () => {
+	it("fails to start or resume, saying no_host_enforces_egress", async () => {
+		const { root } = await setup();
+		const environment = await root.createEnvironment({ name: "later" });
+		const sandbox = await root.createSandbox({ type: "microvm", environment: environment.id, wait: true });
+		expect(sandbox.state).toBe("running");
+		await root.stopSandbox(sandbox.id, { wait: true });
+		// Stopped, so nothing running is refused it: the edit is kept, and the next boot needs a host that enforces it.
+		await root.putEnvironmentGrants(environment.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		const started = await root.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ state: "error", placementReason: "no_host_enforces_egress" });
+		const resumed = await root.resumeSandbox(sandbox.id, { wait: true });
+		expect(resumed).toMatchObject({ state: "error", placementReason: "no_host_enforces_egress" });
+		const { items } = await root.listEvents({ sandboxId: sandbox.id });
+		expect(items.find((event) => event.type === "sandbox.error")?.data).toMatchObject({
+			placementReason: "no_host_enforces_egress",
+		});
 	});
 });
 

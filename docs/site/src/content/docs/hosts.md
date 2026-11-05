@@ -40,29 +40,31 @@ Kantel Connect, a link through kantel.dev for hosts and self-hosted control plan
 
 ## Check a machine
 
-To check a machine before it joins, install only the binary, then run its checks:
+To check a machine before it joins, run the installer with `--check`. It downloads `kantel-host` into a temporary directory, checks it against `SHA256SUMS`, runs its `doctor` from there and installs nothing:
 
 ```sh
-curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --no-join
-sudo kantel-host doctor
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --check
 ```
 
 ```text
-ok    kvm                    /dev/kvm opens read-write
-ok    nested virtualisation  kvm_amd nested=1
-ok    root                   kantel-host runs as root (TAP devices, iptables, /dev/kvm)
-ok    ip                     ip
-ok    iptables               iptables
-ok    mkfs.ext4              mkfs.ext4
-ok    cp                     cp
-ok    tun                    /dev/net/tun
-ok    disk                   412 GiB free at /var/lib/kantel-host (20 GiB or more recommended)
-ok    memory                 128776 MiB (4 GiB or more recommended)
+ok      kvm                    /dev/kvm opens read-write
+ok      nested virtualisation  kvm_amd nested=1
+ok      root                   kantel-host runs as root (TAP devices, iptables, /dev/kvm)
+ok      ip                     ip
+ok      iptables               iptables
+ok      mkfs.ext4              mkfs.ext4
+ok      cp                     cp
+ok      docker                 Docker 28.5.1 builds templates' images
+ok      tun                    /dev/net/tun
+ok      disk                   412 GiB free at /var/lib, which will hold /var/lib/kantel-host (20 GiB or more recommended)
+ok      memory                 128776 MiB (4 GiB or more recommended)
 
 This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, inside a microVM).
 ```
 
-`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` decide whether the machine can run microVMs. `disk` and `memory` are advice. Before the first install, `disk` reads 0 GiB, because `/var/lib/kantel-host` doesn't exist yet. A machine that is itself a VM gets a `host is a VM` line too, which fails without nested virtualisation. `--json` prints the checks as JSON.
+On a machine that already has `kantel-host`, `sudo kantel-host doctor` runs the same checks.
+
+`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory`, `nested virtualisation` and `docker` (which only template builds need) are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. `--json` prints the checks as JSON, each with its `state` and whether it's `required`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
 
 ## Get kantel-host and the images
 
@@ -72,7 +74,7 @@ Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releas
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_…
 ```
 
-The line works the same in bash, zsh and fish, since the script runs under `sh`. It picks the binary for the machine's architecture, downloads it with `SHA256SUMS` from the same release, refuses it if its SHA-256 doesn't match, and then runs `kantel-host install` with the options after `--`. Two options of its own come first: `--version 0.2.0` installs that release rather than the latest, and `--no-join` only puts the binary in `/usr/local/bin`. Every release file has a build provenance attestation too, which `gh attestation verify kantel-host-linux-amd64 --repo lleverage-ai/kantel` checks.
+The line works the same in bash, zsh and fish, since the script runs under `sh`. It picks the binary for the machine's architecture, downloads it with `SHA256SUMS` from the same release, refuses it if its SHA-256 doesn't match, and then runs `kantel-host install` with the options after `--`. Its own options come first: `--version 0.2.0` installs that release rather than the latest, `--no-join` only puts the binary in `/usr/local/bin`, and `--check` only [checks the machine](#check-a-machine). `--dry-run`, anywhere in the options, [shows what the install would do](#see-what-install-will-do) and changes nothing. Every release file has a build provenance attestation too, which `gh attestation verify kantel-host-linux-amd64 --repo lleverage-ai/kantel` checks.
 
 To build `kantel-host` yourself instead, with Go 1.26 or later:
 
@@ -165,7 +167,58 @@ The installer hands its options to `kantel-host install`, which:
 4. registers with the control plane, and saves the host's ID and credential in `/etc/kantel-host/config.json`;
 5. writes the `kantel-host` systemd unit, then enables and starts it.
 
-Without systemd, such as in a container, install stops after step 4: run `kantel-host run` as root under a supervisor of your own, and restart it when it exits. Running `install` again with the same `--url` and no token updates the install and keeps the registration.
+Without systemd, such as in a container, install stops after step 4: run `kantel-host run` as root under a supervisor of your own, and restart it when it exits.
+
+Install adds no users or groups, since `kantel-host` runs as root, and changes no sysctl settings. For microVMs, `kantel-host` sets up its own network when it registers (it starts its tiers for a moment to report what the host can run) and each time the service starts: iptables chains `KANTEL-INPUT` and `KANTEL-FORWARD`, jumped to from `INPUT`, `FORWARD` and, on a host with Docker, `DOCKER-USER`, and ip6tables rules that drop its devices' traffic. The service adds a TAP device for each microVM in `10.231.0.0/16`, with IPv6 off on it.
+
+#### Running it again
+
+Every step can run again. A file already in place with the right digest is kept, a download goes to `<name>.part` and only replaces the file once its digest matches, and the settings and the unit are written whole. So if an install stops part way, run the same command again and it carries on:
+
+- Stopped before registering: the token hasn't been used, so the same command starts over and skips what it already fetched.
+- Stopped after registering: the host keeps the SHA-256 of the token it registered with (never the token), so the same command carries on without using the token again. Install checks that it can save its settings before it registers, since a registration it couldn't save would leave the token used up.
+- With the same `--url` and no token: install updates the binary, the images and the service, and keeps the registration.
+- With a different token: the machine registers again with that token.
+
+#### See what install will do
+
+`--dry-run` prints every step: each download with its URL and expected SHA-256, each directory and file it writes with its mode, the systemd unit and the `systemctl` commands, and the registration. Then it exits without changing anything, and without using the token:
+
+```sh
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --dry-run --url https://kantel.example.com --token kth_…
+```
+
+```text
+==> Download kantel-host
+  get    https://github.com/lleverage-ai/kantel/releases/latest/download/kantel-host-linux-amd64 (sha256 4f1c…, from …/SHA256SUMS): downloaded and checked now, into a temporary directory
+==> Check this machine
+  check  kvm: /dev/kvm opens read-write
+  check  nested virtualisation: kvm_amd nested=1
+==> Install kantel-host 0.3.0
+  copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
+==> Fetch Firecracker and the sandbox images
+  check  images host-images-20261103.1 from https://kantel.example.com/v1/hosts/images/manifest.json
+  mkdir  /var/lib/kantel-host (mode 0755)
+  mkdir  /var/lib/kantel-host/bin (mode 0755)
+  get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
+  mkdir  /var/lib/kantel-host/images (mode 0755)
+  get    https://kantel.example.com/v1/hosts/images/vmlinux-x86_64 to /var/lib/kantel-host/images/vmlinux (sha256 6ae3…, mode 0644)
+  get    https://kantel.example.com/v1/hosts/images/sandbox-amd64.ext4.gz to /var/lib/kantel-host/images/sandbox.ext4 (sha256 8500…, unpacked as it downloads, mode 0644)
+  get    https://kantel.example.com/v1/hosts/images/isolate-amd64.ext4.gz to /var/lib/kantel-host/images/isolate.ext4 (sha256 e670…, unpacked as it downloads, mode 0644)
+==> Register with https://kantel.example.com
+  mkdir  /etc/kantel-host (mode 0755)
+  post   https://kantel.example.com/v1/hosts/register as "builder-1", which uses the token up
+  note   to report what this host can run, registering starts its tiers for a moment, which makes their directories under /var/lib/kantel-host; for microVMs it also makes the bucket mounts' read cache, /var/lib/kantel-host/mount-cache, up to 10240 MiB, and their key, /var/lib/kantel-host/mount-proof.key, and sets up the network rules below
+==> Save the settings
+  write  /etc/kantel-host/config.json (mode 0600: the control plane, the host's ID and credential, and its settings)
+==> Start the service
+  write  /etc/systemd/system/kantel-host.service (the kantel-host systemd unit, mode 0644)
+  run    systemctl daemon-reload
+  run    systemctl enable --now kantel-host
+  run    systemctl restart kantel-host
+```
+
+It ends with what install leaves to the service, as above. The real output has the full digests. To read the plan, the dry run downloads only the images' `manifest.json` and Firecracker's digest. It needs root, like the install, to see `/dev/kvm` and the settings as the install would. A dry run fails where the install would, such as with no usable `/dev/kvm` or images it can't reach. The plan and the install come from the same list of steps, and the install prints each line as it does it. On a machine that already has `kantel-host`, `sudo kantel-host install --dry-run …` does the same. So does `sudo kantel-host plan …`, which the installer runs: it takes the same options and only ever prints the plan, even if an option swallows `--dry-run` as its value.
 
 | Flag | What it does |
 | --- | --- |
@@ -177,9 +230,11 @@ Without systemd, such as in a container, install stops after step 4: run `kantel
 | `--tiers LIST` | `microvm`, `isolate` or both, comma-separated. Default: what the machine can run |
 | `--isolate-runtime native` | Run isolates with workerd on the host itself, with no KVM. For trusted code only |
 | `--proxy-data-path` | Send sandboxes' traffic on to the account's [upstream proxy](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy). Experimental |
+| `--inject-guest-agent` | Boot microVMs through Kantel's initramfs, which puts the guest agent into [any Linux image](/sandboxes/custom-images/). Experimental |
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
+| `--dry-run` | Print what the install would do, and change nothing. See [See what install will do](#see-what-install-will-do) |
 
 Put any of these after the token in the join command. `sudo kantel-admin host join --url … --token …` on the machine runs the same installer, and `kantel-admin host add --ssh root@builder-1` runs the printed command on the machine over SSH.
 
@@ -220,15 +275,18 @@ A host is `online`, `draining`, `unreachable` (registered, but not connected now
 
 Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each running sandbox's CPU and memory. It measures them from its own side and runs nothing in a sandbox to do it:
 
-- A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is that process's resident memory: the guest memory the VM has touched, page cache included. A microVM doesn't give memory back, so the figure stays near its high point after a spike.
+- A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is what the guest itself counts as used, its total less its available memory, as `free -m` shows it in the guest. The guest's kernel reports those figures to Firecracker through a virtio-balloon device that only reports (it never takes memory from the guest), and the host reads them from Firecracker, so nothing runs in the sandbox. Page cache isn't counted, and the figure falls when the guest frees memory.
+- A microVM restored from a snapshot made before the host had that device (or one on a kernel without `virtio_balloon`) can't report, so its memory is its Firecracker process's resident memory instead: the guest memory the VM has touched, page cache included. A microVM doesn't give that memory back to the host, so that figure stays near its high point after a spike. Each reading says which it is (`memSource`, `guest` or `rss`, on the host's link).
 - An account's isolates share one runtime, so the host measures the runtime and shares it out. Each isolate's CPU is its part of the runtime's CPU time, split by how long each spent running commands, as a share of one CPU. The runtime's memory is split evenly.
 - The disk is the file system the host's data directory (`/var/lib/kantel-host`) is on.
 
-While the host can't reach Kantel it keeps the last 120 readings (10 minutes' worth at the default interval) and sends them when it reconnects.
+The host keeps each reading until Kantel confirms it has it, up to the last 120 readings (10 minutes' worth at the default interval). Kantel confirms a reading once the gateway holding the host's connection has added it to the sandbox's usage. If the connection drops or stalls, the host sends every unconfirmed reading again, oldest first, when it reconnects, so readings already sent into a connection that then failed aren't lost. Kantel ignores a reading it already has, so nothing appears twice in the usage or the [OpenTelemetry export](/monitoring/opentelemetry/), even when the host reconnects to a different gateway. A confirmation covers that reading and every earlier one. If Kantel can't add a reading, for example while its database is unavailable, it doesn't confirm it or any later one until it has added them all in order, so a failed reading is never skipped. If more than 120 readings go unconfirmed, for example because Kantel was out of reach for longer than 10 minutes, the oldest are dropped and the host logs how many.
+
+A host that predates this sends each reading once, and a reading sent into a connection that then fails is lost. The same applies to a newer host connected to a Kantel that predates it.
 
 ## Where sandboxes go
 
-Kantel picks a host when a sandbox is created. A host can take the sandbox if it is connected, not draining or revoked, runs the sandbox's type, offers its size, has every label the sandbox asks for, and has the memory and disk free. Among those, Kantel prefers a host with a warm sandbox of that type and size ready, because a create there is a restore rather than a boot. Next it prefers, for an isolate, a host already running the account's isolates, then the most free memory, then the lowest load.
+Kantel picks a host when a sandbox is created. A host can take the sandbox if it is connected, not draining or revoked, runs the sandbox's type, offers its size, has every label the sandbox asks for, and has the memory and disk free. Among those, Kantel prefers, for an isolate, a host already running the account's isolates, then the most free memory, then the lowest load.
 
 Once placed, a sandbox stays on its host. Stop, start, resume and fork all happen there, and so does a sandbox made from one of its snapshots.
 
@@ -240,7 +298,7 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes" \
   -d '{"type": "microvm", "hostLabels": {"zone": "ams"}}'
 ```
 
-The `kantel` command has no flag for this yet. When no host can take a sandbox, the create answers `503` with `unavailable`, such as `No host can run a microvm sandbox now`.
+The `kantel` command has no flag for this yet. When no host can take a sandbox, Kantel says why: the create answers `503` with `unavailable` and `details.reason` `no_host_with_labels` when no host has the labels, and a sandbox whose matching hosts are all full goes to `error` with `placementReason` `insufficient_capacity`. [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed) lists them.
 
 A host offers three microVM sizes unless its settings say otherwise:
 
@@ -250,7 +308,11 @@ A host offers three microVM sizes unless its settings say otherwise:
 | `default` | 4 | 2 GiB | 20 GiB |
 | `large` | 4 | 8 GiB | 50 GiB |
 
-Each host keeps one warm `default` microVM ready. `KANTEL_COMPUTE_POOLS` on the control plane changes that for every host, as JSON such as `{"microvm/default": 2, "microvm/large": 1}`.
+A create can also ask for any vCPUs and memory with `resources`, such as `{"type": "microvm", "resources": {"vcpus": 3, "memoryMb": 6144}}`. A shape that matches a size goes as that size; any other goes only to a host whose `kantel-host` makes custom shapes. Its disk is the smallest size's with at least its memory, unless it starts from a snapshot, which keeps that snapshot's disk; the sandbox's `resources` say what it got. `GET /v1/sandbox-shapes` says what the hosts you may use offer.
+
+Hosts keep no warm microVMs waiting for a create, hosted or self-hosted: an idle VM holds its memory, and the machine may be doing other things. A create restores a template snapshot from the host's disk instead, in a few hundred milliseconds. A host keeps one template per vCPU count, whatever the memory and disk: a sandbox restored from it is given the rest of its memory (virtio-mem) and has its disk grown. The host makes the sizes' counts in the background when it starts, about a gigabyte of disk each; the first create of another count boots from scratch, in a few seconds, while that count's template is made for the next. Once one is made, the host removes any template it kept per size (an update from a version before these), as no create uses them. With `microvm.sharedTemplate` set to `false` in the settings file, a host keeps a template per size instead, made the first time the size is asked for, and a shape off the sizes always boots from scratch. `KANTEL_COMPUTE_POOLS`, which once set warm pools, is ignored with a warning. A `kantel-host` from before then is told to keep none, so it makes no more. It can't end a warm VM it already has: its next create of that size takes it, and updating the host (the new version clears them when it starts) ends the rest.
+
+An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 by default); it shares its account's VM's CPU. Kantel records what it asked for, but workerd can't hold one isolate to a memory limit yet: the account's VM's memory is the limit its isolates share.
 
 ## Update a host
 
@@ -294,13 +356,18 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `egress` | `open` | A sandbox's network when its account has no [proxy settings](/sandboxes/egress-proxy/) turned on: `open` (through the egress proxy, with no rules), `proxy`, or `none` (no network at all) |
-| `egressAllowCIDRs` | none | Private ranges the egress proxy may connect to anyway, such as `["192.168.10.0/24"]` for a package mirror on your network |
+| `egressAllowCIDRs` | none | Private ranges the egress proxy may connect to anyway, such as `["192.168.10.0/24"]` for a package mirror on your network. Bucket mounts reach their store under the same rule, so a MinIO on your network needs its range here |
+| `mountCacheMiB` | `10240` | The host's read cache for bucket mounts (experimental), on disk in `mountCacheDir` (default `<root>/mount-cache`) and shared by every sandbox on the host; the least recently read goes first. `-1` turns bucket mounts off |
 | `proxyDataPath` | `false` | What `--proxy-data-path` sets |
+| `injectGuestAgent` | `false` | What `--inject-guest-agent` sets: `sandboxImage` may be [any Linux image](/sandboxes/custom-images/) |
 | `proxyPort` | `3129` | The egress proxy's port, on each sandbox's gateway address |
 | `subnet` | `10.231.0.0/16` | Where sandboxes' addresses come from. Each microVM gets a `/30` of it |
 | `tiers` | what the machine can run | `["microvm"]`, `["isolate"]` or both |
 | `overcommitMemory` | `1.5` | How much more memory running sandboxes may be given than the host has, as a ratio. Restored sandboxes share their template's unchanged memory |
+| `templateRegistry` | none | The registry the host pulls templates' base images from, by digest, such as `ghcr.io/lleverage-ai`. Without it, the host makes templates only from its own sandbox image, and refuses a template whose base is a published digest. Templates are experimental (`KANTEL_TEMPLATES`) |
+| `templateBuilder` | off | Builds templates' custom images (a Dockerfile, or an image reference) in a build microVM whose only network is the egress proxy, never with the host's Docker. `{ "registries": ["registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com"] }` names the registries, and the hosts their blobs redirect to, a build may reach besides the template's grants. Needs `injectGuestAgent`. See [Custom images](/sandboxes/custom-images/#a-templates-custom-image). Experimental |
 | `autoUpdate` | `true` | Whether the control plane may move the host to another version |
 | `usageIntervalSeconds` | `5` | How often the host sends its and its sandboxes' usage, up to `300`. Below `0`, never |
+| `microvm.sharedTemplate` | `true` | One template snapshot per vCPU count, serving every memory and disk, rather than one per size (see above) |
 
 <!-- Sources (00d22cc): apps/selfhosted/src/gateway/compute.ts:1-45,100-140, deploy/compose/compose.yaml:325-340, packages/admin/src/admin.ts:404-430. (5be456c): apps/host/cmd/kantel-host/install.go:30-190,366-460,600-660, apps/host/cmd/kantel-host/main.go:60-215, apps/host/cmd/kantel-host/manifest.go, apps/host/internal/hostinfo (Checks), apps/host/internal/agent/config.go:20-120, apps/host/internal/agent/conn.go:194-210, apps/host/internal/microvm/microvm.go:55-60, apps/host/guest/README.md, apps/host/guest/rootfs.sh, packages/hosts/src/scheduler.ts:1-115, packages/hosts/src/service.ts:300-340, packages/compute/src/service.ts:334-347, packages/api/src/compute-schema.ts:391-395, apps/selfhosted/src/gateway/compute.ts:15-40,183-190, deploy/compose/compose.yaml:325-338 -->

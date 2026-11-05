@@ -104,7 +104,35 @@ The fields you can set when you create one:
 
 A create is safe to retry. Send an `Idempotency-Key` header with a value of your own, such as a UUID; a retry with the same key gets the first answer and makes no second sandbox. In the SDK, pass `{ idempotencyKey: crypto.randomUUID() }` as the last argument.
 
-If every host is full, the create answers `429` with `exhausted`. If no host can run the type you asked for, such as a microVM on a deployment with no KVM host, it answers `503` with `unavailable`.
+### When it can't be placed
+
+When no host can take the sandbox, Kantel says why with a `reason`. A check it can make before placing it refuses the call, with the reason in `details.reason` beside the error's code and message:
+
+```json
+{
+  "error": {
+    "code": "unavailable",
+    "message": "No host can run a microvm sandbox now",
+    "details": { "reason": "no_host_for_type" }
+  }
+}
+```
+
+Others are found only once a host is being chosen, such as hosts that turn out to be full, or a host that drops off as the sandbox boots. The call then answers as usual and the sandbox goes to `error`, with the reason in its `placementReason` and in the `sandbox.error` event's data; with `wait`, the answer is that sandbox. Any reason can come either way, so check both.
+
+| `reason` | Code (and status, at the call) | What it means | What to do |
+| --- | --- | --- | --- |
+| `no_host` | `503 unavailable` | No host you may use is connected | Try again once one is |
+| `no_host_for_type` | `503 unavailable` | No host runs the type, such as a microVM on a deployment with no KVM host | Ask for the other type |
+| `no_host_with_labels` | `503 unavailable` | No host has every label in `hostLabels` | Ask for other labels, or none |
+| `no_host_offers_size` | `501 not_supported` | No host offers the size or can make the `resources` | Ask for another size; `GET /v1/sandbox-shapes` says what there is |
+| `no_host_enforces_egress` | `501 not_supported` | No host that could take it enforces egress grants or protected variables | Upgrade `kantel-host` |
+| `no_host_for_template` | `501 not_supported` | No host that could take it runs templates, or builds the template's custom image | Create it without the template, or turn a host's template builder on |
+| `insufficient_capacity` | `429 exhausted` | Hosts match, but none has the memory or disk free now | Try again later, or ask for less |
+| `host_unavailable` | `503 unavailable` | The host its disk or snapshot is on is offline, draining or not one you may use now, or it dropped off during the boot | Try again later |
+| `account_limit` | `429 exhausted` | The account runs as many sandboxes as it may | Stop or delete one |
+
+The same goes for a start, resume or fork, and for a create from a snapshot. These run only on the host their disk or snapshot is on, so when that host is offline or isn't one you may use, the reason is `host_unavailable`, whatever other hosts there are. A host that is there can still refuse one for its own reason, such as `insufficient_capacity` or `no_host_enforces_egress`. Other errors have no `reason`.
 
 ## States
 

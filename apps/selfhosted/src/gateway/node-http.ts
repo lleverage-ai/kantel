@@ -1,8 +1,12 @@
 // Serves a Fetch-style handler on node:http, which Bun and Node both run. A client that disconnects aborts the
 // request's signal, so the session API's event streams and result waits end with their connection.
+//
+// A request's body is read whole before the handler sees it (at most MAX_BODY_BYTES, within REQUEST_TIMEOUT_MS), except
+// on the few routes whose bodies are files of any size (`streamsRequestBody`): those reach the handler at once with the
+// body as a stream, which the handler reads as it can.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Duplex } from "node:stream";
+import { type Duplex, Readable } from "node:stream";
 import { refuseUpgrade } from "./upgrade-refusal.ts";
 
 /** A WebSocket upgrade's handler: it takes the socket over, or refuses it. */
@@ -22,9 +26,24 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /**
  * How long a client may take to send its request body. Only the request: a response, such as an
- * event stream, may stay open for as long as the client reads it.
+ * event stream, may stay open for as long as the client reads it. For a streamed body, how long it may go quiet
+ * between chunks instead: a 500 MB upload may take as long as it needs while it keeps coming.
  */
 const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * The requests whose bodies are streamed to the handler rather than read first: a signed file URL's upload
+ * (`PUT /v1/file-urls/{token}`), a bundle's tar (`POST /v1/bundles`) and an archive to extract
+ * (`PUT /v1/sandboxes/{id}/files/archive`), any query. Each can be far larger than MAX_BODY_BYTES, and its route reads
+ * it as a stream (a `rawBody` route, or the file URL's), so holding it in memory would only cap and slow it.
+ */
+export function streamsRequestBody(method: string | undefined, url: string | undefined): boolean {
+	const path = (url ?? "/").split("?", 1)[0] ?? "/";
+	if (method === "PUT") {
+		return /^\/v1\/file-urls\/[A-Za-z0-9_-]+$/.test(path) || /^\/v1\/sandboxes\/[^/]+\/files\/archive$/.test(path);
+	}
+	return method === "POST" && path === "/v1/bundles";
+}
 
 /**
  * How long a response waits for a client that has stopped reading before giving up on it. A session's event stream
@@ -68,6 +87,34 @@ function toRequest(incoming: IncomingMessage, body: Buffer | undefined, signal: 
 		signal,
 		...(body === undefined || method === "GET" || method === "HEAD" ? {} : { body: new Uint8Array(body) }),
 	});
+}
+
+/**
+ * A request whose body is `incoming` itself, read as the handler reads it. The body's queue counts bytes, up to the
+ * request's own high-water mark: by default a web stream counts chunks, so a reader that stops (a signed upload waiting
+ * on its host's window) would leave thousands of whole HTTP chunks queued before `incoming` paused.
+ */
+export function toStreamedRequest(incoming: Readable, url: string, signal: AbortSignal): Request {
+	const headers = new Headers();
+	const message = incoming as Partial<IncomingMessage>;
+	for (const [name, value] of Object.entries(message.headers ?? {})) {
+		if (typeof value === "string") headers.set(name, value);
+		else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
+	}
+	return new Request(url, {
+		method: message.method ?? "PUT",
+		headers,
+		signal,
+		body: Readable.toWeb(incoming, {
+			strategy: { highWaterMark: incoming.readableHighWaterMark, size: (chunk) => (chunk as Uint8Array).byteLength },
+		}) as ReadableStream<Uint8Array>,
+		// What fetch needs for a body that is a stream: sent (here, read) as it comes.
+		duplex: "half",
+	} as RequestInit & { duplex: "half" });
+}
+
+function incomingRequest(incoming: IncomingMessage, signal: AbortSignal): Request {
+	return toStreamedRequest(incoming, `http://${incoming.headers.host ?? "localhost"}${incoming.url ?? "/"}`, signal);
 }
 
 async function write(
@@ -125,14 +172,70 @@ export async function listen(handler: FetchHandler, port: number, options: Liste
 		outgoing.on("close", () => {
 			if (!outgoing.writableFinished) controller.abort();
 		});
-		const chunks: Buffer[] = [];
-		let size = 0;
 		const refuse = (status: number, message: string) => {
 			if (outgoing.headersSent) return;
 			outgoing.writeHead(status, { "content-type": "application/json", connection: "close" });
 			outgoing.end(JSON.stringify({ error: { code: "invalid", message } }));
 			incoming.destroy();
 		};
+		// Making the Request is in the try too: a Host header that makes no URL is a 500, never a throw out of the server.
+		const answer = async (request: () => Request): Promise<Response> => {
+			try {
+				const address = incoming.socket.remoteAddress;
+				return await handler(request(), address === undefined ? {} : { address });
+			} catch (error) {
+				console.error("[gateway]", error);
+				return new Response(JSON.stringify({ error: { code: "unavailable", message: "Internal error" } }), {
+					status: 500,
+					headers: { "content-type": "application/json" },
+				});
+			}
+		};
+		if (streamsRequestBody(incoming.method, incoming.url)) {
+			// No deadline for the whole body, only for a pause in it. A body the handler isn't reading yet (its queue full,
+			// so `incoming` paused) is the handler's wait, not the client's, and doesn't count.
+			let idle: ReturnType<typeof setTimeout> | undefined;
+			const arm = () => {
+				clearTimeout(idle);
+				idle = setTimeout(() => {
+					if (incoming.isPaused()) arm();
+					else refuse(408, "The request body stopped arriving");
+				}, requestTimeoutMs);
+			};
+			const disarm = () => clearTimeout(idle);
+			incoming.on("end", disarm);
+			incoming.on("close", disarm);
+			void (async () => {
+				const response = await answer(() => {
+					const request = incomingRequest(incoming, controller.signal);
+					arm();
+					// After `Readable.toWeb` has started the flow, so this listener only watches it.
+					incoming.on("data", arm);
+					return request;
+				});
+				if (outgoing.headersSent || outgoing.writableEnded) {
+					// Refused already: the body stopped arriving, and the handler then failed on it.
+					await response.body?.cancel().catch(() => {});
+					return;
+				}
+				await write(response, outgoing, incoming.method === "HEAD", drainTimeoutMs);
+				disarm();
+				// Answered without reading all of the body (a refusal, or a sign-in that failed): once the answer is out,
+				// stop taking the rest rather than read a large upload nobody wants.
+				if (!incoming.complete && !incoming.destroyed) {
+					if (!outgoing.writableFinished && !outgoing.destroyed) {
+						await new Promise<void>((done) => {
+							outgoing.once("finish", () => done());
+							outgoing.once("close", () => done());
+						});
+					}
+					incoming.destroy();
+				}
+			})().catch(() => outgoing.destroy());
+			return;
+		}
+		const chunks: Buffer[] = [];
+		let size = 0;
 		// The deadline covers receiving the request only; Node's own requestTimeout is checked only every 30 s, and
 		// Bun's node:http may not check it at all.
 		const deadline = setTimeout(() => refuse(408, "The request took too long to arrive"), requestTimeoutMs);
@@ -150,23 +253,13 @@ export async function listen(handler: FetchHandler, port: number, options: Liste
 			clearTimeout(deadline);
 			if (outgoing.headersSent) return;
 			const body = chunks.length === 0 ? undefined : Buffer.concat(chunks);
-			let response: Response;
-			try {
-				const address = incoming.socket.remoteAddress;
-				response = await handler(
-					toRequest(incoming, body, controller.signal),
-					address === undefined ? {} : { address },
-				);
-			} catch (error) {
-				console.error("[gateway]", error);
-				response = new Response(JSON.stringify({ error: { code: "unavailable", message: "Internal error" } }), {
-					status: 500,
-					headers: { "content-type": "application/json" },
-				});
-			}
+			const response = await answer(() => toRequest(incoming, body, controller.signal));
 			await write(response, outgoing, incoming.method === "HEAD", drainTimeoutMs);
 		});
 	});
+	// Node's own limit on receiving a whole request (300 s by default) would cut a large streamed upload off; the
+	// deadline above bounds every other request's body well within it, and headersTimeout still bounds the headers.
+	server.requestTimeout = 0;
 	const onUpgrade = options.onUpgrade;
 	// Upgraded sockets, so `close` can let them finish the close frames already sent (a host's 1001) before dropping
 	// them: on Bun, `closeAllConnections` destroys upgraded sockets too, where Node leaves them alone.

@@ -1,0 +1,17 @@
+[Unit]
+Description=Kantel browser display: TigerVNC display :2 with only the sandbox's Chromium on it, sized to its viewer
+After=network.target
+# Only on a host that forwards the guest agent's report of the browser surface (it boots the guest with this); on one
+# from before it, Chromium stays on the desktop (kantel-browser).
+ConditionKernelCommandLine=kantel.browser=surface
+
+[Service]
+User=user
+Environment=HOME=/home/user XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=-/etc/kantel/desktop.env
+ExecStart=/usr/local/bin/kantel-browser-display
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

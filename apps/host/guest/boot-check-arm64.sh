@@ -81,6 +81,9 @@ check docker-hello-world runuser -u user -- sh -c "docker run --rm hello-world |
 check desktop wait_for 300 "systemctl is-active kantel-desktop.service && test -e /tmp/.X11-unix/X1"
 check cdp wait_for 600 "curl -fsS -m 5 http://127.0.0.1:9222/json/version | grep -o \"\\\"Browser\\\": *\\\"[^\\\"]*\\\"\""
 check stream wait_for 600 "curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6080/"
+# The browser's own display, with Chromium on it; its stream starts only for a viewer (the guest agent), so here by hand.
+check browser-display wait_for 300 "systemctl is-active kantel-browser-display.service && test -e /tmp/.X11-unix/X2 && runuser -u user -- env DISPLAY=:2 xdotool search --onlyvisible --class chromium | head -n 1"
+check browser-stream wait_for 300 "systemctl start kantel-browser-stream.service && curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6081/"
 check kvm sh -c "if [ -e /dev/kvm ]; then echo /dev/kvm present; else echo no /dev/kvm, as expected on arm64; fi"
 # The desktop as drawn: X is up before XFCE paints it (black, two colours), so wait for a picture with more in it.
 check screenshot wait_for 300 "runuser -u user -- env DISPLAY=:1 import -window root /var/tmp/boot-check.png && test \$(identify -format %k /var/tmp/boot-check.png) -gt 64 && cp /var/tmp/boot-check.png /disk/boot-check.png && identify -format \"%wx%h, %k colours\" /disk/boot-check.png"
@@ -99,7 +102,7 @@ CHECK
 	timeout "$TIMEOUT" qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth-impdef=on -smp 8 -m 4096 \
 		-accel tcg,thread=multi,tb-size=1024 -display none -serial none -monitor none \
 		-kernel /out/vmlinux-aarch64 \
-		-append "console=hvc0 panic=0 root=/dev/vda ro init=/usr/sbin/kantel-init loglevel=4" \
+		-append "console=hvc0 panic=0 root=/dev/vda ro init=/usr/sbin/kantel-init loglevel=4 kantel.browser=surface" \
 		-chardev file,id=con,path=/out/boot-check-arm64.log -device virtio-serial-pci -device virtconsole,chardev=con \
 		-drive if=none,id=root,file="$root",format=raw,readonly=on -device virtio-blk-pci,drive=root,addr=0x5 \
 		-drive if=none,id=disk,file="$work/disk.ext4",format=raw -device virtio-blk-pci,drive=disk,addr=0x6 \

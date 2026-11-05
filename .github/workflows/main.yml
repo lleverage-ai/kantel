@@ -147,6 +147,15 @@ jobs:
     concurrency:
       group: main-sandbox-image-${{ github.ref }}
       cancel-in-progress: false
+    # sandbox-image.yml's base image jobs ask for these, and GitHub checks a called workflow's permissions against the
+    # caller's before it starts, skipped jobs included. Called from here only its gate (`image`) runs, and that job
+    # keeps the called workflow's own `contents: read`; the others run only on its schedule or by hand.
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      security-events: write
+      actions: write
     uses: ./.github/workflows/sandbox-image.yml
 
   # No `if:`, so the default success() applies: a check that failed, was skipped or was cancelled skips the deploy.

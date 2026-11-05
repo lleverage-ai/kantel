@@ -8,6 +8,7 @@
  * | `/v1/me`, `/v1/projects`, `/v1/keys`, members and invites | who is signed in, their projects and keys (`@kantel/identity/http`) |
  * | `/v1/audit/…` | the audit query API (`@kantel/audit/http`) |
  * | `/auth/otp/start`, `/auth/otp/verify`, `/auth/session/end`, on the public origin only | email-code sign-in (`@kantel/identity/otp/http`), with open sign-up (`src/sign-up.ts`) |
+ * | `/auth/oauth/<provider>/start`, `/callback` and `/auth/oauth/session`, on the public origin only, for a provider whose client is set | sign-in with GitHub and Google (`@kantel/identity/oauth`), with the same open sign-up; 404 everywhere else |
  * | every other `/v1/…` | 404 |
  *
  * In that order, as the self-hosted gateway has them (`apps/selfhosted/src/gateway/gateway.ts`): the compute API
@@ -24,8 +25,10 @@
  *
  * On the public origin (KANTEL_PUBLIC_URL, such as app.kantel.dev, with no Access in front) people sign in with an
  * email code instead, and send the Kantel session (`kts_…`) as their bearer. A 401 there names `email_otp`, so the
- * console shows its own sign-in form; anywhere else it names Access, as before. Each code sent counts against the
- * daily mail cap: once it is reached, a start is refused (503) until the next UTC day.
+ * console shows its own sign-in form (with `github` and `google` too, for each provider whose OAuth client is set);
+ * anywhere else it names Access, as before. Each code sent counts against the daily mail cap: once it is reached, a
+ * start is refused (503) until the next UTC day. Every sign-in route, the providers' included, shares one per-address
+ * limit.
  *
  * Before any of that, a browser's write that doesn't come from the console is refused (403, `@kantel/identity/csrf`):
  * a request that changes something and has no `Authorization` header must say it is from the origin it was sent to
@@ -33,9 +36,10 @@
  * port under the same site included. An API key or a Kantel session sent as a bearer passes unchanged.
  */
 import { createAuditQueryHandler } from "@kantel/audit/http";
-import { OTP_START_PATH, OTP_VERIFY_PATH, SESSION_END_PATH } from "@kantel/contracts";
+import { OTP_START_PATH, OTP_VERIFY_PATH, SESSION_END_PATH, type SignInMethod } from "@kantel/contracts";
 import { crossSiteRefusal } from "@kantel/identity/csrf";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
+import { isOAuthPath } from "@kantel/identity/oauth";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
 import { withAccessBearer } from "./compute.ts";
 import type { Stack } from "./stack.ts";
@@ -73,14 +77,16 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	});
 	const email = stack.emailSignIn;
 	const publicHost = email === undefined ? undefined : new URL(email.publicUrl).host;
-	// On the public origin a 401 names email codes, so the console shows its own form; invites are emailed from there.
+	const publicSignIn: readonly SignInMethod[] = ["email_otp", ...(email?.oauth?.providers ?? [])];
+	// On the public origin a 401 names email codes (and the providers that are on), so the console shows its own form;
+	// invites are emailed from there.
 	const publicIdentity =
 		email === undefined
 			? undefined
 			: createIdentityHandler({
 					identity: stack.identity,
 					authenticator: stack.authenticator,
-					signIn: ["email_otp"],
+					signIn: publicSignIn,
 					invites: {
 						mailer: email.invites,
 						link: () => new URL("/", email.publicUrl).toString(),
@@ -109,6 +115,12 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				if (email === undefined || !onPublic) return notFound();
 				return signIn(incoming, email);
 			}
+			// GitHub and Google: only on the public origin, and only a provider that is on; never behind Access.
+			if (isOAuthPath(path)) {
+				const oauth = email?.oauth;
+				if (oauth === undefined || !onPublic || !oauth.handles(path)) return notFound();
+				return limited(incoming) ?? oauth.fetch(incoming);
+			}
 			const request = withAccessBearer(incoming);
 			const computed = await stack.compute.fetch(request);
 			if (computed !== undefined) return computed;
@@ -118,16 +130,21 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		},
 	};
 
-	/** A sign-in route: limited per client address, and a start only while today's mail cap lasts. */
-	async function signIn(request: Request, email: NonNullable<Stack["emailSignIn"]>): Promise<Response> {
+	/** A 429 once this client address has made too many sign-in requests, else undefined (and one more is counted). */
+	function limited(request: Request): Response | undefined {
 		const address = request.headers.get("cf-connecting-ip") ?? "unknown";
 		const retryAfter = signInLimit.take(address);
-		if (retryAfter !== undefined) {
-			return Response.json(
-				{ error: { code: "exhausted", message: "Too many sign-in requests" } },
-				{ status: 429, headers: { ...NO_STORE, "retry-after": String(retryAfter) } },
-			);
-		}
+		if (retryAfter === undefined) return undefined;
+		return Response.json(
+			{ error: { code: "exhausted", message: "Too many sign-in requests" } },
+			{ status: 429, headers: { ...NO_STORE, "retry-after": String(retryAfter) } },
+		);
+	}
+
+	/** A sign-in route: limited per client address, and a start only while today's mail cap lasts. */
+	async function signIn(request: Request, email: NonNullable<Stack["emailSignIn"]>): Promise<Response> {
+		const tooMany = limited(request);
+		if (tooMany !== undefined) return tooMany;
 		if (new URL(request.url).pathname === OTP_START_PATH && request.method === "POST" && !(await email.budget.take())) {
 			console.warn("kantel: today's sign-in mail cap is reached; refusing a sign-in start");
 			return Response.json(

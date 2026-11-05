@@ -1,0 +1,19 @@
+#!/bin/sh
+# The browser alone in a browser: Selkies on loopback port 6081, capturing the browser's own display (:2,
+# kantel-browser-display) rather than the desktop. It is the desktop stream's twin (kantel-stream: one HTTP port, H.264
+# on the CPU over a WebSocket, no login of its own, only the host reaches it) with three differences:
+# - The viewer sizes it: the client's window size becomes the display's (RandR), and the display keeps Chromium's
+#   window at the screen's size, so the page fills whatever shows it.
+# - Its web client's overlay (sidebar, logo, buttons) is off: the page is the browser and nothing else.
+# - It runs only while someone watches: the guest agent starts its unit when the host first opens the port, and stops
+#   it once nothing has been connected for a while (/etc/kantel/on-demand).
+# Another streaming stack would replace this script: the port, the unit and Kantel's relay stay as they are.
+export DISPLAY=:2
+for _ in $(seq 200); do [ -e /tmp/.X11-unix/X2 ] && break; sleep 0.05; done
+exec selkies --addr=127.0.0.1 --port=6081 --enable-https=false --enable-basic-auth=false \
+	--mode=websockets --encoder="${KANTEL_STREAM_ENCODER:-h264enc}" --use-cpu=true \
+	--framerate="${KANTEL_STREAM_FPS:-60}" --enable-resize=true \
+	--ui-show-sidebar=false --ui-show-logo=false --ui-show-core-buttons=false --ui-show-connection-indicator=false \
+	--audio-enabled=false --microphone-enabled=false --gamepad-enabled=false --webcam-enabled=false \
+	--printing-enabled=false --enable-player2=false --enable-player3=false --enable-player4=false \
+	${KANTEL_BROWSER_STREAM_FLAGS:-}

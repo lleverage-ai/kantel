@@ -100,3 +100,27 @@ Revokes its credential and closes its connection. Its sandboxes keep their disks
 - `200`: [Host](/api/reference/types/#host) (`application/json`). The host, revoked.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get one of an account's hosts' usage
+
+`GET /v1/hosts/{hostId}/usage` (SDK method `getAccountHostUsage`)
+
+Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `since` | integer | no | Only the points after this time (epoch milliseconds). |
+
+**Answers**
+
+- `200`: [HostUsage](/api/reference/types/#hostusage) (`application/json`). The host's readings.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).

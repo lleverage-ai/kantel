@@ -6,16 +6,19 @@ import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { createTunnelTickets } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
+import { MemoryInviteMailer } from "@kantel/identity/invites";
 import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import {
 	computeConfig,
+	computeInvites,
 	DEFAULT_HOST_IMAGES,
 	gatewayCompute,
 	gatewayHosts,
 	gatewayRelay,
 	hostImages,
+	mountsSwitch,
 } from "../../src/gateway/compute.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
@@ -24,7 +27,7 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
 });
 
-async function serve(on: boolean, superAdminKey?: string) {
+async function serve(on: boolean, superAdminKey?: string, mailer?: MemoryInviteMailer) {
 	const components = createGatewayComponents();
 	cleanups.push(() => components.close());
 	const seeded = await bootstrap(components, { organisation: "Compute", project: "compute" });
@@ -37,6 +40,9 @@ async function serve(on: boolean, superAdminKey?: string) {
 				authenticator,
 				identity: components.identity,
 				...(superAdminKey === undefined ? {} : { superAdminKey }),
+				...(mailer === undefined
+					? {}
+					: { invites: computeInvites(mailer, "https://kantel.example.com", components.identity) }),
 			})
 		: undefined;
 	if (compute !== undefined) cleanups.push(() => compute.close());
@@ -130,6 +136,71 @@ describe("the compute plane on the gateway", () => {
 		expect((await failure(operator.listHosts())).code).toBe("forbidden");
 	});
 
+	it("lets the person an invite was made for join with its code, and nobody else (#657)", async () => {
+		const { client, person } = await serve(true);
+		const tom = client(await person("tom", "admin"));
+		const ann = client(await person("ann", "operator"));
+		const bob = client(await person("bob", "operator"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		// The address as someone might type it: the match ignores case.
+		const invite = await tom.createInvite(org.id, { email: "Ann@Kantel.Example.com", role: "member" });
+		const code = invite.code ?? "";
+
+		const refused = await failure(bob.joinOrganisation({ code }));
+		expect(refused.code).toBe("forbidden");
+		expect(refused.message).toBe(
+			"This invite is for ann@kantel.example.com, but you're signed in as bob@kantel.example.com. Sign in as ann@kantel.example.com to join.",
+		);
+		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
+	});
+
+	it("names people in the compute plane as identity has them, never by their user ID", async () => {
+		const { client, person } = await serve(true);
+		const tom = client(await person("tom", "admin"));
+		const ann = client(await person("ann", "operator"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@kantel.example.com", role: "member" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+
+		const members = await tom.listMembers(org.id);
+		expect(members.items.map((member) => member.name).sort()).toEqual(["ann", "tom"]);
+		expect((await tom.getCaller()).user?.name).toBe("tom");
+		const sandbox = await ann.createSandbox({ account: org.id, wait: true });
+		expect(sandbox.createdBy).toMatchObject({ kind: "user", name: "ann" });
+	});
+
+	it("emails an organisation's invite with the deployment's mailer, linking to the console at its public URL", async () => {
+		const mailer = new MemoryInviteMailer();
+		const { client, person } = await serve(true, undefined, mailer);
+		const tom = client(await person("tom", "admin"));
+		await person("ann", "viewer");
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@kantel.example.com" });
+		expect(invite.emailed).toBe(true);
+		expect(mailer.sent).toEqual([
+			{
+				to: "ann@kantel.example.com",
+				organisation: "Acme",
+				invitedBy: "tom@kantel.example.com",
+				link: `https://kantel.example.com/organisation#join=${invite.code}`,
+				expiresAt: invite.expiresAt,
+			},
+		]);
+	});
+
+	it("doesn't email an invite to someone who can't sign in to the deployment, and shows its code instead", async () => {
+		// Sign-in is invite-only here: a stranger gets no sign-in code, so a link would lead nowhere. Letting them in is
+		// the deployment's admins' call; an organisation's invite doesn't.
+		const mailer = new MemoryInviteMailer();
+		const { client, person } = await serve(true, undefined, mailer);
+		const tom = client(await person("tom", "admin"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "stranger@kantel.example.com" });
+		expect(invite).toMatchObject({ email: "stranger@kantel.example.com", emailed: false });
+		expect(invite.code).toMatch(/^kji_/);
+		expect(mailer.sent).toEqual([]);
+	});
+
 	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {
 		expect(computeConfig({})).toEqual({});
 		// The old switch is no longer read: off or on, the same.
@@ -147,15 +218,29 @@ describe("the compute plane on the gateway", () => {
 		);
 		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "hosts" })).toThrow(/KANTEL_PUBLIC_URL/);
 		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "cloud" })).toThrow();
+		// Warm pools are gone: an install that still sets KANTEL_COMPUTE_POOLS starts, with a warning, and keeps none.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				computeConfig({
+					KANTEL_COMPUTE_BACKEND: "hosts",
+					KANTEL_PUBLIC_URL: "https://kantel.example.com/",
+					KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
+				}),
+			).toEqual({ hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES } });
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/KANTEL_COMPUTE_POOLS is ignored/));
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("turns templates on only for KANTEL_TEMPLATES=experimental, on the stub or on hosts", () => {
+		expect(computeConfig({ KANTEL_TEMPLATES: "off" })).toEqual({});
+		expect(computeConfig({ KANTEL_TEMPLATES: "experimental" })).toEqual({ templates: true });
 		expect(
-			computeConfig({
-				KANTEL_COMPUTE_BACKEND: "hosts",
-				KANTEL_PUBLIC_URL: "https://kantel.example.com/",
-				KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
-			}),
-		).toEqual({
-			hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES, pools: { "microvm/default": 2 } },
-		});
+			computeConfig({ KANTEL_TEMPLATES: "experimental", KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" }),
+		).toMatchObject({ templates: true, hosts: { publicUrl: "http://127.0.0.1:58090" } });
+		expect(() => computeConfig({ KANTEL_TEMPLATES: "on" })).toThrow(/KANTEL_TEMPLATES/);
 	});
 
 	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {
@@ -292,6 +377,48 @@ describe("the compute plane on the gateway", () => {
 		expect(() => computeConfig({ ...env, KANTEL_ACCOUNT_HOSTS: "on" })).toThrow(/KANTEL_ACCOUNT_HOSTS/);
 		// On the stub there are no hosts to add: nothing to turn on.
 		expect(computeConfig({ KANTEL_ACCOUNT_HOSTS: "experimental" })).toEqual({});
+	});
+
+	it("turns mounts on only for KANTEL_MOUNTS=experimental, with either backend", () => {
+		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
+		expect(computeConfig(env).mounts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_MOUNTS: "off" }).mounts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_MOUNTS: "" }).mounts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_MOUNTS: " Experimental " }).mounts).toBe(true);
+		expect(() => computeConfig({ ...env, KANTEL_MOUNTS: "on" })).toThrow(/KANTEL_MOUNTS/);
+		// On the stub too: bundles, file URLs and archives work there.
+		expect(computeConfig({ KANTEL_MOUNTS: "experimental" })).toEqual({ mounts: true });
+		expect(computeConfig({ KANTEL_COMPUTE_BACKEND: "stub", KANTEL_MOUNTS: "OFF" })).toEqual({});
+		expect(() => computeConfig({ KANTEL_MOUNTS: "yes" })).toThrow(/KANTEL_MOUNTS/);
+		expect(mountsSwitch(undefined)).toBe(false);
+		expect(mountsSwitch("experimental")).toBe(true);
+	});
+
+	it("serves mounts' routes only when they are on", async () => {
+		const components = createGatewayComponents();
+		cleanups.push(() => components.close());
+		const authenticator = createAuthenticator({
+			identity: components.identity,
+			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+		});
+		const bundles = async (on: boolean) => {
+			const compute = await gatewayCompute({ authenticator, ...(on ? { mounts: {} } : {}) });
+			cleanups.push(() => compute.close());
+			const gateway = createGateway({ components, authenticator, compute: compute.api });
+			cleanups.push(() => gateway.close());
+			const response = await gateway.fetch(
+				new Request("http://gateway.test/v1/bundles", {
+					headers: { authorization: `Bearer ${compute.superAdminKey}` },
+				}),
+			);
+			return { status: response.status, binding: compute.binding };
+		};
+		const off = await bundles(false);
+		expect(off.status).toBe(501);
+		expect(off.binding).not.toContain("mounts");
+		const on = await bundles(true);
+		expect(on.binding).toContain("mounts on with bundles in memory");
+		expect(on.status).not.toBe(501);
 	});
 
 	it("lets a signed-in person who isn't a super-admin add a host of their own, with account hosts on", async () => {

@@ -51,6 +51,30 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.spendJoinToken("nope", "host_d", 1)).toBeUndefined();
 	});
 
+	it("changes a host as it is now, so a report never undoes an operator's change, or a revocation", async () => {
+		const store = await open();
+		await store.insertHost(host("host_a", 10));
+		// An operator drains it and labels it, then lifts the drain; a report runs on whatever is stored.
+		await store.updateHost("host_a", (latest) => ({ ...latest, draining: true, labels: { region: "eu" } }));
+		const reported = await store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 5 }));
+		expect(reported).toMatchObject({ lastSeenAt: 5, draining: true, labels: { region: "eu" } });
+		await store.updateHost("host_a", (latest) => ({ ...latest, draining: false }));
+		await store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 6 }));
+		expect((await store.getHost("host_a"))?.draining).toBe(false);
+		// Two at once both land: each is redone on what the other wrote.
+		await Promise.all([
+			store.updateHost("host_a", (latest) => ({ ...latest, labels: { region: "us" } })),
+			store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 8 })),
+		]);
+		expect(await store.getHost("host_a")).toMatchObject({ lastSeenAt: 8, labels: { region: "us" } });
+		// A revoked host stays revoked, and an unknown one or a no-op writes nothing.
+		await store.putHost({ ...((await store.getHost("host_a")) as HostRecord), revoked: true });
+		const after = await store.updateHost("host_a", (latest) => ({ ...latest, revoked: false, lastSeenAt: 9 }));
+		expect(after).toMatchObject({ revoked: true, lastSeenAt: 9 });
+		expect(await store.updateHost("nope", (latest) => latest)).toBeUndefined();
+		expect(await store.updateHost("host_a", () => undefined)).toBeUndefined();
+	});
+
 	it("finds hosts by ID and credential, lists oldest first and replaces a record", async () => {
 		const store = await open();
 		await store.insertHost(host("host_b", 20));

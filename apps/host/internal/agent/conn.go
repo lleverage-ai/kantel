@@ -129,7 +129,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		h.mu.Lock()
 		h.events = nil
 		if h.link == s.calls {
-			h.link = nil
+			h.link, h.usageAcks = nil, false
 		}
 		h.mu.Unlock()
 		// Calls waiting on this connection fail now rather than at their timeout.
@@ -141,7 +141,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		}
 		s.mu.Unlock()
 	}()
-	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.facts, Sandboxes: h.List(), Capacity: h.Capacity()}}
+	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.Facts(), Sandboxes: h.List(), Capacity: h.Capacity()}}
 	if err := s.send(ctx, hello); err != nil {
 		return err
 	}
@@ -164,7 +164,12 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		_ = s.send(ctx, proto.Message{Type: "event", Event: &e})
 	}
 	h.link = s.calls
+	// The first welcome decides it for the connection, as on Kantel's side (a rewelcome forwarded by an older gateway
+	// replica may lack it).
+	h.usageAcks = welcome.Welcome.UsageAcks
 	h.mu.Unlock()
+	// Mounts of sandboxes adopted at start can resolve their bucket sources now.
+	go h.reconcileMounts(ctx)
 	beat := welcome.Welcome.HeartbeatSeconds
 	if beat <= 0 {
 		beat = 15
@@ -200,26 +205,41 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		if err := json.Unmarshal(raw, &m); err != nil {
 			continue
 		}
-		switch m.Type {
-		case "call":
-			go s.call(ctx, m, update)
-		case "result":
-			// The answer to one of the host's own calls (secrets.fetch).
-			s.calls.deliver(m)
-		case "welcome":
-			if m.Welcome != nil {
-				h.applyWelcome(ctx, m.Welcome, update)
-			}
-		case "stream.close":
-			s.closeStream(m.Stream)
+		s.text(ctx, m, update)
+	}
+}
+
+// text handles a text message from Kantel.
+func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
+	switch m.Type {
+	case "call":
+		go s.call(ctx, m, update)
+	case "result":
+		// The answer to one of the host's own calls (secrets.fetch).
+		s.calls.deliver(m)
+	case "welcome":
+		if m.Welcome != nil {
+			s.host.applyWelcome(ctx, m.Welcome, update)
+		}
+	case "usage.ack":
+		// Kantel has taken the usage ticks up to this one: the backlog lets them go.
+		s.host.usageAcked(uint64(max(m.Acked, 0)))
+	case "stream.close":
+		s.closeStream(m.Stream)
+	case "stream.ack":
+		// Kantel's reader of a file read stream has taken this much: its window moves on.
+		s.mu.Lock()
+		conn := s.streams[m.Stream]
+		s.mu.Unlock()
+		if fc, ok := conn.(*fileConn); ok {
+			fc.ack(m.Acked)
 		}
 	}
 }
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
-	if w.Pools != nil {
-		h.SetPools(w.Pools)
-	}
+	// Before the binary's update, which returns early for an E2E host; followImages has the same rule.
+	h.followImages(ctx, w.Images)
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		if h.e2e != nil && h.e2e.Enrolled() {
 			h.log.Info("not updating from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", w.DesiredVersion)
@@ -257,11 +277,22 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		}
 		return
 	}
+	// start, when set, begins what follows the answer (a file stream's transfer), so nothing of it comes before it.
+	var start func()
 	switch m.Method {
 	case proto.MethodPortOpen:
 		// The stream outlives the call, so it runs on the session's context; the gate holds until it is connected.
 		result, err = s.openPort(ctx, callCtx, m.Params)
 		done()
+	case proto.MethodFileOpen:
+		// As a port's, the stream outlives the call: it runs on the session's context. The gate holds until its transfer
+		// has ended, not only until it is set up: a write finds its sandbox only once it starts, so a claim on the
+		// sandbox (its delete, or another made with its ID) ends the transfer and waits for it, and the bytes can never
+		// reach a sandbox the gateway may not write to. openFile releases it (done) once the transfer is over.
+		result, start, err = s.openFile(ctx, callCtx, m.Params, done)
+		if err != nil {
+			done()
+		}
 	case proto.MethodHostUpdate:
 		var p proto.UpdateParams
 		if err = json.Unmarshal(m.Params, &p); err == nil {
@@ -294,6 +325,9 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	}
 	if err := s.send(ctx, reply); err != nil {
 		s.host.log.Warn("couldn't answer a call", "method", m.Method, "error", err)
+	}
+	if start != nil {
+		start()
 	}
 }
 
@@ -378,6 +412,11 @@ func (s *session) binary(frame []byte) {
 		return
 	}
 	if _, err := conn.Write(frame[4:]); err != nil {
+		// A file write whose tier gave up on its input still owns its stream: its transfer reports how it went.
+		var input *errFileInput
+		if errors.As(err, &input) {
+			return
+		}
 		s.closeStream(id)
 	}
 }

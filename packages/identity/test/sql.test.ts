@@ -2,7 +2,9 @@ import {
 	type CallContext,
 	callContextFor,
 	createProjectAccess,
+	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
+	GITHUB_ISSUER,
 	type IdentityDirectory,
 	isKantelError,
 	type Project,
@@ -336,6 +338,46 @@ for (const kind of testDatabaseKinds()) {
 				await expect(
 					third.createUser(admin, { name: "Copy", externalSubject: externalSubjectOf(issuer, "ada-sub") }),
 				).rejects.toMatchObject({ code: "conflict" });
+			});
+		});
+
+		it("an email code's first sign-in overlapping GitHub's finds the user GitHub made, and records its subject once", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const directory = createSqlIdentity({ driver, clock });
+				const { admin } = await tenant(directory);
+				await directory.createInvite(admin, { email: "ada@example.test", role: "viewer" });
+				const code = {
+					issuer: EMAIL_OTP_ISSUER,
+					subject: "ada@example.test",
+					email: "ada@example.test",
+					emailVerified: true,
+				};
+				const github = { issuer: GITHUB_ISSUER, subject: "583231", email: "ada@example.test", emailVerified: true };
+
+				// The code's sign-in misses by subject, then waits before looking by email while GitHub's makes the user.
+				const paused = pausing(driver, (sql) => sql.includes("WHERE email_normalised = ? AND (substr"));
+				const byCode = createSqlIdentity({ driver: paused.driver, clock }).signIn(WORKER, code);
+				await paused.reached;
+				const byGitHub = await directory.signIn(WORKER, github);
+				expect(byGitHub.user.externalSubject).toBe(externalSubjectOf(EMAIL_OTP_ISSUER, "ada@example.test"));
+				paused.release();
+				expect((await byCode).user.id).toBe(byGitHub.user.id);
+
+				const aliases = await driver.query<{ external_subject: unknown }>(
+					"SELECT external_subject FROM identity_user_subjects WHERE user_id = ?",
+					[byGitHub.user.id],
+				);
+				expect(aliases.map((row) => String(row.external_subject))).toEqual([
+					externalSubjectOf(GITHUB_ISSUER, "583231"),
+				]);
+				// Codes still go out to them, and both ways still sign them in.
+				expect(await directory.canSignIn(WORKER, code)).toBe(true);
+				expect(await directory.canSignIn(WORKER, github)).toBe(true);
+				expect((await directory.signIn(WORKER, code)).user.id).toBe(byGitHub.user.id);
+				expect((await directory.signIn(WORKER, { issuer: GITHUB_ISSUER, subject: "583231" })).user.id).toBe(
+					byGitHub.user.id,
+				);
 			});
 		});
 

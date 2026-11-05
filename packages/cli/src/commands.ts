@@ -24,6 +24,7 @@ import {
 	KantelApiError,
 	type KantelClient,
 	type Sandbox,
+	type SandboxNotRunning,
 	type SandboxSizeName,
 	type SandboxType,
 } from "@kantel/api/sdk";
@@ -82,20 +83,23 @@ import {
 	parseGrant,
 	withoutProtectedValues,
 } from "./environments.ts";
-import { CliError, HostAnswerError, UsageError } from "./errors.ts";
+import { CliError, HostAnswerError, notRunningOf, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
 import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } from "./ssh-proxy.ts";
 import {
+	checkPushRoot,
 	downloadTree,
 	getBytes,
 	getFile,
 	gitFiles,
 	parseRemote,
+	pushPlan,
 	remoteIsDirectory,
 	remoteJoin,
 	remotePath,
+	rootContexts,
 	uploadFile,
 	uploadTree,
 	walk,
@@ -278,6 +282,8 @@ interface Arg {
 	readonly optional?: boolean;
 	/** It takes the rest of the words. */
 	readonly variadic?: boolean;
+	/** It may start with "-", as a base64url value may: a word such as `-qWbW…` here is it, not an unknown flag. */
+	readonly dash?: boolean;
 }
 
 interface CommandSpec {
@@ -453,8 +459,10 @@ function callerName(caller: Caller): string {
 const kindOf = (sandbox: Sandbox): string =>
 	sandbox.type === "microvm" && sandbox.size !== undefined ? `microvm ${sandbox.size}` : sandbox.type;
 
-const stateOf = (sandbox: Sandbox): string =>
-	sandbox.reason === undefined ? sandbox.state : `${sandbox.state}: ${sandbox.reason}`;
+const stateOf = (sandbox: Sandbox): string => {
+	const state = sandbox.placementReason === undefined ? sandbox.state : `${sandbox.state} (${sandbox.placementReason})`;
+	return sandbox.reason === undefined ? state : `${state}: ${sandbox.reason}`;
+};
 
 function sandboxTable(sandboxes: readonly Sandbox[]): string {
 	return table(
@@ -1031,6 +1039,13 @@ const E2E_DETAILS =
 	"the host's key, and the host this device's, against the organisation's signed chain. The chain is trusted from\n" +
 	"its genesis, which this device made (init) or an admin gave it (join), never from the gateway.";
 
+/** A genesis: its entry's hash, base64url(SHA-256), which may start with "-". */
+const GENESIS = /^[A-Za-z0-9_-]{43}$/;
+
+/** The command a member trusts a chain with; a genesis that starts with "-" goes after `--`, so it can't be a flag. */
+const joinCommand = (space: string, genesis: string): string =>
+	`kantel e2e join ${space} ${genesis.startsWith("-") ? "-- " : ""}${genesis}`;
+
 const E2E_COMMANDS: readonly CommandSpec[] = [
 	{
 		name: "console",
@@ -1167,8 +1182,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 				[
 					`Started ${space}'s chain, E2E ${started}. Its genesis is ${chain.state.genesis}.`,
 					...(started === mode ? [] : [`It is E2E ${started}, not ${mode}: kantel e2e mode ${mode} changes it.`]),
-					"Give each member that genesis yourself (not through Kantel) for: kantel e2e join " +
-						`${space} ${chain.state.genesis}`,
+					`Give each member that genesis yourself (not through Kantel) for: ${joinCommand(space, chain.state.genesis)}`,
 					"Then enrol your hosts: kantel e2e host-ticket <name>.",
 				].join("\n"),
 			);
@@ -1177,12 +1191,17 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 	{
 		name: "e2e join",
 		summary: "Trust an organisation's chain from the genesis an admin gave you",
-		args: [{ name: "space" }, { name: "genesis" }],
+		args: [{ name: "space" }, { name: "genesis", dash: true }],
 		flags: {
 			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
 		},
+		details:
+			'A genesis may start with "-". One that starts with "--" goes after --: kantel e2e join <space> -- <genesis>.',
 		async run(ctx) {
 			const [space, genesis] = [ctx.arg(0), ctx.arg(1)];
+			if (!GENESIS.test(genesis)) {
+				throw new UsageError(`"${genesis}" isn't a genesis: 43 characters of base64url, as kantel e2e init prints`);
+			}
 			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
 			await e2e.pinGenesis(ctx.io.configDir, space, genesis).catch((error: unknown) => {
 				throw e2eFailure(error);
@@ -1237,7 +1256,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			emitChain(
 				ctx,
 				chain,
-				`Added ${device.id}. They trust the chain with: kantel e2e join ${chain.state.space} ${chain.state.genesis}`,
+				`Added ${device.id}. They trust the chain with: ${joinCommand(chain.state.space, chain.state.genesis)}`,
 			);
 		},
 	},
@@ -2110,23 +2129,54 @@ const SECTIONS: readonly Section[] = [
 				args: [{ name: "id" }, { name: "dir", optional: true }],
 				flags: {
 					to: { type: "string", value: "<path>", description: "Where in the sandbox (default /home/user/<dir name>)" },
+					"allow-home": {
+						type: "boolean",
+						description: "Push your home directory, or one holding it, leaving Kantel's config out",
+					},
+					"no-default-excludes": {
+						type: "boolean",
+						description: "Send credentials, agents' sign-ins and .env files too",
+					},
 				},
 				details:
 					"In a git repository it sends the files git tracks and the new ones .gitignore doesn't leave out, so\n" +
 					"node_modules, build output and .git stay here. Elsewhere it sends everything but .git. Files already\n" +
-					"there are replaced; files you deleted here stay there. Executable bits are kept.",
+					"there are replaced; files you deleted here stay there. Executable bits are kept.\n" +
+					"It leaves out, at any depth, .ssh, .gnupg, .aws, .azure, .kube, .netrc, .pypirc and .docker/config.json,\n" +
+					"and, unless git tracks them, .claude, .codex, .cursor, .npmrc and .env files (not .env.example),\n" +
+					"naming each on stderr; --no-default-excludes sends them. Links to outside the directory stay here.\n" +
+					"It refuses your home directory, or a directory holding it or Kantel's config, without --allow-home,\n" +
+					"and a directory inside one it leaves out, such as ~/.ssh, without --no-default-excludes.",
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
 					const root = resolve(ctx.io.cwd, ctx.optional(1) ?? ".");
 					if (!(await isDirectory(root))) throw new UsageError(`${root} isn't a directory: use kantel scp for a file`);
-					const files = (await gitFiles(root)) ?? (await walk(root));
+					const git = await gitFiles(root);
+					const defaultExcludes = !ctx.boolean("no-default-excludes");
+					const config = await checkPushRoot(root, {
+						home: ctx.io.home,
+						configDir: ctx.io.configDir,
+						allowHome: ctx.boolean("allow-home"),
+						defaultExcludes,
+						inRepository: git !== undefined,
+					});
+					const plan = await pushPlan(root, git?.files ?? (await walk(root)), {
+						tracked: git?.tracked,
+						defaultExcludes,
+						keep: config === undefined ? [] : [config],
+						contexts: await rootContexts(root, git?.top),
+					});
+					for (const skipped of plan.skipped) ctx.note(`kantel: left out ${skipped.path} (${skipped.why})`);
+					if (plan.skipped.some((skipped) => skipped.byDefault === true) && !ctx.json) {
+						ctx.note("kantel: --no-default-excludes sends credentials, sign-ins and .env files too");
+					}
 					const target = remotePath(ctx.string("to") ?? basename(root));
-					const copied = await uploadTree(await ctx.client(), sandboxId, root, files, target, (path) => {
+					const copied = await uploadTree(await ctx.client(), sandboxId, root, plan.files, target, (path) => {
 						if (!ctx.json) ctx.note(path);
 					});
 					const where = target.startsWith("/") ? target : `/home/user/${target}`;
 					ctx.emit(
-						{ ...copied, to: where },
+						{ ...copied, to: where, skipped: plan.skipped },
 						() => `Pushed ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${where}.`,
 					);
 				},
@@ -3582,7 +3632,11 @@ function createContext(
 }
 
 async function execute(command: CommandSpec, argv: readonly string[], io: Io): Promise<number> {
-	const parsed = parseArgs(argv, { ...GLOBAL_FLAGS, ...command.flags });
+	const args = command.args ?? [];
+	// An argument such as a genesis may start with "-". Then a word after one dash is taken as an argument, and
+	// refused below, before the command runs, unless it lands on one that may.
+	const dashArguments = args.some((arg) => arg.dash === true);
+	const parsed = parseArgs(argv, { ...GLOBAL_FLAGS, ...command.flags }, { dashArguments });
 	if (booleanFlag(parsed, "help") === true) {
 		io.stdout.write(`${commandHelp(command)}\n`);
 		return 0;
@@ -3591,7 +3645,12 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 	const takesRest = command.rest !== undefined;
 	const positionals =
 		takesRest || parsed.rest === undefined ? parsed.positionals : [...parsed.positionals, ...parsed.rest];
-	const args = command.args ?? [];
+	if (dashArguments) {
+		const last = args.at(-1);
+		const argAt = (index: number): Arg | undefined => args[index] ?? (last?.variadic === true ? last : undefined);
+		const dashed = parsed.positionals.find((token, index) => /^-[^\d-]/.test(token) && argAt(index)?.dash !== true);
+		if (dashed !== undefined) throw new UsageError(`unknown flag ${dashed}`);
+	}
 	const missing = args.slice(positionals.length).filter((arg) => arg.optional !== true);
 	if (missing.length > 0) throw new UsageError(`${command.name} needs ${missing.map(argUsage).join(" ")}`);
 	const variadic = args.at(-1)?.variadic === true;
@@ -3603,10 +3662,31 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 	return typeof code === "number" ? code : 0;
 }
 
+/** What to do about a sandbox that isn't running, as a command to type. */
+function notRunningHint(details: SandboxNotRunning): string {
+	const resume = `kantel resume ${details.sandboxId}`;
+	switch (details.code) {
+		case "sandbox_starting":
+			return "It is still starting: run the command again in a moment.";
+		case "sandbox_stopping":
+			return `Once it has stopped, resume it with: ${resume}`;
+		case "sandbox_stopped":
+		case "sandbox_paused":
+		case "sandbox_error":
+			return `Resume it with: ${resume}`;
+		default:
+			return details.hint;
+	}
+}
+
 function report(error: unknown, io: Io): number {
 	if (error instanceof KantelApiError) {
-		io.stderr.write(`kantel: ${error.code}: ${error.message}\n`);
+		io.stderr.write(
+			`kantel: ${error.code}: ${error.message}${error.reason === undefined ? "" : ` (reason: ${error.reason})`}\n`,
+		);
 		if (error.code === "unauthenticated") io.stderr.write("Sign in with: kantel login (or set KANTEL_API_KEY)\n");
+		const notRunning = notRunningOf(error);
+		if (notRunning !== undefined) io.stderr.write(`${notRunningHint(notRunning)}\n`);
 		return 1;
 	}
 	if (error instanceof CliError) {

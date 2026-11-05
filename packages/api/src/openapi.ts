@@ -120,41 +120,50 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 	const errorResponse = (description: string) => ({ description, content: { "application/json": { schema: error } } });
 	const frame = route.stream === undefined ? undefined : registry.use(route.stream.frame);
 	const success =
-		frame !== undefined
+		frame !== undefined && route.stream?.eventsOnly === true
 			? {
-					"101": {
-						description:
-							"Upgraded to a WebSocket (send `Upgrade: websocket`). Each message is a JSON array of frames; an empty " +
-							"array is a keep-alive. The server negotiates `permessage-deflate` where the platform can. The client " +
-							"sends nothing; to resume, reconnect with `?after=` and the last cursor it holds.",
-						content: { "application/json": { schema: { type: "array", items: frame } } },
-					},
 					[String(route.answer.status)]: {
 						description:
-							`${route.answer.description} Without an upgrade: server-sent events, each named after its frame's ` +
-							"type with the frame as its JSON data, then one `ready` event once the client has caught up. " +
-							"Snapshot and delta events carry their cursor as the event ID, so `Last-Event-ID` resumes too.",
+							`${route.answer.description} Server-sent events, each named after its frame's type with the frame as its ` +
+							"JSON data; a comment line is a keep-alive. It takes no WebSocket upgrade.",
 						content: { "text/event-stream": { schema: frame } },
 					},
 				}
-			: Object.fromEntries(
-					[route.answer, ...(route.otherAnswers ?? [])].map((answer) => [
-						String(answer.status),
-						answer.media !== undefined
-							? {
-									description: answer.description,
-									content: Object.fromEntries(
-										answer.media.map((type) => [type, { schema: { type: "string", format: "binary" } }]),
-									),
-								}
-							: answer.schema === undefined
-								? { description: answer.description }
-								: {
+			: frame !== undefined
+				? {
+						"101": {
+							description:
+								"Upgraded to a WebSocket (send `Upgrade: websocket`). Each message is a JSON array of frames; an empty " +
+								"array is a keep-alive. The server negotiates `permessage-deflate` where the platform can. The client " +
+								"sends nothing; to resume, reconnect with `?after=` and the last cursor it holds.",
+							content: { "application/json": { schema: { type: "array", items: frame } } },
+						},
+						[String(route.answer.status)]: {
+							description:
+								`${route.answer.description} Without an upgrade: server-sent events, each named after its frame's ` +
+								"type with the frame as its JSON data, then one `ready` event once the client has caught up. " +
+								"Snapshot and delta events carry their cursor as the event ID, so `Last-Event-ID` resumes too.",
+							content: { "text/event-stream": { schema: frame } },
+						},
+					}
+				: Object.fromEntries(
+						[route.answer, ...(route.otherAnswers ?? [])].map((answer) => [
+							String(answer.status),
+							answer.media !== undefined
+								? {
 										description: answer.description,
-										content: { "application/json": { schema: registry.use(answer.schema) } },
-									},
-					]),
-				);
+										content: Object.fromEntries(
+											answer.media.map((type) => [type, { schema: { type: "string", format: "binary" } }]),
+										),
+									}
+								: answer.schema === undefined
+									? { description: answer.description }
+									: {
+											description: answer.description,
+											content: { "application/json": { schema: registry.use(answer.schema) } },
+										},
+						]),
+					);
 	const responses: { [status: string]: unknown } = {
 		...success,
 		[String(UNAUTHENTICATED_STATUS)]: errorResponse("The request needs a valid credential (`unauthenticated`)."),
@@ -183,6 +192,17 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 					requestBody: {
 						required: ((plain(route.body).required as string[] | undefined) ?? []).length > 0,
 						content: { "application/json": { schema: registry.use(route.body) } },
+					},
+				}),
+		...(route.rawBody === undefined
+			? {}
+			: {
+					requestBody: {
+						required: true,
+						description: route.rawBody.description,
+						content: Object.fromEntries(
+							route.rawBody.media.map((type) => [type, { schema: { type: "string", format: "binary" } }]),
+						),
 					},
 				}),
 		responses,

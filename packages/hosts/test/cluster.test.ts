@@ -4,7 +4,7 @@
 // routed to; and replicas trust only each other's signatures, once.
 import { isKantelError } from "@kantel/contracts";
 import { pgliteDatabase } from "@kantel/sql/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type ClusterStore,
 	createHostCluster,
@@ -13,6 +13,7 @@ import {
 	createReplicaKey,
 	createSqlClusterStore,
 	type HostCluster,
+	MAX_USAGE_QUEUE,
 	PEER_SKEW_MS,
 	type PeerTransport,
 	signPeerRequest,
@@ -42,7 +43,12 @@ function cluster(options: { now?: () => number; store?: ClusterStore } = {}) {
 		return replica.local();
 	};
 	const forwarded: string[] = [];
+	/** Usage ticks passed on: the peer, and the tick's `seq`. */
+	const sharedUsage: string[] = [];
 	const transport: PeerTransport = {
+		usage: async (to, _hostId, usage) => {
+			sharedUsage.push(`${to.id} ${(usage as { seq?: number }).seq}`);
+		},
 		call: (to, hostId, method, params, callOptions) => {
 			forwarded.push(`${to.id} ${method}`);
 			return peer(to.id).call(hostId, method, params, callOptions);
@@ -83,7 +89,7 @@ function cluster(options: { now?: () => number; store?: ClusterStore } = {}) {
 		const token = await service.createJoinToken({ name: "box" });
 		return (await service.register({ token: token.token, facts: facts() })).hostId;
 	};
-	return { store, replica, join, forwarded };
+	return { store, replica, join, forwarded, sharedUsage };
 }
 
 describe("gateway replicas", () => {
@@ -260,6 +266,105 @@ describe("gateway replicas", () => {
 		expect(await store.getOwner("host_2")).toMatchObject({ replicaId: "rep_a" });
 		await store.removeReplica("rep_a");
 		expect(await store.owners()).toEqual([]);
+	});
+});
+
+describe("usage ticks passed on to other replicas", () => {
+	it("go to each peer one at a time, in the order they came, the oldest dropped past MAX_USAGE_QUEUE", async () => {
+		const store = createMemoryClusterStore();
+		const sent: string[] = [];
+		let inFlight = 0;
+		let most = 0;
+		let release: () => void = () => undefined;
+		const first = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const transport: PeerTransport = {
+			call: async () => undefined,
+			openPort: async () => {
+				throw new Error("no");
+			},
+			rewelcome: async () => undefined,
+			disconnect: async () => undefined,
+			usage: async (to, hostId, usage) => {
+				inFlight += 1;
+				most = Math.max(most, inFlight);
+				if (sent.length === 0) await first;
+				sent.push(`${to.id} ${hostId} ${(usage as { at: number }).at}`);
+				inFlight -= 1;
+				// One that fails doesn't hold back the rest.
+				if ((usage as { at: number }).at === 10) throw new Error("peer gone");
+			},
+		};
+		const node = (id: string) =>
+			createReplicaKey().then((key) =>
+				createHostCluster({
+					store,
+					transport,
+					replicaId: id,
+					url: `http://${id}.internal:8080`,
+					key,
+					staleMs: 10_000,
+					heartbeatMs: 60_000,
+					log: () => undefined,
+				}),
+			);
+		const b = await node("rep_b");
+		await b.start();
+		const a = await node("rep_a");
+		await a.start();
+		opened.push({ close: () => void a.stop().catch(() => undefined) });
+		opened.push({ close: () => void b.stop().catch(() => undefined) });
+		for (let at = 1; at <= MAX_USAGE_QUEUE + 3; at += 1) a.shareUsage(at % 2 === 0 ? "host_x" : "host_y", { at });
+		release();
+		await vi.waitFor(() => expect(sent).toHaveLength(MAX_USAGE_QUEUE + 1));
+		expect(most).toBe(1);
+		const order = sent.map((each) => Number(each.split(" ")[2]));
+		// The first was on its way; of the rest, the newest MAX_USAGE_QUEUE.
+		expect(order).toEqual([1, ...Array.from({ length: MAX_USAGE_QUEUE }, (_, index) => index + 4)]);
+		expect(sent.every((each) => each.startsWith("rep_b "))).toBe(true);
+		// Once drained, the next goes at once.
+		a.shareUsage("host_x", { at: 1000 });
+		await vi.waitFor(() => expect(sent.at(-1)).toBe("rep_b host_x 1000"));
+	});
+});
+
+describe("usage ticks from a host held here", () => {
+	it("are passed on only once taken here, in order, and not when taking them failed", async () => {
+		const { replica, join, sharedUsage } = cluster();
+		const a = await replica("rep_a");
+		await replica("rep_b");
+		const hostId = await join(a.service);
+		const pending = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
+		a.service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordUsage: (_, usage) =>
+				new Promise<void>((resolve, reject) => {
+					pending.set(usage.seq ?? 0, { resolve, reject });
+				}),
+		});
+		await a.node.tick();
+		const host = new FakeHost(a.service, hostId, ["usage", "usage-acks"]);
+		host.connect();
+		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+		const usage = (seq: number) => ({
+			seq,
+			run: "r1",
+			at: 1_793_793_600_000 + seq * 5000,
+			intervalMs: 5000,
+			host: { cpu: 0.1, memUsedBytes: 1, memTotalBytes: 2, diskUsedBytes: 3, diskTotalBytes: 4 },
+			sandboxes: [],
+		});
+		for (const seq of [1, 2, 3]) host.send({ type: "usage", usage: usage(seq) });
+		await vi.waitFor(() => expect(pending.size).toBe(3));
+		await tick();
+		// Nothing goes on before it is taken here.
+		expect(sharedUsage).toEqual([]);
+		pending.get(1)?.resolve();
+		pending.get(2)?.reject(new Error("store down"));
+		pending.get(3)?.resolve();
+		await vi.waitFor(() => expect(sharedUsage).toEqual(["rep_b 1", "rep_b 3"]));
 	});
 });
 

@@ -25,7 +25,18 @@ function useSubmitCode(code: string | undefined) {
 }
 
 // Each story keeps its own source, so creating or joining an organisation adds it to the menu and switches to it.
-function Scenario({ open = false, opened, code }: { open?: boolean; opened?: Opened; code?: string }) {
+function Scenario({
+	open = false,
+	opened,
+	code,
+	linked,
+}: {
+	open?: boolean;
+	opened?: Opened;
+	code?: string;
+	/** The code an invite email's link opened Join with. */
+	linked?: string;
+}) {
 	const [source] = useState(() => createComputeFixtures());
 	const [accounts, setAccounts] = useState<readonly ComputeAccount[]>([PERSONAL, LLEVERAGE, EVALS]);
 	const [current, setCurrent] = useState<ComputeAccount>(LLEVERAGE);
@@ -59,6 +70,8 @@ function Scenario({ open = false, opened, code }: { open?: boolean; opened?: Ope
 				open={dialog === "join"}
 				onClose={() => setDialog(undefined)}
 				onJoin={async (joinCode) => added(await source.accounts.join(joinCode))}
+				onSignOut={() => setDialog(undefined)}
+				{...(linked === undefined ? {} : { initialCode: linked })}
 			/>
 		</div>
 	);
@@ -72,6 +85,12 @@ export const CreateOrganisation: Story = () => <Scenario opened="create" />;
 
 /** Join with an invite code, after a code that isn't right. */
 export const JoinOrganisation: Story = () => <Scenario opened="join" code="abc" />;
+
+/** Join with a code made for another email: it says which, and offers Sign out to sign in as them. */
+export const JoinAsSomeoneElse: Story = () => <Scenario opened="join" code="kji_otherPerson" />;
+
+/** Opened from an invite email's link: Join with its code filled in. */
+export const JoinFromLink: Story = () => <Scenario opened="join" linked="kji_q8w2mr5tz4kd9xv3bn7c" />;
 
 /** On a phone. */
 export const Mobile: Story = () => <Scenario open />;

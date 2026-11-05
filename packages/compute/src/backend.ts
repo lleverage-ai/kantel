@@ -11,6 +11,16 @@
  * no host can take the work.
  */
 import type { computeSchema } from "@kantel/api";
+import type { BackendUsageReport } from "./usage-series.ts";
+
+/** A sandbox's vCPUs (0 for an isolate, which shares its account's VM's CPU) and memory, as asked for. */
+export interface BackendShape {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+}
+
+/** A host feature: it makes microVMs of any shape, not only its named sizes (`@kantel/hosts`'s `custom-shapes`). */
+export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
 
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
@@ -31,11 +41,14 @@ export interface BackendHost {
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
 	/**
-	 * What it does beyond what every host does; `egress-policy`: it enforces egress grants and protected variables.
-	 * Absent: what the backend's sandboxes get is enforced however they run (the stub).
+	 * What it does beyond what every host does; `egress-policy`: it enforces egress grants and protected variables;
+	 * `usage`: it sends its own usage ticks, so none is read by running a command in a sandbox. Absent: what the backend's
+	 * sandboxes get is enforced however they run (the stub).
 	 */
 	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
+	readonly sizes?: readonly BackendSize[];
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
 	readonly connected?: boolean;
@@ -60,6 +73,11 @@ export interface SandboxSpec {
 	/** Its name under the sandbox domain, which its port URLs start with. */
 	readonly subdomain: string;
 	readonly size?: computeSchema.SandboxSizeName;
+	/**
+	 * What it asked for: a microVM's vCPUs and memory (`size` is then the preset it matches, if any), or an isolate's
+	 * memory (`vcpus` 0). Absent: `size`, or the default.
+	 */
+	readonly shape?: BackendShape;
 	readonly image?: string;
 	/** Environment variables every command sees. */
 	readonly env: { readonly [name: string]: string };
@@ -69,6 +87,138 @@ export interface SandboxSpec {
 	readonly fromSnapshot?: string;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
+	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
+	readonly template?: SandboxTemplateBoot;
+	/**
+	 * Read-only mounts (experimental, `KANTEL_MOUNTS`): microVMs only. A backend answers each one's status in
+	 * `Placement.mounts`; one it doesn't answer is marked `failed` by the service, so a backend that predates mounts
+	 * never leaves one looking mounted.
+	 */
+	readonly mounts?: readonly BackendMount[];
+}
+
+/**
+ * A mount as the backend is given it. A bundle's bytes are fetched by digest (`ComputeService.bundleForHost`, or over
+ * HTTP at `GET /v1/hosts/bundles/{digest}?sandboxId=` with the host's credential); a bucket source's settings and
+ * opened credentials by ID (`ComputeService.bucketSourceForHost`, `bucket.fetch` over the host's link). Neither is
+ * sent with the spec, so no credential rides a create.
+ */
+export interface BackendMount {
+	readonly path: string;
+	readonly source: computeSchema.MountSource;
+}
+
+/** A mount's status as the backend reports it, by path. */
+export interface BackendMountStatus {
+	readonly path: string;
+	readonly status: computeSchema.MountStatus;
+	readonly error?: string;
+}
+
+/**
+ * A template's custom image as a backend builds it (`TemplateBuildSpec.image`) or boots it (`SandboxTemplateBoot.image`):
+ * a Dockerfile, or an image reference, built or pulled only in an isolated build microVM whose sole way out is the
+ * sandbox egress proxy, never on a host's Docker. `scope` is the template, its version and its rebuild
+ * (`<templateId>@<version>#<epoch>`): a rebuild builds or pulls it again.
+ */
+export type BackendTemplateImage =
+	| { readonly kind: "dockerfile"; readonly dockerfile: string; readonly scope: string }
+	| { readonly kind: "image"; readonly ref: string; readonly scope: string };
+
+/**
+ * How a sandbox made from a template boots, as its spec's `shape` either way: a snapshot is picked only when it was
+ * built with those vCPUs and memory, so a restore and a fresh boot get the same machine.
+ */
+export interface SandboxTemplateBoot {
+	/**
+	 * Its custom image, which only a host that built it boots: a fresh boot boots the root filesystem `rootfsKey` names on
+	 * its host, which a build there made (`BuiltTemplate.rootfsKey`), and never builds one. The spec's eligible hosts are
+	 * only hosts holding it.
+	 */
+	readonly image?: BackendTemplateImage;
+	readonly rootfsKey?: string;
+	/** The custom image's digest (`BuiltTemplate.imageDigest`): what the sandbox records it boots. */
+	readonly imageDigest?: string;
+	/** The base image's name, such as `kantel/sandbox`, which a host pulls from its operator's registry by digest. */
+	readonly baseImage: string;
+	/** Empty while the default base's channel has no published digest: each host's own sandbox image. */
+	readonly baseDigest: string;
+	readonly setup?: string;
+	/**
+	 * A template snapshot's `ref` (`BuiltTemplate.ref`) to start from, on the host that built it, which must be one of
+	 * the spec's eligible hosts. Absent: a fresh boot, which boots the template's base image and runs its setup in the
+	 * new machine. A backend that no longer holds the snapshot boots fresh too, and one whose host has no room for the
+	 * machine boots it fresh on another eligible host, either way saying so (`Placement.bootedFresh`): the snapshot only
+	 * speeds a create up.
+	 */
+	readonly snapshot?: string;
+}
+
+/** A machine's vCPUs, memory and disk, as its host gave them. */
+export interface MachineResources {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	readonly diskGb: number;
+}
+
+/** A host's runtime, which a template snapshot is only good for: the guest kernel and Firecracker it runs. */
+export interface TemplateRuntime {
+	readonly hostId: string;
+	readonly kernel: string;
+	readonly firecracker: string;
+	/** It builds templates' custom images, in a build microVM; only such a host is given one to build or boot. */
+	readonly customImages?: boolean;
+}
+
+/** A template snapshot to build: the template's base image booted once, its setup run, then snapshotted. */
+export interface TemplateBuildSpec {
+	/** The template snapshot's ID, `tsn_…`, which names its bytes on the host. */
+	readonly snapshotId: string;
+	readonly accountId: string;
+	readonly templateId: string;
+	readonly version: number;
+	/** As `SandboxTemplateBoot.baseImage`. */
+	readonly baseImage: string;
+	/** As `SandboxTemplateBoot.baseDigest`. */
+	readonly baseDigest: string;
+	/**
+	 * The template's vCPUs and memory to build it as, which its sandboxes ask for too: its host gives the disk it would
+	 * give a create of that shape, so a restore of it is the machine a fresh boot would be.
+	 */
+	readonly shape: BackendShape;
+	readonly env: { readonly [name: string]: string };
+	readonly setup?: string;
+	/**
+	 * Its custom image, built or pulled in a build microVM under `egress` (and the registries the host's operator allows)
+	 * before the boot; absent, the base. Only a runtime with `customImages` is given one.
+	 */
+	readonly image?: BackendTemplateImage;
+	/** The template's grants (and the account's proxy settings), for the build's boot, and a custom image's build. */
+	readonly egress?: BackendEgress;
+	readonly keyHash: string;
+	/** The host to build on: the one whose runtime the key names. */
+	readonly hostId: string;
+}
+
+/**
+ * A template snapshot's bytes to delete: by `ref` once its build answered, else by its ID on the host it was built on,
+ * which may have made them although its build's answer never came (it timed out, say).
+ */
+export interface TemplateSnapshotBytes {
+	readonly snapshotId: string;
+	readonly hostId: string;
+	readonly ref?: string;
+}
+
+/** A template snapshot built: its opaque reference, the host holding it, and its size. */
+export interface BuiltTemplate {
+	readonly ref: string;
+	readonly hostId: string;
+	/** The image booted: a pulled base's ID, or a custom image's digest (a reference's resolved one, a build's image ID). */
+	readonly imageDigest?: string;
+	readonly sizeBytes: number;
+	/** A custom image's root filesystem on its host, which a fresh boot there names (`SandboxTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
 }
 
 /**
@@ -111,8 +261,30 @@ export interface BackendEgressGrant {
 /** Where a machine was placed, and what it can do. */
 export interface Placement {
 	readonly hostId: string;
-	readonly resources?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	readonly resources?: MachineResources;
 	readonly capabilities: computeSchema.SandboxCapabilities;
+	/**
+	 * The base image version its root file system is: a host images version (`host-images-20261104.812`) for a sandbox
+	 * on a host with image patching, or a container image's `sha256:` digest. Absent where the backend doesn't know (the
+	 * stub, a host whose images aren't versioned), and the sandbox's record keeps what it had.
+	 */
+	readonly base?: string;
+	/**
+	 * With `base`: when the machine was put on it, by the backend's own clock (a host's root filesystem link time).
+	 * The record keeps it, and a later report of the base replaces it only when it says a later time.
+	 */
+	readonly baseAt?: number;
+	/**
+	 * The status of each of the spec's or boot's mounts the backend handled, by path. A mount it doesn't answer for is
+	 * `failed` ("this host can't mount …"). A later change (`pending` to `ready`) comes through
+	 * `ComputeService.reportMounts`.
+	 */
+	readonly mounts?: readonly BackendMountStatus[];
+	/**
+	 * A create from a template snapshot that booted the template fresh instead, running its setup: its host no longer
+	 * held the snapshot (or couldn't restore it), or had no room and another host booted it.
+	 */
+	readonly bootedFresh?: boolean;
 }
 
 /** How to boot a machine for a sandbox that has none. */
@@ -120,20 +292,40 @@ export interface BootOptions {
 	/** The disk to boot from: the sandbox's newest snapshot. Absent, an empty disk. */
 	readonly fromSnapshot?: string;
 	readonly size?: computeSchema.SandboxSizeName;
+	/**
+	 * A microVM's vCPUs and memory as it now is: kept on a restart, absent once a restart names another size (then it is
+	 * that size). A backend that can change a stopped machine's shape boots it as this.
+	 */
+	readonly shape?: BackendShape;
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
 	readonly egress?: BackendEgress;
+	/** The sandbox's mounts, mounted again on the new machine. */
+	readonly mounts?: readonly BackendMount[];
 	/**
 	 * The revision of the sandbox's egress the boot carries, with no egress too: the boot states its egress (none is the
 	 * host's default), and an update read before it is refused as older.
 	 */
 	readonly egressRevision?: number;
+	/**
+	 * On `start` only (a cold boot): move the sandbox onto its host's current base images first, keeping its own disk
+	 * and dropping any memory it kept (image patching, `restartSandboxOnLatest`). A backend with no versioned images (the
+	 * stub) ignores it, and so does a host without the `image-patching` feature.
+	 */
+	readonly rebase?: boolean;
+	/**
+	 * With `rebase`: the base version the rebase is to land on (the index's `stable`), which the machine refuses to boot
+	 * onto any other. Absent, the host's current one.
+	 */
+	readonly rebaseTo?: string;
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */
 export interface TakenSnapshot {
 	readonly ref: string;
 	readonly sizeBytes: number;
+	/** The base image version its root file system is, as `Placement.base`; absent where the backend doesn't know. */
+	readonly base?: string;
 }
 
 export interface ExecRequest {
@@ -154,6 +346,15 @@ export interface ExecResult {
 	readonly stderr: string;
 	readonly timedOut: boolean;
 }
+
+/** A file being read as a stream: its size, when known up front, and its bytes. */
+export interface FileStream {
+	readonly size?: number;
+	readonly body: ReadableStream<Uint8Array>;
+}
+
+/** The largest body the service collects to write with `writeFile`, for a backend without `writeFileStream`. */
+export const MAX_UNSTREAMED_WRITE_BYTES = 64 * 1024 * 1024;
 
 /** A part of a file: at most `length` bytes from `offset`. */
 export interface FileRange {
@@ -189,6 +390,8 @@ export interface SshGrant {
 	readonly proxyUrl?: string;
 }
 
+export type { BackendUsageReport };
+
 /** A CPU and memory reading of one running sandbox. */
 export interface UsageSample {
 	/** CPU utilisation, 0 to 1. */
@@ -208,6 +411,17 @@ export interface SandboxBackend {
 	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/**
+	 * Image patching: whether a `start` with `rebase` (and `rebaseTo`) can land now, checked before a running sandbox is
+	 * stopped for it. Rejects when it can't: the machine its disk is on isn't among `eligibleHosts`, doesn't patch
+	 * images (`not_supported`), or isn't on `rebaseTo` yet (`unavailable`). Absent where a backend has no versioned
+	 * images (a rebase there is a plain start). Answers whether the machine is running there, where its host says: a
+	 * sandbox recorded as `error` may still be, and is stopped before the rebase's cold boot.
+	 */
+	prepareRebase?(
+		sandboxId: string,
+		options: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string },
+	): Promise<{ readonly running?: boolean } | undefined>;
+	/**
 	 * Saves the disk as a snapshot and lets the machine go, or with `keepMemory` pauses it, keeping its memory too
 	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken.
 	 */
@@ -226,6 +440,35 @@ export interface SandboxBackend {
 	recover(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/** Lets the machine go for good; its snapshots are deleted separately. */
 	destroy(sandboxId: string): Promise<void>;
+	/**
+	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
+	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.
+	 */
+	readFileStream?(sandboxId: string, path: string): Promise<FileStream>;
+	/**
+	 * Streams `body` into a file, making its directories, replacing what was there only once the whole body has arrived
+	 * (signed upload URLs, archives). Absent, or refusing with `not_supported` before it reads any of `body`, the service
+	 * collects the body (up to `MAX_UNSTREAMED_WRITE_BYTES`) and uses `writeFile`.
+	 */
+	writeFileStream?(
+		sandboxId: string,
+		path: string,
+		body: ReadableStream<Uint8Array>,
+		mode?: number,
+	): Promise<{ readonly size: number }>;
+	/**
+	 * Extracts the tar at `archive` (already checked: see `TarCheck`) into the directory `target`, making it, then
+	 * deletes the tar. The sandbox's own programs, shell and environment have no part in it, so a caller with only
+	 * `files` runs nothing in the sandbox (`PUT /sandboxes/{id}/files/archive`). Absent, or `not_supported`, archives
+	 * aren't extracted there.
+	 */
+	extractArchive?(sandboxId: string, archive: string, target: string): Promise<void>;
+	/**
+	 * The host a sandbox is placed on now, as the backend's scheduler recorded it, even while it is being booted there:
+	 * what a host's fetch of a starting sandbox's mounts' sources is checked against. Absent, a starting sandbox's
+	 * sources go to no host until it is placed.
+	 */
+	placedOn?(sandboxId: string): Promise<string | undefined>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
@@ -259,10 +502,15 @@ export interface SandboxBackend {
 		sandboxId: string,
 		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly embedUrl: string }>;
+	/**
+	 * The browser's live view and CDP URLs. `url` shows the browser alone, apart from the desktop, where the sandbox's
+	 * machine runs it on a surface of its own, as the backend finds it on that machine now (a report kept from another
+	 * boot of its image can be stale); else the desktop it runs on. The answer's `surface` says which (absent: `desktop`).
+	 */
 	openBrowser(
 		sandboxId: string,
 		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
-	): Promise<{ readonly url: string; readonly cdpUrl: string }>;
+	): Promise<{ readonly url: string; readonly cdpUrl: string; readonly surface?: "browser" | "desktop" }>;
 	/**
 	 * A tunnel to the host's E2E responder for the sandbox (`@kantel/e2e`), whose bytes the relay passes on unread, and
 	 * the host's ID. Absent when sandboxes aren't on hosts (the stub).
@@ -271,8 +519,16 @@ export interface SandboxBackend {
 		sandboxId: string,
 		options: { readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly hostId: string }>;
-	/** A CPU and memory reading of a running sandbox. */
+	/**
+	 * A CPU and memory reading of a running sandbox, read when asked: the fallback for a host that doesn't send its
+	 * readings (`ComputeService.recordUsage`) yet.
+	 */
 	usage(sandboxId: string): Promise<UsageSample>;
+	/**
+	 * The ticks a backend with no host to send them makes itself (the stub): one report per host for each tick after
+	 * `since` up to `until`, oldest first, as a host would have sent them. Absent: its hosts send their own.
+	 */
+	usageReports?(since: number, until: number): Promise<BackendUsageReport[]>;
 	/**
 	 * The account's proxy settings changed: apply them to this running sandbox (undefined when they were turned off).
 	 * Absent, sandboxes get them when they next boot.
@@ -283,6 +539,21 @@ export interface SandboxBackend {
 	 * what it holds of them, and fetches them again on the sandbox's next request. Absent, nothing holds them.
 	 */
 	updateSecrets?(sandboxId: string, version: number): Promise<void>;
+	/**
+	 * The runtime of each host that can build and boot template snapshots, one entry a host. Absent (with `buildTemplate`
+	 * and `deleteTemplateSnapshot`), the backend has no templates, and their routes answer `not_supported`.
+	 */
+	templateRuntimes?(): Promise<TemplateRuntime[]>;
+	/**
+	 * Builds a template snapshot on `spec.hostId`; rejects with why when the build or its setup fails, and `exhausted`
+	 * when the host has no room for the build now (it is tried again later).
+	 */
+	buildTemplate?(spec: TemplateBuildSpec): Promise<BuiltTemplate>;
+	/**
+	 * Deletes a template snapshot's bytes from its host, resolving once they are gone, or were never there. Never a user
+	 * snapshot's (`deleteSnapshot`).
+	 */
+	deleteTemplateSnapshot?(bytes: TemplateSnapshotBytes): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */

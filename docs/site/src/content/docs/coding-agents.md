@@ -71,6 +71,8 @@ claude mcp add kantel -e KANTEL_URL=http://127.0.0.1:58090 -e KANTEL_API_KEY=$KA
 codex mcp add kantel --env KANTEL_URL=http://127.0.0.1:58090 --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
 ```
 
+Codex gives a tool call 60 seconds unless told otherwise, and a Kantel tool can wait up to 10 minutes, so add `tool_timeout_sec = 660` under `[mcp_servers.kantel]` in `~/.codex/config.toml`. Claude Code waits about 28 hours unless you've set `MCP_TOOL_TIMEOUT` lower; [MCP server](/tools/mcp-server/#claude-code) says what to do if you have.
+
 The agent then has tools such as `sandbox_create`, `sandbox_exec` and `file_write`. [MCP server](/tools/mcp-server/) lists them all and covers Cursor and other clients. With MCP in place you can skip the skill and go to [step 4](#4-add-the-agentsmd-snippet).
 
 ### pi and the kantel command
@@ -151,7 +153,7 @@ Fork a prepared sandbox: `POST /v1/sandboxes/<id>/fork` with `{"count": 3, "wait
 
 ## Errors
 
-Errors are `{"error": {"code": "...", "message": "..."}}`. `conflict`: the sandbox is in the wrong state, such as stopped (resume it). `exhausted`: a limit or full hosts; wait and retry. `not_supported`: the sandbox's type can't do it; check `.capabilities`. `forbidden`: the key lacks the scope; tell the user.
+Errors are `{"error": {"code": "...", "message": "..."}}`. `conflict`: the sandbox is in the wrong state, such as stopped (resume it). `exhausted`: a limit or full hosts; wait and retry. When a sandbox can't be placed, `error.details.reason` (or the sandbox's `placementReason`) says why: `insufficient_capacity` or `host_unavailable`, retry later; `no_host_for_type`, `no_host_offers_size` or `no_host_with_labels`, ask for another type, size or labels; `account_limit`, stop one first. `not_supported`: the sandbox's type can't do it; check `.capabilities`. `forbidden`: the key lacks the scope; tell the user.
 
 Full docs: https://kantel.dev/docs/llms.txt
 ````

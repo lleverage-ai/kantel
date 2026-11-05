@@ -1,0 +1,260 @@
+package guest
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"io/fs"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// entry is one tar entry for a test archive.
+type entry struct {
+	name     string
+	kind     byte
+	body     string
+	link     string
+	mode     int64
+	modified time.Time
+}
+
+func writeTar(t *testing.T, entries ...entry) string {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range entries {
+		mode := e.mode
+		if mode == 0 {
+			mode = 0o644
+			if e.kind == tar.TypeDir {
+				mode = 0o755
+			}
+		}
+		h := &tar.Header{Name: e.name, Typeflag: e.kind, Mode: mode, Linkname: e.link, ModTime: e.modified, Format: tar.FormatPAX}
+		if e.kind == tar.TypeXGlobalHeader {
+			h = &tar.Header{Typeflag: e.kind, PAXRecords: map[string]string{"comment": e.body}, Format: tar.FormatPAX}
+		}
+		if e.kind == tar.TypeReg {
+			h.Size = int64(len(e.body))
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if e.kind == tar.TypeReg {
+			if _, err := io.WriteString(tw, e.body); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "a.tar")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A tar of directories, files and an inside link is written out under the target, made if missing, with its modes
+// (never setuid or setgid) and times; an existing file is replaced, not written through.
+func TestExtractTarWritesTheArchive(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "work", "deep")
+	when := time.Date(2025, 3, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An old file whose inode a hard link elsewhere shares: replacing it mustn't change the other name's bytes.
+	if err := os.WriteFile(filepath.Join(target, "a.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(target, "a.txt"), filepath.Join(root, "elsewhere")); err != nil {
+		t.Fatal(err)
+	}
+	archive := writeTar(t,
+		entry{name: "./", kind: tar.TypeDir},
+		entry{name: "a.txt", kind: tar.TypeReg, body: "hello", mode: 0o4755, modified: when},
+		entry{name: "dir/", kind: tar.TypeDir, mode: 0o750, modified: when},
+		entry{name: "dir/b.txt", kind: tar.TypeReg, body: "inside"},
+		entry{name: "implied/c.txt", kind: tar.TypeReg, body: "no dir entry"},
+		entry{name: "dir/to-a", kind: tar.TypeSymlink, link: "../a.txt"},
+		entry{kind: tar.TypeXGlobalHeader, body: "made by a test"},
+	)
+	if err := ExtractTar(archive, target, -1, -1); err != nil {
+		t.Fatal(err)
+	}
+	read := func(rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(target, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if read("a.txt") != "hello" || read("dir/b.txt") != "inside" || read("implied/c.txt") != "no dir entry" || read("dir/to-a") != "hello" {
+		t.Fatal("the archive's files")
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "elsewhere")); string(b) != "old" {
+		t.Fatalf("written through an existing file's inode: %q", b)
+	}
+	info, _ := os.Stat(filepath.Join(target, "a.txt"))
+	if info.Mode() != 0o755 || !info.ModTime().Equal(when) {
+		t.Fatalf("a.txt: %v, %v", info.Mode(), info.ModTime())
+	}
+	info, _ = os.Stat(filepath.Join(target, "dir"))
+	if info.Mode().Perm() != 0o750 || !info.ModTime().Equal(when) {
+		t.Fatalf("dir: %v, %v", info.Mode(), info.ModTime())
+	}
+}
+
+// What would leave the target, or isn't a file, directory or link, is refused: an archive refusal, so the agent answers
+// 400.
+func TestExtractTarRefuses(t *testing.T) {
+	for name, entries := range map[string][]entry{
+		"absolute":          {{name: "/etc/passwd", kind: tar.TypeReg, body: "x"}},
+		"climbing":          {{name: "a/../../x", kind: tar.TypeReg, body: "x"}},
+		"absolute link":     {{name: "l", kind: tar.TypeSymlink, link: "/etc"}},
+		"climbing link":     {{name: "a/l", kind: tar.TypeSymlink, link: "../../x"}},
+		"through a link":    {{name: "l", kind: tar.TypeSymlink, link: "d"}, {name: "l/x", kind: tar.TypeReg, body: "x"}},
+		"replacing a link":  {{name: "l", kind: tar.TypeSymlink, link: "d"}, {name: "l", kind: tar.TypeReg, body: "x"}},
+		"hard link":         {{name: "a", kind: tar.TypeReg, body: "x"}, {name: "b", kind: tar.TypeLink, link: "a"}},
+		"device":            {{name: "d", kind: tar.TypeChar}},
+		"fifo":              {{name: "f", kind: tar.TypeFifo}},
+		"file on directory": {{name: "d/", kind: tar.TypeDir}, {name: "d", kind: tar.TypeReg, body: "x"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "t")
+			err := ExtractTar(writeTar(t, entries...), target, -1, -1)
+			var refused *errArchive
+			if !errors.As(err, &refused) {
+				t.Fatalf("not refused: %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, "x")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal("something was written outside the target")
+			}
+		})
+	}
+}
+
+// A link already in the target is never followed, whatever the archive (which sits in the sandbox, and could have
+// changed since Kantel checked it) says: an entry under it is refused, and one at it replaces the link.
+func TestExtractTarNeverFollowsALinkThere(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	target := filepath.Join(root, "t")
+	for _, dir := range []string{outside, target} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(target, "out")); err != nil {
+		t.Fatal(err)
+	}
+	err := ExtractTar(writeTar(t, entry{name: "out/x", kind: tar.TypeReg, body: "x"}), target, -1, -1)
+	var refused *errArchive
+	if !errors.As(err, &refused) {
+		t.Fatalf("through a link: %v", err)
+	}
+	if err := ExtractTar(writeTar(t, entry{name: "out", kind: tar.TypeReg, body: "x"}), target, -1, -1); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := os.ReadDir(outside); len(names) != 0 {
+		t.Fatalf("%d written outside", len(names))
+	}
+	if info, err := os.Lstat(filepath.Join(target, "out")); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("the link wasn't replaced: %v", err)
+	}
+}
+
+// The agent's route extracts a staged tar into its target and deletes the tar; a refused one is a 400 that says why,
+// and its tar goes too.
+func TestExtractArchiveRoute(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	ctx := context.Background()
+	target := filepath.Join(t.TempDir(), "out")
+	archive := writeTar(t, entry{name: "hi.txt", kind: tar.TypeReg, body: "hi"})
+	// The route chowns to the sandbox's user, which a test that isn't root can't; ExtractTar is tested above, so here
+	// only refusals and the tar's removal are checked unless running as root.
+	err := client.ExtractArchive(ctx, archive, target)
+	if os.Geteuid() == 0 {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(target, "hi.txt")); string(b) != "hi" {
+			t.Fatalf("extracted %q", b)
+		}
+	}
+	if _, err := os.Stat(archive); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the tar was left: %v", err)
+	}
+	bad := writeTar(t, entry{name: "/etc/x", kind: tar.TypeReg, body: "x"})
+	err = client.ExtractArchive(ctx, bad, target)
+	if !IsRefused(err) || !strings.Contains(RefusalMessage(err), "absolute name") {
+		t.Fatalf("a bad archive: %v", err)
+	}
+	if _, err := os.Stat(bad); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the refused tar was left: %v", err)
+	}
+	if err := client.ExtractArchive(ctx, archive, ""); !IsRefused(err) {
+		t.Fatalf("no target: %v", err)
+	}
+	// An agent from before the route answers 404 or 405.
+	older := clientFor(t, http.NewServeMux())
+	if err := older.ExtractArchive(ctx, archive, target); !IsUnknownRoute(err) {
+		t.Fatalf("an older agent: %v", err)
+	}
+}
+
+// Writes at once to one path each stage into a file of their own: one aborted after another has landed leaves the
+// landed file whole, and no staging file is left.
+func TestOverlappingWritesKeepTheirOwnStaging(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.bin")
+	// A long write that is still sending when the short one lands, then aborts.
+	pr, pw := io.Pipe()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = client.WriteFileStream(ctx, path, pr, 0o644)
+	}()
+	if _, err := pw.Write(bytes.Repeat([]byte("L"), 256<<10)); err != nil {
+		t.Fatal(err)
+	}
+	short := bytes.Repeat([]byte("S"), 1000)
+	if n, err := client.WriteFileStream(ctx, path, bytes.NewReader(short), 0o644); err != nil || n != int64(len(short)) {
+		t.Fatalf("the short write: %d, %v", n, err)
+	}
+	// The long one carries on after the short one landed, then fails.
+	_, _ = pw.Write(bytes.Repeat([]byte("L"), 256<<10))
+	pw.CloseWithError(errors.New("the sender went away"))
+	wg.Wait()
+	// The handler cleans up once it has seen the body fail; give it a moment.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, short) {
+			t.Fatalf("the landed file: %d bytes, %v", len(got), err)
+		}
+		names, _ := os.ReadDir(dir)
+		if len(names) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d entries left beside the file", len(names))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

@@ -5,8 +5,8 @@
  * A directory is copied file by file, a few at a time.
  */
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, posix, relative, sep } from "node:path";
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { CliError } from "./errors.ts";
 
@@ -203,13 +203,10 @@ export async function walk(root: string): Promise<string[]> {
 	return found.sort();
 }
 
-/** In a git repository: the files git tracks and the new ones .gitignore doesn't leave out. Otherwise undefined. */
-export function gitFiles(root: string): Promise<string[] | undefined> {
+/** What `git ls-files` lists in `root` with `flags`, relative to it, or undefined when it isn't in a git repository. */
+function gitList(root: string, flags: readonly string[]): Promise<string[] | undefined> {
 	return new Promise((done) => {
-		const child = spawn("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-			cwd: root,
-			stdio: ["ignore", "pipe", "ignore"],
-		});
+		const child = spawn("git", ["ls-files", ...flags, "-z"], { cwd: root, stdio: ["ignore", "pipe", "ignore"] });
 		const chunks: Buffer[] = [];
 		child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
 		child.once("error", () => done(undefined));
@@ -219,6 +216,224 @@ export function gitFiles(root: string): Promise<string[] | undefined> {
 			done(names.sort());
 		});
 	});
+}
+
+/**
+ * In a git repository: the files git tracks and the new ones .gitignore doesn't leave out, and which of them git
+ * tracks. Otherwise undefined.
+ */
+export async function gitFiles(
+	root: string,
+): Promise<{ readonly files: string[]; readonly tracked: ReadonlySet<string>; readonly top: string } | undefined> {
+	const [files, tracked, top] = await Promise.all([
+		gitList(root, ["--cached", "--others", "--exclude-standard"]),
+		gitList(root, ["--cached"]),
+		gitTop(root),
+	]);
+	if (files === undefined || tracked === undefined || top === undefined) return undefined;
+	return { files, tracked: new Set(tracked), top };
+}
+
+/** The top of the working tree `root` is in, or undefined. */
+function gitTop(root: string): Promise<string | undefined> {
+	return new Promise((done) => {
+		const child = spawn("git", ["rev-parse", "--show-toplevel"], { cwd: root, stdio: ["ignore", "pipe", "ignore"] });
+		const chunks: Buffer[] = [];
+		child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+		child.once("error", () => done(undefined));
+		child.once("close", (code) => {
+			const top = Buffer.concat(chunks).toString("utf8").trim();
+			done(code === 0 && top !== "" ? resolve(top) : undefined);
+		});
+	});
+}
+
+/**
+ * The paths that lead to `root`, with `/`, which push puts before each file it classifies, so a root inside `.cursor`
+ * or named `.docker` counts as it would from above. Both the path as named, links and all, and where it resolves
+ * count. In a repository each starts at its top, named by its own name (`.docker` when git starts there), so a
+ * worktree in `.claude/worktrees` isn't all agent settings. The named path's top is its nearest ancestor that
+ * resolves to the repository's (`top`); with none, and outside a repository, the paths are absolute.
+ */
+export async function rootContexts(root: string, top?: string): Promise<string[]> {
+	const named = resolve(root);
+	const resolved = await real(root);
+	const posixOf = (path: string) => path.split(sep).join("/");
+	if (top === undefined) return [...new Set([named, resolved].map(posixOf))];
+	const realTop = await real(top);
+	const fromTop = (path: string, at: string) => join(basename(at), relative(at, path));
+	let namedTop: string | undefined;
+	for (let at = named; namedTop === undefined; at = dirname(at)) {
+		if ((await real(at)) === realTop) namedTop = at;
+		else if (dirname(at) === at) break;
+	}
+	const contexts = [namedTop === undefined ? named : fromTop(named, namedTop), fromTop(resolved, realTop)];
+	return [...new Set(contexts.map(posixOf))];
+}
+
+/** Credentials push leaves out wherever they are in the tree, even when git tracks them. */
+const CREDENTIALS = new Set([".ssh", ".gnupg", ".aws", ".azure", ".kube", ".netrc", ".pypirc"]);
+/** Agents' sign-ins and settings: left out unless git tracks the file, as it does a project's shared settings. */
+const AGENTS = new Set([".claude", ".codex", ".cursor"]);
+/** `.env` and `.env.local`, not `.env.example`: left out unless git tracks the file. */
+const isEnvFile = (name: string): boolean =>
+	/^\.env(\..+)?$/.test(name) && !/^\.env\.(example|sample|template|dist)$/.test(name);
+
+/**
+ * Why push leaves out `file` (a relative path) by default, and the part of it to name; undefined to send it.
+ * `tracked` is whether git tracks it, undefined outside a repository.
+ */
+export function defaultExclude(file: string, tracked: boolean | undefined): Skipped | undefined {
+	const parts = file.split(/[\\/]/);
+	for (let index = 0; index < parts.length; index++) {
+		// Lower case: on macOS and Windows `.SSH` is `.ssh`.
+		const name = (parts[index] as string).toLowerCase();
+		const path = parts.slice(0, index + 1).join("/");
+		if (CREDENTIALS.has(name)) return { path, why: "credentials", byDefault: true };
+		if (name === ".docker" && parts[index + 1]?.toLowerCase() === "config.json") {
+			return { path: `${path}/config.json`, why: "credentials", byDefault: true };
+		}
+		if (tracked === true) continue;
+		// In a repository git may track some of the directory, which goes, so this names the file.
+		if (AGENTS.has(name)) {
+			return { path: tracked === undefined ? path : file, why: "an agent's sign-in and settings", byDefault: true };
+		}
+		// Projects commit theirs too, so a tracked one goes.
+		if (name === ".npmrc") return { path, why: "it can hold a registry token", byDefault: true };
+		if (isEnvFile(name)) return { path, why: "an environment file", byDefault: true };
+	}
+	return undefined;
+}
+
+/** Whether `path` is `directory` or inside it; both absolute. */
+export function within(path: string, directory: string): boolean {
+	const rel = relative(directory, path);
+	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** `path` with its links resolved, or as it is when it doesn't exist. */
+async function real(path: string): Promise<string> {
+	try {
+		return await realpath(path);
+	} catch {
+		return resolve(path);
+	}
+}
+
+/** Something push left out, and why. */
+export interface Skipped {
+	readonly path: string;
+	readonly why: string;
+	/** A default exclude, which `--no-default-excludes` sends. */
+	readonly byDefault?: true;
+}
+
+/**
+ * The files push sends from `files` (relative to `root`): not ones that resolve outside `root` through a link, nor
+ * ones in `keep` (absolute directories, such as Kantel's config), nor, with `defaultExcludes`, credentials, agents'
+ * sign-ins and environment files ({@link defaultExclude}). `tracked` is what git tracks, in a repository.
+ */
+export async function pushPlan(
+	root: string,
+	files: readonly string[],
+	options: {
+		readonly tracked?: ReadonlySet<string>;
+		readonly defaultExcludes: boolean;
+		readonly keep?: readonly string[];
+		/** What leads to `root` ({@link rootContexts}); default its absolute paths. */
+		readonly contexts?: readonly string[];
+	},
+): Promise<{ readonly files: string[]; readonly skipped: Skipped[] }> {
+	const realRoot = await real(root);
+	const keep = await Promise.all((options.keep ?? []).map(real));
+	const contexts = options.contexts ?? (await rootContexts(root));
+	// Each file is classified under what leads to the root, so `.cursor/User/auth.json` counts when the root is
+	// `.cursor/User`, and `config.json` when it is `.docker`. A notice names the file as it is under the root.
+	const exclude = (rel: string): Skipped | undefined => {
+		if (!options.defaultExcludes) return undefined;
+		const posixRel = rel.split(sep).join("/");
+		for (const context of contexts) {
+			const prefix = context === "" ? "" : `${context.replace(/\/+$/, "")}/`;
+			const found = defaultExclude(`${prefix}${posixRel}`, options.tracked?.has(posixRel));
+			if (found === undefined) continue;
+			const under = found.path.startsWith(prefix) ? found.path.slice(prefix.length) : "";
+			return { ...found, path: under === "" ? posixRel : under };
+		}
+		return undefined;
+	};
+	const sent = new Set<string>();
+	const skipped = new Map<string, Skipped>();
+	await eachLimited(files, 32, async (file) => {
+		const named = exclude(file);
+		if (named !== undefined) {
+			skipped.set(named.path, named);
+			return;
+		}
+		const target = await real(join(root, file));
+		if (!within(target, realRoot)) {
+			skipped.set(file, { path: file, why: "a link to outside the directory" });
+			return;
+		}
+		const kept = keep.find((directory) => within(target, directory));
+		if (kept !== undefined) {
+			const path = relative(realRoot, kept).split(sep).join("/") || file;
+			skipped.set(path, { path, why: "Kantel's config, with your API key" });
+			return;
+		}
+		const linked = exclude(relative(realRoot, target));
+		if (linked !== undefined) {
+			skipped.set(file, { path: file, why: `a link to ${linked.path}, ${linked.why}`, byDefault: true });
+			return;
+		}
+		sent.add(file);
+	});
+	return {
+		files: files.filter((file) => sent.has(file)),
+		skipped: [...skipped.values()].sort((a, b) => (a.path < b.path ? -1 : 1)),
+	};
+}
+
+/**
+ * Refuses to push `root` when it is in Kantel's config directory; when it is in a directory push leaves out, such as
+ * `.ssh` (or `.claude` outside a repository), unless `defaultExcludes` is off; and when it is the home directory or holds it or Kantel's config directory,
+ * unless `allowHome`. With it, answers the config directory for push to leave out.
+ */
+export async function checkPushRoot(
+	root: string,
+	options: {
+		readonly home: string;
+		readonly configDir: string;
+		readonly allowHome: boolean;
+		readonly defaultExcludes: boolean;
+		readonly inRepository: boolean;
+	},
+): Promise<string | undefined> {
+	const [realRoot, home, configDir] = await Promise.all([real(root), real(options.home), real(options.configDir)]);
+	if (within(realRoot, configDir)) {
+		throw new CliError(`${root} is in Kantel's config directory, ${configDir}, which holds your API key`);
+	}
+	for (const path of options.defaultExcludes ? new Set([resolve(root), realRoot]) : []) {
+		// In a repository only credentials count: Claude Code keeps worktrees in `.claude/worktrees`.
+		const found = defaultExclude(path, options.inRepository ? true : undefined);
+		if (found !== undefined) {
+			const where = found.path === path ? "is" : `is in ${found.path}, which is`;
+			throw new CliError(
+				`${root} ${where} one push leaves out (${found.why}): add --no-default-excludes if you mean it`,
+			);
+		}
+	}
+	if (!options.allowHome && within(home, realRoot)) {
+		const what = realRoot === home ? "is your home directory" : `holds your home directory, ${home}`;
+		throw new CliError(`${root} ${what}: push a project directory, or add --allow-home if you mean it`);
+	}
+	if (!within(configDir, realRoot)) return undefined;
+	if (!options.allowHome) {
+		throw new CliError(
+			`${root} holds Kantel's config directory, ${configDir}, with your API key: push a directory that doesn't, ` +
+				"or add --allow-home to push the rest",
+		);
+	}
+	return configDir;
 }
 
 export interface Copied {
@@ -262,6 +477,12 @@ async function remoteWalk(client: KantelClient, sandboxId: string, path: string)
 		do {
 			const page = await client.listFiles(sandboxId, { path: orHome(directory), cursor });
 			for (const entry of page.items) {
+				// The names come from the sandbox, and become paths here: none may lead outside the directory.
+				if (entry.name === "" || entry.name === "." || entry.name === ".." || /[\\/]/.test(entry.name)) {
+					throw new CliError(
+						`${sandboxId} listed ${JSON.stringify(entry.name)} in ${directory}, which isn't safe here`,
+					);
+				}
 				const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
 				if (entry.kind === "directory") await visit(entry.path, rel);
 				else if (entry.kind === "file") found.push(rel);

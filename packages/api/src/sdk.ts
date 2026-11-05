@@ -88,6 +88,7 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 	const args: string[] = names.map((name) => `${name}: string`);
 	const params = names.map((name) => name);
 	let body: string | undefined;
+	let raw: string | undefined;
 	let query: string | undefined;
 	// A stream's handlers come straight after its path parameters, ahead of its optional query.
 	const frame = route.stream === undefined ? undefined : types.type(plain(route.stream.frame));
@@ -101,6 +102,11 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 		args.push(`body${optional ? "?" : ""}: ${type}`);
 		params.push(optional ? "body = {}" : "body");
 		body = "body";
+	}
+	if (route.rawBody !== undefined) {
+		args.push("body: RawBody");
+		params.push("body");
+		raw = `raw: { body, type: ${JSON.stringify(route.rawBody.media[0] ?? "application/octet-stream")} }`;
 	}
 	if (route.query !== undefined) {
 		const type = types.type(plain(route.query));
@@ -125,7 +131,9 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 		`path: ${names.length === 0 ? JSON.stringify(route.path) : `\`${path}\``}`,
 		...(query === undefined ? [] : [query]),
 		...(body === undefined ? [] : [body]),
+		...(raw === undefined ? [] : [raw]),
 		...(binary ? ["binary: true"] : []),
+		...(route.stream?.eventsOnly === true ? ["events: true"] : []),
 	].join(", ");
 	const summary = [
 		route.summary,
@@ -149,12 +157,15 @@ export interface SdkSource {
 	readonly runtime: string;
 	/** Who generated it from what, for the header comment. */
 	readonly header: string;
+	/** Named schemas declared though no route answers with them, such as an error's `details` (`SandboxNotRunning`). */
+	readonly extraSchemas?: readonly TSchema[];
 }
 
 /** The SDK's source for `routes`. */
 export function renderSdk(routes: { readonly [id: string]: RouteDefinition }, source: SdkSource): string {
 	const types = new TypeWriter();
 	const methods = Object.values(routes).map((route) => method(route, types));
+	for (const schema of source.extraSchemas ?? []) types.type(plain(schema));
 	const declarations = [...types.named].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text);
 	return [
 		source.header,

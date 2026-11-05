@@ -78,6 +78,15 @@ services:
       # behind a TLS proxy: invites link to it, and hosts on other machines
       # reach the gateway there.
       KANTEL_PUBLIC_URL: ${KANTEL_PUBLIC_URL:-}
+      # Sign-in with GitHub and Google beside email codes: an OAuth client
+      # of each, made by you, with its callback at
+      # KANTEL_PUBLIC_URL/auth/oauth/<github|google>/callback. A provider
+      # is on with both its ID and secret and KANTEL_PUBLIC_URL; empty, off.
+      # Invite-only as email codes are.
+      KANTEL_GITHUB_CLIENT_ID: ${KANTEL_GITHUB_CLIENT_ID:-}
+      KANTEL_GITHUB_CLIENT_SECRET: ${KANTEL_GITHUB_CLIENT_SECRET:-}
+      KANTEL_GOOGLE_CLIENT_ID: ${KANTEL_GOOGLE_CLIENT_ID:-}
+      KANTEL_GOOGLE_CLIENT_SECRET: ${KANTEL_GOOGLE_CLIENT_SECRET:-}
       # The compute plane's API (@kantel/compute), which the console runs
       # on: sandboxes, snapshots, scoped keys, webhooks and hosts under /v1,
       # its records in memory for now. Sandboxes run on the machines you add
@@ -87,7 +96,6 @@ services:
       # KANTEL_COMPUTE_BACKEND=stub runs them on a stand-in with no hosts.
       KANTEL_COMPUTE_BACKEND: ${KANTEL_COMPUTE_BACKEND:-}
       KANTEL_COMPUTE_PUBLIC_URL: ${KANTEL_COMPUTE_PUBLIC_URL:-${KANTEL_PUBLIC_URL:-http://127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}}}
-      KANTEL_COMPUTE_POOLS: ${KANTEL_COMPUTE_POOLS:-}
       KANTEL_COMPUTE_IMAGES: ${KANTEL_COMPUTE_IMAGES:-}
       KANTEL_HOST_VERSION: ${KANTEL_HOST_VERSION:-}
       KANTEL_HOST_UPDATE_URL: ${KANTEL_HOST_UPDATE_URL:-}
@@ -98,6 +106,17 @@ services:
       # and secret files are refused; plain variables still work.
       KANTEL_SECRETS_KEY: ${KANTEL_SECRETS_KEY:-}
       KANTEL_ACCOUNT_HOSTS: ${KANTEL_ACCOUNT_HOSTS:-}
+      # `experimental` turns on read-only mounts, bundles, bucket sources and
+      # signed file URLs. Bundles' tars are kept in the gatewaystate volume,
+      # under /var/lib/harbour/bundles.
+      KANTEL_MOUNTS: ${KANTEL_MOUNTS:-}
+      # Where bundles' tars are kept instead: a path in this container, so a
+      # directory elsewhere needs a volume mounted there too (a Compose
+      # override). Gateways sharing one database must share it. Empty, the
+      # default above.
+      KANTEL_BUNDLES_DIR: ${KANTEL_BUNDLES_DIR:-}
+      # `experimental` turns templates on (built microVM profiles, snapshot-cached).
+      KANTEL_TEMPLATES: ${KANTEL_TEMPLATES:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes:

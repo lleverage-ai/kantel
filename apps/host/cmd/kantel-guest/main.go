@@ -1,8 +1,10 @@
 // kantel-guest is the agent inside every microVM sandbox: it serves the host's commands, files and port streams over
 // vsock (see internal/guest), and applies each sandbox's identity after a boot, restore or fork.
 //
-//	kantel-guest serve [--bridge 127.0.0.1:7001=1025 ...]
+//	kantel-guest serve [--bridge 127.0.0.1:7001=1025 ...] [--injected --init systemd|kantel]
 //	kantel-guest doctor (also run as kantel-doctor)
+//	kantel-guest init (as an initramfs's /init: boots any Linux image with this agent in it; see internal/guestinit)
+//	kantel-guest ssh-access (lets $KANTEL_PUBLIC_KEY in, or a new key it prints, and prints the host key's SHA256)
 //
 // doctor checks, from inside the sandbox, that its protected environment variables will be swapped by the host's
 // proxy: one line per check, exiting 1 if any fails.
@@ -12,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -24,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
+	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/vsock"
 )
 
@@ -38,13 +42,25 @@ func main() {
 	if filepath.Base(os.Args[0]) == "kantel-doctor" || (len(os.Args) >= 2 && os.Args[1] == "doctor") {
 		os.Exit(doctor(os.Stdout))
 	}
+	// The kernel starts an initramfs's /init with no arguments.
+	if os.Getpid() == 1 && (os.Args[0] == "/init" || len(os.Args) == 1 || (os.Args[1] == "init" && len(os.Args) == 2)) {
+		log.Fatal(guestinit.Stage1())
+	}
+	if len(os.Args) >= 3 && os.Args[1] == "init" && os.Args[2] == "--stage2" {
+		log.Fatal(guestinit.Stage2())
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "ssh-access" {
+		os.Exit(sshAccess(os.Stdout, os.Stderr))
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		fmt.Fprintln(os.Stderr, "usage: kantel-guest serve [--bridge addr=hostport ...] | kantel-guest doctor")
+		fmt.Fprintln(os.Stderr, "usage: kantel-guest serve [--bridge addr=hostport ...] [--injected --init systemd|kantel] | kantel-guest doctor | kantel-guest init | kantel-guest ssh-access")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	var bs bridges
 	fs.Var(&bs, "bridge", "listen on a TCP address and connect to a host vsock port: 127.0.0.1:7001=1025")
+	injected := fs.Bool("injected", false, "Kantel's initramfs put this agent in (any Linux image): netlink, its own SSH, root where there's no user")
+	pid1 := fs.String("init", "systemd", `PID 1: "systemd" (the image's) or "kantel" (kantel-guest init's own)`)
 	_ = fs.Parse(os.Args[2:])
 	for _, b := range bs {
 		addr, portText, ok := strings.Cut(b, "=")
@@ -58,7 +74,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &guest.Server{Version: version}
+	mounts := &guest.Mounts{
+		Dial:      func(context.Context) (net.Conn, error) { return vsock.DialHost(guest.MountPort) },
+		StateFile: guest.MountsStateFile,
+	}
+	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1, Mounts: mounts}
+	if *injected {
+		// Its SSH server's key, before the first identity (ssh-access prints its fingerprint).
+		if err := guest.EnsureHostKey(); err != nil {
+			log.Printf("ssh host key: %v", err)
+		}
+	}
+	// Mounts a previous run of the agent had: their FUSE servers ended with it.
+	go mounts.Restore(context.Background())
 	if l, err := net.Listen("tcp", guest.LocalProxyAddr); err == nil {
 		go func() { log.Print(server.ServeLocalProxy(l)) }()
 	} else {

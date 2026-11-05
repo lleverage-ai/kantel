@@ -41,10 +41,27 @@ type Message struct {
 	// stream.close (either way): a port stream ended; Reason says why.
 	Stream uint32 `json:"stream,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// stream.ack, on a file stream (FeatureFileStreams): the bytes of it its receiver has taken so far. Host → Kantel on
+	// a write, the sandbox's, sent every FileStreamAckBytes or so; Kantel → host on a read, its reader's. The sender
+	// keeps within FileStreamWindowBytes of it.
+	Acked int64 `json:"acked,omitempty"`
 
-	// usage (host → Kantel): one tick of the host's and its sandboxes' readings.
+	// usage (host → Kantel): one tick of the host's and its sandboxes' readings. Its answer, on a connection whose
+	// welcome had UsageAcks, is a usage.ack (Kantel → host) whose Acked is the Seq of the newest tick Kantel has taken,
+	// covering every earlier one (FeatureUsageAcks).
 	Usage *UsageSample `json:"usage,omitempty"`
 }
+
+// FileStreamAckBytes is about how often a host sends a file write stream's stream.ack.
+const FileStreamAckBytes = 512 << 10
+
+// FileStreamWindowBytes is how far a file stream's sender may get ahead of its receiver's stream.ack: a read's host of
+// what Kantel's reader has taken, so a slow download holds the host back rather than filling the gateway's memory.
+const FileStreamWindowBytes = 4 << 20
+
+// FileStreamFrameMaxBytes is the most of a file a read's host sends in one frame (Kantel's FILE_STREAM_FRAME_MAX_BYTES):
+// Kantel ends a read whose host sends a larger frame, or any frame once FileStreamWindowBytes are unacked.
+const FileStreamFrameMaxBytes = 1 << 20
 
 // Error codes a call can fail with.
 const (
@@ -90,15 +107,102 @@ type Facts struct {
 	// Features are what the host does beyond protocol 1 as first released (FeatureEgressPolicy). The control plane
 	// sends a sandbox a policy it must enforce only when its host reports the feature that enforces it.
 	Features []string `json:"features,omitempty"`
+	// Images is what the host boots new sandboxes on, and its image settings; present with FeatureImagePatching.
+	Images *HostImages `json:"images,omitempty"`
+	// Firecracker is the version of Firecracker the microVM tier runs (`v1.17.0`), and GuestKernel the guest kernel's
+	// (its version and a SHA-256 prefix of the file, `6.1.102+0123456789ab`). A template snapshot restores only onto
+	// the same two, so they are part of its cache key. Empty on a host without the microVM tier.
+	Firecracker string `json:"firecracker,omitempty"`
+	GuestKernel string `json:"guestKernel,omitempty"`
 }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
 
+// FeatureFileStreams: the host serves sandbox.files.open (FileOpenParams), a file's bytes on a port stream, for the
+// sandboxes of a tier that streams files (the microVM tier), and acks a write's bytes as the sandbox takes them
+// (stream.ack).
+const FeatureFileStreams = "file-streams"
+
+// FeatureFilesExtract: the host serves sandbox.files.extract (FileExtractParams) for the sandboxes of a tier that
+// extracts archives (the microVM tier), with its own code: never the sandbox's tar, shell or environment.
+const FeatureFilesExtract = "files-extract"
+
+// FeatureCustomShapes: sandbox.create takes vcpus, memoryMiB and diskGiB for a microVM shape off the named sizes,
+// and memoryMiB for an isolate.
+const FeatureCustomShapes = "custom-shapes"
+
 // FeatureUsage: the host sends a "usage" message every tick (UsageSample) without being asked, so the control plane
 // needn't run a command in a sandbox to read its usage.
 const FeatureUsage = "usage"
+
+// FeatureUsageAcks: each usage tick carries Run and Seq, and on a connection whose welcome has UsageAcks the host keeps
+// a tick until a usage.ack covers it, sending again on its next connection what none did, so a tick written into a
+// connection that then dies isn't lost. Without UsageAcks (an older control plane) a tick is done with once written.
+const FeatureUsageAcks = "usage-acks"
+
+// FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
+// each sandbox's and snapshot's Base, and restarts a sandbox on its current images when sandbox.start has Rebase.
+const FeatureImagePatching = "image-patching"
+
+// HostImages is a host's images: the version new sandboxes start on, and how it takes new ones.
+type HostImages struct {
+	// Version is the host images version new sandboxes boot on (empty when the images aren't versioned yet).
+	Version string `json:"version"`
+	// Firecracker is the Firecracker version the host runs, such as v1.17.0.
+	Firecracker string `json:"firecracker"`
+	// AutoUpdate says the host follows Welcome.Images.
+	AutoUpdate bool `json:"autoUpdate"`
+	// Signatures is the host's signature policy: "require", "warn" or "off".
+	Signatures string `json:"signatures"`
+	// State, when host.images is asked about a sandbox, is its state on this host (running, stopped, ...): a gateway
+	// whose record of it is `error` learns whether its machine is still running before it restarts it on new images.
+	State string `json:"state,omitempty"`
+}
+
+// ImageChannel is the host images Kantel wants hosts on.
+type ImageChannel struct {
+	// Channel names the channel, such as "stable".
+	Channel string `json:"channel"`
+	// Version is the release, such as host-images-20261103.
+	Version string `json:"version"`
+	// URL is the release's download base: it holds manifest.json and manifest.json.sigstore.json (a cosign bundle).
+	URL string `json:"url"`
+}
+
+// FeatureTemplateBuild: the host can build templates (template.build) now: it runs the microVM tier, and Docker is
+// installed on it and its daemon answers. Without it, template.build answers ErrUnsupported; restoring or booting a
+// template already built doesn't need it.
+const FeatureTemplateBuild = "template-build"
+
+// FeatureBucketMounts (HOST_FEATURES.mountsBucket): the host mounts CreateParams' bucket Mounts read-only in microVM
+// sandboxes (a lazy FUSE view over a host-wide read cache), fetches each bucket source's location and credentials with
+// bucket.fetch, answers each mount's status in SandboxInfo.Mounts (and later changes as a sandbox.mounts event), and
+// answers sandbox.mounts.refresh. Experimental: the control plane sends mounts only behind its switch.
+const FeatureBucketMounts = "mounts-bucket"
+
+// FeatureTemplateImageBuild: the host builds templates' custom images (a Dockerfile, or an image reference) in a build
+// microVM whose only network is the sandbox egress proxy, and boots them through Kantel's initramfs (the injected
+// guest agent). Reported only when its settings switch the builder on (templateBuilder) and it injects the agent. A
+// host without it is never sent a TemplateImage, in a build or a boot.
+const FeatureTemplateImageBuild = "template-image-build"
+
+// Template image kinds besides a Kantel base (the default, which has no TemplateImage).
+const (
+	TemplateImageDockerfile = "dockerfile"
+	TemplateImageRef        = "image"
+)
+
+// TemplateImage is a template's custom image: a Dockerfile built with no build context, or an image reference pulled,
+// in a build microVM. Scope names the build the image belongs to (the template, its version and its rebuild), so a
+// rebuild builds or pulls it again, and no other account's or template's build shares it.
+type TemplateImage struct {
+	Kind       string `json:"kind"`
+	Dockerfile string `json:"dockerfile,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	Scope      string `json:"scope"`
+}
 
 // Size is a sandbox shape.
 type Size struct {
@@ -123,20 +227,31 @@ type Welcome struct {
 	// automatic updates on fetches it from UpdateURL (with {version}, {os} and {arch} filled in).
 	DesiredVersion string `json:"desiredVersion,omitempty"`
 	UpdateURL      string `json:"updateUrl,omitempty"`
-	// Pools are the pre-warmed sandboxes Kantel wants per tier and size, such as {"microvm/default": 2}.
-	Pools map[string]int `json:"pools,omitempty"`
 	// Draining hosts take no new sandboxes.
 	Draining bool `json:"draining,omitempty"`
+	// Images are the host images Kantel wants hosts on: a host with image patching and automatic image updates on
+	// fetches them, checks their signature, and starts new sandboxes on them. Running and stopped sandboxes stay on
+	// theirs until a sandbox.start with Rebase.
+	Images *ImageChannel `json:"images,omitempty"`
+	// UsageAcks says Kantel acknowledges usage ticks on this connection (usage.ack, FeatureUsageAcks). The connection's
+	// first welcome decides it; a later one doesn't change it.
+	UsageAcks bool `json:"usageAcks,omitempty"`
 }
 
 // Capacity is what is free now.
 type Capacity struct {
-	FreeMemoryMiB int64          `json:"freeMemoryMiB"`
-	FreeDiskGiB   int64          `json:"freeDiskGiB"`
-	Running       int            `json:"running"`
-	Stopped       int            `json:"stopped"`
-	Load1         float64        `json:"load1"`
-	Warm          map[string]int `json:"warm"`
+	FreeMemoryMiB int64   `json:"freeMemoryMiB"`
+	FreeDiskGiB   int64   `json:"freeDiskGiB"`
+	Running       int     `json:"running"`
+	Stopped       int     `json:"stopped"`
+	Load1         float64 `json:"load1"`
+	// Warm is always empty: hosts keep no warm pools. It is sent for control planes from before they were removed,
+	// which refuse a capacity without it.
+	Warm map[string]int `json:"warm"`
+	// Builds are the template builds (their snapshot IDs) the host has admitted and not yet ended, whose machines'
+	// memory and disk FreeMemoryMiB and FreeDiskGiB already leave out: a control plane holding room for one of them
+	// stops holding it once a report names it, so it is counted once.
+	Builds []string `json:"builds,omitempty"`
 }
 
 type Heartbeat struct {
@@ -167,12 +282,154 @@ type SandboxInfo struct {
 	CreatedAt int64  `json:"createdAt"`
 	// Timings of the operation that answered with this, in milliseconds, by step.
 	Timings map[string]float64 `json:"timings,omitempty"`
-	// Source says how a create was served: "pool" (a pre-warmed sandbox), "snapshot" (restored from a snapshot) or
-	// "boot" (a cold boot).
+	// Source says how a create was served: "snapshot" (restored from a snapshot), "boot" (a cold boot), or for an
+	// isolate "pool" (an isolate its account's VM had pre-loaded) or "account" (its account's VM already ran).
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
 	Owner string `json:"owner,omitempty"`
+	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
+	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
+	Base string `json:"base,omitempty"`
+	// BaseAt is when the sandbox was put on Base (unix milliseconds: its root filesystem link's time, set by a create,
+	// a rebase or the first pinning); with Base only. Reports of one sandbox's base are ordered by it, so one read
+	// before a rebase never replaces what the rebase reported.
+	BaseAt int64 `json:"baseAt,omitempty"`
+	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
+	Guest *GuestCapabilities `json:"guest,omitempty"`
+	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts).
+	Mounts []MountStatus `json:"mounts,omitempty"`
 }
+
+// GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and
+// Docker that Kantel can open. The compute API passes it on as a sandbox's capabilities.guest.
+type GuestCapabilities struct {
+	ReportedAt int64 `json:"reportedAt"`
+	Agent      struct {
+		Version string `json:"version"`
+		// Injected: Kantel put the agent in at boot (any Linux image), rather than the image shipping it.
+		Injected bool `json:"injected"`
+	} `json:"agent"`
+	OS struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Version string `json:"version,omitempty"`
+	} `json:"os"`
+	// Arch is uname -m's: x86_64 or aarch64.
+	Arch string `json:"arch"`
+	// Libc is "glibc", "musl" or "none".
+	Libc string `json:"libc"`
+	// Shell runs a command's string; empty: argv only.
+	Shell string `json:"shell,omitempty"`
+	// Init is PID 1: "systemd" (the image's) or "kantel" (the agent's own, for an image without systemd).
+	Init    string       `json:"init"`
+	Desktop GuestFeature `json:"desktop"`
+	Browser GuestFeature `json:"browser"`
+	// BrowserSurface: the browser alone, on a display of its own with a stream of just that display, apart from the
+	// desktop (absent from an agent too old to say: no such surface).
+	BrowserSurface GuestFeature `json:"browserSurface"`
+	Docker         GuestDocker  `json:"docker"`
+}
+
+// GuestFeature is one thing an image has or lacks: what was found, or why it isn't there.
+type GuestFeature struct {
+	Available bool   `json:"available"`
+	Detail    string `json:"detail,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// GuestDocker is Docker's GuestFeature, with whether /dev/kvm opens inside (nested virtualisation for containers).
+type GuestDocker struct {
+	GuestFeature
+	KVM bool `json:"kvm"`
+}
+
+// Mount kinds.
+const (
+	MountBucket = "bucket"
+)
+
+// Mount is one read-only mount a sandbox is created with (HostMount): the sandbox sees it at Path and can't write to
+// it (EROFS). A bucket mount is a prefix of an account's bucket source. The host lists it once when it mounts (the
+// manifest: every object's path, size, mtime and ETag), so listing and stat in the sandbox are local, and fetches an
+// object's bytes only when the sandbox reads them, through the host's read cache.
+type Mount struct {
+	// Path is where it appears in the sandbox: absolute, and not one of the system's own directories.
+	Path string `json:"path"`
+	// Kind is "bucket" (or "bundle", which this host's bucket mounts leave alone).
+	Kind string `json:"kind"`
+	// Digest is a bundle's (kind "bundle").
+	Digest string `json:"digest,omitempty"`
+	// BucketSourceID is the account's bucket source: the host asks Kantel for its location and credentials
+	// (bucket.fetch) and keeps them in memory only. They never reach the sandbox.
+	BucketSourceID string `json:"bucketSourceId,omitempty"`
+	// Prefix is the part of the bucket mounted ("" the whole bucket); "reports" and "reports/" are the same.
+	Prefix string `json:"prefix,omitempty"`
+	// RefreshTTLSeconds is how old the manifest may be when the sandbox looks at the mount before the host lists the
+	// prefix again, in the background. Nil: the host's default (60); 0: never again (sandbox.mounts.refresh still does).
+	RefreshTTLSeconds *int `json:"refreshTtlSeconds,omitempty"`
+}
+
+// Mount states.
+const (
+	MountReady   = "ready"
+	MountPending = "pending"
+	MountFailed  = "failed"
+)
+
+// MountStatus is how one of a sandbox's mounts is doing (HostMountStatus, with the manifest's figures besides).
+type MountStatus struct {
+	Path  string `json:"path"`
+	Kind  string `json:"kind,omitempty"`
+	State string `json:"status"`
+	// Error says why a failed mount failed (never a credential).
+	Error string `json:"error,omitempty"`
+	// Objects and Bytes are what the manifest holds; RefreshedAt (ms) is when the prefix was last listed.
+	Objects     int   `json:"objects,omitempty"`
+	Bytes       int64 `json:"bytes,omitempty"`
+	RefreshedAt int64 `json:"refreshedAt,omitempty"`
+	// ListCalls is how many list requests (pages) the host has made for this mount since it was mounted.
+	ListCalls int64 `json:"listCalls,omitempty"`
+}
+
+// MountsRefreshParams is sandbox.mounts.refresh: list the sandbox's bucket mounts again now (Path empty: all of
+// them), and retry a failed one. The result is the sandbox's []MountStatus.
+type MountsRefreshParams struct {
+	SandboxID string `json:"sandboxId"`
+	Path      string `json:"path,omitempty"`
+}
+
+// BucketResolveParams is bucket.fetch (host → Kantel): a bucket source a sandbox on this host mounts.
+type BucketResolveParams struct {
+	SandboxID string `json:"sandboxId"`
+	SourceID  string `json:"bucketSourceId"`
+}
+
+// BucketSource is bucket.fetch's answer (HostBucketSource). Its credentials live only in the host's memory: never in
+// meta.json, a log, an error or anything the sandbox is sent.
+type BucketSource struct {
+	ID string `json:"id,omitempty"`
+	// Provider is "s3" (any S3-compatible store) or "gcs" (Google Cloud Storage: its XML API, with an HMAC key or a
+	// service account's key).
+	Provider string `json:"provider"`
+	Bucket   string `json:"bucket"`
+	// Endpoint is the store's origin, such as http://minio:9000; empty is the provider's own (AWS S3 in Region, or
+	// https://storage.googleapis.com).
+	Endpoint string `json:"endpoint,omitempty"`
+	Region   string `json:"region,omitempty"`
+	// Credentials: nil for a public bucket.
+	Credentials *BucketCredentials `json:"credentials,omitempty"`
+}
+
+// BucketCredentials is an access key (an S3 key or a GCS HMAC key), or a GCS service account's JSON key.
+type BucketCredentials struct {
+	AccessKeyID       string `json:"accessKeyId,omitempty"`
+	SecretAccessKey   string `json:"secretAccessKey,omitempty"`
+	SessionToken      string `json:"sessionToken,omitempty"`
+	ServiceAccountKey string `json:"serviceAccountKey,omitempty"`
+}
+
+// EventMounts is the event a host sends when a sandbox's mounts change status after its create answered.
+const EventMounts = "sandbox.mounts"
 
 // SnapshotInfo is one snapshot of a sandbox's disk (and, for a stop that kept it, its memory).
 type SnapshotInfo struct {
@@ -185,6 +442,8 @@ type SnapshotInfo struct {
 	SizeBytes int64  `json:"sizeBytes"`
 	Memory    bool   `json:"memory"`
 	Tier      string `json:"tier"`
+	// Base is the host images version the snapshot's root filesystem is (empty when unknown: images not versioned).
+	Base string `json:"base,omitempty"`
 }
 
 // Egress is a sandbox's way out, sent with create, resume and fork.
@@ -219,6 +478,9 @@ type Egress struct {
 	Allow       []string `json:"allow,omitempty"`
 	Deny        []string `json:"deny,omitempty"`
 	DefaultDeny bool     `json:"defaultDeny,omitempty"`
+	// PublicOnly is the host's own, never sent or kept (a template's build microVM): its proxy connections reach
+	// public addresses only, whatever private ranges egressAllowCIDRs opens to ordinary sandboxes.
+	PublicOnly bool `json:"-"`
 }
 
 // Protected is a sandbox's protected variables as the host's proxy needs to know them up front: no values.
@@ -305,6 +567,92 @@ type CreateParams struct {
 	// Owner is the organisation or account the sandbox belongs to; the isolate tier keeps each owner's sandboxes in
 	// their own VM.
 	Owner string `json:"owner,omitempty"`
+	// VCPUs, MemoryMiB and DiskGiB are, for a microVM, a shape off the host's named sizes (all three set, Size
+	// empty), which cold-boots: no size template is kept for it (one made from a Template restores that template's
+	// snapshot when it was built as this shape). For an isolate, MemoryMiB is the memory asked
+	// for, recorded and passed to the runtime but not enforced per isolate (workerd has no per-isolate memory limit;
+	// the account VM's memory is the bound).
+	VCPUs     int `json:"vcpus,omitempty"`
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+	DiskGiB   int `json:"diskGiB,omitempty"`
+	// Template makes the sandbox from a template (microVMs only): from its template snapshot, or by booting its image
+	// fresh and running its setup in the new sandbox.
+	Template *TemplateBoot `json:"template,omitempty"`
+	// Mounts are read-only mounts (FeatureBucketMounts); a tier that has none refuses them as unsupported.
+	Mounts []Mount `json:"mounts,omitempty"`
+}
+
+// TemplateBoot is how a sandbox made from a template boots.
+type TemplateBoot struct {
+	// RootfsKey names the image's root filesystem (images/templates/<key>.ext4); empty, it is worked out from the base
+	// image and its digest, as a template.build does.
+	RootfsKey string `json:"rootfsKey,omitempty"`
+	// BaseImage and BaseDigest are the template's Kantel base: an image name such as kantel/sandbox (no registry, tag
+	// or digest) and the digest the host pulls it by from its templateRegistry. With no digest (the default base, while
+	// its channel has none published), the template is the host's own sandbox image.
+	BaseImage  string `json:"baseImage"`
+	BaseDigest string `json:"baseDigest,omitempty"`
+	// Image is the template's custom image (FeatureTemplateImageBuild); nil for a Kantel base. A fresh boot of one
+	// boots the root filesystem RootfsKey names, which a build on this host made; it is never built in a create.
+	Image *TemplateImage `json:"image,omitempty"`
+	// Setup is run as root in a sandbox that boots fresh (no Snapshot), once it has its identity.
+	Setup string `json:"setup,omitempty"`
+	// Snapshot is a template snapshot on this host (a template.build's Ref) to restore; empty: boot fresh. It is
+	// restored only when it was built with the create's vCPUs and memory (its Size's, or its custom shape's); else the
+	// template boots fresh.
+	Snapshot string `json:"snapshot,omitempty"`
+}
+
+// TemplateBuildParams is template.build: take the image's root filesystem (the host's own image, or the base pulled by
+// its digest and made into one, or that from the cache), boot it once as the machine asked (the named size with those
+// vCPUs, memory and disk, else that custom shape), run Setup as root, and snapshot it as
+// template-snapshots/<SnapshotID>. The host refuses it (ErrCapacity) while its budget hasn't the machine's memory and
+// disk left beside its sandboxes and other builds, and counts it as used, naming it in Capacity.Builds, until its
+// machine has gone; a machine beyond its custom shapes' limits is ErrInvalid. A base with a digest
+// is ErrUnsupported on a host with no templateRegistry, and a bad base image name or digest ErrInvalid.
+type TemplateBuildParams struct {
+	SnapshotID string `json:"snapshotId"`
+	// BaseImage and BaseDigest are the template's Kantel base, as TemplateBoot's.
+	BaseImage  string `json:"baseImage"`
+	BaseDigest string `json:"baseDigest,omitempty"`
+	// Image is the template's custom image (FeatureTemplateImageBuild): built or pulled in a build microVM, under
+	// Egress with the operator's registries, then booted as the snapshot's root filesystem. Nil: the Kantel base.
+	Image     *TemplateImage    `json:"image,omitempty"`
+	Setup     string            `json:"setup,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	VCPUs     int               `json:"vcpus"`
+	MemoryMiB int               `json:"memoryMiB"`
+	// DiskGiB is the snapshot's disk: that of the named size with these vCPUs and memory, else the custom shape's
+	// (the control plane's diskFor), so a create of the same shape gets the same disk.
+	DiskGiB int    `json:"diskGiB"`
+	KeyHash string `json:"keyHash"`
+	// Egress is the build's way out while its setup runs (the template's grants); nil is the host's default.
+	Egress *Egress `json:"egress,omitempty"`
+	// Owner is the account the template is of, which the egress proxy names the build's requests after.
+	Owner string `json:"owner,omitempty"`
+}
+
+// TemplateBuildResult is template.build's answer. Ref names the snapshot on this host (its ID).
+type TemplateBuildResult struct {
+	Ref string `json:"ref"`
+	// ImageDigest is the pulled base's image ID, as Docker answers it; empty for the host's own image. For a custom
+	// image, the digest the build microVM reported: an image reference's resolved digest, a Dockerfile's built image ID.
+	ImageDigest string `json:"imageDigest,omitempty"`
+	// RootfsKey names a custom image's root filesystem on this host (images/templates/<key>.ext4), which a create's
+	// fresh boot of the template names (TemplateBoot.RootfsKey). Empty for a Kantel base.
+	RootfsKey string `json:"rootfsKey,omitempty"`
+	// Source is the custom image's kind, and DockerfileDigest (sha256: of the Dockerfile built) or ImageRef (the
+	// reference pulled) what it was: the build's provenance. Empty for a Kantel base.
+	Source           string             `json:"source,omitempty"`
+	DockerfileDigest string             `json:"dockerfileDigest,omitempty"`
+	ImageRef         string             `json:"imageRef,omitempty"`
+	SizeBytes        int64              `json:"sizeBytes"`
+	Timings          map[string]float64 `json:"timings,omitempty"`
+}
+
+// TemplateDeleteParams is template.delete: the template snapshot's directory goes; nothing else does.
+type TemplateDeleteParams struct {
+	SnapshotID string `json:"snapshotId"`
 }
 
 type SandboxRef struct {
@@ -320,6 +668,11 @@ type StopParams struct {
 	Memory *bool `json:"memory,omitempty"`
 }
 
+// HostImagesParams is host.images's: with SandboxID, the answer's Version is where a rebase of that sandbox lands.
+type HostImagesParams struct {
+	SandboxID string `json:"sandboxId,omitempty"`
+}
+
 // ResumeParams is sandbox.resume and sandbox.start.
 type ResumeParams struct {
 	SandboxID string  `json:"sandboxId"`
@@ -328,6 +681,13 @@ type ResumeParams struct {
 	// ignored. A call with a Revision states the sandbox's egress: on sandbox.start and sandbox.resume, no Egress
 	// with a Revision is the host's default (a clear), while no Egress without one keeps the egress it has.
 	Revision int64 `json:"revision,omitempty"`
+	// Rebase, on sandbox.start (a cold boot), first moves the sandbox onto the host's current images: its own disk
+	// stays, its memory snapshot is dropped. sandbox.resume ignores it.
+	Rebase bool `json:"rebase,omitempty"`
+	// RebaseTo, with Rebase, is the host images version (HostImages.Version) the gateway expects the rebase to land on:
+	// a host whose current images are another refuses the start before it changes anything, as it hasn't taken that
+	// update. Empty: whatever is current.
+	RebaseTo string `json:"rebaseTo,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its
@@ -380,6 +740,14 @@ type FileParams struct {
 	Length    int64  `json:"length,omitempty"`
 }
 
+// FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
+// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted.
+type FileExtractParams struct {
+	SandboxID string `json:"sandboxId"`
+	Archive   string `json:"archive"`
+	Target    string `json:"target"`
+}
+
 type FileEntry struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
@@ -410,6 +778,31 @@ type PortParams struct {
 // PortE2E is the port.open target that is an E2E session with the host rather than a sandbox port.
 const PortE2E = 0
 
+// FileOpenParams is sandbox.files.open: a file's bytes on Stream, in binary frames as port.open's.
+//
+// Op "read": the call is answered {"size": n}, the file's bytes follow on the stream, and a stream.close ends it with
+// the reason "ok <size>", or "error <code>: <message>". Op "write": the call is answered {} once the host is ready;
+// Kantel sends the bytes, then an empty frame for the end; the host writes them beside the file, moves them over it once
+// all have arrived, and ends the stream with a stream.close as for a read. A stream.close from Kantel aborts either
+// (for a write, nothing is moved into place).
+type FileOpenParams struct {
+	SandboxID string `json:"sandboxId"`
+	Stream    uint32 `json:"stream"`
+	Path      string `json:"path"`
+	Op        string `json:"op"`
+	// Mode is a write's permissions, such as 0o644 (the default).
+	Mode uint32 `json:"mode,omitempty"`
+	// Acks, on a read, is Kantel acking what its reader takes (stream.ack): the host keeps within FileStreamWindowBytes
+	// of it. False (an older Kantel), the host sends as fast as it can.
+	Acks bool `json:"acks,omitempty"`
+}
+
+// FileOpenParams' ops.
+const (
+	FileOpRead  = "read"
+	FileOpWrite = "write"
+)
+
 // UpdateParams is host.update.
 type UpdateParams struct {
 	Version string `json:"version"`
@@ -438,6 +831,11 @@ type Event struct {
 // CPUs; a microVM's of its vCPUs (its Firecracker process's CPU time over vCPUs × interval); an isolate's of one CPU
 // (its JavaScript runs on one thread), as its share of its account's runtime's CPU time.
 type UsageSample struct {
+	// Seq is the tick's place in Run, from 1 up by one per tick taken (FeatureUsageAcks); one the backlog dropped leaves
+	// a gap. Run is chosen when the sampler starts, so a restarted host's Seq starting again isn't taken for ticks Kantel
+	// has already had. Kantel takes a tick at most once by them, so one sent again after a reconnect isn't counted twice.
+	Seq uint64 `json:"seq,omitempty"`
+	Run string `json:"run,omitempty"`
 	// At is when it was taken, in milliseconds; IntervalMs is the span its CPU figures cover.
 	At         int64          `json:"at"`
 	IntervalMs int64          `json:"intervalMs"`
@@ -461,13 +859,27 @@ type SandboxUsage struct {
 	// Kind is the tier: "microvm" or "isolate".
 	Kind string  `json:"kind"`
 	CPU  float64 `json:"cpu"`
-	// MemUsedBytes, for a microVM, is its Firecracker process's resident memory: the guest memory the VM has touched
-	// (the guest's page cache too, and nothing is given back without a balloon) and the VMM's own. MemLimitBytes is its
-	// size's memory. An isolate gets an even share of its account's runtime's resident memory and memory (workerd
-	// says nothing of an isolate's own).
+	// MemUsedBytes, for a microVM, is what its guest counts as used, MemTotal - MemAvailable as its virtio_balloon
+	// driver reports them to Firecracker (MemSource "guest"): so not its page cache, and it falls when the guest frees
+	// memory. A VM without the balloon's statistics (one restored from a snapshot made before them, or a kernel
+	// without the driver) gets its Firecracker process's resident memory instead (MemSource "rss"): the guest memory the
+	// VM has touched, page cache included, which never falls, and the VMM's own. MemLimitBytes is its size's memory. An
+	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; workerd says nothing of
+	// an isolate's own).
 	MemUsedBytes  int64 `json:"memUsedBytes"`
 	MemLimitBytes int64 `json:"memLimitBytes"`
+	// MemSource is where MemUsedBytes came from, MemSourceGuest or MemSourceRSS. A host that predates it sends none
+	// (its figures are all "rss").
+	MemSource string `json:"memSource,omitempty"`
 }
+
+// SandboxUsage.MemSource's values.
+const (
+	// MemSourceGuest is the guest's own count of its used memory (MemTotal - MemAvailable), read from outside it.
+	MemSourceGuest = "guest"
+	// MemSourceRSS is the resident memory of the host process that runs the sandbox (or the sandbox's share of it).
+	MemSourceRSS = "rss"
+)
 
 // Methods.
 const (
@@ -491,11 +903,26 @@ const (
 	MethodSnapshotRead = "snapshot.read"
 	MethodPortOpen     = "port.open"
 	MethodHostUpdate   = "host.update"
-	MethodHostPools    = "host.pools"
+	// MethodHostImages (Kantel → host, HostImagesParams; FeatureImagePatching) answers the host's HostImages as they
+	// are now, which a hello's facts can be behind: a restart on latest asks it before stopping the sandbox.
+	MethodHostImages = "host.images"
 	// MethodEgress replaces a sandbox's egress (ResumeParams: sandboxId, egress; null egress is the host's default).
 	MethodEgress = "sandbox.egress"
 	// MethodSecrets (Kantel → host, SecretsParams) says a sandbox's protected variables changed; the result is {}.
 	MethodSecrets = "sandbox.secrets"
 	// MethodSecretsFetch (host → Kantel, SandboxRef) answers a SecretsTable.
 	MethodSecretsFetch = "secrets.fetch"
+	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).
+	MethodFileOpen = "sandbox.files.open"
+	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
+	// own code (FeatureFilesExtract); the result is {}.
+	MethodFileExtract = "sandbox.files.extract"
+	// MethodTemplateBuild (TemplateBuildParams) answers a TemplateBuildResult.
+	MethodTemplateBuild = "template.build"
+	// MethodTemplateDelete (TemplateDeleteParams) deletes a template snapshot; the result is {"ok": true}.
+	MethodTemplateDelete = "template.delete"
+	// MethodMountsRefresh (Kantel → host, MountsRefreshParams) lists a sandbox's bucket mounts again now.
+	MethodMountsRefresh = "sandbox.mounts.refresh"
+	// MethodBucketResolve (host → Kantel, BucketResolveParams) answers a BucketSource (HostMethods.bucketFetch).
+	MethodBucketResolve = "bucket.fetch"
 )

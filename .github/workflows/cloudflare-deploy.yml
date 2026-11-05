@@ -31,10 +31,16 @@ name: Cloudflare deploy
 #   optional var KANTEL_ACCOUNT_HOSTS: `experimental` lets people add machines of their own, which dial out to
 #            KANTEL_PUBLIC_URL and run only their account's sandboxes; unset or `off`, it stays off. Set either way,
 #            KANTEL_PUBLIC_URL may go without KANTEL_SIGN_IN_FROM, leaving email sign-in off
+#   optional var KANTEL_TEMPLATES: `experimental` turns templates on (microVM profiles built once and restored from a
+#            snapshot); unset or `off`, every template route answers not_supported
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            KANTEL_VAULT_KEY (without it the vault answers 503), KANTEL_VAULT_MODEL_GATEWAY_TOKEN,
 #            KANTEL_VAULT_EGRESS_GATEWAY_TOKEN, KANTEL_CPA_API_KEY, KANTEL_BRWSR_API_KEY (src/browser.ts: without it
 #            sessions have no browser)
+#   optional secrets KANTEL_GITHUB_CLIENT_ID with KANTEL_GITHUB_CLIENT_SECRET, and KANTEL_GOOGLE_CLIENT_ID with
+#            KANTEL_GOOGLE_CLIENT_SECRET: sign-in with GitHub and with Google on KANTEL_PUBLIC_URL (with email sign-in
+#            on), each set on the Worker as a secret of the same name. Each pair goes together or the run fails; unset,
+#            the provider stays off (apps/cloudflare/README.md, "Sign in with GitHub and Google")
 #
 # The token's permissions (apps/cloudflare/README.md explains each):
 #   Account  Workers Scripts: Edit            deploy the Worker, its Durable Objects and static assets
@@ -105,6 +111,8 @@ jobs:
       KANTEL_SIGN_IN_DAILY_CAP: ${{ vars.KANTEL_SIGN_IN_DAILY_CAP }}
       # Optional, experimental: accounts' own hosts, dialling KANTEL_PUBLIC_URL.
       KANTEL_ACCOUNT_HOSTS: ${{ vars.KANTEL_ACCOUNT_HOSTS }}
+      # Optional, experimental: templates.
+      KANTEL_TEMPLATES: ${{ vars.KANTEL_TEMPLATES }}
     steps:
       - uses: actions/checkout@v4
 
@@ -181,6 +189,11 @@ jobs:
           # Kantel's own browsers: view links' signing key and the key their profiles and recordings are sealed with.
           KANTEL_BROWSER_VIEW_KEY: ${{ (secrets.KANTEL_BROWSER_VIEW_KEY || secrets.HARBOUR_BROWSER_VIEW_KEY) }}
           KANTEL_BROWSER_SEAL_KEY: ${{ (secrets.KANTEL_BROWSER_SEAL_KEY || secrets.HARBOUR_BROWSER_SEAL_KEY) }}
+          # Sign-in with GitHub and Google on the public origin: each provider's OAuth client (@kantel/identity/oauth).
+          KANTEL_GITHUB_CLIENT_ID: ${{ secrets.KANTEL_GITHUB_CLIENT_ID }}
+          KANTEL_GITHUB_CLIENT_SECRET: ${{ secrets.KANTEL_GITHUB_CLIENT_SECRET }}
+          KANTEL_GOOGLE_CLIENT_ID: ${{ secrets.KANTEL_GOOGLE_CLIENT_ID }}
+          KANTEL_GOOGLE_CLIENT_SECRET: ${{ secrets.KANTEL_GOOGLE_CLIENT_SECRET }}
         run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
 
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.

@@ -69,7 +69,7 @@ function Scenario({
  * the owner. */
 export const Organisation: Story = () => <Scenario />;
 
-/** An invite just made: its join code shows once, since Kantel sends no email. */
+/** An invite just made where the deployment sends no mail: its join code shows once, to pass on. */
 export const OrganisationInvited: Story = () => (
 	<Scenario
 		invited={{
@@ -78,6 +78,20 @@ export const OrganisationInvited: Story = () => (
 			role: "member",
 			sentAt: FIXTURE_NOW,
 			code: "kji_q8w2mr5tz4kd9xv3bn7c",
+		}}
+	/>
+);
+
+/** An invite just made and emailed with a link to join: the code shows once too, in case the email doesn't arrive. */
+export const OrganisationInviteEmailed: Story = () => (
+	<Scenario
+		invited={{
+			id: "inv_new",
+			email: "sam@example.com",
+			role: "member",
+			sentAt: FIXTURE_NOW,
+			code: "kji_q8w2mr5tz4kd9xv3bn7c",
+			emailed: true,
 		}}
 	/>
 );

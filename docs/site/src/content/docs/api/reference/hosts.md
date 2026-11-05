@@ -9,6 +9,18 @@ sidebar:
 
 The machines that run sandboxes: join tokens, labels, drain and revoke. Super-admins only.
 
+## List base images
+
+`GET /v1/admin/hosts/images` (SDK method `listBaseImages`)
+
+Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).
+
+**Answers**
+
+- `200`: [BaseImageList](/api/reference/types/#baseimagelist) (`application/json`). The base images.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List hosts
 
 `GET /v1/admin/hosts` (SDK method `listHosts`)
@@ -90,6 +102,30 @@ Revokes its credential and closes its connection. Its sandboxes keep their disks
 - `200`: [Host](/api/reference/types/#host) (`application/json`). The host, revoked.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get a host's usage
+
+`GET /v1/admin/hosts/{hostId}/usage` (SDK method `getHostUsage`)
+
+Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `since` | integer | no | Only the points after this time (epoch milliseconds). |
+
+**Answers**
+
+- `200`: [HostUsage](/api/reference/types/#hostusage) (`application/json`). The host's readings.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get the public URL
 

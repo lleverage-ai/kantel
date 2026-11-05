@@ -30,6 +30,8 @@ Every error answers with the same body, an [ErrorBody](/api/reference/types/#err
 
 `code` is one of the values of [ErrorCode](/api/reference/types/#errorcode). A missing or wrong key answers `401` with `unauthenticated`, and a key without the scope a call needs answers `403` with `forbidden`.
 
+Some errors say more in `details`. A call that needs a running sandbox (commands, files, ports, file URLs, archives) answers `409` `conflict` when the sandbox isn't running, with a [SandboxNotRunning](/api/reference/types/#sandboxnotrunning) in `details`: a stable `code` such as `sandbox_stopped` or `sandbox_starting`, the sandbox's `state`, the `stopReason` where Kantel recorded why it stopped, and a `hint` naming the resume call. A call made while the sandbox starts waits for it first, up to 60 seconds. See [When the sandbox isn't running](/sandboxes/commands-and-files/#when-the-sandbox-isnt-running).
+
 ## Get the OpenAPI document
 
 The document is OpenAPI 3.1. Take it from the repository at `packages/api/generated/openapi.json`, or generate it from a checkout:

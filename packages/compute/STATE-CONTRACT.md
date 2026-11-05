@@ -165,13 +165,13 @@ answers `conflict`, then the same sandbox, with one backend create.
 a running one or deleting a deleted one answers the sandbox as it is. Section 3's conditional transitions keep that true
 across gateways.
 
-## 5. Warm acquisition, claims and leases
+## 5. Acquisition, claims and leases
 
-- **The warm claim is on the host.** Each host keeps its own pool of pre-warmed microVMs (`microvm/default: 1` by
-  default, set by the gateway in the host's welcome). It claims one under its own lock, in 0.2–0.4 ms of the roughly
-  145 ms create. The gateway holds no lease on a warm sandbox. So two gateways can't double-claim one: the second
-  create on a host with an empty pool falls back to restoring the template snapshot (about 210 ms). That is slower but
-  correct.
+- **No warm pools.** Hosts keep no idle microVMs waiting for a create, hosted or self-hosted: an idle VM holds its
+  memory. A create of a named size restores that size's template snapshot on the host (about 210 ms); a shape off the
+  sizes cold-boots. There is nothing to claim, so nothing two gateways could double-claim. The welcome still sends
+  `pools: {}` so a host from before pools were removed ends any it kept; `KANTEL_COMPUTE_POOLS` is ignored. Inside an
+  isolate tier VM, workerd still keeps isolates pre-loaded for its account (`ISOLATE_POOL_SIZE`).
 - **Placement.** The scheduler (`packages/hosts/src/scheduler.ts`) picks among the hosts *this gateway* sees as
   connected. It subtracts what it has placed since each host's last heartbeat (`reserved`, kept in memory per process).
   Two gateways placing at once don't see each other's reservations, so they can place more on one host than its
