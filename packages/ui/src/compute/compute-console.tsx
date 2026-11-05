@@ -159,6 +159,25 @@ export function sandboxPath(base: string, sandboxId: string, view: SandboxView =
 	return view === "overview" ? page : `${page}/${view}`;
 }
 
+/**
+ * The query of a screen's page, which opens in a new tab: `tabQuery`, what this tab runs on (its source and hosting,
+ * as the app chose them when it started), and this address's `?theme`. Nothing of this page's own (`?new`, a file
+ * browser's place, Egress's tab) goes with it.
+ */
+export function screenSearch(search: string, tabQuery = ""): string {
+	const params = new URLSearchParams(tabQuery);
+	const theme = new URLSearchParams(search).get("theme");
+	if (theme !== null) params.set("theme", theme);
+	const query = params.toString();
+	return query === "" ? "" : `?${query}`;
+}
+
+/** The address of a sandbox's view: a screen's carries the query a new tab needs (`screenSearch`). */
+function sandboxViewPath(base: string, sandboxId: string, view: SandboxView, query: string): string {
+	const path = sandboxPath(base, sandboxId, view);
+	return view === "desktop" || view === "watch" || view === "browser" ? `${path}${query}` : path;
+}
+
 /** The query parameters a file browser keeps in the address: the folder, the file open in it, and whose files. */
 const FILES_PARAMS = ["path", "file", "snapshot"] as const;
 
@@ -274,6 +293,11 @@ export interface ComputeConsoleProps {
 	readonly signedInAs?: { readonly name?: string; readonly email?: string };
 	/** The person chose a theme in their menu, which has applied it: the app keeps it for them. */
 	readonly onThemeChoose?: (preference: ThemePreference) => void;
+	/**
+	 * What a new tab of the console needs in its query to show the same data as this one (`source=recorded`,
+	 * `hosting=hosted`): a screen's page opens in one, and a tab opened without its opener has none of this tab's session.
+	 */
+	readonly tabQuery?: string;
 	/** An invite's code from its email's link: the console opens Join with it. */
 	readonly joinCode?: string;
 	/** The Join `joinCode` opened is done with, joined or closed: the app forgets the code. */
@@ -372,6 +396,7 @@ export function ComputeConsole({
 	onSignOut,
 	signedInAs,
 	onThemeChoose,
+	tabQuery,
 	joinCode,
 	onJoinCodeDone,
 }: ComputeConsoleProps) {
@@ -581,6 +606,63 @@ export function ComputeConsole({
 		</a>
 	);
 
+	// A sandbox's desktop or browser is a page of its own, the whole window, without the console around it: the sandbox's
+	// page opens it in a new tab, and its address is one to share.
+	const screenPage =
+		page === "sandboxes" &&
+		route.sandboxId !== undefined &&
+		(route.sandboxView === "desktop" || route.sandboxView === "watch" || route.sandboxView === "browser");
+	if (screenPage) {
+		return (
+			// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
+			// biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, so the keyboard takes the same path.
+			<div className="kt-screen-page h-dvh min-h-0 min-w-0 bg-canvas text-fg" onClick={onClick}>
+				{failed !== undefined ? (
+					<div className="grid h-full place-items-center p-gutter">
+						<ConsoleUnavailable
+							message={messageOf(failed.error, "Try again in a moment.")}
+							onRetry={() => {
+								viewer.reload();
+								accounts.reload();
+							}}
+						/>
+					</div>
+				) : account === undefined || me === undefined ? (
+					<div className="p-gutter">
+						<Skeleton lines={3} />
+					</div>
+				) : (
+					<PageFor
+						page={page}
+						route={route}
+						source={source}
+						account={account}
+						viewer={me}
+						now={now}
+						base={base}
+						search={search}
+						hash={hash}
+						navigate={navigate}
+						noHosts={noHosts}
+						narrow={narrow}
+						hosts={hostsSource}
+						ownHosts={!superAdmin}
+						accounts={list ?? []}
+						onSwitch={switchTo}
+						onRenamed={() => accounts.reload()}
+						you={{ name: name ?? me.name, email: email ?? me.email }}
+						onHostJoined={hosts.reload}
+						onCreate={() => setDialog("create")}
+						onJoin={() => setDialog("join")}
+						onLeft={() => accounts.reload()}
+						onOpenAccount={setAccountId}
+						tabQuery={tabQuery}
+					/>
+				)}
+			</div>
+		);
+	}
+
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
 		// biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, so the keyboard takes the same path.
@@ -766,6 +848,7 @@ export function ComputeConsole({
 									if (personal !== undefined) switchTo(personal);
 									accounts.reload();
 								}}
+								tabQuery={tabQuery}
 							/>
 						</SettingsFrameFor>
 					</div>
@@ -833,6 +916,8 @@ function PageFor({
 	onCreate,
 	onJoin,
 	onLeft,
+	onOpenAccount,
+	tabQuery,
 }: {
 	page: ComputePage;
 	route: ComputeRoute;
@@ -865,8 +950,15 @@ function PageFor({
 	onCreate: () => void;
 	onJoin: () => void;
 	onLeft: () => void;
+	/**
+	 * A screen's page, which has no switcher: the sandbox is in another of the viewer's accounts, and this tab moves to
+	 * it, not remembered, so a shared link opens whichever account was used last.
+	 */
+	onOpenAccount?: (accountId: string) => void;
+	tabQuery: string | undefined;
 }): ReactNode {
 	const timing = now === undefined ? {} : { now };
+	const screenQuery = screenSearch(search, tabQuery);
 	switch (page) {
 		case "sandboxes":
 			return route.sandboxId !== undefined ? (
@@ -877,8 +969,11 @@ function PageFor({
 					hosting={source.hosting}
 					sandboxId={route.sandboxId}
 					accountId={account.id}
+					{...(onOpenAccount === undefined
+						? {}
+						: { accountIds: new Set(accounts.map((each) => each.id)), onOpenAccount })}
 					view={route.sandboxView ?? "overview"}
-					href={(view) => sandboxPath(base, route.sandboxId ?? "", view)}
+					href={(view) => sandboxViewPath(base, route.sandboxId ?? "", view, screenQuery)}
 					sandboxesHref={computePath("sandboxes", base)}
 					environmentHref={(id) => computePath("environments", base, id)}
 					{...(source.templates === undefined
@@ -901,7 +996,7 @@ function PageFor({
 					snapshots={source.snapshots}
 					account={account}
 					hosting={source.hosting}
-					sandboxHref={(sandboxId, view) => sandboxPath(base, sandboxId, view)}
+					sandboxHref={(sandboxId, view) => sandboxViewPath(base, sandboxId, view ?? "overview", screenQuery)}
 					navigate={navigate}
 					environments={(accountId) => source.environments.list(accountId)}
 					{...(source.templates === undefined

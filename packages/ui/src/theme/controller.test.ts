@@ -53,6 +53,19 @@ const v1 = (preference: string, css: Record<string, string> = {}) =>
 const saved = (storage: ReturnType<typeof memory>) => JSON.parse(storage.getItem(THEME_STORAGE_KEY) ?? "null");
 
 describe("the theme controller", () => {
+	it("shows the address's theme for the page, whatever is remembered or chosen, and still remembers a choice", () => {
+		const storage = memory({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "dark" }) });
+		const { root, attributes } = page();
+		const controller = createThemeController({ root, storage, prefersLight: device(false), search: "?theme=light" });
+		expect(attributes.get("data-kt-theme")).toBe("light");
+		controller.choose("dark");
+		expect([attributes.get("data-kt-theme"), saved(storage).preference]).toEqual(["light", "dark"]);
+		// Not a theme: the page follows what was chosen.
+		const other = page();
+		createThemeController({ root: other.root, storage, prefersLight: device(true), search: "?theme=pink" });
+		expect(other.attributes.get("data-kt-theme")).toBe("dark");
+	});
+
 	it("follows the device until a person chooses, and remembers nothing until then", () => {
 		const storage = memory();
 		const { root, attributes } = page();
@@ -183,15 +196,24 @@ describe("a choice remembered before light and dark", () => {
 
 describe("the boot script", () => {
 	/** Runs the inline script against a fake page; returns the theme it set on <html>. */
-	const boot = (entries: Record<string, string>, light = false) => {
+	const boot = (entries: Record<string, string>, light = false, search?: string) => {
 		const attributes = new Map<string, string>();
-		new Function("localStorage", "matchMedia", "document", themeBootScript)(
+		new Function("localStorage", "matchMedia", "document", "location", themeBootScript)(
 			memory(entries),
 			() => ({ matches: light }),
 			{ documentElement: { setAttribute: (name: string, value: string) => void attributes.set(name, value) } },
+			search === undefined ? undefined : { search },
 		);
 		return attributes.get("data-kt-theme");
 	};
+
+	it("paints the theme the address asks for over what was chosen, and ignores one it doesn't know", () => {
+		const dark = { [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "dark" }) };
+		expect(boot(dark, false, "?theme=light")).toBe("light");
+		expect(boot(dark, true, "?x=1&theme=system")).toBe("light");
+		expect(boot({}, true, "?theme=dark")).toBe("dark");
+		expect(boot(dark, true, "?theme=solarized")).toBe("dark");
+	});
 
 	it("paints the device's theme with nothing remembered, and what was chosen otherwise", () => {
 		expect(boot({}, true)).toBe("light");

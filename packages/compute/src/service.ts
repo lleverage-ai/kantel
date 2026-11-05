@@ -93,9 +93,10 @@ import type {
 	StoredSandbox,
 	StoredSnapshot,
 	StoredTelemetry,
+	StoredUsageClaim,
 	StoredWebhook,
 } from "./store.ts";
-import { UniqueViolation } from "./store.ts";
+import { UniqueViolation, usageClaimId } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
@@ -381,7 +382,9 @@ export interface ComputeService {
 	 * Takes a host's usage tick (`HostUsageReport` in @kantel/hosts): its own readings and its sandboxes', kept in
 	 * memory for an hour as they came and as 5-minute means, a sandbox's in its record. Readings for a sandbox not on
 	 * `hostId` are dropped. A host's ticks are taken in the order they came. `shared`: another gateway replica, the one
-	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't.
+	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't. A numbered tick
+	 * (`seq` and `run`) taken already, as one sent again after a reconnect is, resolves without being taken twice. It
+	 * resolves once the tick is in its series: what the host's link acknowledges (`usage.ack`).
 	 */
 	recordUsage(hostId: string, report: ReportedUsage, how?: { readonly shared?: boolean }): Promise<void>;
 	/**
@@ -536,6 +539,27 @@ export const FALLBACK_READ_GAP_MS = 15_000;
 const SETTLE_EVERY_MS = 60_000;
 /** How far ahead of the control plane's a host's clock may be before its ticks are stamped on arrival instead. */
 const MAX_CLOCK_SKEW_MS = 30_000;
+/** The most numbered ticks held for a host while they can't be taken: its own backlog's bound (kantel-host's). */
+export const MAX_HELD_USAGE = 120;
+const HOUR_MS = 3_600_000;
+/** The runs of a host's sampler whose taken ticks are kept (`takenSeq`): a restart or two, and a late tick of the last. */
+const MAX_RUNS_KEPT = 4;
+/** Expired usage claims removed at once, and the pause between batches (`sweepUsageClaims`). */
+const CLAIM_SWEEP_BATCH = 50;
+const CLAIM_SWEEP_PAUSE_MS = 50;
+
+/** A tick from a host with acknowledged ticks (`usage-acks`): its `seq` and `run` both there. */
+type NumberedUsage = ReportedUsage & { readonly seq: number; readonly run: string };
+
+/**
+ * A numbered tick on its way in. `shared`: another replica passed it on. `exported`: whether this replica exports it,
+ * once its claim (`claimUsage`) is settled; kept while it is held, so trying it again doesn't claim it again.
+ */
+interface HeldUsage {
+	readonly report: NumberedUsage;
+	readonly shared: boolean;
+	exported?: boolean;
+}
 /** A host is reporting while its last tick came within this, or 3 of its intervals if longer. */
 const REPORTING_WITHIN_MS = 15_000;
 /** How far back the metrics export reaches for a sandbox it hasn't exported before. */
@@ -1307,11 +1331,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const exportedUntil = new Map<string, number>();
 	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
 	const tickArrivedAt = new Map<string, number>();
+	/**
+	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in each of its
+	 * sampler's recent runs (`MAX_RUNS_KEPT`, newest last): one sent again after a reconnect, at or before it, is
+	 * acknowledged without being taken twice. By run, so a late tick of a host's old run (passed on from another replica)
+	 * never moves its new run's back. A run's ticks are taken in order (`ingestInTurn`), so every one at or before it is in.
+	 */
+	const takenSeq = new Map<string, Map<string, number>>();
+	/**
+	 * Each host's numbered ticks that couldn't be taken (the store failing), oldest first, with every numbered tick after
+	 * them: taken in order before anything newer (`ingestInTurn`).
+	 */
+	const heldUsage = new Map<string, HeldUsage[]>();
 	/** Up to when the backend's own ticks (the stub's) are in. */
 	let pulledUntil = Number.NEGATIVE_INFINITY;
 	/** The stub's past ticks being taken (`catchUpUsage`), if they are. */
 	let replaying: Promise<void> | undefined;
 	let settledAt = Number.NEGATIVE_INFINITY;
+	/** This process, as the owner of the usage ticks it claims to export (`StoredUsageClaim.owner`). */
+	const usageOwner = crypto.randomUUID();
+	let claimsSweptAt = Number.NEGATIVE_INFINITY;
+	/** Set by `close`: a claim sweep under way stops. */
+	let closing = false;
 
 	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
 	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
@@ -3098,6 +3139,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		hostSeries.settle(asOf);
 		for (const { key, rollup } of sandboxSeries.settle(asOf)) await keepRollup(key, rollup).catch(() => undefined);
 		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
+		// A host's backlog is minutes long: an hour without a tick, none of what it would send again is still to come.
+		for (const hostId of takenSeq.keys()) if (!tickArrivedAt.has(hostId)) takenSeq.delete(hostId);
+		for (const hostId of heldUsage.keys()) if (!tickArrivedAt.has(hostId)) heldUsage.delete(hostId);
+		sweepUsageClaims();
 	}
 
 	/**
@@ -3105,12 +3150,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * series before anything is written, so a slow write can't let the next tick in ahead of this one; `recordUsage`
 	 * takes a host's ticks one at a time. `settle`: close what stopped reporting, now and then (not while replaying the
 	 * stub's past ticks, whose later ones would find their 5 minutes already closed). `shared`: it came from the replica
-	 * holding the host, which exports it, so this one doesn't (`UsagePoint.shared`).
+	 * holding the host, which exports it, so this one doesn't (`UsagePoint.shared`). `exports`, instead: asked whether this
+	 * replica exports it (`claimUsage`), once nothing else can stop the tick going in. It throws only before any reading
+	 * is in (the lookup of the host's sandboxes, or `exports`), so a tick that failed can be taken again whole.
 	 */
 	async function ingest(
 		hostId: string,
 		report: ReportedUsage,
-		how: { readonly known?: ReadonlySet<string>; readonly settle?: boolean; readonly shared?: boolean } = {},
+		how: {
+			readonly known?: ReadonlySet<string>;
+			readonly settle?: boolean;
+			readonly shared?: boolean;
+			readonly exports?: () => Promise<boolean>;
+		} = {},
 	): Promise<void> {
 		const meta = { intervalMs: report.intervalMs };
 		// The host's own time, unless its clock runs ahead: a reading stamped in the future would hold back every one after
@@ -3119,6 +3171,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const at = report.at - received > MAX_CLOCK_SKEW_MS ? received : report.at;
 		// Whether the host is reporting goes by when its ticks arrive, not by its clock.
 		tickArrivedAt.set(hostId, received);
+		// A host reports only its own sandboxes: one statement for all of them, not one per sandbox. Read before any
+		// reading goes in, so a tick it fails for has none in.
+		const held = report.sandboxes.length === 0 ? new Set<string>() : (how.known ?? (await sandboxesOn(hostId)));
+		const shared = how.exports === undefined ? how.shared === true : !(await how.exports());
 		hostSeries.add(
 			hostId,
 			{
@@ -3130,8 +3186,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			{ ...meta, memTotalBytes: report.host.memTotalBytes, diskTotalBytes: report.host.diskTotalBytes },
 		);
 		if (report.sandboxes.length > 0) {
-			// A host reports only its own sandboxes: one statement for all of them, not one per sandbox.
-			const held = how.known ?? (await sandboxesOn(hostId));
 			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
 			for (const reading of report.sandboxes) {
 				if (!held.has(reading.id)) continue;
@@ -3142,7 +3196,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						cpu: reading.cpu,
 						memUsedBytes: reading.memUsedBytes,
 						diskUsedBytes: 0,
-						...(how.shared === true ? { shared: true } : {}),
+						...(shared ? { shared: true } : {}),
 					},
 					{ ...meta, memLimitBytes: reading.memLimitBytes },
 				);
@@ -3150,16 +3204,144 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			for (const { id, rollup } of closed) await keepRollup(id, rollup).catch(() => undefined);
 		}
-		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage();
+		// The tick is in: settling that fails is tried again with the next.
+		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage().catch(() => undefined);
 	}
 
 	/** Each host's tick being taken, so the next waits for it (`recordUsage`). */
 	const ingesting = new Map<string, Promise<void>>();
 
-	/** Takes a host's tick after the one before it from the same host. */
+	/**
+	 * Whether a numbered tick is one already taken: its run's, at or before the newest taken. A series takes only newer
+	 * points too, but a tick stamped with this process's clock (its host's ran ahead, `MAX_CLOCK_SKEW_MS`) would get a
+	 * new time each time it came, and this doesn't depend on it.
+	 */
+	const takenAlready = (hostId: string, report: ReportedUsage): boolean => {
+		if (report.seq === undefined || report.run === undefined) return false;
+		const taken = takenSeq.get(hostId)?.get(report.run);
+		return taken !== undefined && report.seq <= taken;
+	};
+
+	/** Notes a numbered tick as taken (`takenSeq`), its run as the host's newest. */
+	const noteTaken = (hostId: string, report: NumberedUsage): void => {
+		const runs = takenSeq.get(hostId) ?? new Map<string, number>();
+		const taken = runs.get(report.run);
+		if (taken !== undefined && taken >= report.seq) return;
+		runs.delete(report.run);
+		runs.set(report.run, report.seq);
+		for (const run of runs.keys()) if (runs.size > MAX_RUNS_KEPT) runs.delete(run);
+		takenSeq.set(hostId, runs);
+	};
+
+	/**
+	 * Claims a numbered tick from its host for this process to export (`StoredUsageClaim`), and answers whether the claim
+	 * is its own: made now, or by this process before (a claim written whose answer was lost, tried again). A claim of
+	 * another's means that replica took the tick and exports it.
+	 */
+	async function claimUsage(hostId: string, report: NumberedUsage): Promise<boolean> {
+		const id = usageClaimId(hostId, report.run, report.seq);
+		// While the host could still send it again: its backlog is MAX_HELD_USAGE ticks; twice that, and an hour at least.
+		const keepUntil = now() + Math.max(HOUR_MS, 2 * MAX_HELD_USAGE * report.intervalMs);
+		const claim: StoredUsageClaim = { id, hostId, owner: usageOwner, keepUntil };
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			if (await store.usageClaims.insert(claim)) return true;
+			const current = await store.usageClaims.get(id);
+			// None any more (removed between the two, long past): claim it afresh.
+			if (current !== undefined) return current.owner === usageOwner;
+		}
+		return false;
+	}
+
+	/**
+	 * Removes the claims to ticks no host can send again, at most once an hour (`settleTaken`): in the background, so no
+	 * tick and no export waits for it, a batch at a time, and stopped by `close`.
+	 */
+	function sweepUsageClaims(): void {
+		if (now() - claimsSweptAt < HOUR_MS) return;
+		claimsSweptAt = now();
+		keepGoing(
+			(async () => {
+				const expired = (await store.usageClaims.list()).filter((claim) => claim.keepUntil < now());
+				for (let from = 0; from < expired.length && !closing; from += CLAIM_SWEEP_BATCH) {
+					const batch = expired.slice(from, from + CLAIM_SWEEP_BATCH);
+					await Promise.all(batch.map((claim) => store.usageClaims.delete(claim.id).catch(() => false)));
+					// Room for the ticks' own statements between batches.
+					await new Promise((resolve) => setTimeout(resolve, CLAIM_SWEEP_PAUSE_MS));
+				}
+			})(),
+		);
+	}
+
+	/**
+	 * Takes a numbered tick unless it is taken already: exported here only if this process claims it (`claimUsage`),
+	 * which it does once nothing else can stop the tick going in, so a claim made is a tick in.
+	 */
+	async function takeNumbered(hostId: string, entry: HeldUsage): Promise<void> {
+		if (takenAlready(hostId, entry.report)) return;
+		const exports = async () => {
+			entry.exported ??= await claimUsage(hostId, entry.report);
+			return entry.exported;
+		};
+		await ingest(hostId, entry.report, entry.shared ? { shared: true } : { exports });
+		noteTaken(hostId, entry.report);
+	}
+
+	/** Takes the host's held ticks, oldest first; one that fails again stays, with every one after it. */
+	async function takeHeld(hostId: string): Promise<void> {
+		const held = heldUsage.get(hostId);
+		while (held !== undefined && held.length > 0) {
+			const [next] = held;
+			if (next !== undefined) await takeNumbered(hostId, next);
+			held.shift();
+		}
+		heldUsage.delete(hostId);
+	}
+
+	/** Holds a numbered tick that couldn't be taken, behind those held already, at most MAX_HELD_USAGE of them. */
+	function hold(hostId: string, entry: HeldUsage): void {
+		const held = heldUsage.get(hostId) ?? [];
+		const { run, seq } = entry.report;
+		if (held.some((each) => each.report.run === run && each.report.seq === seq)) return;
+		held.push(entry);
+		if (held.length > MAX_HELD_USAGE) held.splice(0, held.length - MAX_HELD_USAGE);
+		heldUsage.set(hostId, held);
+	}
+
+	/**
+	 * Takes a host's tick after the one before it from the same host. A numbered tick taken already isn't taken again,
+	 * and one that can't be taken (the store failing) is held, with every numbered tick after it, until they can be, in
+	 * order: so a tick's promise resolves only once it and every numbered tick before it from the host are in, which is
+	 * what makes the hub's cumulative `usage.ack` true, and no later point gets into a series ahead of a held one (which
+	 * the series would then refuse as older). The held ones are tried again before each tick and each export.
+	 */
 	function ingestInTurn(hostId: string, report: ReportedUsage, shared: boolean): Promise<void> {
+		return inTurn(hostId, async () => {
+			if (report.seq === undefined || report.run === undefined) {
+				await ingest(hostId, report, { shared });
+				return;
+			}
+			const entry: HeldUsage = { report: { ...report, seq: report.seq, run: report.run }, shared };
+			try {
+				await takeHeld(hostId);
+				await takeNumbered(hostId, entry);
+			} catch (error) {
+				hold(hostId, entry);
+				throw error;
+			}
+		});
+	}
+
+	/** Tries every host's held ticks again, each in its host's turn (before an export). */
+	async function retryHeldUsage(): Promise<void> {
+		await Promise.all(
+			[...heldUsage.keys()].map((hostId) => inTurn(hostId, () => takeHeld(hostId)).catch(() => undefined)),
+		);
+	}
+
+	/** Runs `work` after the host's tick before it, and before its next. */
+	function inTurn(hostId: string, work: () => Promise<void>): Promise<void> {
 		const before = ingesting.get(hostId) ?? Promise.resolve();
-		const turn = before.then(() => ingest(hostId, report, { shared }));
+		const turn = before.then(work);
 		const settled = turn.catch(() => undefined);
 		ingesting.set(hostId, settled);
 		void settled.then(() => {
@@ -5795,6 +5977,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async sampleUsage() {
 			await catchUpUsage();
+			// Ticks held while the store failed go in first, so they are in this export, not left for a tick that may not come.
+			await retryHeldUsage();
 			const samples: TelemetryUsageSample[] = [];
 			const running = await store.sandboxes.list({ state: "running" });
 			// The export's own timer is the fallback's pace: one read per flush for a host that doesn't send its own.
@@ -5943,6 +6127,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async close() {
+			closing = true;
 			for (const controller of runningCommands.values()) controller.abort();
 			await idle();
 		},

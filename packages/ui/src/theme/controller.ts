@@ -66,7 +66,18 @@ export type ThemeControllerOptions = {
 	storage?: Storage;
 	/** Light mode, for System. Default: the browser's prefers-color-scheme. */
 	prefersLight?: MediaQuery;
+	/** The page's query, for `?theme=`. Default: the page's address. */
+	search?: string;
 };
+
+/**
+ * The theme a page's address asks for, `?theme=light`, `dark` or `system`: that page shows it, whatever this browser
+ * remembers or the person chooses, and nothing is remembered. A link to a sandbox's desktop can carry one.
+ */
+export function themeInAddress(search: string | undefined): ThemePreference | undefined {
+	const asked = /[?&]theme=([a-z]+)(?:[&#]|$)/.exec(search ?? "")?.[1];
+	return asked !== undefined && isThemePreference(asked) ? asked : undefined;
+}
 
 /**
  * A theme's canvas in its remembered CSS rule, `--kt-canvas:#141e28;` (`--hb-canvas` before the rename), as written:
@@ -112,10 +123,13 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 
 	const resolve = (preference: ThemePreference): ThemeName =>
 		preference === SYSTEM_THEME ? (prefersLight?.matches === true ? "light" : "dark") : preference;
+	const pinned = themeInAddress(options.search ?? globalThis.location?.search);
+	// What the page shows for a preference: the address's theme, when it asks for one.
+	const shown = (preference: ThemePreference): ThemeName => resolve(pinned ?? preference);
 	const read = readThemeCache(storage);
 	let remembered = read !== undefined;
 	const first = read?.preference ?? DEFAULT_THEME_PREFERENCE;
-	let state: ThemeState = { preference: first, applied: resolve(first) };
+	let state: ThemeState = { preference: first, applied: shown(first) };
 
 	let settle: number | undefined;
 	const paint = (theme: ThemeName) => {
@@ -153,7 +167,7 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 	// A choice remembered under the old key, or from before light and dark, is written again as today's.
 	if (read?.rewrite === true) remember();
 	const onDevice = () => {
-		if (state.preference === SYSTEM_THEME) set({ ...state, applied: resolve(SYSTEM_THEME) });
+		if ((pinned ?? state.preference) === SYSTEM_THEME) set({ ...state, applied: shown(state.preference) });
 	};
 	prefersLight?.addEventListener("change", onDevice);
 
@@ -163,7 +177,7 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 		choose(named) {
 			const preference = themePreference(named);
 			remembered = true;
-			set({ preference, applied: resolve(preference) });
+			set({ preference, applied: shown(preference) });
 			remember();
 		},
 		resolve,
