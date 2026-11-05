@@ -1469,11 +1469,10 @@ export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
 };
 
 /**
- * The settled states, most of any list: their words stay quiet beside the coloured dot, so colour in words is left
- * for an error or a change under way.
+ * Every state but an error keeps its words quiet beside the coloured dot (a change under way has the dot's pulse), so
+ * colour in words means one thing: something failed.
  */
-export const quietState = (state: SandboxState): boolean =>
-	state === "running" || state === "paused" || state === "stopped";
+export const quietState = (state: SandboxState): boolean => state !== "error";
 
 export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 	isolate: "Isolate",

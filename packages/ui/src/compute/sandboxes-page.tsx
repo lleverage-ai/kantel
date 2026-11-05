@@ -768,8 +768,9 @@ function Cpu({
 			<Sparkline
 				size={compact ? "xs" : "sm"}
 				values={values}
-				// Busy past 80%: the line and its figure turn the caution colour, so a glance finds the loaded ones.
-				tone={busy ? "warning" : "done"}
+				// In neutral ink, so green keeps meaning Running; busy past 80%, the line and its figure turn the caution colour,
+				// so a glance finds the loaded ones.
+				tone={busy ? "warning" : "muted"}
 				label={loading ? `Reading ${sandbox.name}'s CPU` : label}
 				loading={loading}
 				{...(series === undefined ? {} : { timed: line.timed })}
