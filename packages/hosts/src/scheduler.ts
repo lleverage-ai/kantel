@@ -27,11 +27,7 @@ export interface Shape {
 
 export interface PlacementRequest {
 	readonly tier: SandboxTier;
-	/**
-	 * A microVM's named size, as asked for before shapes. Default `default`. With a shape, the shape wins, but where the
-	 * host has a size of this name with exactly that shape it is that size, not another of the same numbers: a snapshot
-	 * holding memory restores only into the size it was taken of, by name.
-	 */
+	/** A microVM's named size, as asked for before shapes; `shape` wins when both are given. Default `default`. */
 	readonly size?: string;
 	readonly shape?: Shape;
 	readonly owner?: string;
@@ -114,9 +110,9 @@ export function shapeOn(
 		const named = facts.sizes.find((candidate) => candidate.name === name);
 		return named === undefined ? undefined : { size: named, custom: false };
 	}
-	const fits = (candidate: HostSize) => candidate.vcpus === shape.vcpus && candidate.memoryMiB === shape.memoryMiB;
-	const named =
-		facts.sizes.find((candidate) => candidate.name === request.size && fits(candidate)) ?? facts.sizes.find(fits);
+	const named = facts.sizes.find(
+		(candidate) => candidate.vcpus === shape.vcpus && candidate.memoryMiB === shape.memoryMiB,
+	);
 	if (named !== undefined) return { size: named, custom: false };
 	if (!makesCustomShapes(host) || shape.vcpus > facts.cpus || shape.memoryMiB > facts.memoryMiB) return undefined;
 	const custom = { vcpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskGiB: diskFor(facts.sizes, shape.memoryMiB) };

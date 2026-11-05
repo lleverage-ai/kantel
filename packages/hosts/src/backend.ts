@@ -647,15 +647,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			hosts.sandboxes.create({
 				sandboxId: spec.sandboxId,
 				tier: spec.type,
-				...(spec.type === "microvm" &&
-				spec.size !== undefined &&
-				(spec.shape === undefined || spec.restoresMemory === true)
-					? { size: spec.size }
-					: {}),
+				...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
 				// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
-				// custom shape; a template's snapshot is restored only where it was built as that shape. Restoring memory, the
-				// snapshot's own size name goes with it, so a host with two sizes of those numbers makes that one; any other
-				// name was inferred from some host's sizes, and would narrow placement for nothing.
+				// custom shape; a template's snapshot is restored only where it was built as that shape. A memory snapshot's
+				// host makes it as the snapshot's own size wherever the shape is that machine's, whatever name it resolves to.
 				...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
 				owner: spec.accountId,
 				env: spec.env,

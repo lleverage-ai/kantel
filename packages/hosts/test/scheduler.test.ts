@@ -162,23 +162,6 @@ describe("place", () => {
 		expect(shapeOn(host.host, { tier: "isolate" })?.size.name).toBe("isolate");
 	});
 
-	it("makes the size named with a shape where two sizes have its numbers, so a memory snapshot keeps its size", () => {
-		const twins = candidate("h", {
-			facts: {
-				...facts,
-				sizes: [
-					{ name: "default", vcpus: 4, memoryMiB: 8192, diskGiB: 20 },
-					{ name: "large", vcpus: 4, memoryMiB: 8192, diskGiB: 50 },
-				],
-			},
-		});
-		const shape = { vcpus: 4, memoryMiB: 8192 };
-		expect(shapeOn(twins.host, { tier: "microvm", size: "large", shape })?.size.name).toBe("large");
-		// No name, or one of other numbers: the first size with them.
-		expect(shapeOn(twins.host, { tier: "microvm", shape })?.size.name).toBe("default");
-		expect(shapeOn(twins.host, { tier: "microvm", size: "small", shape })?.size.name).toBe("default");
-	});
-
 	it("says why when nothing fits", () => {
 		const refused = place({ tier: "microvm", size: "default" }, []);
 		expect(isRefusal(refused) && refused.reason).toMatch(/no hosts have joined/);

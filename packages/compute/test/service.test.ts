@@ -586,11 +586,11 @@ describe("sandboxes", () => {
 		expect(same).toMatchObject({ size: "large", state: "running" });
 		const plain = await tom.createSandbox({ from: id, wait: true });
 		expect(plain).toMatchObject({ size: "large", state: "running" });
-		// Its backend is told it restores memory, with the snapshot's own size by name; a fresh create isn't.
+		// Its backend is asked for the snapshot's own vCPUs and memory, which its host makes as the snapshot's size.
 		const restore = create.mock.calls.find(([spec]) => spec.sandboxId === plain.id)?.[0];
-		expect(restore).toMatchObject({ size: "large", restoresMemory: true });
-		const fresh = create.mock.calls.find(([spec]) => spec.sandboxId === vm.id)?.[0];
-		expect(fresh?.restoresMemory).toBeUndefined();
+		expect(restore?.shape).toEqual(
+			paused?.resources && { vcpus: paused.resources.vcpus, memoryMb: paused.resources.memoryMb },
+		);
 	});
 
 	it("keeps a pause's memory when it is saved, so a sandbox made from the save is its machine too", async () => {
@@ -1891,7 +1891,7 @@ describe("organisations", () => {
 		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
 	});
 
-	it("makes a sandbox from a memory snapshot whose create or fork failed again as a memory restore of its size", async () => {
+	it("makes a sandbox from a memory snapshot whose create or fork failed again as the snapshot's machine", async () => {
 		const stub = createStubBackend();
 		let failing = false;
 		const creates: SandboxSpec[] = [];
@@ -1912,6 +1912,8 @@ describe("organisations", () => {
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
 		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
 		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		const own = pause?.resources && { vcpus: pause.resources.vcpus, memoryMb: pause.resources.memoryMb };
+		expect(own).toBeDefined();
 		failing = true;
 		const made = await tom.createSandbox({ from: pause?.id ?? "", wait: true });
 		const [fork] = (await tom.forkSandbox(vm.id, { wait: true })).items;
@@ -1924,7 +1926,8 @@ describe("organisations", () => {
 			expect((await tom.getSandbox(id)).state).toBe("running");
 			const remade = creates.filter((spec) => spec.sandboxId === id);
 			expect(remade).toHaveLength(2);
-			for (const spec of remade) expect(spec).toMatchObject({ size: "large", restoresMemory: true });
+			// The snapshot's own machine each time, which its host makes as the snapshot's size.
+			for (const spec of remade) expect(spec.shape).toEqual(own);
 		}
 	});
 
