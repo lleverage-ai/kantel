@@ -153,7 +153,7 @@ Fork a prepared sandbox: `POST /v1/sandboxes/<id>/fork` with `{"count": 3, "wait
 
 ## Errors
 
-Errors are `{"error": {"code": "...", "message": "..."}}`. `conflict`: the sandbox is in the wrong state, such as stopped (resume it). `exhausted`: a limit or full hosts; wait and retry. `not_supported`: the sandbox's type can't do it; check `.capabilities`. `forbidden`: the key lacks the scope; tell the user.
+Errors are `{"error": {"code": "...", "message": "..."}}`. `conflict`: the sandbox is in the wrong state, such as stopped (resume it). `exhausted`: a limit or full hosts; wait and retry. When a sandbox can't be placed, `error.details.reason` (or the sandbox's `placementReason`) says why: `insufficient_capacity` or `host_unavailable`, retry later; `no_host_for_type`, `no_host_offers_size` or `no_host_with_labels`, ask for another type, size or labels; `account_limit`, stop one first. `not_supported`: the sandbox's type can't do it; check `.capabilities`. `forbidden`: the key lacks the scope; tell the user.
 
 Full docs: https://kantel.dev/docs/llms.txt
 ````

@@ -723,6 +723,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
 | `previousState` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
 | `reason` | string | no |  |
+| `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 
 ### EventPage
@@ -1069,6 +1070,12 @@ One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketM
 
 One of: `"pending"` or `"ready"` or `"failed"`.
 
+### PlacementReason
+
+Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may.
+
+One of: `"no_host"` or `"no_host_for_type"` or `"no_host_with_labels"` or `"no_host_offers_size"` or `"no_host_enforces_egress"` or `"no_host_for_template"` or `"insufficient_capacity"` or `"host_unavailable"` or `"account_limit"`.
+
 ### PollDeviceLoginBody
 
 | Field | Type | Required | Description |
@@ -1196,6 +1203,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
 | `health` | [SandboxHealth](/api/reference/types/#sandboxhealth) | no |  |
 | `reason` | string | no | Why it is in `error` or `degraded`, in words. |
+| `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `capabilities` | [SandboxCapabilities](/api/reference/types/#sandboxcapabilities) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes | The caller's own labels. |

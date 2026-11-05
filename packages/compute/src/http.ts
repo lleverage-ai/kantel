@@ -110,7 +110,10 @@ const json = (body: unknown, status: number, headers: { readonly [name: string]:
 		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
 	});
 
-/** The error response for a failure: a KantelError's code and status, 401 for no valid credential, else 500. */
+/**
+ * The error response for a failure: a KantelError's code, status and details (a placement's `reason`), 401 for no valid
+ * credential, else 500.
+ */
 export function computeErrorResponse(error: unknown): Response {
 	if (error instanceof UnauthenticatedError) {
 		return json({ error: { code: "unauthenticated", message: error.message } }, 401, {
@@ -118,7 +121,11 @@ export function computeErrorResponse(error: unknown): Response {
 		});
 	}
 	if (isKantelError(error)) {
-		return json({ error: { code: error.code, message: error.message } }, STATUS_BY_CODE[error.code]);
+		const { details } = error;
+		return json(
+			{ error: { code: error.code, message: error.message, ...(details === undefined ? {} : { details }) } },
+			STATUS_BY_CODE[error.code],
+		);
 	}
 	return json({ error: { code: "unavailable", message: "The compute API failed" } }, 500);
 }

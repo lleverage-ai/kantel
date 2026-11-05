@@ -16,7 +16,7 @@
  * Templates are each backend's own too: their runtimes are both backends' hosts', a build goes to the backend whose host
  * it names, and a template snapshot is answered by the backend its reference is of (`holdsSnapshot`).
  */
-import { KantelError } from "@kantel/contracts";
+import { KantelError, placementError } from "@kantel/contracts";
 import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
 
 export interface RoutedBackendOptions {
@@ -55,7 +55,7 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return fallback;
 		}
 		if (madeOnFallback.has(sandboxId)) return fallback;
-		throw new KantelError("unavailable", NOT_HELD);
+		throw placementError("unavailable", "host_unavailable", NOT_HELD);
 	};
 	const forRef = (ref: string): SandboxBackend => (options.holdsSnapshot(ref) ? primary : fallback);
 
@@ -70,8 +70,9 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		const own = new Set((await backend.capabilities()).hosts.map((host) => host.id));
 		const eligibleHosts = input.eligibleHosts.filter((id) => own.has(id));
 		if (backend === fallback && eligibleHosts.length === 0 && input.eligibleHosts.length > 0) {
-			throw new KantelError(
+			throw placementError(
 				"unavailable",
+				"host_unavailable",
 				`It is on the deployment's shared hosts, none of which it may use now; it may use ${input.eligibleHosts.join(", ")}`,
 			);
 		}

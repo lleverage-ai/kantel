@@ -476,12 +476,32 @@ describe("hosts from before templates", () => {
 		// With the older host alone to use: not_supported, and nothing sent to it.
 		await expect(
 			service.sandboxes.create({ tier: "microvm", template: TEMPLATE, hostIds: ["host_older"] }),
-		).rejects.toSatisfy((error) => isKantelError(error, "not_supported"));
+		).rejects.toSatisfy(
+			(error) => isKantelError(error, "not_supported") && error.details?.reason === "no_host_for_template",
+		);
 		await expect(backend.buildTemplate?.(buildSpec("host_older"))).rejects.toSatisfy((error) =>
 			isKantelError(error, "not_supported"),
 		);
 		expect(older.calls.map((call) => call.method)).toEqual(["sandbox.create"]);
 		expect(older.calls.some((call) => "template" in call.params)).toBe(false);
+	});
+});
+
+describe("a template build its host can't take now", () => {
+	it("says host_unavailable when the host is draining or gone, and insufficient_capacity when it has no room", async () => {
+		const { store, service, backend } = await setup();
+		const reasonOf = (call: Promise<unknown> | undefined) =>
+			(call ?? Promise.reject(new Error("No buildTemplate"))).then(
+				() => "built",
+				(error: unknown) => (isKantelError(error) ? `${error.code} ${String(error.details?.reason)}` : String(error)),
+			);
+		await addHost(store, service, "host_draining", { draining: true });
+		expect(await reasonOf(backend.buildTemplate?.(buildSpec("host_draining")))).toBe("unavailable host_unavailable");
+		await addHost(store, service, "host_small", { freeMemoryMiB: 100 });
+		expect(await reasonOf(backend.buildTemplate?.(buildSpec("host_small")))).toBe("exhausted insufficient_capacity");
+		await addHost(store, service, "host_gone");
+		service.hub.disconnect("host_gone", 1001, "gone");
+		expect(await reasonOf(backend.buildTemplate?.(buildSpec("host_gone")))).toBe("unavailable host_unavailable");
 	});
 });
 

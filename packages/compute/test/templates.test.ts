@@ -953,14 +953,16 @@ describe("a template's custom image", () => {
 		const refusal = await failure(tom.createSandbox({ template: "rg" }));
 		expect(refusal.code).toBe("not_supported");
 		expect(refusal.message).toContain("templateBuilder");
+		expect(refusal.reason).toBe("no_host_for_template");
 
 		// One host switches its builder on: it alone builds it.
 		customImageHosts.add("hst_two");
 		await api.service.sweep();
 		const held = await build(0);
 		expect(held.spec.hostId).toBe("hst_two");
-		// Until a build is ready, no host holds the image: a create waits for it.
-		expect((await failure(tom.createSandbox({ template: "rg" }))).code).toBe("unavailable");
+		// Until a build is ready, no host holds the image: a create waits for it, which is no placement's refusal.
+		const building = await failure(tom.createSandbox({ template: "rg" }));
+		expect([building.code, building.reason]).toEqual(["unavailable", undefined]);
 		held.release();
 		await releaseAll(() => api.service.idle());
 		expect(builds).toHaveLength(1);
@@ -993,8 +995,10 @@ describe("a template's custom image", () => {
 			state: "stale",
 			hostId: STUB_HOST_ID,
 		});
-		// Nothing serves it meanwhile: the old host can't, and the new one hasn't the image yet.
-		expect((await failure(tom.createSandbox({ template: "rg" }))).code).toBe("unavailable");
+		// Nothing serves it meanwhile: the old host can't, and the new one hasn't the image yet. Held only where it may
+		// not go, its host is the reason.
+		const elsewhere = await failure(tom.createSandbox({ template: "rg" }));
+		expect([elsewhere.code, elsewhere.reason]).toEqual(["unavailable", "host_unavailable"]);
 		again.release();
 		await api.service.idle();
 		await api.service.sweep();
@@ -1440,7 +1444,8 @@ describe("a template's machine", () => {
 		await tom.createTemplate({ name: "web", spec: SPEC });
 		await api.service.idle();
 		expect(builds).toEqual([]);
-		expect((await failure(tom.createSandbox({ template: "web" }))).code).toBe("not_supported");
+		const unsized = await failure(tom.createSandbox({ template: "web" }));
+		expect([unsized.code, unsized.reason]).toEqual(["not_supported", "no_host_offers_size"]);
 		// Named by a size it has, it makes it, booted fresh.
 		const sized = await tom.createSandbox({ template: "web", size: "large", wait: true });
 		expect(sized).toMatchObject({
@@ -1948,7 +1953,8 @@ describe("hosts that can't boot templates", () => {
 		await tom.createTemplate({ name: "web", spec: SPEC });
 		await api.service.idle();
 		expect(builds).toEqual([]);
-		expect((await failure(tom.createSandbox({ template: "web" }))).code).toBe("not_supported");
+		const refused = await failure(tom.createSandbox({ template: "web" }));
+		expect([refused.code, refused.reason]).toEqual(["not_supported", "no_host_for_template"]);
 		expect((await tom.createSandbox({ type: "microvm", wait: true })).state).toBe("running");
 	});
 });

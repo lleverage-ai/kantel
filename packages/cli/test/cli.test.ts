@@ -540,6 +540,25 @@ describe("errors", () => {
 		expect(result.stdout).toBe("");
 	});
 
+	it("names why a sandbox can't be placed", async () => {
+		const routes = {
+			"POST /v1/sandboxes": () =>
+				json(
+					{
+						error: {
+							code: "exhausted",
+							message: "The account may run 5 sandboxes at once",
+							details: { reason: "account_limit" },
+						},
+					},
+					429,
+				),
+		};
+		const result = await kantel(["sandbox", "create"], { routes });
+		expect(result.code).toBe(1);
+		expect(result.stderr).toBe("kantel: exhausted: The account may run 5 sandboxes at once (reason: account_limit)\n");
+	});
+
 	it("tells an unauthenticated caller to log in", async () => {
 		const routes = { "GET /v1/whoami": () => kantelError(401, "unauthenticated", "A bearer is needed") };
 		const result = await kantel(["whoami"], { routes, env: { KANTEL_URL: "https://kantel.test" } });

@@ -228,6 +228,22 @@ function json(value: object, lead?: string): ToolResult {
 	};
 }
 
+/**
+ * A sandbox's state for a tool's answer: `running`, or for one in `error`, why, with what to do when its boot couldn't
+ * place it (its `placementReason`).
+ */
+function stateLine(sandbox: {
+	readonly state: string;
+	readonly reason?: string;
+	readonly placementReason?: string;
+}): string {
+	if (sandbox.state !== "error") return sandbox.state;
+	const why = sandbox.placementReason === undefined ? "" : ` (${sandbox.placementReason})`;
+	const reason = sandbox.reason === undefined ? "" : `: ${sandbox.reason}`;
+	const hint = sandbox.placementReason === undefined ? undefined : PLACEMENT_HINTS[sandbox.placementReason];
+	return `error${why}${reason}${hint === undefined ? "" : `\n${hint}`}`;
+}
+
 function errorResult(message: string, structured?: object): ToolResult {
 	return {
 		content: [{ type: "text", text: message }],
@@ -302,6 +318,19 @@ const HINTS: { readonly [code: string]: string } = {
 	conflict: "If the sandbox is stopped or paused, resume it with sandbox_resume first.",
 };
 
+/** What to do about a sandbox that can't be placed, by its `reason`. */
+const PLACEMENT_HINTS: { readonly [reason: string]: string } = {
+	no_host: "No host is connected to run it. Try again once one is, or tell the user.",
+	no_host_for_type: "No host runs this type. Try the other type (isolate or microvm), or tell the user.",
+	no_host_with_labels: "No host has those host labels. Ask for others, or none.",
+	no_host_offers_size: "No host offers that size or resources. Ask for a smaller size or other resources.",
+	no_host_enforces_egress: "No host that could take it enforces egress grants. Tell the user to upgrade kantel-host.",
+	no_host_for_template: "No host runs this template. Create the sandbox without it, or tell the user.",
+	insufficient_capacity: "The hosts are full now. Try again in a minute, or ask for a smaller size.",
+	host_unavailable: "The host this sandbox is on can't take it now. Try again later, or create a new sandbox.",
+	account_limit: "The account runs as many sandboxes as it may. Stop or delete one first.",
+};
+
 // Tools.
 
 const TOOLS: readonly Tool[] = [
@@ -342,7 +371,7 @@ const TOOLS: readonly Tool[] = [
 				},
 				{ signal },
 			);
-			return json(sandbox, `Sandbox ${sandbox.id} (${sandbox.name}) is ${sandbox.state}.`);
+			return json(sandbox, `Sandbox ${sandbox.id} (${sandbox.name}) is ${stateLine(sandbox)}.`);
 		},
 	},
 	{
@@ -361,7 +390,8 @@ const TOOLS: readonly Tool[] = [
 		inputSchema: schema({ sandboxId }, ["sandboxId"]),
 		annotations: { title: "Get a sandbox", readOnlyHint: true },
 		async call(args, { client, signal }) {
-			return json(await client.getSandbox(text(args, "sandboxId"), { signal }));
+			const sandbox = await client.getSandbox(text(args, "sandboxId"), { signal });
+			return json(sandbox, `Sandbox ${sandbox.id} is ${stateLine(sandbox)}.`);
 		},
 	},
 	{
@@ -388,7 +418,7 @@ const TOOLS: readonly Tool[] = [
 				},
 				{ signal },
 			);
-			return json(sandbox, `Sandbox ${sandbox.id} is ${sandbox.state}.`);
+			return json(sandbox, `Sandbox ${sandbox.id} is ${stateLine(sandbox)}.`);
 		},
 	},
 	{
@@ -398,7 +428,7 @@ const TOOLS: readonly Tool[] = [
 		annotations: { title: "Resume a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
 		async call(args, { client, signal }) {
 			const sandbox = await client.resumeSandbox(text(args, "sandboxId"), { wait: true }, { signal });
-			return json(sandbox, `Sandbox ${sandbox.id} is ${sandbox.state}.`);
+			return json(sandbox, `Sandbox ${sandbox.id} is ${stateLine(sandbox)}.`);
 		},
 	},
 	{
@@ -825,9 +855,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 		} catch (error) {
 			if (controller.signal.aborted) return undefined;
 			if (error instanceof KantelApiError) {
-				const hint = HINTS[error.code];
-				const message = `${error.code}: ${error.message}${hint === undefined ? "" : `\n${hint}`}`;
-				return success(id, errorResult(message, { error: { code: error.code, message: error.message } }));
+				const reason = error.reason;
+				const hint = (reason === undefined ? undefined : PLACEMENT_HINTS[reason]) ?? HINTS[error.code];
+				const message = `${error.code}${reason === undefined ? "" : ` (${reason})`}: ${error.message}${hint === undefined ? "" : `\n${hint}`}`;
+				return success(
+					id,
+					errorResult(message, {
+						error: { code: error.code, message: error.message, ...(reason === undefined ? {} : { reason }) },
+					}),
+				);
 			}
 			if (error instanceof ArgumentError) return success(id, errorResult(`Invalid arguments: ${error.message}`));
 			const message = error instanceof Error ? error.message : String(error);

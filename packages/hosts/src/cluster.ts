@@ -374,7 +374,7 @@ export interface HostCluster {
 export const MAX_USAGE_QUEUE = 144;
 
 const NOT_CONNECTED = (hostId: string) =>
-	new HostCallError({ code: "unavailable", message: `Host ${hostId} is not connected` });
+	new HostCallError({ code: "unavailable", message: `Host ${hostId} is not connected` }, { disconnected: true });
 
 export function createHostCluster(options: HostClusterOptions): HostCluster {
 	const { store, transport, replicaId } = options;

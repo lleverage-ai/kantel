@@ -32,7 +32,7 @@ import type {
 	TakenSnapshot,
 	TemplateRuntime,
 } from "@kantel/compute";
-import { type ErrorCode, isKantelError, KantelError } from "@kantel/contracts";
+import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
@@ -394,7 +394,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	 */
 	const mayUse = (hostId: string, eligible: readonly string[]) => {
 		if (!eligible.includes(hostId)) {
-			throw new KantelError("unavailable", `The host its disk is on (${hostId}) can't take it now`);
+			throw placementError("unavailable", "host_unavailable", `The host its disk is on (${hostId}) can't take it now`);
 		}
 	};
 
