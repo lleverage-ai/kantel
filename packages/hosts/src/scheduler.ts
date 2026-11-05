@@ -119,6 +119,18 @@ export function shapeOn(
 	return { size: { name: customSizeName(custom), ...custom }, custom: true };
 }
 
+/**
+ * A size a host made, by the name it answered: one of its named sizes, or a custom size by its name
+ * (`customSizeName`). Undefined for a name it doesn't say and that isn't a custom size's.
+ */
+export function hostSizeNamed(host: HostRecord | undefined, name: string): HostSize | undefined {
+	const named = host?.facts?.sizes.find((size) => size.name === name);
+	if (named !== undefined) return named;
+	const custom = /^custom-(\d+)c-(\d+)m-(\d+)g$/.exec(name);
+	if (custom === null) return undefined;
+	return { name, vcpus: Number(custom[1]), memoryMiB: Number(custom[2]), diskGiB: Number(custom[3]) };
+}
+
 /** A host's named size, by name: what a sandbox placed before shapes was made as. */
 export function sizeOn(host: HostRecord, tier: SandboxTier, size: string): HostSize | undefined {
 	return shapeOn(host, { tier, size })?.size;

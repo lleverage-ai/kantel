@@ -630,6 +630,31 @@ describe("sandboxes", () => {
 		expect(refused.code).toBe("invalid");
 	});
 
+	it("keeps an older save holding memory once the pause it shares bytes with is deleted", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup(createStubBackend(), { store });
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
+		const stored = await store.snapshots.get(saved.id);
+		if (stored === undefined || pause === undefined) throw new Error("no snapshots");
+		await store.snapshots.put({ ...stored, memory: false });
+		// The source resumes, and its pause is deleted: the save is the bytes' last record.
+		await tom.resumeSandbox(vm.id, { wait: true });
+		await tom.deleteSnapshot(pause.id);
+		expect((await store.snapshots.get(saved.id))?.memory).toBe(true);
+		expect((await tom.getSnapshot(saved.id)).memory).toBe(true);
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items.find((item) => item.id === saved.id);
+		expect(listed?.memory).toBe(true);
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", from: "old-save", resources: { vcpus: 2, memoryMb: 4096 } }),
+		);
+		expect(refused.code).toBe("invalid");
+		expect((await tom.listSandboxes({ all: true })).items).toHaveLength(before);
+	});
+
 	it("checks an ask against a memory snapshot's own record, never another host's sizes", () => {
 		const pause = {
 			id: "snap_p",

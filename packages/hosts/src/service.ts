@@ -51,7 +51,16 @@ import {
 	type SandboxTier,
 } from "./protocol.ts";
 import { DEFAULT_HOST_UPDATE_URL, type HostReleases, needsUpdate, plainVersion } from "./releases.ts";
-import { type Candidate, isRefusal, makesCustomShapes, place, type Shape, shapeOn, sizeOn } from "./scheduler.ts";
+import {
+	type Candidate,
+	hostSizeNamed,
+	isRefusal,
+	makesCustomShapes,
+	place,
+	type Shape,
+	shapeOn,
+	sizeOn,
+} from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
@@ -1047,8 +1056,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 	};
 
-	const settle = async (placement: PlacementRecord, sandbox: HostSandbox): Promise<PlacementRecord> => {
-		const settled = { ...placement, state: sandbox.state, updatedAt: clock.now() };
+	/**
+	 * A placement as its host answered it: its state, and the size the host made where that isn't the one placement
+	 * chose (a memory snapshot restores as its own size, another name for the same vCPUs and memory, whose disk may
+	 * differ), resolved by the host's own sizes or a custom size's name, so its resources are what the host made.
+	 */
+	const settle = async (
+		placement: PlacementRecord,
+		sandbox: HostSandbox,
+		host?: HostRecord,
+	): Promise<PlacementRecord> => {
+		const made = sandbox.size === placement.size ? undefined : hostSizeNamed(host, sandbox.size);
+		const settled = {
+			...placement,
+			...(made === undefined
+				? {}
+				: { size: made.name, vcpus: made.vcpus, memoryMiB: made.memoryMiB, diskGiB: made.diskGiB }),
+			state: sandbox.state,
+			updatedAt: clock.now(),
+		};
 		await store.putPlacement(settled);
 		return settled;
 	};
@@ -1437,7 +1463,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						template === undefined ? undefined : { timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS },
 						chosen.host,
 					);
-					const settled = await settle(placement, sandbox);
+					const settled = await settle(placement, sandbox, chosen.host);
 					const statuses = mounts.status(sandbox);
 					return {
 						sandbox,

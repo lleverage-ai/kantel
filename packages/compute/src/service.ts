@@ -3111,6 +3111,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return (await store.snapshots.list({ ref: snapshot.ref, memory: true })).length > 0;
 	}
 
+	/**
+	 * Deletes a snapshot's record. One that holds memory first passes that on to every other record of its bytes (a save
+	 * made before saves kept the flag says no), so none of them stops saying so once it is gone.
+	 */
+	async function forgetSnapshot(snapshot: StoredSnapshot): Promise<void> {
+		if (snapshot.memory && snapshot.ref !== undefined) {
+			for (const other of await store.snapshots.list({ ref: snapshot.ref, memory: false })) {
+				await store.snapshots.update(other.id, (latest) => (latest.memory ? undefined : { ...latest, memory: true }));
+			}
+		}
+		await store.snapshots.delete(snapshot.id);
+	}
+
 	async function releaseRef(ref: string | undefined): Promise<void> {
 		if (ref === undefined) return;
 		if ((await store.snapshots.list({ ref })).length > 0) return;
@@ -5469,7 +5482,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						await backend.destroy(current.id);
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
-								await store.snapshots.delete(snapshot.id);
+								await forgetSnapshot(snapshot);
 								await releaseRef(snapshot.ref);
 							} else {
 								await store.snapshots.put({ ...snapshot, sandboxId: undefined });
@@ -6041,7 +6054,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				await store.snapshots.put(snapshot);
 				if (existing !== undefined) {
-					await store.snapshots.delete(existing.id);
+					await forgetSnapshot(existing);
 					await releaseRef(existing.ref);
 					await emit("snapshot.deleted", existing.accountId, {
 						snapshotId: existing.id,
@@ -6092,7 +6105,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", "A stopped sandbox's newest snapshot is what it resumes from");
 				}
 			}
-			await store.snapshots.delete(snapshot.id);
+			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot.ref);
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
 				const [newest] = newestFirst(
