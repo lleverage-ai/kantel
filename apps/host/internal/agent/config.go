@@ -76,6 +76,14 @@ type Config struct {
 	// (default 10240; -1 turns bucket mounts off). MountCacheDir is where it is (default Root/mount-cache).
 	MountCacheMiB int64  `json:"mountCacheMiB,omitempty"`
 	MountCacheDir string `json:"mountCacheDir,omitempty"`
+	// BundleCacheMiB bounds the erofs images of bundles kept on the host for sandboxes' bundle mounts, beyond the ones
+	// sandboxes use now (default 10240; -1 turns bundle mounts off). BundleCacheDir is where they are (default
+	// Root/bundles). Bundle mounts need mkfs.erofs (erofs-utils).
+	BundleCacheMiB int64  `json:"bundleCacheMiB,omitempty"`
+	BundleCacheDir string `json:"bundleCacheDir,omitempty"`
+	// BundleDrives is how many bundles a microVM can mount (default 8, at most 12): every microVM has that many
+	// read-only drives, empty until a bundle is attached.
+	BundleDrives int `json:"bundleDrives,omitempty"`
 	// AutoUpdate lets the control plane move the host to the version it wants (default true).
 	AutoUpdate *bool `json:"autoUpdate,omitempty"`
 	// TemplateRegistry is the operator's registry templates' Kantel base images are pulled from, by digest, such as

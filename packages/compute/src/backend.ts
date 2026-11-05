@@ -113,6 +113,11 @@ export interface BackendMountStatus {
 	readonly path: string;
 	readonly status: computeSchema.MountStatus;
 	readonly error?: string;
+	/**
+	 * The backend answered this one itself: its host can't do that kind of mount, so was never sent it and will never
+	 * report it. Kept however the host's own statuses are ordered (`mountsAfter`).
+	 */
+	readonly unsent?: true;
 }
 
 /**
@@ -285,6 +290,11 @@ export interface Placement {
 	 * held the snapshot (or couldn't restore it), or had no room and another host booted it.
 	 */
 	readonly bootedFresh?: boolean;
+	/**
+	 * With `mounts`: when the backend set them (its own clock, later with each change), which orders them against its
+	 * later reports (`ComputeService.reportMounts`). Absent where the backend doesn't say.
+	 */
+	readonly mountsAt?: number;
 }
 
 /** How to boot a machine for a sandbox that has none. */

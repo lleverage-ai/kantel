@@ -578,6 +578,169 @@ describe("a sandbox's mounts", () => {
 	});
 });
 
+describe("a host's report that lands before its boot's answer is written", () => {
+	it("is kept on a first create and on a restart, and the answer's pending doesn't undo it", async () => {
+		// The host settles the mount (its sandbox.mounts event) before the compute plane writes the boot's answer, which
+		// still says pending: the order a bundle that finishes just after the create's wait gives.
+		let service: { reportMounts: ComputeApi["service"]["reportMounts"] } | undefined;
+		const early = (sandboxId: string) =>
+			service?.reportMounts(STUB_HOST_ID, sandboxId, [{ path: "/mnt/skills", status: "ready" }]);
+		const pendingAnswer = { mounts: [{ path: "/mnt/skills", status: "pending" as const }] };
+		const { api, tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => {
+					const placed = await stub.create(spec);
+					await early(spec.sandboxId);
+					return { ...placed, ...pendingAnswer };
+				},
+				start: async (sandboxId, options) => {
+					const placed = await stub.start(sandboxId, options);
+					await early(sandboxId);
+					return { ...placed, ...pendingAnswer };
+				},
+			}),
+		});
+		service = api.service;
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [{ path: "/mnt/skills", source: { kind: "bundle", digest: bundle.digest } }],
+			wait: true,
+		});
+		expect(sandbox.mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+		expect((await tom.getSandbox(sandbox.id)).mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const started = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(started.mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+
+		// A host the sandbox isn't on, once it runs: still dropped.
+		await api.service.reportMounts("host_other", sandbox.id, [{ path: "/mnt/skills", status: "failed", error: "x" }]);
+		expect((await tom.getSandbox(sandbox.id)).mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+	});
+
+	it("is ordered by when the host set them: an earlier answer or replay never undoes a later report", async () => {
+		// The boot answers one mount failed and one pending at t=100; its background finish retries both and reports them
+		// ready at t=101. Whichever lands first, they end ready; a replay read at t=100 that lands last changes nothing.
+		let service: { reportMounts: ComputeApi["service"]["reportMounts"] } | undefined;
+		const both = ["/mnt/a", "/mnt/b"];
+		const answer = {
+			mounts: [
+				{ path: "/mnt/a", status: "failed" as const, error: "fetching bundle: 503" },
+				{ path: "/mnt/b", status: "pending" as const },
+			],
+			mountsAt: 100,
+		};
+		const ready = both.map((path) => ({ path, status: "ready" as const }));
+		const replay = [{ path: "/mnt/a", status: "failed" as const, error: "fetching bundle: 503" }];
+		let reportFirst = true;
+		const { api, tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => {
+					const placed = await stub.create(spec);
+					if (reportFirst) await service?.reportMounts(STUB_HOST_ID, spec.sandboxId, ready, 101);
+					return { ...placed, ...answer };
+				},
+				start: async (sandboxId, options) => ({ ...(await stub.start(sandboxId, options)), ...answer, mountsAt: 200 }),
+			}),
+		});
+		service = api.service;
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const mounts = both.map((path) => ({ path, source: { kind: "bundle" as const, digest: bundle.digest } }));
+		const statuses = async (id: string) => (await tom.getSandbox(id)).mounts?.map((mount) => mount.status);
+
+		// The report first, then the answer set before it.
+		const first = await tom.createSandbox({ type: "microvm", mounts, wait: true });
+		expect(first.mounts?.map((mount) => mount.status)).toEqual(["ready", "ready"]);
+		// A replay of what the host had at t=100 (its settled one: a's failure), landing late: dropped.
+		await api.service.reportMounts(STUB_HOST_ID, first.id, replay, 100);
+		expect(await statuses(first.id)).toEqual(["ready", "ready"]);
+
+		// The answer first, then the report set after it.
+		reportFirst = false;
+		const second = await tom.createSandbox({ type: "microvm", mounts, wait: true });
+		expect(second.mounts?.map((mount) => mount.status)).toEqual(["failed", "pending"]);
+		await api.service.reportMounts(STUB_HOST_ID, second.id, ready, 101);
+		expect(await statuses(second.id)).toEqual(["ready", "ready"]);
+		await api.service.reportMounts(STUB_HOST_ID, second.id, replay, 100);
+		expect(await statuses(second.id)).toEqual(["ready", "ready"]);
+
+		// A restart starts the order again: its own answer, set later on the host, applies whole.
+		await tom.stopSandbox(second.id, { wait: true });
+		const started = await tom.startSandbox(second.id, { wait: true });
+		expect(started.mounts?.map((mount) => mount.status)).toEqual(["failed", "pending"]);
+		// And a report from before it (the last boot's, delayed) is older than what it has.
+		await api.service.reportMounts(STUB_HOST_ID, second.id, ready, 150);
+		expect(await statuses(second.id)).toEqual(["failed", "pending"]);
+
+		// A host too old to say when: its reports are taken as they come.
+		await api.service.reportMounts(STUB_HOST_ID, first.id, [{ path: "/mnt/a", status: "failed", error: "x" }]);
+		expect(await statuses(first.id)).toEqual(["failed", "ready"]);
+	});
+
+	it("keeps the backend's own failure of a mount its host can't do, even when the host's answer is older", async () => {
+		// A bundle and a bucket on a host that does only bundles: the bucket is never sent, so the hand-off's failure is the
+		// only word it gets. The bundle's ready report (t=101) lands before the answer (t=100) is written.
+		let service: { reportMounts: ComputeApi["service"]["reportMounts"] } | undefined;
+		const answer = {
+			mounts: [
+				{ path: "/mnt/skills", status: "pending" as const },
+				{
+					path: "/mnt/data",
+					status: "failed" as const,
+					error: "This host can't mount buckets yet",
+					unsent: true as const,
+				},
+			],
+			mountsAt: 100,
+		};
+		const { api, tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => {
+					const placed = await stub.create(spec);
+					await service?.reportMounts(STUB_HOST_ID, spec.sandboxId, [{ path: "/mnt/skills", status: "ready" }], 101);
+					return { ...placed, ...answer };
+				},
+			}),
+		});
+		service = api.service;
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const source = await tom.createBucketSource({ name: "org", provider: "s3", bucket: "org" });
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [
+				{ path: "/mnt/skills", source: { kind: "bundle", digest: bundle.digest } },
+				{ path: "/mnt/data", source: { kind: "bucket", bucketSourceId: source.id, prefix: "org/" } },
+			],
+			wait: true,
+		});
+		const got = (await tom.getSandbox(sandbox.id)).mounts;
+		expect(got?.map((mount) => [mount.path, mount.status, mount.error])).toEqual([
+			["/mnt/skills", "ready", undefined],
+			["/mnt/data", "failed", "This host can't mount buckets yet"],
+		]);
+		expect(got?.some((mount) => "unsent" in mount)).toBe(false);
+	});
+
+	it("leaves a mount pending when no report came, and a boot sets a settled one pending again", async () => {
+		const { tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => ({
+					...(await stub.create(spec)),
+					mounts: [{ path: "/mnt/skills", status: "pending" }],
+				}),
+			}),
+		});
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [{ path: "/mnt/skills", source: { kind: "bundle", digest: bundle.digest } }],
+			wait: true,
+		});
+		expect(sandbox.mounts?.map((mount) => mount.status)).toEqual(["pending"]);
+	});
+});
+
 describe("signed file URLs", () => {
 	it("download and upload a file with no credential, bound to their path and method, until they expire", async () => {
 		const { tom, fetchApi } = setup();

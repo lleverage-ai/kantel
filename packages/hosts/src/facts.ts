@@ -280,6 +280,11 @@ const MOUNT_STATUSES: ReadonlySet<string> = new Set<HostMountStatus["status"]>([
 const MAX_MOUNT_PATH = 1024;
 const MAX_MOUNT_ERROR = 512;
 
+/** When a host set a sandbox's mounts (`HostSandbox.mountsAt`): a positive whole number of milliseconds, or undefined. */
+export function parseMountsAt(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 /**
  * Mounts' statuses as a host reports them (a `sandbox.mounts` event, or the sandbox a call answered): undefined unless
  * they are a list of at most `MAX_MOUNTS` (null, Go's empty list, is none). An entry that isn't

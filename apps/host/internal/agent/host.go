@@ -178,10 +178,15 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		if err != nil {
 			return nil, err
 		}
+		bundleCache, bundleDrives, err := h.newBundles()
+		if err != nil {
+			return nil, err
+		}
 		mv, err := microvm.New(microvm.Config{
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
-			Root:            cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
+			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
+			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events:         h.sandboxEvent,
@@ -292,8 +297,11 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.cfg.ImagePatching {
 		features = append(features, proto.FeatureImagePatching)
 	}
-	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t) {
+	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBucket}) {
 		features = append(features, proto.FeatureBucketMounts)
+	}
+	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBundle}) {
+		features = append(features, proto.FeatureBundleMounts)
 	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
@@ -565,8 +573,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if p.Template != nil && h.tierName(p.Tier) != microvm.Tier {
 			return nil, invalid("a sandbox made from a template is a microVM")
 		}
-		if len(p.Mounts) > 0 && !supportsMounts(t) {
-			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier has no mounts on this host", h.tierName(p.Tier))}
+		if len(p.Mounts) > 0 && !supportsMounts(t, p.Mounts...) {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier on this host doesn't take these mounts", h.tierName(p.Tier))}
 		}
 		defer h.lifecycle.lock(p.SandboxID)()
 		if _, err := h.tierOf(p.SandboxID); err == nil {

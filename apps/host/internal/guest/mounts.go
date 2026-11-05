@@ -40,12 +40,13 @@ var reservedDirs = []string{
 	"/var/lib/docker", "/var/run",
 }
 
-// CheckMountPath says whether a mount may be at p: an absolute, clean path, not the system's own directories.
+// CheckMountPath says whether a mount, a bucket's or a bundle's, may be at p: an absolute, clean path with no control
+// characters, not the system's own directories.
 func CheckMountPath(p string) error {
 	if !strings.HasPrefix(p, "/") || path.Clean(p) != p || p == "/" {
 		return fmt.Errorf("a mount's path must be absolute and clean, not %q", p)
 	}
-	if len(p) > 1024 || strings.ContainsRune(p, 0) {
+	if len(p) > 1024 || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return fmt.Errorf("bad mount path %q", p)
 	}
 	for _, dir := range reservedDirs {
@@ -54,6 +55,11 @@ func CheckMountPath(p string) error {
 		}
 	}
 	return nil
+}
+
+// overlaps says whether mounts at a and b would meet: the same path, or one inside the other.
+func overlaps(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 // Mounts are the guest's bucket mounts, by path.
@@ -117,6 +123,37 @@ func (ms *Mounts) Apply(ctx context.Context, specs []MountSpec) []MountResult {
 	}
 	ms.save()
 	return results
+}
+
+// Release unmounts the bucket mounts at, above or under any of paths: a sandbox made from a snapshot may have one
+// where it now has a bundle (the same path, a parent of it, or a folder in it), which goes before the bundle is
+// mounted, so its unmount can never take the bundle instead, and the bundle never mounts on the old bucket's
+// read-only view (POST /bundles). A sandbox's own mounts never overlap, so every bucket mount that meets a bundle's
+// path is a snapshot's the sandbox no longer has. Deepest first, should two of those be nested.
+func (ms *Mounts) Release(paths []string) {
+	if ms == nil {
+		return
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	var gone []string
+	for p := range ms.byPath {
+		for _, q := range paths {
+			if overlaps(p, q) {
+				gone = append(gone, p)
+				break
+			}
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	sort.Slice(gone, func(i, j int) bool { return len(gone[i]) > len(gone[j]) })
+	for _, p := range gone {
+		ms.byPath[p].unmount()
+		delete(ms.byPath, p)
+	}
+	ms.save()
 }
 
 func (ms *Mounts) save() {
@@ -221,6 +258,14 @@ func (ms *Mounts) mount(ctx context.Context, s MountSpec) (*bucketMount, error) 
 	}
 	m.tree.Store(newTree(*man))
 	m.checked.Store(time.Now().UnixNano())
+	// A bundle still mounted here, above or under here (a snapshot's, which POST /bundles couldn't unmount: something
+	// in the sandbox uses it) stays, as a bundle replaced by another does: never detached or hidden under its users, so
+	// its drive stays held. The sandbox's own bundles never overlap its buckets, so one that does is a snapshot's.
+	for p := range readBundleState() {
+		if overlaps(p, s.Path) {
+			return nil, fmt.Errorf("the bundle mounted at %s before is still in use in the sandbox", p)
+		}
+	}
 	// Something left at the path (a mount of a previous run of the agent, its server gone) goes first.
 	_ = syscall.Unmount(s.Path, syscall.MNT_DETACH)
 	if err := os.MkdirAll(s.Path, 0o755); err != nil {

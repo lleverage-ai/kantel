@@ -144,6 +144,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly baseAt?: number;
 	/**
+	 * When its host set the `mounts` statuses it has (`Placement.mountsAt`, the host's clock, later with each change; absent:
+	 * not said, or set by this plane, as a boot's `pending`). A host's report of them that says an earlier time is older
+	 * than what is here, and doesn't replace it (`reportMountStatuses`, `mountsAfter`).
+	 */
+	readonly mountsAt?: number;
+	/**
 	 * Moves on by one with every change of its state (`withState`), so a lifecycle step that read it earlier can claim
 	 * the next only while nothing else has moved it since, even if it is back in the state it read (a restart in
 	 * between). Absent: 0, a record from before it was kept.

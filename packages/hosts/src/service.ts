@@ -68,11 +68,17 @@ export interface MountHandoff {
 	/** The mounts the host can do, for the call's `mounts` (sent only when there are some). */
 	readonly send: readonly HostMount[];
 	/**
-	 * Every mount's status once the host answered with `sandbox`, in the order given: `failed` for one it can't do, else
-	 * what it reported for that path, or `pending`. Undefined when there were no mounts.
+	 * Every mount's status once the host answered with `sandbox`, in the order given: `failed` (and `unsent`) for one it
+	 * can't do, else what it reported for that path, or `pending`. Undefined when there were no mounts.
 	 */
-	status(sandbox: HostSandbox | undefined): HostMountStatus[] | undefined;
+	status(sandbox: HostSandbox | undefined): HandoffMountStatus[] | undefined;
 }
+
+/**
+ * A mount's status after a hand-off. `unsent`: the host was never sent it (it can't do that kind), so this `failed` is
+ * the only word it will get, whatever the order of the host's own reports.
+ */
+export type HandoffMountStatus = HostMountStatus & { readonly unsent?: true };
 
 /**
  * Splits `mounts` by what a host with `features` can mount. A host that predates mounts would ignore the field and
@@ -89,8 +95,10 @@ export function mountHandoff(
 		status(sandbox) {
 			if (all.length === 0) return undefined;
 			const reported = new Map((parseMountStatuses(sandbox?.mounts) ?? []).map((status) => [status.path, status]));
-			return all.map((mount): HostMountStatus => {
-				if (!can(mount)) return { path: mount.path, status: "failed", error: MOUNT_KINDS[mount.kind].refusal };
+			return all.map((mount): HandoffMountStatus => {
+				if (!can(mount)) {
+					return { path: mount.path, status: "failed", error: MOUNT_KINDS[mount.kind].refusal, unsent: true };
+				}
 				return reported.get(mount.path) ?? { path: mount.path, status: "pending" };
 			});
 		},
@@ -255,8 +263,16 @@ export interface HostComputeLink {
 	 * `hostId` and mounts it (`ComputeService.bucketSourceForHost`).
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
-	/** A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`). */
-	reportMounts?(hostId: string, sandboxId: string, mounts: readonly HostMountStatus[]): Promise<void>;
+	/**
+	 * A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`): only for a
+	 * sandbox whose placement is on that host. `mountsAt` is when the host set them (absent from an older host).
+	 */
+	reportMounts?(
+		hostId: string,
+		sandboxId: string,
+		mounts: readonly HostMountStatus[],
+		mountsAt?: number,
+	): Promise<void>;
 	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
@@ -794,10 +810,18 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (compute?.bucketSource === undefined) throw new Error("The compute plane keeps no bucket sources here");
 			return compute.bucketSource(hostId, sandboxId, bucketSourceId);
 		},
-		onMounts(hostId, sandboxId, mounts) {
+		onMounts(hostId, sandboxId, mounts, mountsAt) {
 			const link = compute;
 			if (link?.reportMounts === undefined) return;
-			report((async () => link.reportMounts?.(hostId, sandboxId, mounts))());
+			// Only for a sandbox placed on this host, by its placement record, which is written before the host is asked
+			// to boot it: a report can come before the compute plane has recorded the boot's host (a first create's, or a
+			// restart's on another host), and that plane takes a starting sandbox's report from the host this names.
+			report(
+				(async () => {
+					if ((await store.getPlacement(sandboxId))?.hostId !== hostId) return;
+					await link.reportMounts?.(hostId, sandboxId, mounts, mountsAt);
+				})(),
+			);
 		},
 		onUsage(hostId, reported): Promise<void> | undefined {
 			if (compute?.recordUsage === undefined && cluster === undefined) return undefined;

@@ -118,21 +118,28 @@ func TestValidate(t *testing.T) {
 		{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "bks_1"},
 		{Path: "/mnt/ab", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p/", RefreshTTLSeconds: &zero},
 		{Path: "/var/data", Kind: "bucket", BucketSourceID: "bks_1", RefreshTTLSeconds: &day},
+		// Bundles and buckets in one list.
+		{Path: "/workspace/skills", Kind: "bundle", Digest: "sha256:" + strings.Repeat("a", 64)},
 	}
 	if err := Validate(ok); err != nil {
 		t.Fatal(err)
 	}
+	bundle := proto.Mount{Path: "/mnt/a/b", Kind: "bundle", Digest: "sha256:" + strings.Repeat("b", 64)}
 	for name, mounts := range map[string][]proto.Mount{
-		"overlap":      {{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b"}, {Path: "/mnt/a/b", Kind: "bucket", BucketSourceID: "b"}},
-		"same":         {{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b"}, {Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b"}},
-		"system":       {{Path: "/usr/local/x", Kind: "bucket", BucketSourceID: "b"}},
-		"var/run":      {{Path: "/var/run/x", Kind: "bucket", BucketSourceID: "b"}},
-		"root":         {{Path: "/", Kind: "bucket", BucketSourceID: "b"}},
-		"relative":     {{Path: "mnt/a", Kind: "bucket", BucketSourceID: "b"}},
-		"unclean":      {{Path: "/mnt/../etc", Kind: "bucket", BucketSourceID: "b"}},
-		"no source":    {{Path: "/mnt/a", Kind: "bucket"}},
-		"negative ttl": {{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b", RefreshTTLSeconds: &neg}},
-		"unknown kind": {{Path: "/mnt/a", Kind: "nfs"}},
+		"overlap":       {{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b"}, {Path: "/mnt/a/b", Kind: "bucket", BucketSourceID: "b"}},
+		"same":          {{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b"}, {Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b"}},
+		"system":        {{Path: "/usr/local/x", Kind: "bucket", BucketSourceID: "b"}},
+		"var/run":       {{Path: "/var/run/x", Kind: "bucket", BucketSourceID: "b"}},
+		"root":          {{Path: "/", Kind: "bucket", BucketSourceID: "b"}},
+		"relative":      {{Path: "mnt/a", Kind: "bucket", BucketSourceID: "b"}},
+		"unclean":       {{Path: "/mnt/../etc", Kind: "bucket", BucketSourceID: "b"}},
+		"no source":     {{Path: "/mnt/a", Kind: "bucket"}},
+		"negative ttl":  {{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b", RefreshTTLSeconds: &neg}},
+		"unknown kind":  {{Path: "/mnt/a", Kind: "nfs"}},
+		"no digest":     {{Path: "/mnt/a", Kind: "bundle"}},
+		"bad digest":    {{Path: "/mnt/a", Kind: "bundle", Digest: "sha256:abc"}},
+		"bundle path":   {{Path: "/etc/skills", Kind: "bundle", Digest: bundle.Digest}},
+		"kinds overlap": {{Path: "/mnt/a", Kind: "bucket", BucketSourceID: "b"}, bundle},
 		"too many": func() []proto.Mount {
 			var ms []proto.Mount
 			for i := range MaxMounts + 1 {

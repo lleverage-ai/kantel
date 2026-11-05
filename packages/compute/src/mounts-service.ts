@@ -145,21 +145,38 @@ export const unanswered = (mount: computeSchema.Mount): string =>
 
 /**
  * A sandbox's mounts once its backend placed it: each the status the backend answered for its path, or `failed` when
- * it answered none, so a backend that predates mounts never leaves one looking mounted.
+ * it answered none, so a backend that predates mounts never leaves one looking mounted. Every boot sets its mounts
+ * `pending` first (and forgets `mountsAt`), so one already `ready` or `failed` here was settled by its host's report
+ * (`reportMountStatuses`) during this boot, which can land before the boot's own answer is written. When both say
+ * when the host set them (`at`), the later wins: an answer set before the report keeps none of its host's statuses,
+ * even a `failed` the host has since retried. Otherwise (a host too old to say) an answer of `pending` doesn't undo a
+ * settled status. A status the backend gave itself (`unsent`: the host can't do that kind, so was never sent it and
+ * will never report it) is kept whatever the order.
  */
 export function mountsAfter(
 	mounts: readonly computeSchema.SandboxMount[] | undefined,
 	reported: readonly BackendMountStatus[] | undefined,
+	at: { readonly stored?: number | undefined; readonly reported?: number | undefined } = {},
 ): computeSchema.SandboxMount[] | undefined {
 	if (mounts === undefined || mounts.length === 0) return undefined;
+	const ordered = at.stored !== undefined && at.reported !== undefined;
+	const older = ordered && (at.reported ?? 0) < (at.stored ?? 0);
 	const byPath = new Map((reported ?? []).map((status) => [status.path, status]));
 	return mounts.map((mount) => {
 		const status = byPath.get(mount.path);
 		const { error: _old, ...rest } = mount;
+		if (older && status?.unsent !== true) return { ...mount };
 		if (status === undefined) return { ...rest, status: "failed", error: unanswered(mount) };
+		if (!ordered && status.status === "pending" && (mount.status === "ready" || mount.status === "failed")) {
+			return { ...mount };
+		}
 		return { ...rest, status: status.status, ...(status.error === undefined ? {} : { error: status.error }) };
 	});
 }
+
+/** The later of two `mountsAt`s, either absent. */
+export const laterMountsAt = (a: number | undefined, b: number | undefined): number | undefined =>
+	a === undefined ? b : b === undefined ? a : Math.max(a, b);
 
 /** A sandbox's mounts as its backend is given them: no statuses. */
 export const backendMounts = (mounts: readonly computeSchema.SandboxMount[] | undefined): BackendMount[] | undefined =>
@@ -180,17 +197,26 @@ const mountsOfSource = (sandbox: StoredSandbox, matches: (source: computeSchema.
 
 /**
  * A host's later word on a sandbox's mounts (`ComputeService.reportMounts`): each status replaces the one at its path.
- * Dropped unless the sandbox is on `hostId`; a path it doesn't mount is ignored.
+ * Dropped unless the sandbox is on `hostId`; a path it doesn't mount is ignored. While it is `starting`, the host that
+ * reports may be the one it is being placed on (not yet recorded here: a first create has no host yet, a restart may
+ * move it), which the caller has checked against the host's own placement record, so a report that lands before the
+ * boot's answer is written is kept, and that answer doesn't undo it (`mountsAfter`). `mountsAt` is when the host set
+ * them: a report set no later than what the record has (a reconnect's replay read before a retry that settled since)
+ * is dropped. A host too old to say has every report taken as it comes.
  */
 export async function reportMountStatuses(
 	store: ComputeStore,
 	hostId: string,
 	sandboxId: string,
 	reported: readonly BackendMountStatus[],
+	mountsAt?: number,
 ): Promise<void> {
 	const byPath = new Map(reported.map((status) => [status.path, status]));
+	const at = typeof mountsAt === "number" && Number.isSafeInteger(mountsAt) && mountsAt > 0 ? mountsAt : undefined;
 	await store.sandboxes.update(sandboxId, (current) => {
-		if (current.hostId !== hostId || current.state === "deleted" || current.mounts === undefined) return undefined;
+		if (current.state === "deleted" || current.mounts === undefined) return undefined;
+		if (current.hostId !== hostId && current.state !== "starting") return undefined;
+		if (at !== undefined && current.mountsAt !== undefined && at <= current.mountsAt) return undefined;
 		let changed = false;
 		const mounts = current.mounts.map((mount) => {
 			const status = byPath.get(mount.path);
@@ -205,7 +231,7 @@ export async function reportMountStatuses(
 			const error = typeof status.error === "string" ? status.error.slice(0, 1000) : undefined;
 			return { ...rest, status: status.status, ...(error === undefined ? {} : { error }) };
 		});
-		return changed ? { ...current, mounts } : undefined;
+		return changed ? { ...current, mounts, ...(at === undefined ? {} : { mountsAt: at }) } : undefined;
 	});
 }
 

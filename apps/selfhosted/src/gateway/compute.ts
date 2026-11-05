@@ -598,7 +598,8 @@ export async function gatewayCompute(options: {
 				}),
 		bundle: (hostId, sandboxId, digest) => api.service.bundleForHost(hostId, sandboxId, digest),
 		bucketSource: (hostId, sandboxId, id) => api.service.bucketSourceForHost(hostId, sandboxId, id),
-		reportMounts: (hostId, sandboxId, mounts) => api.service.reportMounts(hostId, sandboxId, mounts),
+		reportMounts: (hostId, sandboxId, mounts, mountsAt) =>
+			api.service.reportMounts(hostId, sandboxId, mounts, mountsAt),
 	});
 	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
 	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));

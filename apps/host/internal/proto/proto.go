@@ -209,6 +209,14 @@ type TemplateImage struct {
 	Scope      string `json:"scope"`
 }
 
+// FeatureBundleMounts (HOST_FEATURES.mountsBundle): the host mounts CreateParams' bundle Mounts read-only in microVM
+// sandboxes. It fetches a bundle's tar from the control plane (GET /v1/hosts/bundles/{digest}?sandboxId=, with its
+// credential) the first time any sandbox on the host mounts it, checks it against the digest, makes it an erofs image
+// kept on the host under that digest, and attaches that one image as a read-only drive to every sandbox that mounts
+// it. It answers each mount's status in SandboxInfo.Mounts, and a later change as an EventMounts. Experimental: the
+// control plane sends mounts only behind its switch.
+const FeatureBundleMounts = "mounts-bundle"
+
 // Size is a sandbox shape.
 type Size struct {
 	Name      string `json:"name"`
@@ -301,8 +309,12 @@ type SandboxInfo struct {
 	BaseAt int64 `json:"baseAt,omitempty"`
 	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
 	Guest *GuestCapabilities `json:"guest,omitempty"`
-	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts).
+	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts, FeatureBundleMounts).
 	Mounts []MountStatus `json:"mounts,omitempty"`
+	// MountsAt, with Mounts, is when the host last set them (unix milliseconds, the host's clock, and always later
+	// than the sandbox's last MountsAt): reports of a sandbox's mounts, from a call's answer, an EventMounts or the
+	// replay after a reconnect, are ordered by it, so one read earlier never replaces a later one.
+	MountsAt int64 `json:"mountsAt,omitempty"`
 }
 
 // GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and
@@ -350,19 +362,21 @@ type GuestDocker struct {
 
 // Mount kinds.
 const (
+	MountBundle = "bundle"
 	MountBucket = "bucket"
 )
 
 // Mount is one read-only mount a sandbox is created with (HostMount): the sandbox sees it at Path and can't write to
-// it (EROFS). A bucket mount is a prefix of an account's bucket source. The host lists it once when it mounts (the
-// manifest: every object's path, size, mtime and ETag), so listing and stat in the sandbox are local, and fetches an
-// object's bytes only when the sandbox reads them, through the host's read cache.
+// it (EROFS). A bundle mount is a tar the account uploaded, named by its digest: the host makes it an erofs image
+// once and attaches it as a read-only drive. A bucket mount is a prefix of an account's bucket source. The host lists
+// it once when it mounts (the manifest: every object's path, size, mtime and ETag), so listing and stat in the sandbox
+// are local, and fetches an object's bytes only when the sandbox reads them, through the host's read cache.
 type Mount struct {
 	// Path is where it appears in the sandbox: absolute, and not one of the system's own directories.
 	Path string `json:"path"`
-	// Kind is "bucket" (or "bundle", which this host's bucket mounts leave alone).
+	// Kind is "bundle" or "bucket".
 	Kind string `json:"kind"`
-	// Digest is a bundle's (kind "bundle").
+	// Digest is a bundle's (kind "bundle"): sha256:<64 hex digits>.
 	Digest string `json:"digest,omitempty"`
 	// BucketSourceID is the account's bucket source: the host asks Kantel for its location and credentials
 	// (bucket.fetch) and keeps them in memory only. They never reach the sandbox.
@@ -381,7 +395,7 @@ const (
 	MountFailed  = "failed"
 )
 
-// MountStatus is how one of a sandbox's mounts is doing (HostMountStatus, with the manifest's figures besides).
+// MountStatus is how one of a sandbox's mounts is doing (HostMountStatus, with a bucket manifest's figures besides).
 type MountStatus struct {
 	Path  string `json:"path"`
 	Kind  string `json:"kind,omitempty"`
@@ -433,7 +447,8 @@ type BucketCredentials struct {
 	ServiceAccountKey string `json:"serviceAccountKey,omitempty"`
 }
 
-// EventMounts is the event a host sends when a sandbox's mounts change status after its create answered.
+// EventMounts is the event a host sends when a sandbox's mounts change status after its create answered
+// (HOST_EVENT_MOUNTS); the event's Sandbox carries them.
 const EventMounts = "sandbox.mounts"
 
 // SnapshotInfo is one snapshot of a sandbox's disk (and, for a stop that kept it, its memory).
@@ -583,7 +598,8 @@ type CreateParams struct {
 	// Template makes the sandbox from a template (microVMs only): from its template snapshot, or by booting its image
 	// fresh and running its setup in the new sandbox.
 	Template *TemplateBoot `json:"template,omitempty"`
-	// Mounts are read-only mounts (FeatureBucketMounts); a tier that has none refuses them as unsupported.
+	// Mounts are read-only mounts (FeatureBucketMounts, FeatureBundleMounts), kept for as long as the sandbox exists:
+	// its starts, resumes and forks mount them again. A tier that has none refuses them as unsupported.
 	Mounts []Mount `json:"mounts,omitempty"`
 }
 

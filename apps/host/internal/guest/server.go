@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /files/extract", s.extractArchive)
 	mux.HandleFunc("GET /ports/{port}", s.port)
 	mux.HandleFunc("POST /mounts", s.mounts)
+	mux.HandleFunc("POST /bundles", s.mountBundles)
 	return mux
 }
 
