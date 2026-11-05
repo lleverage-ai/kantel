@@ -17,7 +17,8 @@ cat <<EOF
   "chrome": "$(pkg google-chrome-stable)",
   "selkies": "$(pkg selkies)",
   "tigervnc": "$(pkg tigervnc-standalone-server)",
-  "xfce": "$(pkg xfce4-session)",
+  "openbox": "$(pkg openbox)",
+  "tint2": "$(pkg tint2)",
   "openssh": "$(pkg openssh-server)"
 }
 EOF

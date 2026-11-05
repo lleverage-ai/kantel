@@ -34,7 +34,7 @@ It was tested on Kantel's own image, `debian:trixie`, `alpine:3.22` and `busybox
 | SFTP, and `scp` (which uses SFTP) | OpenSSH's `sftp-server`, such as Debian's `openssh-sftp-server` or Alpine's `openssh-sftp-server` |
 | Docker | `dockerd`, and systemd as the image's init to start it |
 | `/dev/kvm` inside | Nothing in the image; the host must allow [nested virtualisation](/hosts/) |
-| The desktop and browser | Kantel's desktop stack: TigerVNC, XFCE and Selkies, with Kantel's `kantel-desktop` and `kantel-browser` services and systemd. Today only Kantel's own image has them |
+| The desktop and browser | Kantel's desktop stack: TigerVNC, Openbox and Selkies, with Kantel's `kantel-desktop` and `kantel-browser` services and systemd. Today only Kantel's own image has them; an image built on it can run another session on the desktop by setting `KANTEL_DESKTOP_SESSION` in `/etc/kantel/desktop.env` |
 | Reading a snapshot's files without starting it | Nothing in the image. On the host: `debugfs` for an ext4 image, as for Kantel's own; `unsquashfs` (`squashfs-tools` 4.6 or later) for a squashfs one. An erofs image's snapshot files can't be read this way: start the sandbox to read them |
 
 Commands and SSH run as `user` where the image has that account, as Kantel's image does, and as `root` where it doesn't. An image without `/etc/passwd` runs everything as root, with `/root` as home.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=LXTerminal
+Exec=lxterminal
+Icon=/usr/share/kantel/icons/terminal.svg
+Terminal=false
+NoDisplay=true

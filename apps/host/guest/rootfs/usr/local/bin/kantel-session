@@ -1,0 +1,44 @@
+#!/bin/sh
+# Kantel's desktop session on display :1 (kantel-desktop runs it in a D-Bus session): Openbox, with a thin top bar
+# and a small dock (two tint2 panels, ~/.config/tint2) on a plain background, and nothing on the desktop itself. A
+# right click on the desktop opens Openbox's menu (~/.config/openbox/menu.xml). An image with a session of its own
+# names it in KANTEL_DESKTOP_SESSION (/etc/kantel/desktop.env) instead, and this doesn't run.
+export XDG_CURRENT_DESKTOP=Kantel XDG_SESSION_DESKTOP=openbox XDG_SESSION_TYPE=x11
+# No accessibility bus: nothing here uses one, and GTK apps otherwise each wait on it and warn.
+export NO_AT_BRIDGE=1
+# The desktop's apps are dark (Adwaita's dark variant), by the environment rather than ~/.config/gtk-3.0: the
+# sandbox's own Chromium (kantel-browser, on :2) reads that file too, and dark there would change the pages agents see
+# (prefers-color-scheme) and the Browser view.
+export GTK_THEME=Adwaita:dark
+# The desktop Chromium's profile (kantel-chromium): a lock in it with no Chromium holding it is from another boot (the
+# template's, or one before a stop or a fork), whose host name Chromium won't accept, and it asks on a dialog instead.
+# Cleared here, once, before the dock and the menu exist to launch it; a desktop restart has stopped any Chromium
+# started from the last session, since it ran in the same unit.
+profile=$HOME/.config/chromium
+if ! pgrep -u "$(id -u)" -f -- "--user-data-dir=$profile( |$)" >/dev/null 2>&1; then
+	rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
+fi
+# The background as a root pixmap (hsetroot), which the dock's rounded corners show through without a compositor.
+hsetroot -solid '#15171b' >/dev/null 2>&1 || xsetroot -solid '#15171b'
+xsetroot -cursor_name left_ptr
+
+# Openbox, started again if it ever falls over (it exits 0 only when asked to).
+(
+	while :; do
+		openbox && break
+		sleep 1
+	done
+) &
+wm=$!
+for _ in $(seq 100); do xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q 'window id' && break; sleep 0.05; done
+
+# The bar and the dock, likewise.
+for panel in topbar dock; do
+	(
+		while :; do
+			tint2 -c "$HOME/.config/tint2/$panel.tint2rc" >/dev/null 2>&1
+			sleep 1
+		done
+	) &
+done
+wait "$wm"

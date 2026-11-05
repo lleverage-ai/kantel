@@ -1,0 +1,6 @@
+#!/bin/sh
+# Every app on the desktop, as a grid with a search box: rofi's list of desktop entries (~/.config/rofi/config.rasi).
+# The dock's first icon, the top bar's Kantel button, Super+Space and the desktop's menu open it; a second press
+# while it is open closes it.
+if pkill -x -u "$(id -u)" rofi 2>/dev/null; then exit 0; fi
+exec rofi -show drun

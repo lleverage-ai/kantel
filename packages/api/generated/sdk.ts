@@ -951,7 +951,7 @@ export interface GuestCapabilities {
 
 export interface GuestDocker {
 	readonly available: boolean;
-	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	/** What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. */
 	readonly detail?: string;
 	/** Why it isn't available, in words, such as `No desktop in this image`. */
 	readonly reason?: string;
@@ -962,7 +962,7 @@ export interface GuestDocker {
 /** One thing a microVM's image has or lacks. */
 export interface GuestFeature {
 	readonly available: boolean;
-	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	/** What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. */
 	readonly detail?: string;
 	/** Why it isn't available, in words, such as `No desktop in this image`. */
 	readonly reason?: string;

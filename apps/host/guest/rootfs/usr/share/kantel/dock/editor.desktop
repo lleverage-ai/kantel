@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Editor
+Comment=Geany, the text and code editor
+Exec=geany
+Icon=/usr/share/kantel/icons/editor.svg
+Terminal=false
+NoDisplay=true

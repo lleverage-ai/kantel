@@ -13,9 +13,12 @@ The image holds the full licence text of every Debian-format package at `/usr/sh
 
 ## Kantel's own parts
 
-`kantel-guest`, `kantel-init`, `kantel-desktop`, `kantel-browser`, `kantel-stream`, `kantel-image-info` and the
-configuration under `/etc/kantel` and `/etc/systemd/system/kantel-*`: Apache License 2.0, source in
-https://github.com/lleverage-ai/kantel (`apps/host`).
+`kantel-guest`, `kantel-init`, `kantel-desktop`, `kantel-session`, `kantel-apps`, `kantel-chromium`,
+`kantel-browser`, `kantel-stream`, `kantel-image-info`, the configuration under `/etc/kantel`,
+`/etc/systemd/system/kantel-*` and `/home/user/.config`, the desktop's icons and dock entries (`/usr/share/kantel/icons`,
+`/usr/share/kantel/dock`) and its Openbox theme (`/usr/share/themes/Kantel`): Apache License 2.0, source in
+https://github.com/lleverage-ai/kantel (`apps/host`). The desktop's Openbox, tint2, rofi, LXTerminal, PCManFM and
+Geany are Ubuntu's packages (below).
 
 ## The guest kernel
 

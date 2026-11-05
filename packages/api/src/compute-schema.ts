@@ -417,7 +417,7 @@ export const GuestFeature = Type.Object(
 	{
 		available: Type.Boolean(),
 		detail: Type.Optional(
-			Type.String({ description: "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`." }),
+			Type.String({ description: "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`." }),
 		),
 		reason: Type.Optional(
 			Type.String({ description: "Why it isn't available, in words, such as `No desktop in this image`." }),

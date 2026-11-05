@@ -1,0 +1,60 @@
+# Kantel's dock (tint2, started by kantel-session): five launchers at the bottom of the screen, centred. Left to
+# right: every app (kantel-apps), the desktop's browser (kantel-chromium), the terminal, files and the editor. Each
+# is a desktop entry in /usr/share/kantel/dock, with no field codes (%F, %U) in its Exec: tint2 17 aborts on some. The
+# top bar is a second tint2 (topbar.tint2rc).
+
+# 1: the dock
+rounded = 14
+border_width = 1
+border_sides = TBLR
+background_color = #1b1d22 100
+border_color = #2a2e36 100
+background_color_hover = #1b1d22 100
+border_color_hover = #2a2e36 100
+background_color_pressed = #1b1d22 100
+border_color_pressed = #2a2e36 100
+
+# 2: a launcher, lit when the pointer is on it
+rounded = 10
+border_width = 0
+background_color = #1b1d22 0
+border_color = #000000 0
+background_color_hover = #2f333d 100
+border_color_hover = #000000 0
+background_color_pressed = #3a3f4b 100
+border_color_pressed = #000000 0
+
+panel_items = L
+panel_size = 0 60
+panel_margin = 0 8
+panel_padding = 8 6 6
+panel_background_id = 1
+wm_menu = 0
+panel_dock = 0
+panel_position = bottom center horizontal
+panel_layer = top
+panel_monitor = all
+panel_shrink = 1
+autohide = 0
+strut_policy = follow_size
+panel_window_name = kantel-dock
+disable_transparency = 0
+mouse_effects = 1
+font_shadow = 0
+mouse_hover_icon_asb = 100 0 12
+mouse_pressed_icon_asb = 100 0 0
+
+launcher_padding = 0 0 6
+launcher_background_id = 0
+launcher_icon_background_id = 2
+launcher_icon_size = 44
+launcher_icon_asb = 100 0 0
+launcher_icon_theme = hicolor
+launcher_icon_theme_override = 0
+startup_notifications = 0
+launcher_tooltip = 1
+launcher_item_app = /usr/share/kantel/dock/apps.desktop
+launcher_item_app = /usr/share/kantel/dock/browser.desktop
+launcher_item_app = /usr/share/kantel/dock/terminal.desktop
+launcher_item_app = /usr/share/kantel/dock/files.desktop
+launcher_item_app = /usr/share/kantel/dock/editor.desktop

@@ -186,7 +186,7 @@ export const KANTEL_IMAGE: SandboxImage = {
 	init: "systemd",
 	injected: false,
 	agentVersion: "0.42.0",
-	desktop: { available: true, detail: "Xtigervnc, xfce4-session, Selkies" },
+	desktop: { available: true, detail: "Xtigervnc, Openbox, Selkies" },
 	browser: { available: true, detail: "Chromium" },
 	docker: { available: true, detail: "dockerd 29.1" },
 	kvm: true,
