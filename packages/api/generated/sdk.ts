@@ -340,6 +340,8 @@ export interface Caller {
 	readonly superAdmin: boolean;
 	/** `selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans. */
 	readonly mode: DeploymentMode;
+	/** The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none. */
+	readonly sandboxDomain?: string;
 }
 
 /** The key the call was signed in with, when it was a key. */

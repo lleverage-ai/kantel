@@ -2223,11 +2223,13 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		});
 	const caller = await asSignedIn(watched).getCaller();
 
-	// The domain sandbox addresses are under. The API names no deployment domain: the caller has none, and a sandbox
-	// answers only its subdomain. The one hostname it does answer is its SSH gateway's, `ssh.<domain>` as the UI's
-	// `sshCommand` writes it, so once an access call has given one the domain comes from that. Until then the page's own
-	// host is the nearest guess (a self-hosted install serves the console and its sandboxes under one name), and outside
-	// a browser, as in tests, "localhost".
+	// The domain sandbox addresses are under. A deployment that has one names it on the caller (`sandboxDomain`): the
+	// hosted service's is kantel.run, a domain apart from the console's, so the page's own host is never it. One that
+	// names none answers only its subdomain. The one hostname it does answer is its SSH gateway's, `ssh.<domain>` as
+	// the UI's `sshCommand` writes it, so once an access call has given one the domain comes from that. Until then the
+	// page's own host is the nearest guess (a self-hosted install serves the console and its sandboxes under one name),
+	// and outside a browser, as in tests, "localhost".
+	const named = caller.sandboxDomain?.trim().toLowerCase() || undefined;
 	let learned: string | undefined;
 	const fallback = pageHost() ?? "localhost";
 	const { local } = options;
@@ -2240,7 +2242,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 	const context: Context = {
 		api,
 		hosting: options.hosting ?? "self-hosted",
-		domain: () => learned ?? fallback,
+		domain: () => named ?? learned ?? fallback,
 		learnHost: (host) => {
 			learned = host.replace(/^ssh\./, "");
 		},

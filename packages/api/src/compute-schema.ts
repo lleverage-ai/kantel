@@ -128,6 +128,14 @@ export const Caller = Type.Object(
 			title: "DeploymentMode",
 			description: "`selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans.",
 		}),
+		sandboxDomain: Type.Optional(
+			Type.String({
+				description:
+					"The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports " +
+					"`<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the " +
+					"deployment names none.",
+			}),
+		),
 	},
 	{ title: "Caller", description: "Who is calling, the accounts they may act in, and the deployment's mode." },
 );

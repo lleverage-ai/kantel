@@ -48,6 +48,7 @@ function setup(
 		accountHosts?: boolean;
 		backend?: SandboxBackend;
 		baseImages?: Parameters<typeof createComputeApi>[0]["baseImages"];
+		sandboxDomain?: string;
 		templates?: boolean;
 	} = {},
 ) {
@@ -1445,5 +1446,48 @@ describe("mounts", () => {
 			},
 		]);
 		expect(calls).toEqual([`GET /v1/bucket-sources?account=${accountId}`]);
+	});
+});
+
+describe("sandbox addresses", () => {
+	it("are under the domain the deployment names, never the console's own host (TASK-5220)", async () => {
+		// The hosted console is on app.kantel.dev; its sandboxes are on kantel.run.
+		vi.stubGlobal("location", { host: "app.kantel.dev", origin: "https://app.kantel.dev" });
+		try {
+			const { api, fetchApi } = setup({ sandboxDomain: "kantel.run" });
+			const source = await open(fetchApi);
+			expect(source.domain).toBe("kantel.run");
+			const made = await source.sandboxes.create({
+				accountId: await personalAccount(source),
+				name: "keen",
+				kind: "microvm",
+			});
+			await api.service.idle();
+			const [listed] = await source.sandboxes.list(made.accountId);
+			expect(listed?.hostname).toMatch(/^keen-[a-z0-9]+\.kantel\.run$/);
+			// An SSH grant names the gateway's host, which isn't where sandboxes are: the named domain stays.
+			await source.sandboxes.sshKey?.(made.id, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample ada@laptop");
+			expect((await source.sandboxes.get(made.id))?.hostname).toMatch(/^keen-[a-z0-9]+\.kantel\.run$/);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("fall back to the page's host where the deployment names no domain", async () => {
+		vi.stubGlobal("location", { host: "kantel.internal", origin: "https://kantel.internal" });
+		try {
+			const { api, fetchApi } = setup();
+			const source = await open(fetchApi);
+			const made = await source.sandboxes.create({
+				accountId: await personalAccount(source),
+				name: "lab",
+				kind: "isolate",
+			});
+			await api.service.idle();
+			const [listed] = await source.sandboxes.list(made.accountId);
+			expect(listed?.hostname).toMatch(/^lab-[a-z0-9]+\.kantel\.internal$/);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

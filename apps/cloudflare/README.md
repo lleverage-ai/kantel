@@ -32,7 +32,8 @@ works here as it does there (`src/compute.ts`):
   a separate registrable domain from the console's (`app.kantel.dev`), so a port's page is never the same site as the
   console. It isn't on the Public Suffix List, so port names are one site to each other and cookies aren't private
   between sandboxes. Account hosts' microVMs' ports are served there over HTTP (see "Exposed ports" below); the stub
-  only names its URLs.
+  only names its URLs. `GET /v1/whoami` names the domain (`sandboxDomain`), and the console shows each sandbox's
+  address under it (`keen-newt-a8gdig.kantel.run`), not under its own host.
 - Account hosts (experimental, `KANTEL_ACCOUNT_HOSTS=experimental` with `KANTEL_PUBLIC_URL`; off by default, and the
   deploy sets it from the repository variable of the same name): people add machines of their own (`POST /v1/hosts/join-tokens`). A host registers at
   `POST /v1/hosts/register` and keeps a WebSocket to `GET /v1/hosts/connect` open on `KantelStack`, which holds the

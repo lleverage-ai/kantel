@@ -11824,6 +11824,10 @@
 					},
 					"mode": {
 						"$ref": "#/components/schemas/DeploymentMode"
+					},
+					"sandboxDomain": {
+						"type": "string",
+						"description": "The domain sandboxes' addresses are under: a sandbox's is `<subdomain>.<sandboxDomain>` and its exposed ports `<port>-<subdomain>.<sandboxDomain>`, such as `kantel.run` on Kantel's hosted service. Absent when the deployment names none."
 					}
 				},
 				"title": "Caller",
