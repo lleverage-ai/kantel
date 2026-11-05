@@ -904,7 +904,9 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `name` | string | yes |  |
 | `state` | [HostState](/api/reference/types/#hoststate) | yes |  |
 | `version` | string | no | Its host agent's version. |
-| `latestVersion` | string | no | The newest version the control plane offers. |
+| `latestVersion` | string | no | The version hosts should run: the deployment's `KANTEL_HOST_VERSION` when it sets one, otherwise Kantel's latest release. Absent when neither is known. |
+| `updateAvailable` | boolean | no | True when it runs an older version than `latestVersion` (any other, when the deployment sets `KANTEL_HOST_VERSION`), so it can be updated. Absent otherwise. |
+| `updating` | [HostUpdate](/api/reference/types/#hostupdate) | no |  |
 | `os` | string | no |  |
 | `arch` | `"x86_64"` or `"aarch64"` | no |  |
 | `tiers` | [SandboxType](/api/reference/types/#sandboxtype)[] | yes | The sandbox types it runs. |
@@ -955,6 +957,15 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked.
 
 One of: `"online"` or `"unreachable"` or `"draining"` or `"revoked"`.
+
+### HostUpdate
+
+An update asked for in the last 10 minutes that the host hasn't connected on yet. Absent once it has, or after 10 minutes, when it didn't take.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | yes | The version it's moving to. |
+| `requestedAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### HostUsage
 

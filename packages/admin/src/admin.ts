@@ -273,9 +273,11 @@ function hostTable(hosts: readonly Host[]): string {
 			host.state,
 			host.version === undefined
 				? ""
-				: host.latestVersion !== undefined && host.latestVersion !== host.version
-					? `${host.version} (${host.latestVersion} out)`
-					: host.version,
+				: host.updating !== undefined
+					? `${host.version} (updating to ${host.updating.version})`
+					: host.updateAvailable === true && host.latestVersion !== undefined
+						? `${host.version} (${host.latestVersion} out)`
+						: host.version,
 			host.tiers.join(","),
 			String(host.allocated.sandboxes),
 			host.lastSeenAt === undefined ? "" : ago(host.lastSeenAt),
@@ -583,6 +585,19 @@ const COMMANDS: readonly CommandSpec[] = [
 		async run(ctx) {
 			const host = await (await ctx.client()).updateHost(ctx.arg(0, "hostId"), { draining: !ctx.boolean("undo") });
 			ctx.emit(host, () => `${host.id} ${host.state}`);
+		},
+	},
+	{
+		name: "host update",
+		usage: "host update <hostId>",
+		summary: "Update a host's kantel-host to the version it should run, over its connection",
+		details:
+			"The version is KANTEL_HOST_VERSION when it's set, otherwise Kantel's latest release (`host list` shows it beside a " +
+			"host that's behind). The host fetches it, checks it against the release's SHA256SUMS and restarts; its sandboxes " +
+			"keep running. On the machine itself, use `host run -- update`.",
+		async run(ctx) {
+			const host = await (await ctx.client()).updateHostAgent(ctx.arg(0, "hostId"));
+			ctx.emit(host, () => `${host.id} updating to ${host.updating?.version ?? host.latestVersion ?? "the latest"}`);
 		},
 	},
 	{

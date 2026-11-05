@@ -14,12 +14,18 @@ import {
 	computeConfig,
 	computeInvites,
 	DEFAULT_HOST_IMAGES,
+	DEFAULT_HOST_RELEASES_URL,
+	DEFAULT_HOST_UPDATE_URL,
 	gatewayCompute,
 	gatewayHosts,
 	gatewayRelay,
 	hostImages,
 	mountsSwitch,
 } from "../../src/gateway/compute.ts";
+
+/** What a hosts config has without KANTEL_HOST_VERSION: where an update comes from, and the latest release is read. */
+const RELEASES = { updateUrl: DEFAULT_HOST_UPDATE_URL, releasesUrl: DEFAULT_HOST_RELEASES_URL };
+
 import { createGateway } from "../../src/gateway/gateway.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -207,10 +213,10 @@ describe("the compute plane on the gateway", () => {
 		expect(computeConfig({ KANTEL_COMPUTE: "experimental" })).toEqual({});
 		expect(computeConfig({ KANTEL_COMPUTE: "", KANTEL_PUBLIC_URL: "", KANTEL_COMPUTE_PUBLIC_URL: "" })).toEqual({});
 		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" })).toEqual({
-			hosts: { publicUrl: "http://127.0.0.1:58090", images: DEFAULT_HOST_IMAGES },
+			hosts: { publicUrl: "http://127.0.0.1:58090", images: DEFAULT_HOST_IMAGES, ...RELEASES },
 		});
 		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual({
-			hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES },
+			hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES, ...RELEASES },
 		});
 		// The stand-in on request, with an address or without.
 		expect(computeConfig({ KANTEL_COMPUTE_BACKEND: "stub", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual(
@@ -227,7 +233,7 @@ describe("the compute plane on the gateway", () => {
 					KANTEL_PUBLIC_URL: "https://kantel.example.com/",
 					KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
 				}),
-			).toEqual({ hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES } });
+			).toEqual({ hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES, ...RELEASES } });
 			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/KANTEL_COMPUTE_POOLS is ignored/));
 		} finally {
 			warn.mockRestore();
@@ -254,6 +260,18 @@ describe("the compute plane on the gateway", () => {
 			computeConfig({ ...env, KANTEL_HOST_VERSION: "0.2.0", KANTEL_HOST_UPDATE_URL: "https://dl.example/{version}" })
 				?.hosts?.updateUrl,
 		).toBe("https://dl.example/{version}");
+	});
+
+	it("reads the latest release to flag out-of-date hosts, unless KANTEL_HOST_VERSION names one or it's off", () => {
+		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
+		expect(computeConfig(env)?.hosts?.releasesUrl).toBe(DEFAULT_HOST_RELEASES_URL);
+		expect(computeConfig({ ...env, KANTEL_HOST_RELEASES: "OFF" })?.hosts?.releasesUrl).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_HOST_RELEASES: "https://dl.example/latest.json" })?.hosts?.releasesUrl).toBe(
+			"https://dl.example/latest.json",
+		);
+		// A version the operator set is the one hosts run: the release isn't read.
+		expect(computeConfig({ ...env, KANTEL_HOST_VERSION: "0.2.0" })?.hosts?.releasesUrl).toBeUndefined();
+		expect(() => computeConfig({ ...env, KANTEL_HOST_RELEASES: "latest.json" })).toThrow(/KANTEL_HOST_RELEASES/);
 	});
 
 	it("points hosts at Kantel's published images unless KANTEL_COMPUTE_IMAGES says otherwise", () => {

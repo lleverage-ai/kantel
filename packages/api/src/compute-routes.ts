@@ -1920,6 +1920,27 @@ export const revokeHost = defineRoute({
 	errors: [...readErrors, "unavailable"],
 });
 
+export const updateHostAgent = defineRoute({
+	operationId: "updateHostAgent",
+	method: "POST",
+	path: "/admin/hosts/{hostId}/update",
+	tag: "hosts",
+	summary: "Update a host's agent",
+	description: describe(
+		"Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it",
+		"fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its",
+		"sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds",
+		"it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on",
+		"it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest",
+		"release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine,",
+		"with `sudo kantel-host update`.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The host, updating.", schema: Host },
+	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
+});
+
 export const createHostJoinToken = defineRoute({
 	operationId: "createHostJoinToken",
 	method: "POST",
@@ -1992,6 +2013,7 @@ export const hostRoutes = {
 	getHost,
 	getHostUsage,
 	updateHost,
+	updateHostAgent,
 	revokeHost,
 	getPublicUrl,
 	setPublicUrl,
@@ -2102,6 +2124,28 @@ export const updateAccountHost = defineRoute({
 	body: UpdateHostBody,
 	answer: { status: 200, description: "The host.", schema: Host },
 	errors: [...changeErrors, "not_supported"],
+});
+
+export const updateAccountHostAgent = defineRoute({
+	operationId: "updateAccountHostAgent",
+	method: "POST",
+	path: "/hosts/{hostId}/update",
+	tag: "account-hosts",
+	summary: "Update the agent of one of an account's hosts",
+	description: describe(
+		"Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it",
+		"fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its",
+		"sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds",
+		"it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on",
+		"it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest",
+		"release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine,",
+		"with `sudo kantel-host update`.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The host, updating.", schema: Host },
+	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
 });
 
 export const removeAccountHost = defineRoute({
@@ -2264,6 +2308,7 @@ export const accountHostRoutes = {
 	getAccountHost,
 	getAccountHostUsage,
 	updateAccountHost,
+	updateAccountHostAgent,
 	removeAccountHost,
 } as const;
 

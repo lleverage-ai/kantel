@@ -54,7 +54,7 @@ Read these before relying on Kantel for real work.
 
 - **A sandbox on a host joined to app.kantel.dev.** Joining and sandboxes on account hosts have run on local installs and under `wrangler dev`, not recorded end to end on the hosted service.
 - **SSH and public ports on app.kantel.dev.** Their live checks were planned after deploy, and no result is recorded.
-- **Host updates.** `kantel-host update`, automatic updates, `revoke`, `uninstall` and the systemd service on a bare-metal host have not been run. Running sandboxes keeping going through an update is untested.
+- **Host updates.** `kantel-host update`, automatic updates, the console's **Update to** (tested against a host stand-in only), `revoke`, `uninstall` and the systemd service on a bare-metal host have not been run. Running sandboxes keeping going through an update is untested.
 - **arm64 hosts.** The arm64 `kantel-host` and images are boot-checked in emulation only, never on arm64 hardware.
 - **Hosts without KVM.** The `--isolate-runtime native` path hasn't been run, and there's no script yet to put `workerd` in a host's images.
 - **macOS hosts.** Not built. A host is Linux only.

@@ -9657,6 +9657,107 @@
 				}
 			}
 		},
+		"/admin/hosts/{hostId}/update": {
+			"post": {
+				"operationId": "updateHostAgent",
+				"summary": "Update a host's agent",
+				"description": "Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host, updating.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/public-url": {
 			"get": {
 				"operationId": "getPublicUrl",
@@ -10267,6 +10368,107 @@
 					},
 					"501": {
 						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/hosts/{hostId}/update": {
+			"post": {
+				"operationId": "updateAccountHostAgent",
+				"summary": "Update the agent of one of an account's hosts",
+				"description": "Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host, updating.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -13607,7 +13809,14 @@
 					},
 					"latestVersion": {
 						"type": "string",
-						"description": "The newest version the control plane offers."
+						"description": "The version hosts should run: the deployment's `KANTEL_HOST_VERSION` when it sets one, otherwise Kantel's latest release. Absent when neither is known."
+					},
+					"updateAvailable": {
+						"type": "boolean",
+						"description": "True when it runs an older version than `latestVersion` (any other, when the deployment sets `KANTEL_HOST_VERSION`), so it can be updated. Absent otherwise."
+					},
+					"updating": {
+						"$ref": "#/components/schemas/HostUpdate"
 					},
 					"os": {
 						"type": "string"
@@ -13762,6 +13971,22 @@
 				],
 				"title": "HostState",
 				"description": "`online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked."
+			},
+			"HostUpdate": {
+				"type": "object",
+				"required": ["version", "requestedAt"],
+				"properties": {
+					"version": {
+						"type": "string",
+						"description": "The version it's moving to."
+					},
+					"requestedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "HostUpdate",
+				"description": "An update asked for in the last 10 minutes that the host hasn't connected on yet. Absent once it has, or after 10 minutes, when it didn't take."
 			},
 			"HostUsage": {
 				"type": "object",

@@ -647,6 +647,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					id: host.id,
 					name: host.name,
 					...(host.version === undefined ? {} : { version: host.version }),
+					...(host.latestVersion === undefined ? {} : { latestVersion: host.latestVersion }),
+					...(host.updateAvailable === true ? { updateAvailable: true } : {}),
 					...(host.os === undefined ? {} : { os: host.os }),
 					...(host.arch === undefined ? {} : { arch: host.arch }),
 					tiers: [...host.tiers],
@@ -1164,6 +1166,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			await hosts.revoke(hostId).catch((error: unknown) => {
 				if (!(error instanceof KantelError && error.code === "not_found")) throw error;
 			});
+		},
+		async updateHostAgent(hostId) {
+			return hosts.updateAgent(hostId);
 		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {

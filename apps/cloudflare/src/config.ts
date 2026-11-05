@@ -4,6 +4,7 @@
  */
 import { DEFAULT_BASE_IMAGE_INDEX } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
+import { DEFAULT_HOST_RELEASES_URL } from "@kantel/hosts/releases";
 import { type OAuthClients, oauthClientsFromEnv } from "@kantel/identity/oauth";
 
 export interface GatewayVars {
@@ -30,6 +31,11 @@ export interface GatewayVars {
 	 * the Worker changes.
 	 */
 	readonly KANTEL_ACCOUNT_HOSTS?: string;
+	/**
+	 * With account hosts: where the latest kantel-host release is read, hourly, to say which hosts are out of date and
+	 * update one from the console. Default Kantel's latest GitHub Release; `off` reads none.
+	 */
+	readonly KANTEL_HOST_RELEASES?: string;
 	/**
 	 * Image patching (experimental): `experimental` reads the base image index CI publishes, so sandboxes and saved
 	 * snapshots say how far behind their base is, `restart-on-latest` and the admin's image list are served, and account
@@ -102,8 +108,8 @@ export interface GatewayConfig {
 	readonly adminName?: string;
 	/** The domain port URLs are under, from KANTEL_COMPUTE_PORTS_DOMAIN. Absent, `HOSTED_PORTS_DOMAIN`. */
 	readonly portsDomain?: string;
-	/** Account hosts, when on: where hosts reach this Worker. */
-	readonly accountHosts?: { readonly publicUrl: string };
+	/** Account hosts, when on: where hosts reach this Worker, and where the latest kantel-host is read (absent, off). */
+	readonly accountHosts?: { readonly publicUrl: string; readonly releasesUrl?: string };
 	/** Image patching, when on: where the base image index is read. */
 	readonly imagePatching?: { readonly indexUrl: string };
 	/** Templates, from KANTEL_TEMPLATES=experimental. Absent, off. */
@@ -226,7 +232,12 @@ function accountHostsConfig(vars: GatewayVars): GatewayConfig["accountHosts"] {
 			"KANTEL_ACCOUNT_HOSTS needs KANTEL_PUBLIC_URL: the origin hosts reach this Worker at, such as https://kantel.example.com",
 		);
 	}
-	return { publicUrl: new URL(publicUrl).origin };
+	const releases = trimmed(vars.KANTEL_HOST_RELEASES) || DEFAULT_HOST_RELEASES_URL;
+	if (releases.toLowerCase() === "off") return { publicUrl: new URL(publicUrl).origin };
+	if (!/^https?:\/\/[^/\s]+/i.test(releases)) {
+		throw new KantelError("invalid", "KANTEL_HOST_RELEASES is an http(s) URL, or `off`");
+	}
+	return { publicUrl: new URL(publicUrl).origin, releasesUrl: releases };
 }
 
 const PUBLIC_ORIGIN = /^https?:\/\/[^/?#\s]+\/?$/i;
