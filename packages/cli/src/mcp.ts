@@ -343,7 +343,8 @@ const PLACEMENT_HINTS: { readonly [reason: string]: string } = {
 	no_host_enforces_egress: "No host that could take it enforces egress grants. Tell the user to upgrade kantel-host.",
 	no_host_for_template: "No host runs this template. Create the sandbox without it, or tell the user.",
 	insufficient_capacity: "The hosts are full now. Try again in a minute, or ask for a smaller size.",
-	host_unavailable: "The host this sandbox is on can't take it now. Try again later, or create a new sandbox.",
+	host_unavailable:
+		"The host this sandbox is on, or was asked to go on, can't take it now. Try again later, or create a new sandbox.",
 	account_limit: "The account runs as many sandboxes as it may. Stop or delete one first.",
 };
 
@@ -376,6 +377,10 @@ const TOOLS: readonly Tool[] = [
 			},
 			labels: strings("Labels to find it by, such as { task: 'PROJ-12' }."),
 			env: strings("Environment variables every command sees. Not for secrets: anyone who may exec sees them."),
+			host: {
+				type: "string",
+				description: "Run it on this host, its name or ID. Only when the user asks for a host; default: Kantel picks.",
+			},
 		}),
 		annotations: { title: "Create a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
 		async call(args, { client, account, signal }) {
@@ -391,6 +396,7 @@ const TOOLS: readonly Tool[] = [
 					idleStopMinutes: optionalNumber(args, "idleStopMinutes"),
 					labels: optionalStrings(args, "labels"),
 					env: optionalStrings(args, "env"),
+					host: optionalText(args, "host"),
 					wait: true,
 				},
 				{ signal },

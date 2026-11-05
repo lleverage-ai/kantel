@@ -476,14 +476,20 @@ const stateOf = (sandbox: Sandbox): string => {
 	return sandbox.reason === undefined ? state : `${state}: ${sandbox.reason}`;
 };
 
+/** The host a sandbox is on, by name, as far as the caller is shown it. */
+const hostOf = (sandbox: Sandbox): string | undefined => sandbox.hostName ?? sandbox.hostId;
+
 function sandboxTable(sandboxes: readonly Sandbox[]): string {
+	// A host column only when the caller is shown any: hosts it can't see would leave it empty.
+	const hosts = sandboxes.some((sandbox) => hostOf(sandbox) !== undefined);
 	return table(
-		["ID", "NAME", "TYPE", "STATE", "CREATED", "STOPS"],
+		["ID", "NAME", "TYPE", "STATE", ...(hosts ? ["HOST"] : []), "CREATED", "STOPS"],
 		sandboxes.map((sandbox) => [
 			sandbox.id,
 			sandbox.name,
 			kindOf(sandbox),
 			sandbox.state,
+			...(hosts ? [hostOf(sandbox) ?? ""] : []),
 			ago(sandbox.createdAt),
 			sandbox.stopsAt === undefined ? "" : until(sandbox.stopsAt),
 		]),
@@ -515,6 +521,12 @@ function describeSandbox(sandbox: Sandbox): string {
 		["image", sandbox.image],
 		["state", stateOf(sandbox)],
 		["health", sandbox.health === "degraded" ? "degraded" : undefined],
+		[
+			"host",
+			sandbox.hostName === undefined || sandbox.hostId === undefined
+				? sandbox.hostId
+				: `${sandbox.hostName} (${sandbox.hostId})`,
+		],
 		["visibility", sandbox.visibility],
 		["labels", labels.join(", ")],
 		["auto-stop", sandbox.stopsAt === undefined ? autoStop : `${autoStop} (stops ${until(sandbox.stopsAt)})`],
@@ -1831,6 +1843,17 @@ const SECTIONS: readonly Section[] = [
 						value: "<port[:public]>",
 						description: "Give this port an HTTPS URL once it runs; repeat it",
 					},
+					on: {
+						type: "string",
+						value: "<host>",
+						description: "Run it on this host, its name or ID (kantel hosts list shows them)",
+					},
+					"host-label": {
+						type: "string",
+						multiple: true,
+						value: "<k=v>",
+						description: "Run it only on a host with this label; repeat for more",
+					},
 					"no-wait": noWait,
 				},
 				details:
@@ -1840,7 +1863,9 @@ const SECTIONS: readonly Section[] = [
 					"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
 					"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
 					"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
-					"page saying it is stopped and why: it doesn't wake it.",
+					"page saying it is stopped and why: it doesn't wake it.\n\n" +
+					"--on puts it on one host: one of the account's own hosts, or for a super-admin any host. It stays there,\n" +
+					"as every sandbox stays on the host it was placed on. Without it, Kantel picks the host.",
 				async run(ctx) {
 					const hosts = ctx.list("host").map(hostedPort);
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
@@ -1865,6 +1890,8 @@ const SECTIONS: readonly Section[] = [
 							envs.filter((item) => item.includes("=")),
 							"--env",
 						),
+						host: ctx.string("on"),
+						hostLabels: pairs(ctx.list("host-label"), "--host-label"),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
@@ -1891,6 +1918,7 @@ const SECTIONS: readonly Section[] = [
 				flags: {
 					all: { type: "boolean", description: "Include stopped, paused and errored ones" },
 					label: { type: "string", multiple: true, value: "<k=v>", description: "Only those with this label" },
+					on: { type: "string", value: "<host>", description: "Only those on this host, its name or ID" },
 					cursor: cursorFlag,
 				},
 				async run(ctx) {
@@ -1900,6 +1928,7 @@ const SECTIONS: readonly Section[] = [
 						account: config.account,
 						all: all ? true : undefined,
 						label: pairs(ctx.list("label"), "--label"),
+						host: ctx.string("on"),
 						cursor: ctx.string("cursor"),
 					});
 					ctx.emit(page, () => {

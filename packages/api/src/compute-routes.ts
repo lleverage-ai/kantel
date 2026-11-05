@@ -109,6 +109,7 @@ import {
 	SandboxPage,
 	SandboxPath,
 	SandboxShapes,
+	SandboxShapesQuery,
 	SandboxUsage,
 	SaveSnapshotBody,
 	SetEnvironmentFileBody,
@@ -399,12 +400,12 @@ export const getSandboxShapes = defineRoute({
 	summary: "Get the shapes a sandbox may be",
 	description: describe(
 		"What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and",
-		"memory, the hosts' presets and what an hour costs.",
+		"memory, the hosts' presets and what an hour costs. With `host`, from that host alone.",
 		scope("sandboxes:read"),
 	),
-	query: AccountScopedQuery,
+	query: SandboxShapesQuery,
 	answer: { status: 200, description: "The shapes.", schema: SandboxShapes },
-	errors: ["invalid", "forbidden"],
+	errors: ["invalid", "forbidden", "not_found"],
 });
 
 export const createSandbox = defineRoute({

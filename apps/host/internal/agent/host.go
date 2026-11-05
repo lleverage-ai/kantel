@@ -762,11 +762,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		t, err := h.tierOf(p.SandboxID)
-		if err != nil {
-			return nil, err
-		}
-		return t.Get(p.SandboxID)
+		return h.Sandbox(p.SandboxID)
 	case proto.MethodList:
 		return h.List(), nil
 	case proto.MethodMountsRefresh:

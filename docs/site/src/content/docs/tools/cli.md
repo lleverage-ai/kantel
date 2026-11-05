@@ -103,7 +103,7 @@ kantel stop sbx_g2yy5jhyqr
 kantel resume sbx_g2yy5jhyqr
 ```
 
-`kantel list` shows your running sandboxes (`--all` for the stopped ones too), `kantel info <id>` one of them, `kantel fork <id> --count 3` makes copies, and `kantel delete <id> --yes` erases one for good.
+`kantel list` shows your running sandboxes (`--all` for the stopped ones too, `--on <host>` for those on one host), `kantel info <id>` one of them, `kantel fork <id> --count 3` makes copies, and `kantel delete <id> --yes` erases one for good.
 
 ## Running commands
 

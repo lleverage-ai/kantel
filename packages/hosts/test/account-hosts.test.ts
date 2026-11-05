@@ -189,6 +189,66 @@ describe("Account hosts", () => {
 		expect((await failure(bob.getAccountHost(host.hostId))).code).toBe("not_found");
 	});
 
+	it("puts a sandbox on the host its create names, and shows its host to whoever may know that host", async () => {
+		const { tom, ann, root, join } = setup();
+		const shared = await join((await root.createHostJoinToken({ name: "shared" })).token);
+		const first = await join((await tom.createAccountJoinToken({ name: "tom-one" })).token);
+		const second = await join((await tom.createAccountJoinToken({ name: "tom-two" })).token);
+
+		// By name and by ID, each lands where it was told to, whichever host placement would have picked.
+		for (const [ref, host] of [
+			["tom-one", first],
+			["tom-two", second],
+			[first.hostId, first],
+			[second.hostId, second],
+		] as const) {
+			const sandbox = await tom.createSandbox({ type: "microvm", host: ref, wait: true });
+			expect(host.sandboxes.has(sandbox.id)).toBe(true);
+			// Its own account's host: shown to Tom, with its name.
+			expect(await tom.getSandbox(sandbox.id)).toMatchObject({
+				hostId: host.hostId,
+				hostName: host === first ? "tom-one" : "tom-two",
+			});
+		}
+		// Listed by host, by name or ID.
+		const onFirst = (await tom.listSandboxes({ host: "tom-one" })).items;
+		expect(onFirst).toHaveLength(2);
+		expect(onFirst.every((sandbox) => sandbox.hostId === first.hostId && sandbox.hostName === "tom-one")).toBe(true);
+		expect((await tom.listSandboxes({ host: second.hostId })).items).toHaveLength(2);
+
+		// A shared host, or another account's, isn't Tom's to name: not_found, so it isn't given away.
+		expect((await failure(tom.createSandbox({ type: "microvm", host: shared.hostId }))).code).toBe("not_found");
+		expect((await failure(ann.createSandbox({ type: "microvm", host: first.hostId }))).code).toBe("not_found");
+		expect((await failure(ann.listSandboxes({ host: first.hostId }))).code).toBe("not_found");
+		// Ann's sandbox on the shared host: its host isn't shown to her.
+		const hers = await ann.createSandbox({ type: "microvm", wait: true });
+		expect(shared.sandboxes.has(hers.id)).toBe(true);
+		expect((await ann.getSandbox(hers.id)).hostId).toBeUndefined();
+		expect((await ann.listSandboxes()).items[0]?.hostName).toBeUndefined();
+
+		// The super-admin may name a shared host, and is shown it.
+		const rootOwn = await root.createSandbox({ type: "microvm", host: "shared", wait: true });
+		expect(shared.sandboxes.has(rootOwn.id)).toBe(true);
+		expect(await root.getSandbox(rootOwn.id)).toMatchObject({ hostId: shared.hostId, hostName: "shared" });
+
+		// The shapes a sandbox pinned to a host may be come from that host; one Tom may not name is not_found.
+		expect((await tom.getSandboxShapes({ host: "tom-one" })).microvm).toBeDefined();
+		expect((await failure(tom.getSandboxShapes({ host: shared.hostId }))).code).toBe("not_found");
+		expect((await root.getSandboxShapes({ host: "shared" })).microvm).toBeDefined();
+
+		// A named host that can't take it now is refused as that host, not placed elsewhere.
+		await tom.updateAccountHost(first.hostId, { draining: true });
+		const refused = await failure(tom.createSandbox({ type: "microvm", host: "tom-one" }));
+		expect(refused).toMatchObject({ code: "unavailable", reason: "host_unavailable" });
+		expect(refused.message).toContain("tom-one");
+
+		// Two hosts of one name: the name is ambiguous, the ID isn't.
+		await tom.updateAccountHost(second.hostId, { name: "tom-one" });
+		expect((await failure(tom.createSandbox({ type: "microvm", host: "tom-one" }))).code).toBe("invalid");
+		const byId = await tom.createSandbox({ type: "microvm", host: second.hostId, wait: true });
+		expect(second.sandboxes.has(byId.id)).toBe(true);
+	});
+
 	it("never places a sandbox with another owner on an account's host, whatever hosts the caller names", async () => {
 		const { service, tom, join } = setup();
 		const own = await join((await tom.createAccountJoinToken({})).token);

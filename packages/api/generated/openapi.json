@@ -1327,6 +1327,15 @@
 						}
 					},
 					{
+						"name": "host",
+						"in": "query",
+						"required": false,
+						"description": "Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
 						"name": "limit",
 						"in": "query",
 						"required": false,
@@ -1526,7 +1535,7 @@
 			"get": {
 				"operationId": "getSandboxShapes",
 				"summary": "Get the shapes a sandbox may be",
-				"description": "What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`.",
+				"description": "What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. With `host`, from that host alone. A key needs `sandboxes:read`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -1534,6 +1543,15 @@
 						"in": "query",
 						"required": false,
 						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "host",
+						"in": "query",
+						"required": false,
+						"description": "The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use.",
 						"schema": {
 							"type": "string"
 						}
@@ -1572,6 +1590,16 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -12297,6 +12325,11 @@
 						},
 						"description": "Place it only on a host with each label, such as `{ site: \"home\" }`."
 					},
+					"host": {
+						"type": "string",
+						"minLength": 1,
+						"description": "Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks."
+					},
 					"mounts": {
 						"type": "array",
 						"items": {
@@ -14744,7 +14777,11 @@
 					},
 					"hostId": {
 						"type": "string",
-						"description": "The host it runs on; only a super-admin is shown it."
+						"description": "The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else."
+					},
+					"hostName": {
+						"type": "string",
+						"description": "That host's name, with `hostId`."
 					},
 					"base": {
 						"$ref": "#/components/schemas/SandboxBase"

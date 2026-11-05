@@ -5,6 +5,7 @@
 //	kantel-host install --dry-run --url … --token …                     what install would do, changing nothing
 //	kantel-host doctor                                                  what this machine can run, and what's missing
 //	kantel-host status                                                  the service, the connection and the sandboxes
+//	kantel-host sandboxes [show <id>] [--json]                          the sandboxes the service holds (as root)
 //	kantel-host update [--version v]                                    move to another version now
 //	kantel-host run                                                     the daemon (systemd runs this)
 //	kantel-host bench                                                   measure create, resume and fork on this host
@@ -53,6 +54,8 @@ func main() {
 		err = doctor(args)
 	case "status":
 		err = status(args)
+	case "sandboxes":
+		err = sandboxesCmd(args)
 	case "update":
 		err = updateCmd(args)
 	case "uninstall":
@@ -86,6 +89,10 @@ func usage() {
   plan --url <kantel> --token <kth_…>      what install would do, with install's options: always a dry run
   doctor                                    check what this machine can run (exits 1 unless the required checks pass)
   status                                    the service, its connection and its sandboxes
+  sandboxes [--json]                        the sandboxes the service holds, from its control socket (as root)
+  sandboxes show <id> [--json]              one of them in full
+                                            (read-only: stop or delete a sandbox through Kantel, with
+                                            kantel sandbox stop or the console, which keep its record)
   update [--version <v>]                    update now (the service also updates itself when Kantel asks)
   uninstall [--purge]                       stop and remove the service (--purge: sandboxes and images too)
   bench                                     measure sandbox create, resume and fork on this machine
@@ -101,6 +108,7 @@ func run(args []string) error {
 	configPath := fs.String("config", defaultConfigPath, "config file")
 	debug := fs.Bool("debug", false, "debug logging")
 	local := fs.String("local", "", "also serve the host's calls over HTTP on this loopback address (tests; no auth)")
+	controlSocket := fs.String("control-socket", "", `the read-only control socket for kantel-host sandboxes and status (default: the config's; "off": none)`)
 	_ = fs.Parse(args)
 	level := slog.LevelInfo
 	if *debug {
@@ -123,6 +131,18 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	log.Info("kantel-host started", "version", version, "tiers", host.Tiers(), "controlPlane", cfg.ControlPlane)
+	if *controlSocket != "" {
+		cfg.ControlSocket = *controlSocket
+	}
+	if cfg.ControlSocket != "off" {
+		// Without it the host still runs: only the operator's view of it is missing.
+		if stopControl, err := agent.ServeControl(cfg.ControlSocket, host, log); err != nil {
+			log.Error("control socket: kantel-host sandboxes won't answer", "path", cfg.ControlSocket, "error", err)
+		} else {
+			defer stopControl()
+			log.Info("control socket", "path", cfg.ControlSocket)
+		}
+	}
 	if *local != "" {
 		if ip, _, err := net.SplitHostPort(*local); err != nil || !net.ParseIP(ip).IsLoopback() {
 			return errors.New("--local must be a loopback address, such as 127.0.0.1:7070")
@@ -238,7 +258,22 @@ func status(args []string) error {
 	fmt.Printf("host          %s\n", orNone(cfg.HostID))
 	out, _ := runOutput("systemctl", "is-active", "kantel-host")
 	fmt.Printf("service       %s\n", orNone(strings.TrimSpace(out)))
+	fmt.Printf("sandboxes     %s\n", sandboxesLine(cfg))
 	return nil
+}
+
+// sandboxesLine is status's count of the service's sandboxes by state, or why there isn't one.
+func sandboxesLine(cfg agent.Config) string {
+	if cfg.ControlSocket == "off" {
+		return "unknown: the control socket is off"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	list, err := controlClient{path: cfg.ControlSocket}.list(ctx)
+	if err != nil {
+		return "unknown: " + err.Error()
+	}
+	return stateCounts(list)
 }
 
 func orNone(s string) string {
