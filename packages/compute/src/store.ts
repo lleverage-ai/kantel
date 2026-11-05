@@ -199,7 +199,13 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
 };
 
-export type StoredCommand = computeSchema.Command & { readonly accountId: string };
+export type StoredCommand = computeSchema.Command & {
+	readonly accountId: string;
+	/** Run detached: its result can be fetched from the backend (`commandResult`) by any gateway. */
+	readonly detached?: boolean;
+	/** Killed, and its kill not yet taken by its backend: a later kill sends it again. */
+	readonly killPending?: boolean;
+};
 
 /**
  * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root

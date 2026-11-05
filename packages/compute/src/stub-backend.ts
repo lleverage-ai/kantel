@@ -260,6 +260,9 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const machines = new Map<string, Machine>();
 	/** Sandboxes a create is making now (booting, restoring, running a template's setup). */
 	const creating = new Set<string>();
+	/** The commands running now with an ID, by sandbox and ID: what ends each (`killCommand`). */
+	const killers = new Map<string, () => void>();
+	const commandKey = (sandboxId: string, commandId: string) => `${sandboxId}\u0000${commandId}`;
 	const snapshots = new Map<string, Tree>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
@@ -513,15 +516,18 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 				);
 			}
 			const signal = request.signal;
-			if (signal !== undefined) {
+			// A stub's command runs in this process, so it ends with its wait (its signal) as with a kill.
+			const key = request.commandId === undefined ? undefined : commandKey(sandboxId, request.commandId);
+			if (signal !== undefined || key !== undefined) {
 				races.push(
 					new Promise<ExecResult>((resolve) => {
 						onAbort = () => {
 							controller.abort();
 							resolve({ exitCode: 137, stdout: "", stderr: "killed\n", timedOut: false });
 						};
-						if (signal.aborted) onAbort();
-						else signal.addEventListener("abort", onAbort, { once: true });
+						if (key !== undefined) killers.set(key, onAbort);
+						if (signal?.aborted) onAbort();
+						else signal?.addEventListener("abort", onAbort, { once: true });
 					}),
 				);
 			}
@@ -530,7 +536,12 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			} finally {
 				if (timer !== undefined) clearTimeout(timer);
 				if (signal !== undefined && onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+				if (key !== undefined && killers.get(key) === onAbort) killers.delete(key);
 			}
+		},
+
+		async killCommand(sandboxId, commandId) {
+			killers.get(commandKey(sandboxId, commandId))?.();
 		},
 
 		async readFile(sandboxId, path, range) {

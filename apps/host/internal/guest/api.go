@@ -49,6 +49,10 @@ type ExecRequest struct {
 	Detached bool `json:"detached,omitempty"`
 	// MaxOutputBytes caps each of stdout and stderr in a non-streamed answer. Default 1 MiB.
 	MaxOutputBytes int `json:"maxOutputBytes,omitempty"`
+	// ID names the command (Kantel's command ID): while it runs, POST /exec/{id}/kill stops it and its process group.
+	// POST /exec/start needs one, and keeps its result for GET /exec/{id} once it ends. A guest from before IDs
+	// ignores it.
+	ID string `json:"id,omitempty"`
 	// ProxyUser, when set, replaces the user name in the proxy URLs of this command's environment, so the egress
 	// proxy can tell this command's requests from the rest of the sandbox's (advisory; see the proxy notes).
 	ProxyUser string `json:"proxyUser,omitempty"`

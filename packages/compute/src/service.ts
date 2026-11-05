@@ -50,18 +50,20 @@ import {
 	requireScope,
 	roleIn,
 } from "./auth.ts";
-import type {
-	BackendCapabilities,
-	BackendEgress,
-	BackendEgressGrant,
-	BackendFileEntry,
-	BackendHost,
-	BackendMountStatus,
-	BackendSize,
-	BootOptions,
-	Placement,
-	SandboxBackend,
-	SandboxTemplateBoot,
+import {
+	type BackendCapabilities,
+	type BackendEgress,
+	type BackendEgressGrant,
+	type BackendFileEntry,
+	type BackendHost,
+	type BackendMountStatus,
+	type BackendSize,
+	type BootOptions,
+	type ExecResult,
+	isDetachedWaitEnded,
+	type Placement,
+	type SandboxBackend,
+	type SandboxTemplateBoot,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
@@ -527,6 +529,10 @@ export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_OUTPUT_CHARS = 1024 * 1024;
 /** A command's default time limit. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
+/** How long after its start a detached command its backend doesn't know is taken as lost, not as not yet started. */
+const LOST_COMMAND_MS = 60_000;
+/** The longest a stop or delete waits to bring in the ends of a sandbox's detached commands no gateway here follows. */
+const RECONCILE_MS = 5_000;
 /** How many of each base image's versions the admin list answers, newest first. */
 export const BASE_IMAGE_VERSIONS_LISTED = 10;
 /** The routes whose answers carry a sandbox's or snapshot's `base`, which read the base image index first. */
@@ -1473,7 +1479,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** Each sandbox's queue of lifecycle work; settled promises, so a failure doesn't stop the next. */
 	const pending = new Map<string, Promise<void>>();
-	/** Detached commands and their kill switches. */
+	/** The commands this gateway is waiting for, and what ends each wait. */
 	const runningCommands = new Map<string, AbortController>();
 	const background = new Set<Promise<unknown>>();
 	/** Idempotent calls working on this gateway, by their key's ID, with their request's fingerprint. */
@@ -2891,13 +2897,137 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await backend.deleteSnapshot(ref).catch(() => undefined);
 	}
 
-	/** Marks a sandbox's running commands killed, and kills the detached ones. */
+	/** Records a running command's end; one no longer `running` (a kill or a stop landed first) is kept as it is. */
+	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
+		const stdout = truncate(result.stdout);
+		const stderr = truncate(result.stderr);
+		const at = now();
+		const ended = await settleCommand(commandId, (latest) => ({
+			...latest,
+			state: result.timedOut ? "timed_out" : "exited",
+			exitCode: result.exitCode,
+			stdout: stdout.text,
+			stderr: stderr.text,
+			truncated: stdout.truncated || stderr.truncated,
+			endedAt: at,
+			durationMs: at - latest.startedAt,
+		}));
+		return ended ?? (await store.commands.get(commandId));
+	}
+
+	/**
+	 * Moves a command out of `running` with `change`, atomically: `undefined` when it was no longer running (another
+	 * end, a kill or a stop got there first, on any gateway), which is then kept as it is.
+	 */
+	async function settleCommand(
+		commandId: string,
+		change: (running: StoredCommand) => StoredCommand,
+	): Promise<StoredCommand | undefined> {
+		let won = false;
+		const written = await store.commands.update(commandId, (latest) => {
+			won = latest.state === "running";
+			return won ? change(latest) : undefined;
+		});
+		return won ? written : undefined;
+	}
+
+	/**
+	 * A detached command no gateway here is waiting for (the one that started it closed, or is another replica), as its
+	 * backend has it now: ended once the backend says so, and lost once it no longer knows it.
+	 */
+	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
+		if (
+			command.state !== "running" ||
+			command.detached !== true ||
+			runningCommands.has(command.id) ||
+			backend.commandResult === undefined
+		) {
+			return command;
+		}
+		let result: ExecResult | undefined;
+		try {
+			result = await backend.commandResult(command.sandboxId, command.id);
+		} catch (error) {
+			// Not just started (a start the backend hasn't recorded yet reads as unknown too).
+			if (
+				!(error instanceof KantelError && error.code === "not_found") ||
+				now() - command.startedAt < LOST_COMMAND_MS
+			) {
+				return command;
+			}
+			result = {
+				exitCode: 1,
+				stdout: "",
+				stderr:
+					"Kantel lost this command's result: its sandbox's host no longer knows it (it or the sandbox restarted)\n",
+				timedOut: false,
+			};
+		}
+		if (result === undefined) return command;
+		return (await endCommand(command.id, result)) ?? command;
+	}
+
+	/**
+	 * Sends a killed command's kill to its backend (`killCommand`), the record's `killPending` until it is done: the
+	 * backend took it, or can't ever (`not_supported`, an older host). One that failed otherwise (its host out of reach)
+	 * stays pending, its stderr saying so, and the next kill of it, on any gateway, sends it again.
+	 */
+	async function deliverKill(sandboxId: string, command: StoredCommand): Promise<StoredCommand> {
+		if (backend.killCommand === undefined) return command;
+		let failure: unknown;
+		let delivered = false;
+		try {
+			await backend.killCommand(sandboxId, command.id);
+			delivered = true;
+		} catch (error) {
+			failure = error;
+		}
+		const final = delivered || (failure instanceof KantelError && failure.code === "not_supported");
+		const note = delivered
+			? undefined
+			: `Kantel marked this command killed but couldn't stop it, so it may still be running: ${messageOf(failure)}${
+					final ? "" : "; kill it again to retry"
+				}\n`;
+		// Only while it is still pending: once another attempt has delivered it, a late failure changes nothing.
+		const written = await store.commands.update(command.id, (latest) => {
+			if (latest.state !== "killed" || latest.killPending !== true) return undefined;
+			const stderr =
+				note === undefined || latest.stderr.includes(note) ? latest.stderr : truncate(`${latest.stderr}${note}`).text;
+			if (!final) return { ...latest, stderr, killPending: true };
+			const { killPending: _, ...done } = latest;
+			return { ...done, stderr };
+		});
+		return written ?? (await store.commands.get(command.id)) ?? command;
+	}
+
+	/**
+	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
+	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
+	 */
 	async function killCommandsOf(sandboxId: string): Promise<void> {
-		for (const command of await store.commands.list({ sandboxId, state: "running" })) {
+		const running = await store.commands.list({ sandboxId, state: "running" });
+		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
+		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
+		// time is marked killed.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const budget = new Promise<undefined>((resolve) => {
+			timer = setTimeout(() => resolve(undefined), RECONCILE_MS);
+		});
+		const reconciled = await Promise.all(
+			running.map(async (listed) => (await Promise.race([fetchedCommand(listed), budget])) ?? listed),
+		);
+		if (timer !== undefined) clearTimeout(timer);
+		for (const command of reconciled) {
+			if (command.state !== "running") continue;
+			const at = now();
+			await settleCommand(command.id, (latest) => ({
+				...latest,
+				state: "killed",
+				endedAt: at,
+				durationMs: at - latest.startedAt,
+			}));
 			runningCommands.get(command.id)?.abort();
 			runningCommands.delete(command.id);
-			const at = now();
-			await store.commands.put({ ...command, state: "killed", endedAt: at, durationMs: at - command.startedAt });
 		}
 	}
 
@@ -5152,44 +5282,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					stderr: "",
 					truncated: false,
 					startedAt: now(),
+					...(detached ? { detached: true } : {}),
 				};
 				await store.commands.put(command);
 				const controller = new AbortController();
 				runningCommands.set(command.id, controller);
-				const finish = async (result: {
-					exitCode: number;
-					stdout: string;
-					stderr: string;
-					timedOut: boolean;
-				}): Promise<StoredCommand> => {
+				const finish = async (result: ExecResult): Promise<StoredCommand> => {
 					runningCommands.delete(command.id);
-					const latest = (await store.commands.get(command.id)) ?? command;
-					if (latest.state !== "running") return latest;
-					const stdout = truncate(result.stdout);
-					const stderr = truncate(result.stderr);
-					const at = now();
-					const ended: StoredCommand = {
-						...latest,
-						state: result.timedOut ? "timed_out" : "exited",
-						exitCode: result.exitCode,
-						stdout: stdout.text,
-						stderr: stderr.text,
-						truncated: stdout.truncated || stderr.truncated,
-						endedAt: at,
-						durationMs: at - latest.startedAt,
-					};
-					await store.commands.put(ended);
-					return ended;
+					return (await endCommand(command.id, result)) ?? command;
 				};
-				const failed = (error: unknown) =>
-					finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
+				const failed = async (error: unknown): Promise<StoredCommand> => {
+					// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
+					// it runs on, and getCommand fetches its end.
+					if (detached && isDetachedWaitEnded(error)) {
+						runningCommands.delete(command.id);
+						return (await store.commands.get(command.id)) ?? command;
+					}
+					return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
+				};
 				const run = backend.exec(current.id, {
 					command: body.command,
 					cwd: command.cwd,
 					env: { ...current.env, ...body.env },
 					stdin: body.stdin,
-					timeoutMs: detached ? undefined : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+					// A detached command has no limit unless the caller gave one.
+					timeoutMs: detached ? body.timeoutMs : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 					signal: controller.signal,
+					commandId: command.id,
+					...(detached ? { detached: true } : {}),
 				});
 				if (detached) {
 					keepGoing(run.then(finish, failed));
@@ -5211,33 +5331,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				query.limit,
 				query.cursor,
 			);
-			return { items: page.items.map(commandView), nextCursor: page.nextCursor };
+			// A detached command no gateway here follows is brought up to date from its backend first, as getCommand does.
+			const items = await Promise.all(page.items.map((command) => fetchedCommand(command)));
+			return { items: items.map(commandView), nextCursor: page.nextCursor };
 		},
 
 		getCommand: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const command = await store.commands.get(params.commandId);
 			if (command === undefined || command.sandboxId !== sandbox.id) throw notFound("command");
-			return commandView(command);
+			return commandView(await fetchedCommand(command));
 		},
 
 		killCommand: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
-			const command = await store.commands.get(params.commandId);
-			if (command === undefined || command.sandboxId !== sandbox.id) throw notFound("command");
+			const stored = await store.commands.get(params.commandId);
+			if (stored === undefined || stored.sandboxId !== sandbox.id) throw notFound("command");
+			// Killed before, but its kill never reached its backend: sent again.
+			if (stored.state === "killed" && stored.killPending === true) {
+				return commandView(await deliverKill(sandbox.id, stored));
+			}
+			// One that ended where no gateway here saw it is answered with its end, not killed.
+			const command = await fetchedCommand(stored);
 			if (command.state !== "running") return commandView(command);
-			runningCommands.get(command.id)?.abort();
-			runningCommands.delete(command.id);
 			const at = now();
-			const killed: StoredCommand = {
-				...command,
+			// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
+			// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
+			// kill is pending from then until its backend takes it, so a gateway that dies before sending it, or a send
+			// that fails, leaves it for the next kill to send.
+			const killed = await settleCommand(command.id, (latest) => ({
+				...latest,
 				state: "killed",
 				exitCode: 137,
 				endedAt: at,
-				durationMs: at - command.startedAt,
-			};
-			await store.commands.put(killed);
-			return commandView(killed);
+				durationMs: at - latest.startedAt,
+				...(backend.killCommand === undefined ? {} : { killPending: true }),
+			}));
+			if (killed === undefined) return commandView((await store.commands.get(command.id)) ?? command);
+			runningCommands.get(command.id)?.abort();
+			runningCommands.delete(command.id);
+			// Its process, which the gateway that started it may not be: the kill goes to its host whichever it is.
+			return commandView(await deliverKill(sandbox.id, killed));
 		},
 
 		readFile: async (principal, { params, query }) => {

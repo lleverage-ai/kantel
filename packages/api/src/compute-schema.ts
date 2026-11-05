@@ -1136,10 +1136,18 @@ export const RunCommandBody = Type.Object(
 		env: Type.Optional(Type.Record(Type.String(), Type.String())),
 		stdin: Type.Optional(Type.String()),
 		timeoutMs: Type.Optional(
-			Type.Integer({ minimum: 1, maximum: 600_000, description: "Default 30 000; at most 600 000 (10 minutes)." }),
+			Type.Integer({
+				minimum: 1,
+				maximum: 600_000,
+				description:
+					"Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one.",
+			}),
 		),
 		detached: Type.Optional(
-			Type.Boolean({ description: "Start it and answer at once, with no time limit; read it back by its ID." }),
+			Type.Boolean({
+				description:
+					"Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID.",
+			}),
 		),
 	},
 	{ title: "RunCommandBody" },
@@ -1158,7 +1166,10 @@ export const Command = Type.Object(
 		cwd: Type.Optional(Type.String()),
 		state: CommandState,
 		exitCode: Type.Optional(Type.Integer()),
-		stdout: Type.String({ description: "Its output so far, up to 1 MiB; `truncated` says if there was more." }),
+		stdout: Type.String({
+			description:
+				"Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more.",
+		}),
 		stderr: Type.String(),
 		truncated: Type.Boolean(),
 		startedAt: Timestamp,

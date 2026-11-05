@@ -2708,7 +2708,7 @@
 			"post": {
 				"operationId": "runCommand",
 				"summary": "Run a command",
-				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`.",
+				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless `timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -2919,7 +2919,7 @@
 			"get": {
 				"operationId": "getCommand",
 				"summary": "Get a command",
-				"description": "Its state and its output so far. A key needs `exec`.",
+				"description": "Its state, and once it has ended its exit code and output. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -2997,7 +2997,7 @@
 			"delete": {
 				"operationId": "killCommand",
 				"summary": "Kill a command",
-				"description": "Ends a running command; one that has ended is answered as it is. A key needs `exec`.",
+				"description": "Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -11890,7 +11890,7 @@
 					},
 					"stdout": {
 						"type": "string",
-						"description": "Its output so far, up to 1 MiB; `truncated` says if there was more."
+						"description": "Its output once it has ended, up to 1 MiB (a detached command's is empty while it runs); `truncated` says if there was more."
 					},
 					"stderr": {
 						"type": "string"
@@ -14548,11 +14548,11 @@
 						"type": "integer",
 						"minimum": 1,
 						"maximum": 600000,
-						"description": "Default 30 000; at most 600 000 (10 minutes)."
+						"description": "Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one."
 					},
 					"detached": {
 						"type": "boolean",
-						"description": "Start it and answer at once, with no time limit; read it back by its ID."
+						"description": "Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID."
 					}
 				},
 				"title": "RunCommandBody"

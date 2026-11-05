@@ -88,6 +88,10 @@ export interface CallOptions {
 	readonly timeoutMs?: number;
 	/** Progress the host sends on the call (a streamed command's output). */
 	readonly onEvent?: (event: HostEvent) => void;
+	/**
+	 * Ends the wait for the answer, which is then dropped; the host is told nothing. What stops a command is its own call,
+	 * `sandbox.exec.kill` (`HOST_FEATURES.execControl`).
+	 */
 	readonly signal?: AbortSignal;
 }
 
@@ -697,12 +701,31 @@ export function createHostHub(options: HostHubOptions): HostHub {
 					reject(error);
 					return;
 				}
+				// Aborted before it was sent: never sent (its abort event has been and gone).
+				if (callOptions.signal?.aborted === true) {
+					reject(new HostCallError({ code: "timeout", message: `${method} was aborted` }));
+					return;
+				}
 				nextCall += 1;
 				const id = `c${nextCall}`;
 				const timeoutMs = callOptions.timeoutMs ?? callTimeout;
+				const signal = callOptions.signal;
+				const onAbort = () => {
+					if (!connection.pending.delete(id)) return;
+					clearTimeout(timer);
+					reject(new HostCallError({ code: "timeout", message: `${method} was aborted`, unanswered: true }));
+				};
+				// However it settles, its listener goes: a signal shared by many calls (a detached command's every poll)
+				// would otherwise keep one per call, and the connection each closes over.
+				const settled =
+					<A>(settle: (value: A) => void) =>
+					(value: A) => {
+						signal?.removeEventListener("abort", onAbort);
+						settle(value);
+					};
 				const timer = setTimeout(() => {
 					connection.pending.delete(id);
-					reject(
+					settled(reject)(
 						new HostCallError({
 							code: "timeout",
 							message: `${method} took longer than ${timeoutMs} ms`,
@@ -711,20 +734,12 @@ export function createHostHub(options: HostHubOptions): HostHub {
 					);
 				}, timeoutMs);
 				connection.pending.set(id, {
-					resolve: resolve as (value: unknown) => void,
-					reject,
+					resolve: settled(resolve as (value: unknown) => void),
+					reject: settled(reject),
 					timer,
 					...(callOptions.onEvent === undefined ? {} : { onEvent: callOptions.onEvent }),
 				});
-				callOptions.signal?.addEventListener(
-					"abort",
-					() => {
-						if (!connection.pending.delete(id)) return;
-						clearTimeout(timer);
-						reject(new HostCallError({ code: "timeout", message: `${method} was aborted`, unanswered: true }));
-					},
-					{ once: true },
-				);
+				signal?.addEventListener("abort", onAbort, { once: true });
 				send(connection, { type: "call", id, method, params });
 			});
 		},

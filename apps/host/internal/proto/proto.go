@@ -142,6 +142,11 @@ const FeatureUsage = "usage"
 // connection that then dies isn't lost. Without UsageAcks (an older control plane) a tick is done with once written.
 const FeatureUsageAcks = "usage-acks"
 
+// FeatureExecControl: sandbox.exec takes a CommandID, and with Detached runs the command in the background past any
+// call's end (sandbox.exec.get answers it), and sandbox.exec.kill stops a command by its ID, its whole process group.
+// Without it a control plane can't stop a host's command, and a detached one runs as a foreground one does.
+const FeatureExecControl = "exec-control"
+
 // FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
 // each sandbox's and snapshot's Base, and restarts a sandbox on its current images when sandbox.start has Rebase.
 const FeatureImagePatching = "image-patching"
@@ -713,9 +718,51 @@ type ExecParams struct {
 	TimeoutMs int64             `json:"timeoutMs,omitempty"`
 	Stdin     string            `json:"stdin,omitempty"`
 	Stream    bool              `json:"stream,omitempty"`
-	Detached  bool              `json:"detached,omitempty"`
+	// Detached, without a CommandID (an E2E device's), starts the command in the background and answers its pid and
+	// the log its output goes to. With a CommandID (FeatureExecControl), see CommandID.
+	Detached bool `json:"detached,omitempty"`
 	// Attribution names the command at the egress proxy (such as an agent's tool call ID).
 	Attribution string `json:"attribution,omitempty"`
+	// CommandID is Kantel's ID for the command (FeatureExecControl): while it runs, sandbox.exec.kill stops it. With
+	// Detached the call is answered at once (ExecStatus, running), the command runs with no limit but its TimeoutMs (an
+	// isolate's has its default), and its exit code and output, bounded as a foreground answer's, are
+	// sandbox.exec.get's once it ends, for as long as the host keeps them (the newest few dozen of a sandbox's).
+	CommandID string `json:"commandId,omitempty"`
+}
+
+// ExecRef is sandbox.exec.get's and sandbox.exec.kill's params: a command by its CommandID. WaitMs, for a get, holds
+// the answer up to that long (at most ExecMaxWaitMs) for a running command to end.
+type ExecRef struct {
+	SandboxID string `json:"sandboxId"`
+	CommandID string `json:"commandId"`
+	WaitMs    int64  `json:"waitMs,omitempty"`
+}
+
+// ExecMaxWaitMs is the longest a sandbox.exec.get waits for a command to end.
+const ExecMaxWaitMs = 60_000
+
+// ExecStatus is a command by its CommandID: a detached sandbox.exec's answer, and sandbox.exec.get's. State is
+// ExecRunning or ExecEnded; an ended command has its Result.
+type ExecStatus struct {
+	CommandID string      `json:"commandId"`
+	State     string      `json:"state"`
+	Pid       int         `json:"pid,omitempty"`
+	Result    *ExecResult `json:"result,omitempty"`
+	// Unconfirmed, on a detached start: the sandbox didn't answer it, so whether the command started is unknown.
+	// Kantel follows it by its ID as any; sandbox.exec.get's not_found then means it never started.
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
+}
+
+// ExecStatus's states.
+const (
+	ExecRunning = "running"
+	ExecEnded   = "exited"
+)
+
+// ExecKilled is sandbox.exec.kill's answer: whether the command was running (it has been killed, with its process
+// group). A command that ended, or that the host never ran, is not killed.
+type ExecKilled struct {
+	Killed bool `json:"killed"`
 }
 
 type ExecResult struct {
@@ -891,15 +938,20 @@ const (
 
 // Methods.
 const (
-	MethodCreate       = "sandbox.create"
-	MethodStop         = "sandbox.stop"
-	MethodResume       = "sandbox.resume"
-	MethodStart        = "sandbox.start"
-	MethodFork         = "sandbox.fork"
-	MethodDelete       = "sandbox.delete"
-	MethodGet          = "sandbox.get"
-	MethodList         = "sandbox.list"
-	MethodExec         = "sandbox.exec"
+	MethodCreate = "sandbox.create"
+	MethodStop   = "sandbox.stop"
+	MethodResume = "sandbox.resume"
+	MethodStart  = "sandbox.start"
+	MethodFork   = "sandbox.fork"
+	MethodDelete = "sandbox.delete"
+	MethodGet    = "sandbox.get"
+	MethodList   = "sandbox.list"
+	MethodExec   = "sandbox.exec"
+	// MethodExecGet (Kantel → host, ExecRef; FeatureExecControl) answers a command's ExecStatus by its CommandID.
+	MethodExecGet = "sandbox.exec.get"
+	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its
+	// process group; answered ExecKilled.
+	MethodExecKill     = "sandbox.exec.kill"
 	MethodFileRead     = "sandbox.files.read"
 	MethodFileWrite    = "sandbox.files.write"
 	MethodFileDelete   = "sandbox.files.delete"
