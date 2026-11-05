@@ -381,7 +381,9 @@ export function UsageGraph({
 				{loading ? (
 					<None className="text-faint" />
 				) : (
-					<span className="truncate text-fg tabular-nums">{value ?? <None className="text-faint" />}</span>
+					<span className={`truncate tabular-nums ${tone === "warning" ? "text-status-approval" : "text-fg"}`}>
+						{value ?? <None className="text-faint" />}
+					</span>
 				)}
 			</figcaption>
 			<svg

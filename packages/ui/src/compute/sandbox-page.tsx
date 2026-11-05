@@ -394,7 +394,7 @@ export function SandboxPage({
 	const entries: readonly MenuEntry[] = menu.entries;
 	const held = access?.value;
 	const readyAccess = held !== undefined && held !== "loading" && !(held instanceof Error) ? held : undefined;
-	const screenLink = (to: ScreenView, label: string, icon: ReactNode) => {
+	const screenLink = (to: ScreenView, label: string, icon: ReactNode, primary = false) => {
 		// One its image lacks isn't offered at all: Overview's Image section says what's missing.
 		if (imageLacks(sandbox, to === "browser" ? "browser" : "desktop") !== undefined) return null;
 		// One that can't open here is shown disabled with its reason, never opened onto an error page.
@@ -412,7 +412,7 @@ export function SandboxPage({
 				</Button>
 			) : (
 				<a
-					className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
+					className={`${buttonClass(primary ? "primary" : "secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
 					href={href(to)}
 					onClick={(event) => {
 						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
@@ -431,8 +431,10 @@ export function SandboxPage({
 		<>
 			{windows ? (
 				<>
+					{/* The desktop is the way in that does the most, so it's the page's one primary action; Browser sits
+					    beside it as the lighter way. */}
 					{screenLink("browser", "Browser", <GlobeIcon size="sm" />)}
-					{screenLink("desktop", "Desktop", <DesktopIcon size="sm" />)}
+					{screenLink("desktop", "Desktop", <DesktopIcon size="sm" />, true)}
 				</>
 			) : null}
 			{can.recover ? (
@@ -1007,7 +1009,8 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 					{...(latestCpu === undefined ? {} : { value: `${Math.round(latestCpu * 100)}%` })}
 					values={cpu}
 					{...(series === undefined ? { slots: cpu.length } : { timed: liveCpu.timed })}
-					tone={sandbox.state === "error" ? "error" : "done"}
+					// Busy past 80% in the caution colour, as the sandboxes list shows it: one threshold everywhere.
+					tone={sandbox.state === "error" ? "error" : latestCpu !== undefined && latestCpu >= 0.8 ? "warning" : "done"}
 					loading={loading}
 					// No time axis of its own: the memory chart under it carries the pair's.
 					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
