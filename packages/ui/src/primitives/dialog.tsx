@@ -13,7 +13,7 @@ import { CloseIcon } from "./lucide.tsx";
  * line height, case and spacing.
  */
 const dialogFrame =
-	"kt-dialog m-auto max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md font-normal leading-normal text-fg text-start whitespace-normal wrap-break-word normal-case tracking-normal backdrop:bg-scrim";
+	"kt-dialog m-auto max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md font-regular leading-normal text-fg text-start whitespace-normal wrap-break-word normal-case [letter-spacing:normal] backdrop:bg-scrim";
 
 /** Its width: a short sentence's, or a chart's and a table's (`wide`), never wider than the window. */
 const dialogWidth = {
