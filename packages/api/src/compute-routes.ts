@@ -168,8 +168,9 @@ export const getCaller = defineRoute({
 	tag: "accounts",
 	summary: "Who is calling",
 	description: describe(
-		"The person or key calling, the accounts they may act in (their personal account first), and the deployment's",
-		"mode. Any key may call it.",
+		"The person or key calling, the accounts they may act in (their personal account first), the deployment's mode,",
+		"and whether it keeps protected variables and secret files (`protectedValues`), so a client can check before it",
+		"makes an environment that needs them. Any key may call it.",
 	),
 	answer: { status: 200, description: "The caller.", schema: Caller },
 	errors: [],

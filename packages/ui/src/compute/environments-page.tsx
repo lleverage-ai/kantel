@@ -64,6 +64,10 @@ const agoText = (at: number, now: number): string => {
 
 const plural = (count: number, one: string, many = `${one}s`): string => `${count} ${count === 1 ? one : many}`;
 
+/** What both pages say on a deployment that keeps no protected values (`EnvironmentsSource.protectedValues`). */
+export const NO_PROTECTED_VALUES_TEXT =
+	"This deployment doesn't support protected variables or secret files. Plain variables, repositories and egress grants work.";
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The list
 
@@ -90,6 +94,7 @@ export function EnvironmentsPage({
 }: EnvironmentsPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	const [newOpen, setNewOpen] = useState(creating);
+	const canProtect = source.protectedValues !== false;
 	const now = fixedNow ?? Date.now();
 	const addButton = (
 		<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setNewOpen(true)}>
@@ -100,9 +105,14 @@ export function EnvironmentsPage({
 		<div className={computePage}>
 			<PageHeader
 				title="Environments"
-				lede="What each new sandbox starts with: variables, secret files and repositories, and where it may connect. Mark a variable protected and sandboxes only ever see a placeholder for it."
+				lede={
+					canProtect
+						? "What each new sandbox starts with: variables, secret files and repositories, and where it may connect. Mark a variable protected and sandboxes only ever see a placeholder for it."
+						: "What each new sandbox starts with: variables and repositories, and where it may connect."
+				}
 				actions={addButton}
 			/>
+			{canProtect ? null : <Notice announce={false}>{NO_PROTECTED_VALUES_TEXT}</Notice>}
 			{state.status === "error" ? (
 				<Notice
 					level="error"
@@ -331,6 +341,7 @@ export function EnvironmentPage({
 		addingProtected ? { kind: "variable", protect: true } : undefined,
 	);
 	const [notice, setNotice] = useState<NoticeState>();
+	const canProtect = source.protectedValues !== false;
 	// The repository list is saved whole, from the list it was changed from, so one change waits for the last.
 	const [savingRepos, setSavingRepos] = useState(false);
 	const now = fixedNow ?? Date.now();
@@ -434,8 +445,9 @@ export function EnvironmentPage({
 				}
 			/>
 			<Notice announce={false}>
-				New sandboxes start with what's here. A protected variable's new value reaches running sandboxes on their next
-				request, with the same placeholder.
+				{canProtect
+					? "New sandboxes start with what's here. A protected variable's new value reaches running sandboxes on their next request, with the same placeholder."
+					: `New sandboxes start with what's here. ${NO_PROTECTED_VALUES_TEXT}`}
 			</Notice>
 			{notice === undefined ? null : (
 				<Notice
@@ -453,6 +465,7 @@ export function EnvironmentPage({
 			<VariablesSection
 				env={env}
 				now={now}
+				canProtect={canProtect}
 				onAdd={(protect) => setEditing({ kind: "variable", protect })}
 				onEdit={(variable) => setEditing({ kind: "variable", variable })}
 				onRotate={(variable) => setEditing({ kind: "rotate", variable })}
@@ -466,6 +479,7 @@ export function EnvironmentPage({
 			<FilesSection
 				env={env}
 				now={now}
+				canAdd={canProtect}
 				onAdd={() => setEditing({ kind: "file" })}
 				onReplace={(file) => setEditing({ kind: "file", file })}
 				onRemove={(file) =>
@@ -504,7 +518,7 @@ export function EnvironmentPage({
 			{editing?.kind === "variable" ? (
 				<VariableDialog
 					{...(editing.variable === undefined ? {} : { variable: editing.variable })}
-					protect={editing.protect ?? editing.variable?.protected ?? false}
+					{...dialogProtection(editing.variable, editing.protect, canProtect)}
 					taken={env.variables.map((variable) => variable.name)}
 					onClose={() => setEditing(undefined)}
 					onSave={async (input) => {
@@ -600,9 +614,71 @@ function Bindings({ bindings }: { bindings: readonly DestinationBinding[] }) {
 	);
 }
 
-function VariablesSection({
+/**
+ * A variable's actions. A protected variable kept from when the deployment had its secrets key can only be removed
+ * without it: an edit or a rotation would be refused, and its dialog must never save it plain instead.
+ */
+export function variableMenu(
+	variable: EnvironmentVariable,
+	canProtect: boolean,
+	actions: { readonly [action in "edit" | "rotate" | "remove"]: (variable: EnvironmentVariable) => void },
+): MenuEntry[] {
+	const editable = canProtect || !variable.protected;
+	return [
+		...(editable
+			? [
+					{
+						kind: "item" as const,
+						id: "edit",
+						label: variable.protected ? "Edit bindings" : "Edit",
+						icon: <PencilIcon size="sm" />,
+						onSelect: () => actions.edit(variable),
+					},
+				]
+			: []),
+		...(variable.protected && canProtect
+			? [
+					{
+						kind: "item" as const,
+						id: "rotate",
+						label: "Rotate value",
+						icon: <ReconnectIcon />,
+						onSelect: () => actions.rotate(variable),
+					},
+				]
+			: []),
+		...(editable ? [{ kind: "separator" as const, id: "sep-remove" }] : []),
+		{
+			kind: "item",
+			id: "remove",
+			label: "Remove",
+			icon: <TrashIcon />,
+			danger: true,
+			onSelect: () => actions.remove(variable),
+		},
+	];
+}
+
+/**
+ * The variable dialog's protection: an existing variable keeps its own, whatever the deployment offers now, so a
+ * protected one is never saved plain because the key is missing. Only a new one is plain without it.
+ */
+export function dialogProtection(
+	variable: EnvironmentVariable | undefined,
+	askedProtected: boolean | undefined,
+	canProtect: boolean,
+): { readonly protect: boolean; readonly canProtect: boolean } {
+	return {
+		protect: variable?.protected ?? (canProtect && (askedProtected ?? false)),
+		canProtect: canProtect || variable?.protected === true,
+	};
+}
+
+/** Exported for the tests, which render it alone: the page reads its environment before it shows it. */
+export function VariablesSection({
 	env,
 	now,
+	canProtect,
 	onAdd,
 	onEdit,
 	onRotate,
@@ -610,6 +686,8 @@ function VariablesSection({
 }: {
 	env: Environment;
 	now: number;
+	/** Whether the deployment keeps protected values: without, there's no Add protected variable. */
+	canProtect: boolean;
 	onAdd: (protect: boolean) => void;
 	onEdit: (variable: EnvironmentVariable) => void;
 	onRotate: (variable: EnvironmentVariable) => void;
@@ -625,15 +703,19 @@ function VariablesSection({
 						<Button size="sm" icon={<PlusIcon size="sm" />} onClick={() => onAdd(false)}>
 							Add variable
 						</Button>
-						<Button size="sm" icon={<PlusIcon size="sm" />} onClick={() => onAdd(true)}>
-							Add protected variable
-						</Button>
+						{canProtect ? (
+							<Button size="sm" icon={<PlusIcon size="sm" />} onClick={() => onAdd(true)}>
+								Add protected variable
+							</Button>
+						) : null}
 					</>
 				}
 			/>
 			{env.variables.length === 0 ? (
 				<p className="m-0 text-sm text-muted">
-					No variables. A plain one is its value in the sandbox; a protected one is a placeholder there.
+					{canProtect
+						? "No variables. A plain one is its value in the sandbox; a protected one is a placeholder there."
+						: "No variables. Each is its value in the sandbox."}
 				</p>
 			) : (
 				<TableFrame>
@@ -659,35 +741,11 @@ function VariablesSection({
 						</thead>
 						<tbody>
 							{env.variables.map((variable) => {
-								const entries: MenuEntry[] = [
-									{
-										kind: "item",
-										id: "edit",
-										label: variable.protected ? "Edit bindings" : "Edit",
-										icon: <PencilIcon size="sm" />,
-										onSelect: () => onEdit(variable),
-									},
-									...(variable.protected
-										? [
-												{
-													kind: "item" as const,
-													id: "rotate",
-													label: "Rotate value",
-													icon: <ReconnectIcon />,
-													onSelect: () => onRotate(variable),
-												},
-											]
-										: []),
-									{ kind: "separator", id: "sep-remove" },
-									{
-										kind: "item",
-										id: "remove",
-										label: "Remove",
-										icon: <TrashIcon />,
-										danger: true,
-										onSelect: () => onRemove(variable),
-									},
-								];
+								const entries = variableMenu(variable, canProtect, {
+									edit: onEdit,
+									rotate: onRotate,
+									remove: onRemove,
+								});
 								return (
 									<tr key={variable.name} data-variable={variable.name}>
 										<td className={td}>
@@ -788,15 +846,18 @@ function checkBinding(draft: BindingDraft): {
 }
 
 /** Add variable, Add protected variable and Edit: a name, a value, and for a protected one where it may go. */
-function VariableDialog({
+export function VariableDialog({
 	variable,
 	protect,
+	canProtect = true,
 	taken,
 	onClose,
 	onSave,
 }: {
 	variable?: EnvironmentVariable;
 	protect: boolean;
+	/** Whether the deployment keeps protected values: without, there's no Protected switch. */
+	canProtect?: boolean;
 	taken: readonly string[];
 	onClose: () => void;
 	onSave: (input: VariableInput) => Promise<void>;
@@ -867,16 +928,18 @@ function VariableDialog({
 						{...(tried && nameError !== undefined ? { error: nameError } : {})}
 					/>
 				)}
-				<Switch
-					label="Protected"
-					checked={isProtected}
-					onChange={setProtected}
-					hint={
-						isProtected
-							? "Each sandbox gets a kph_ placeholder. The host's egress proxy swaps it for the value only on requests to the hosts below; sent anywhere else, the request is refused."
-							: "The sandbox gets the value itself, readable by anything in it."
-					}
-				/>
+				{canProtect ? (
+					<Switch
+						label="Protected"
+						checked={isProtected}
+						onChange={setProtected}
+						hint={
+							isProtected
+								? "Each sandbox gets a kph_ placeholder. The host's egress proxy swaps it for the value only on requests to the hosts below; sent anywhere else, the request is refused."
+								: "The sandbox gets the value itself, readable by anything in it."
+						}
+					/>
+				) : null}
 				<TextAreaField
 					label={keepsValue ? "New value" : "Value"}
 					hint={
@@ -1036,15 +1099,18 @@ function RotateDialog({
 // ---------------------------------------------------------------------------------------------------------------------
 // Secret files and repositories
 
-function FilesSection({
+export function FilesSection({
 	env,
 	now,
+	canAdd,
 	onAdd,
 	onReplace,
 	onRemove,
 }: {
 	env: Environment;
 	now: number;
+	/** Whether the deployment keeps secret files: without, there's no Add file. */
+	canAdd: boolean;
 	onAdd: () => void;
 	onReplace: (file: EnvironmentFile) => void;
 	onRemove: (file: EnvironmentFile) => void;
@@ -1054,15 +1120,20 @@ function FilesSection({
 			<SectionHeading
 				id="environment-files-title"
 				title="Secret files"
-				actions={
-					<Button size="sm" icon={<PlusIcon size="sm" />} onClick={onAdd}>
-						Add file
-					</Button>
-				}
+				{...(canAdd
+					? {
+							actions: (
+								<Button size="sm" icon={<PlusIcon size="sm" />} onClick={onAdd}>
+									Add file
+								</Button>
+							),
+						}
+					: {})}
 			/>
 			<p className="m-0 text-sm text-muted">
-				Written to each new sandbox's disk, so anything in the sandbox can read them. Kantel keeps them encrypted and
-				never shows them again.
+				{canAdd
+					? "Written to each new sandbox's disk, so anything in the sandbox can read them. Kantel keeps them encrypted and never shows them again."
+					: "This deployment doesn't support secret files."}
 			</p>
 			{env.files.length === 0 ? null : (
 				<TableFrame>
@@ -1105,14 +1176,19 @@ function FilesSection({
 											icon={<EllipsisIcon />}
 											align="end"
 											entries={[
-												{
-													kind: "item",
-													id: "replace",
-													label: "Replace",
-													icon: <PencilIcon size="sm" />,
-													onSelect: () => onReplace(file),
-												},
-												{ kind: "separator", id: "sep-remove" },
+												// Without a secrets key new contents would be refused: the file can only be removed.
+												...(canAdd
+													? [
+															{
+																kind: "item" as const,
+																id: "replace",
+																label: "Replace",
+																icon: <PencilIcon size="sm" />,
+																onSelect: () => onReplace(file),
+															},
+															{ kind: "separator" as const, id: "sep-remove" },
+														]
+													: []),
 												{
 													kind: "item",
 													id: "remove",
