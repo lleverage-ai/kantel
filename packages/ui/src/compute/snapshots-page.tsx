@@ -366,8 +366,8 @@ function SavedList({
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
 									</td>
-									{/* On a phone (table.css): where it came from on a line of its own, then the type, size, age and
-									    uses as one quiet line. */}
+									{/* On a phone (table.css): where it came from on a line of its own, then the type, size and uses,
+									    then when and by whom. */}
 									<td className={td} data-phone="line">
 										<span className="text-fg">{entry.sandboxName}</span>
 										{entry.sandboxId === undefined ? <span className={cellSub}>Since deleted</span> : null}
@@ -379,7 +379,8 @@ function SavedList({
 									<td className={`${td} text-right tabular-nums`} data-phone="bare">
 										{bytesText(entry.sizeBytes)}
 									</td>
-									<td className={td} data-phone="bare">
+									{/* On a phone, when and by whom on the card's last line, after what it is, its size and its uses. */}
+									<td className={td} data-phone="bare line last">
 										<span className="text-fg" title={new Date(entry.createdAt).toLocaleString("en-GB")}>
 											{compactAge(entry.createdAt, now)}
 										</span>

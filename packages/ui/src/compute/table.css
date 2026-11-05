@@ -137,10 +137,15 @@
 	}
 
 	/* In a value on a line of its own, its second line ("Since deleted") is a quiet line under it, not run on. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="line"] > * + * {
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="line"]:not([data-phone~="last"]) > * + * {
 		display: block;
 		margin-left: 0;
 		font-size: var(--kt-text-xs);
+	}
+
+	/* A value for the card's last line (`data-phone="last"`), after the cells that follow it in the table. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="last"] {
+		order: 5;
 	}
 
 	/* A value that starts a line of its own (`data-phone="line"`), so the meta lines break where they mean to. */
