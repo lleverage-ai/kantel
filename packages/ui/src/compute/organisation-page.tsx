@@ -610,91 +610,106 @@ function People({
 	const sorted = [...members].sort((a, b) => rank[a.role] - rank[b.role] || a.name.localeCompare(b.name, "en-GB"));
 	// In a card at every width, as every list in the console.
 	const row = `flex min-w-0 items-center gap-3 border-b border-border py-2.5 text-sm last:border-b-0 ${narrow ? "px-3" : "px-4"}`;
-	// The role is a fixed column right after the person, and the menu keeps to the row's end, so a wide card has no gulf
-	// between a name and its role.
-	const roleColumn = "mr-auto flex w-28 flex-none justify-start";
+	// The role is a fixed column just before the row's menu, under a Role heading on a wide card, so every row ends on the
+	// same edge and the column reads as one.
+	const roleColumn = "flex w-28 flex-none justify-start";
+	// The menu's room, kept on every row (and the heading) so the role column lines up whether a row has a menu or not.
+	const menuColumn = "w-control-xs flex-none pointer-coarse:w-control-lg";
 	return (
 		// In a white card, as every list in the console is.
-		<ul className="kt-member-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
-			{sorted.map((member) => {
-				const you = member.id === viewerId;
-				const waiting = busy.has(member.id);
-				const removable = manager && !you && !waiting && member.role !== "owner";
-				return (
-					<li key={member.id} className={row} data-member={member.id} aria-busy={waiting || undefined}>
-						<PersonMark name={member.name} />
-						<span
-							className="flex min-w-0 flex-1 flex-col gap-0.5 sm:max-w-(--kt-popover-width)"
-							title={`Joined ${compactAge(member.joinedAt, now)} ago`}
-						>
-							<span className="flex min-w-0 items-center gap-2">
-								<span className="truncate font-medium text-fg">{member.name}</span>
-								{/* A label, not part of the name. */}
-								{you ? <Badge tone="neutral">You</Badge> : null}
+		<div className="rounded-panel border border-border bg-raised">
+			{narrow ? null : (
+				// The headings, as a table's: the list's own rows are read with their labels, so this is for the eye.
+				<div
+					className="flex h-control-md items-center gap-3 border-b border-border px-4 text-sm font-medium text-muted"
+					aria-hidden="true"
+				>
+					<span className="flex-1">Name</span>
+					<span className={`${roleColumn} px-1.5`}>Role</span>
+					{manager ? <span className={menuColumn} /> : null}
+				</div>
+			)}
+			<ul className="kt-member-rows m-0 flex list-none flex-col p-0">
+				{sorted.map((member) => {
+					const you = member.id === viewerId;
+					const waiting = busy.has(member.id);
+					const removable = manager && !you && !waiting && member.role !== "owner";
+					return (
+						<li key={member.id} className={row} data-member={member.id} aria-busy={waiting || undefined}>
+							<PersonMark name={member.name} />
+							<span
+								className="flex min-w-0 flex-1 flex-col gap-0.5"
+								title={`Joined ${compactAge(member.joinedAt, now)} ago`}
+							>
+								<span className="flex min-w-0 items-center gap-2">
+									<span className="truncate font-medium text-fg">{member.name}</span>
+									{/* A label, not part of the name. */}
+									{you ? <Badge tone="neutral">You</Badge> : null}
+								</span>
+								{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
 							</span>
-							{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
-						</span>
-						<span className={roleColumn}>
-							<RoleControl
-								member={member}
-								viewerRole={viewerRole}
-								{...(you || waiting || onRole === undefined ? {} : { onRole })}
-							/>
-						</span>
-						{manager ? (
-							<RowMenu
-								label={`Actions for ${member.name}`}
-								entries={
-									removable
-										? [
-												{
-													kind: "item",
-													id: "remove",
-													label: "Remove",
-													icon: <TrashIcon />,
-													danger: true,
-													onSelect: () => onRemove(member),
-												},
-											]
-										: []
-								}
-							/>
-						) : null}
-					</li>
-				);
-			})}
-			{invites.map((invite) => {
-				const sent = `Invited ${compactAge(invite.sentAt, now)} ago`;
-				const name = invite.email === "" ? "Anyone with the code" : invite.email;
-				return (
-					<li key={invite.id} className={row} data-invite={invite.id}>
-						<PersonMark name={invite.email === "" ? "?" : invite.email} />
-						<span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:max-w-(--kt-popover-width)">
-							<span className="truncate font-medium text-fg">{name}</span>
-							<span className="truncate text-sm text-muted">{sent}</span>
-						</span>
-						<span className={roleColumn}>
-							<RoleText role={invite.role} />
-						</span>
-						{manager ? (
-							<RowMenu
-								label={`Actions for the invite to ${name}`}
-								entries={[
-									{
-										kind: "item",
-										id: "revoke",
-										label: "Revoke invite",
-										icon: <RevokeInviteIcon />,
-										danger: true,
-										onSelect: () => onRevoke(invite),
-									},
-								]}
-							/>
-						) : null}
-					</li>
-				);
-			})}
-		</ul>
+							<span className={roleColumn}>
+								<RoleControl
+									member={member}
+									viewerRole={viewerRole}
+									{...(you || waiting || onRole === undefined ? {} : { onRole })}
+								/>
+							</span>
+							{manager ? (
+								<RowMenu
+									label={`Actions for ${member.name}`}
+									entries={
+										removable
+											? [
+													{
+														kind: "item",
+														id: "remove",
+														label: "Remove",
+														icon: <TrashIcon />,
+														danger: true,
+														onSelect: () => onRemove(member),
+													},
+												]
+											: []
+									}
+								/>
+							) : null}
+						</li>
+					);
+				})}
+				{invites.map((invite) => {
+					const sent = `Invited ${compactAge(invite.sentAt, now)} ago`;
+					const name = invite.email === "" ? "Anyone with the code" : invite.email;
+					return (
+						<li key={invite.id} className={row} data-invite={invite.id}>
+							<PersonMark name={invite.email === "" ? "?" : invite.email} />
+							<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+								<span className="truncate font-medium text-fg">{name}</span>
+								<span className="truncate text-sm text-muted">{sent}</span>
+							</span>
+							<span className={roleColumn}>
+								<RoleText role={invite.role} />
+							</span>
+							{manager ? (
+								<RowMenu
+									label={`Actions for the invite to ${name}`}
+									entries={[
+										{
+											kind: "item",
+											id: "revoke",
+											label: "Revoke invite",
+											icon: <RevokeInviteIcon />,
+											danger: true,
+											onSelect: () => onRevoke(invite),
+										},
+									]}
+								/>
+							) : null}
+						</li>
+					);
+				})}
+			</ul>
+		</div>
 	);
 }
 
