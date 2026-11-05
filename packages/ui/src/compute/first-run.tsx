@@ -73,7 +73,8 @@ export function FirstRun({ source, now, onJoined, poll = true }: FirstRunProps) 
 				</Step>
 				<Step n={3} current={false} title="Use it from your code">
 					<span className="-mt-2 text-sm text-faint">
-						<code className="rounded-xs bg-active px-1 font-mono text-code text-fg">kantel login</code>, or an API key.
+						Sign in with <code className="rounded-xs bg-active px-1 font-mono text-code text-fg">kantel login</code> or
+						an API key.
 					</span>
 				</Step>
 			</ol>
