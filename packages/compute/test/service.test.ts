@@ -634,6 +634,34 @@ describe("sandboxes", () => {
 		const [xlarge] = (await tom.forkSandbox(custom.id, { snapshotId: saved.id, size: "xlarge", wait: true })).items;
 		expect(xlarge?.resources).toEqual({ vcpus: 8, memoryMb: 16384, diskGb: 80 });
 		expect(xlarge?.size).toBe("xlarge");
+		// A disk another preset has too (large's 40 GB), or smaller than its own size's: still the snapshot's, with its own
+		// vCPUs and memory as the console sends them, or with others.
+		for (const [size, diskGb, vcpus, memoryMb] of [
+			["small", 40, 1, 1024],
+			["default", 15, 2, 4096],
+		] as const) {
+			const made = await tom.createSandbox({ type: "microvm", size, resources: { diskGb }, wait: true });
+			const kept = await tom.saveSnapshot({ name: `${size}-${diskGb}`, sandboxId: made.id });
+			const same = await tom.createSandbox({
+				type: "microvm",
+				from: kept.id,
+				resources: { vcpus, memoryMb },
+				wait: true,
+			});
+			expect(same.resources).toEqual({ vcpus, memoryMb, diskGb });
+		}
+		const small = await tom.createSandbox({ type: "microvm", size: "small", resources: { diskGb: 40 }, wait: true });
+		const smallKept = await tom.saveSnapshot({ name: "small-kept", sandboxId: small.id });
+		const wider = await tom.createSandbox({
+			type: "microvm",
+			from: smallKept.id,
+			resources: { vcpus: 2, memoryMb: 4096 },
+			wait: true,
+		});
+		expect(wider.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 40 });
+		const [defaultFork] = (await tom.forkSandbox(small.id, { snapshotId: smallKept.id, size: "default", wait: true }))
+			.items;
+		expect(defaultFork?.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 40 });
 		// One from a snapshot keeps the snapshot's disk: none may be asked for.
 		const refused = await failure(
 			tom.createSandbox({ type: "microvm", from: saved.id, resources: { diskGb: 200 }, wait: true }),

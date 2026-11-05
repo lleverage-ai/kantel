@@ -96,12 +96,31 @@ export interface SandboxMachine {
 	readonly shape?: BackendShape;
 }
 
+/**
+ * The host a copied machine's disk is on (a snapshot's, or a sandbox's forked live), which a machine made from it goes
+ * to: its presets, and whether it makes shapes off them, so whether it can be asked for the copied disk.
+ */
+export interface CopiedOn {
+	readonly presets: readonly BackendSize[];
+	readonly custom: boolean;
+}
+
+/** `host` as a copied machine's (`CopiedOn`): undefined for a host not known, whose presets nothing says. */
+export const copiedOn = (
+	host: BackendHost | undefined,
+	deploymentSizes: readonly BackendSize[],
+): CopiedOn | undefined =>
+	host === undefined ? undefined : { presets: host.sizes ?? deploymentSizes, custom: makesCustom(host) };
+
 /** What a new sandbox is made from, as far as its machine goes. */
 export type MachineSource =
 	/** A template: its resources. */
 	| { readonly template: computeSchema.TemplateResources }
-	/** A snapshot (its sandbox's machine when taken), or a running sandbox forked live (its shape now). */
-	| { readonly copies: RecordedMachine & { readonly shape?: BackendShape } }
+	/**
+	 * A snapshot (its sandbox's machine when taken), or a running sandbox forked live (its shape now), and the host its
+	 * disk is on (`on`), whose presets another size or shape asked for is taken from.
+	 */
+	| { readonly copies: RecordedMachine & { readonly shape?: BackendShape }; readonly on?: CopiedOn }
 	| undefined;
 
 /**
@@ -133,18 +152,15 @@ function presetDiskOf(presets: readonly BackendSize[], shape: BackendShape): num
 }
 
 /**
- * `machine` keeping a copied disk of `diskGb`: a host copies the snapshot's disk and grows it to the machine's, never
- * shrinking it, so where the machine's own disk is smaller (or unknown) its shape asks for the copied one. Unchanged
- * where the machine's own disk is at least as big, so a named size stays one, and where the copied disk is a preset's:
- * only a host that makes custom shapes made one of another, and a host that makes only presets still takes a fork of a
- * preset's disk to a smaller preset, as it did before disks were chosen.
+ * `machine` keeping a copied disk of `diskGb` on the host it is on (`on`): a host copies the snapshot's disk and grows
+ * it to the machine's, never shrinking it, so where the machine's own disk there is smaller its shape asks for the
+ * copied one, whatever presets have that disk too. Unchanged where the machine's own disk is at least as big, so a
+ * named size stays one; and where the host makes only its presets (it is asked for one by name, and keeps the bigger
+ * copied disk, as before disks were chosen) or isn't known (nothing says its presets, and no other host's are its).
  */
-function keepingDisk(
-	machine: SandboxMachine,
-	diskGb: number | undefined,
-	presets: readonly BackendSize[],
-): SandboxMachine {
-	if (diskGb === undefined || diskGb <= 0 || presets.some((each) => each.diskGb === diskGb)) return machine;
+function keepingDisk(machine: SandboxMachine, diskGb: number | undefined, on: CopiedOn | undefined): SandboxMachine {
+	if (diskGb === undefined || diskGb <= 0 || on === undefined || !on.custom) return machine;
+	const { presets } = on;
 	const base = machine.shape ?? presets.find((each) => each.name === machine.size);
 	if (base === undefined) return machine;
 	const own =
@@ -169,9 +185,10 @@ export const presetOf = (
  * - a shape asked for: that shape, whatever it is made from (a template's snapshot is then used only when it was built
  *   as that shape);
  * - a template: as a size asked for, that size's shape (undefined when no preset has the name); else its resources;
- * - a snapshot, or a source forked live: that sandbox's machine, its disk too, unless `asked.size` names another size,
- *   which it then is; a live fork asks for none, so it is always its source's. Whatever shape or size it is then, it
- *   keeps the copied disk where that is bigger than the machine's own (`keepingDisk`), as its host copies it;
+ * - a snapshot, or a source forked live: that sandbox's machine, its disk too, unless `asked.size` names another size
+ *   or `asked.shape` other vCPUs or memory, which it then is, as its snapshot's host (`on`) makes it; a live fork asks
+ *   for none, so it is always its source's. Whatever shape or size it is then, it keeps the copied disk where that is
+ *   bigger than the machine's own (`keepingDisk`), as its host copies it;
  * - else the size asked for, `default` when none is.
  *
  * A disk asked for alone (`asked.diskGb`) then replaces that machine's: its shape is its size's vCPUs and memory with
@@ -212,6 +229,7 @@ function machineOf(
 			: { size: named.name, shape: { vcpus: named.vcpus, memoryMb: named.memoryMb } };
 	}
 	const copied = source?.copies;
+	const on = source?.on;
 	// Its disk is the copied machine's: what its host gave it, else what it asked for.
 	const copiedBase =
 		copied?.shape ??
@@ -219,16 +237,43 @@ function machineOf(
 			? undefined
 			: { vcpus: copied.resources.vcpus, memoryMb: copied.resources.memoryMb });
 	const copiedDisk = copied?.resources?.diskGb ?? copiedBase?.diskGb;
-	const copiedShape = copiedBase === undefined ? undefined : copyShape(copiedBase, copiedDisk);
-	// Another shape or size than the copied machine's: that one, with the copied disk where it is bigger than its own.
-	if (asked.shape !== undefined) return keepingDisk(shaped(asked.shape), copiedDisk, presets);
-	if (copied !== undefined && (copied.size !== undefined || copiedShape !== undefined)) {
-		if (asked.size === undefined || asked.size === copied.size) {
-			return {
-				...(copied.size === undefined ? {} : { size: copied.size }),
-				...(copiedShape === undefined ? {} : { shape: copiedShape }),
-			};
+	// A host that makes only its presets is asked for one of them: one off them by disk it can't make, and it keeps the
+	// copied disk anyway.
+	const presetOnly =
+		on !== undefined &&
+		!on.custom &&
+		copiedBase !== undefined &&
+		!on.presets.some(
+			(each) => each.vcpus === copiedBase.vcpus && each.memoryMb === copiedBase.memoryMb && each.diskGb === copiedDisk,
+		);
+	const copiedShape = copiedBase === undefined ? undefined : copyShape(copiedBase, presetOnly ? 0 : copiedDisk);
+	const copiedMachine =
+		copied !== undefined && (copied.size !== undefined || copiedShape !== undefined)
+			? {
+					...(copied.size === undefined ? {} : { size: copied.size }),
+					...(copiedShape === undefined ? {} : { shape: copiedShape }),
+				}
+			: undefined;
+	if (asked.shape !== undefined) {
+		// The copied machine's own vCPUs and memory (as the console sends them for a snapshot): that machine, its disk too.
+		const own = copiedBase ?? (on?.presets ?? presets).find((each) => each.name === copied?.size);
+		if (
+			copiedMachine !== undefined &&
+			own !== undefined &&
+			own.vcpus === asked.shape.vcpus &&
+			own.memoryMb === asked.shape.memoryMb
+		) {
+			return copiedMachine;
 		}
+		// Another shape: that one, named among its host's presets, with the copied disk where it is bigger than its own.
+		const preset = presetOf(on?.presets ?? presets, asked.shape);
+		return keepingDisk(
+			{ ...(preset === undefined ? {} : { size: preset }), shape: copyShape(asked.shape) },
+			copiedDisk,
+			on,
+		);
 	}
-	return keepingDisk({ size: asked.size ?? "default" }, copiedDisk, presets);
+	if (copiedMachine !== undefined && (asked.size === undefined || asked.size === copied?.size)) return copiedMachine;
+	// Another size: that size on its host, with the copied disk where it is bigger than the size's own.
+	return keepingDisk({ size: asked.size ?? "default" }, copiedDisk, on);
 }

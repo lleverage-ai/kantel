@@ -70,7 +70,15 @@ import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
-import { diskLimitsOf, makesCustom, makesShape, recordedMachine, recordsMachine, sandboxMachine } from "./machine.ts";
+import {
+	copiedOn,
+	diskLimitsOf,
+	makesCustom,
+	makesShape,
+	recordedMachine,
+	recordsMachine,
+	sandboxMachine,
+} from "./machine.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
 import {
 	backendMounts,
@@ -4742,6 +4750,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
+				// A snapshot's disk is on the host its sandbox is on: another size or shape is that host's.
+				const fromHostId =
+					from?.sandboxId === undefined ? undefined : (await store.sandboxes.get(from.sandboxId))?.hostId;
 				const machine =
 					type !== "microvm"
 						? undefined
@@ -4750,7 +4761,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									? { template: template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES }
 									: from === undefined
 										? undefined
-										: { copies: from },
+										: {
+												copies: from,
+												on: copiedOn(
+													capabilities.hosts.find((host) => host.id === fromHostId),
+													capabilities.sizes,
+												),
+											},
 								{
 									...(body.size === undefined ? {} : { size: body.size }),
 									...(shape === undefined ? {} : { shape }),
@@ -4986,16 +5003,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							: sandboxMachine(
 									{
 										copies: recordsMachine(snapshot) ? snapshot : current,
+										// Its snapshot is on the source's host, which another size is then made as: its preset, keeping a
+										// copied disk bigger than the preset's own.
+										on: await backend.capabilities().then((capabilities) =>
+											copiedOn(
+												capabilities.hosts.find((host) => host.id === current.hostId),
+												capabilities.sizes,
+											),
+										),
 									},
 									body.size === undefined ? {} : { size: body.size },
-									// The presets of the hosts it may go to: one of another size keeps a copied disk bigger than its own.
-									await backend
-										.capabilities()
-										.then((capabilities) =>
-											capabilities.hosts
-												.filter((host) => hosts.includes(host.id))
-												.flatMap((host) => host.sizes ?? capabilities.sizes),
-										),
+									[],
 								);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
