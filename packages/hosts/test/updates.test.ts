@@ -92,6 +92,15 @@ describe("the latest release", () => {
 
 	it("takes a mirror's {version} or GitHub API's {tag_name}, refuses one naming no release, and never waits long", async () => {
 		const api = github([() => Response.json({ tag_name: "v0.5.1" })]);
+		// A mirror that moved its JSON: the redirect is followed, as before.
+		const moved = github([
+			() => new Response(null, { status: 301, headers: { location: "/v2/latest.json" } }),
+			() => Response.json({ version: "0.5.2" }),
+		]);
+		expect(await createHostReleases({ url: "https://dl.example/latest.json", fetch: moved.fetcher }).latest()).toBe(
+			"0.5.2",
+		);
+		expect(moved.urls).toEqual(["https://dl.example/latest.json", "https://dl.example/v2/latest.json"]);
 		expect(await createHostReleases({ url: "https://api.example/latest", fetch: api.fetcher }).latest()).toBe("0.5.1");
 		const mirror = github([() => Response.json({ version: "0.6.0" })]);
 		expect(await createHostReleases({ url: "https://dl.example/latest.json", fetch: mirror.fetcher }).latest()).toBe(

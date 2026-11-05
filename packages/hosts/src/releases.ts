@@ -103,17 +103,26 @@ export function createHostReleases(options: HostReleasesOptions = {}): HostRelea
 	const read = (): Promise<string | undefined> => {
 		reading ??= (async () => {
 			try {
-				const response = await fetcher(url, {
-					headers: { accept: "application/json", "user-agent": "kantel-control-plane" },
-					// A redirect to a release's tag names its version, so it isn't followed.
-					redirect: "manual",
-					signal: AbortSignal.timeout(Math.max(timeoutMs, 10_000)),
-				});
+				const get = (target: string, redirect: "manual" | "follow") =>
+					fetcher(target, {
+						headers: { accept: "application/json", "user-agent": "kantel-control-plane" },
+						redirect,
+						signal: AbortSignal.timeout(Math.max(timeoutMs, 10_000)),
+					});
+				// A redirect to a release's tag (GitHub's `…/releases/latest`) names its version, so it isn't followed; any
+				// other redirect (a mirror moving its JSON) is, as an ordinary fetch would.
+				let response = await get(url, "manual");
 				const location = response.headers.get("location");
+				const tag =
+					response.status >= 300 && response.status < 400 && location !== null
+						? /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1]
+						: undefined;
+				if (tag === undefined && location !== null && response.status >= 300 && response.status < 400) {
+					response = await get(new URL(location, url).toString(), "follow");
+				}
 				let raw: unknown;
-				if (response.status >= 300 && response.status < 400 && location !== null) {
-					raw = /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1];
-					if (raw !== undefined) raw = decodeURIComponent(raw as string);
+				if (tag !== undefined) {
+					raw = decodeURIComponent(tag);
 				} else {
 					if (!response.ok) throw new Error(`GET ${url}: ${response.status}`);
 					// A mirror's (or GitHub API's) JSON: `{"version"}` or `{"tag_name"}`.
