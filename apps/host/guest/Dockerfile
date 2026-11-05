@@ -37,7 +37,8 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 # snapshot.ubuntu.com/ubuntu carries every architecture.
 # The desktop is Openbox with two tint2 panels (a top bar and a dock), rofi for the app list, and small GTK 3 apps
 # that need no GPU: LXTerminal, PCManFM and Geany. hsetroot draws the background as a root pixmap, which tint2 and
-# rofi show through their rounded corners without a compositor; librsvg2-common lets GTK and rofi draw SVG icons.
+# rofi show through their rounded corners without a compositor; librsvg2-common lets GTK and rofi draw SVG icons;
+# xsettingsd hands the GTK apps the DPI a viewer's pixel ratio asks for (kantel-session).
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
 	&& echo "APT::Snapshot \"$UBUNTU_SNAPSHOT\";" > /etc/apt/apt.conf.d/50kantel-snapshot \
 	&& echo 'Acquire::Snapshots::URI::Host::ports.ubuntu.com "https://snapshot.ubuntu.com/ubuntu/@SNAPSHOTID@/";' \
@@ -48,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 		ca-certificates curl wget gnupg git openssh-server sudo less nano vim-tiny jq unzip zip xz-utils file \
 		python3 python3-pip python3-venv python3-dev build-essential pkg-config e2fsprogs \
 		tigervnc-standalone-server tigervnc-tools dbus-x11 x11-utils x11-xserver-utils xdotool xclip xauth \
-		openbox tint2 rofi hsetroot lxterminal pcmanfm geany librsvg2-common \
+		openbox tint2 rofi hsetroot xsettingsd lxterminal pcmanfm geany librsvg2-common \
 		adwaita-icon-theme fonts-dejavu-core fonts-liberation fonts-noto-color-emoji imagemagick \
 	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 
