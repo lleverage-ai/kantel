@@ -510,7 +510,7 @@ export interface MountsSource {
 /** One thing an image has or lacks: what the guest agent found, or why it isn't there. */
 export interface SandboxFeature {
 	readonly available: boolean;
-	/** What was found, such as "Xtigervnc, xfce4-session, Selkies". */
+	/** What was found, such as "Xtigervnc, Openbox, Selkies". */
 	readonly detail?: string;
 	/** Why not, in a few words, such as "No desktop in this image". */
 	readonly reason?: string;

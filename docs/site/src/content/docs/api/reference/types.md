@@ -871,7 +871,7 @@ What a microVM's image has, as its guest agent found it when it last started: it
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `available` | boolean | yes |  |
-| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. |
 | `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
 | `kvm` | boolean | yes | `/dev/kvm` opens inside, so containers and VMs in it can nest. |
 
@@ -882,7 +882,7 @@ One thing a microVM's image has or lacks.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `available` | boolean | yes |  |
-| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. |
 | `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
 
 ### GuestOs

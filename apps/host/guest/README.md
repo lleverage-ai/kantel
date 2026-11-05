@@ -12,9 +12,9 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
 - Docker CE and containerd (pinned versions), with Buildx and Compose
 - git, curl, wget, jq, build-essential, pkg-config, Python 3 with pip and venv, Node and Go (pinned releases,
   checked against their SHA-256)
-- an XFCE session on a TigerVNC X server (display `:1`, 1920x1080), Chromium on that display (Debian 13's build,
-  from `snapshot.debian.org` at the same date; Ubuntu's own Chromium is a snap, and Google Chrome can't be
-  redistributed)
+- a desktop on a TigerVNC X server (display `:1`, 1920x1080): Openbox with a top bar and a dock ("The desktop"
+  below), and Chromium (Debian 13's build, from `snapshot.debian.org` at the same date; Ubuntu's own Chromium is a
+  snap, and Google Chrome can't be redistributed)
 - Selkies, streaming the desktop to a browser
 - OpenSSH, the guest agent (`kantel-guest`) and `kantel-init`
 
@@ -50,6 +50,25 @@ Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay th
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.
 `/etc/kantel/desktop.env` can set `KANTEL_DESKTOP_SIZE`, `KANTEL_STREAM_ENCODER` (`h264enc`, `h264enc-striped`,
 `jpeg`), `KANTEL_STREAM_FPS` and `KANTEL_STREAM_FLAGS`.
+
+### The desktop
+
+`kantel-session` (from `kantel-desktop`) runs Openbox and two tint2 panels: a thin top bar (an Applications button,
+the open windows, the clock) and a dock at the bottom with five launchers, left to right: the apps list (rofi),
+Chromium, a terminal (LXTerminal), a file manager (PCManFM) and an editor (Geany). All are small GTK 3 apps that draw
+on the CPU, so they need no GPU and start in well under a second. The look is dark (Adwaita-dark, DejaVu fonts, a
+Kantel Openbox theme); the settings are in `rootfs/home/user/.config`, the dock's launchers and icons in
+`rootfs/usr/share/kantel/{dock,icons}`. LXTerminal keeps 10,000 lines of scrollback; Geany shows line numbers, its
+One Dark scheme and its file browser in the sidebar.
+
+The dock's Chromium (`kantel-chromium`) is the desktop's own: a profile of its own (`~/.config/chromium`, beside the sandbox
+browser's `~/.config/kantel-chrome`) through the guest's proxy, not the sandbox's browser. That one runs on display `:2` with its DevTools port open to
+the session's tools, and the browser view streams it alone; sharing it would put the user's tabs in front of the
+agent's automation and take the browser view's window away. Where desktop.env puts the sandbox's browser on `:1`
+(`KANTEL_BROWSER_DISPLAY=:1`, or a host from before the browser view), the dock raises it instead.
+
+`KANTEL_DESKTOP_SESSION` in `/etc/kantel/desktop.env` runs another session in its place, as a custom image that
+installs XFCE might (`KANTEL_DESKTOP_SESSION=startxfce4`).
 
 ### The browser alone
 

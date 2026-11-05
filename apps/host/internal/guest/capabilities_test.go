@@ -39,9 +39,10 @@ func TestDetectKantelImage(t *testing.T) {
 		"lib64/ld-linux-x86-64.so.2":                    "",
 		"bin/bash":                                      "",
 		"usr/bin/Xtigervnc":                             "",
-		"usr/bin/xfce4-session":                         "",
+		"usr/bin/openbox":                               "",
 		"usr/local/bin/selkies":                         "",
 		"usr/local/bin/kantel-desktop":                  "",
+		"usr/local/bin/kantel-session":                  "",
 		"usr/local/bin/kantel-browser":                  "",
 		"usr/bin/chromium":                              "",
 		"usr/bin/dockerd":                               "",
@@ -55,7 +56,7 @@ func TestDetectKantelImage(t *testing.T) {
 	if c.Libc != "glibc" || c.Shell != "/bin/bash" || c.Init != "systemd" || !c.Agent.Injected || c.Agent.Version != "1.18.0" {
 		t.Errorf("libc %s, shell %s, init %s, agent %+v", c.Libc, c.Shell, c.Init, c.Agent)
 	}
-	if !c.Desktop.Available || c.Desktop.Detail != "Xtigervnc, xfce4-session, Selkies" {
+	if !c.Desktop.Available || c.Desktop.Detail != "Xtigervnc, Openbox, Selkies" {
 		t.Errorf("desktop: %+v", c.Desktop)
 	}
 	if !c.Browser.Available || c.Browser.Detail != "Chromium" {
@@ -66,11 +67,46 @@ func TestDetectKantelImage(t *testing.T) {
 	}
 }
 
+// The desktop's detail names the session kantel-desktop runs: Kantel's Openbox, the one desktop.env names instead, or
+// in an image from before Openbox (no kantel-session), XFCE's.
+func TestDetectDesktopSession(t *testing.T) {
+	base := map[string]string{
+		"etc/os-release":                            "ID=ubuntu\n",
+		"usr/bin/Xtigervnc":                         "",
+		"usr/bin/selkies":                           "",
+		"usr/local/bin/kantel-desktop":              "",
+		"etc/systemd/system/kantel-desktop.service": "",
+	}
+	for name, tc := range map[string]struct {
+		files map[string]string
+		want  string
+	}{
+		"Kantel's Openbox":        {map[string]string{"usr/local/bin/kantel-session": "", "usr/bin/openbox": ""}, "Xtigervnc, Openbox, Selkies"},
+		"an image from before it": {map[string]string{"usr/bin/xfce4-session": ""}, "Xtigervnc, xfce4-session, Selkies"},
+		"a session of the image's own": {map[string]string{
+			"usr/local/bin/kantel-session": "", "usr/bin/openbox": "", "usr/bin/xfce4-session": "",
+			"etc/kantel/desktop.env": "KANTEL_DESKTOP_SIZE=1280x720\nKANTEL_DESKTOP_SESSION=\"/usr/bin/startxfce4 --with-ck-launch\"\n",
+		}, "Xtigervnc, startxfce4, Selkies"},
+		"Openbox removed": {map[string]string{"usr/local/bin/kantel-session": ""}, "Xtigervnc, Selkies"},
+	} {
+		files := map[string]string{}
+		for path, content := range base {
+			files[path] = content
+		}
+		for path, content := range tc.files {
+			files[path] = content
+		}
+		if c := Detect(image(t, files), "v", "systemd", false); !c.Desktop.Available || c.Desktop.Detail != tc.want {
+			t.Errorf("%s: desktop %+v, want %q", name, c.Desktop, tc.want)
+		}
+	}
+}
+
 func TestDetectBrowserSurface(t *testing.T) {
 	files := map[string]string{
 		"etc/os-release":                                    "ID=ubuntu\n",
 		"usr/bin/Xtigervnc":                                 "",
-		"usr/bin/xfce4-session":                             "",
+		"usr/bin/openbox":                                   "",
 		"usr/bin/selkies":                                   "",
 		"usr/bin/chromium":                                  "",
 		"usr/local/bin/kantel-desktop":                      "",

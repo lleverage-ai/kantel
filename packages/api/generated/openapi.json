@@ -12994,7 +12994,7 @@
 					},
 					"detail": {
 						"type": "string",
-						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+						"description": "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`."
 					},
 					"reason": {
 						"type": "string",
@@ -13016,7 +13016,7 @@
 					},
 					"detail": {
 						"type": "string",
-						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+						"description": "What the guest agent found, such as `Xtigervnc, Openbox, Selkies`."
 					},
 					"reason": {
 						"type": "string",
