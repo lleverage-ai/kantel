@@ -234,6 +234,11 @@ export interface HostExecStatus {
 	readonly pid?: number;
 	/** Once it has ended. */
 	readonly result?: HostExecResult;
+	/**
+	 * On a detached start: the sandbox didn't answer it, so whether the command started is unknown. Kantel follows it by
+	 * its ID as any; `sandbox.exec.get`'s `not_found` then means it never started.
+	 */
+	readonly unconfirmed?: boolean;
 }
 
 /**

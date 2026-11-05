@@ -94,6 +94,9 @@ const EXEC_RETRY_MAX_MS = 30_000;
 /** Added to a detached command's stderr when a host from before detached commands stopped it at its own limit. */
 export const OLD_HOST_DETACHED =
 	"Kantel: this sandbox's host runs a kantel-host from before detached commands, which stops one at its own time limit (2 minutes on a microVM); upgrade its kantel-host to run them with no limit\n";
+/** A detached command whose start its sandbox never confirmed, and which its host then didn't know: it never ran. */
+const UNCONFIRMED_START =
+	"The sandbox didn't confirm this command's start, and its host doesn't know it, so it never ran: run it again";
 /** Why a kill can't reach the process on a host from before kills. */
 export const OLD_HOST_KILL =
 	"this sandbox's host runs a kantel-host from before kills, which can't stop a command; upgrade its kantel-host";
@@ -763,8 +766,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(controls ? { commandId: request.commandId } : {}),
 			};
 			if (controls && request.detached === true && request.commandId !== undefined) {
+				let started: HostExecStatus;
 				try {
-					await call<HostExecStatus>(sandboxId, HostMethods.exec, { ...params, detached: true }, request.signal);
+					started = await call<HostExecStatus>(
+						sandboxId,
+						HostMethods.exec,
+						{ ...params, detached: true },
+						request.signal,
+					);
 				} catch (error) {
 					if (request.signal?.aborted) throw new DetachedWaitEnded();
 					// Sent and never answered (`unanswered`: the connection dropped, or the call timed out), or a peer replica's
@@ -774,7 +783,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					if (isKantelError(error) && !unanswered(error)) throw error;
 					return commandEnd(sandboxId, request.commandId, request.signal, error);
 				}
-				return commandEnd(sandboxId, request.commandId, request.signal);
+				// The sandbox didn't confirm it started: followed as any, and a host that then doesn't know it says so.
+				const unconfirmed =
+					started?.unconfirmed === true ? new KantelError("unavailable", UNCONFIRMED_START) : undefined;
+				return commandEnd(sandboxId, request.commandId, request.signal, unconfirmed);
 			}
 			const result = await call<HostExecResult>(
 				sandboxId,

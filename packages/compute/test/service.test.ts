@@ -1,6 +1,6 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import {
 	type BackendCapabilities,
@@ -354,6 +354,42 @@ describe("sandboxes", () => {
 		// Delivered: a third kill sends nothing.
 		await tom.killCommand(sandbox.id, held.id);
 		expect(kills).toEqual([held.id, held.id]);
+	});
+
+	it("doesn't reopen a delivered kill when an older attempt fails after it", async () => {
+		const stub = createStubBackend();
+		const deliveries: { resolve: () => void; reject: (error: Error) => void }[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			exec: (_id, request) =>
+				new Promise((_resolve, reject) =>
+					request.signal?.addEventListener("abort", () => reject(new DetachedWaitEnded())),
+				),
+			killCommand: () =>
+				new Promise<void>((resolve, reject) => {
+					deliveries.push({ resolve, reject });
+				}),
+		};
+		const { api, tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const held = await tom.runCommand(sandbox.id, { command: "./serve", detached: true });
+		// Two kills at once: the first marks it killed, pending; the second retries the pending kill.
+		const first = tom.killCommand(sandbox.id, held.id);
+		await vi.waitFor(() => expect(deliveries).toHaveLength(1));
+		const second = tom.killCommand(sandbox.id, held.id);
+		await vi.waitFor(() => expect(deliveries).toHaveLength(2));
+		// The second is delivered, then the first fails.
+		deliveries[1]?.resolve();
+		expect((await second).stderr).toBe("");
+		deliveries[0]?.reject(new KantelError("unavailable", "the host disconnected"));
+		const late = await first;
+		expect(late.stderr).toBe("");
+		const stored = await api.store.commands.get(held.id);
+		expect(stored?.killPending).toBeUndefined();
+		expect(stored?.stderr).toBe("");
+		// Delivered: another kill sends nothing.
+		await tom.killCommand(sandbox.id, held.id);
+		expect(deliveries).toHaveLength(2);
 	});
 
 	it("keeps an end recorded while a kill was on its way, and sends that kill nowhere", async () => {

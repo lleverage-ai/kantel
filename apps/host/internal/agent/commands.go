@@ -221,7 +221,8 @@ func (c *commandRuns) kill(key string) (bool, <-chan struct{}) {
 func (c *commandRuns) status(commandID string, run *commandRun) proto.ExecStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !ended(run) {
+	// A reservation's done closing is its start settling, never the command ending: it is running (or starting).
+	if run.reserved || !ended(run) {
 		return proto.ExecStatus{CommandID: commandID, State: proto.ExecRunning}
 	}
 	result := run.result
@@ -308,9 +309,15 @@ func (h *Host) startDetached(ctx context.Context, t Tier, key string, p proto.Ex
 		pid, err := runner.StartCommand(ctx, p)
 		var pe *proto.Error
 		if err != nil && !errors.As(err, &pe) {
-			// No answer from the guest (its connection failed): it may have started it all the same, so it is asked.
-			if status, statusErr := runner.CommandStatus(ctx, p.SandboxID, p.CommandID, 0); statusErr == nil && status.State != "" {
+			// No answer from the guest (its connection failed): it may have started it all the same, so it is asked; and
+			// when it can't be asked either, the start is unconfirmed, not failed. Answered running, unconfirmed: Kantel
+			// follows it by its ID, and the guest says whether it has it.
+			status, statusErr := runner.CommandStatus(ctx, p.SandboxID, p.CommandID, 0)
+			if statusErr == nil && status.State != "" {
 				err = nil
+			} else if statusErr == nil || !errors.As(statusErr, &pe) || pe.Code != proto.ErrNotFound {
+				h.runs.unreserve(key, reserved)
+				return proto.ExecStatus{CommandID: p.CommandID, State: proto.ExecRunning, Unconfirmed: true}, nil
 			}
 		}
 		if err == nil {

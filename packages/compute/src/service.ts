@@ -531,6 +531,8 @@ export const MAX_OUTPUT_CHARS = 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 /** How long after its start a detached command its backend doesn't know is taken as lost, not as not yet started. */
 const LOST_COMMAND_MS = 60_000;
+/** The longest a stop or delete waits to bring in the ends of a sandbox's detached commands no gateway here follows. */
+const RECONCILE_MS = 5_000;
 /** How many of each base image's versions the admin list answers, newest first. */
 export const BASE_IMAGE_VERSIONS_LISTED = 10;
 /** The routes whose answers carry a sandbox's or snapshot's `base`, which read the base image index first. */
@@ -2986,15 +2988,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			: `Kantel marked this command killed but couldn't stop it, so it may still be running: ${messageOf(failure)}${
 					final ? "" : "; kill it again to retry"
 				}\n`;
+		// Only while it is still pending: once another attempt has delivered it, a late failure changes nothing.
 		const written = await store.commands.update(command.id, (latest) => {
-			if (latest.state !== "killed") return undefined;
+			if (latest.state !== "killed" || latest.killPending !== true) return undefined;
 			const stderr =
 				note === undefined || latest.stderr.includes(note) ? latest.stderr : truncate(`${latest.stderr}${note}`).text;
 			if (!final) return { ...latest, stderr, killPending: true };
 			const { killPending: _, ...done } = latest;
 			return { ...done, stderr };
 		});
-		return written ?? command;
+		return written ?? (await store.commands.get(command.id)) ?? command;
 	}
 
 	/**
@@ -3002,9 +3005,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
 	 */
 	async function killCommandsOf(sandboxId: string): Promise<void> {
-		for (const listed of await store.commands.list({ sandboxId, state: "running" })) {
-			// One that ended where no gateway here saw it keeps its end, not a kill.
-			const command = await fetchedCommand(listed);
+		const running = await store.commands.list({ sandboxId, state: "running" });
+		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
+		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
+		// time is marked killed.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const budget = new Promise<undefined>((resolve) => {
+			timer = setTimeout(() => resolve(undefined), RECONCILE_MS);
+		});
+		const reconciled = await Promise.all(
+			running.map(async (listed) => (await Promise.race([fetchedCommand(listed), budget])) ?? listed),
+		);
+		if (timer !== undefined) clearTimeout(timer);
+		for (const command of reconciled) {
 			if (command.state !== "running") continue;
 			const at = now();
 			await settleCommand(command.id, (latest) => ({

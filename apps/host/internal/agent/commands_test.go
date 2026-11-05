@@ -71,6 +71,8 @@ type runnerTier struct {
 	lostAnswer bool
 	// killErr: the guest fails to take a kill.
 	killErr error
+	// probeErr: the guest can't be asked for a command's status either.
+	probeErr error
 }
 
 func (r *runnerTier) StartCommand(_ context.Context, p proto.ExecParams) (int, error) {
@@ -96,6 +98,9 @@ func (r *runnerTier) StartCommand(_ context.Context, p proto.ExecParams) (int, e
 func (r *runnerTier) CommandStatus(_ context.Context, _, id string, _ time.Duration) (proto.ExecStatus, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.probeErr != nil {
+		return proto.ExecStatus{}, r.probeErr
+	}
 	for _, k := range r.killed {
 		if k == id {
 			return proto.ExecStatus{CommandID: id, State: proto.ExecEnded, Result: &proto.ExecResult{ExitCode: 137}}, nil
@@ -446,6 +451,52 @@ func TestAGuestStartWhoseAnswerWasLostIsAskedFor(t *testing.T) {
 	}
 	if h.runs.get(runKey("sbx_1", "cmd_l")) != nil {
 		t.Fatal("the reservation outlived the start")
+	}
+}
+
+// A guest whose start answer and status probe both fail may have the command: the start is answered running but
+// unconfirmed, for Kantel to follow by its ID, never as a failure. A probe that says it has none leaves the error.
+func TestAGuestStartThatCantBeConfirmedIsntAFailure(t *testing.T) {
+	tier := &runnerTier{heldTier: newHeldTier(), lostAnswer: true, probeErr: errors.New("vsock: connection reset")}
+	h := hostWith(t, tier)
+	status, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "./serve", Detached: true, CommandID: "cmd_u"})
+	if err != nil || status.State != proto.ExecRunning || !status.Unconfirmed {
+		t.Fatalf("start: %+v, %v", status, err)
+	}
+	tier.probeErr = &proto.Error{Code: proto.ErrNotFound, Message: "no such command"}
+	if _, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "./serve", Detached: true, CommandID: "cmd_n"}); err == nil {
+		t.Fatal("a start the guest says it doesn't have was answered started")
+	}
+}
+
+// A get that took a reservation as its start settled reads it as running, never as an exit with no result.
+func TestAReleasedReservationIsNeverAnEnd(t *testing.T) {
+	var runs commandRuns
+	for _, release := range []func(key string, r *commandRun){
+		func(key string, r *commandRun) { runs.unreserve(key, r) },
+		func(key string, r *commandRun) {
+			runs.replace(key, r, &commandRun{cancel: func() {}, done: make(chan struct{}), detached: true})
+		},
+	} {
+		key := runKey("sbx_1", "cmd_r")
+		reserved := &commandRun{cancel: func() {}, done: make(chan struct{}), reserved: true}
+		if r := runs.add(key, reserved); r != added {
+			t.Fatalf("add: %v", r)
+		}
+		seen := runs.get(key)
+		release(key, reserved)
+		if status := runs.status("cmd_r", seen); status.State != proto.ExecRunning || status.Result != nil {
+			t.Fatalf("a released reservation read as %+v", status)
+		}
+		runs.forget("sbx_1")
+	}
+	// A run that really ended keeps its result.
+	key := runKey("sbx_1", "cmd_d")
+	run := &commandRun{cancel: func() {}, done: make(chan struct{}), detached: true}
+	runs.add(key, run)
+	runs.end(key, run, proto.ExecResult{ExitCode: 4, Stdout: "out"}, nil)
+	if status := runs.status("cmd_d", run); status.State != proto.ExecEnded || status.Result.ExitCode != 4 {
+		t.Fatalf("an ended run read as %+v", status)
 	}
 }
 

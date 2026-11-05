@@ -49,6 +49,8 @@ class CommandHost {
 	dropOnStart?: "started" | "lost";
 	/** Set: every status get is refused with it, as once its space turns E2E on. */
 	refuseGets?: { code: string; message: string };
+	/** A detached start answered unconfirmed (its guest didn't answer): `started` once the guest has it, `lost` not. */
+	unconfirmStart?: "started" | "lost";
 	private receive?: (text: string) => void;
 	private closed?: (code: number, reason: string) => void;
 
@@ -117,8 +119,11 @@ class CommandHost {
 				const command: Running = { params: p, waiting: [] };
 				const drop = this.controls && p.detached === true ? this.dropOnStart : undefined;
 				this.dropOnStart = undefined;
-				if (drop !== "lost") this.commands.set(id, command);
+				const unconfirmed = this.controls && p.detached === true ? this.unconfirmStart : undefined;
+				this.unconfirmStart = undefined;
+				if (drop !== "lost" && unconfirmed !== "lost") this.commands.set(id, command);
 				if (drop !== undefined) return this.drop();
+				if (unconfirmed !== undefined) return answer({ commandId: id, state: "running", unconfirmed: true });
 				if (this.controls && p.detached === true) {
 					return answer({ commandId: id, state: "running", pid: 4242 });
 				}
@@ -263,6 +268,24 @@ describe("commands on kantel-host hosts", () => {
 		const ended = await root.getCommand(sandbox.id, started.id);
 		expect(ended).toMatchObject({ exitCode: 1 });
 		expect(ended.stderr).toContain("end-to-end encrypted");
+	});
+
+	it("follows a detached start its sandbox didn't confirm, and ends it with that said when it never started", async () => {
+		const { root, host, sandbox } = await setup(true);
+		host.unconfirmStart = "started";
+		const kept = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec.get").length).toBeGreaterThan(0));
+		expect((await root.getCommand(sandbox.id, kept.id)).state).toBe("running");
+		host.end(kept.id, { exitCode: 0, stdout: "served\n", stderr: "" });
+		await vi.waitFor(async () =>
+			expect(await root.getCommand(sandbox.id, kept.id)).toMatchObject({ state: "exited", stdout: "served\n" }),
+		);
+		host.unconfirmStart = "lost";
+		const lost = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, lost.id)).state).toBe("exited"));
+		const ended = await root.getCommand(sandbox.id, lost.id);
+		expect(ended.exitCode).toBe(1);
+		expect(ended.stderr).toContain("didn't confirm this command's start");
 	});
 
 	it("honours a detached command's own limit", async () => {

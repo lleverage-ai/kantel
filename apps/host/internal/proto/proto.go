@@ -748,6 +748,9 @@ type ExecStatus struct {
 	State     string      `json:"state"`
 	Pid       int         `json:"pid,omitempty"`
 	Result    *ExecResult `json:"result,omitempty"`
+	// Unconfirmed, on a detached start: the sandbox didn't answer it, so whether the command started is unknown.
+	// Kantel follows it by its ID as any; sandbox.exec.get's not_found then means it never started.
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 }
 
 // ExecStatus's states.
