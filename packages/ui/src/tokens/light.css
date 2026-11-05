@@ -36,6 +36,7 @@
 	/* Lines. */
 	--kt-border: hsl(60 6% 83.7%); /* border: Grey 400 */
 	--kt-border-strong: hsl(60 6% 78%); /* a step over the border */
+	--kt-chart-fill: 0.14; /* a usage chart's area under its line: enough to read on white */
 	--kt-skeleton: color-mix(
 		in srgb,
 		var(--kt-border) 70%,

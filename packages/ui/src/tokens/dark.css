@@ -43,6 +43,7 @@
 	/* Lines. */
 	--kt-border: hsl(220 4% 22.4%); /* border */
 	--kt-border-strong: hsl(220 4% 27%); /* a step over the input */
+	--kt-chart-fill: 0.09; /* a usage chart's area under its line: a step quieter: the same tint is loud on the dark card */
 	--kt-skeleton: color-mix(
 		in srgb,
 		var(--kt-border) 50%,

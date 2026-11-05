@@ -409,7 +409,12 @@ export function UsageGraph({
 					return (
 						<g key={points[0]?.[0] ?? 0}>
 							{area === undefined ? null : (
-								<polygon points={area} fill="currentColor" fillOpacity="0.14" stroke="none" />
+								<polygon
+									points={area}
+									fill="currentColor"
+									style={{ fillOpacity: "var(--kt-chart-fill)" }}
+									stroke="none"
+								/>
 							)}
 							<polyline
 								points={pointsText(points)}
