@@ -981,8 +981,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		snapshotId: string,
 		shape: { readonly memoryMiB: number; readonly diskGiB: number },
 	) => {
-		if (!hub.connected(host.id)) throw new KantelError("unavailable", `The host ${host.name} isn't connected`);
-		if (host.draining) throw new KantelError("unavailable", `The host ${host.name} is draining`);
+		if (!hub.connected(host.id)) {
+			throw placementError("unavailable", "host_unavailable", `The host ${host.name} isn't connected`);
+		}
+		if (host.draining) throw placementError("unavailable", "host_unavailable", `The host ${host.name} is draining`);
 		const capacity = host.capacity;
 		const held = reservedOn(host);
 		if (
@@ -990,7 +992,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			capacity.freeMemoryMiB - held.memoryMiB < shape.memoryMiB ||
 			capacity.freeDiskGiB - held.diskGiB < shape.diskGiB
 		) {
-			throw new KantelError("exhausted", `The host ${host.name} has no room to build the template now`);
+			throw placementError(
+				"exhausted",
+				"insufficient_capacity",
+				`The host ${host.name} has no room to build the template now`,
+			);
 		}
 		const hold = { memoryMiB: shape.memoryMiB, diskGiB: shape.diskGiB };
 		const holds = building.get(host.id) ?? new Map();
@@ -1156,7 +1162,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						? usable
 						: usable.filter(input.template.image === undefined ? runsTemplates : buildsTemplateImages);
 				if (templating.length === 0 && usable.length > 0) {
-					throw new KantelError("not_supported", "No host that could take it runs templates; upgrade kantel-host");
+					throw placementError(
+						"not_supported",
+						"no_host_for_template",
+						"No host that could take it runs templates; upgrade kantel-host",
+					);
 				}
 				// Grants and protected variables go only where they are enforced.
 				const hosts = needsEgressPolicy(input.egress) ? templating.filter(enforcesPolicy) : templating;
@@ -1197,7 +1207,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				);
 				if (isRefusal(chosen)) {
 					// From a snapshot it goes only on the snapshot's host: that host not being up is the reason, not a lack of hosts.
-					const reason = input.from !== undefined && chosen.code === "no_host" ? "host_unavailable" : chosen.code;
+					const pinned = input.from !== undefined || input.template?.snapshot !== undefined;
+					const reason = pinned && chosen.code === "no_host" ? "host_unavailable" : chosen.code;
 					throw placementError("exhausted", reason, chosen.reason);
 				}
 				const now = clock.now();

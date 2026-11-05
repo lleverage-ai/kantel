@@ -2577,8 +2577,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (holders !== undefined) {
 				eligibleHosts = holders.filter((hostId) => boot.eligibleHosts.includes(hostId));
 				if (eligibleHosts.length === 0) {
-					throw new KantelError(
+					throw placementError(
 						"unavailable",
+						"host_unavailable",
 						"No host this sandbox may use holds its template's image now; make a new sandbox from the template once it's built",
 					);
 				}
@@ -4126,7 +4127,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								eligible.flatMap((host) => host.sizes ?? capabilities.sizes),
 							);
 				if (type === "microvm" && machine === undefined) {
-					throw new KantelError("not_supported", `No host this sandbox may use offers the size ${body.size}`);
+					throw placementError(
+						"not_supported",
+						"no_host_offers_size",
+						`No host this sandbox may use offers the size ${body.size}`,
+					);
 				}
 				// From the template's newest ready snapshot built as that machine, on its host, or a fresh boot.
 				const start =

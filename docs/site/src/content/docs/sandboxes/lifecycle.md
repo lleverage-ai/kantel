@@ -127,6 +127,7 @@ Others are found only once a host is being chosen, such as hosts that turn out t
 | `no_host_with_labels` | `503 unavailable` | No host has every label in `hostLabels` | Ask for other labels, or none |
 | `no_host_offers_size` | `501 not_supported` | No host offers the size or can make the `resources` | Ask for another size; `GET /v1/sandbox-shapes` says what there is |
 | `no_host_enforces_egress` | `501 not_supported` | No host that could take it enforces egress grants or protected variables | Upgrade `kantel-host` |
+| `no_host_for_template` | `501 not_supported` | No host that could take it runs templates, or builds the template's custom image | Create it without the template, or turn a host's template builder on |
 | `insufficient_capacity` | `429 exhausted` | Hosts match, but none has the memory or disk free now | Try again later, or ask for less |
 | `host_unavailable` | `503 unavailable` | The host its disk or snapshot is on is offline, draining or not one you may use now, or it dropped off during the boot | Try again later |
 | `account_limit` | `429 exhausted` | The account runs as many sandboxes as it may | Stop or delete one |

@@ -1072,9 +1072,9 @@ One of: `"pending"` or `"ready"` or `"failed"`.
 
 ### PlacementReason
 
-Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may.
+Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may.
 
-One of: `"no_host"` or `"no_host_for_type"` or `"no_host_with_labels"` or `"no_host_offers_size"` or `"no_host_enforces_egress"` or `"insufficient_capacity"` or `"host_unavailable"` or `"account_limit"`.
+One of: `"no_host"` or `"no_host_for_type"` or `"no_host_with_labels"` or `"no_host_offers_size"` or `"no_host_enforces_egress"` or `"no_host_for_template"` or `"insufficient_capacity"` or `"host_unavailable"` or `"account_limit"`.
 
 ### PollDeviceLoginBody
 

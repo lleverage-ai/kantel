@@ -325,6 +325,7 @@ const PLACEMENT_HINTS: { readonly [reason: string]: string } = {
 	no_host_with_labels: "No host has those host labels. Ask for others, or none.",
 	no_host_offers_size: "No host offers that size or resources. Ask for a smaller size or other resources.",
 	no_host_enforces_egress: "No host that could take it enforces egress grants. Tell the user to upgrade kantel-host.",
+	no_host_for_template: "No host runs this template. Create the sandbox without it, or tell the user.",
 	insufficient_capacity: "The hosts are full now. Try again in a minute, or ask for a smaller size.",
 	host_unavailable: "The host this sandbox is on can't take it now. Try again later, or create a new sandbox.",
 	account_limit: "The account runs as many sandboxes as it may. Stop or delete one first.",

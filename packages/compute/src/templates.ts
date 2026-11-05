@@ -42,7 +42,7 @@
  * with `backend.deleteTemplateSnapshot`. Nothing here reads or writes `store.snapshots` or calls `backend.deleteSnapshot`.
  */
 import { computeSchema, type RouteHandlers, type SignedInComputeRoutes, type templateRoutes } from "@kantel/api";
-import { isKantelError, KantelError } from "@kantel/contracts";
+import { isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { actingAccount, type Principal, requireScope, roleIn } from "./auth.ts";
 import type {
 	BackendEgress,
@@ -1138,8 +1138,9 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		const booting = new Set(hostRuntimes.map((runtime) => runtime.hostId));
 		const eligible = start.eligibleHosts.filter((hostId) => booting.has(hostId));
 		if (eligible.length === 0) {
-			throw new KantelError(
+			throw placementError(
 				"not_supported",
+				"no_host_for_template",
 				custom
 					? "No host this sandbox may use builds templates' custom images; switch a host's templateBuilder on"
 					: "No host this sandbox may use can boot templates; upgrade its kantel-host",
