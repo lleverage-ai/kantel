@@ -67,7 +67,7 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		column-gap: var(--kt-step-3);
+		column-gap: var(--kt-step-4); /* labelled facts on a line stay apart as pairs */
 		row-gap: var(--kt-step-1);
 		padding: var(--kt-step-3) var(--kt-step-3);
 		border-bottom: var(--kt-hairline) solid var(--kt-border);
