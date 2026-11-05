@@ -68,7 +68,9 @@
 	--kt-status-working: hsl(210 45% 45%); /* info */
 	--kt-status-error-soft: color-mix(in srgb, var(--kt-status-error) 10%, transparent); /* the error tint */
 	--kt-status-waiting: hsl(280 30% 42%); /* plum: waiting on an answer from you */
-	--kt-status-approval: hsl(40 70% 30%); /* warning-text */
+	--kt-status-approval: hsl(
+		36 80% 32%
+	); /* warning-text, a warmer step off olive so a busy chart reads amber, not tan (5.4:1 on white) */
 	--kt-status-done: hsl(145 35% 35%); /* success */
 	--kt-status-error: hsl(0 55% 40%); /* destructive-text */
 	--kt-status-idle: var(--kt-text-faint); /* nothing happening */
