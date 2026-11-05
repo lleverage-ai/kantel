@@ -33,7 +33,7 @@ func (m *Manager) Processes() []usage.Process {
 			continue
 		}
 		running := s.meta.State == proto.StateRunning && s.machine != nil
-		id, owner, sizeName, pid, dir := s.meta.ID, s.meta.Owner, s.meta.Size, 0, ""
+		id, owner, sizeName, pid, dir, agent := s.meta.ID, s.meta.Owner, s.meta.Size, 0, "", s.guest
 		if running {
 			pid, dir = s.machine.Pid(), s.machine.Dir
 		}
@@ -44,6 +44,17 @@ func (m *Manager) Processes() []usage.Process {
 		p := usage.Process{SandboxID: id, Owner: owner, Pid: pid, ReadGuest: func(ctx context.Context) (usage.Memory, error) {
 			return guestMemory(ctx, dir)
 		}}
+		if agent != nil {
+			// Its disk and IO, which only the guest knows: its agent answers them (an agent from before /stats answers
+			// 404, and the sandbox has neither).
+			p.ReadStats = func(ctx context.Context) (usage.GuestStats, error) {
+				st, err := agent.Stats(ctx)
+				if err != nil {
+					return usage.GuestStats{}, err
+				}
+				return usage.GuestStats{DiskUsedBytes: st.DiskUsedBytes, DiskTotalBytes: st.DiskTotalBytes, IOSomeMicros: st.IOSomeMicros}, nil
+			}
+		}
 		if size, err := m.size(sizeName); err == nil {
 			p.CPUs = float64(size.VCPUs)
 			p.MemLimitBytes = int64(size.MemoryMiB) << 20

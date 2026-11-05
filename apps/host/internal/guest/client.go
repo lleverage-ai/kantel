@@ -170,6 +170,13 @@ func (c *Client) Capabilities(ctx context.Context) (*proto.GuestCapabilities, er
 	return &out, nil
 }
 
+// Stats asks the agent for its disk and IO figures; an IsNotFound error from an agent too old to say.
+func (c *Client) Stats(ctx context.Context) (Stats, error) {
+	var out Stats
+	_, err := c.do(ctx, http.MethodGet, "/stats", nil, &out)
+	return out, err
+}
+
 func (c *Client) SetIdentity(ctx context.Context, id Identity) error {
 	_, err := c.SetIdentitySteps(ctx, id)
 	return err

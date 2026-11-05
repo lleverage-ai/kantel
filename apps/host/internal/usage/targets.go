@@ -19,9 +19,19 @@ type Process struct {
 	// ReadGuest, if set, reads the guest's own MemTotal and MemAvailable from outside it (a microVM's balloon
 	// statistics, which Firecracker keeps): nothing runs in the guest to answer it. It fails for a VM without them.
 	ReadGuest func(ctx context.Context) (Memory, error)
+	// ReadStats, if set, asks the guest's agent for its disk and IO pressure: the one reading that runs in the guest.
+	ReadStats func(ctx context.Context) (GuestStats, error)
 	// Held: the sandbox was mid-operation (its lock taken by a create, snapshot or stop), so it wasn't read this time.
 	// It has no figure in this sample, and its counters are kept for the next.
 	Held bool
+}
+
+// GuestStats is a guest's own disk and IO figures (guest.Stats): its disk as df counts it, and its IO pressure's "some"
+// total in microseconds since boot, nil when its kernel has none.
+type GuestStats struct {
+	DiskUsedBytes  int64
+	DiskTotalBytes int64
+	IOSomeMicros   *uint64
 }
 
 // Shared is a process that runs several sandboxes, which can't be measured apart from the host's side: an account's

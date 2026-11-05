@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend, UsageSample } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
-import { FALLBACK_INTERVAL_MS, MAX_SAMPLES, spanMean } from "../src/service.ts";
+import { FALLBACK_INTERVAL_MS, HOURLY_SAMPLES, keptSamples, MAX_SAMPLES, spanMean } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID, stubReading } from "../src/stub-backend.ts";
@@ -89,6 +89,8 @@ describe("a usage series", () => {
 			memUsedBytes: 200,
 			diskUsedBytes: 0,
 			readings: 2,
+			diskReadings: 2,
+			ioReadings: 0,
 			local: true,
 		});
 		const closed = series.add("s", point(start + ROLLUP_MS, 1, 1000), { intervalMs: 5000 });
@@ -106,7 +108,7 @@ describe("a usage series", () => {
 		const start = ROLLUP_MS * 1000;
 		series.add("s", point(start), { intervalMs: 5000 });
 		expect(series.settle(start + ROLLUP_MS)).toEqual([]);
-		const mean = { ...point(start), readings: 1, local: true };
+		const mean = { ...point(start), readings: 1, diskReadings: 1, ioReadings: 0, local: true };
 		expect(series.settle(start + ROLLUP_MS + 10_000)).toEqual([{ key: "s", rollup: mean }]);
 		expect(series.keys()).toEqual(["s"]);
 		// A point late for the closed 5 minutes is kept, but makes no second mean for them.
@@ -176,6 +178,97 @@ function tick(at: number, sandboxes: ReportedUsage["sandboxes"], cpu = 0.4): Rep
 }
 
 describe("a host's usage ticks", () => {
+	it("carry a microVM's disk and IO pressure to its series and its means, and say where nothing was measured", async () => {
+		let clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const start = clock;
+		const reading = { id: box.id, kind: "microvm" as const, cpu: 0.2, memUsedBytes: 100 * MIB, memLimitBytes: 0 };
+		// Ten minutes of ticks with disk and IO, but one tick in each minute without (a guest that didn't answer).
+		for (let at = start; at < start + 10 * 60_000; at += USAGE_INTERVAL_MS) {
+			clock = at;
+			const answered = (at - start) % 60_000 !== 0;
+			const figures = answered ? { diskUsedBytes: 2048 * MIB, diskTotalBytes: 8192 * MIB, ioPressure: 0.25 } : {};
+			await api.service.recordUsage(STUB_HOST_ID, tick(at, [{ ...reading, ...figures }]));
+		}
+		const usage = await tom.getSandboxUsage(box.id, { since: start - 2 * ROLLUP_MS, intervalSeconds: 300 });
+		expect(usage.diskTotalBytes).toBe(8192 * MIB);
+		const series = usage.series.points;
+		expect(series[0]).toEqual({ at: start, cpu: 0.2, memUsedBytes: 100 * MIB });
+		expect(series[1]).toEqual({
+			at: start + USAGE_INTERVAL_MS,
+			cpu: 0.2,
+			memUsedBytes: 100 * MIB,
+			diskUsedBytes: 2048 * MIB,
+			ioPressure: 0.25,
+		});
+		// The means: the two 5-minute spans before it started are unmeasured, not 0; those it ran have disk and IO, the
+		// mean of the readings that had them.
+		const [before, , first] = usage.points;
+		expect(before).toMatchObject({ measured: false, cpu: 0 });
+		expect(before?.diskUsedBytes).toBeUndefined();
+		expect(first).toMatchObject({ measured: true, diskUsedBytes: 2048 * MIB, ioPressure: 0.25 });
+		// And the closed 5-minute mean is kept in the sandbox's record with them.
+		const stored = await api.store.sandboxes.get(box.id);
+		expect(stored?.samples[0]).toMatchObject({ at: start, diskMb: 2048, io: 0.25 });
+		// With how many of its 60 readings had them, for when it is folded into an hour.
+		expect(stored?.samples[0]).toMatchObject({ readings: 60, diskReadings: 55, ioReadings: 55 });
+	});
+
+	it("count CPU seconds by the time each kept mean covers, and only within the span asked for", async () => {
+		const HOUR = 3_600_000;
+		const DAY = 24 * HOUR;
+		const t0 = Date.UTC(2026, 10, 1, 0, 0, 0);
+		let clock = t0;
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		// Six days of hourly means at full CPU, then a day of 5-minute means at none, running all week.
+		const hours = Array.from({ length: HOURLY_SAMPLES }, (_, i) => ({
+			at: t0 + i * HOUR,
+			cpu: 1,
+			memoryMb: 10,
+			readings: 720,
+			spanMs: HOUR,
+		}));
+		const day = Array.from({ length: MAX_SAMPLES }, (_, i) => ({
+			at: t0 + 6 * DAY + i * ROLLUP_MS,
+			cpu: 0,
+			memoryMb: 10,
+			readings: 60,
+		}));
+		await api.store.sandboxes.update(box.id, (current) => ({
+			...current,
+			createdAt: t0,
+			runs: [{ from: t0 }],
+			samples: [...hours, ...day],
+		}));
+		clock = t0 + 7 * DAY;
+		// The last day ran at no CPU, whatever the week before it did.
+		expect((await tom.getSandboxUsage(box.id)).totals).toMatchObject({ runningSeconds: DAY / 1000, cpuSeconds: 0 });
+		// The week: six days of full CPU, each hour counting for an hour, not for five minutes.
+		const week = await tom.getSandboxUsage(box.id, { since: t0, intervalSeconds: 3600 });
+		expect(week.totals.cpuSeconds).toBe((6 * DAY) / 1000);
+		expect((await tom.getSandbox(box.id)).usage.cpuSeconds).toBe((6 * DAY) / 1000);
+	});
+
+	it("keep an isolate's (no disk, no IO) without either", async () => {
+		let clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const reading = { id: box.id, kind: "isolate" as const, cpu: 0.1, memUsedBytes: MIB, memLimitBytes: 0 };
+		for (let at = clock; at < clock + 6 * 60_000; at += USAGE_INTERVAL_MS) {
+			await api.service.recordUsage(STUB_HOST_ID, tick(at, [reading]));
+		}
+		clock += 6 * 60_000;
+		const usage = await tom.getSandboxUsage(box.id, { intervalSeconds: 300 });
+		expect(usage.diskTotalBytes).toBeUndefined();
+		expect(usage.series.points.some((each) => "diskUsedBytes" in each || "ioPressure" in each)).toBe(false);
+		expect(usage.points.some((each) => "diskUsedBytes" in each || "ioPressure" in each)).toBe(false);
+	});
+
 	it("are kept per sandbox and per host, read with since, and never exec'd for", async () => {
 		let clock = Date.UTC(2026, 10, 4, 12, 0, 0);
 		const { backend, reads } = hostless(() => clock);
@@ -997,16 +1090,111 @@ describe("spanMean", () => {
 			{ at: 0, cpu: 0.2, memoryMb: 100, readings: 60 },
 			{ at: ROLLUP_MS, cpu: 0.6, memoryMb: 300, readings: 60 },
 		];
-		expect(spanMean(samples, 0, ROLLUP_MS)).toEqual({ cpu: 0.2, memoryMb: 100 });
+		expect(spanMean(samples, 0, ROLLUP_MS)).toEqual({ cpu: 0.2, memoryMb: 100, measured: true });
 		const straddling = spanMean(samples, ROLLUP_MS / 2, ROLLUP_MS + ROLLUP_MS / 2);
 		expect(straddling.cpu).toBeCloseTo(0.4);
 		expect(straddling.memoryMb).toBeCloseTo(200);
-		expect(spanMean([{ at: 12_345, cpu: 0.7, memoryMb: 9 }], 0, ROLLUP_MS)).toEqual({ cpu: 0.7, memoryMb: 9 });
-		expect(spanMean([{ at: 12_345, cpu: 0.7, memoryMb: 9 }], 20_000, ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0 });
+		const single = [{ at: 12_345, cpu: 0.7, memoryMb: 9 }];
+		expect(spanMean(single, 0, ROLLUP_MS)).toEqual({ cpu: 0.7, memoryMb: 9, measured: true });
+		expect(spanMean(single, 20_000, ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0, measured: false });
 		// A single reading taken on a 5-minute boundary is still a single reading: it counts only where it falls.
 		const onBoundary = [{ at: ROLLUP_MS, cpu: 0.7, memoryMb: 9 }];
-		expect(spanMean(onBoundary, ROLLUP_MS + 60_000, 2 * ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0 });
-		expect(spanMean(onBoundary, ROLLUP_MS, ROLLUP_MS + 60_000)).toEqual({ cpu: 0.7, memoryMb: 9 });
+		expect(spanMean(onBoundary, ROLLUP_MS + 60_000, 2 * ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0, measured: false });
+		expect(spanMean(onBoundary, ROLLUP_MS, ROLLUP_MS + 60_000)).toEqual({ cpu: 0.7, memoryMb: 9, measured: true });
+	});
+
+	it("means disk and IO over the samples that have them, and covers an hourly mean's whole span", () => {
+		const samples = [
+			{ at: 0, cpu: 0.2, memoryMb: 100, readings: 60, diskMb: 1000, io: 0.1 },
+			{ at: ROLLUP_MS, cpu: 0.6, memoryMb: 300, readings: 60 },
+		];
+		const both = spanMean(samples, 0, 2 * ROLLUP_MS);
+		expect(both).toMatchObject({ measured: true, diskMb: 1000, io: 0.1 });
+		expect(spanMean(samples, ROLLUP_MS, 2 * ROLLUP_MS)).toEqual({ cpu: 0.6, memoryMb: 300, measured: true });
+		const hourly = [{ at: 0, cpu: 0.5, memoryMb: 50, readings: 720, spanMs: 3_600_000 }];
+		expect(spanMean(hourly, 3_000_000, 3_300_000)).toMatchObject({ cpu: 0.5, measured: true });
+		expect(spanMean(hourly, 3_600_000, 3_900_000).measured).toBe(false);
+	});
+});
+
+describe("keptSamples", () => {
+	const HOUR = 3_600_000;
+	const fiveMinute = (at: number, cpu: number, extra: object = {}) => ({
+		at,
+		cpu,
+		memoryMb: 10,
+		readings: 60,
+		...extra,
+	});
+
+	it("keeps a day of 5-minute means and folds older ones into hourly means, weighted by their readings", () => {
+		// A day and an hour of 5-minute means: the first hour's twelve fold into one.
+		const samples = Array.from({ length: MAX_SAMPLES + 12 }, (_, i) =>
+			fiveMinute(i * ROLLUP_MS, i < 12 ? (i < 6 ? 0.2 : 0.4) : 0.9, i === 0 ? { diskMb: 100, io: 0.5 } : {}),
+		);
+		const kept = keptSamples(samples);
+		expect(kept).toHaveLength(MAX_SAMPLES + 1);
+		const [hour] = kept;
+		expect(hour).toMatchObject({ at: 0, readings: 720, spanMs: HOUR, diskMb: 100, io: 0.5 });
+		expect(hour?.cpu).toBeCloseTo(0.3);
+		expect(kept[1]).toEqual(samples[12]);
+		// Under a day, nothing changes.
+		expect(keptSamples(samples.slice(12))).toEqual(samples.slice(12));
+	});
+
+	it("adds a 5-minute mean to its hour's mean, and keeps at most HOURLY_SAMPLES hours", () => {
+		const hours = Array.from({ length: HOURLY_SAMPLES }, (_, i) => ({
+			at: i * HOUR,
+			cpu: 0.1,
+			memoryMb: 10,
+			readings: 60,
+			spanMs: ROLLUP_MS,
+		}));
+		const last = (HOURLY_SAMPLES - 1) * HOUR;
+		const day = Array.from({ length: MAX_SAMPLES + 1 }, (_, i) => fiveMinute(last + (i + 1) * ROLLUP_MS, 0.5));
+		const kept = keptSamples([...hours, ...day]);
+		expect(kept).toHaveLength(HOURLY_SAMPLES + MAX_SAMPLES);
+		// The overflowing 5-minute mean was in the last hour's clock hour: folded into it, its span reaching to its end.
+		const folded = kept[HOURLY_SAMPLES - 1];
+		expect(folded).toMatchObject({ at: last, readings: 120, spanMs: 2 * ROLLUP_MS });
+		expect(folded?.cpu).toBeCloseTo(0.3);
+		// Eleven more fill that hour and start the next, which pushes out the oldest hour.
+		const more = Array.from({ length: 11 }, (_, i) => fiveMinute(last + (MAX_SAMPLES + 2 + i) * ROLLUP_MS, 0.5));
+		const next = keptSamples([...kept, ...more]);
+		expect(next).toHaveLength(HOURLY_SAMPLES + MAX_SAMPLES);
+		expect(next[0]?.at).toBe(HOUR);
+		expect(next[HOURLY_SAMPLES - 2]).toMatchObject({ at: last, readings: 720, spanMs: HOUR });
+		expect(next[HOURLY_SAMPLES - 1]).toMatchObject({ at: last + HOUR, readings: 60, spanMs: ROLLUP_MS });
+	});
+
+	it("weights an hour's disk and IO only by the readings that had them", () => {
+		// IO 0, then a 5-minute mean whose guest never answered, then IO 1: the hour's IO is 1/2, not 1/3. Disk: 100 MB
+		// from all 60 readings, then 400 MB from 20 of 60.
+		const hour = [
+			fiveMinute(0, 0.5, { io: 0, diskMb: 100 }),
+			fiveMinute(ROLLUP_MS, 0.5),
+			fiveMinute(2 * ROLLUP_MS, 0.5, { io: 1, diskMb: 400, diskReadings: 20 }),
+		];
+		const day = Array.from({ length: MAX_SAMPLES }, (_, i) => fiveMinute(HOUR + i * ROLLUP_MS, 0.5));
+		const [folded] = keptSamples([...hour, ...day]);
+		expect(folded).toMatchObject({ readings: 180, diskReadings: 80, ioReadings: 120 });
+		expect(folded?.io).toBeCloseTo(0.5);
+		expect(folded?.diskMb).toBeCloseTo(175);
+		// Folding it again keeps the weights: another 60 readings at IO 1 make it (0 + 60 + 60) / 180.
+		const [again] = keptSamples([
+			folded as NonNullable<typeof folded>,
+			fiveMinute(3 * ROLLUP_MS, 0.5, { io: 1 }),
+			...day,
+		]);
+		expect(again).toMatchObject({ readings: 240, ioReadings: 180 });
+		expect(again?.io).toBeCloseTo(2 / 3);
+		// A spanMean over the hour weights them the same way.
+		expect(spanMean([folded as NonNullable<typeof folded>], 0, HOUR).io).toBeCloseTo(0.5);
+		// An hour with neither has neither.
+		const [bare] = keptSamples([fiveMinute(0, 0.5), fiveMinute(ROLLUP_MS, 0.5), ...day]);
+		expect(bare).not.toHaveProperty("io");
+		expect(bare).not.toHaveProperty("diskMb");
+		expect(bare).not.toHaveProperty("ioReadings");
 	});
 });
 

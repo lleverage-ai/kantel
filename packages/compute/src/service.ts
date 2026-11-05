@@ -550,6 +550,8 @@ const BASE_ROUTES = [
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** The usage readings kept per sandbox: a day of 5-minute means. */
 export const MAX_SAMPLES = 288;
+/** The hourly means kept per sandbox before its day of 5-minute ones (`keptSamples`): six more days, a week in all. */
+export const HOURLY_SAMPLES = 144;
 /** How far apart readings are taken by running a command in a sandbox, for a host that doesn't send its own. */
 export const FALLBACK_INTERVAL_MS = 60_000;
 /** How often a read may run that command at most, per sandbox. */
@@ -594,14 +596,17 @@ export function spanMean(
 	samples: readonly StoredSample[],
 	from: number,
 	to: number,
-): { cpu: number; memoryMb: number } {
+): { cpu: number; memoryMb: number; measured: boolean; diskMb?: number; io?: number } {
 	let weight = 0;
 	let cpu = 0;
 	let memoryMb = 0;
+	const disk = { weight: 0, sum: 0 };
+	const io = { weight: 0, sum: 0 };
 	for (const sample of samples) {
+		const readings = sample.readings ?? 1;
 		const covered =
 			sample.readings !== undefined
-				? Math.min(to, sample.at + ROLLUP_MS) - Math.max(from, sample.at)
+				? Math.min(to, sample.at + (sample.spanMs ?? ROLLUP_MS)) - Math.max(from, sample.at)
 				: sample.at >= from && sample.at < to
 					? FALLBACK_INTERVAL_MS
 					: 0;
@@ -609,8 +614,80 @@ export function spanMean(
 		weight += covered;
 		cpu += covered * sample.cpu;
 		memoryMb += covered * sample.memoryMb;
+		// Disk and IO count for the share of its readings that had them.
+		if (sample.diskMb !== undefined) {
+			const share = covered * (diskReadings(sample) / readings);
+			disk.weight += share;
+			disk.sum += share * sample.diskMb;
+		}
+		if (sample.io !== undefined) {
+			const share = covered * (ioReadings(sample) / readings);
+			io.weight += share;
+			io.sum += share * sample.io;
+		}
 	}
-	return weight === 0 ? { cpu: 0, memoryMb: 0 } : { cpu: cpu / weight, memoryMb: memoryMb / weight };
+	if (weight === 0) return { cpu: 0, memoryMb: 0, measured: false };
+	return {
+		cpu: cpu / weight,
+		memoryMb: memoryMb / weight,
+		measured: true,
+		...(disk.weight === 0 ? {} : { diskMb: disk.sum / disk.weight }),
+		...(io.weight === 0 ? {} : { io: io.sum / io.weight }),
+	};
+}
+
+/**
+ * A sandbox's samples with a new 5-minute mean in its place (`keepRollup`), at most a day of 5-minute means: older ones
+ * are folded into hourly means, each the mean of the 5-minute means of one clock hour weighted by their readings and
+ * covering from its first to the end of its last (`spanMs`), at most `HOURLY_SAMPLES` of them. Oldest first.
+ */
+export function keptSamples(samples: readonly StoredSample[]): StoredSample[] {
+	const folded = samples.filter((sample) => sample.spanMs !== undefined);
+	const fine = samples.filter((sample) => sample.spanMs === undefined);
+	if (fine.length <= MAX_SAMPLES) return [...samples];
+	const hourly = [...folded];
+	for (const sample of fine.slice(0, fine.length - MAX_SAMPLES)) {
+		const last = hourly[hourly.length - 1];
+		const end = sample.at + (sample.readings === undefined ? FALLBACK_INTERVAL_MS : ROLLUP_MS);
+		if (last !== undefined && Math.floor(last.at / HOUR_MS) === Math.floor(sample.at / HOUR_MS)) {
+			hourly[hourly.length - 1] = foldSample(last, sample, end);
+		} else {
+			hourly.push({ ...sample, readings: sample.readings ?? 1, spanMs: end - sample.at });
+		}
+	}
+	return [...hourly.slice(-HOURLY_SAMPLES), ...fine.slice(-MAX_SAMPLES)];
+}
+
+/** Of a sample's readings, those with a disk figure: all of them unless it says (`diskReadings`), none without one. */
+const diskReadings = (sample: StoredSample): number =>
+	sample.diskMb === undefined ? 0 : (sample.diskReadings ?? sample.readings ?? 1);
+/** Of a sample's readings, those with IO pressure, likewise. */
+const ioReadings = (sample: StoredSample): number =>
+	sample.io === undefined ? 0 : (sample.ioReadings ?? sample.readings ?? 1);
+
+/**
+ * An hourly mean with one more 5-minute mean (or reading) in it, to `end`. CPU and memory are weighted by all their
+ * readings; disk and IO only by those that had them, so a gap between two figures doesn't dilute either.
+ */
+function foldSample(into: StoredSample, sample: StoredSample, end: number): StoredSample {
+	const a = into.readings ?? 1;
+	const b = sample.readings ?? 1;
+	const readings = a + b;
+	const fold = (x: number | undefined, wx: number, y: number | undefined, wy: number) =>
+		x === undefined || wx === 0 ? y : y === undefined || wy === 0 ? x : (x * wx + y * wy) / (wx + wy);
+	const disks = diskReadings(into) + diskReadings(sample);
+	const ios = ioReadings(into) + ioReadings(sample);
+	const diskMb = fold(into.diskMb, diskReadings(into), sample.diskMb, diskReadings(sample));
+	const io = fold(into.io, ioReadings(into), sample.io, ioReadings(sample));
+	return {
+		at: into.at,
+		cpu: (into.cpu * a + sample.cpu * b) / readings,
+		memoryMb: (into.memoryMb * a + sample.memoryMb * b) / readings,
+		readings,
+		spanMs: Math.max(into.at + (into.spanMs ?? ROLLUP_MS), end) - into.at,
+		...(diskMb === undefined ? {} : { diskMb, ...(disks === readings ? {} : { diskReadings: disks }) }),
+		...(io === undefined ? {} : { io, ...(ios === readings ? {} : { ioReadings: ios }) }),
+	};
 }
 const MIB = 1024 * 1024;
 /** The egress log entries kept per sandbox, newest first. */
@@ -1617,11 +1694,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hourlyRate(rates, sandbox.type, resources);
 	};
 
-	/** A sandbox's mean CPU: its kept 5-minute means and the one under way. */
-	const meanCpu = (sandbox: StoredSandbox) => {
-		const samples = withPartial(sandbox);
-		return samples.length === 0 ? 0 : samples.reduce((total, sample) => total + sample.cpu, 0) / samples.length;
-	};
+	/**
+	 * A sandbox's mean CPU over `[from, to)` (all it has kept, without): its kept means and the one under way, each
+	 * weighted by the time it covers, so an hourly mean counts for its hour and one outside the span not at all.
+	 */
+	const meanCpu = (sandbox: StoredSandbox, from = 0, to = now()) => spanMean(withPartial(sandbox), from, to).cpu;
 
 	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
@@ -1645,6 +1722,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			autoStopMinutes: sandbox.autoStopMinutes,
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			latestSnapshotId: sandbox.latestSnapshotId,
+			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
 			environmentId: sandbox.environmentId,
 			template: sandbox.template === undefined ? undefined : { ...sandbox.template },
@@ -2346,6 +2424,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const withMakerNamed = async <T extends { readonly createdBy: Sandbox["createdBy"] }>(item: T): Promise<T> =>
 		(await withMakersNamed([item]))[0] ?? item;
 
+	/**
+	 * Sandboxes with when their latest snapshot was taken, for those whose record has the snapshot but not when (kept
+	 * before records had it): from the snapshot's own record, if it is still there.
+	 */
+	async function withSnapshotTimes(items: readonly Sandbox[]): Promise<Sandbox[]> {
+		return Promise.all(
+			items.map(async (item) => {
+				if (item.latestSnapshotId === undefined || item.latestSnapshotAt !== undefined) return item;
+				const snapshot = await store.snapshots.get(item.latestSnapshotId);
+				return snapshot === undefined ? item : { ...item, latestSnapshotAt: snapshot.createdAt };
+			}),
+		);
+	}
+
 	// Events.
 
 	async function emit(
@@ -2931,6 +3023,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const result = await transition(sandbox.id, "stopping", (current) =>
 					withState(current, keepMemory ? "paused" : "stopped", {
 						latestSnapshotId: snapshot.id,
+						latestSnapshotAt: snapshot.createdAt,
 						ports: [],
 						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
 						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
@@ -3287,7 +3380,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// A sandbox's 5-minute means go into its record's `samples`, which its sparkline and `points` are read from.
 
 	/**
-	 * Keeps a sandbox's closed 5-minute mean in its record, oldest first, at most `MAX_SAMPLES`. Only a replica that took
+	 * Keeps a sandbox's closed 5-minute mean in its record, oldest first, a day of them and hourly means before it
+	 * (`keptSamples`). Only a replica that took
 	 * some of its readings itself keeps one: one that was only passed them on may have joined part way through. Of two
 	 * for the same 5 minutes (the host moved replica within them, and each kept what it had), the one of more readings.
 	 */
@@ -3295,9 +3389,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (!rollup.local) return;
 		await patchSandbox(sandboxId, (latest) => {
 			if (latest.state === "deleted") return undefined;
-			const sample = { at: rollup.at, cpu: rollup.cpu, memoryMb: rollup.memUsedBytes / MIB, readings: rollup.readings };
+			const sample = sampleOf(rollup);
 			const index = latest.samples.findIndex((each) => each.at >= rollup.at);
-			if (index === -1) return { ...latest, samples: [...latest.samples, sample].slice(-MAX_SAMPLES) };
+			if (index === -1) return { ...latest, samples: keptSamples([...latest.samples, sample]) };
 			const there = latest.samples[index];
 			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return undefined;
 			return { ...latest, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
@@ -3378,16 +3472,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
 			for (const reading of report.sandboxes) {
 				if (!held.has(reading.id)) continue;
+				// The last disk size a reading had: one without (a guest that didn't answer in time) keeps it.
+				const diskTotal = reading.diskTotalBytes ?? sandboxSeries.meta(reading.id)?.diskTotalBytes;
 				const rollup = sandboxSeries.add(
 					reading.id,
 					{
 						at,
 						cpu: reading.cpu,
 						memUsedBytes: reading.memUsedBytes,
-						diskUsedBytes: 0,
+						...(reading.diskUsedBytes === undefined
+							? { diskUsedBytes: 0, noDisk: true }
+							: { diskUsedBytes: reading.diskUsedBytes }),
+						...(reading.ioPressure === undefined ? {} : { ioPressure: reading.ioPressure }),
 						...(shared ? { shared: true } : {}),
 					},
-					{ ...meta, memLimitBytes: reading.memLimitBytes },
+					{
+						...meta,
+						memLimitBytes: reading.memLimitBytes,
+						...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
+					},
 				);
 				if (rollup !== undefined) closed.push({ id: reading.id, rollup });
 			}
@@ -3631,7 +3734,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const limit = sandbox.resources?.memoryMb === undefined ? {} : { memLimitBytes: sandbox.resources.memoryMb * MIB };
 		const closed = sandboxSeries.add(
 			sandbox.id,
-			{ at, cpu: reading.cpu, memUsedBytes: reading.memoryBytes, diskUsedBytes: 0 },
+			{ at, cpu: reading.cpu, memUsedBytes: reading.memoryBytes, diskUsedBytes: 0, noDisk: true },
 			{ intervalMs: FALLBACK_INTERVAL_MS, ...limit },
 		);
 		if (closed !== undefined) await keepRollup(sandbox.id, closed);
@@ -3653,10 +3756,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const partial = sandbox.state === "deleted" ? undefined : sandboxSeries.partial(sandbox.id);
 		const last = sandbox.samples[sandbox.samples.length - 1];
 		if (partial === undefined || (last !== undefined && partial.at <= last.at)) return sandbox.samples;
-		return [
-			...sandbox.samples,
-			{ at: partial.at, cpu: partial.cpu, memoryMb: partial.memUsedBytes / MIB, readings: partial.readings },
-		];
+		return [...sandbox.samples, sampleOf(partial)];
+	}
+
+	/** A 5-minute mean as a sandbox's record keeps it. */
+	function sampleOf(rollup: Rollup): StoredSample {
+		return {
+			at: rollup.at,
+			cpu: rollup.cpu,
+			memoryMb: rollup.memUsedBytes / MIB,
+			readings: rollup.readings,
+			...(rollup.noDisk === true
+				? {}
+				: {
+						diskMb: rollup.diskUsedBytes / MIB,
+						...(rollup.diskReadings === rollup.readings ? {} : { diskReadings: rollup.diskReadings }),
+					}),
+			...(rollup.ioPressure === undefined
+				? {}
+				: {
+						io: rollup.ioPressure,
+						...(rollup.ioReadings === rollup.readings ? {} : { ioReadings: rollup.ioReadings }),
+					}),
+		};
 	}
 
 	function hostSparklines(hostId: string): computeSchema.UsageSparklines {
@@ -4124,7 +4246,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			return {
-				items: await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				items: await withSnapshotTimes(
+					await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				),
 				nextCursor: page.nextCursor,
 			};
 		},
@@ -4401,7 +4525,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getSandbox: async (principal, { params }) => {
 			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			return withMakerNamed(sandboxView(sandbox, principal));
+			const [view] = await withSnapshotTimes([await withMakerNamed(sandboxView(sandbox, principal))]);
+			return view as Sandbox;
 		},
 
 		updateSandbox: async (principal, { params, body }) => {
@@ -4792,7 +4917,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						}
 					}
 					const result = await transition(current.id, "deleting", (latest) =>
-						withState(latest, "deleted", { ports: [], latestSnapshotId: undefined, pausedSnapshotId: undefined }),
+						withState(latest, "deleted", {
+							ports: [],
+							latestSnapshotId: undefined,
+							latestSnapshotAt: undefined,
+							pausedSnapshotId: undefined,
+						}),
 					);
 					if (!("moved" in result)) return;
 					const deleted = result.moved;
@@ -4819,7 +4949,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const since = Math.max(query.since ?? at - DAY_MS, current.createdAt - intervalMs);
 			const rate = rateOf(current);
 			const start = Math.max(since, at - 1000 * intervalMs);
-			const points: { at: number; cpu: number; memoryMb: number; runningSeconds: number; cost: number }[] = [];
+			const points: computeSchema.SandboxUsagePoint[] = [];
 			for (let from = start; from < at; from += intervalMs) {
 				const to = Math.min(from + intervalMs, at);
 				const seconds = runningMs(current.runs, from, to) / 1000;
@@ -4830,6 +4960,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					memoryMb: round(mean.memoryMb),
 					runningSeconds: round(seconds),
 					cost: round((seconds / 3600) * rate),
+					measured: mean.measured,
+					...(mean.diskMb === undefined ? {} : { diskUsedBytes: Math.round(mean.diskMb * MIB) }),
+					...(mean.io === undefined ? {} : { ioPressure: Math.min(1, mean.io) }),
 				});
 			}
 			const seconds = runningMs(current.runs, since, at) / 1000;
@@ -4837,20 +4970,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const memLimit =
 				series.meta?.memLimitBytes ??
 				(current.resources?.memoryMb === undefined ? undefined : current.resources.memoryMb * MIB);
+			// The disk's size as its guest last counted it; else, where it has disk figures kept from before this process
+			// started, its size's.
+			const diskTotal =
+				series.meta?.diskTotalBytes ??
+				(current.resources?.diskGb !== undefined && kept.some((sample) => sample.diskMb !== undefined)
+					? current.resources.diskGb * 1024 * MIB
+					: undefined);
 			return {
 				sandboxId: current.id,
 				intervalSeconds: intervalMs / 1000,
 				points,
 				totals: {
 					runningSeconds: round(seconds),
-					cpuSeconds: round(seconds * meanCpu(current)),
+					cpuSeconds: round(seconds * meanCpu(current, since, at)),
 					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
 				},
 				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
+				...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
 				series: {
 					intervalMs:
 						series.meta?.intervalMs ?? (hostReports(current.hostId) ? USAGE_INTERVAL_MS : FALLBACK_INTERVAL_MS),
-					points: series.points.map((point) => ({ at: point.at, cpu: point.cpu, memUsedBytes: point.memUsedBytes })),
+					points: series.points.map((point) => ({
+						at: point.at,
+						cpu: point.cpu,
+						memUsedBytes: point.memUsedBytes,
+						...(point.noDisk === true ? {} : { diskUsedBytes: point.diskUsedBytes }),
+						...(point.ioPressure === undefined ? {} : { ioPressure: point.ioPressure }),
+					})),
 				},
 			};
 		},
@@ -5220,7 +5367,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(taken.base === undefined ? {} : { base: taken.base }),
 			};
 			await store.snapshots.put(snapshot);
-			await patchSandbox(current.id, (latest) => ({ ...latest, latestSnapshotId: snapshot.id }));
+			await patchSandbox(current.id, (latest) => ({
+				...latest,
+				latestSnapshotId: snapshot.id,
+				latestSnapshotAt: snapshot.createdAt,
+			}));
 			return snapshotView(snapshot);
 		},
 
@@ -5340,7 +5491,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					),
 				);
 				await patchSandbox(current.id, (latest) =>
-					latest.latestSnapshotId === snapshot.id ? { ...latest, latestSnapshotId: newest?.id } : undefined,
+					latest.latestSnapshotId === snapshot.id
+						? { ...latest, latestSnapshotId: newest?.id, latestSnapshotAt: newest?.createdAt }
+						: undefined,
 				);
 			}
 			if (snapshot.kind === "saved") {

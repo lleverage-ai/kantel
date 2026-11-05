@@ -583,8 +583,8 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 			: {
 					snapshot: {
 						id: sandbox.latestSnapshotId,
-						// The API names the snapshot but not when it was taken; a stop takes one, so the stop is nearest.
-						takenAt: sandbox.stoppedAt ?? sandbox.startedAt ?? sandbox.createdAt,
+						// When the snapshot itself was taken, not a guess from its starts and stops (a running sandbox's can be new).
+						...(sandbox.latestSnapshotAt === undefined ? {} : { takenAt: sandbox.latestSnapshotAt }),
 					},
 				}),
 		// Hosted only: the API's cost is in its currency's units, the UI's in cents.
@@ -809,10 +809,16 @@ function sandboxesSource(context: Context): SandboxesSource {
 		// The API's `null` is always on.
 		setAutoStop: async (id, minutes) => view(await api.updateSandbox(id, { autoStopMinutes: minutes ?? null })),
 		usageNow: async (id) => {
-			// The latest point's memory; the API doesn't say how much disk is in use.
+			// The latest point's memory, and its disk where its host sends it (a microVM's guest).
 			const latest = (await api.getSandboxUsage(id)).points.at(-1);
-			return latest === undefined ? {} : { memoryGb: Math.round((latest.memoryMb / 1024) * 10) / 10 };
+			if (latest === undefined) return {};
+			const gb = (bytes: number) => Math.round((bytes / 1024 ** 3) * 10) / 10;
+			return {
+				memoryGb: Math.round((latest.memoryMb / 1024) * 10) / 10,
+				...(latest.diskUsedBytes === undefined ? {} : { diskGb: gb(latest.diskUsedBytes) }),
+			};
 		},
+		rename: async (id, name) => view(await api.updateSandbox(id, { name })),
 		ports: async (id) => (await api.listPorts(id)).items.map(portOf),
 		exposePort: async (id, port, isPublic) => portOf(await api.exposePort(id, { port, public: isPublic })),
 		hidePort: (id, port) => api.hidePort(id, String(port)),
@@ -2262,7 +2268,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 			return context.domain();
 		},
 		accounts: accountsSource(context),
-		sandboxes: withUsage(sandboxesSource(context), "usageSeries", usage.sandbox),
+		sandboxes: { ...withUsage(sandboxesSource(context), "usageSeries", usage.sandbox), usageHistory: usage.history },
 		snapshots: snapshotsSource(context),
 		keys: keysSource(context),
 		proxy: proxySource(context),

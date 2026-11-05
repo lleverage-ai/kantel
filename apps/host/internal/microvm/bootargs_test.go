@@ -25,3 +25,18 @@ func TestBootTellsTheGuestItsBrowserSurfaceIsForwarded(t *testing.T) {
 		t.Errorf("fingerprint %q", fp)
 	}
 }
+
+// Every boot turns on the guest kernel's pressure figures (off by default in Firecracker's guest config), which its
+// agent reads for the sandbox's IO pressure; a template booted without them is made again.
+func TestBootTurnsOnTheGuestsPressureFigures(t *testing.T) {
+	for _, m := range []*Manager{{}, {cfg: Config{Initrd: "/var/lib/kantel-host/initramfs.cpio"}}} {
+		for _, s := range []shape{{}, {HotplugMiB: 1024}} {
+			if args := m.bootConfig(s, "vmlinux", "", "", 3).BootArgs; !slices.Contains(strings.Fields(args), "psi=1") {
+				t.Errorf("initrd %q, hotplug %d: %q", m.cfg.Initrd, s.HotplugMiB, args)
+			}
+		}
+	}
+	if fp := (&Manager{}).templateFingerprint(shape{}); !strings.Contains(fp, "psi=1") {
+		t.Errorf("fingerprint %q", fp)
+	}
+}

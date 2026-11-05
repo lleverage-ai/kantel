@@ -145,6 +145,22 @@ describe("sandboxes", () => {
 		expect(ended.stdout).toBe("later\n");
 	});
 
+	it("says when its latest snapshot was taken, from the snapshot, for a snapshot taken while it runs and an older record", async () => {
+		const { api, tom } = setup();
+		const sandbox = await tom.createSandbox({ wait: true });
+		const taken = await tom.takeSnapshot(sandbox.id, {});
+		const running = await tom.getSandbox(sandbox.id);
+		expect(running).toMatchObject({ latestSnapshotId: taken.id, latestSnapshotAt: taken.createdAt });
+		// A record kept before it had the time: the list and the sandbox read it from the snapshot's own record.
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		if (stored === undefined) expect.fail("no sandbox");
+		const { latestSnapshotAt: _, ...older } = stored;
+		await api.store.sandboxes.put(older);
+		expect((await tom.getSandbox(sandbox.id)).latestSnapshotAt).toBe(taken.createdAt);
+		const listed = (await tom.listSandboxes()).items.find((item) => item.id === sandbox.id);
+		expect(listed?.latestSnapshotAt).toBe(taken.createdAt);
+	});
+
 	it("stops with a history snapshot and resumes with its files", async () => {
 		const { tom } = setup();
 		const sandbox = await tom.createSandbox({ wait: true });
@@ -157,6 +173,7 @@ describe("sandboxes", () => {
 		expect(history.items).toHaveLength(1);
 		expect(history.items[0]).toMatchObject({ kind: "automatic", trigger: "stop", sandboxId: sandbox.id });
 		expect(stopped.latestSnapshotId).toBe(history.items[0]?.id);
+		expect(stopped.latestSnapshotAt).toBe(history.items[0]?.createdAt);
 		expect((await failure(tom.runCommand(sandbox.id, { command: "true" }))).code).toBe("conflict");
 		expect((await tom.listSandboxes()).items.map((item) => item.id)).not.toContain(sandbox.id);
 		expect((await tom.listSandboxes({ all: true })).items.map((item) => item.id)).toContain(sandbox.id);

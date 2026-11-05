@@ -79,6 +79,8 @@ centred on their text within 1px, and a story for every required state; `--only`
 | `EmptyState` | What a list or screen says when it has nothing | Errors that need action (use `Notice`) |
 | `Disclosure` | A summary that shows detail on demand | Navigation |
 | `CopyButton` | Copying a link, code or command | |
+| `Tooltip`, `HelpHint` | A few words on hover and keyboard focus: a truncated value in full, a chart's figures, what a column means (`HelpHint`'s "?") | Anything to act on, or that must be read to use the page (say it in the page) |
+| `Dialog` | A modal: a short decision with its buttons, or (`width="wide"`, no `actions`) something to look at, such as a sandbox's metrics, with a close button | Long forms (use a page) |
 | `PageHeader`, `FormLayout`, `FormSection`, `FormField`, `FormGrid`, `FormActions` | Config pages and their forms: the page title and actions, sections, labelled fields with help, equal tracks for short fields, and the buttons | Filters above a list |
 | `TextField` | A labelled single-line input | |
 | `TextAreaField` | A labelled multi-line input, such as a webhook's description | |

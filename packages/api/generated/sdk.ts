@@ -1429,6 +1429,8 @@ export interface Sandbox {
 	readonly stopsAt?: number;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
+	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
+	readonly latestSnapshotAt?: number;
 	/** What it was made from. */
 	readonly source?: SandboxSource;
 	/** The environment it was made from. */
@@ -1592,6 +1594,10 @@ export interface SandboxSeriesPoint {
 	readonly cpu: number;
 	/** Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. */
 	readonly memUsedBytes: number;
+	/** A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it. */
+	readonly diskUsedBytes?: number;
+	/** The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. */
+	readonly ioPressure?: number;
 }
 
 /** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
@@ -1660,10 +1666,13 @@ export interface SandboxUsage {
 	};
 	/** The memory it may use, when its host reports it or its size sets it. */
 	readonly memLimitBytes?: number;
+	/** Its own disk's size, as its guest counts it, when its host sends disk figures. */
+	readonly diskTotalBytes?: number;
 	/** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
 	readonly series: SandboxUsageSeries;
 }
 
+/** One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
 export interface SandboxUsagePoint {
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
@@ -1672,6 +1681,12 @@ export interface SandboxUsagePoint {
 	readonly memoryMb: number;
 	readonly runningSeconds: number;
 	readonly cost: number;
+	/** Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. */
+	readonly measured?: boolean;
+	/** The sandbox's own disk in use, its mean over the interval; absent where its host doesn't send it. */
+	readonly diskUsedBytes?: number;
+	/** The share of the interval in which at least one of its tasks waited on IO, its mean; absent where its guest has no pressure figures. */
+	readonly ioPressure?: number;
 }
 
 /** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */

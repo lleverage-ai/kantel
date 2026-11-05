@@ -104,6 +104,21 @@ export interface StoredSample {
 	 * single reading, as samples were kept before hosts sent ticks.
 	 */
 	readonly readings?: number;
+	/**
+	 * A mean of 5-minute means folded together once they are a day old (`keptSamples`): the time from `at` it covers,
+	 * up to an hour. Absent on a 5-minute mean (it covers `ROLLUP_MS`) and a single reading.
+	 */
+	readonly spanMs?: number;
+	/** The sandbox's own disk in use, in MiB, from a host that sends it; absent from one that doesn't. */
+	readonly diskMb?: number;
+	/** IO pressure, 0 to 1, from a guest with the figures. */
+	readonly io?: number;
+	/**
+	 * Of `readings`, how many had a disk figure and how many IO pressure, where not all of them did (a guest that
+	 * didn't answer in time, one restored from an older snapshot): `diskMb` and `io` are the means of those alone.
+	 */
+	readonly diskReadings?: number;
+	readonly ioReadings?: number;
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
@@ -159,7 +174,7 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly placeholders?: { readonly [name: string]: string };
 	readonly hostLabels: { readonly [key: string]: string };
 	readonly runs: readonly RunPeriod[];
-	/** The newest readings, at most `MAX_SAMPLES`. */
+	/** The newest readings: a day of 5-minute means (`MAX_SAMPLES`), and hourly ones before it (`HOURLY_SAMPLES`). */
 	readonly samples: readonly StoredSample[];
 	readonly ports: readonly computeSchema.ExposedPort[];
 	/** The snapshot its memory was paused into, while `paused`. */
