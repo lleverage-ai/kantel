@@ -613,16 +613,22 @@ export async function uploadTreeArchive(
 		if (parts === 0) return { files: 0, bytes: 0 };
 		// The parts' names sort in order, so the glob joins them as they were cut. The tar goes into a directory of its
 		// own inside the destination first, so one that fails part way (a full disk) leaves the destination as it was.
-		// Then each file is moved into place, a directory at a time: on one file system a move is a rename, so a file
-		// already there is replaced by the whole new one in one step, never missing and never half written.
+		// Then, a directory at a time, its files move into a new hidden directory inside that destination directory
+		// (which may copy, where the directory is another file system, but under names no one uses), and from there
+		// into place: source and target are in one directory, so that last move is always a rename, and a file already
+		// there is replaced by the whole new one in one step, never missing and never half written.
 		const into = archiveTarget(target);
-		const stage = quote(posix.join(archiveTargetPath(target), `.kantel-push-${staging.slice(-12)}`));
-		const place = `for d; do mkdir -p "$0/$d" && find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$0/$d" || exit 1; done`;
+		const id = staging.slice(-12);
+		const stage = quote(posix.join(archiveTargetPath(target), `.kantel-push-${id}`));
+		const place =
+			'top=$0; id=$1; shift; for d; do mkdir -p "$top/$d" && t="$top/$d/.kantel-in-$id" && mkdir "$t" && { ' +
+			'find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$t" && ' +
+			'find "$t" -mindepth 1 -maxdepth 1 -print0 | xargs -0 -r mv -f -t "$top/$d"; s=$?; rm -rf "$t"; [ $s -eq 0 ]; } || exit 1; done';
 		await run(
 			client,
 			sandboxId,
 			`mkdir ${stage} && cat ${glob} | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
-				`(cd ${stage} && find . -type d -exec sh -c ${quote(place)} ${into} {} +); s=$?; rm -rf ${stage}; exit $s`,
+				`(cd ${stage} && find . -type d -exec sh -c ${quote(place)} ${into} ${id} {} +); s=$?; rm -rf ${stage}; exit $s`,
 			600_000,
 		);
 	} finally {

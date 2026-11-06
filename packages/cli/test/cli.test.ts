@@ -1391,11 +1391,15 @@ describe("copying files", () => {
 		const prefix = names[0]?.replace(/-\d{6}$/, "");
 		// It checks the destination, extracts into it where the files API would put it, and removes the parts.
 		const stage = `/home/user/app/.kantel-push-${prefix?.slice(-12)}`;
-		const place = `for d; do mkdir -p "$0/$d" && find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$0/$d" || exit 1; done`;
+		const id = prefix?.slice(-12);
+		const place =
+			'top=$0; id=$1; shift; for d; do mkdir -p "$top/$d" && t="$top/$d/.kantel-in-$id" && mkdir "$t" && { ' +
+			'find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$t" && ' +
+			'find "$t" -mindepth 1 -maxdepth 1 -print0 | xargs -0 -r mv -f -t "$top/$d"; s=$?; rm -rf "$t"; [ $s -eq 0 ]; } || exit 1; done';
 		expect(commands).toEqual([
 			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null && mv --help 2>&1 | grep -q -- --target-directory",
 			`mkdir ${stage} && cat ${prefix}-* | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
-				`(cd ${stage} && find . -type d -exec sh -c '${place}' /home/user/app {} +); s=$?; rm -rf ${stage}; exit $s`,
+				`(cd ${stage} && find . -type d -exec sh -c '${place}' /home/user/app ${id} {} +); s=$?; rm -rf ${stage}; exit $s`,
 			`rm -f ${prefix}-*`,
 		]);
 		// The parts, joined in order, are a tar that tar itself extracts to the same tree.
@@ -1492,7 +1496,7 @@ describe("copying files", () => {
 			expect(result.code).toBe(0);
 			expect(commands[0]).toContain(`mkdir -p ${where} && test -w ${where}`);
 			expect(commands[1]).toContain(`-C ${where}/.kantel-push-`);
-			expect(commands[1]).toContain(`' ${where} {} +`);
+			expect(commands[1]).toMatch(new RegExp(`' ${where} [0-9a-f]{12} \\{\\} \\+`));
 			expect(commands.join("\n")).not.toContain("..");
 		}
 	});
