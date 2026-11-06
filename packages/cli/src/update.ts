@@ -86,17 +86,36 @@ export const runInstaller: RunInstaller = (script, args, env) =>
 		child.once("exit", (code, signal) => done(code ?? (signal === null ? 1 : 128)));
 	});
 
+/** Where `version`'s installer is: `KANTEL_RELEASE_URL`'s when that is set, else the release's on GitHub. */
+export function installerUrl(version: string, env: Env): string {
+	const mirror = env.KANTEL_RELEASE_URL;
+	return mirror !== undefined && mirror !== ""
+		? `${mirror.replace(/\/$/, "")}/install-cli.sh`
+		: `${RELEASES}/download/v${version}/install-cli.sh`;
+}
+
+/**
+ * The shell line that runs `version`'s installer into `where`, as `install` does: what to run to repair an update that
+ * failed part way. It needs nothing of the kantel that is there, which may be either release, or half of one.
+ */
+export function installLine(version: string, where: Install, env: Env): string {
+	const quote = (value: string) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`);
+	const mirror = env.KANTEL_RELEASE_URL;
+	const vars = [
+		...(mirror !== undefined && mirror !== "" ? [`KANTEL_RELEASE_URL=${quote(mirror)}`] : []),
+		`KANTEL_HOME=${quote(where.home)}`,
+	];
+	const args = ["--version", version, ...(where.bin === undefined ? [] : ["--dir", quote(where.bin)])];
+	return `curl -fsSL ${quote(installerUrl(version, env))} | ${vars.join(" ")} sh -s -- ${args.join(" ")}`;
+}
+
 /** Downloads `version`'s installer (`KANTEL_RELEASE_URL`'s when that is set) and runs it to install there. */
 export async function install(
 	version: string,
 	where: Install,
 	io: { readonly fetch: typeof fetch; readonly env: Env; readonly run: RunInstaller },
 ): Promise<number> {
-	const mirror = io.env.KANTEL_RELEASE_URL;
-	const url =
-		mirror !== undefined && mirror !== ""
-			? `${mirror.replace(/\/$/, "")}/install-cli.sh`
-			: `${RELEASES}/download/v${version}/install-cli.sh`;
+	const url = installerUrl(version, io.env);
 	let response: Response;
 	try {
 		response = await io.fetch(url);

@@ -117,6 +117,19 @@ describe("update", () => {
 		const result = await update([], { script: await installed(), exit: 3 });
 		expect(result.code).toBe(1);
 		expect(result.stderr).toContain("failed (exit 3), so the installation may be incomplete");
+		// The repair runs the release's installer itself: a half-updated kantel may already say it is 9.9.9, and a
+		// release from before `update` has no such command.
+		expect(result.stderr).toContain(
+			`curl -fsSL ${RELEASES}/download/v9.9.9/install-cli.sh | KANTEL_HOME=${join(root, "share", "kantel")} sh -s -- --version 9.9.9 --dir ${join(root, "bin")}`,
+		);
+		const mirrored = await update(["--version", "1.2.3"], {
+			script: await installed(),
+			exit: 1,
+			env: { KANTEL_RELEASE_URL: "https://mirror.test/k" },
+		});
+		expect(mirrored.stderr).toContain(
+			"curl -fsSL https://mirror.test/k/install-cli.sh | KANTEL_RELEASE_URL=https://mirror.test/k KANTEL_HOME=",
+		);
 	});
 
 	it("downloads the installer from KANTEL_RELEASE_URL, which needs --version", async () => {

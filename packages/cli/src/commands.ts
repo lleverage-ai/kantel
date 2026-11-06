@@ -108,6 +108,7 @@ import {
 import {
 	compareVersions,
 	install,
+	installLine,
 	installOf,
 	latestRelease,
 	RELEASES,
@@ -3787,8 +3788,8 @@ const SECTIONS: readonly Section[] = [
 					const code = await install(target, where, { fetch: ctx.io.fetch, env: ctx.io.env, run: ctx.io.runInstaller });
 					if (code !== 0) {
 						throw new CliError(
-							`The installer for ${target} failed (exit ${code}), so the installation may be incomplete: ` +
-								"check kantel version, and run kantel update again to repair it",
+							`The installer for ${target} failed (exit ${code}), so the installation may be incomplete. ` +
+								`To repair it, run ${target}'s installer again:\n  ${installLine(target, where, ctx.io.env)}`,
 						);
 					}
 					if (ctx.json) ctx.emit({ ...state, updated: true }, () => "");
