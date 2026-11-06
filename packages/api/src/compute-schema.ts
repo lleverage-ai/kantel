@@ -939,6 +939,11 @@ export const ListSandboxesQuery = Type.Object(
 					"Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host.",
 			}),
 		),
+		mine: Type.Optional(
+			Type.Boolean({
+				description: "Only the caller's own: the ones they made, in the console or with any of their API keys.",
+			}),
+		),
 		limit,
 		cursor,
 	},

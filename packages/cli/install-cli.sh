@@ -195,6 +195,8 @@ main() {
 		say "  bash, zsh: add  export PATH=\"$bin:\$PATH\"  to ~/.bashrc or ~/.zshrc"
 		;;
 	esac
+	# `kantel update` runs this with KANTEL_UPDATE set: someone updating is signed in already.
+	[ -z "${KANTEL_UPDATE:-}" ] || return 0
 	say "Next: kantel login (or kantel login --url <url> for your own Kantel)"
 	if [ "$admin" = 0 ]; then
 		say "Self-hosting? Add kantel-admin with: curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin"
