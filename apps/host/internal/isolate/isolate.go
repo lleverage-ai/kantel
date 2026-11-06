@@ -885,14 +885,8 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	}
 	manifest := Manifest{}
 	if p.From != "" {
-		snap, err := m.readSnapshot(p.From)
-		if err != nil {
-			return fail(err)
-		}
-		if snap.Owner != p.Owner {
-			return fail(&proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no snapshot %s for this account", p.From)})
-		}
-		if manifest, err = readManifest(filepath.Join(m.snapshotDir(p.From), "manifest.json")); err != nil {
+		var err error
+		if manifest, err = m.snapshotManifest(p.From, p.Owner); err != nil {
 			return fail(err)
 		}
 	}
@@ -1473,6 +1467,26 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		return proto.SnapshotInfo{}, err
 	}
 	return snap, nil
+}
+
+// snapshotManifest reads what a snapshot of owner's holds, for a sandbox made from it. Held against the snapshot's
+// removal (autoMu: a delete, or pruneAuto after its sandbox's next stop), so its record and its manifest are read as
+// one; and a snapshot whose manifest is gone has lost its files, which is an error, not an empty workspace.
+func (m *Manager) snapshotManifest(id, owner string) (Manifest, error) {
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
+	snap, err := m.readSnapshot(id)
+	if err != nil {
+		return nil, err
+	}
+	if snap.Owner != owner {
+		return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no snapshot %s for this account", id)}
+	}
+	path := filepath.Join(m.snapshotDir(id), "manifest.json")
+	if _, err := os.Stat(path); err != nil {
+		return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("snapshot %s has no files on this host", id)}
+	}
+	return readManifest(path)
 }
 
 func (m *Manager) DeleteSnapshot(id string) error {

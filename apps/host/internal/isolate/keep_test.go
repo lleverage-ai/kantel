@@ -148,3 +148,42 @@ func TestKeptSnapshotOutlivesPruneAndSandboxDelete(t *testing.T) {
 		t.Fatalf("kept manifest %v, %v", man, err)
 	}
 }
+
+// A sandbox made from a snapshot reads its source as a keep does: it waits for a removal under way, then finds the
+// source gone rather than an empty workspace, and a source whose manifest is gone is refused.
+func TestCreateFromASnapshotReadsItWholeOrNotAtAll(t *testing.T) {
+	m := &Manager{cfg: Config{Root: t.TempDir(), AutoSnapshots: 5}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	writeAuto(t, m, "snap_a", 1)
+	if man, err := m.snapshotManifest("snap_a", "acct"); err != nil || man["/home/user/a"].SHA != "snap_a" {
+		t.Fatalf("read a snapshot: %v, %v", man, err)
+	}
+	if _, err := m.snapshotManifest("snap_a", "someone-else"); keepCode(t, err) != proto.ErrNotFound {
+		t.Fatalf("another account's snapshot: %v", err)
+	}
+	// A delete or a prune is part way through removing it: it holds autoMu.
+	m.autoMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.snapshotManifest("snap_a", "acct")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("a create read its source while it was being removed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = os.Remove(filepath.Join(m.snapshotDir("snap_a"), "manifest.json"))
+	m.autoMu.Unlock()
+	select {
+	case err := <-done:
+		if keepCode(t, err) != proto.ErrNotFound {
+			t.Fatalf("a create from a source that lost its files: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the create didn't go ahead once the removal was done")
+	}
+	_ = os.RemoveAll(m.snapshotDir("snap_a"))
+	if _, err := m.snapshotManifest("snap_a", "acct"); err == nil {
+		t.Fatal("a create from a removed snapshot went ahead")
+	}
+}
