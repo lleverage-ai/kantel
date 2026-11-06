@@ -529,6 +529,9 @@ describe("sandboxes", () => {
 
 		const saved = await tom.saveSnapshot({ name: "base", sandboxId: source.id });
 		expect(saved).toMatchObject({ kind: "saved", name: "base", trigger: "save" });
+		// Who saved it, as the list answers it too.
+		expect(saved.createdBy).toMatchObject({ kind: "user", id: "usr_tom" });
+		expect((await tom.listSnapshots({ kind: "saved" })).items[0]?.createdBy).toEqual(saved.createdBy);
 		expect((await failure(tom.saveSnapshot({ name: "base", sandboxId: source.id }))).code).toBe("conflict");
 
 		const fromSaved = await tom.createSandbox({ from: "base", wait: true });

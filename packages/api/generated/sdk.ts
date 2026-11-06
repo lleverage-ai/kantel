@@ -1864,6 +1864,7 @@ export interface Snapshot {
 	readonly sizeBytes?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
+	readonly createdBy?: CreatedBy;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
 	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */

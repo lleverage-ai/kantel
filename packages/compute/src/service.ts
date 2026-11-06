@@ -2178,6 +2178,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		...recordedMachine(snapshot),
 		sizeBytes: snapshot.sizeBytes,
 		createdAt: snapshot.createdAt,
+		createdBy: snapshot.createdBy,
 		expiresAt: snapshot.expiresAt,
 		base: baseView(snapshot.base),
 	});
@@ -6355,6 +6356,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...recordedMachine(current),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
+					createdBy: actorOf(principal),
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
 					...(taken.base === undefined ? {} : { base: taken.base }),
@@ -6430,6 +6432,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...machine,
 					sizeBytes,
 					createdAt: now(),
+					createdBy: actorOf(principal),
 					ref,
 					...(base === undefined ? {} : { base }),
 				};
