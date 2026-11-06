@@ -207,7 +207,7 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	if h.anyE2E() {
 		var made []string
 		switch method {
-		case proto.MethodStop, proto.MethodSnapshotSave:
+		case proto.MethodStop, proto.MethodSnapshotSave, proto.MethodSnapshotKeep:
 			made = []string{p.SnapshotID}
 		case proto.MethodFork:
 			made = []string{p.SnapshotID, "fork-" + p.NewID}
@@ -528,6 +528,10 @@ func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 		add(&claims, lifecycle(p.SandboxID), p.SandboxID)
 	case proto.MethodSnapshotDel:
 		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
+	case proto.MethodSnapshotKeep:
+		// The snapshot it makes, and the one it links, which no delete or prune may take meanwhile.
+		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
+		add(&uses, snapshot(p.From), p.From)
 	case proto.MethodSnapshotRead, proto.MethodSnapshotTree:
 		add(&uses, snapshot(p.SnapshotID), p.SnapshotID)
 	default:
@@ -768,7 +772,8 @@ func (h *Host) onSince(space string) string {
 }
 
 // snapshotBorn is whether a snapshot in tier t was taken of a sandbox bornIn space, after it was made: one taken of an
-// earlier sandbox of that ID, or while E2E was off, isn't.
+// earlier sandbox of that ID, or while E2E was off, isn't. A kept copy (snapshot.keep) is judged on when its source's
+// state was taken (TakenAt), not when it was copied.
 func (h *Host) snapshotBorn(t Tier, snapshotID, space string) bool {
 	if t == nil || h.e2e == nil {
 		return false
@@ -778,7 +783,7 @@ func (h *Host) snapshotBorn(t Tier, snapshotID, space string) bool {
 			continue
 		}
 		b, ok := h.e2e.BornRecord(snap.SandboxID)
-		if !ok || b.Space != space || snap.CreatedAt <= b.At {
+		if !ok || b.Space != space || snap.TakenAtOrCreated() <= b.At {
 			return false
 		}
 		since := h.e2e.OnSince(space)

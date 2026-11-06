@@ -59,6 +59,7 @@ import {
 	type HostMount,
 	type HostProcessList,
 	type HostSandbox,
+	type HostSnapshotKeep,
 	type HostTemplateBoot,
 	type SandboxTier,
 } from "./protocol.ts";
@@ -186,6 +187,8 @@ export interface HostBackendOptions {
 	/** Serves exposed ports on the gateway's wildcard name; without it, microVMs expose none. */
 	readonly ports?: PortRouter;
 	readonly now?: () => number;
+	/** Where it warns of what it works around (a host too old for a call); default `console.warn`. */
+	readonly log?: (message: string) => void;
 }
 
 /**
@@ -439,6 +442,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 
 	/** What the host reports doing beyond protocol 1 (`HOST_FEATURES`). */
 	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
+	const warn = options.log ?? ((message: string) => console.warn(message));
 
 	/** Whether the sandbox's host runs commands by Kantel's ID (`execControl`): detached ones, and kills. */
 	async function controlsCommands(sandboxId: string): Promise<boolean> {
@@ -1142,6 +1146,29 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				DISK_COPY_TIMEOUT_MS,
 			);
 			return takenOn(hostId, snap);
+		},
+		// A saved snapshot of a stopped sandbox, or of a history entry: the host links the automatic snapshot's files into
+		// one of its own, which its pruning and the sandbox's delete leave. Asked of a host that says it keeps them; one from
+		// before it could (hosts are updated apart from the control plane) is answered `undefined`, so the save shares the
+		// automatic snapshot's ref as it did before, and the host may still prune it.
+		async keepSnapshot(ref): Promise<TakenSnapshot | undefined> {
+			const { hostId, snapshotId: from } = parseRef(ref);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.snapshotKeep)) {
+				warn(
+					`hosts: ${hostId} can't keep snapshot ${from} as a copy of its own (no ${HOST_FEATURES.snapshotKeep}): the saved snapshot shares it, and goes when the host prunes it; update kantel-host`,
+				);
+				return undefined;
+			}
+			const params: HostSnapshotKeep = { snapshotId: snapshotId(), from };
+			// The host's errors as Kantel's (a pruned source is `not_found`, a host away `unavailable`), an unanswered call
+			// still marked as one: the host may have made the snapshot.
+			const snap = await hosts.hub
+				.call<HostSnapshot>(hostId, HostMethods.snapshotKeep, params)
+				.catch((error: unknown) => {
+					throw kantelErrorFromHost(error);
+				});
+			// The host's own word on memory: an older automatic snapshot may have lost its own to pruning.
+			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);

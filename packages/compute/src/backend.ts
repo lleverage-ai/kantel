@@ -585,6 +585,17 @@ export interface SandboxBackend {
 	processes?(sandboxId: string, limit: number): Promise<BackendProcessList>;
 	/** Takes a snapshot of a running sandbox's disk without stopping it. */
 	takeSnapshot(sandboxId: string): Promise<TakenSnapshot>;
+	/**
+	 * Keeps what a snapshot holds (`ref`, an automatic one: a stop's or a history entry) as a snapshot of its own, under
+	 * a new ref, without taking it again: a saved snapshot of a stopped sandbox. The new ref's bytes outlast whatever the
+	 * backend does with automatic snapshots (a host prunes them, and removes them with their sandbox), and deleting
+	 * either ref leaves the other. `ref` stays as it was. The answer's `memory` is whether the new ref holds memory (an
+	 * older automatic snapshot may have lost its own); absent, as `ref` does. It throws `not_found` once `ref`'s bytes are
+	 * gone. Absent, or answering `undefined` (a routed backend whose `ref` is on a backend without it, or a host too old
+	 * to keep a copy): the saved snapshot shares its source's ref, as before there were copies, and on such a host goes
+	 * when the host drops the source's bytes.
+	 */
+	keepSnapshot?(ref: string): Promise<TakenSnapshot | undefined>;
 	listSnapshotFiles(ref: string, path: string): Promise<BackendFileEntry[]>;
 	readSnapshotFile(ref: string, path: string): Promise<Uint8Array>;
 	deleteSnapshot(ref: string): Promise<void>;

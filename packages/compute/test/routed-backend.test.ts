@@ -248,3 +248,39 @@ describe("createRoutedBackend's templates", () => {
 		await expect(half.buildTemplate?.(buildSpec("host_own"))).rejects.toMatchObject({ code: "not_supported" });
 	});
 });
+
+describe("createRoutedBackend's keepSnapshot", () => {
+	const kept = { ref: "kept", sizeBytes: 1 };
+	const keeping = (calls: string[], keeps: boolean): SandboxBackend => {
+		const { keepSnapshot: _own, ...stub } = createStubBackend();
+		return keeps
+			? {
+					...stub,
+					keepSnapshot: async (ref: string) => {
+						calls.push(ref);
+						return kept;
+					},
+				}
+			: stub;
+	};
+	const route = (primary: SandboxBackend, fallback: SandboxBackend) =>
+		createRoutedBackend({
+			primary,
+			fallback,
+			holds: async () => false,
+			holdsSnapshot: (ref) => ref.startsWith("host_"),
+		});
+
+	it("keeps a snapshot on the backend its ref is on, and answers none where that backend has no keep", async () => {
+		const primary: string[] = [];
+		const fallback: string[] = [];
+		const routed = route(keeping(primary, true), keeping(fallback, true));
+		expect(await routed.keepSnapshot?.("host_own/snap_1")).toEqual(kept);
+		expect(await routed.keepSnapshot?.("ref_stub")).toEqual(kept);
+		expect(primary).toEqual(["host_own/snap_1"]);
+		expect(fallback).toEqual(["ref_stub"]);
+		const half = route(keeping([], true), keeping([], false));
+		expect(await half.keepSnapshot?.("ref_stub")).toBeUndefined();
+		expect(route(keeping([], false), keeping([], false)).keepSnapshot).toBeUndefined();
+	});
+});

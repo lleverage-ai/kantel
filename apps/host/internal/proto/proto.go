@@ -227,6 +227,11 @@ const FeatureBundleMounts = "mounts-bundle"
 // agent is from before it could, and an isolate, answer ErrUnsupported.
 const FeatureProcesses = "processes"
 
+// FeatureSnapshotKeep (HOST_FEATURES.snapshotKeep): the host serves snapshot.keep, which makes a saved snapshot of an
+// existing one (an automatic one, which the host prunes and removes with its sandbox) without taking it again, so a
+// stopped sandbox's state, or a snapshot from its history, can be saved and outlast both.
+const FeatureSnapshotKeep = "snapshot-keep"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -481,6 +486,18 @@ type SnapshotInfo struct {
 	Tier      string `json:"tier"`
 	// Base is the host images version the snapshot's root filesystem is (empty when unknown: images not versioned).
 	Base string `json:"base,omitempty"`
+	// TakenAt is when the state it holds was taken, where that is before CreatedAt: a kept snapshot's (snapshot.keep)
+	// is its source's. E2E provenance is judged on it (TakenAtOrCreated), so a copy made now of older files isn't taken
+	// for a snapshot of a sandbox made since. 0: CreatedAt.
+	TakenAt int64 `json:"takenAt,omitempty"`
+}
+
+// TakenAtOrCreated is when the state a snapshot holds was taken: TakenAt, or CreatedAt where it has none.
+func (s SnapshotInfo) TakenAtOrCreated() int64 {
+	if s.TakenAt != 0 {
+		return s.TakenAt
+	}
+	return s.CreatedAt
 }
 
 // Egress is a sandbox's way out, sent with create, resume and fork.
@@ -876,12 +893,14 @@ type FileEntry struct {
 	Target  string `json:"target,omitempty"`
 }
 
-// SnapshotParams is snapshot.save / snapshot.delete / snapshot.tree / snapshot.read.
+// SnapshotParams is snapshot.save / snapshot.keep / snapshot.delete / snapshot.tree / snapshot.read.
 type SnapshotParams struct {
 	SandboxID  string `json:"sandboxId,omitempty"`
 	SnapshotID string `json:"snapshotId"`
 	Name       string `json:"name,omitempty"`
 	Path       string `json:"path,omitempty"`
+	// From is the snapshot snapshot.keep keeps: SnapshotID is made a saved snapshot of what it holds.
+	From string `json:"from,omitempty"`
 }
 
 // PortParams is port.open: binary frames on Stream carry the bytes both ways.
@@ -1031,6 +1050,9 @@ const (
 	MethodProcesses    = "sandbox.processes"
 	MethodSnapshotList = "snapshot.list"
 	MethodSnapshotSave = "snapshot.save"
+	// MethodSnapshotKeep (Kantel → host, SnapshotParams: snapshotId, from, name; FeatureSnapshotKeep) makes snapshotId
+	// a saved snapshot of what snapshot from holds, which stays as it was; answered with the new SnapshotInfo.
+	MethodSnapshotKeep = "snapshot.keep"
 	MethodSnapshotDel  = "snapshot.delete"
 	MethodSnapshotTree = "snapshot.tree"
 	MethodSnapshotRead = "snapshot.read"

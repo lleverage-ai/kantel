@@ -158,6 +158,9 @@ type Manager struct {
 	// usageOwners is the account of each sandbox running at the last usage reading (Shared), under usageMu.
 	usageMu     sync.Mutex
 	usageOwners map[string]string
+	// autoMu is held while snapshots are removed (pruneAuto, a sandbox's delete, DeleteSnapshot) and while one is kept
+	// as a saved snapshot (KeepSnapshot), so a keep never copies a snapshot being removed.
+	autoMu sync.Mutex
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -1023,11 +1026,13 @@ func (m *Manager) Delete(_ context.Context, id string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	m.autoMu.Lock()
 	for _, snap := range m.snapshotsOf(id) {
 		if snap.Kind == "auto" {
 			_ = os.RemoveAll(m.snapshotDir(snap.ID))
 		}
 	}
+	m.autoMu.Unlock()
 	if err := os.RemoveAll(s.dir); err != nil {
 		return err
 	}
@@ -1394,6 +1399,8 @@ func (m *Manager) snapshotsOf(sandboxID string) []snapshotMeta {
 }
 
 func (m *Manager) pruneAuto(sandboxID string) {
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
 	auto := 0
 	for _, snap := range m.snapshotsOf(sandboxID) {
 		if snap.Kind != "auto" {
@@ -1425,10 +1432,54 @@ func (m *Manager) SaveSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	return snap, m.saveSnapshot(s, &snap)
 }
 
+// KeepSnapshot makes p.SnapshotID a saved snapshot of what p.From holds (snapshot.keep): its manifest copied, the blobs
+// being the account's, so pruneAuto and a sandbox's delete, which only remove automatic snapshots, leave it. Held
+// against those removals (autoMu), so p.From isn't removed while it is read.
+func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error) {
+	if !validID(p.SnapshotID) {
+		return proto.SnapshotInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+	}
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
+	src, err := m.readSnapshot(p.From)
+	if err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	// A snapshot without its manifest has lost its files: not an empty workspace (as a sandbox's missing one is).
+	manifest := filepath.Join(m.snapshotDir(p.From), "manifest.json")
+	if _, err := os.Stat(manifest); err != nil {
+		return proto.SnapshotInfo{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("snapshot %s has no files on this host", p.From)}
+	}
+	man, err := readManifest(manifest)
+	if err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	dir := m.snapshotDir(p.SnapshotID)
+	if _, err := os.Lstat(dir); err == nil {
+		return proto.SnapshotInfo{}, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("snapshot %s already exists on this host", p.SnapshotID)}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	// Its own save time, and its source's state's time (TakenAt), which E2E provenance is judged on.
+	snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), SizeBytes: src.SizeBytes, Base: src.Base, Tier: Tier}
+	if err := writeJSONFile(filepath.Join(dir, "manifest.json"), man); err != nil {
+		os.RemoveAll(dir)
+		return proto.SnapshotInfo{}, err
+	}
+	if err := writeJSONFile(filepath.Join(dir, "meta.json"), snapshotMeta{SnapshotInfo: snap, Owner: src.Owner}); err != nil {
+		os.RemoveAll(dir)
+		return proto.SnapshotInfo{}, err
+	}
+	return snap, nil
+}
+
 func (m *Manager) DeleteSnapshot(id string) error {
 	if _, err := m.readSnapshot(id); err != nil {
 		return err
 	}
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
 	return os.RemoveAll(m.snapshotDir(id))
 }
 

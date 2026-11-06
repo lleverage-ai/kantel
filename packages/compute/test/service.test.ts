@@ -85,6 +85,20 @@ async function failure(call: Promise<unknown>): Promise<KantelApiError> {
 	throw new Error("Expected the call to fail");
 }
 
+/**
+ * A save of a stopped sandbox as an older control plane stored it: its pause's bytes (the pause's ref, shared), said to
+ * hold no memory. Saves now keep their own ref (`keepSnapshot`), so the records sharing one are older ones.
+ */
+async function asOlderSave(store: ReturnType<typeof createMemoryStore>, savedId: string): Promise<void> {
+	const stored = await store.snapshots.get(savedId);
+	if (stored?.sandboxId === undefined) throw new Error("no saved snapshot");
+	const sandbox = await store.sandboxes.get(stored.sandboxId);
+	const pause =
+		sandbox?.latestSnapshotId === undefined ? undefined : await store.snapshots.get(sandbox.latestSnapshotId);
+	if (pause?.ref === undefined) throw new Error("no pause");
+	await store.snapshots.put({ ...stored, ref: pause.ref, memory: false });
+}
+
 describe("sandboxes", () => {
 	it("creates an isolate, runs a command and reads, writes and lists files", async () => {
 		const { tom } = setup();
@@ -654,6 +668,93 @@ describe("sandboxes", () => {
 		);
 	});
 
+	it("keeps a stopped sandbox's save, and a history entry's, under refs of their own", async () => {
+		const store = createMemoryStore();
+		const backend = createStubBackend();
+		const keep = vi.spyOn(backend, "keepSnapshot");
+		const take = vi.spyOn(backend, "takeSnapshot");
+		const drop = vi.spyOn(backend, "deleteSnapshot");
+		const { tom } = setup(backend, { store });
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.writeFile(vm.id, { path: "app.txt", content: "v1" });
+		const first = await tom.stopSandbox(vm.id, { wait: true });
+		const refOf = async (id: string | undefined) => (await store.snapshots.get(id ?? ""))?.ref;
+		const firstRef = await refOf(first.latestSnapshotId);
+
+		// The stopped sandbox's newest snapshot, kept: the save's ref is the kept one, not the stop's.
+		const stopped = await tom.saveSnapshot({ name: "stopped", sandboxId: vm.id });
+		expect(keep).toHaveBeenCalledTimes(1);
+		expect(keep).toHaveBeenLastCalledWith(firstRef);
+		const stoppedRef = await refOf(stopped.id);
+		expect(stoppedRef).toBe((await keep.mock.results[0]?.value)?.ref);
+		expect(stoppedRef).not.toBe(firstRef);
+		expect(take).not.toHaveBeenCalled();
+		// The stop's entry stays in the history, automatic, on its own ref.
+		expect(await store.snapshots.get(first.latestSnapshotId ?? "")).toMatchObject({ kind: "automatic", ref: firstRef });
+
+		// A later run, and a save of the first stop from the history: kept from that entry's ref.
+		await tom.resumeSandbox(vm.id, { wait: true });
+		await tom.writeFile(vm.id, { path: "app.txt", content: "v2" });
+		await tom.stopSandbox(vm.id, { wait: true });
+		const history = await tom.saveSnapshot({ name: "history", sandboxId: vm.id, snapshotId: first.latestSnapshotId });
+		expect(keep).toHaveBeenLastCalledWith(firstRef);
+		const historyRef = await refOf(history.id);
+		expect(new Set([firstRef, stoppedRef, historyRef]).size).toBe(3);
+
+		// Deleting the history entry lets its bytes go, and each save keeps its own.
+		await tom.deleteSnapshot(first.latestSnapshotId ?? "");
+		expect(drop).toHaveBeenLastCalledWith(firstRef);
+		for (const saved of [stopped, history]) {
+			expect((await tom.readSnapshotFile(saved.id, { path: "app.txt" })).content).toBe("v1");
+		}
+		// Replacing a save lets its own bytes go, never the history's it was kept from.
+		const latestRef = await refOf((await tom.getSandbox(vm.id)).latestSnapshotId);
+		const replaced = await tom.saveSnapshot({ name: "history", sandboxId: vm.id, replace: true });
+		expect(drop).toHaveBeenLastCalledWith(historyRef);
+		expect(drop).not.toHaveBeenCalledWith(latestRef);
+		// Deleting the sandbox lets its automatic snapshots' bytes go; the saves' are their own.
+		await tom.deleteSandbox(vm.id);
+		expect(drop).toHaveBeenLastCalledWith(latestRef);
+		expect(drop).not.toHaveBeenCalledWith(stoppedRef);
+		expect((await tom.readSnapshotFile(stopped.id, { path: "app.txt" })).content).toBe("v1");
+		expect((await tom.readSnapshotFile(replaced.id, { path: "app.txt" })).content).toBe("v2");
+	});
+
+	it("records a kept save's memory as its backend says, and stores none it couldn't keep", async () => {
+		const stub = createStubBackend();
+		let answer: "pruned" | "refused" = "pruned";
+		const backend: SandboxBackend = {
+			...stub,
+			async keepSnapshot(ref) {
+				if (answer === "refused") throw new KantelError("not_supported", "This snapshot's host is too old");
+				// A host whose source has lost its memory to pruning.
+				const kept = await stub.keepSnapshot?.(ref);
+				return kept && { ...kept, memory: false };
+			},
+		};
+		const { tom } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		expect(pause?.memory).toBe(true);
+		expect((await tom.saveSnapshot({ name: "pruned", sandboxId: vm.id })).memory).toBe(false);
+		answer = "refused";
+		expect((await failure(tom.saveSnapshot({ name: "refused", sandboxId: vm.id }))).code).toBe("not_supported");
+		expect((await tom.listSnapshots({ kind: "saved" })).items.map((item) => item.name)).toEqual(["pruned"]);
+	});
+
+	it("shares its source's ref where the backend never drops a snapshot's bytes on its own", async () => {
+		const store = createMemoryStore();
+		const { keepSnapshot: _none, ...stub } = createStubBackend();
+		const { tom } = setup(stub, { store });
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		const stopped = await tom.stopSandbox(vm.id, { wait: true });
+		const saved = await tom.saveSnapshot({ name: "shared", sandboxId: vm.id });
+		expect((await store.snapshots.get(saved.id))?.ref).toBe(
+			(await store.snapshots.get(stopped.latestSnapshotId ?? ""))?.ref,
+		);
+	});
+
 	it("keeps a pause's memory when it is saved, so a sandbox made from the save is its machine too", async () => {
 		const { tom } = setup();
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
@@ -673,10 +774,7 @@ describe("sandboxes", () => {
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
 		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
 		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
-		// As an older control plane stored it: the pause's bytes, said to hold no memory.
-		const stored = await store.snapshots.get(saved.id);
-		if (stored === undefined) throw new Error("no saved snapshot");
-		await store.snapshots.put({ ...stored, memory: false });
+		await asOlderSave(store, saved.id);
 		// Reads say what a create from it is held to; a snapshot of the disk alone still says no.
 		expect((await tom.getSnapshot(saved.id)).memory).toBe(true);
 		const listed = (await tom.listSnapshots({ kind: "saved" })).items.find((item) => item.id === saved.id);
@@ -698,9 +796,8 @@ describe("sandboxes", () => {
 		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
 		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
 		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
-		const stored = await store.snapshots.get(saved.id);
-		if (stored === undefined || pause === undefined) throw new Error("no snapshots");
-		await store.snapshots.put({ ...stored, memory: false });
+		if (pause === undefined) throw new Error("no pause");
+		await asOlderSave(store, saved.id);
 		// The source resumes, and its pause is deleted: the save is the bytes' last record.
 		await tom.resumeSandbox(vm.id, { wait: true });
 		await tom.deleteSnapshot(pause.id);
@@ -738,9 +835,7 @@ describe("sandboxes", () => {
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
 		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
 		const saved = await tom.saveSnapshot({ name: "old-save", sandboxId: vm.id });
-		const stored = await store.snapshots.get(saved.id);
-		if (stored === undefined) throw new Error("no saved snapshot");
-		await store.snapshots.put({ ...stored, memory: false });
+		await asOlderSave(store, saved.id);
 		// Deleting the sandbox forgets its pause and detaches the save, which keeps the flag it was just given.
 		await tom.deleteSandbox(vm.id);
 		expect(await store.snapshots.get(saved.id)).toMatchObject({ memory: true });

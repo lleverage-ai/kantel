@@ -49,6 +49,8 @@ type Tier interface {
 	DialPort(ctx context.Context, id string, port int) (net.Conn, error)
 	Snapshots(sandboxID string) []proto.SnapshotInfo
 	SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error)
+	// KeepSnapshot makes p.SnapshotID a saved snapshot of what p.From holds (snapshot.keep), leaving p.From as it was.
+	KeepSnapshot(ctx context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error)
 	DeleteSnapshot(id string) error
 	HasSnapshot(id string) bool
 	SnapshotFiles(id, path string) ([]proto.FileEntry, error)
@@ -281,7 +283,7 @@ func (h *Host) makeFacts() proto.Facts {
 	if reserve == 0 {
 		reserve = max(2048, total/10)
 	}
-	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -905,6 +907,16 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return t.SaveSnapshot(ctx, p)
+	case proto.MethodSnapshotKeep:
+		p, err := decode[proto.SnapshotParams](params)
+		if err != nil {
+			return nil, err
+		}
+		t, err := h.tierOfSnapshot(p.From)
+		if err != nil {
+			return nil, err
+		}
+		return t.KeepSnapshot(ctx, p)
 	case proto.MethodSnapshotDel:
 		p, err := decode[proto.SnapshotParams](params)
 		if err != nil {

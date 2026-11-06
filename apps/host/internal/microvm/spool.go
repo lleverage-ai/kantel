@@ -3,6 +3,7 @@ package microvm
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -103,23 +104,32 @@ func (sp *spool) place(path, target string) error {
 	return nil
 }
 
-// link makes dst the same memory file as src: a hard link once on disk, another symlink while it's spooled.
+// link makes dst the same memory file as src: a hard link once on disk, another symlink while it's spooled. A src
+// that is neither a file on disk nor a spool file still to be moved there (a symlink into a spool a reboot emptied, or
+// one whose move gave up) has no memory to link: that is an error, not a link to the dangling symlink, so the snapshot
+// keeps its disk alone and a sandbox made from it boots rather than failing to restore.
 func (sp *spool) link(src, dst string) error {
 	if sp != nil {
+		// Held through the check and the link: a flush renames the file on disk over src under it.
+		sp.mu.Lock()
+		defer sp.mu.Unlock()
 		if path, err := os.Readlink(src); err == nil && strings.HasPrefix(path, sp.dir+"/") {
-			sp.mu.Lock()
 			if _, pending := sp.targets[path]; pending {
 				_ = os.Remove(dst)
 				if err := os.Symlink(path, dst); err != nil {
-					sp.mu.Unlock()
 					return err
 				}
 				sp.targets[path] = append(sp.targets[path], dst)
-				sp.mu.Unlock()
 				return nil
 			}
-			sp.mu.Unlock()
 		}
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("memory file %s isn't on the disk", src)
 	}
 	return os.Link(src, dst)
 }
