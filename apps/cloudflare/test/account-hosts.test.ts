@@ -741,6 +741,7 @@ describe("Account hosts on the Worker", () => {
 		await expect(stub.listSnapshotFiles(ref, "/")).rejects.toMatchObject({ code: "unavailable" });
 		await expect(stub.readSnapshotFile(ref, "/a")).rejects.toMatchObject({ code: "unavailable" });
 		await expect(stub.deleteSnapshot(ref)).rejects.toMatchObject({ code: "unavailable" });
+		await expect(stub.keepSnapshot?.(ref)).rejects.toMatchObject({ code: "unavailable" });
 		// The stub's own snapshot it has lost still boots from an empty disk, as before.
 		await expect(stub.create({ ...spec, fromSnapshot: "ref_gone" })).resolves.toMatchObject({ hostId: STUB_HOST_ID });
 	});

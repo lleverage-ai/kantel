@@ -1425,6 +1425,39 @@ func (m *Manager) SaveSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	return snap, m.saveSnapshot(s, &snap)
 }
 
+// KeepSnapshot makes p.SnapshotID a saved snapshot of what p.From holds (snapshot.keep): its manifest copied, the blobs
+// being the account's, so pruneAuto and a sandbox's delete, which only remove automatic snapshots, leave it.
+func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error) {
+	if !validID(p.SnapshotID) {
+		return proto.SnapshotInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+	}
+	src, err := m.readSnapshot(p.From)
+	if err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	man, err := readManifest(filepath.Join(m.snapshotDir(p.From), "manifest.json"))
+	if err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	dir := m.snapshotDir(p.SnapshotID)
+	if _, err := os.Lstat(dir); err == nil {
+		return proto.SnapshotInfo{}, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("snapshot %s already exists on this host", p.SnapshotID)}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), SizeBytes: src.SizeBytes, Base: src.Base, Tier: Tier}
+	if err := writeJSONFile(filepath.Join(dir, "manifest.json"), man); err != nil {
+		os.RemoveAll(dir)
+		return proto.SnapshotInfo{}, err
+	}
+	if err := writeJSONFile(filepath.Join(dir, "meta.json"), snapshotMeta{SnapshotInfo: snap, Owner: src.Owner}); err != nil {
+		os.RemoveAll(dir)
+		return proto.SnapshotInfo{}, err
+	}
+	return snap, nil
+}
+
 func (m *Manager) DeleteSnapshot(id string) error {
 	if _, err := m.readSnapshot(id); err != nil {
 		return err

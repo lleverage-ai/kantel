@@ -230,6 +230,10 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return backend.processes(id, limit);
 		},
 		takeSnapshot: async (id) => (await on(id)).takeSnapshot(id),
+		// On the backend its source is on; one without it never drops a snapshot's bytes on its own (`undefined`).
+		...(primary.keepSnapshot === undefined && fallback.keepSnapshot === undefined
+			? {}
+			: { keepSnapshot: async (ref: string) => forRef(ref).keepSnapshot?.(ref) }),
 		listSnapshotFiles: (ref, path) => forRef(ref).listSnapshotFiles(ref, path),
 		readSnapshotFile: (ref, path) => forRef(ref).readSnapshotFile(ref, path),
 		deleteSnapshot: (ref) => forRef(ref).deleteSnapshot(ref),

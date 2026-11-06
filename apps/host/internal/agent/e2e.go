@@ -207,7 +207,7 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	if h.anyE2E() {
 		var made []string
 		switch method {
-		case proto.MethodStop, proto.MethodSnapshotSave:
+		case proto.MethodStop, proto.MethodSnapshotSave, proto.MethodSnapshotKeep:
 			made = []string{p.SnapshotID}
 		case proto.MethodFork:
 			made = []string{p.SnapshotID, "fork-" + p.NewID}
@@ -528,6 +528,10 @@ func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 		add(&claims, lifecycle(p.SandboxID), p.SandboxID)
 	case proto.MethodSnapshotDel:
 		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
+	case proto.MethodSnapshotKeep:
+		// The snapshot it makes, and the one it links, which no delete or prune may take meanwhile.
+		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
+		add(&uses, snapshot(p.From), p.From)
 	case proto.MethodSnapshotRead, proto.MethodSnapshotTree:
 		add(&uses, snapshot(p.SnapshotID), p.SnapshotID)
 	default:

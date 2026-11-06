@@ -1296,6 +1296,10 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 			refuseHostSnapshot(ref);
 			return stub.deleteSnapshot(ref);
 		},
+		keepSnapshot: async (ref) => {
+			refuseHostSnapshot(ref);
+			return stub.keepSnapshot?.(ref);
+		},
 		exec: (id, request) => onMachine(id, () => stub.exec(id, request)),
 		readFile: (id, path, range) => onMachine(id, () => stub.readFile(id, path, range)),
 		writeFile: (id, path, content, mode) => onMachine(id, () => stub.writeFile(id, path, content, mode)),

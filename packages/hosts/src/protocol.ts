@@ -206,7 +206,23 @@ export const HOST_FEATURES = {
 	 * Without it Kantel asks no host for processes.
 	 */
 	processes: "processes",
+	/**
+	 * `snapshot.keep` (`HostSnapshotKeep`): a saved snapshot made of an existing one (a stop's automatic snapshot, which
+	 * the host prunes and removes with its sandbox) without taking it again, answered as `snapshot.save` is. Without it
+	 * Kantel can't save a stopped sandbox, or a snapshot from its history, on that host.
+	 */
+	snapshotKeep: "snapshot-keep",
 } as const;
+
+/**
+ * `snapshot.keep`'s params (`HOST_FEATURES.snapshotKeep`): `snapshotId` made a saved snapshot of what `from` holds, which
+ * stays as it was. Its memory comes along while `from` still has it; the answer's `memory` says.
+ */
+export interface HostSnapshotKeep {
+	readonly snapshotId: string;
+	readonly from: string;
+	readonly name?: string;
+}
 
 /** `sandbox.processes`' params: at most `limit` processes (the host's default 10 without one, at most 50). */
 export interface HostProcessesParams {
@@ -763,6 +779,8 @@ export const HostMethods = {
 	processes: "sandbox.processes",
 	snapshotList: "snapshot.list",
 	snapshotSave: "snapshot.save",
+	/** `HostSnapshotKeep` (`HOST_FEATURES.snapshotKeep`): a saved snapshot of another, answered as `snapshot.save`. */
+	snapshotKeep: "snapshot.keep",
 	snapshotDelete: "snapshot.delete",
 	snapshotTree: "snapshot.tree",
 	snapshotRead: "snapshot.read",

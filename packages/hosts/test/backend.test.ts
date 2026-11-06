@@ -195,6 +195,13 @@ class FakeHost {
 			case "snapshot.delete":
 				this.snapshots.delete(String(p.snapshotId));
 				return answer({ ok: true });
+			case "snapshot.keep": {
+				const from = this.snapshots.get(String(p.from));
+				if (from === undefined) return fail("not_found", `no snapshot ${String(p.from)} on this host`);
+				this.snapshots.set(String(p.snapshotId), new Map(from));
+				// As a host whose source has lost its memory to pruning answers.
+				return answer({ id: p.snapshotId, kind: "saved", sizeBytes: 40, memory: false, base: "v2" });
+			}
 			case "host.images":
 				return this.images === undefined
 					? fail("unsupported", "image patching is off on this host")
@@ -722,5 +729,49 @@ describe("a restart on the latest base, checked with the host first", () => {
 		await expect(prepare()).rejects.toMatchObject({ code: "unavailable" });
 		// No sandbox stopped for any of it.
 		expect(host.calls.filter((method) => method === "sandbox.stop")).toEqual([]);
+	});
+});
+
+describe("saving a stopped sandbox on a host", () => {
+	async function connected(features: readonly string[]) {
+		const { service, root } = setup();
+		const told = { ...facts, features: [...features] };
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts: told });
+		const host = new FakeHost(service, hostId);
+		host.facts = told;
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		await root.writeFile(sandbox.id, { path: "/home/user/app.txt", content: "v1" });
+		const stopped = await root.stopSandbox(sandbox.id, { wait: true });
+		const stopSnapshot = String(host.params.find((call) => call.method === "sandbox.stop")?.params.snapshotId);
+		return { root, host, sandbox, stopped, stopSnapshot };
+	}
+
+	it("keeps the stop's snapshot as one of the save's own on the host, which outlasts the automatic one", async () => {
+		const { root, host, sandbox, stopped, stopSnapshot } = await connected(["snapshot-keep"]);
+		const saved = await root.saveSnapshot({ name: "kept", sandboxId: sandbox.id });
+		const keeps = host.params.filter((call) => call.method === "snapshot.keep").map((call) => call.params);
+		expect(keeps).toHaveLength(1);
+		expect(keeps[0]?.from).toBe(stopSnapshot);
+		expect(keeps[0]?.snapshotId).not.toBe(stopSnapshot);
+		// The host's word on what it kept: its source's memory pruned, the save says none.
+		expect(saved).toMatchObject({ kind: "saved", memory: false, sizeBytes: 40 });
+		// The stop's entry stays in the history, automatic.
+		expect((await root.getSnapshot(stopped.latestSnapshotId ?? "")).kind).toBe("automatic");
+		// The host prunes the stop's snapshot, or removes it with its sandbox: the save's bytes are its own.
+		host.snapshots.delete(stopSnapshot);
+		expect((await root.readSnapshotFile(saved.id, { path: "/home/user/app.txt" })).content).toBe("v1");
+		const made = await root.createSandbox({ type: "microvm", from: saved.id, wait: true });
+		expect((await root.readFile(made.id, { path: "/home/user/app.txt" })).content).toBe("v1");
+	});
+
+	it("refuses to save it on a host from before it could, rather than share bytes the host will prune", async () => {
+		const { root, host, sandbox } = await connected([]);
+		const refused = await failure(root.saveSnapshot({ name: "kept", sandboxId: sandbox.id }));
+		expect(refused.code).toBe("not_supported");
+		expect(host.calls).not.toContain("snapshot.keep");
+		expect((await root.listSnapshots({ kind: "saved" })).items).toEqual([]);
 	});
 });

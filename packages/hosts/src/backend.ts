@@ -59,6 +59,7 @@ import {
 	type HostMount,
 	type HostProcessList,
 	type HostSandbox,
+	type HostSnapshotKeep,
 	type HostTemplateBoot,
 	type SandboxTier,
 } from "./protocol.ts";
@@ -1128,6 +1129,21 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { hostId } = await tierOf(sandboxId);
 			const snap = await call<HostSnapshot>(sandboxId, "snapshot.save", { snapshotId: snapshotId() });
 			return takenOn(hostId, snap);
+		},
+		// A saved snapshot of a stopped sandbox, or of a history entry: the host links the automatic snapshot's files into
+		// one of its own, which its pruning and the sandbox's delete leave. Asked of a host that says it keeps them.
+		async keepSnapshot(ref): Promise<TakenSnapshot> {
+			const { hostId, snapshotId: from } = parseRef(ref);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.snapshotKeep)) {
+				throw new KantelError(
+					"not_supported",
+					"This snapshot's host is too old to save a stopped sandbox: update kantel-host, or start the sandbox and save it running",
+				);
+			}
+			const params: HostSnapshotKeep = { snapshotId: snapshotId(), from };
+			const snap = await hosts.hub.call<HostSnapshot>(hostId, HostMethods.snapshotKeep, params);
+			// The host's own word on memory: an older automatic snapshot may have lost its own to pruning.
+			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);

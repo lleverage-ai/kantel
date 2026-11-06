@@ -327,6 +327,9 @@ type Manager struct {
 	// bases is the base lock: read while a reference to an image version is made or moved, written by a prune from its
 	// walk of what is in use until its removals (base.go).
 	bases sync.RWMutex
+	// autoMu is held while automatic snapshots are removed (pruneAuto, a sandbox's delete) and while one is kept as a
+	// saved snapshot (KeepSnapshot), so a keep never links a snapshot half removed. Taken after bases, never before.
+	autoMu sync.Mutex
 	// pinning serialises PinBases; pinned is its first success (base.go).
 	pinning sync.Mutex
 	pinned  atomic.Bool
@@ -2884,6 +2887,8 @@ func (m *Manager) latestSnapshot(sandboxID string) string {
 // reads one half written) and replaces each meta.json by a rename rather than truncating it.
 func (m *Manager) pruneAuto(sandboxID string) {
 	defer m.holdBases()()
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
 	auto := 0
 	for _, snap := range m.snapshotsOf(sandboxID) {
 		if snap.Kind != "auto" {
@@ -2943,16 +2948,90 @@ func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (pro
 	}
 }
 
+// KeepSnapshot makes p.SnapshotID a saved snapshot of what p.From holds (snapshot.keep): the files of p.From linked
+// into a directory of its own, so neither pruneAuto nor a sandbox's delete, which only remove automatic snapshots,
+// takes them, and deleting either snapshot leaves the other whole. p.From stays as it was (an automatic snapshot stays
+// in its sandbox's history). Nothing in a snapshot's directory is written after it is made (a memory file never is, a
+// disk is copied out of it), so a link is as good as a copy.
+//
+// The memory comes along only while p.From still has it all (pruneAuto drops it from all but the newest): the answer
+// says whether it did. Held against pruneAuto and a sandbox's delete (autoMu), so p.From isn't half removed meanwhile.
+func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error) {
+	if !validID(p.SnapshotID) {
+		return proto.SnapshotInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+	}
+	// The new snapshot's meta names its source's base: held as any snapshot's save holds it (base.go). Before autoMu,
+	// as pruneAuto takes them.
+	defer m.holdBases()()
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
+	src, err := m.readSnapshot(p.From)
+	if err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	if src.Transient {
+		// A live fork's own, whose disk the fork takes: it is no snapshot to keep.
+		return proto.SnapshotInfo{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no snapshot %s on this host", p.From)}
+	}
+	sdir := m.snapshotDir(p.SnapshotID)
+	if _, err := os.Lstat(sdir); err == nil {
+		return proto.SnapshotInfo{}, conflict("snapshot %s already exists on this host", p.SnapshotID)
+	}
+	if err := os.MkdirAll(sdir, 0o700); err != nil {
+		return proto.SnapshotInfo{}, err
+	}
+	from := m.snapshotDir(p.From)
+	if err := os.Link(filepath.Join(from, fc.DiskFile), filepath.Join(sdir, fc.DiskFile)); err != nil {
+		os.RemoveAll(sdir)
+		return proto.SnapshotInfo{}, err
+	}
+	kept := src
+	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), Memory: src.Memory, Base: src.Base, Tier: Tier}
+	if kept.Memory {
+		ok := os.Link(filepath.Join(from, "state"), filepath.Join(sdir, "state")) == nil &&
+			m.spool.link(filepath.Join(from, "mem"), filepath.Join(sdir, "mem")) == nil
+		for i, digest := range src.BundleSlots {
+			if ok && digest != "" {
+				ok = os.Link(filepath.Join(from, bundleDriveFile(i)), filepath.Join(sdir, bundleDriveFile(i))) == nil
+			}
+		}
+		if !ok {
+			// Its disk alone, as pruneAuto leaves an older snapshot: a sandbox made from it boots.
+			_ = os.Remove(filepath.Join(sdir, "state"))
+			_ = os.Remove(filepath.Join(sdir, "mem"))
+			dropDrives(sdir)
+			kept.Memory = false
+		}
+	}
+	if !kept.Memory {
+		kept.BundleDrives, kept.BundleSlots = 0, nil
+	}
+	kept.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile))
+	if kept.Memory {
+		kept.SizeBytes += diskUsage(filepath.Join(sdir, "mem"))
+	}
+	raw, _ := json.MarshalIndent(kept, "", "  ")
+	if err := fsutil.WriteFileDurably(filepath.Join(sdir, "meta.json"), raw, 0o600); err != nil {
+		os.RemoveAll(sdir)
+		return proto.SnapshotInfo{}, err
+	}
+	return kept.SnapshotInfo, nil
+}
+
 // DeleteSnapshot removes a snapshot.
 func (m *Manager) DeleteSnapshot(id string) error {
 	if _, err := m.readSnapshot(id); err != nil {
 		return err
 	}
 	defer m.evictBundles()
+	// Not while a keep links it (KeepSnapshot).
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
 	return os.RemoveAll(m.snapshotDir(id))
 }
 
-// Delete ends a sandbox and removes its disk and automatic snapshots. Saved snapshots stay.
+// Delete ends a sandbox and removes its disk and automatic snapshots. Saved snapshots stay, kept ones too
+// (KeepSnapshot): their links hold the files.
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	s, err := m.get(id)
 	if err != nil {
@@ -2973,11 +3052,13 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		m.detach(s.link.Slot)
 		s.link = nil
 	}
+	m.autoMu.Lock()
 	for _, snap := range m.snapshotsOf(id) {
 		if snap.Kind == "auto" {
 			_ = os.RemoveAll(m.snapshotDir(snap.ID))
 		}
 	}
+	m.autoMu.Unlock()
 	if m.cfg.Mounts != nil {
 		m.cfg.Mounts.Forget(id)
 	}

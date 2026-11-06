@@ -701,6 +701,7 @@ func TestGateKeys(t *testing.T) {
 		{proto.MethodCreate, map[string]any{"sandboxId": "x", "from": "s"}, []string{"snapshot:s"}, []string{"sandbox:x"}},
 		{proto.MethodDelete, map[string]any{"sandboxId": "x"}, nil, []string{"sandbox:x"}},
 		{proto.MethodSnapshotDel, map[string]any{"snapshotId": "s"}, nil, []string{"snapshot:s"}},
+		{proto.MethodSnapshotKeep, map[string]any{"snapshotId": "k", "from": "s"}, []string{"snapshot:s"}, []string{"snapshot:k"}},
 		{proto.MethodExec, map[string]any{"sandboxId": "x"}, []string{"sandbox:x"}, nil},
 	} {
 		raw, _ := json.Marshal(c.params)

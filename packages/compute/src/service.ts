@@ -6394,13 +6394,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let memory = false;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
 				let machine = recordedMachine(current);
-				if (body.snapshotId !== undefined) {
-					const source = await store.snapshots.get(body.snapshotId);
-					if (source === undefined || source.sandboxId !== current.id) throw notFound("snapshot of this sandbox");
-					ref = readyRef(source);
-					sizeBytes = source.sizeBytes;
-					base = source.base;
-					memory = await holdsMemory(source);
+				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
+				// own (`keepSnapshot`), since a host prunes automatic snapshots, and removes them with their sandbox. The
+				// entry stays in the sandbox's history, automatic, on its own ref.
+				const source =
+					body.snapshotId !== undefined
+						? await store.snapshots.get(body.snapshotId)
+						: current.state === "running" || current.latestSnapshotId === undefined
+							? undefined
+							: await store.snapshots.get(current.latestSnapshotId);
+				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
+					throw notFound("snapshot of this sandbox");
+				}
+				if (source !== undefined) {
+					const from = readyRef(source);
+					const kept = await backend.keepSnapshot?.(from);
+					ref = kept?.ref ?? from;
+					sizeBytes = kept?.sizeBytes ?? source.sizeBytes;
+					base = kept?.base ?? source.base;
+					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
 					const taken = await backend.takeSnapshot(current.id);
@@ -6409,14 +6421,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					base = taken.base;
 					memory = taken.memory === true;
 				} else {
-					const latest =
-						current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
-					if (latest === undefined) throw new KantelError("conflict", "The sandbox has no state to save yet");
-					ref = readyRef(latest);
-					sizeBytes = latest.sizeBytes;
-					base = latest.base;
-					memory = await holdsMemory(latest);
-					if (recordsMachine(latest)) machine = recordedMachine(latest);
+					throw new KantelError("conflict", "The sandbox has no state to save yet");
 				}
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),

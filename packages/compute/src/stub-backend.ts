@@ -613,6 +613,11 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			return keep(await capture(running(sandboxId).fs));
 		},
 
+		async keepSnapshot(ref) {
+			// A tree is never changed once taken: the new ref shares it, and each ref goes on its own.
+			return keep(snapshotTree(ref));
+		},
+
 		async listSnapshotFiles(ref, path) {
 			const tree = snapshotTree(ref);
 			const entries = entriesOf(tree, path);

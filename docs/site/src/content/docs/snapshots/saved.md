@@ -36,6 +36,8 @@ const template = await kantel.saveSnapshot({
 
 This saves the sandbox's state now. To save a moment from its history instead, add that snapshot's ID as `snapshotId`; see [How snapshots work](/snapshots/history/).
 
+A stopped sandbox's state is its newest snapshot. Saving it, or a snapshot from its history, keeps a copy of its own: the history entry stays in the history and still expires, and deleting either one leaves the other. A history entry older than the sandbox's newest stop may have kept only its disk, and a save of it then has `memory: false`. On [your own hosts](/hosts/), a host too old to keep a copy answers `501` with `not_supported`: update it, or start the sandbox and save it running.
+
 A name is up to 63 characters of lower-case letters, digits, `-`, `_` and `.`, starting with a letter or digit, and is unique in its account. The answer is the [Snapshot](/api/reference/types/#snapshot), with `kind: "saved"`.
 
 ## Start sandboxes from one
