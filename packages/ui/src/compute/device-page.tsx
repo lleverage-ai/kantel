@@ -1,12 +1,13 @@
 // The device sign-in page (compute console, experimental): where a person approves `kantel login` from a terminal.
-// The command line shows a code and opens `/device?code=…`; the page shows what is asking to sign in and the
-// account its key will act in, the one the account switcher has open, and Approve makes the key, which the terminal
-// collects on its next poll. Without a code in the address the person types the one their terminal shows. Every call
+// The command line shows a code and opens `/device?code=…`; the page shows what is asking to sign in and what it will
+// get, and Approve makes it, which the terminal collects on its next poll. A sign-in that asks for a personal token
+// gets one acting as the person in all their accounts, or only the one the account switcher has open; any member may
+// approve that. An older terminal's sign-in gets an API key in the open account, which needs admin there. Without a code in the address the person types the one their terminal shows. Every call
 // goes through the `DeviceLoginsSource` the host binds; stories bind it to fixtures.
 
 import { type FormEvent, useEffect, useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { TextField } from "../primitives/controls.tsx";
+import { SelectField, TextField } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
@@ -45,6 +46,7 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 		code === undefined ? { status: "idle" } : { status: "loading", code: tidyCode(code) },
 	);
 	const [busy, setBusy] = useState<"approve" | "deny">();
+	const [reach, setReach] = useState<"all" | "this">("all");
 	const [failure, setFailure] = useState<string>();
 	const now = fixedNow ?? Date.now();
 
@@ -70,7 +72,10 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 		try {
 			const decided =
 				how === "approve"
-					? await source.approve(login.userCode, { accountId: account.id })
+					? await source.approve(login.userCode, {
+							accountId: account.id,
+							...(login.personal === true && reach === "this" ? { accounts: [account.id] } : {}),
+						})
 					: await source.deny(login.userCode);
 			setLooked({ status: "ready", login: decided });
 		} catch (caught) {
@@ -89,7 +94,7 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 		<div className={computePage}>
 			<PageHeader
 				title="Sign in a device"
-				lede="Approve a terminal running kantel login. It gets an API key of its own, in the account below, which you can revoke on the API keys page."
+				lede="Approve a terminal running kantel login. It gets a credential of its own, which you can revoke in the console."
 			/>
 			{looked.status === "idle" || looked.status === "error" ? (
 				<form className="flex max-w-card flex-col gap-3" onSubmit={submit}>
@@ -119,6 +124,8 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 					account={account}
 					now={now}
 					busy={busy}
+					reach={reach}
+					onReach={setReach}
 					onApprove={() => void decide(looked.login, "approve")}
 					onDeny={() => void decide(looked.login, "deny")}
 				/>
@@ -133,6 +140,8 @@ function Decision({
 	account,
 	now,
 	busy,
+	reach,
+	onReach,
 	onApprove,
 	onDeny,
 }: {
@@ -140,6 +149,8 @@ function Decision({
 	account: ComputeAccount;
 	now: number;
 	busy: "approve" | "deny" | undefined;
+	reach: "all" | "this";
+	onReach: (reach: "all" | "this") => void;
 	onApprove: () => void;
 	onDeny: () => void;
 }) {
@@ -147,7 +158,10 @@ function Decision({
 	if (state === "approved") {
 		return (
 			<Notice level="info">
-				{login.clientName} is signed in to {account.name}. You can close this tab and go back to the terminal.
+				{login.personal === true
+					? `${login.clientName} is signed in as you${reach === "this" ? `, in ${account.name} only` : ""}.`
+					: `${login.clientName} is signed in to ${account.name}.`}{" "}
+				You can close this tab and go back to the terminal.
 			</Notice>
 		);
 	}
@@ -158,7 +172,9 @@ function Decision({
 		return <Notice level="warning">This code has expired. Run kantel login again for a new one.</Notice>;
 	}
 	const minutes = Math.max(1, Math.round((login.expiresAt - now) / 60_000));
-	const allowed = canApprove(account);
+	const personal = login.personal === true;
+	// A personal token acts with the approver's own role, so any member may approve one.
+	const allowed = personal || canApprove(account);
 	return (
 		<section className="flex max-w-card flex-col gap-4" aria-label="The sign-in">
 			<dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2">
@@ -168,9 +184,27 @@ function Decision({
 				<dd>
 					<span className="font-mono">{login.userCode}</span> <Badge>{`Expires in ${minutes} min`}</Badge>
 				</dd>
-				<dt className="text-muted">Account</dt>
-				<dd>{account.name}</dd>
+				{personal ? null : (
+					<>
+						<dt className="text-muted">Account</dt>
+						<dd>{account.name}</dd>
+					</>
+				)}
 			</dl>
+			{personal ? (
+				<SelectField
+					label="Access"
+					hint="It acts as you, with your role in each account. Revoke it under Profile."
+					value={reach}
+					onChange={(event) => onReach(event.target.value === "this" ? "this" : "all")}
+					options={[
+						{ value: "all", label: "All your accounts" },
+						{ value: "this", label: `Only ${account.kind === "personal" ? "your personal account" : account.name}` },
+					]}
+				/>
+			) : (
+				<p className="text-muted">It gets an API key in {account.name}, which you can revoke on the API keys page.</p>
+			)}
 			<p className="text-muted">
 				Check the code matches the one in your terminal. Only approve a sign-in you started yourself.
 			</p>

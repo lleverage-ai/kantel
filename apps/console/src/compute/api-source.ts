@@ -24,6 +24,7 @@ import {
 	type EgressGrant as ApiGrant,
 	type ApiKey,
 	type MountSource as ApiMountSource,
+	type PersonalToken as ApiPersonalToken,
 	type EnvironmentRepo as ApiRepo,
 	type SandboxEgress as ApiSandboxEgress,
 	type SandboxMount as ApiSandboxMount,
@@ -79,6 +80,7 @@ import type {
 	HostChoice,
 	HostingMode,
 	HostsSource,
+	PersonalTokensSource,
 	ProxySource,
 	SandboxesSource,
 	SnapshotsSource,
@@ -88,6 +90,7 @@ import type {
 	EgressEntry as UiEgressEntry,
 	Environment as UiEnvironment,
 	EgressGrant as UiGrant,
+	PersonalToken as UiPersonalToken,
 	SandboxEgress as UiSandboxEgress,
 	SandboxImage as UiSandboxImage,
 	SandboxProcess as UiSandboxProcess,
@@ -314,6 +317,9 @@ function accountOf(account: Account): ComputeAccount {
 		role: account.role,
 		// The API doesn't count members on an account; the viewer is one.
 		members: 1,
+		...(account.kind === "organisation" && account.personalTokens !== undefined
+			? { personalTokens: account.personalTokens }
+			: {}),
 	};
 }
 
@@ -365,6 +371,8 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 		},
 		...(caller.user === undefined || caller.apiKey !== undefined ? {} : { deleteAccount: () => api.deleteCaller() }),
 		rename: async (accountId, name) => accountOf(await api.updateAccount(accountId, { name })),
+		setPersonalTokens: async (accountId, policy) =>
+			accountOf(await api.updateAccount(accountId, { personalTokens: policy })),
 		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }
@@ -1293,11 +1301,43 @@ function keysSource({ api }: Context): ApiKeysSource {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Personal access tokens
+
+const personalTokenOf = (token: ApiPersonalToken): UiPersonalToken => ({
+	id: token.id,
+	name: token.name,
+	prefix: token.prefix,
+	...(token.scopes === undefined ? {} : { scopes: token.scopes }),
+	...(token.accounts === undefined ? {} : { accounts: token.accounts }),
+	createdAt: token.createdAt,
+	expiresAt: token.expiresAt,
+	...(token.lastUsedAt === undefined ? {} : { lastUsedAt: token.lastUsedAt }),
+	...(token.revokedAt === undefined ? {} : { revokedAt: token.revokedAt }),
+});
+
+function personalTokensSource({ api }: Context): PersonalTokensSource {
+	return {
+		list: async () => (await api.listPersonalTokens()).items.map(personalTokenOf),
+		create: async (input) => {
+			const issued = await api.createPersonalToken({
+				name: input.name,
+				...(input.scopes === undefined ? {} : { scopes: [...input.scopes] }),
+				...(input.accounts === undefined ? {} : { accounts: [...input.accounts] }),
+				expiresInDays: input.expiresInDays,
+			});
+			return { token: personalTokenOf(issued.token), secret: issued.secret };
+		},
+		revoke: async (id) => personalTokenOf(await api.revokePersonalToken(id)),
+	};
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Device sign-ins
 
 const deviceLoginOf = (login: DeviceLoginRequest): DeviceLogin => ({
 	userCode: login.userCode,
 	clientName: login.clientName,
+	...(login.personal === true ? { personal: true } : {}),
 	state: login.state,
 	createdAt: login.createdAt,
 	expiresAt: login.expiresAt,
@@ -1307,7 +1347,12 @@ function devicesSource({ api }: Context): DeviceLoginsSource {
 	return {
 		get: async (userCode) => deviceLoginOf(await api.getDeviceLogin(userCode)),
 		approve: async (userCode, input) =>
-			deviceLoginOf(await api.approveDeviceLogin(userCode, { account: input.accountId })),
+			deviceLoginOf(
+				await api.approveDeviceLogin(userCode, {
+					account: input.accountId,
+					...(input.accounts === undefined ? {} : { accounts: [...input.accounts] }),
+				}),
+			),
 		deny: async (userCode) => deviceLoginOf(await api.denyDeviceLogin(userCode)),
 	};
 }
@@ -2399,8 +2444,10 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 			: {}),
 		// Bundles and bucket sources, where the deployment has turned mounts on; absent, nothing about mounts is shown.
 		...(mountsOffered ? { mounts: mountsSource(context) } : {}),
-		// Only a person approves a device; a console signed in with a key has nothing to approve with.
-		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
+		// Only a person approves a device; a console signed in with a key or a personal token has nothing to approve with.
+		...(caller.apiKey === undefined && caller.personalToken === undefined ? { devices: devicesSource(context) } : {}),
+		// A person's own tokens, which a key has none of.
+		...(caller.apiKey === undefined ? { personalTokens: personalTokensSource(context) } : {}),
 		e2e:
 			local === undefined
 				? {

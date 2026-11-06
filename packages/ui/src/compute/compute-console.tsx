@@ -1157,6 +1157,8 @@ function PageFor({
 				<ProfilePage
 					name={you.name}
 					narrow={narrow}
+					accounts={accounts}
+					{...(source.personalTokens === undefined ? {} : { tokens: source.personalTokens })}
 					{...(you.email === undefined ? {} : { email: you.email })}
 					{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 					{...(onDeleteAccount === undefined ? {} : { onDeleteAccount })}
