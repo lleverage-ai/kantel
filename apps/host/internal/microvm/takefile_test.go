@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // A live fork takes its snapshot's disk: moved, not copied, and gone from the snapshot.
@@ -26,6 +27,41 @@ func TestTakeFileMoves(t *testing.T) {
 	}
 	if !os.SameFile(before, after) {
 		t.Fatal("the disk was copied, not moved")
+	}
+}
+
+// The disk's stamp sees a write in a later clock tick (writeWatch sees one in the same tick: below).
+func TestUnchangedSeesAWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "disk.ext4")
+	if err := os.WriteFile(path, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read, as the copy does: still unchanged.
+	if _, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if !unchanged(path, before) {
+		t.Fatal("a read counted as a write")
+	}
+	// A write in place, of the same size, a tick or more later.
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := f.WriteAt([]byte("x"), 100); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if unchanged(path, before) {
+		t.Fatal("a write went unseen")
+	}
+	if unchanged(filepath.Join(t.TempDir(), "gone"), before) {
+		t.Fatal("a missing file counted as unchanged")
 	}
 }
 
