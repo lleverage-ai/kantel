@@ -5,8 +5,9 @@
 // shadow inward from it, under the text, so the cut-off column reads as cut off rather than as the end.
 //
 // With `fill`, the content can scroll down as well, in the room its page leaves it (a list page whose table fills the
-// window under its header and filters, base.css): while it does, its header row sticks, it shows its own scrollbars,
-// whose bottom one is then in the window anyway, and the pinned bar goes.
+// window under its header and filters, base.css): while it does, its header row sticks and it shows its own vertical
+// scrollbar. The pinned bar stays its horizontal one either way, so which bars show never changes its height, and a
+// table near the height where it starts to scroll can't flicker between the two.
 
 import { type ComponentProps, useLayoutEffect, useRef, useState } from "react";
 
@@ -34,25 +35,12 @@ const fits: Edges = { width: undefined, start: false, end: false, reachable: tru
 const focusable =
 	'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-/**
- * What the scroller's content needs. `railRoom` is given while it's scrolling down with its own scrollbars: the height
- * the pinned bar and the gap over it take, which leaving would give back to the bar. It stays tall until the content
- * would fit with that bar back in place of its own, so the choice of bars can't undo itself (leaving makes it tall
- * again) and flicker between the two at one height.
- */
-function measure(scroller: HTMLElement, railRoom?: number): Edges {
+function measure(scroller: HTMLElement): Edges {
 	const { scrollWidth, clientWidth, scrollLeft, scrollHeight, clientHeight } = scroller;
 	// A pixel of slack: zoom and fractional sizes leave the scroll size a rounding over the client size.
-	const style = getComputedStyle(scroller);
-	const scrolls = style.overflowX !== "visible";
+	const scrolls = getComputedStyle(scroller).overflowX !== "visible";
 	const wide = scrollWidth > clientWidth + 1;
-	let room = clientHeight;
-	if (railRoom !== undefined) {
-		// Its own bottom scrollbar goes when it leaves, and the pinned bar comes back if it's still too wide.
-		const borders = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
-		room += scroller.offsetHeight - clientHeight - borders - (wide ? railRoom : 0);
-	}
-	const tall = scrolls && scrollHeight > room + 1;
+	const tall = scrolls && scrollHeight > clientHeight + 1;
 	if (!wide && !tall) return scrolls ? fits : { ...fits, scrolls };
 	return {
 		width: wide ? scrollWidth : undefined,
@@ -99,7 +87,7 @@ const stickyHead = {
  * scroll for a pointer, so it's hidden from assistive tech and out of the tab order.
  *
  * `fill` lets it scroll down too, as tall as its page lets it be (base.css's `kt-fill`): while its content is taller
- * than that, its table's header row sticks and its own scrollbars show in place of the pinned bar.
+ * than that, its table's header row sticks and its own vertical scrollbar shows beside the pinned bar.
  */
 export function SideScroll({
 	children,
@@ -111,20 +99,13 @@ export function SideScroll({
 	const scroller = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
 	const [edges, setEdges] = useState<Edges>(fits);
-	// Whether it's scrolling down with its own bars, and the room the pinned bar took when last shown (until then, about a
-	// scrollbar and the column's gap): measure's way back to the pinned bar.
-	const mode = useRef({ scrolling: false, railRoom: 24 });
 	useLayoutEffect(() => {
 		const box = scroller.current;
 		if (box === null) return;
 		const update = () => {
-			const rail = bar.current;
-			if (rail !== null && !rail.hidden) {
-				mode.current.railRoom = rail.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
-			}
-			const next = measure(box, mode.current.scrolling ? mode.current.railRoom : undefined);
-			mode.current.scrolling = fill && next.tall;
+			const next = measure(box);
 			setEdges((current) => (same(current, next) ? current : next));
+			const rail = bar.current;
 			if (rail !== null && rail.scrollLeft !== box.scrollLeft) rail.scrollLeft = box.scrollLeft;
 		};
 		update();
@@ -143,13 +124,15 @@ export function SideScroll({
 			children.disconnect();
 			box.removeEventListener("scroll", update);
 		};
-	}, [fill]);
+	}, []);
 	const follow = () => {
 		const box = scroller.current;
 		const rail = bar.current;
 		if (box !== null && rail !== null && box.scrollLeft !== rail.scrollLeft) box.scrollLeft = rail.scrollLeft;
 	};
-	// Scrolling down in its own room: its scrollbars are in the window, so it shows them rather than the pinned bar.
+	// Scrolling down in its own room: it shows its own vertical scrollbar. Its horizontal one stays hidden for the pinned
+	// bar (WebKit and Chromium; Firefox can't hide one axis, so it shows both of its own, thin, beside the pinned bar),
+	// so its height is the same with or without its own bars.
 	const scrolling = fill && edges.tall;
 	return (
 		<>
@@ -158,7 +141,7 @@ export function SideScroll({
 				{...rest}
 				ref={scroller}
 				data-edges={edgesData(edges)}
-				className={`kt-side-scroll kt-focusable relative overflow-x-auto ${fill && edges.scrolls ? "kt-table-fill kt-scroll-rounded min-h-0 overflow-y-auto" : ""} ${scrolling ? stickyHead[surface] : "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"} ${className ?? ""}`}
+				className={`kt-side-scroll kt-focusable relative overflow-x-auto ${fill && edges.scrolls ? "kt-table-fill kt-scroll-rounded min-h-0 overflow-y-auto" : ""} ${scrolling ? `${stickyHead[surface]} [&::-webkit-scrollbar:horizontal]:h-0` : "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"} ${className ?? ""}`}
 			>
 				{children}
 			</div>
@@ -166,7 +149,7 @@ export function SideScroll({
 				ref={bar}
 				aria-hidden="true"
 				tabIndex={-1}
-				hidden={edges.width === undefined || scrolling}
+				hidden={edges.width === undefined}
 				onScroll={follow}
 				className="kt-side-scroll-bar sticky bottom-0 z-1 min-w-0 overflow-x-auto overflow-y-hidden bg-canvas"
 			>

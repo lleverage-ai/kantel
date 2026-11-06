@@ -246,8 +246,9 @@ row is painted in. With nothing to scroll there is no bar and no shadow. `classN
 
 `fill`, for a page that is a list (Sandboxes, Snapshots, Environments, the egress log; `TableFrame` passes it on): the
 content takes the room its page leaves under the header, filters and notices, and scrolls down in it too, so New and
-the filters stay in view down a long list. While it scrolls down, its table's header row sticks and its own scrollbars
-show in place of the pinned bar. Every flex column from the console's page down to it carries `kt-fill`
+the filters stay in view down a long list. While it scrolls down, its table's header row sticks and its own vertical
+scrollbar shows; the pinned bar stays its horizontal one, so its height doesn't change with the bars it shows and it
+can't flicker between them (Firefox, which can't hide one axis, shows both of its own beside it). Every flex column from the console's page down to it carries `kt-fill`
 (`tokens/base.css`), which lets one holding a filling table shrink; the rest keep their height. A short list stays
 as tall as its rows. A phone (the console puts no `kt-fill` on its page), a window under 36rem tall, and a table shown
 as cards all scroll the page as before.
