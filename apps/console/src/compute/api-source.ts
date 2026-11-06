@@ -815,15 +815,9 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(latest.diskUsedBytes === undefined ? {} : { diskGb: gb(latest.diskUsedBytes) }),
 			};
 		},
-		// A microVM's busiest processes, which its guest agent reads when asked. Their command lines are its content, so end
-		// to end they come over this console's session to its host, as its files do.
+		// A microVM's busiest processes, which its guest agent reads when asked.
 		processes: async (id) => {
 			try {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const { processes } = await host.call<{ processes: ApiSandboxProcess[] | null }>(id, "sandbox.processes", {});
-					return (processes ?? []).map(processOf);
-				}
 				return (await api.listSandboxProcesses(id)).items.map(processOf);
 			} catch (error) {
 				if (unlistedProcesses(error)) return undefined;
@@ -880,7 +874,7 @@ async function readSandboxFile(context: Context, id: string, path: string, range
 /**
  * A read whose refusal (a path outside what the sandbox has, such as anything but an isolate's /workspace, or one that
  * isn't there) is the UI's refusal, which it shows as a line and never offers to try again. Anything else (the host
- * unreachable, a dropped session) is as it was, for Try again.
+ * unreachable) is as it was, for Try again.
  */
 async function refusing<T>(read: () => Promise<T>): Promise<T> {
 	try {
