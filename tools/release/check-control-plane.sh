@@ -21,7 +21,8 @@ base=${base%/}
 latest_url=${KANTEL_RELEASES_LATEST_URL:-https://github.com/${GITHUB_REPOSITORY:-lleverage-ai/kantel}/releases/latest}
 # Seconds between tries: past the control plane's 30-second gap between checks, so a retry reads again.
 retry_after=${KANTEL_CHECK_RETRY_SECONDS:-35}
-wait_tries=${KANTEL_CHECK_WAIT_TRIES:-24}
+# The longest wait for GitHub to name the release, network time included.
+wait_seconds=${KANTEL_CHECK_WAIT_SECONDS:-120}
 
 warn() {
 	echo "::warning::$*"
@@ -37,18 +38,25 @@ if [[ "$version" == *-* ]]; then
 fi
 
 # GitHub's latest-release redirect can lag a new release by a few seconds; until it names this one, the control plane
-# would read the one before. Wait for it (two minutes at most), then call either way.
-for ((try = 1; try <= wait_tries; try++)); do
-	location=$(curl -sS -o /dev/null --max-time 10 -w '%{redirect_url}' "$latest_url" 2>/dev/null) || location=""
+# would read the one before. Wait for it (`wait_seconds` at most, however slow GitHub is), then call either way.
+deadline=$((SECONDS + wait_seconds))
+location=""
+while :; do
+	left=$((deadline - SECONDS))
+	if ((left > 0)); then
+		location=$(curl -sS -o /dev/null --max-time "$((left < 10 ? left : 10))" -w '%{redirect_url}' "$latest_url" 2>/dev/null) ||
+			location=""
+	fi
 	if [[ "$location" == */releases/tag/v$version ]]; then
 		echo "$latest_url names v$version."
 		break
 	fi
-	if ((try == wait_tries)); then
+	left=$((deadline - SECONDS))
+	if ((left <= 0)); then
 		echo "$latest_url still names ${location:-nothing} rather than v$version; asking the control plane anyway."
-	else
-		sleep 5
+		break
 	fi
+	sleep "$((left < 5 ? left : 5))"
 done
 
 body=$(mktemp)

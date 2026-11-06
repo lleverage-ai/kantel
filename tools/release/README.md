@@ -65,7 +65,7 @@ After the GitHub Release, `check-control-plane.sh` asks app.kantel.dev (the repo
 or `https://app.kantel.dev`) to read the latest release now: `POST /v1/hosts/releases/check`, with the
 `KANTEL_RELEASE_CHECK_TOKEN` Actions secret as its bearer. The console then offers hosts the update within a minute,
 rather than within the hour. The call names no version: the control plane reads GitHub's latest release itself, so
-the token can only make it read sooner. The script first waits (up to two minutes) for
+the token can only make it read sooner. The script first waits (up to two minutes, network time included) for
 `releases/latest` to name the new tag, then tries three times, 35 seconds apart, past the control plane's
 30-second gap between checks.
 
