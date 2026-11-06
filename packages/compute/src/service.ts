@@ -6341,7 +6341,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "snapshots:write");
 			return once(principal, "takeSnapshot", { params, body, idempotencyKey }, async () => {
 				const current = await requireRunning(principal, sandbox.id);
-				const taken = await backend.takeSnapshot(current.id);
+				const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -6415,7 +6415,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
-					const taken = await backend.takeSnapshot(current.id);
+					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
 					ref = taken.ref;
 					sizeBytes = taken.sizeBytes;
 					base = taken.base;

@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -61,6 +63,8 @@ func TestSpooledForkDiskMatchesMemory(t *testing.T) {
 	cfg := Config{
 		Root: t.TempDir(), Firecracker: firecracker, Kernel: kernel, Rootfs: rootfs, SharedTemplate: true,
 		Sizes: []proto.Size{{Name: "default", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 4}}, Network: netm, ProxyPort: 3129,
+		// Discard on the disk where Firecracker can, as a host has it.
+		Discard:  fc.DiscardSupported(hostinfo.FirecrackerVersion(firecracker)),
 		SpoolDir: spoolDir, SpoolMaxMiB: 8192,
 		Log: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 	}

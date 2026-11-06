@@ -48,6 +48,16 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &api) && api.Status == 404
 }
 
+// StatusOf is the HTTP status the agent refused a call with, or 0 for an error that isn't the agent's answer (the
+// connection, a timeout).
+func StatusOf(err error) int {
+	var api *apiError
+	if errors.As(err, &api) {
+		return api.Status
+	}
+	return 0
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, out any) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, "http://guest"+path, body)
 	if err != nil {
@@ -205,6 +215,16 @@ func (c *Client) SetIdentitySteps(ctx context.Context, id Identity) (map[string]
 func (c *Client) GrowDisk(ctx context.Context, bytes int64) error {
 	_, err := c.do(ctx, http.MethodPost, "/disk/grow?bytes="+strconv.FormatInt(bytes, 10), nil, &map[string]any{})
 	return err
+}
+
+// TrimDisk discards the free blocks of the sandbox's disk (fstrim) and answers how many bytes the guest trimmed. An
+// older agent answers 404 (IsNotFound), a disk without discard 501, and 409 while an earlier trim still runs.
+func (c *Client) TrimDisk(ctx context.Context) (uint64, error) {
+	var out struct {
+		Trimmed uint64 `json:"trimmed"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/disk/trim", nil, &out)
+	return out.Trimmed, err
 }
 
 // Mount makes the guest's read-only mounts the specs (an empty list unmounts them all).

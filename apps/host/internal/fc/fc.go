@@ -196,6 +196,35 @@ type BootConfig struct {
 	// output drive, or a sandbox's read-only bundle drives. Their paths are relative to the VM's directory, as the
 	// others' are.
 	Drives []Drive
+	// Discard lets the guest discard (trim) blocks of its writable disk: Firecracker punches holes in disk.ext4 for
+	// them, so space the guest frees is freed on the host too (DiscardSupported says which Firecracker can). Off, the
+	// guest sees no discard support and its trims go nowhere. A snapshot keeps the device as it was booted.
+	Discard bool
+}
+
+// DiscardSupported says whether a Firecracker version (`v1.17.0`, as hostinfo.FirecrackerVersion reports it) takes a
+// drive's `discard` field: from v1.17, for writable drives on the Sync IO engine (the default). An earlier one refuses
+// the field, so the boot would fail; an unknown version is taken as unable.
+func DiscardSupported(version string) bool {
+	var major, minor int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(version, "v"), "%d.%d", &major, &minor); err != nil {
+		return false
+	}
+	return major > 1 || major == 1 && minor >= 17
+}
+
+// DiskEngine is the writable disk's IO engine, said outright rather than left to Firecracker's default (the same):
+// Sync serves each guest request on the VMM thread, which Barrier relies on, and is the engine discard needs. Async
+// (io_uring) would complete writes on its own, beyond Barrier.
+const DiskEngine = "Sync"
+
+// diskDrive is the writable disk's drive, with discard on when asked (BootConfig.Discard).
+func diskDrive(discard bool) map[string]any {
+	drive := map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false, "io_engine": DiskEngine}
+	if discard {
+		drive["discard"] = true
+	}
+	return drive
 }
 
 // Drive is an extra block device. Path is relative to the VM's directory, as rootfs.ext4 is, so a snapshot of the VM
@@ -242,7 +271,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 		{"/machine-config", map[string]any{"vcpu_count": cfg.VCPUs, "mem_size_mib": cfg.MemoryMiB, "smt": false}},
 		{"/boot-source", bootSource(cfg)},
 		{"/drives/rootfs", map[string]any{"drive_id": "rootfs", "path_on_host": RootfsFile, "is_root_device": true, "is_read_only": true}},
-		{"/drives/disk", map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false}},
+		{"/drives/disk", diskDrive(cfg.Discard)},
 	}
 	// Block devices are attached in the order they're configured, so these are vdc, vdd, ... after vda and vdb.
 	for _, d := range cfg.Drives {
@@ -277,6 +306,17 @@ func (m *Machine) Pause(ctx context.Context) error {
 
 func (m *Machine) Resume(ctx context.Context) error {
 	return m.call(ctx, http.MethodPatch, "/vm", map[string]string{"state": "Resumed"})
+}
+
+// Barrier returns once the VM's VMM thread has handled a request (GET /machine-config) sent now. Firecracker runs every
+// virtio device on that one thread, its block device included, and the disk is on the Sync engine (DiskEngine): each
+// guest write to disk.ext4 is a write the thread makes and finishes before it handles its next event. So when Barrier
+// returns, every write to the disk that was under way when it was called has finished, and raised its IN_MODIFY: a
+// paused VM's disk copy checked for writes after a Barrier can't miss one still in flight. (Firecracker's
+// docs/design.md: "The VMM thread exposes the machine model, minimal legacy device model, MMDS, and VirtIO device
+// emulated Net, Block and Vsock devices"; the API thread hands each request to it.)
+func (m *Machine) Barrier(ctx context.Context) error {
+	return m.call(ctx, http.MethodGet, "/machine-config", nil)
 }
 
 // Snapshot writes a full snapshot of a paused VM: its state and its memory. The disk is the caller's to copy.

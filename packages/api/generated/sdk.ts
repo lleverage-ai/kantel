@@ -1787,6 +1787,8 @@ export interface SaveSnapshotBody {
 	readonly description?: string;
 	/** Replace a saved snapshot of the same name. */
 	readonly replace?: boolean;
+	/** Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is. */
+	readonly memory?: boolean;
 }
 
 export type ScanSeverity = "critical" | "high" | "medium" | "low" | "unknown";
@@ -1929,6 +1931,8 @@ export interface StopSandboxBody {
 
 export interface TakeSnapshotBody {
 	readonly description?: string;
+	/** Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. */
+	readonly memory?: boolean;
 }
 
 /** Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.cpu`, `kantel.sandbox.memory_bytes` and `kantel.sandbox.running_seconds`) every 60 seconds, and each lifecycle event as an OTLP log record when it happens. */

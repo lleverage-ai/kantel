@@ -90,6 +90,36 @@ func TestBootWithoutBalloonStats(t *testing.T) {
 	}
 }
 
+// Discard is on the writable disk only when asked: a Firecracker before v1.17 refuses the field.
+func TestBootDiscard(t *testing.T) {
+	for _, discard := range []bool{false, true} {
+		dir, api := serveFake(t, "")
+		m := &Machine{Dir: dir, http: apiClient(dir)}
+		if err := m.Boot(context.Background(), BootConfig{VCPUs: 1, MemoryMiB: 512, Kernel: "vmlinux", GuestCID: 3, Discard: discard}); err != nil {
+			t.Fatal(err)
+		}
+		disk := api.puts["/drives/disk"]
+		// Barrier, and so a disk-only snapshot's copy, rely on the Sync engine: said outright, never left to a default.
+		if disk["io_engine"] != "Sync" {
+			t.Fatalf("the disk's IO engine is %v, not Sync", disk["io_engine"])
+		}
+		if got, ok := disk["discard"]; discard && got != true || !discard && ok {
+			t.Fatalf("discard %v: disk drive %v", discard, disk)
+		}
+		if _, ok := api.puts["/drives/rootfs"]["discard"]; ok {
+			t.Fatalf("discard on the read-only rootfs: %v", api.puts["/drives/rootfs"])
+		}
+	}
+}
+
+func TestDiscardSupported(t *testing.T) {
+	for version, want := range map[string]bool{"v1.17.0": true, "v1.18.2": true, "v2.0.0": true, "v1.16.1": false, "v1.10.0": false, "": false, "unknown": false} {
+		if got := DiscardSupported(version); got != want {
+			t.Errorf("DiscardSupported(%q) = %v, want %v", version, got, want)
+		}
+	}
+}
+
 // A restore leaves kvmclock where the snapshot had it: advanced by the time since (clock_realtime), it jumps the
 // guest's scheduler clock, and a 1-vCPU guest's agent answered seconds late (TASK-5137).
 func TestLoadDoesNotAdvanceKvmclock(t *testing.T) {

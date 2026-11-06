@@ -1134,14 +1134,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				total: list.total,
 			};
 		},
-		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
+		async takeSnapshot(sandboxId, options): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
 			// As long as a fork: a live save writes the machine's memory and copies its whole disk. Given up on sooner, it
-			// went on and saved a snapshot no one knew the ID of.
+			// went on and saved a snapshot no one knew the ID of. The disk only unless memory is asked for: a host from before
+			// `memory` keeps memory either way, and says so.
 			const snap = await call<HostSnapshot>(
 				sandboxId,
 				"snapshot.save",
-				{ snapshotId: snapshotId() },
+				{ snapshotId: snapshotId(), ...(options?.memory === true ? { memory: true } : {}) },
 				undefined,
 				DISK_COPY_TIMEOUT_MS,
 			);

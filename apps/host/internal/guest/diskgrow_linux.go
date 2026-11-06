@@ -3,6 +3,7 @@ package guest
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -84,6 +85,58 @@ func GrowFS(ctx context.Context, dev string, want uint64) error {
 		return fmt.Errorf("grow %s to %d blocks: %w", mount, blocks, errno)
 	}
 	return nil
+}
+
+// fiTrim is FITRIM, _IOWR('X', 121, struct fstrim_range): discard a mounted file system's free blocks, as fstrim
+// does. x/sys/unix has no constant for it.
+const fiTrim = 0xc0185879
+
+// fstrimRange is struct fstrim_range: which bytes to trim, and the smallest free extent worth it. The kernel writes
+// back into len how many bytes it trimmed.
+type fstrimRange struct {
+	start, len, minLen uint64
+}
+
+// trimDisk discards the disk's free blocks (fstrim), so that with discard on the drive (Firecracker's, from v1.17) the
+// host punches holes where deleted files were, and a snapshot copies none of them. The host asks before it saves a
+// snapshot. A device without discard answers 501 (EOPNOTSUPP); an older agent 404: either way nothing to do. One trim
+// at a time: the ioctl runs on after the host stops waiting for it, and another asked for meanwhile answers 409 at
+// once rather than queue behind it.
+func (s *Server) trimDisk(w http.ResponseWriter, _ *http.Request) {
+	if !s.trimming.TryLock() {
+		fail(w, 409, errors.New("a trim of the disk is already running"))
+		return
+	}
+	defer s.trimming.Unlock()
+	trimmed, err := TrimFS(diskDevice)
+	if errors.Is(err, unix.EOPNOTSUPP) {
+		fail(w, 501, err)
+		return
+	}
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]uint64{"trimmed": trimmed})
+}
+
+// TrimFS discards every free block of the file system mounted from dev and says how many bytes it trimmed (what the
+// kernel counted: ext4 skips groups it trimmed before since the mount, and reports what it discarded).
+func TrimFS(dev string) (uint64, error) {
+	mount, err := mountOf(dev)
+	if err != nil {
+		return 0, err
+	}
+	dir, err := os.Open(mount)
+	if err != nil {
+		return 0, err
+	}
+	defer dir.Close()
+	rng := fstrimRange{len: ^uint64(0)}
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, dir.Fd(), fiTrim, uintptr(unsafe.Pointer(&rng))); errno != 0 {
+		return 0, fmt.Errorf("trim %s: %w", mount, errno)
+	}
+	return rng.len, nil
 }
 
 // deviceBytes is a block device's capacity as the kernel sees it.

@@ -1728,8 +1728,18 @@ export const ListSnapshotsQuery = Type.Object(
 	{ title: "ListSnapshotsQuery" },
 );
 
+/** A live snapshot's choice to keep a microVM's memory as well as its disk. */
+const keepMemory = Type.Optional(
+	Type.Boolean({
+		description:
+			"Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where " +
+			"it left off instead of booting, on the same machine size only. Default false: the disk alone, which is " +
+			"several GB smaller and makes sandboxes of any size.",
+	}),
+);
+
 export const TakeSnapshotBody = Type.Object(
-	{ description: Type.Optional(Type.String({ maxLength: 500 })) },
+	{ description: Type.Optional(Type.String({ maxLength: 500 })), memory: keepMemory },
 	{ title: "TakeSnapshotBody" },
 );
 
@@ -1742,6 +1752,15 @@ export const SaveSnapshotBody = Type.Object(
 		),
 		description: Type.Optional(Type.String({ maxLength: 500 })),
 		replace: Type.Optional(Type.Boolean({ description: "Replace a saved snapshot of the same name." })),
+		memory: Type.Optional(
+			Type.Boolean({
+				description:
+					"Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot " +
+					"carries on where it left off instead of booting, on the same machine size only. Default false: the " +
+					"disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a " +
+					"snapshot of its history is saved as that snapshot is.",
+			}),
+		),
 	},
 	{ title: "SaveSnapshotBody" },
 );

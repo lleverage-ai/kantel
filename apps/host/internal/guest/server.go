@@ -59,6 +59,8 @@ type Server struct {
 	upstream atomic.Value
 	// commands are those run with an ID (commands.go).
 	commands commands
+	// trimming is held while a trim of the disk runs (trimDisk): one at a time.
+	trimming sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {
@@ -76,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /exec/{id}/kill", s.killCommand)
 	mux.HandleFunc("POST /sync", s.sync)
 	mux.HandleFunc("POST /disk/grow", s.growDisk)
+	mux.HandleFunc("POST /disk/trim", s.trimDisk)
 	mux.HandleFunc("GET /files", s.readFile)
 	mux.HandleFunc("PUT /files", s.writeFile)
 	mux.HandleFunc("DELETE /files", s.deleteFile)

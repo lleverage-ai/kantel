@@ -4,12 +4,18 @@
 
 import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
-import { SelectField, TextField } from "../primitives/controls.tsx";
+import { CheckboxField, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { ClockIcon, ForkIcon } from "../primitives/icons.tsx";
 import { ReplayIcon, SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
 import type { MenuEntry } from "../primitives/menu.tsx";
-import { type Sandbox, type SandboxesSource, type SavedSnapshot, sandboxActions } from "./compute-model.ts";
+import {
+	type Sandbox,
+	type SandboxesSource,
+	type SavedSnapshot,
+	type SaveSnapshotOptions,
+	sandboxActions,
+} from "./compute-model.ts";
 import { autoStopChanges, idleStopChanges } from "./one-change.ts";
 import { messageOf } from "./parts.tsx";
 
@@ -40,7 +46,7 @@ export const IDLE_STOP_HINT =
 export interface SandboxMenuCalls {
 	readonly source: SandboxesSource;
 	/** Saves a sandbox's latest snapshot under a name; without it there's no Save snapshot. */
-	readonly save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
+	readonly save?: (sandboxId: string, name: string, options?: SaveSnapshotOptions) => Promise<SavedSnapshot>;
 	/**
 	 * A sandbox changed or was made (a fork); `null` when it was deleted. `asked`, where given, is what `asked` read as the
 	 * call was made: the answer is dropped if the sandbox changed since (a Stop or a Delete that answered first).
@@ -198,8 +204,8 @@ export function useSandboxMenu(
 				<SaveSnapshotDialog
 					sandbox={open === "save" ? sandbox : undefined}
 					onClose={close}
-					onSave={async (box, name) => {
-						await save(box.id, name);
+					onSave={async (box, name, options) => {
+						await save(box.id, name, options);
 						onNotice({ level: "info", text: `Saved ${box.name} as ${name}.` });
 					}}
 				/>
@@ -330,25 +336,33 @@ export function DeleteDialog({
 	);
 }
 
-function SaveSnapshotDialog({
+/** Save snapshot: a name, and for a running microVM whether to keep its memory too (the disk alone by default). */
+export function SaveSnapshotDialog({
 	sandbox,
 	onClose,
 	onSave,
 }: {
 	sandbox: Sandbox | undefined;
 	onClose: () => void;
-	onSave: (box: Sandbox, name: string) => Promise<void>;
+	onSave: (box: Sandbox, name: string, options?: SaveSnapshotOptions) => Promise<void>;
 }) {
 	const [name, setName] = useState("");
+	const [memory, setMemory] = useState(false);
 	const close = () => {
 		setName("");
+		setMemory(false);
 		setFailure(undefined);
 		onClose();
 	};
 	const { busy, failure, setFailure, run } = useAttempt(close);
+	// Only a running microVM has memory to keep: a stopped one is saved as its latest snapshot is.
+	const live = sandbox?.kind === "microvm" && sandbox.state === "running";
 	const submit = () => {
 		if (sandbox === undefined || name.trim() === "") return;
-		run(() => onSave(sandbox, name.trim()), "Kantel couldn't save it. Try again.");
+		run(
+			() => onSave(sandbox, name.trim(), live && memory ? { memory: true } : undefined),
+			"Kantel couldn't save it. Try again.",
+		);
 	};
 	return (
 		<Dialog
@@ -365,11 +379,18 @@ function SaveSnapshotDialog({
 				</>
 			}
 		>
-			<p>
-				Keeps <strong>{sandbox?.name}</strong>'s latest snapshot under a name until you delete it. New sandboxes can
-				start from it.
-			</p>
-			<div className="pt-2">
+			{live ? (
+				<p>
+					Keeps <strong>{sandbox?.name}</strong>'s disk as it is now under a name until you delete it. New sandboxes of
+					any size can start from it.
+				</p>
+			) : (
+				<p>
+					Keeps <strong>{sandbox?.name}</strong>'s latest snapshot under a name until you delete it. New sandboxes can
+					start from it.
+				</p>
+			)}
+			<div className="flex flex-col gap-4 pt-2">
 				<TextField
 					label="Name"
 					value={name}
@@ -377,6 +398,14 @@ function SaveSnapshotDialog({
 					placeholder="node22-base"
 					mono
 				/>
+				{live ? (
+					<CheckboxField
+						label="Keep its memory too"
+						hint="A sandbox made from it carries on where this one is instead of starting up, but has to be the same size. It also takes as much disk space as the sandbox's memory."
+						checked={memory}
+						onChange={(event) => setMemory(event.currentTarget.checked)}
+					/>
+				) : null}
 			</div>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>

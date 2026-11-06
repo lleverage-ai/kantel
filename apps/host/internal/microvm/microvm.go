@@ -35,6 +35,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -225,6 +226,10 @@ type Config struct {
 	BundleWait   time.Duration
 	// MountEvents receives a sandbox whose mounts changed status after its call answered.
 	MountEvents func(proto.SandboxInfo)
+	// Discard boots every microVM with discard on its writable disk (fc.BootConfig.Discard), for a Firecracker that
+	// can (fc.DiscardSupported): blocks the guest frees, and those a trim before a save frees (trimDisk), are holes in
+	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. It is in the templates' fingerprint.
+	Discard bool
 }
 
 type meta struct {
@@ -379,6 +384,7 @@ func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, driv
 	cfg := fc.BootConfig{
 		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
 		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: bundleDrives(drives),
+		Discard: m.cfg.Discard,
 	}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
@@ -1214,7 +1220,12 @@ func (m *Manager) templateFingerprint(sh shape) string {
 	if m.cfg.Initrd != "" {
 		images = append(images, m.cfg.Initrd)
 	}
-	return fc.Fingerprint(images...) + templateDevices + " boot=" + guest.BrowserSurfaceBootArg + psiBootArg + m.shapeKey(sh)
+	devices := templateDevices
+	if m.cfg.Discard {
+		// A template from before keeps a disk without discard, and so would every sandbox restored from it.
+		devices += ",discard"
+	}
+	return fc.Fingerprint(images...) + devices + " boot=" + guest.BrowserSurfaceBootArg + psiBootArg + m.shapeKey(sh)
 }
 
 // templateReady says whether the shape's template can be restored now without making it: made for these images, or,
@@ -2757,11 +2768,16 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	// Firecracker resets the VM's vsock connections when it snapshots: a kept-alive one would answer the next call
 	// with EOF (seen after a live fork). Drop them so the next call dials afresh.
 	s.guest.Close()
-	if err := s.machine.Pause(ctx); err != nil {
+	resume, err := m.pauseMachine(ctx, s)
+	if err != nil {
+		os.RemoveAll(sdir)
 		return "", err
 	}
 	defer func() {
-		_ = s.machine.Resume(context.Background())
+		// The snapshot is whole either way; a VM that won't resume has been stopped (pauseMachine), not left frozen.
+		if rerr := resume(); rerr != nil {
+			m.log.Warn("after a live snapshot", "sandbox", s.meta.ID, "err", rerr)
+		}
 		s.guest.Close()
 		t.step("resume", &start)
 	}()
@@ -2836,7 +2852,8 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	}
 	<-diskDone
 	t["disk"] = diskMs
-	if beside && memErr == nil && diskErr == nil && (watch.written() || !unchanged(disk, before)) {
+	// After a Barrier, so a write still under way as the copy ended is in the watch too (copyQuietDisk).
+	if beside && memErr == nil && diskErr == nil && (s.machine.Barrier(ctx) != nil || watch.written() || !unchanged(disk, before)) {
 		m.log.Info("disk written during a live snapshot; copying it again", "sandbox", s.meta.ID)
 		again := time.Now()
 		diskErr = copySparse(disk, filepath.Join(sdir, fc.DiskFile))
@@ -2856,6 +2873,178 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 		return "", err
 	}
 	return spooled, nil
+}
+
+// trimWait bounds the guest's trim before a save: past it the save goes ahead with whatever was trimmed by then.
+const trimWait = 20 * time.Second
+
+// trimDisk asks the guest to discard its disk's free blocks (fstrim) before a save, so that with discard on the drive
+// (Config.Discard) the bytes of files it deleted are holes in disk.ext4 and the snapshot copies none of them. Best
+// effort, within trimWait: a guest agent too old to trim, a disk booted without discard, or a slow or failed trim only
+// leaves the snapshot as big as it would have been. Called with s.mu held.
+func (m *Manager) trimDisk(ctx context.Context, s *sandbox) {
+	m.trimGuestDisk(ctx, s.meta.ID, s.guest)
+}
+
+// trimGuestDisk is trimDisk's call to the guest agent, and says whether it trimmed. The agent ships in the sandbox
+// image (host-images), not with the host, so for a while a host talks to agents from before POST /disk/trim: their 404
+// answers at once and is no trim, quietly, as is a disk booted without discard (501). The guest's trim isn't stopped
+// when trimWait ends (the ioctl runs on), so the agent runs one at a time and answers 409 to another meanwhile: a
+// trim that hangs costs each later save nothing, and holds nothing they need.
+func (m *Manager) trimGuestDisk(ctx context.Context, id string, client *guest.Client) bool {
+	ctx, cancel := context.WithTimeout(ctx, trimWait)
+	defer cancel()
+	start := time.Now()
+	trimmed, err := client.TrimDisk(ctx)
+	switch status := guest.StatusOf(err); {
+	case err == nil:
+		m.log.Info("trimmed the disk before a snapshot", "sandbox", id, "bytes", trimmed, "ms", time.Since(start).Milliseconds())
+		return true
+	case status == http.StatusNotFound, status == http.StatusNotImplemented, status == http.StatusConflict:
+		// An agent that can't trim, a disk that can't discard, or a trim still running: nothing to say.
+	default:
+		m.log.Debug("no trim before the snapshot", "sandbox", id, "err", err)
+	}
+	return false
+}
+
+// diskCopies is how many times liveDiskSnapshot copies a disk that keeps being written while paused before it gives up.
+const diskCopies = 4
+
+// liveDiskSnapshot snapshots a running sandbox's disk alone (no memory) and lets it carry on: what a save keeps unless
+// it asks for memory. Called with s.mu held.
+//
+// The copy is crash-consistent: what the disk would hold had the machine lost power at the pause. The guest flushes its
+// page cache first (sync), so that is everything written until then, and the VM is paused for the copy, so the guest
+// asks for no more I/O. A request it queued just before the pause may still be served during the copy, though, and a
+// copy that saw part of it would be torn. So each copy is watched for writes (writeWatch, and the file's stamp beside
+// it), and one that saw any is made again: a copy no write overlapped is the disk at one instant. With reflinks
+// (copySparse) a copy is a clone, made in an instant.
+//
+// With no memory kept, what the guest hadn't written back would be lost without a word: a sync that fails fails the
+// save, the VM running on as it was.
+func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo) error {
+	if !validID(snap.ID) {
+		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+	}
+	sdir := m.snapshotDir(snap.ID)
+	if err := os.MkdirAll(sdir, 0o700); err != nil {
+		return err
+	}
+	if err := s.guest.Sync(ctx); err != nil {
+		os.RemoveAll(sdir)
+		return fmt.Errorf("the sandbox couldn't write its files back to its disk for the snapshot: %w", err)
+	}
+	resume, err := m.pauseMachine(ctx, s)
+	if err != nil {
+		os.RemoveAll(sdir)
+		return err
+	}
+	barrier := func() error {
+		bctx, cancel := context.WithTimeout(context.Background(), resumeWait)
+		defer cancel()
+		return s.machine.Barrier(bctx)
+	}
+	err = copyQuietDisk(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile), diskCopies, barrier)
+	if rerr := resume(); rerr != nil {
+		err = errors.Join(err, rerr)
+	}
+	if err != nil {
+		os.RemoveAll(sdir)
+		return err
+	}
+	snap.Memory = false
+	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile))
+	if err := m.writeSnapshotMeta(s, snap); err != nil {
+		os.RemoveAll(sdir)
+		return err
+	}
+	return nil
+}
+
+// resumeWait bounds each try to resume a VM paused for a snapshot, apart from the call's context: a caller that has
+// gone (its connection closed) mustn't leave the VM paused.
+const resumeWait = 10 * time.Second
+
+// resumeTries is how many times a paused VM is asked to resume before it is given up on and stopped.
+const resumeTries = 3
+
+// pauseMachine pauses s's VM for a snapshot and returns what resumes it, to call once the snapshot is taken. A pause
+// whose answer is lost (a dropped connection, a cancelled context) may still have applied, so a failed pause is
+// resumed too before its error is returned: resuming a running VM changes nothing. resume tries resumeTries times,
+// each within resumeWait whatever ctx says; a VM that still won't resume is killed, so it is stopped (with its disk) as
+// an exited VM is, rather than left frozen while it is reported running, and resume says so. Called with s.mu held.
+func (m *Manager) pauseMachine(ctx context.Context, s *sandbox) (resume func() error, err error) {
+	machine := s.machine
+	resume = func() error {
+		var err error
+		for try := range resumeTries {
+			if try > 0 {
+				time.Sleep(time.Duration(try) * 200 * time.Millisecond)
+			}
+			rctx, cancel := context.WithTimeout(context.Background(), resumeWait)
+			err = machine.Resume(rctx)
+			cancel()
+			if err == nil {
+				return nil
+			}
+		}
+		m.log.Error("couldn't resume a VM paused for a snapshot; stopping it", "sandbox", s.meta.ID, "err", err)
+		machine.Kill()
+		return fmt.Errorf("sandbox %s couldn't be resumed after its snapshot, so it was stopped: %w", s.meta.ID, err)
+	}
+	if err := machine.Pause(ctx); err != nil {
+		if rerr := resume(); rerr != nil {
+			return nil, errors.Join(err, rerr)
+		}
+		return nil, err
+	}
+	return resume, nil
+}
+
+// watchDisk starts watching a disk for writes (watchWrites); a test stands in a failing one.
+var watchDisk = watchWrites
+
+// copyQuietDisk copies disk to dst (copySparse) until a copy has no write to disk overlapping it, at most tries times.
+// A disk that can't be watched (inotify's instances used up, say) can't be shown quiet by its stamps alone, which a
+// write in the same clock tick leaves as they were: only a reflink, a clone of the file at one instant, is taken of it,
+// and on a file system without them the copy fails rather than risk a torn one.
+//
+// A write raises its IN_MODIFY as it finishes, so one still under way when a copy ends isn't in the watch yet. barrier
+// (fc.Machine.Barrier: a round trip through the VMM thread, which makes every disk write) is called after each copy and
+// before its watch is read: by its return every write that was under way has finished and is in the watch. A barrier
+// that fails counts as a write.
+func copyQuietDisk(disk, dst string, tries int, barrier func() error) error {
+	for try := 1; ; try++ {
+		watch, werr := watchDisk(disk)
+		if werr != nil {
+			if out, err := exec.Command("cp", "--reflink=always", disk, dst).CombinedOutput(); err != nil {
+				_ = os.Remove(dst)
+				return fmt.Errorf("can't watch the disk for writes during its copy (%v), and can't clone it (%s): no copy of it can be shown whole", werr, strings.TrimSpace(string(out)))
+			}
+			return nil
+		}
+		before, err := os.Stat(disk)
+		if err != nil {
+			watch.close()
+			return err
+		}
+		err = copySparse(disk, dst)
+		settled := barrier() == nil
+		quiet := settled && !watch.written() && unchanged(disk, before)
+		watch.close()
+		if err != nil {
+			return err
+		}
+		if quiet {
+			return nil
+		}
+		if try >= tries {
+			_ = os.Remove(dst)
+			return fmt.Errorf("the disk was written during each of %d copies while paused", tries)
+		}
+		_ = os.Remove(dst)
+	}
 }
 
 type snapshotMeta struct {
@@ -3062,8 +3251,10 @@ func (m *Manager) Snapshots(sandboxID string) []proto.SnapshotInfo {
 	return out
 }
 
-// SaveSnapshot keeps a sandbox's current state under a name, until it is deleted: live for a running sandbox
-// (memory too), from its newest snapshot for a stopped one.
+// SaveSnapshot keeps a sandbox's current state under a name, until it is deleted: live for a running sandbox, from its
+// newest snapshot for a stopped one. A running sandbox's save keeps its disk only, unless p.Memory asks for its
+// memory too: a memory file is as big as the machine's memory, and ties a sandbox made from the snapshot to the same
+// machine size. A stopped one's keeps what its stop kept, memory or not, whatever p.Memory says.
 func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error) {
 	s, err := m.get(p.SandboxID)
 	if err != nil {
@@ -3077,10 +3268,15 @@ func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (pro
 	}
 	switch s.meta.State {
 	case proto.StateRunning:
-		snap.Memory = true
+		snap.Memory = p.Memory
+		m.trimDisk(ctx, s)
+		if !snap.Memory {
+			return snap, m.liveDiskSnapshot(ctx, s, &snap)
+		}
 		_, err := m.liveSnapshot(ctx, s, &snap, timings{}, false)
 		return snap, err
 	case proto.StateStopped:
+		// As its stop left it, as a save of a stopped sandbox or a history entry is: memory only matters live.
 		snap.Memory = s.meta.Memory
 		return snap, m.saveSnapshot(s, &snap, false)
 	default:

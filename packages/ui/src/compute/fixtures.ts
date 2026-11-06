@@ -2375,7 +2375,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						.sort((a, b) => b.createdAt - a.createdAt),
 				),
 			history: (sandboxId) => gate(() => [...(history.get(sandboxId) ?? [])]),
-			save: (sandboxId, name) =>
+			save: (sandboxId, name, options) =>
 				gate(() => {
 					const box = find(sandboxes, sandboxId, "sandbox");
 					if ([...saved.values()].some((entry) => entry.accountId === box.accountId && entry.name === name)) {
@@ -2392,6 +2392,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						createdBy: VIEWER.name,
 						sizeBytes: Math.round(sampleSpec(box).diskGb * 1024 ** 3 * 0.1),
 						uses: 0,
+						...(options?.memory === true ? { memory: true } : {}),
 						// Saved on the base the sandbox is on now.
 						...(box.base === undefined ? {} : { base: box.base }),
 					};

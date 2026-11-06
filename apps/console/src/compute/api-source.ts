@@ -1222,8 +1222,11 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 			);
 			return snapshots.map((snapshot) => sandboxSnapshotOf(snapshot, sandboxId));
 		},
-		save: async (sandboxId, name) => {
-			const [snapshot, sandbox] = await Promise.all([api.saveSnapshot({ name, sandboxId }), api.getSandbox(sandboxId)]);
+		save: async (sandboxId, name, options) => {
+			const [snapshot, sandbox] = await Promise.all([
+				api.saveSnapshot({ name, sandboxId, ...(options?.memory === true ? { memory: true } : {}) }),
+				api.getSandbox(sandboxId),
+			]);
 			return savedSnapshotOf(snapshot, sandbox.name);
 		},
 		removeSaved: (id) => api.deleteSnapshot(id),

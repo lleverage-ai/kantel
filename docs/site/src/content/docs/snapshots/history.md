@@ -69,7 +69,7 @@ curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/snapshots" \
 const before = await kantel.takeSnapshot("sbx_4kq9x2mt", { description: "Before the schema migration" });
 ```
 
-It answers at once, with the snapshot in `creating`. It joins the sandbox's history like any automatic snapshot, so it expires too: to keep it, [save it](/snapshots/saved/#save-a-snapshot).
+It keeps the disk alone; add `"memory": true` to keep a running microVM's memory too (see [Disk only, or memory too](/snapshots/saved/#disk-only-or-memory-too)). It answers at once, with the snapshot in `creating`. It joins the sandbox's history like any automatic snapshot, so it expires too: to keep it, [save it](/snapshots/saved/#save-a-snapshot).
 
 ## Browse a snapshot's files
 

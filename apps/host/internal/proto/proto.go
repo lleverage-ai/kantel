@@ -901,6 +901,10 @@ type SnapshotParams struct {
 	Path       string `json:"path,omitempty"`
 	// From is the snapshot snapshot.keep keeps: SnapshotID is made a saved snapshot of what it holds.
 	From string `json:"from,omitempty"`
+	// Memory (snapshot.save) keeps the sandbox's memory beside its disk, so a sandbox made from the snapshot resumes
+	// where it was rather than booting, on the same machine size only. Without it a save keeps the disk alone. A host
+	// from before it kept memory on every save of a running sandbox.
+	Memory bool `json:"memory,omitempty"`
 }
 
 // PortParams is port.open: binary frames on Stream carry the bytes both ways.

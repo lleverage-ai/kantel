@@ -229,7 +229,7 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			}
 			return backend.processes(id, limit);
 		},
-		takeSnapshot: async (id) => (await on(id)).takeSnapshot(id),
+		takeSnapshot: async (id, options) => (await on(id)).takeSnapshot(id, options),
 		// On the backend its source is on; one without it never drops a snapshot's bytes on its own (`undefined`).
 		...(primary.keepSnapshot === undefined && fallback.keepSnapshot === undefined
 			? {}

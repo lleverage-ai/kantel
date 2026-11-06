@@ -725,6 +725,12 @@ const TOOLS: readonly Tool[] = [
 				name: { type: "string", description: "Unique in the account." },
 				description: { type: "string", description: "What it holds." },
 				replace: { type: "boolean", description: "Replace a saved snapshot of the same name." },
+				memory: {
+					type: "boolean",
+					description:
+						"Keep a running microVM's memory as well as its disk, so a sandbox made from it carries on where it was, " +
+						"on the same size only. Default false: the disk alone, much smaller.",
+				},
 			},
 			["sandboxId", "name"],
 		),
@@ -736,6 +742,7 @@ const TOOLS: readonly Tool[] = [
 					name: text(args, "name"),
 					description: optionalText(args, "description"),
 					replace: optionalBoolean(args, "replace"),
+					memory: optionalBoolean(args, "memory"),
 				},
 				{ signal },
 			);
