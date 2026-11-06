@@ -91,11 +91,17 @@ function arrive(p) {
 	return 0.2 + ((p - 0.6) / 0.4) * 0.8;
 }
 
-function hexToRgb(hex) {
-	const value = hex.trim().replace("#", "");
-	const full = value.length === 3 ? [...value].map((ch) => ch + ch).join("") : value;
-	const n = Number.parseInt(full, 16);
-	return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+/** Any CSS colour (hex, hsl() and so on) as [r, g, b], by letting a 2D context parse it. */
+function toRgb(colour, ctx) {
+	ctx.fillStyle = "#000";
+	ctx.fillStyle = colour;
+	const value = String(ctx.fillStyle);
+	if (value.startsWith("#")) {
+		const n = Number.parseInt(value.slice(1, 7), 16);
+		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+	}
+	const [r = 0, g = 0, b = 0] = value.match(/[\d.]+/g)?.map(Number) ?? [];
+	return [r, g, b];
 }
 
 /**
@@ -113,14 +119,15 @@ export function mountPixelField(canvas, options = {}) {
 		options.quiet !== undefined ? options.quiet : document.getElementById(canvas.dataset.pixelQuiet ?? "");
 
 	// The page's colours (site.css's --site-* values), read again whenever the theme changes: midnight pixels on paper,
-	// or paper pixels on midnight.
+	// or the console's text colour on its dark canvas. Dark ones are hsl() references to the console's tokens, so the
+	// ink goes through toRgb rather than a hex parse.
 	let accent = "";
 	let line = "";
 	let inkLevels = [];
 	function readColours() {
 		const styles = getComputedStyle(canvas);
 		const colour = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
-		const ink = hexToRgb(options.ink ?? colour("--site-midnight", "#141e28"));
+		const ink = toRgb(options.ink ?? colour("--site-midnight", "#141e28"), ctx);
 		accent = options.accent ?? colour("--site-orange", "#ec7523");
 		line = options.line ?? colour("--site-line", "#d8d8d3");
 		inkLevels = Array.from({ length: 21 }, (_, i) => `rgba(${ink[0]},${ink[1]},${ink[2]},${(i / 20).toFixed(2)})`);

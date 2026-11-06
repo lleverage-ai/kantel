@@ -1,6 +1,6 @@
 /* The docs (Starlight) in the Lleverage brand. Plain CSS, not Tailwind: it sets Starlight's own custom properties,
-   which no utility reaches. Light is paper with midnight text; dark is midnight with paper text (never pure white);
-   orange is the accent. The faces are the brand's three, self-hosted from Fontsource as @kantel/ui does. */
+   which no utility reaches. Light is paper with midnight text; dark is the console's dark greys with its text (never
+   pure white); orange is the accent. The faces are the brand's three, self-hosted from Fontsource as @kantel/ui does. */
 
 @import "@fontsource-variable/public-sans/wght.css";
 @import "@fontsource/abhaya-libre/latin-400.css";
@@ -13,20 +13,22 @@
 	--sl-content-width: 48rem;
 }
 
-/* Dark: midnight ground, paper text, orange accent. */
+/* Dark: the console's dark theme (@kantel/ui's dark.css), its near-neutral greys rather than the brand's blue
+   midnight, as the marketing page's dark theme is. Hex copies of its tokens, since the docs don't load tokens.css:
+   canvas, panel, raised, border, border-strong, text-muted and text, with the orange accent. */
 :root,
 ::backdrop {
 	--sl-color-accent-low: #3a2414;
 	--sl-color-accent: #ec7523;
 	--sl-color-accent-high: #ffc79a;
-	--sl-color-white: #f9f7f0;
-	--sl-color-gray-1: #eeeeeb;
-	--sl-color-gray-2: #d8d8d3;
-	--sl-color-gray-3: #ababa7;
-	--sl-color-gray-4: #656563;
-	--sl-color-gray-5: #2c353e;
-	--sl-color-gray-6: #1c2631;
-	--sl-color-black: #141e28;
+	--sl-color-white: #f1f0ea; /* --kt-text */
+	--sl-color-gray-1: #e4e2da;
+	--sl-color-gray-2: #bfbcb0; /* --kt-text-muted */
+	--sl-color-gray-3: #9c998c;
+	--sl-color-gray-4: #6b6c70;
+	--sl-color-gray-5: #37383b; /* --kt-border */
+	--sl-color-gray-6: #242628; /* --kt-panel */
+	--sl-color-black: #1c1d20; /* --kt-canvas */
 }
 
 /* Light: paper ground, midnight text. */
