@@ -2448,6 +2448,35 @@ describe("deleting your account", () => {
 		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
 	});
 
+	it("begins with only a settling saved snapshot left, and carries its bytes' cleanup on", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const released: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			deleteSnapshot: async (ref) => {
+				released.push(ref);
+				await stub.deleteSnapshot(ref);
+			},
+		};
+		const { api, ann } = setup(backend, { store });
+		const sandbox = await ann.createSandbox({ autoStopMinutes: null, wait: true });
+		const saved = await ann.saveSnapshot({ name: "golden", sandboxId: sandbox.id });
+		const ref = (await store.snapshots.get(saved.id))?.ref;
+		await ann.deleteSandbox(sandbox.id);
+		await api.service.idle();
+		// Its delete was claimed, but its host couldn't delete the bytes yet.
+		await store.snapshots.update(saved.id, (current) => ({
+			...current,
+			state: "deleting",
+			retiring: { by: "gateway-other", at: 0, why: "delete", settling: true },
+		}));
+		await ann.deleteCaller();
+		await finishDeletions(api, store);
+		expect(await store.snapshots.get(saved.id)).toBeUndefined();
+		expect(released).toContain(ref);
+	});
+
 	it("revokes their keys, takes them out of organisations, removes them from sign-in, and starts afresh after", async () => {
 		const deleted: string[] = [];
 		const store = createMemoryStore();
@@ -4742,6 +4771,88 @@ describe("snapshot expiry", () => {
 		await sweep();
 		expect(await base.snapshots.get(saved.id)).toBeUndefined();
 		expect(released).toContain(ref);
+	});
+
+	it("keeps a confirmed pending replacement while the save it replaces has an unresolved mark", async () => {
+		const base = createMemoryStore();
+		let failReads = false;
+		const store = {
+			...base,
+			sandboxes: {
+				...base.sandboxes,
+				list: async (where?: Parameters<typeof base.sandboxes.list>[0]) => {
+					if (failReads && where === undefined) throw new KantelError("unavailable", "An injected failure");
+					return base.sandboxes.list(where);
+				},
+			},
+		} as ReturnType<typeof createMemoryStore>;
+		const { tom, clock, sweep } = expiring({ store });
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.saveSnapshot({ name: "golden", sandboxId: running.id });
+		const fresh = await tom.saveSnapshot({ name: "spare", sandboxId: running.id });
+		// A replace whose gateway died after marking the old save and storing the new one, confirmed, pending.
+		await base.snapshots.update(old.id, (current) => ({
+			...current,
+			state: "deleting",
+			retiring: { by: "gateway-dead", token: "ret_dead", at: clock.at, why: "delete", from: "ready" },
+		}));
+		await base.snapshots.update(fresh.id, (current) => ({
+			...current,
+			name: "golden",
+			state: "creating",
+			validated: true,
+		}));
+		// Past the lease, the sweep takes the old save's mark over but can't read what depends on it: unresolved.
+		clock.at += RETIRE_LEASE_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+		failReads = true;
+		await sweep();
+		failReads = false;
+		expect((await base.snapshots.get(old.id))?.state).toBe("deleting");
+		expect((await base.snapshots.get(fresh.id))?.state).toBe("creating");
+		// Resolved on the next pass: the old one settles, the replacement is made ready.
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		await sweep();
+		expect((await base.snapshots.get(old.id))?.state).not.toBe("ready");
+		expect((await base.snapshots.get(fresh.id))?.state).toBe("ready");
+		expect((await tom.listSnapshots({ kind: "saved" })).items.map((item) => item.id)).toEqual([fresh.id]);
+	});
+
+	it("drops a confirmed pending replacement once the save it was to replace is ready again", async () => {
+		const { store, tom, clock, sweep } = expiring();
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.saveSnapshot({ name: "golden", sandboxId: running.id });
+		const fresh = await tom.saveSnapshot({ name: "spare", sandboxId: running.id });
+		await store.snapshots.update(fresh.id, (current) => ({
+			...current,
+			name: "golden",
+			state: "creating",
+			validated: true,
+		}));
+		clock.at += RETIRE_LEASE_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+		await sweep();
+		expect(await store.snapshots.get(fresh.id)).toBeUndefined();
+		expect((await tom.listSnapshots({ kind: "saved" })).items.map((item) => item.id)).toEqual([old.id]);
+	});
+
+	it("lets settling saves stand for none in names, the limit, and an organisation's emptiness", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup(createStubBackend(), { store, limits: { savedSnapshots: 1 } });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const running = await tom.createSandbox({ account: org.id, autoStopMinutes: null, wait: true });
+		const old = await tom.saveSnapshot({ name: "golden", sandboxId: running.id });
+		const settle = (id: string) =>
+			store.snapshots.update(id, (current) => ({
+				...current,
+				state: "deleting",
+				retiring: { by: "gateway-other", at: 0, why: "delete", settling: true },
+			}));
+		await settle(old.id);
+		// Its name is free, and it isn't counted against the limit of one.
+		const again = await tom.saveSnapshot({ name: "golden", sandboxId: running.id });
+		expect((await failure(tom.createSandbox({ from: "nothing" }))).code).toBe("not_found");
+		await settle(again.id);
+		await tom.deleteSandbox(running.id);
+		await tom.deleteOrganisation(org.id);
 	});
 
 	it("retires a deleted sandbox's history on a later sweep when its delete couldn't", async () => {

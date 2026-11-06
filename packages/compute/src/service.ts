@@ -3825,22 +3825,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Finishes the saves a process left pending (`creating`) past `RETIRE_LEASE_MS`, dying between storing a save and
-	 * making it ready (or between retiring the save it replaces and that): made ready when its bytes were confirmed
-	 * (`validated`) and no other save of the account has its name, live or provisionally deleted (the one it replaced has
-	 * settled or gone); otherwise let go (`dropPending`, whose byte release keeps bytes another record still has).
+	 * making it ready (or between retiring the save it replaces and that). One whose bytes were never confirmed
+	 * (`validated`) is let go (`dropPending`, whose byte release keeps bytes another record still has). Otherwise, by the
+	 * other saves of its name: one ready (the one it was to replace, kept after all) lets it go; one still provisionally
+	 * marked, its delete unresolved, leaves it for a later pass; an older pending one goes first; with none, it is made
+	 * ready (the one it replaced has settled or gone).
 	 */
 	async function recoverPendingSaves(): Promise<void> {
 		const at = now();
 		for (const pending of await store.snapshots.list({ kind: "saved", state: "creating" })) {
 			if (closing) return;
 			if (pending.createdAt + RETIRE_LEASE_MS > at) continue;
-			const others = (await liveSnapshots({ accountId: pending.accountId, kind: "saved", name: pending.name })).filter(
-				(other) => other.id !== pending.id,
-			);
-			if (others.length > 0 || pending.validated !== true) {
+			if (pending.validated !== true) {
 				await dropPending(pending);
 				continue;
 			}
+			const others = (await liveSnapshots({ accountId: pending.accountId, kind: "saved", name: pending.name })).filter(
+				(other) => other.id !== pending.id,
+			);
+			if (others.some((other) => other.state === "ready")) {
+				await dropPending(pending);
+				continue;
+			}
+			const before = (other: StoredSnapshot) =>
+				other.createdAt < pending.createdAt || (other.createdAt === pending.createdAt && other.id < pending.id);
+			if (others.some((other) => other.state === "deleting" || (other.state === "creating" && before(other)))) continue;
 			await store.snapshots.update(pending.id, (latest) =>
 				latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
 			);
@@ -5639,7 +5648,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Bundles too: deleting one (`deleteBundle`) removes its bytes from the deployment's store, which only it checks.
 				if (
 					(await store.sandboxes.list({ accountId: personal })).some((sandbox) => sandbox.state !== "deleted") ||
-					(await store.snapshots.list({ accountId: personal, kind: "saved" })).length > 0 ||
+					// Settling ones are going already; the deletion carries their bytes' cleanup on (`clearPersonalAccount`).
+					(await liveSnapshots({ accountId: personal, kind: "saved" })).length > 0 ||
 					(await store.bundles.list({ accountId: personal })).length > 0
 				) {
 					throw new KantelError("conflict", "Delete your sandboxes, saved snapshots and bundles first");
