@@ -4,13 +4,21 @@
 // performance.now() and looping at window.END as the site's copy does. It draws the pixel field (field.js) on every
 // frame and seek, as window.seek does for the renderer, so the preview and the recorded frames share one timeline.
 // The renderer's ?record mode never creates it.
+//
+// It starts at the preview's ?t= position, so Space and the arrow keys work from the frame on screen before any click.
+// The engine's first click sets currentTime to that position once; after playback started from the keyboard, the
+// clock ignores that one reset, so the click only pauses.
 (() => {
+	const start = Number(new URLSearchParams(location.search).get("t")) || 0;
+
 	class SilentClock {
 		constructor() {
-			this.at = 0; // seconds, when paused or when last started
+			this.at = start; // seconds, when paused or when last started
 			this.since = 0; // performance.now() when last started or seeked
 			this.playing = false;
 			this.frame = 0;
+			this.played = false; // started at least once
+			this.seeked = false; // moved by a seek since loading
 		}
 
 		get paused() {
@@ -25,6 +33,12 @@
 		}
 
 		set currentTime(t) {
+			// The engine's first-click reset to the start, after the keyboard already started playback: keep the time.
+			if (t === start && this.played && !this.seeked) {
+				this.seeked = true;
+				return;
+			}
+			this.seeked = true;
 			this.at = t;
 			this.since = performance.now();
 			window.drawField?.(t);
@@ -34,6 +48,7 @@
 			if (!this.playing) {
 				this.since = performance.now();
 				this.playing = true;
+				this.played = true;
 				const step = () => {
 					if (!this.playing) return;
 					window.drawField?.(this.currentTime);
