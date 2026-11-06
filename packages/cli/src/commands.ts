@@ -3785,10 +3785,12 @@ const SECTIONS: readonly Section[] = [
 					}
 					ctx.note(`Updating kantel ${VERSION} to ${target}`);
 					const code = await install(target, where, { fetch: ctx.io.fetch, env: ctx.io.env, run: ctx.io.runInstaller });
-					if (code !== 0)
+					if (code !== 0) {
 						throw new CliError(
-							`The installer for ${target} failed (exit ${code}); kantel ${VERSION} is still installed`,
+							`The installer for ${target} failed (exit ${code}), so the installation may be incomplete: ` +
+								"check kantel version, and run kantel update again to repair it",
 						);
+					}
 					if (ctx.json) ctx.emit({ ...state, updated: true }, () => "");
 					return 0;
 				},

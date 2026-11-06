@@ -116,7 +116,7 @@ describe("update", () => {
 	it("says so when the installer fails", async () => {
 		const result = await update([], { script: await installed(), exit: 3 });
 		expect(result.code).toBe(1);
-		expect(result.stderr).toContain("failed (exit 3)");
+		expect(result.stderr).toContain("failed (exit 3), so the installation may be incomplete");
 	});
 
 	it("downloads the installer from KANTEL_RELEASE_URL, which needs --version", async () => {
