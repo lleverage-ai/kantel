@@ -3184,6 +3184,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxFor,
 					requireRunning,
 					requireRunningByToken,
+					accountOpen,
 					once: (principal, operation, input, work) => once(principal, operation, input, work),
 				});
 
@@ -3970,9 +3971,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * the account before it looks for sandboxes again, so of a create and a deletion that overlap, one always sees the
 	 * other: the create stops here, or the deletion finds its sandbox and refuses.
 	 */
-	async function holdAccount(accountId: string, sandboxIds: readonly string[]): Promise<void> {
+	async function accountOpen(accountId: string): Promise<boolean> {
 		const account = await store.accounts.get(accountId);
-		if (account !== undefined && !retiring(account)) return;
+		return account !== undefined && !retiring(account);
+	}
+
+	async function holdAccount(accountId: string, sandboxIds: readonly string[]): Promise<void> {
+		if (await accountOpen(accountId)) return;
 		for (const id of sandboxIds) await store.sandboxes.delete(id);
 		throw new KantelError("conflict", "This account is being deleted");
 	}
@@ -4847,6 +4852,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", "Delete your sandboxes, saved snapshots and bundles first");
 				}
 			};
+			const finish = async () => {
+				await store.users.delete(person.userId);
+				// Last, so a call that fails before here can be made again: until it goes, they can still sign in.
+				await options.deletePerson?.(person.userId);
+			};
+			// A deletion that removed the account and then failed has only the person left to remove: a retry finishes it.
+			if ((await store.accounts.get(personal)) === undefined) {
+				await finish();
+				return undefined;
+			}
 			await leftOver();
 			// Claimed, then looked at again: a create stores its sandbox and then checks the claim (`holdAccount`), so one
 			// that overlaps this is either found here or stopped there. The claim is this call's alone: another deletion
@@ -4891,6 +4906,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const kept of await store.idempotency.list()) {
 					if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
 				}
+				// The claim may have lapsed while that ran, letting a create through, or been taken by another deletion. So it is
+				// renewed, only while still this call's, and the account looked at once more before anything of it goes: a
+				// create stored before now is found here, while the person can still reach it, and one after is stopped by the
+				// claim. The account goes only while the claim is still this call's and fresh.
+				const mine = (account: StoredAccount) => account.retiring?.token === token;
+				const renewed = await store.accounts.update(personal, (account) =>
+					mine(account) ? { ...account, retiring: { token, at: now() } } : undefined,
+				);
+				if (renewed === undefined) throw new KantelError("conflict", "Your account is being deleted already");
+				await leftOver();
 				// Their personal account and what it kept, as `deleteOrganisation` clears an organisation.
 				await templates.retireAccount(personal);
 				// Bucket sources, with their sealed credentials, even where mounts are off now.
@@ -4921,15 +4946,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const entry of await store.e2eChain.list({ space: personal })) await store.e2eChain.delete(entry.id);
 				await store.telemetry.delete(personal);
 				await store.proxies.delete(personal);
-				// The claim may have lapsed while this ran, letting a create through, or been taken by another deletion. So it is
-				// renewed, only while still this call's; then a create stored before now is found, and one after is stopped by
-				// it; and the account goes only while the claim is still this call's and fresh.
-				const mine = (account: StoredAccount) => account.retiring?.token === token;
-				const renewed = await store.accounts.update(personal, (account) =>
-					mine(account) ? { ...account, retiring: { token, at: now() } } : undefined,
-				);
-				if (renewed === undefined) throw new KantelError("conflict", "Your account is being deleted already");
-				await leftOver();
 				const gone = await store.accounts.deleteIf(personal, (account) => mine(account) && retiring(account));
 				if (!gone) throw new KantelError("unavailable", "Deleting your account took too long; try again");
 			} catch (error) {
@@ -4938,9 +4954,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					.catch(() => undefined);
 				throw error;
 			}
-			await store.users.delete(person.userId);
-			// Last, so a call that fails before here can be made again: until it goes, they can still sign in.
-			await options.deletePerson?.(person.userId);
+			await finish();
 			return undefined;
 		},
 

@@ -404,6 +404,18 @@ describe("mounts off", () => {
 });
 
 describe("bundles", () => {
+	it("forgets an upload, bytes and all, that lands while its account is being deleted", async () => {
+		const { tom, store, bundles } = setup();
+		const personal = (await tom.getCaller()).accountId;
+		await store.accounts.update(personal, (account) => ({
+			...account,
+			retiring: { token: "deleting", at: Date.now() },
+		}));
+		expect((await failure(tom.uploadBundle(SKILLS.slice().buffer))).code).toBe("conflict");
+		expect(await store.bundles.list({ accountId: personal })).toEqual([]);
+		await bundles.consistent();
+	});
+
 	it("are stored once by digest, listed, and refused for deletion while mounted", async () => {
 		const { tom, ann, bundles, fetchApi } = setup();
 		const digest = digestOf(SKILLS);

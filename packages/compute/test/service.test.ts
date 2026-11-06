@@ -2268,6 +2268,48 @@ describe.each(STORES)("deleting your account while a sandbox is being made, stor
 		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
 	});
 
+	it("finishes on a retry when a deletion removed the account and then failed", async () => {
+		const store = await make();
+		const deleted: string[] = [];
+		const { ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
+		const personal = (await ann.getCaller()).accountId;
+		const remove = store.users.delete.bind(store.users);
+		let failOnce = true;
+		store.users.delete = async (id) => {
+			if (failOnce) {
+				failOnce = false;
+				throw new Error("the database went away");
+			}
+			return remove(id);
+		};
+		await expect(ann.deleteCaller()).rejects.toBeDefined();
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(deleted).toEqual([]);
+		await ann.deleteCaller();
+		expect(deleted).toEqual(["usr_ann"]);
+		expect(await store.users.get("usr_ann")).toBeUndefined();
+	});
+
+	it("leaves a sandbox its last look finds where its person can still reach it", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const made = await ann.createSandbox({ wait: true });
+		const record = await store.sandboxes.get(made.id);
+		await ann.deleteSandbox(made.id);
+		// Stored as the claim is renewed, just before the last look.
+		const update = store.accounts.update.bind(store.accounts);
+		let claims = 0;
+		store.accounts.update = async (id, change, expected) => {
+			const updated = await update(id, change, expected);
+			if (updated?.retiring !== undefined && ++claims === 2 && record !== undefined) {
+				await store.sandboxes.put({ ...record, id: "sbx_late", state: "stopped" });
+			}
+			return updated;
+		};
+		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
+		expect(await ann.getSandbox("sbx_late")).toMatchObject({ id: "sbx_late", state: "stopped" });
+	});
+
 	it("lets only the deletion that claimed the account let go of it, when two overlap", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });

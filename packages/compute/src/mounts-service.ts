@@ -81,6 +81,11 @@ export interface MountsDeps {
 	/** `requireRunning` (a starting sandbox waited for) for a call a signed file URL authorises, with no principal. */
 	readonly requireRunningByToken: (sandboxId: string) => Promise<StoredSandbox>;
 	/** Does `work` once for the call's `Idempotency-Key` and request, answering a retry the first answer (the service's). */
+	/**
+	 * Whether an account still takes new records: it exists, and no account deletion holds it (`holdAccount` in the
+	 * service). An upload asks once its bundle is published, so one that overlaps a deletion is found or refused.
+	 */
+	readonly accountOpen: (accountId: string) => Promise<boolean>;
 	readonly once: <T>(
 		principal: Principal,
 		operation: string,
@@ -681,6 +686,14 @@ export function createMounts(deps: MountsDeps) {
 				inserted = await publishBundle(staged, record);
 			} finally {
 				await staged.discard().catch(() => undefined);
+			}
+			if (inserted && !(await deps.accountOpen(account.id))) {
+				// Its account is being deleted: the upload is forgotten, bytes and all, as `deleteBundle` would.
+				const stored = await store.bundles.get(record.id);
+				if (stored !== undefined && (await store.bundles.delete(stored.id))) {
+					await options.bundles.delete(stored.digest, generationOf(stored)).catch(() => undefined);
+				}
+				throw new KantelError("conflict", "This account is being deleted");
 			}
 			if (inserted) return bundleView(record);
 			// Uploaded again: the bundle it has already, as it was, with 200 rather than 201.
