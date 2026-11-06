@@ -284,3 +284,9 @@ func UsableTrampoline(path string) bool {
 		}
 	}
 }
+
+// ProtectFromOOM sets this process's OOM score adjustment to -1000, so the kernel never kills it for memory. It needs
+// root (CAP_SYS_RESOURCE); the commands it starts get 0 again (ExecCommandMain).
+func ProtectFromOOM() error {
+	return os.WriteFile("/proc/self/oom_score_adj", []byte("-1000\n"), 0)
+}

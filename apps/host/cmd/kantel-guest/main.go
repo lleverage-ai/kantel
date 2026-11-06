@@ -93,6 +93,11 @@ func main() {
 			log.Printf("ssh host key: %v", err)
 		}
 	}
+	// Never the process the kernel kills for memory. systemd's unit says so too (OOMScoreAdjust); without systemd
+	// (--init kantel) nothing else would, and the memory watch below makes the kernel pick a process to kill.
+	if err := guest.ProtectFromOOM(); err != nil {
+		log.Printf("oom_score_adj: %v", err)
+	}
 	// Runs the kernel's OOM killer when the machine thrashes for memory, rather than letting it, and this agent, stall.
 	guest.StartMemoryWatch(context.Background(), &guest.MemoryWatch{})
 	// Mounts a previous run of the agent had: their FUSE servers ended with it.

@@ -34,14 +34,14 @@ func TestCommandsDontInheritTheAgentsOOMScore(t *testing.T) {
 		out, err := cmd.Output()
 		return strings.TrimSpace(string(out)), err
 	}
-	// 0, unless this test already runs above it (some runners do), which an unprivileged process can't go below.
-	want := "0"
-	if own, err := os.ReadFile("/proc/self/oom_score_adj"); err == nil && !strings.HasPrefix(string(own), "-") &&
-		strings.TrimSpace(string(own)) != "0" {
-		want = strings.TrimSpace(string(own))
+	// 0. A runner that already runs above 0 and may not lower its own score (no CAP_SYS_RESOURCE) stays where it is.
+	own := "0"
+	if raw, err := os.ReadFile("/proc/self/oom_score_adj"); err == nil {
+		own = strings.TrimSpace(string(raw))
 	}
-	if out, err := run(&Server{Trampoline: self}, ExecRequest{Command: "cat /proc/self/oom_score_adj"}); err != nil || out != want {
-		t.Fatalf("a command's OOM score adjustment: %q, %v; want %s", out, err, want)
+	if out, err := run(&Server{Trampoline: self}, ExecRequest{Command: "cat /proc/self/oom_score_adj"}); err != nil ||
+		(out != "0" && out != own) {
+		t.Fatalf("a command's OOM score adjustment: %q, %v; want 0 (or this test's own %s)", out, err, own)
 	}
 	// argv arrives as given, and a missing program still fails.
 	out, err := run(&Server{Trampoline: self}, ExecRequest{Argv: []string{"sh", "-c", "echo $0 $1", "first", "second"}})
