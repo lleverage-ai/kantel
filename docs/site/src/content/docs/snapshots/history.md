@@ -15,7 +15,7 @@ A snapshot is a copy of a sandbox's disk at one moment, and, for a paused microV
 
 | Kind | Made by | Kept |
 | --- | --- | --- |
-| `automatic` | Kantel, as the sandbox runs and at every stop, or you with [Take a snapshot now](#take-a-snapshot-now) | Until it expires (`expiresAt`), or the sandbox is deleted |
+| `automatic` | Kantel, as the sandbox runs and at every stop, or you with [Take a snapshot now](#take-a-snapshot-now) | Until it expires (`expiresAt`, 7 days after it was taken), or the sandbox is deleted. A sandbox's newest snapshot is kept past its time, as is one another snapshot record shares bytes with. On a host whose kantel-host can't keep a saved snapshot's own copy, the host prunes old ones itself instead. Expiry runs on app.kantel.dev; a self-hosted Kantel turns it on with `KANTEL_SNAPSHOT_EXPIRY=on` ([Install](/self-hosting/install/)) |
 | `saved` | You, under a name | Until you delete it, even after its sandbox is gone. See [Saved snapshots](/snapshots/saved/) |
 
 A sandbox's newest snapshot is what a resume or a fork starts from, and the sandbox names it in `latestSnapshotId`.
@@ -72,6 +72,8 @@ const before = await kantel.takeSnapshot("sbx_4kq9x2mt", { description: "Before 
 ```
 
 It keeps the disk alone; add `"memory": true` to keep a running microVM's memory too (see [Disk only, or memory too](/snapshots/saved/#disk-only-or-memory-too)). It answers at once, with the snapshot in `creating`. It joins the sandbox's history like any automatic snapshot, so it expires too: to keep it, [save it](/snapshots/saved/#save-a-snapshot).
+
+A host refuses a snapshot that would leave it short of disk: less than 10 GiB free once it has copied the disk (and, for a running sandbox, written its memory), counting other snapshots still being written. That answers `429` with `exhausted`, and the message says how much is free. Delete snapshots you no longer need and try again. Saving from a sandbox's history links the files it already has, so it needs no room of its own.
 
 ## Browse a snapshot's files
 

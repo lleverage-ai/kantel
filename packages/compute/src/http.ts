@@ -106,6 +106,10 @@ export interface ComputeApiOptions {
 	readonly startHoldMs?: number;
 	/** How often that call reads the sandbox again (`ComputeServiceOptions.startPollMs`). Default 250 ms. */
 	readonly startPollMs?: number;
+	/** Expiry of automatic snapshots (`ComputeServiceOptions.snapshotExpiry`). Default off. */
+	readonly snapshotExpiry?: boolean;
+	/** How long after it starts the service first expires snapshots (`ComputeServiceOptions.snapshotExpiryDelayMs`). */
+	readonly snapshotExpiryDelayMs?: number;
 }
 
 export interface ComputeApi {
@@ -191,6 +195,8 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.liveRelay === undefined ? {} : { liveRelay: options.liveRelay }),
 		...(options.startHoldMs === undefined ? {} : { startHoldMs: options.startHoldMs }),
 		...(options.startPollMs === undefined ? {} : { startPollMs: options.startPollMs }),
+		...(options.snapshotExpiry === undefined ? {} : { snapshotExpiry: options.snapshotExpiry }),
+		...(options.snapshotExpiryDelayMs === undefined ? {} : { snapshotExpiryDelayMs: options.snapshotExpiryDelayMs }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

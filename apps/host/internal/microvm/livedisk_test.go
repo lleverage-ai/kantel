@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -142,7 +143,7 @@ func TestLiveDiskSnapshot(t *testing.T) {
 	api := &fakeVMAPI{}
 	m, s := liveDiskSetup(t, api, http.StatusOK)
 	snap := proto.SnapshotInfo{ID: "snap_ok", SandboxID: s.meta.ID, Kind: "saved", Memory: true}
-	if err := m.liveDiskSnapshot(context.Background(), s, &snap); err != nil {
+	if err := m.liveDiskSnapshot(context.Background(), s, &snap, nil); err != nil {
 		t.Fatal(err)
 	}
 	if asked, paused := api.state(); paused || strings.Join(asked, ",") != "Paused,Resumed" {
@@ -168,7 +169,7 @@ func TestLiveDiskSnapshotFailsWhenTheGuestCantSync(t *testing.T) {
 	api := &fakeVMAPI{}
 	m, s := liveDiskSetup(t, api, http.StatusInternalServerError)
 	snap := proto.SnapshotInfo{ID: "snap_nosync", SandboxID: s.meta.ID, Kind: "saved"}
-	if err := m.liveDiskSnapshot(context.Background(), s, &snap); err == nil {
+	if err := m.liveDiskSnapshot(context.Background(), s, &snap, nil); err == nil {
 		t.Fatal("a save whose guest couldn't sync worked")
 	}
 	if asked, _ := api.state(); len(asked) != 0 {
@@ -182,7 +183,7 @@ func TestLiveDiskSnapshotResumesAPauseWhoseAnswerWasLost(t *testing.T) {
 	api := &fakeVMAPI{dropPause: true}
 	m, s := liveDiskSetup(t, api, http.StatusOK)
 	snap := proto.SnapshotInfo{ID: "snap_dropped", SandboxID: s.meta.ID, Kind: "saved"}
-	if err := m.liveDiskSnapshot(context.Background(), s, &snap); err == nil {
+	if err := m.liveDiskSnapshot(context.Background(), s, &snap, nil); err == nil {
 		t.Fatal("a save whose pause wasn't answered worked")
 	}
 	if asked, paused := api.state(); paused || strings.Join(asked, ",") != "Paused,Resumed" {
@@ -196,7 +197,7 @@ func TestLiveDiskSnapshotStopsAVMThatWontResume(t *testing.T) {
 	api := &fakeVMAPI{failResume: true}
 	m, s := liveDiskSetup(t, api, http.StatusOK)
 	snap := proto.SnapshotInfo{ID: "snap_frozen", SandboxID: s.meta.ID, Kind: "saved"}
-	err := m.liveDiskSnapshot(context.Background(), s, &snap)
+	err := m.liveDiskSnapshot(context.Background(), s, &snap, nil)
 	if err == nil || !strings.Contains(err.Error(), "couldn't be resumed") {
 		t.Fatalf("a save whose VM wouldn't resume answered %v", err)
 	}
@@ -298,4 +299,58 @@ func tryReflink(t *testing.T, dir string) bool {
 	defer os.Remove(src)
 	defer os.Remove(dst)
 	return exec.Command("cp", "--reflink=always", src, dst).Run() == nil
+}
+
+// The room a live save reserves is measured once the VM is paused, its disk still: a disk the guest's sync grew past the
+// room just before the pause is refused there, the VM resumed, nothing copied and nothing left reserved.
+func TestLiveDiskSnapshotMeasuresItsRoomOncePaused(t *testing.T) {
+	api := &fakeVMAPI{}
+	m, s := liveDiskSetup(t, api, http.StatusOK)
+	disk := filepath.Join(s.vmDir(), fc.DiskFile)
+	size := diskUsage(disk)
+	m.statfs = func(_ string, st *syscall.Statfs_t) error {
+		st.Bsize, st.Bavail = 1, uint64(int64(snapshotHeadroom)+size+(1<<20))
+		return nil
+	}
+	s.guest.Close()
+	s.guest = guest.NewClient(handlerAgent(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sync" {
+			http.NotFound(w, r)
+			return
+		}
+		// The page cache written back: the disk grows by 4 MiB.
+		if err := os.WriteFile(disk, make([]byte, 4<<20), 0o600); err != nil {
+			t.Error(err)
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})))
+	t.Cleanup(s.guest.Close)
+	// The early check, before the sync, passes.
+	early, err := m.roomToSave(s, false)
+	if err != nil {
+		t.Fatalf("the early check: %v", err)
+	}
+	early()
+	snap := proto.SnapshotInfo{ID: "snap_grown", SandboxID: s.meta.ID, Kind: "saved"}
+	err = m.liveDiskSnapshot(context.Background(), s, &snap, func() (func(), error) {
+		// Measured once the VM is paused and its writes settled (a barrier).
+		api.mu.Lock()
+		barriers := api.barriers
+		api.mu.Unlock()
+		if asked, paused := api.state(); !paused || barriers != 1 || strings.Join(asked, ",") != "Paused" {
+			t.Errorf("the room was measured with the VM asked %v (paused: %v) after %d barriers", asked, paused, barriers)
+		}
+		return m.roomToSave(s, false)
+	})
+	var refused *proto.Error
+	if !errors.As(err, &refused) || refused.Code != proto.ErrCapacity {
+		t.Fatalf("a disk grown past the room by its sync: %v, want a capacity error", err)
+	}
+	if asked, paused := api.state(); paused || strings.Join(asked, ",") != "Paused,Resumed" {
+		t.Fatalf("the VM was asked %v (paused now: %v)", asked, paused)
+	}
+	noSnapshotDir(t, m, snap.ID)
+	if m.snapshotReserved != 0 {
+		t.Fatalf("%d bytes still reserved", m.snapshotReserved)
+	}
 }

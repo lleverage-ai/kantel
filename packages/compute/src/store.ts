@@ -245,7 +245,20 @@ export type StoredCommand = computeSchema.Command & {
  * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
  * file system is (`TakenSnapshot.base`), answered as the API's `base`.
  */
-export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
+	readonly ref?: string;
+	readonly base?: string;
+	/**
+	 * While expiry deletes it (`deleting`): the process whose mark it is, the mark's token, since when; `settling` once its
+	 * bytes are being deleted, after which it is never put back.
+	 */
+	readonly retiring?: {
+		readonly by: string;
+		readonly token?: string;
+		readonly at: number;
+		readonly settling?: boolean;
+	};
+};
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
