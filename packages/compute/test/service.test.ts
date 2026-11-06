@@ -1,5 +1,6 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
+import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import {
@@ -29,7 +30,8 @@ import {
 	SHARED_KEY_REFUSED,
 	shapeFor,
 } from "../src/service.ts";
-import { createMemoryStore, type StoredCommand } from "../src/store.ts";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
+import { type ComputeStore, createMemoryStore, type StoredCommand } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -2147,38 +2149,84 @@ describe("deleting your account, beyond the basics", () => {
 	});
 });
 
-describe("deleting your account while a sandbox is being made", () => {
-	it("stops a create that stores its sandbox once the deletion holds the account", async () => {
-		const store = createMemoryStore();
+/** The stores the deletion races are run on: they coordinate only through the store, so each must hold them off. */
+const databases: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+	for (const database of databases.splice(0)) await database.close();
+});
+const STORES: readonly { readonly name: string; readonly make: () => Promise<ComputeStore> }[] = [
+	{ name: "in memory", make: async () => createMemoryStore() },
+	{
+		name: "in SQL",
+		make: async () => {
+			const database = await pgliteDatabase.open();
+			databases.push(database);
+			await migrateComputeStore(database.driver);
+			return createSqlComputeStore(database.driver);
+		},
+	},
+];
+const sqlTimeout = pgliteDatabase.testTimeoutMs === undefined ? {} : { timeout: pgliteDatabase.testTimeoutMs };
+
+describe.each(STORES)("deleting your account while a sandbox is being made, stored $name", sqlTimeout, ({ make }) => {
+	/** Runs `during` once, just after a deletion claims the personal account and before it looks again. */
+	const onClaim = (store: ComputeStore, during: () => Promise<void>) => {
+		const update = store.accounts.update.bind(store.accounts);
+		let done = false;
+		store.accounts.update = async (id, change, expected) => {
+			const updated = await update(id, change, expected);
+			if (!done && updated?.retiring !== undefined) {
+				done = true;
+				await during();
+			}
+			return updated;
+		};
+	};
+
+	it("stops a create that stores its sandbox once a deletion has claimed the account", async () => {
+		const store = await make();
 		const { ann } = setup(undefined, { store });
 		const personal = (await ann.getCaller()).accountId;
-		await store.accounts.update(personal, (account) => ({ ...account, retiringAt: 1 }));
+		await store.accounts.update(personal, (account) => ({ ...account, retiring: { token: "other", at: Date.now() } }));
 		expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
 		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
+		// A claim that lapsed, from a deletion that died, holds nothing.
+		await store.accounts.update(personal, (account) => ({ ...account, retiring: { token: "other", at: 0 } }));
+		await ann.createSandbox({ wait: true });
 	});
 
-	it("refuses, and lets go of the account, when a create stored its sandbox before the hold", async () => {
-		const store = createMemoryStore();
+	it("refuses, and lets go of its claim, when a create stored its sandbox just before it", async () => {
+		const store = await make();
 		const { ann } = setup(undefined, { store });
 		const personal = (await ann.getCaller()).accountId;
 		const made = await ann.createSandbox({ wait: true });
 		const record = await store.sandboxes.get(made.id);
 		await ann.deleteSandbox(made.id);
-		// The create's record lands just as the deletion takes its hold: after its first look, before its second.
-		const update = store.accounts.update.bind(store.accounts);
-		let raced = false;
-		store.accounts.update = async (id, change, expected) => {
-			const updated = await update(id, change, expected);
-			if (!raced && updated?.retiringAt !== undefined && record !== undefined) {
-				raced = true;
-				await store.sandboxes.put({ ...record, id: "sbx_raced", state: "starting" });
-			}
-			return updated;
-		};
+		// The create's record, landing between the deletion's two looks.
+		onClaim(store, async () => {
+			if (record !== undefined) await store.sandboxes.put({ ...record, id: "sbx_raced", state: "starting" });
+		});
 		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
-		expect((await store.accounts.get(personal))?.retiringAt).toBeUndefined();
-		await store.sandboxes.delete("sbx_raced");
-		await ann.createSandbox({ wait: true });
+		expect((await store.accounts.get(personal))?.retiring).toBeUndefined();
+	});
+
+	it("lets only the deletion that claimed the account let go of it, when two overlap", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		let second: Promise<unknown> | undefined;
+		// A second deletion starts while the first holds its claim: it's refused, and the first's claim stays.
+		onClaim(store, async () => {
+			second = failure(ann.deleteCaller());
+			expect(((await second) as KantelApiError).code).toBe("conflict");
+			expect((await store.accounts.get(personal))?.retiring).toBeDefined();
+			// So a create now is still stopped.
+			expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
+		});
+		await ann.deleteCaller();
+		expect(second).toBeDefined();
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
 	});
 });
 

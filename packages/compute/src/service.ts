@@ -566,6 +566,12 @@ function withoutPortToken(url: string): string {
  */
 export const DEFAULT_HOST_JOIN_COMMAND =
 	"curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}";
+/**
+ * How long an account deletion's claim on its personal account holds (`StoredAccount.retiring`): a deletion that died
+ * stops holding it after this, and its person can make sandboxes again.
+ */
+const ACCOUNT_DELETE_CLAIM_MS = 10 * 60_000;
+
 /** The console's page where a person approves a device sign-in. */
 export const DEFAULT_DEVICE_LOGIN_URL = "{url}/device";
 /** How long a device sign-in waits for a person, and how often its device may poll. */
@@ -3954,15 +3960,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hostView(updated ?? { ...host, updating });
 	}
 
+	/** Whether an account deletion's claim on `account` is fresh (`StoredAccount.retiring`). */
+	const retiring = (account: StoredAccount) =>
+		account.retiring !== undefined && now() - account.retiring.at < ACCOUNT_DELETE_CLAIM_MS;
+
 	/**
 	 * Checks, once new sandboxes are stored, that their account is neither gone nor held by its person's account deletion
-	 * (`retiringAt`); otherwise it forgets them, before anything boots or anyone sees them, and refuses. The deletion holds
+	 * (`retiring`); otherwise it forgets them, before anything boots or anyone sees them, and refuses. The deletion holds
 	 * the account before it looks for sandboxes again, so of a create and a deletion that overlap, one always sees the
 	 * other: the create stops here, or the deletion finds its sandbox and refuses.
 	 */
 	async function holdAccount(accountId: string, sandboxIds: readonly string[]): Promise<void> {
 		const account = await store.accounts.get(accountId);
-		if (account !== undefined && account.retiringAt === undefined) return;
+		if (account !== undefined && !retiring(account)) return;
 		for (const id of sandboxIds) await store.sandboxes.delete(id);
 		throw new KantelError("conflict", "This account is being deleted");
 	}
@@ -4838,9 +4848,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			};
 			await leftOver();
-			// Held, then looked at again: a create stores its sandbox and then checks the hold (`holdAccount`), so one that
-			// overlaps this is either found here or stopped there. A refusal or a failure lets go of it.
-			await store.accounts.update(personal, (account) => ({ ...account, retiringAt: now() }));
+			// Claimed, then looked at again: a create stores its sandbox and then checks the claim (`holdAccount`), so one
+			// that overlaps this is either found here or stopped there. The claim is this call's alone: another deletion
+			// refuses while it is fresh, and only this one lets go of it, on a refusal or a failure.
+			const token = randomSlug(12);
+			const claimed = await store.accounts.update(personal, (account) =>
+				retiring(account) ? undefined : { ...account, retiring: { token, at: now() } },
+			);
+			if (claimed === undefined) throw new KantelError("conflict", "Your account is being deleted already");
 			try {
 				await leftOver();
 
@@ -4906,9 +4921,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const entry of await store.e2eChain.list({ space: personal })) await store.e2eChain.delete(entry.id);
 				await store.telemetry.delete(personal);
 				await store.proxies.delete(personal);
+				// A claim lapses, so one this slow might have let a create through: what it stored stays, and refuses this.
+				await leftOver();
 				await store.accounts.delete(personal);
 			} catch (error) {
-				await store.accounts.update(personal, ({ retiringAt: _held, ...account }) => account).catch(() => undefined);
+				await store.accounts
+					.update(personal, ({ retiring: claim, ...account }) => (claim?.token === token ? account : undefined))
+					.catch(() => undefined);
 				throw error;
 			}
 			await store.users.delete(person.userId);
