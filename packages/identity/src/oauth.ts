@@ -437,6 +437,7 @@ export function createOAuthSignIn(options: OAuthSignInOptions): OAuthSignIn {
 				issuer: session.issuer,
 				subject: session.subject,
 				...(session.email === undefined ? {} : { email: session.email, emailVerified: true }),
+				userId: session.userId,
 			});
 		} catch (cause) {
 			if (isKantelError(cause, "forbidden")) return unauthenticated();

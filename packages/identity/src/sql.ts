@@ -1632,6 +1632,13 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			) {
 				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
+			// A stored sign-in for a user who is gone resolves no one, and changes nothing.
+			if (identity.userId !== undefined) {
+				const [bound] = await driver.query<{ id: unknown }>("SELECT id FROM identity_users WHERE id = ?", [
+					identity.userId,
+				]);
+				if (bound === undefined) throw forbidden("no user matches this sign-in");
+			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
 			const email =
 				identity.emailVerified === true && typeof identity.email === "string"

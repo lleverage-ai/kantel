@@ -181,7 +181,8 @@ export function openSignUp(
 			return identity.canSignIn(ctx, external);
 		},
 		async signIn(ctx, external): Promise<SignIn> {
-			if (!isProvenEmail(external)) return identity.signIn(ctx, external);
+			// A stored sign-in (`userId`) is its user's or no one's: it never signs anyone up.
+			if (!isProvenEmail(external) || external.userId !== undefined) return identity.signIn(ctx, external);
 			let signedIn: SignIn;
 			try {
 				signedIn = await identity.signIn(ctx, external);

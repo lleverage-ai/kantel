@@ -790,6 +790,8 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			) {
 				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
+			// A stored sign-in for a user who is gone resolves no one, and changes nothing.
+			if (identity.userId !== undefined && !users.has(identity.userId)) throw forbidden("no user matches this sign-in");
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
 			// Made or first linked by one of Kantel's own sign-ins: with the email code's subject, as the SQL directory does,
 			// and the provider's beside it.

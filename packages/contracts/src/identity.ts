@@ -193,6 +193,11 @@ export interface ExternalIdentity {
 	/** Whether the provider verified the email. Only a verified email links an invited user. */
 	readonly emailVerified?: boolean;
 	readonly name?: string;
+	/**
+	 * The user a stored sign-in (a Kantel session) was made for: `signIn` resolves it as that user or not at all, and
+	 * refuses before it links, makes or invites anyone once that user is gone (deleted their account).
+	 */
+	readonly userId?: UserId;
 }
 
 /** The `User.externalSubject` for a provider's subject: the issuer and subject, separated by a space. */

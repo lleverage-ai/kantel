@@ -808,6 +808,15 @@ export function createMounts(deps: MountsDeps) {
 		handlers,
 
 		/**
+		 * Removes a bundle of an account that is being deleted: its bytes, then its record, only while that record is still
+		 * the same upload's. A failed byte delete throws and leaves the record, so the deletion tries again.
+		 */
+		async forgetBundle(bundle: StoredBundle): Promise<void> {
+			await options.bundles.delete(bundle.digest, generationOf(bundle));
+			await store.bundles.deleteIf(bundle.id, (current) => generationOf(current) === generationOf(bundle));
+		},
+
+		/**
 		 * A create's (or a fork's) mounts, checked: their paths, and that each source is the account's. microVMs only.
 		 * Answers them `pending`, as the sandbox keeps them until its backend says.
 		 */

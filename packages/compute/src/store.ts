@@ -533,6 +533,27 @@ export interface StoredSetting {
 }
 
 /**
+ * A person's account deletion, from when it is accepted until everything of theirs has gone: its ID is their user ID.
+ * The deletion is carried on from here, by the call that started it and then by the sweep, never by the person (who
+ * can't sign in once it exists), so one that fails partway is finished all the same.
+ */
+export interface StoredDeletion {
+	readonly id: string;
+	readonly personalAccountId: string;
+	readonly name: string;
+	readonly email?: string;
+	readonly startedAt: number;
+	/** When its first pass finished; its last pass, which clears what writes already under way left, comes after. */
+	readonly clearedAt?: number;
+	/** When it is due to be carried on (`sweep`). */
+	readonly dueAt: number;
+	readonly attempts: number;
+	readonly lastError?: string;
+	/** Who is carrying it on, until when: one gateway at a time. */
+	readonly lease?: { readonly token: string; readonly until: number };
+}
+
+/**
  * A gateway replica's claim to export one numbered usage tick: its ID is `usageClaimId` of the host, the tick's `run`
  * and its `seq`. A replica taking a tick straight from its host claims it (`insert`) once nothing can stop the tick
  * going into its series, and exports it only if the claim is its own (`owner`, that process's): a tick the host sends
@@ -638,6 +659,8 @@ export interface ComputeStore {
 	readonly templateBases: Collection<StoredTemplateBase>;
 	/** Which replica exports each numbered usage tick (`StoredUsageClaim`). */
 	readonly usageClaims: Collection<StoredUsageClaim>;
+	/** Account deletions under way (`StoredDeletion`). */
+	readonly deletions: Collection<StoredDeletion>;
 }
 
 /**
@@ -775,6 +798,7 @@ export function createMemoryStore(): ComputeStore {
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
 		usageClaims: memoryCollection(),
+		deletions: memoryCollection(),
 		templates: templates.collection,
 		templateVersions: templateVersions.collection,
 		templateWrites: memoryTemplateWrites(templates, templateVersions),
@@ -792,6 +816,11 @@ export function joinTokenSpender(store: ComputeStore) {
 		async spendJoinToken(hash: string, hostId: string, now: number) {
 			const [token] = await store.joinTokens.list({ tokenHash: hash });
 			if (token === undefined) return undefined;
+			// An account's token joins nothing once its account is closed or gone (its person deleted their account).
+			if (token.accountId !== undefined) {
+				const account = await store.accounts.get(token.accountId);
+				if (account === undefined || account.closedAt !== undefined) return undefined;
+			}
 			const spent = await store.joinTokens.update(token.id, (current) =>
 				current.usedAt !== undefined || current.expiresAt <= now ? undefined : { ...current, usedAt: now, hostId },
 			);

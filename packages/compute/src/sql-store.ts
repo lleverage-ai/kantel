@@ -337,6 +337,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		fileUrls: sqlCollection(driver, "fileUrls"),
 		settings: sqlCollection(driver, "settings"),
 		usageClaims: sqlCollection(driver, "usageClaims"),
+		deletions: sqlCollection(driver, "deletions"),
 		templates: sqlCollection(driver, TEMPLATES),
 		templateVersions: sqlCollection(driver, TEMPLATE_VERSIONS),
 		templateWrites: sqlTemplateWrites(driver),

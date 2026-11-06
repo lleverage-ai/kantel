@@ -31,7 +31,7 @@ import {
 	shapeFor,
 } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore, type StoredCommand } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore, joinTokenSpender, type StoredCommand } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -2064,6 +2064,20 @@ describe("device sign-in", () => {
 	});
 });
 
+/** Carries every account deletion on to its end, as the sweep does once each pass is due. */
+async function finishDeletions(api: ComputeApi, store: ComputeStore): Promise<void> {
+	for (let round = 0; round < 5 && (await store.deletions.list()).length > 0; round++) {
+		for (const deletion of await store.deletions.list()) {
+			await store.deletions.update(deletion.id, (current) => ({ ...current, dueAt: 0 }));
+		}
+		await api.service.sweep();
+		await vi.waitFor(async () => {
+			for (const deletion of await store.deletions.list()) expect(deletion.lease).toBeUndefined();
+		});
+	}
+	expect(await store.deletions.list()).toEqual([]);
+}
+
 describe("deleting your account", () => {
 	it("refuses while you'd leave an organisation with no owner, or have sandboxes of your own", async () => {
 		const { tom, ann } = setup();
@@ -2082,7 +2096,7 @@ describe("deleting your account", () => {
 	it("revokes their keys, takes them out of organisations, removes them from sign-in, and starts afresh after", async () => {
 		const deleted: string[] = [];
 		const store = createMemoryStore();
-		const { tom, ann, client } = setup(undefined, {
+		const { api, tom, ann, client } = setup(undefined, {
 			store,
 			deletePerson: async (userId) => void deleted.push(userId),
 		});
@@ -2109,7 +2123,8 @@ describe("deleting your account", () => {
 		expect((await failure(orgKey.getCaller())).status).toBe(401);
 		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
 
-		// Signing in again, they're someone new: a fresh personal account with nothing in it.
+		// Signing in again once the deletion has finished, they're someone new: a fresh personal account with nothing in it.
+		await finishDeletions(api, store);
 		const again = await ann.getCaller();
 		expect(again.accountId).not.toBe(before);
 		expect(again.accounts.map((account) => account.id)).toEqual([again.accountId]);
@@ -2215,10 +2230,10 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect(await store.sandboxes.get(raced.id)).toBeUndefined();
 	});
 
-	it("is finished by a retry after failing partway, and the closed account takes nothing new meanwhile", async () => {
+	it("is carried on by the sweep after a pass fails partway, and the person can't get back in meanwhile", async () => {
 		const store = await make();
 		const deleted: string[] = [];
-		const { ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
+		const { api, ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
 		const personal = (await ann.getCaller()).accountId;
 		const listWebhooks = store.webhooks.list.bind(store.webhooks);
 		let failOnce = true;
@@ -2229,34 +2244,67 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 			}
 			return listWebhooks(where);
 		};
-		await expect(ann.deleteCaller()).rejects.toBeDefined();
-		expect((await store.accounts.get(personal))?.closedAt).toBeDefined();
-		expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
 		await ann.deleteCaller();
-		expect(deleted).toEqual(["usr_ann"]);
+		const pending = await store.deletions.get("usr_ann");
+		expect(pending).toMatchObject({ attempts: 1, lastError: expect.stringContaining("went away") });
+		expect((await store.accounts.get(personal))?.closedAt).toBeDefined();
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		await finishDeletions(api, store);
+		expect(deleted.length).toBeGreaterThan(0);
 		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toBeUndefined();
 	});
 
-	it("finishes on a retry when a deletion removed the account and then failed", async () => {
+	it("finishes the person's removal from sign-in when that fails after their records are gone", async () => {
 		const store = await make();
-		const deleted: string[] = [];
-		const { ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
-		const personal = (await ann.getCaller()).accountId;
-		const remove = store.users.delete.bind(store.users);
 		let failOnce = true;
-		store.users.delete = async (id) => {
-			if (failOnce) {
-				failOnce = false;
-				throw new Error("the database went away");
-			}
-			return remove(id);
-		};
-		await expect(ann.deleteCaller()).rejects.toBeDefined();
+		const deleted: string[] = [];
+		const { api, ann } = setup(undefined, {
+			store,
+			deletePerson: async (userId) => {
+				if (failOnce) {
+					failOnce = false;
+					throw new Error("identity is away");
+				}
+				deleted.push(userId);
+			},
+		});
+		const personal = (await ann.getCaller()).accountId;
+		await ann.deleteCaller();
 		expect(await store.accounts.get(personal)).toBeUndefined();
 		expect(deleted).toEqual([]);
+		await finishDeletions(api, store);
+		expect(deleted).toContain("usr_ann");
+	});
+
+	it("clears in its last pass what a write already under way stored after its first", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
 		await ann.deleteCaller();
-		expect(deleted).toEqual(["usr_ann"]);
-		expect(await store.users.get("usr_ann")).toBeUndefined();
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		// A request authorised before the close lands its write after the first pass.
+		const webhook = { id: "whk_late", accountId: personal } as Parameters<typeof store.webhooks.put>[0];
+		await store.webhooks.put(webhook);
+		await finishDeletions(api, store);
+		expect(await store.webhooks.list({ accountId: personal })).toEqual([]);
+	});
+
+	it("joins no host with a token whose account has closed", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const hash = "f".repeat(64);
+		await store.joinTokens.put({
+			id: "jtk_1",
+			tokenHash: hash,
+			labels: {},
+			expiresAt: Date.now() + 60_000,
+			createdAt: Date.now(),
+			accountId: personal,
+		});
+		await close(store, personal);
+		expect(await joinTokenSpender(store).spendJoinToken(hash, "host_1", Date.now())).toBeUndefined();
 	});
 
 	it("lets two deletions that overlap both carry it on, ending with the account gone", async () => {

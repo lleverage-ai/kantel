@@ -1485,6 +1485,9 @@ export function createIdentityConformance(options: {
 				await identity.deleteUser(WORKER, ada.id);
 
 				await identity.createInvite(beta.admin, { email, role: "viewer" });
+				// A stored sign-in of hers (a session from before) resolves no one, and links nothing to whoever comes next.
+				await a.rejectsWithCode(identity.signIn(WORKER, { ...github, userId: ada.id }), "forbidden", "her old session");
+				a.strictEqual((await identity.listInvites(beta.admin)).length, 1, "and accepts no invite");
 				const again = await identity.signIn(WORKER, github);
 				a.ok(again.user.id !== ada.id, "invited again, she is a new user");
 				a.deepEqual(await identity.userPreferences(contextFor(actors.human(again.user.id), beta.organisation.id)), {});

@@ -222,11 +222,13 @@ export interface AuthenticateOptions {
 }
 
 /**
- * Whether the person a key acts for still exists. Deleting an account revokes the keys it finds, but a key made while
- * the deletion ran may be stored after that: once its person is gone, it works nowhere.
+ * Whether the person a key acts for still exists and isn't being deleted. Deleting an account revokes the keys it finds,
+ * but a key made while the deletion ran may be stored after that: from the moment the deletion is accepted, it works
+ * nowhere.
  */
 async function ownerRemains(store: ComputeStore, key: StoredApiKey): Promise<boolean> {
-	return (await store.users.get(key.ownerUserId)) !== undefined;
+	const [user, deletion] = await Promise.all([store.users.get(key.ownerUserId), store.deletions.get(key.ownerUserId)]);
+	return user !== undefined && deletion === undefined;
 }
 
 /** The API key a secret is, while it is neither revoked nor expired and its person exists. */
@@ -283,6 +285,10 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	}
 	const identity = await options.authenticatePerson?.(request);
 	if (identity === undefined) throw new UnauthenticatedError("The credentials are not valid");
+	// Someone whose account deletion is under way is never let in again, nor made afresh by `ensurePerson`.
+	if ((await store.deletions.get(identity.userId)) !== undefined) {
+		throw new UnauthenticatedError("This account is being deleted");
+	}
 	const user = await ensurePerson(store, identity, now);
 	return {
 		kind: "person",

@@ -91,7 +91,8 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 
 	async function human(candidates: readonly SignInProvider[], token: string): Promise<SignedIn> {
 		const provider = providerFor(candidates, token);
-		const { userId: boundTo, ...external } = await provider.verify(token);
+		const external = await provider.verify(token);
+		const boundTo = external.userId;
 		if (signIn === undefined) throw authenticationError("invalid", INVALID_MESSAGE);
 		let signedIn: SignIn;
 		try {

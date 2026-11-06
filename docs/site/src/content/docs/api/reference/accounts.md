@@ -25,7 +25,7 @@ The person or key calling, the accounts they may act in (their personal account 
 
 `DELETE /v1/whoami` (SDK method `deleteCaller`)
 
-Deletes the calling person and their personal account: its hosts are removed, every API key that acts for them is revoked, they leave every organisation, and their sign-ins end. Their private sandboxes in an organisation stay, stopped, as when they leave it. `conflict` while their personal account has sandboxes, saved snapshots or bundles, or while they are an organisation's last owner. People only, and not a deployment super-admin.
+Deletes the calling person and their personal account: its hosts are removed, every API key that acts for them is revoked, they leave every organisation, and their sign-ins end. Their private sandboxes in an organisation stay, stopped, as when they leave it. `conflict` while their personal account has sandboxes, saved snapshots or bundles, or while they are an organisation's last owner. Once accepted, it carries on in the background until everything has gone. People only, and not a deployment super-admin.
 
 **Answers**
 
