@@ -62,6 +62,7 @@ function setup(
 		| "deletePerson"
 		| "deploymentAdmin"
 		| "accountHosts"
+		| "now"
 	> = {},
 ) {
 	const api = createComputeApi({
@@ -2208,6 +2209,63 @@ describe.each(STORES)("deleting your account while a sandbox is being made, stor
 		});
 		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
 		expect((await store.accounts.get(personal))?.retiring).toBeUndefined();
+	});
+
+	it("goes no further once its claim lapsed and another deletion took it over", async () => {
+		const store = await make();
+		let clock = Date.now();
+		const { ann } = setup(undefined, { store, now: () => clock });
+		const personal = (await ann.getCaller()).accountId;
+		// Partway through, the claim lapses and a newer deletion claims the account.
+		const list = store.idempotency.list.bind(store.idempotency);
+		store.idempotency.list = async (where) => {
+			clock += 11 * 60_000;
+			await store.accounts.update(personal, (account) => ({ ...account, retiring: { token: "newer", at: clock } }));
+			return list(where);
+		};
+		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
+		const account = await store.accounts.get(personal);
+		expect(account?.retiring?.token).toBe("newer");
+	});
+
+	it("renews a lapsed claim before its last look, so a create after that is stopped", async () => {
+		const store = await make();
+		let clock = Date.now();
+		const { ann } = setup(undefined, { store, now: () => clock });
+		const personal = (await ann.getCaller()).accountId;
+		const list = store.idempotency.list.bind(store.idempotency);
+		store.idempotency.list = async (where) => {
+			clock += 11 * 60_000;
+			return list(where);
+		};
+		// A create authorised before the deletion began stores its sandbox after the deletion's last look, just before the
+		// account goes.
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const put = store.sandboxes.put.bind(store.sandboxes);
+		let paused = false;
+		store.sandboxes.put = async (record) => {
+			if (!paused && record.accountId === personal) {
+				paused = true;
+				await gate;
+			}
+			return put(record);
+		};
+		const creating = failure(ann.createSandbox({}));
+		await vi.waitFor(() => expect(paused).toBe(true));
+		const deleteIf = store.accounts.deleteIf.bind(store.accounts);
+		let raced: KantelApiError | undefined;
+		store.accounts.deleteIf = async (id, should) => {
+			release();
+			raced = await creating;
+			return deleteIf(id, should);
+		};
+		await ann.deleteCaller();
+		expect(raced?.code).toBe("conflict");
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
 	});
 
 	it("lets only the deletion that claimed the account let go of it, when two overlap", async () => {

@@ -4921,9 +4921,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const entry of await store.e2eChain.list({ space: personal })) await store.e2eChain.delete(entry.id);
 				await store.telemetry.delete(personal);
 				await store.proxies.delete(personal);
-				// A claim lapses, so one this slow might have let a create through: what it stored stays, and refuses this.
+				// The claim may have lapsed while this ran, letting a create through, or been taken by another deletion. So it is
+				// renewed, only while still this call's; then a create stored before now is found, and one after is stopped by
+				// it; and the account goes only while the claim is still this call's and fresh.
+				const mine = (account: StoredAccount) => account.retiring?.token === token;
+				const renewed = await store.accounts.update(personal, (account) =>
+					mine(account) ? { ...account, retiring: { token, at: now() } } : undefined,
+				);
+				if (renewed === undefined) throw new KantelError("conflict", "Your account is being deleted already");
 				await leftOver();
-				await store.accounts.delete(personal);
+				const gone = await store.accounts.deleteIf(personal, (account) => mine(account) && retiring(account));
+				if (!gone) throw new KantelError("unavailable", "Deleting your account took too long; try again");
 			} catch (error) {
 				await store.accounts
 					.update(personal, ({ retiring: claim, ...account }) => (claim?.token === token ? account : undefined))
