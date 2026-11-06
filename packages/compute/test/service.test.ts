@@ -2066,16 +2066,17 @@ describe("device sign-in", () => {
 
 /** Carries every account deletion on to its end, as the sweep does once each pass is due. */
 async function finishDeletions(api: ComputeApi, store: ComputeStore): Promise<void> {
-	for (let round = 0; round < 5 && (await store.deletions.list()).length > 0; round++) {
-		for (const deletion of await store.deletions.list()) {
+	const running = () => store.deletions.list({ stage: "running" });
+	for (let round = 0; round < 5 && (await running()).length > 0; round++) {
+		for (const deletion of await running()) {
 			await store.deletions.update(deletion.id, (current) => ({ ...current, dueAt: 0 }));
 		}
 		await api.service.sweep();
 		await vi.waitFor(async () => {
-			for (const deletion of await store.deletions.list()) expect(deletion.lease).toBeUndefined();
+			for (const deletion of await running()) expect(deletion.lease).toBeUndefined();
 		});
 	}
-	expect(await store.deletions.list()).toEqual([]);
+	expect(await running()).toEqual([]);
 }
 
 describe("deleting your account", () => {
@@ -2123,13 +2124,18 @@ describe("deleting your account", () => {
 		expect((await failure(orgKey.getCaller())).status).toBe(401);
 		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
 
-		// Signing in again once the deletion has finished, they're someone new: a fresh personal account with nothing in it.
+		// Once it has finished, the user ID they had is never let in or honoured again: not even should a request that
+		// began before the deletion make their record afresh, nor with a key that a write landing late left live. (Signing
+		// up again gets a new user ID: apps/cloudflare/test/sign-in.test.ts.)
 		await finishDeletions(api, store);
-		const again = await ann.getCaller();
-		expect(again.accountId).not.toBe(before);
-		expect(again.accounts.map((account) => account.id)).toEqual([again.accountId]);
-		expect((await ann.listWebhooks()).items).toEqual([]);
-		expect((await ann.listApiKeys()).items).toEqual([]);
+		expect(await store.deletions.get("usr_ann")).toEqual(expect.objectContaining({ stage: "done", name: "" }));
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		await store.users.put({ id: "usr_ann", name: "Ann", superAdmin: false, personalAccountId: before, createdAt: 0 });
+		for (const key of await store.apiKeys.list({ ownerUserId: "usr_ann" })) {
+			await store.apiKeys.update(key.id, ({ revokedAt: _revoked, ...live }) => live);
+		}
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		expect((await failure(orgKey.listMembers(org.id))).status).toBe(401);
 	});
 });
 

@@ -539,6 +539,11 @@ export interface StoredSetting {
  */
 export interface StoredDeletion {
 	readonly id: string;
+	/**
+	 * `running` until its last pass is done; then `done`, kept for good, with nothing of the person's but their user ID,
+	 * so that ID is never let in, made afresh or honoured on a key again (`authenticate`, `ownerRemains`).
+	 */
+	readonly stage: "running" | "done";
 	readonly personalAccountId: string;
 	readonly name: string;
 	readonly email?: string;

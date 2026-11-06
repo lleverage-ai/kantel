@@ -4132,6 +4132,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 		if (job === undefined) return;
 		const mine = (current: StoredDeletion) => current.lease?.token === token;
+		if (job.stage === "done") return;
 		const released = ({ lease: _lease, ...current }: StoredDeletion) => current;
 		try {
 			await deletionPass(job);
@@ -4156,7 +4157,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return { ...rest, clearedAt: now(), dueAt: now() + DELETION_LAST_PASS_MS, attempts: 0 };
 			});
 		} else {
-			await store.deletions.deleteIf(userId, mine);
+			// Done: kept as the user ID alone, for good, so it is never let in or made afresh again.
+			await store.deletions.update(userId, (current) =>
+				mine(current)
+					? {
+							id: current.id,
+							stage: "done",
+							personalAccountId: current.personalAccountId,
+							name: "",
+							startedAt: current.startedAt,
+							clearedAt: now(),
+							dueAt: Number.MAX_SAFE_INTEGER,
+							attempts: 0,
+						}
+					: undefined,
+			);
 		}
 	}
 
@@ -5037,6 +5052,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				await store.deletions.insert({
 					id: person.userId,
+					stage: "running",
 					personalAccountId: personal,
 					name: person.name,
 					...(person.email === undefined ? {} : { email: person.email }),
@@ -7604,7 +7620,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				principal = key;
 			} else {
 				const user = await store.users.get(grantee.userId);
-				if (user === undefined) return false;
+				// Gone, or being (or having been) deleted: nothing they were given goes on.
+				if (user === undefined || (await store.deletions.get(grantee.userId)) !== undefined) return false;
 				if (grantee.session !== undefined && options.sessionLive !== undefined) {
 					if (!(await options.sessionLive(grantee.session))) return false;
 				}
@@ -7636,7 +7653,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async sweep() {
 			const at = now();
 			// Account deletions whose next pass is due: carried on in the background, one gateway each.
-			for (const deletion of await store.deletions.list()) {
+			for (const deletion of await store.deletions.list({ stage: "running" })) {
 				if (deletion.dueAt <= at) keepGoing(carryOnDeletion(deletion.id));
 			}
 			// The sweep alone stops a sandbox past its time, and only where its host is connected: one on a host that is
