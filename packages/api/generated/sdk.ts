@@ -2696,7 +2696,7 @@ export interface KantelClient {
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
 	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), the deployment's mode, and whether it keeps protected variables and secret files (`protectedValues`), so a client can check before it makes an environment that needs them. Any key may call it. `GET /whoami` */
 	getCaller(options?: CallOptions): Promise<Caller>;
-	/** Delete your account. Deletes the calling person and their personal account: its hosts are removed, every API key that acts for them is revoked, they leave every organisation, and their sign-ins end. Their private sandboxes in an organisation stay, stopped, as when they leave it. `conflict` while their personal account has sandboxes or saved snapshots, or while they are an organisation's last owner. People only, and not a deployment super-admin. `DELETE /whoami` */
+	/** Delete your account. Deletes the calling person and their personal account: its hosts are removed, every API key that acts for them is revoked, they leave every organisation, and their sign-ins end. Their private sandboxes in an organisation stay, stopped, as when they leave it. `conflict` while their personal account has sandboxes, saved snapshots or bundles, or while they are an organisation's last owner. People only, and not a deployment super-admin. `DELETE /whoami` */
 	deleteCaller(options?: CallOptions): Promise<void>;
 	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. `GET /accounts` */
 	listAccounts(options?: CallOptions): Promise<AccountList>;

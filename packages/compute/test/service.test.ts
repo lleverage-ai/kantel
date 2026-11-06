@@ -2078,7 +2078,11 @@ describe("deleting your account", () => {
 
 	it("revokes their keys, takes them out of organisations, removes them from sign-in, and starts afresh after", async () => {
 		const deleted: string[] = [];
-		const { tom, ann, client } = setup(undefined, { deletePerson: async (userId) => void deleted.push(userId) });
+		const store = createMemoryStore();
+		const { tom, ann, client } = setup(undefined, {
+			store,
+			deletePerson: async (userId) => void deleted.push(userId),
+		});
 		const org = await tom.createOrganisation({ name: "Acme" });
 		const invite = await tom.createInvite(org.id, { role: "admin" });
 		await ann.joinOrganisation({ code: invite.code ?? "" });
@@ -2086,11 +2090,18 @@ describe("deleting your account", () => {
 		const personalKey = client((await ann.createApiKey({ name: "mine", preset: "read-only" })).secret);
 		const orgKey = client((await ann.createApiKey({ name: "theirs", preset: "read-only", account: org.id })).secret);
 		await ann.createWebhook({ name: "hook", url: "https://example.com/hook", events: ["sandbox.created"] });
+		await ann.createApiKey({ name: "again", preset: "read-only" }, { idempotencyKey: "first" });
+		await tom.createOrganisation({ name: "Tom's" }, { idempotencyKey: "first" });
+		const kept = async (prefix: string) =>
+			(await store.idempotency.list()).filter((each) => each.id.startsWith(prefix));
+		expect(await kept("user:usr_ann:")).toHaveLength(1);
 
 		expect((await failure(personalKey.deleteCaller())).code).toBe("forbidden");
 		await ann.deleteCaller();
 
 		expect(deleted).toEqual(["usr_ann"]);
+		expect(await kept("user:usr_ann:")).toEqual([]);
+		expect(await kept("user:usr_tom:")).toHaveLength(1);
 		expect((await failure(personalKey.getCaller())).status).toBe(401);
 		expect((await failure(orgKey.getCaller())).status).toBe(401);
 		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
@@ -2117,6 +2128,18 @@ describe("deleting your account, beyond the basics", () => {
 		await ann.joinOrganisation({ code: invite.code ?? "" });
 		await ann.createAccountJoinToken({ name: "laptop", account: org.id });
 		expect(await store.joinTokens.list({ createdBy: "usr_ann" })).toHaveLength(1);
+		// A bundle's bytes are deleteBundle's to remove, so one left in their personal account refuses it.
+		const personal = (await ann.getCaller()).accountId;
+		const bundle = {
+			id: `${personal}/sha256:00`,
+			accountId: personal,
+			digest: "sha256:00",
+			sizeBytes: 1,
+			createdAt: 0,
+		};
+		await store.bundles.put(bundle);
+		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
+		await store.bundles.delete(bundle.id);
 
 		await ann.deleteCaller();
 		expect(await store.joinTokens.list({ createdBy: "usr_ann" })).toEqual([]);

@@ -4817,8 +4817,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				(sandbox) => sandbox.state !== "deleted",
 			);
 			const saved = await store.snapshots.list({ accountId: personal, kind: "saved" });
-			if (sandboxes.length > 0 || saved.length > 0) {
-				throw new KantelError("conflict", "Delete your sandboxes and saved snapshots first");
+			// Bundles too: deleting one (`deleteBundle`) removes its bytes from the deployment's store, which only it checks.
+			const bundles = await store.bundles.list({ accountId: personal });
+			if (sandboxes.length > 0 || saved.length > 0 || bundles.length > 0) {
+				throw new KantelError("conflict", "Delete your sandboxes, saved snapshots and bundles first");
 			}
 
 			// Their hosts first: a revoke that can't be made fails the call before anything else has gone, to be made again.
@@ -4841,14 +4843,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (token.usedAt === undefined) await store.joinTokens.delete(token.id);
 			}
 			// Every key that acts for them, in any account, stops working.
-			for (const key of await store.apiKeys.list({ ownerUserId: person.userId })) {
+			const keys = await store.apiKeys.list({ ownerUserId: person.userId });
+			for (const key of keys) {
 				if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+			}
+			// And the answers kept for their retries (`once`), theirs and their keys', go: some hold what they made.
+			const callers = [`user:${person.userId}:`, ...keys.map((key) => `key:${key.id}:`)];
+			for (const kept of await store.idempotency.list()) {
+				if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
 			}
 			// Their personal account and what it kept, as `deleteOrganisation` clears an organisation.
 			await templates.retireAccount(personal);
-			// Bundles and bucket sources, with the bytes and credentials they keep, even where mounts are off now.
-			if (mounts !== undefined) await mounts.retireAccount(personal);
-			for (const bundle of await store.bundles.list({ accountId: personal })) await store.bundles.delete(bundle.id);
+			// Bucket sources, with their sealed credentials, even where mounts are off now.
 			for (const source of await store.bucketSources.list({ accountId: personal })) {
 				await store.bucketSources.delete(source.id);
 			}
@@ -4862,13 +4868,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const environment of await store.environments.list({ accountId: personal })) {
 				await store.environments.delete(environment.id);
 			}
-			for (const sandbox of await store.sandboxes.list({ accountId: personal })) {
+			// Only those already deleted: one a create made meanwhile keeps its record, and with it its stop and its delete.
+			for (const sandbox of await store.sandboxes.list({ accountId: personal, state: "deleted" })) {
 				for (const command of await store.commands.list({ sandboxId: sandbox.id })) {
 					await store.commands.delete(command.id);
 				}
 				await store.sandboxes.delete(sandbox.id);
 			}
 			for (const event of await store.events.list({ accountId: personal })) await store.events.delete(event.id);
+			for (const entry of await store.egress.list({ accountId: personal })) await store.egress.delete(entry.id);
+			for (const entry of await store.e2eChain.list({ space: personal })) await store.e2eChain.delete(entry.id);
 			await store.telemetry.delete(personal);
 			await store.proxies.delete(personal);
 			await store.accounts.delete(personal);

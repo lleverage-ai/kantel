@@ -112,8 +112,8 @@ function DeleteAccountDialog({
 				working, you leave every organisation, and you're signed out everywhere. This can't be undone.
 			</p>
 			<p>
-				Delete your own sandboxes and saved snapshots first. If you're an organisation's last owner, make someone else
-				an owner or delete it.
+				Delete your own sandboxes, saved snapshots and bundles first. If you're an organisation's last owner, make
+				someone else an owner or delete it.
 			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
