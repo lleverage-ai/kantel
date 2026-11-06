@@ -1377,6 +1377,15 @@
 						}
 					},
 					{
+						"name": "mine",
+						"in": "query",
+						"required": false,
+						"description": "Only the caller's own: the ones they made, in the console or with any of their API keys.",
+						"schema": {
+							"type": "boolean"
+						}
+					},
+					{
 						"name": "limit",
 						"in": "query",
 						"required": false,

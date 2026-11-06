@@ -24,6 +24,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 | `all` | boolean | no | Include stopped, paused and errored sandboxes. Default: only active ones. |
 | `label` | Record&lt;string, string&gt; | no | Only those with each label: `label.ticket=PROJ-12`. |
 | `host` | string | no | Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host. |
+| `mine` | boolean | no | Only the caller's own: the ones they made, in the console or with any of their API keys. |
 | `limit` | integer | no | At most this many; default 50. (minimum 1, maximum 500) |
 | `cursor` | string | no | A previous page's `nextCursor`. |
 

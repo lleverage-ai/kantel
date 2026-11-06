@@ -829,9 +829,13 @@ describe("sandboxes", () => {
 		expect(asText.stdout).toMatch(/^ID\s+NAME\s+TYPE\s+STATE/);
 		expect(asText.stdout).toContain("kantel list --cursor c2");
 		// A filtered page's next command keeps its filters, so the cursor walks the same list.
-		const filtered = await kantel(["sandbox", "list", "--all", "--label", "team=a b", "--on", "box 1"], { routes });
+		const filtered = await kantel(["sandbox", "list", "--all", "--mine", "--label", "team=a b", "--on", "box 1"], {
+			routes,
+		});
 		expect(filtered.calls[0]?.query.get("host")).toBe("box 1");
-		expect(filtered.stdout).toContain("kantel list --all --label 'team=a b' --on 'box 1' --cursor c2");
+		expect(filtered.calls[0]?.query.get("mine")).toBe("true");
+		expect(filtered.stdout).toContain("kantel list --all --mine --label 'team=a b' --on 'box 1' --cursor c2");
+		expect((await kantel(["list"], { routes })).calls[0]?.query.has("mine")).toBe(false);
 	});
 
 	it("pauses with stop --pause", async () => {

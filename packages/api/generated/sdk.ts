@@ -1169,6 +1169,8 @@ export interface ListSandboxesQuery {
 	};
 	/** Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host. */
 	readonly host?: string;
+	/** Only the caller's own: the ones they made, in the console or with any of their API keys. */
+	readonly mine?: boolean;
 	/** At most this many; default 50. */
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */

@@ -105,6 +105,16 @@ import {
 	uploadTreeTo,
 	walk,
 } from "./transfer.ts";
+import {
+	compareVersions,
+	install,
+	installOf,
+	latestRelease,
+	RELEASES,
+	type RunInstaller,
+	releaseVersion,
+	runInstaller,
+} from "./update.ts";
 import { VERSION } from "./version.ts";
 
 /** Where the CLI writes. */
@@ -145,6 +155,10 @@ export interface RunOptions {
 	readonly connect?: (url: string) => Promise<ByteChannel>;
 	/** `kantel console` is serving: resolves when it should stop; default on Ctrl-C (SIGINT) or SIGTERM. */
 	readonly served?: (console: LocalConsole) => Promise<void>;
+	/** The path this CLI was started as, for `update` to find where it is installed; default `process.argv[1]`. */
+	readonly script?: string;
+	/** Runs a release's installer, for `update`; default `sh` with this process's output. */
+	readonly runInstaller?: RunInstaller;
 }
 
 interface Io {
@@ -161,6 +175,8 @@ interface Io {
 	readonly self: readonly string[] | undefined;
 	readonly connect: (url: string) => Promise<ByteChannel>;
 	readonly served: (console: LocalConsole) => Promise<void>;
+	readonly script: string | undefined;
+	readonly runInstaller: RunInstaller;
 }
 
 /** Until Ctrl-C or SIGTERM. */
@@ -2001,16 +2017,19 @@ const SECTIONS: readonly Section[] = [
 					all: { type: "boolean", description: "Include stopped, paused and errored ones" },
 					label: { type: "string", multiple: true, value: "<k=v>", description: "Only those with this label" },
 					on: { type: "string", value: "<host>", description: "Only those on this host, its name or ID" },
+					mine: { type: "boolean", description: "Only your own, not the ones others share in an organisation" },
 					cursor: cursorFlag,
 				},
 				async run(ctx) {
 					const config = await ctx.config();
 					const all = ctx.boolean("all");
+					const mine = ctx.boolean("mine");
 					const page = await (await ctx.client()).listSandboxes({
 						account: config.account,
 						all: all ? true : undefined,
 						label: pairs(ctx.list("label"), "--label"),
 						host: ctx.string("on"),
+						mine: mine ? true : undefined,
 						cursor: ctx.string("cursor"),
 					});
 					ctx.emit(page, () => {
@@ -2019,6 +2038,7 @@ const SECTIONS: readonly Section[] = [
 						// The next page's command keeps this one's filters: the cursor is an offset into the same filtered list.
 						const filters = [
 							...(all ? ["--all"] : []),
+							...(mine ? ["--mine"] : []),
 							...ctx.list("label").flatMap((label) => ["--label", shellQuote(label)]),
 							...(ctx.string("on") === undefined ? [] : ["--on", shellQuote(ctx.string("on") ?? "")]),
 						];
@@ -3720,6 +3740,59 @@ const SECTIONS: readonly Section[] = [
 					ctx.out(VERSION);
 				},
 			},
+			{
+				name: "update",
+				summary: "Update kantel to the latest release, or to --version",
+				flags: {
+					version: { type: "string", value: "<version>", description: "Install this release, such as 0.2.0" },
+					check: { type: "boolean", description: "Only say whether there is a newer release" },
+					force: { type: "boolean", description: "Install it even when it is the version you have" },
+				},
+				details:
+					"It runs the release's own install-cli.sh, which checks the download against the release's SHA256SUMS,\n" +
+					"installs where this kantel is, and updates kantel-admin too where it is installed.",
+				async run(ctx) {
+					const asked = ctx.string("version");
+					const mirrored = (ctx.io.env.KANTEL_RELEASE_URL ?? "") !== "";
+					if (asked === undefined && mirrored && !ctx.boolean("check")) {
+						throw new UsageError("With KANTEL_RELEASE_URL set, say which release it holds with --version");
+					}
+					const target = asked === undefined ? await latestRelease(ctx.io.fetch) : releaseVersion(asked);
+					const order = compareVersions(VERSION, target);
+					const state = { current: VERSION, target, updateAvailable: asked === undefined ? order < 0 : order !== 0 };
+					if (ctx.boolean("check")) {
+						ctx.emit(state, () =>
+							order < 0
+								? `kantel ${target} is out (you have ${VERSION}): kantel update installs it.`
+								: `kantel ${VERSION} is up to date${order > 0 ? `, newer than the latest release (${target})` : ""}.`,
+						);
+						return 0;
+					}
+					if (!ctx.boolean("force") && (order === 0 || (asked === undefined && order > 0))) {
+						ctx.emit({ ...state, updated: false }, () =>
+							order === 0
+								? `kantel ${VERSION} is up to date.`
+								: `kantel ${VERSION} is newer than the latest release (${target}): nothing to do.`,
+						);
+						return 0;
+					}
+					const where = ctx.io.script === undefined ? undefined : await installOf(ctx.io.script);
+					if (where === undefined) {
+						throw new CliError(
+							`This kantel (${ctx.io.script ?? "unknown"}) wasn't installed by install-cli.sh, so it can't update itself. ` +
+								`Install the release with: curl -fsSL ${RELEASES}/download/v${target}/install-cli.sh | sh`,
+						);
+					}
+					ctx.note(`Updating kantel ${VERSION} to ${target}`);
+					const code = await install(target, where, { fetch: ctx.io.fetch, env: ctx.io.env, run: ctx.io.runInstaller });
+					if (code !== 0)
+						throw new CliError(
+							`The installer for ${target} failed (exit ${code}); kantel ${VERSION} is still installed`,
+						);
+					if (ctx.json) ctx.emit({ ...state, updated: true }, () => "");
+					return 0;
+				},
+			},
 		],
 	},
 ];
@@ -4105,6 +4178,8 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 		self: options.self ?? thisCli(),
 		connect: options.connect ?? e2e.webSocketChannel,
 		served: options.served ?? untilSignalled,
+		script: options.script ?? process.argv[1],
+		runInstaller: options.runInstaller ?? runInstaller,
 	};
 	try {
 		return await dispatch(argv, io);

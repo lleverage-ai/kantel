@@ -3170,6 +3170,15 @@ describe("organisations", () => {
 		const mine = await tom.createSandbox({ account: org.id, visibility: "private", wait: true });
 		const seen = await ann.listSandboxes({ account: org.id });
 		expect(seen.items.map((item) => item.id)).toEqual([shared.id]);
+		expect((await ann.listSandboxes({ account: org.id, mine: true })).items).toEqual([]);
+		const annOwn = await ann.createSandbox({ account: org.id, wait: true });
+		expect((await ann.listSandboxes({ account: org.id, mine: true })).items.map((item) => item.id)).toEqual([
+			annOwn.id,
+		]);
+		expect((await tom.listSandboxes({ account: org.id, mine: true })).items.map((item) => item.id).sort()).toEqual(
+			[shared.id, mine.id].sort(),
+		);
+		await ann.deleteSandbox(annOwn.id);
 		expect((await failure(ann.getSandbox(mine.id))).code).toBe("not_found");
 		const annEvents = await ann.listEvents({ account: org.id });
 		expect(annEvents.items.some((event) => event.sandboxId === shared.id)).toBe(true);

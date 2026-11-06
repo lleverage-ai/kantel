@@ -5461,7 +5461,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? undefined
 					: pinnableHost(principal, account.id, await ensureHosts(), query.host, { revoked: true }).id;
 			const visible: StoredSandbox[] = [];
-			for (const sandbox of await store.sandboxes.list({ accountId: account.id })) {
+			const owned = query.mine === true ? { ownerUserId: principal.userId } : {};
+			for (const sandbox of await store.sandboxes.list({ accountId: account.id, ...owned })) {
 				if (sandbox.state === "deleted") continue;
 				if (onHost !== undefined && sandbox.hostId !== onHost) continue;
 				const wanted =

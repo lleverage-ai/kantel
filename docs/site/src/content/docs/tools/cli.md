@@ -25,7 +25,7 @@ kantel version
 kantel login
 ```
 
-It downloads the latest release's files, checks them against its `SHA256SUMS`, puts them in `~/.local/share/kantel`, and links `~/.local/bin/kantel` to them. If `~/.local/bin` isn't on your `PATH`, it says how to put it there (`fish_add_path ~/.local/bin` in fish). Run the same line again to update. After `| sh -s --`, `--admin` adds `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/), for self-hosting; once it's installed, updates keep it up to date unless you say `--no-admin`), `--dir DIR` links the commands in another directory, and `--version 0.1.0` installs that release. Each release also carries the same installer as `install-cli.sh`, which installs that release. `gh attestation verify ~/.local/share/kantel/kantel.mjs --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
+It downloads the latest release's files, checks them against its `SHA256SUMS`, puts them in `~/.local/share/kantel`, and links `~/.local/bin/kantel` to them. If `~/.local/bin` isn't on your `PATH`, it says how to put it there (`fish_add_path ~/.local/bin` in fish). `kantel update` updates it to the latest release (`--check` only says whether there is one, and `--version 0.3.2` installs that release): it runs that release's own installer, so it checks the download the same way and updates `kantel-admin` too where it is installed. Running the install line again does the same. After `| sh -s --`, `--admin` adds `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/), for self-hosting; once it's installed, updates keep it up to date unless you say `--no-admin`), `--dir DIR` links the commands in another directory, and `--version 0.1.0` installs that release. Each release also carries the same installer as `install-cli.sh`, which installs that release. `gh attestation verify ~/.local/share/kantel/kantel.mjs --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
 
 It isn't on npm (publishing is on hold), so `npx kantel` doesn't work: install it as above and run `kantel`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
 
@@ -109,7 +109,7 @@ kantel stop sbx_g2yy5jhyqr
 kantel resume sbx_g2yy5jhyqr
 ```
 
-`kantel list` shows your running sandboxes (`--all` for the stopped ones too, `--on <host>` for those on one host), `kantel info <id>` one of them, `kantel fork <id> --count 3` makes copies, and `kantel delete <id> --yes` erases one for good.
+`kantel list` shows your running sandboxes (`--all` for the stopped ones too, `--mine` for only your own, not the ones others share in an organisation, and `--on <host>` for those on one host), `kantel info <id>` one of them, `kantel fork <id> --count 3` makes copies, and `kantel delete <id> --yes` erases one for good.
 
 ## Running commands
 
@@ -243,7 +243,7 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 | Group | Commands |
 | --- | --- |
 | Signing in | `login [--key-stdin] [--no-browser] [--wait]`, `logout`, `whoami` |
-| [Sandboxes](/sandboxes/lifecycle/) | `new`, `list [--all]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
+| [Sandboxes](/sandboxes/lifecycle/) | `new`, `list [--all] [--mine]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
 | [Commands](/sandboxes/commands-and-files/) | `exec [-d] [--timeout <s>]`, `attach`, `ps`, `kill` |
 | [Files](/sandboxes/commands-and-files/) | `scp [-r]`, `push`, `files ls`, `files cat`, `files put`, `files get`, `files rm` |
 | [Ports](/sandboxes/public-ports/), [SSH](/sandboxes/ssh/), [desktop and browser](/sandboxes/desktop-and-browser/) | `host <id> <port>`, `port list`, `port hide`, `ssh`, `desktop`, `browser` |
@@ -253,6 +253,7 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 | [Webhooks](/monitoring/webhooks/), events and [OpenTelemetry](/monitoring/opentelemetry/) | `webhook list`, `webhook create`, `webhook rm`, `webhook test`, `events`, `telemetry get`, `telemetry set`, `telemetry rm` |
 | [Your own hosts](/own-hosts/) (experimental): machines of your own | `hosts add [name]`, `hosts list`, `hosts info`, `hosts drain [--off]`, `hosts rm` |
 | [Coding agents](/coding-agents/) | `init`, `mcp`, `agents` |
+| This command | `update [--check] [--version V]`, `version` |
 
 `kantel key create agent --preset agent` makes a key for a coding agent and prints its secret once. The other presets are `ci`, `read-only` and `admin`; `--scope` picks scopes one by one, `--sandbox` limits the key to one sandbox and `--expires-days` sets when it stops working.
 

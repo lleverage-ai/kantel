@@ -407,10 +407,16 @@ const TOOLS: readonly Tool[] = [
 	{
 		name: "sandbox_list",
 		description: "List the account's sandboxes, newest first: running ones, or all of them with all.",
-		inputSchema: schema({ all: { type: "boolean", description: "Include stopped, paused and errored ones." } }),
+		inputSchema: schema({
+			all: { type: "boolean", description: "Include stopped, paused and errored ones." },
+			mine: { type: "boolean", description: "Only the key's person's own, not ones others share in an organisation." },
+		}),
 		annotations: { title: "List sandboxes", readOnlyHint: true },
 		async call(args, { client, account, signal }) {
-			const page = await client.listSandboxes({ account, all: optionalBoolean(args, "all") }, { signal });
+			const page = await client.listSandboxes(
+				{ account, all: optionalBoolean(args, "all"), mine: optionalBoolean(args, "mine") },
+				{ signal },
+			);
 			return json(page);
 		},
 	},

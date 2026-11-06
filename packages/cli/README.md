@@ -23,7 +23,8 @@ release:
 curl -fsSL https://kantel.dev/cli.sh | sh
 ```
 
-Run it again to update. `sh -s -- --admin` adds `kantel-admin`. A release's own copy
+`kantel update` updates it to the latest release (`--check` only says whether there is one, `--version V` installs
+release V) by running that release's own `install-cli.sh`; running the line above again does the same. `sh -s -- --admin` adds `kantel-admin`. A release's own copy
 (`releases/download/v0.2.0/install-cli.sh`) installs that release. In this repository the package is `@kantel/cli`. It is built as the npm package `kantel` too,
 but npm publishing is on hold, so `npx kantel` doesn't work: install it as above and run `kantel`.
 
@@ -60,7 +61,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | Command | What it does |
 | --- | --- |
 | `new [--type isolate\|microvm] [--size] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--env <env>] [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs; `--env` with no `=` names an environment to start from |
-| `list [--all]`, `info <id>` | List and show sandboxes |
+| `list [--all] [--mine]`, `info <id>` | List and show sandboxes; `--mine` leaves out the ones others share in an organisation |
 | `start\|stop\|resume\|recover <id>` | Its lifecycle; `stop --pause` keeps a microVM's memory |
 | `fork <id> [--count N]` | Copy it into new sandboxes |
 | `delete <id> --yes` | Delete it for good: it refuses without `--yes` |
@@ -81,6 +82,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `hosts add\|list\|info\|drain\|rm …` | Your own hosts (experimental): machines of your own that run only your account's sandboxes |
 | `init [--global] [--for claude\|codex\|pi]` | AGENTS.md, CLAUDE.md and the kantel skill for coding agents |
 | `mcp` | The MCP server on stdio |
+| `update [--check] [--version V] [--force]` | Update kantel (and kantel-admin, where installed) from a GitHub Release |
 | `agents [claude\|codex\|pi\|cursor\|all] [--write]` | MCP setup for coding agents |
 
 `ls` is short for `list` and `rm` for `delete`, and the first CLI's `sandbox …` spellings (`sandbox create`,
