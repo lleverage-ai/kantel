@@ -355,7 +355,8 @@ export interface StackComputeOptions {
 	 * Who holds which role: an organisation admin who signs in is the compute plane's super-admin, and a member of the
 	 * deployment's organisation may use the stub.
 	 */
-	readonly identity: Pick<IdentityDirectory, "authorize" | "getUser">;
+	/** With `roleOf`, deleting an account knows the deployment's admins whichever organisation a call names. */
+	readonly identity: Pick<IdentityDirectory, "authorize" | "getUser"> & Partial<Pick<IdentityDirectory, "roleOf">>;
 	/**
 	 * The deployment's own organisation: only its admins are super-admins, and only its members may use the stub here.
 	 * Others are refused, or with account hosts on, may use only hosts of their own. Absent, any organisation's admin
@@ -367,6 +368,8 @@ export interface StackComputeOptions {
 	 * sign-in), sign-ins are taken to last; Access tokens carry no session to end.
 	 */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/** Removes a person from sign-in once they delete their account (`ComputeServiceOptions.deletePerson`). */
+	readonly deletePerson?: (userId: string) => Promise<void>;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
 	readonly sql?: SqlDriver;
 	readonly now?: () => number;
@@ -527,6 +530,14 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 					now,
 				);
 	const deploymentOrganisation = options.adminOrganisationId;
+	// The deployment's admins, whichever organisation a call names: a person in their own space too isn't a super-admin
+	// there, but still may not delete the account the deployment's administration rests on.
+	const roleOf = options.identity.roleOf?.bind(options.identity);
+	const deploymentAdmin =
+		deploymentOrganisation === undefined || roleOf === undefined
+			? undefined
+			: async (userId: string) =>
+					(await roleOf(systemContext("compute"), { kind: "human", userId }, deploymentOrganisation)) === "admin";
 	// One cached read of the index for the API and the hosts' welcome alike; the object keeps it between requests.
 	const baseImages =
 		options.imagePatching === undefined
@@ -553,6 +564,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		authenticatePerson: (request) =>
 			personOf(options.authenticator, options.identity, request, options.adminOrganisationId, own !== undefined),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
+		...(options.deletePerson === undefined ? {} : { deletePerson: options.deletePerson }),
+		...(deploymentAdmin === undefined ? {} : { deploymentAdmin }),
 		// The stub is its members', account hosts on or off: with them on, people outside get in for hosts of their own,
 		// and a key one of them made then must stay off the stub once they are off.
 		...(deploymentOrganisation === undefined

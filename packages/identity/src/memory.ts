@@ -852,6 +852,34 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			return { user: stored.user, organisationIds: [...organisationIds] };
 		},
 
+		async deleteUser(ctx, userId) {
+			await requireSystem(ctx, "identity.deleteUser", { ...(audit === undefined ? {} : { audit }), clock });
+			const stored = users.get(userId);
+			const email = normalisedEmail(stored?.user.email);
+			const organisationIds = new Set<OrganisationId>();
+			const key = principalKey({ kind: "user", userId });
+			for (const [bindingId, binding] of bindings) {
+				if (principalKey(binding.principal) !== key) continue;
+				organisationIds.add(binding.organisationId);
+				bindings.delete(bindingId);
+			}
+			for (const [subject, linked] of linkedSubjects) if (linked === userId) linkedSubjects.delete(subject);
+			for (const [inviteId, invite] of invites) {
+				if (email !== undefined && invite.emailNormalised === email) invites.delete(inviteId);
+			}
+			preferences.delete(userId);
+			users.delete(userId);
+			for (const organisationId of organisationIds) {
+				await emit(
+					{ actor: ctx.actor, organisationId },
+					"identity.user.deleted",
+					organisationId,
+					{ kind: "identity.user", id: userId },
+					{},
+				);
+			}
+		},
+
 		async canSignIn(ctx, identity) {
 			await requireSystem(ctx, "identity.canSignIn", { ...(audit === undefined ? {} : { audit }), clock });
 			const wellFormed =

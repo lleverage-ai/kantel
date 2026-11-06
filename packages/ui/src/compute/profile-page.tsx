@@ -1,11 +1,13 @@
-// Profile (compute console, under Settings): who is signed in, and the theme. The name and email come from sign-in and
-// can't be changed here; the theme is the same System, Light or Dark as in your menu.
+// Profile (compute console, under Settings): who is signed in, the theme, and deleting the account. The name and email
+// come from sign-in and can't be changed here; the theme is the same System, Light or Dark as in your menu.
 
 import type { ThemePreference } from "@kantel/contracts";
-import { useId } from "react";
+import { useId, useState } from "react";
+import { Button } from "../primitives/button.tsx";
+import { Dialog } from "../primitives/dialog.tsx";
 import { FormField } from "../primitives/form-layout.tsx";
 import { ThemeSwitch } from "../theme/theme-switch.tsx";
-import { computePage } from "./parts.tsx";
+import { computePage, messageOf, SectionHeading } from "./parts.tsx";
 import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface ProfilePageProps {
@@ -15,6 +17,8 @@ export interface ProfilePageProps {
 	readonly narrow?: boolean;
 	/** A theme was chosen and applied: the host keeps it for the person. */
 	readonly onThemeChoose?: (preference: ThemePreference) => void;
+	/** Deletes the person's account; Delete account shows only with it. Rejects with why it couldn't. */
+	readonly onDeleteAccount?: () => Promise<void>;
 }
 
 /** A label and its value, read only, laid out as a field's label is. */
@@ -27,8 +31,10 @@ function Fact({ label, children }: { label: string; children: string }) {
 	);
 }
 
-export function ProfilePage({ name, email, narrow = false, onThemeChoose }: ProfilePageProps) {
+export function ProfilePage({ name, email, narrow = false, onThemeChoose, onDeleteAccount }: ProfilePageProps) {
 	const themeId = useId();
+	const headingId = useId();
+	const [deleting, setDeleting] = useState(false);
 	return (
 		<div className={computePage}>
 			<SettingsPageHeader title="Profile" narrow={narrow} />
@@ -39,6 +45,77 @@ export function ProfilePage({ name, email, narrow = false, onThemeChoose }: Prof
 			<FormField id={themeId} label="Theme">
 				<ThemeSwitch {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
 			</FormField>
+			{onDeleteAccount === undefined ? null : (
+				<section className="flex min-w-0 flex-col gap-2 pt-4" aria-labelledby={headingId}>
+					<SectionHeading id={headingId} title="Delete account" />
+					{/* A card as Leave is on an organisation's page, with the solid red button kept for the dialog. */}
+					<div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-panel border border-border bg-raised px-4 py-3">
+						<p className="m-0 min-w-0 text-sm text-muted">
+							Removes your personal account, its hosts and your API keys, and takes you out of every organisation.
+						</p>
+						<Button variant="danger-quiet" onClick={() => setDeleting(true)}>
+							Delete account
+						</Button>
+					</div>
+					<DeleteAccountDialog open={deleting} onClose={() => setDeleting(false)} onDelete={onDeleteAccount} />
+				</section>
+			)}
 		</div>
+	);
+}
+
+function DeleteAccountDialog({
+	open,
+	onClose,
+	onDelete,
+}: {
+	open: boolean;
+	onClose: () => void;
+	onDelete: () => Promise<void>;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [failure, setFailure] = useState<string>();
+	const close = () => {
+		setFailure(undefined);
+		onClose();
+	};
+	return (
+		<Dialog
+			open={open}
+			title="Delete your account?"
+			onClose={close}
+			actions={
+				<>
+					<Button onClick={close}>Cancel</Button>
+					<Button
+						variant="danger"
+						busy={busy}
+						onClick={() => {
+							setBusy(true);
+							setFailure(undefined);
+							onDelete().then(
+								() => setBusy(false),
+								(caught: unknown) => {
+									setBusy(false);
+									setFailure(messageOf(caught, "Kantel couldn't delete your account. Try again."));
+								},
+							);
+						}}
+					>
+						Delete account
+					</Button>
+				</>
+			}
+		>
+			<p>
+				Your personal account goes, with its hosts, environments, webhooks and templates. Every API key you made stops
+				working, you leave every organisation, and you're signed out everywhere. This can't be undone.
+			</p>
+			<p>
+				Delete your own sandboxes and saved snapshots first. If you're an organisation's last owner, make someone else
+				an owner or delete it.
+			</p>
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+		</Dialog>
 	);
 }

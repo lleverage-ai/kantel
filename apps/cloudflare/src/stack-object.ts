@@ -119,6 +119,9 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			signUps: {
 				load: (userId) => storage.get<SignUpRecord>(`${SIGN_UP_PREFIX}${userId}`),
 				save: (userId, record) => storage.put(`${SIGN_UP_PREFIX}${userId}`, record),
+				delete: async (userId) => {
+					await storage.delete(`${SIGN_UP_PREFIX}${userId}`);
+				},
 			},
 		};
 	}

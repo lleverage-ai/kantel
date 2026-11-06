@@ -80,6 +80,10 @@ export interface ComputeApiOptions {
 	readonly sessionLive?: (session: string) => Promise<boolean>;
 	/** Whether a user may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`); absent, everyone. */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
+	/** Removes a person from sign-in once they delete their account (`ComputeServiceOptions.deletePerson`). */
+	readonly deletePerson?: (userId: string) => Promise<void>;
+	/** Whether a person administers the deployment (`ComputeServiceOptions.deploymentAdmin`). */
+	readonly deploymentAdmin?: (userId: string) => Promise<boolean>;
 	/**
 	 * `KANTEL_SECRETS_KEY`: 32 bytes, base64, sealing environments' protected values and secret files. Absent, a memory
 	 * store makes one for the process and a persistent store refuses them. Not a key: `createComputeApi` throws.
@@ -175,6 +179,8 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
+		...(options.deletePerson === undefined ? {} : { deletePerson: options.deletePerson }),
+		...(options.deploymentAdmin === undefined ? {} : { deploymentAdmin: options.deploymentAdmin }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),

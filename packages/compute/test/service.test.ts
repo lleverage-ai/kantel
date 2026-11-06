@@ -51,7 +51,15 @@ function setup(
 	backend: SandboxBackend = createStubBackend(),
 	extra: Pick<
 		Parameters<typeof createComputeApi>[0],
-		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs" | "store"
+		| "sharedHosts"
+		| "invites"
+		| "limits"
+		| "startHoldMs"
+		| "startPollMs"
+		| "store"
+		| "deletePerson"
+		| "deploymentAdmin"
+		| "accountHosts"
 	> = {},
 ) {
 	const api = createComputeApi({
@@ -2050,6 +2058,69 @@ describe("device sign-in", () => {
 		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "denied" });
 		expect((await failure(device.pollDeviceLogin({ deviceCode: "kdc_nope" }))).code).toBe("not_found");
 		expect((await failure(tom.getDeviceLogin("BBBB-BBBB"))).code).toBe("not_found");
+	});
+});
+
+describe("deleting your account", () => {
+	it("refuses while you'd leave an organisation with no owner, or have sandboxes of your own", async () => {
+		const { tom, ann } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const failed = await failure(tom.deleteCaller());
+		expect(failed.code).toBe("conflict");
+		expect(failed.message).toContain("Acme");
+
+		const sandbox = await ann.createSandbox({ wait: true });
+		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
+		await ann.deleteSandbox(sandbox.id);
+		await ann.deleteCaller();
+		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
+	});
+
+	it("revokes their keys, takes them out of organisations, removes them from sign-in, and starts afresh after", async () => {
+		const deleted: string[] = [];
+		const { tom, ann, client } = setup(undefined, { deletePerson: async (userId) => void deleted.push(userId) });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "admin" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		const before = (await ann.getCaller()).accountId;
+		const personalKey = client((await ann.createApiKey({ name: "mine", preset: "read-only" })).secret);
+		const orgKey = client((await ann.createApiKey({ name: "theirs", preset: "read-only", account: org.id })).secret);
+		await ann.createWebhook({ name: "hook", url: "https://example.com/hook", events: ["sandbox.created"] });
+
+		expect((await failure(personalKey.deleteCaller())).code).toBe("forbidden");
+		await ann.deleteCaller();
+
+		expect(deleted).toEqual(["usr_ann"]);
+		expect((await failure(personalKey.getCaller())).status).toBe(401);
+		expect((await failure(orgKey.getCaller())).status).toBe(401);
+		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
+
+		// Signing in again, they're someone new: a fresh personal account with nothing in it.
+		const again = await ann.getCaller();
+		expect(again.accountId).not.toBe(before);
+		expect(again.accounts.map((account) => account.id)).toEqual([again.accountId]);
+		expect((await ann.listWebhooks()).items).toEqual([]);
+		expect((await ann.listApiKeys()).items).toEqual([]);
+	});
+});
+
+describe("deleting your account, beyond the basics", () => {
+	it("spends no join token they made for an organisation, and is refused to a deployment admin", async () => {
+		const store = createMemoryStore();
+		const { tom, ann } = setup(undefined, {
+			store,
+			accountHosts: true,
+			deploymentAdmin: async (userId) => userId === "usr_tom",
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "admin" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		await ann.createAccountJoinToken({ name: "laptop", account: org.id });
+		expect(await store.joinTokens.list({ createdBy: "usr_ann" })).toHaveLength(1);
+
+		await ann.deleteCaller();
+		expect(await store.joinTokens.list({ createdBy: "usr_ann" })).toEqual([]);
+		expect((await failure(tom.deleteCaller())).code).toBe("forbidden");
 	});
 });
 

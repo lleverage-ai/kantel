@@ -56,6 +56,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { secretsKeyMissing } from "@kantel/compute";
+import { systemContext } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { oauthClientsFromEnv } from "@kantel/identity/oauth";
 import { kantelSessionProvider } from "@kantel/identity/otp";
@@ -196,6 +197,11 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		authenticator,
 		identity: components.identity,
 		sessionLive: async (session) => (await sessions.find(session, Date.now())) !== undefined,
+		// Someone who deletes their account is signed out, then forgotten by sign-in.
+		deletePerson: async (userId) => {
+			await sessions.deleteForUser(userId);
+			await components.identity.deleteUser(systemContext("compute"), userId);
+		},
 		...(previous?.computeKey === undefined ? {} : { superAdminKey: previous.computeKey }),
 		...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
 		...(hosts === undefined ? {} : { hosts }),

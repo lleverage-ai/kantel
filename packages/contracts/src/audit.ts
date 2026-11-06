@@ -77,6 +77,7 @@ export type KnownAuditEventType =
 	| "identity.role.granted"
 	| "identity.role.revoked"
 	| "identity.user.linked"
+	| "identity.user.deleted"
 	| "identity.session.started"
 	| "identity.session.ended"
 	| "identity.passkey.registered"

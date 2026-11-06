@@ -478,6 +478,16 @@ export interface IdentityDirectory {
 	canSignIn(ctx: SystemContext, identity: ExternalIdentity): Promise<boolean>;
 
 	/**
+	 * Deletes a person who deleted their account: their user, every sign-in subject linked to them, their roles in every
+	 * organisation, their settings, and the invites addressed to their email, so `signIn` no longer finds them and a
+	 * later sign-in with the same email or provider account is someone new. Audited as `identity.user.deleted` in each
+	 * organisation they held a role in. Their sessions are the session store's to end. Organisations, keys and invites
+	 * they made for others stay. A user that doesn't exist is a no-op, so a retry finishes. A worker call: the gateway
+	 * makes it as `system` once the compute plane has deleted their account; any other actor is `forbidden`.
+	 */
+	deleteUser(ctx: SystemContext, userId: UserId): Promise<void>;
+
+	/**
 	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or on the organisation as a
 	 * whole when it is absent, or undefined. A key holds its role on its projects, or with `organisation` scope on the
 	 * organisation and every project of it, and never in another organisation. A worker call:

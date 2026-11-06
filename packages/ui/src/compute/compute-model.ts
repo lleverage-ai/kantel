@@ -81,6 +81,11 @@ export interface AccountsSource {
 	revokeInvite(accountId: string, inviteId: string): Promise<void>;
 	removeMember(accountId: string, memberId: string): Promise<void>;
 	leave(accountId: string): Promise<void>;
+	/**
+	 * Deletes the signed-in person's account (`DELETE /v1/whoami`): their personal account, keys and memberships, and
+	 * their sign-in. Absent where the source can't, as for an API key.
+	 */
+	deleteAccount?(): Promise<void>;
 	/** Renames an organisation; needs admin. Absent where the source can't. */
 	rename?(accountId: string, name: string): Promise<ComputeAccount>;
 	/** Changes a member's role; needs admin, and only an owner makes or unmakes an owner. Absent where it can't. */

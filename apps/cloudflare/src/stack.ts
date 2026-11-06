@@ -33,6 +33,7 @@ import {
 	type ProjectAccess,
 	type SignInMethod,
 	systemClock,
+	systemContext,
 } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import type { InviteMailer } from "@kantel/identity/invites";
@@ -311,6 +312,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			: {
 					sessionLive: async (session: string) => (await otpStores.sessions.find(session, clock.now())) !== undefined,
 				}),
+		// Someone who deletes their account is signed out, then forgotten by sign-in and sign-up alike.
+		deletePerson: async (userId: string) => {
+			await otpStores?.sessions.deleteForUser(userId);
+			await identity.deleteUser(systemContext("compute"), userId);
+			await storage.signUps?.delete(userId);
+		},
 		...(storage.compute === undefined ? {} : { sql: storage.compute }),
 		...(options.config.portsDomain === undefined ? {} : { portsDomain: options.config.portsDomain }),
 		...(options.config.accountHosts === undefined ? {} : { accountHosts: options.config.accountHosts }),

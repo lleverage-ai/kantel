@@ -15,6 +15,7 @@ import {
 	isKantelError,
 	KantelError,
 	systemClock,
+	type UserId,
 } from "@kantel/contracts";
 import { type CryptoKey, createLocalJWKSet, errors, type JWSHeaderParameters, type JWTPayload, jwtVerify } from "jose";
 import { bearerToken } from "./authenticator.ts";
@@ -32,8 +33,14 @@ export interface SignInProvider {
 	 * The person `token` vouches for. A token that does not verify rejects with `authenticationError("invalid", …)`;
 	 * keys or discovery the provider cannot fetch reject with `unavailable`. No error carries the token.
 	 */
-	verify(token: string): Promise<ExternalIdentity>;
+	verify(token: string): Promise<VerifiedIdentity>;
 }
+
+/**
+ * The person a token vouches for, and for a Kantel session, the user it was started for: the session signs in only as
+ * them, so a session from before someone deleted their account never reaches whoever signs up with that email after.
+ */
+export type VerifiedIdentity = ExternalIdentity & { readonly userId?: UserId };
 
 /** How long a key or discovery fetch may take before the provider counts as unavailable. */
 const FETCH_TIMEOUT_MILLISECONDS = 5_000;

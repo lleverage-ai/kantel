@@ -257,6 +257,16 @@ export interface ComputeServiceOptions {
 	 */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
 	/**
+	 * Removes a person from the deployment's sign-in once `deleteCaller` has removed them here: their user, the ways
+	 * they sign in and their sessions, so they are signed out everywhere. Absent, only the compute plane's records go.
+	 */
+	readonly deletePerson?: (userId: string) => Promise<void>;
+	/**
+	 * Whether a person administers the deployment, whichever organisation a call names: `deleteCaller` refuses them, as
+	 * the deployment needs its administrators. Absent, `superAdmin` on the call alone decides.
+	 */
+	readonly deploymentAdmin?: (userId: string) => Promise<boolean>;
+	/**
 	 * The deployment's `KANTEL_SECRETS_KEY` (32 bytes, base64), which seals protected variable values and secret files.
 	 * Absent: a memory store seals with a key made at random for the process; a persistent store refuses them
 	 * (`not_supported`), and plain variables still work. Not a key: the service refuses to start.
@@ -4782,6 +4792,90 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...deploymentDomain,
 				protectedValues: sealer !== undefined,
 			};
+		},
+
+		deleteCaller: async (principal) => {
+			const person = requirePerson(principal);
+			// The deployment's own administrators are its operator's to remove, not their own: the deployment needs one.
+			if (person.superAdmin || (await options.deploymentAdmin?.(person.userId)) === true) {
+				throw new KantelError("forbidden", "A deployment super-admin can't delete their account");
+			}
+			const memberships = await store.members.list({ userId: person.userId });
+			// Refused before anything changes: an organisation keeps an owner, and their own sandboxes are theirs to delete.
+			for (const member of memberships) {
+				if (member.role !== "owner" || member.accountId === person.personalAccountId) continue;
+				if ((await ownerCount(member.accountId)) > 1) continue;
+				const organisation = await store.accounts.get(member.accountId);
+				if (organisation === undefined) continue;
+				throw new KantelError(
+					"conflict",
+					`You're the last owner of ${organisation.name}: make someone else an owner, or delete it, first`,
+				);
+			}
+			const personal = person.personalAccountId;
+			const sandboxes = (await store.sandboxes.list({ accountId: personal })).filter(
+				(sandbox) => sandbox.state !== "deleted",
+			);
+			const saved = await store.snapshots.list({ accountId: personal, kind: "saved" });
+			if (sandboxes.length > 0 || saved.length > 0) {
+				throw new KantelError("conflict", "Delete your sandboxes and saved snapshots first");
+			}
+
+			// Their hosts first: a revoke that can't be made fails the call before anything else has gone, to be made again.
+			for (const host of await ensureHosts()) {
+				if (host.accountId === personal && host.state !== "revoked") await revokeStoredHost(host);
+			}
+			// They leave each organisation as `removeMember` has a member leave: their private sandboxes stay, stopped. The
+			// stops come before the membership goes, so a call that fails between them finds the organisation again on retry.
+			for (const member of memberships) {
+				if (member.accountId === personal) continue;
+				for (const sandbox of await store.sandboxes.list({ accountId: member.accountId, ownerUserId: person.userId })) {
+					if (sandbox.visibility === "private" && sandbox.state === "running") {
+						keepGoing((await beginStop(sandbox, false, "Its person deleted their account", principal)).work);
+					}
+				}
+				await store.members.delete(member.id);
+			}
+			// Nor can a host join any account on a token they made and nobody has spent.
+			for (const token of await store.joinTokens.list({ createdBy: person.userId })) {
+				if (token.usedAt === undefined) await store.joinTokens.delete(token.id);
+			}
+			// Every key that acts for them, in any account, stops working.
+			for (const key of await store.apiKeys.list({ ownerUserId: person.userId })) {
+				if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+			}
+			// Their personal account and what it kept, as `deleteOrganisation` clears an organisation.
+			await templates.retireAccount(personal);
+			// Bundles and bucket sources, with the bytes and credentials they keep, even where mounts are off now.
+			if (mounts !== undefined) await mounts.retireAccount(personal);
+			for (const bundle of await store.bundles.list({ accountId: personal })) await store.bundles.delete(bundle.id);
+			for (const source of await store.bucketSources.list({ accountId: personal })) {
+				await store.bucketSources.delete(source.id);
+			}
+			for (const member of await store.members.list({ accountId: personal })) await store.members.delete(member.id);
+			for (const invite of await store.invites.list({ accountId: personal })) await store.invites.delete(invite.id);
+			for (const webhook of await store.webhooks.list({ accountId: personal })) await store.webhooks.delete(webhook.id);
+			for (const delivery of await store.deliveries.list({ accountId: personal })) {
+				await store.deliveries.delete(delivery.id);
+			}
+			for (const token of await store.joinTokens.list({ accountId: personal })) await store.joinTokens.delete(token.id);
+			for (const environment of await store.environments.list({ accountId: personal })) {
+				await store.environments.delete(environment.id);
+			}
+			for (const sandbox of await store.sandboxes.list({ accountId: personal })) {
+				for (const command of await store.commands.list({ sandboxId: sandbox.id })) {
+					await store.commands.delete(command.id);
+				}
+				await store.sandboxes.delete(sandbox.id);
+			}
+			for (const event of await store.events.list({ accountId: personal })) await store.events.delete(event.id);
+			await store.telemetry.delete(personal);
+			await store.proxies.delete(personal);
+			await store.accounts.delete(personal);
+			await store.users.delete(person.userId);
+			// Last, so a call that fails before here can be made again: until it goes, they can still sign in.
+			await options.deletePerson?.(person.userId);
+			return undefined;
 		},
 
 		listAccounts: async (principal) => {

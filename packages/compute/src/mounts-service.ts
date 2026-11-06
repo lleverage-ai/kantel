@@ -794,6 +794,18 @@ export function createMounts(deps: MountsDeps) {
 		handlers,
 
 		/**
+		 * Deletes an account's bundles, with their bytes, and its bucket sources, with their sealed credentials, when the
+		 * account goes (its person deleted their account). Its sandboxes are gone already, so nothing mounts them.
+		 */
+		async retireAccount(accountId: string): Promise<void> {
+			for (const bundle of await store.bundles.list({ accountId })) {
+				await store.bundles.delete(bundle.id);
+				await options.bundles.delete(bundle.digest, generationOf(bundle)).catch(() => undefined);
+			}
+			for (const source of await store.bucketSources.list({ accountId })) await store.bucketSources.delete(source.id);
+		},
+
+		/**
 		 * A create's (or a fork's) mounts, checked: their paths, and that each source is the account's. microVMs only.
 		 * Answers them `pending`, as the sandbox keeps them until its backend says.
 		 */

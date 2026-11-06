@@ -1697,6 +1697,60 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			return { user: stored.user, organisationIds: [...organisationIds] };
 		},
 
+		async deleteUser(ctx, userId) {
+			await requireSystem(ctx, "identity.deleteUser", workerOptions);
+			const [user] = await driver.query<{ email_normalised: unknown }>(
+				"SELECT email_normalised FROM identity_users WHERE id = ?",
+				[userId],
+			);
+			const email = typeof user?.email_normalised === "string" ? user.email_normalised : undefined;
+			const held = await driver.query<{ organisation_id: unknown }>(
+				"SELECT DISTINCT organisation_id FROM identity_role_bindings WHERE principal_kind = 'user' AND principal_id = ?",
+				[userId],
+			);
+			const organisationIds = held.map((row) => String(row.organisation_id));
+			// The person first, in one batch, so nobody signs in as them from here on: a role a failure below leaves behind
+			// names a user nobody can sign in as.
+			await driver.batch([
+				sql("DELETE FROM identity_user_subjects WHERE user_id = ?", userId),
+				sql("DELETE FROM identity_user_preferences WHERE user_id = ?", userId),
+				sql("DELETE FROM identity_invites WHERE accepted_by = ?", userId),
+				...(email === undefined ? [] : [sql("DELETE FROM identity_invites WHERE email_normalised = ?", email)]),
+				sql("DELETE FROM identity_users WHERE id = ?", userId),
+			]);
+			// Each organisation's roles move on with the delete, as a revocation's do, so a grant checked before it can't
+			// land after it. A grant that lands meanwhile fails the batch, and the delete reads the version again.
+			for (const organisationId of organisationIds) {
+				const statement = sql(
+					"DELETE FROM identity_role_bindings WHERE principal_kind = 'user' AND principal_id = ? AND organisation_id = ?",
+					userId,
+					organisationId,
+				);
+				for (let attempt = 1; ; attempt++) {
+					const seen = await rolesVersion(organisationId);
+					if (!(await scopeExists(organisationId, undefined))) {
+						await driver.batch([statement]);
+						break;
+					}
+					try {
+						await guardedRoleChange(organisationId, seen, [statement]);
+						break;
+					} catch (error) {
+						if (!(error instanceof KantelError && error.code === "conflict") || attempt >= 3) throw error;
+					}
+				}
+			}
+			for (const organisationId of organisationIds) {
+				await emit(
+					{ actor: ctx.actor, organisationId },
+					"identity.user.deleted",
+					organisationId,
+					{ kind: "identity.user", id: userId },
+					{},
+				);
+			}
+		},
+
 		async canSignIn(ctx, identity) {
 			await requireSystem(ctx, "identity.canSignIn", workerOptions);
 			const wellFormed =
