@@ -698,7 +698,8 @@ func (m *Manager) startVM(ctx context.Context, r *runtime) error {
 	if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
 		return err
 	}
-	if err := runCmd("cp", "--sparse=always", filepath.Join(tpl, fc.DiskFile), filepath.Join(vm, fc.DiskFile)); err != nil {
+	// A reflink where the file system can (XFS, btrfs), else a copy that keeps holes.
+	if err := runCmd("cp", "--reflink=auto", "--sparse=always", filepath.Join(tpl, fc.DiskFile), filepath.Join(vm, fc.DiskFile)); err != nil {
 		return err
 	}
 	// The worker's ways to the host: Firecracker hands a guest's connection to host port N to <uds>_N.

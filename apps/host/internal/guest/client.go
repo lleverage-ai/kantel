@@ -207,6 +207,16 @@ func (c *Client) GrowDisk(ctx context.Context, bytes int64) error {
 	return err
 }
 
+// TrimDisk discards the free blocks of the sandbox's disk (fstrim) and answers how many bytes the guest trimmed. An
+// older agent answers 404 (IsNotFound), a disk without discard 501.
+func (c *Client) TrimDisk(ctx context.Context) (uint64, error) {
+	var out struct {
+		Trimmed uint64 `json:"trimmed"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/disk/trim", nil, &out)
+	return out.Trimmed, err
+}
+
 // Mount makes the guest's read-only mounts the specs (an empty list unmounts them all).
 func (c *Client) Mount(ctx context.Context, specs []MountSpec) ([]MountResult, error) {
 	if specs == nil {

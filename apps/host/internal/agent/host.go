@@ -23,6 +23,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
@@ -200,6 +201,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			MinDiskGiB:      cfg.MicroVM.MinDiskGiB, MaxDiskGiB: cfg.MicroVM.MaxDiskGiB,
 			// Creates, starts, resumes and template builds are admitted against the host's budget, as Capacity reports it.
 			Budget: h.budgetBeside(microvm.Tier),
+			// Discard on the disks where Firecracker can (v1.17 on): space the guest frees is freed on the host.
+			Discard: fc.DiscardSupported(hostinfo.FirecrackerVersion(cfg.Firecracker)),
 		})
 		if err != nil {
 			return nil, err

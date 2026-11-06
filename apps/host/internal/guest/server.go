@@ -76,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /exec/{id}/kill", s.killCommand)
 	mux.HandleFunc("POST /sync", s.sync)
 	mux.HandleFunc("POST /disk/grow", s.growDisk)
+	mux.HandleFunc("POST /disk/trim", s.trimDisk)
 	mux.HandleFunc("GET /files", s.readFile)
 	mux.HandleFunc("PUT /files", s.writeFile)
 	mux.HandleFunc("DELETE /files", s.deleteFile)

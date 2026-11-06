@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -35,7 +37,9 @@ func TestDeferredDiskGrowth(t *testing.T) {
 	cfg := Config{
 		Root: t.TempDir(), Firecracker: firecracker, Kernel: kernel, Rootfs: rootfs, SharedTemplate: true,
 		Sizes: []proto.Size{{Name: "default", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 4}}, Network: netm, ProxyPort: 3129,
-		Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		// Discard on the disk where Firecracker can, as a host has it: the growth patches a drive with discard on.
+		Discard: fc.DiscardSupported(hostinfo.FirecrackerVersion(firecracker)),
+		Log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 	m, err := New(cfg)
 	if err != nil {
