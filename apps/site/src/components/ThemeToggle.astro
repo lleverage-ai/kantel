@@ -1,0 +1,148 @@
+---
+// The header's light and dark switch: a sun whose core swells into a moon while its rays turn away, and back. The
+// page follows the device until the person presses it; their choice is kept under Starlight's own key
+// (`starlight-theme`), so the docs open in the same theme, and choosing what the device already prefers goes back to
+// following it. Base.astro's inline script sets the theme before first paint; this keeps it in step afterwards.
+//
+// The icon is SVG, viewBox 24: the core is a circle of r 9 shown at 55% (r 5) as a sun, inside a group masked by a
+// second circle that slides in from the top right to bite the moon out of it. The mask sits on the group, not the
+// circle, so scaling the core doesn't scale the bite.
+---
+
+<button
+	type="button"
+	data-theme-toggle
+	aria-label="Dark theme"
+	aria-pressed="false"
+	title="Switch to dark theme"
+	class="group grid size-9 shrink-0 xs:size-10 cursor-pointer place-items-center rounded-full border border-line text-midnight transition-colors hover:border-midnight hover:bg-card"
+>
+	<svg
+		class="size-5 overflow-visible transition-transform duration-500 ease-out motion-reduce:transition-none group-active:scale-90 dark:-rotate-12"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.75"
+		stroke-linecap="round"
+		aria-hidden="true"
+	>
+		<mask id="theme-toggle-bite">
+			<rect x="-4" y="-4" width="32" height="32" fill="white"></rect>
+			<circle
+				cx="17"
+				cy="7"
+				r="7"
+				fill="black"
+				class="translate-x-3 -translate-y-3 transition-transform duration-500 ease-out motion-reduce:transition-none dark:translate-0"
+			></circle>
+		</mask>
+		<g mask="url(#theme-toggle-bite)">
+			<circle
+				cx="12"
+				cy="12"
+				r="9"
+				fill="currentColor"
+				stroke="none"
+				class="origin-center scale-55 transition-transform duration-500 ease-out motion-reduce:transition-none transform-fill dark:scale-100"
+			></circle>
+		</g>
+		<g
+			class="origin-center transition duration-500 ease-out motion-reduce:transition-none transform-fill dark:scale-50 dark:rotate-90 dark:opacity-0"
+		>
+			<line x1="19.5" y1="12" x2="22" y2="12"></line>
+			<line x1="17.3" y1="17.3" x2="19.07" y2="19.07"></line>
+			<line x1="12" y1="19.5" x2="12" y2="22"></line>
+			<line x1="6.7" y1="17.3" x2="4.93" y2="19.07"></line>
+			<line x1="4.5" y1="12" x2="2" y2="12"></line>
+			<line x1="6.7" y1="6.7" x2="4.93" y2="4.93"></line>
+			<line x1="12" y1="4.5" x2="12" y2="2"></line>
+			<line x1="17.3" y1="6.7" x2="19.07" y2="4.93"></line>
+		</g>
+	</svg>
+</button>
+
+<script>
+	type Theme = "light" | "dark";
+
+	const STORAGE_KEY = "starlight-theme";
+	const root = document.documentElement;
+	const prefersLight = matchMedia("(prefers-color-scheme: light)");
+	const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+	const device = (): Theme => (prefersLight.matches ? "light" : "dark");
+	const current = (): Theme => (root.dataset.theme === "light" ? "light" : "dark");
+
+	function stored(): Theme | null {
+		try {
+			const value = localStorage.getItem(STORAGE_KEY);
+			return value === "light" || value === "dark" ? value : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function store(theme: Theme) {
+		try {
+			// An empty value is Starlight's "auto": follow the device.
+			localStorage.setItem(STORAGE_KEY, theme === device() ? "" : theme);
+		} catch {
+			// Storage blocked: the choice lasts for this page only.
+		}
+	}
+
+	/** Sets the theme on the page and says so on every toggle and in the browser's chrome. */
+	function apply(theme: Theme) {
+		root.dataset.theme = theme;
+		const colour = getComputedStyle(root).getPropertyValue("--site-paper").trim();
+		// Both of Base.astro's theme-color tags (one per device scheme), since the choice can differ from the device's.
+		for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.setAttribute("content", colour);
+		for (const button of document.querySelectorAll<HTMLButtonElement>("button[data-theme-toggle]")) {
+			const dark = theme === "dark";
+			button.setAttribute("aria-pressed", String(dark));
+			button.title = dark ? "Switch to light theme" : "Switch to dark theme";
+		}
+	}
+
+	/** Switches with the new theme spreading out from the button, where the browser can and motion is welcome. */
+	function switchTo(theme: Theme, from: HTMLElement) {
+		if (reduceMotion.matches || !("startViewTransition" in document)) {
+			apply(theme);
+			return;
+		}
+		const box = from.getBoundingClientRect();
+		const x = box.left + box.width / 2;
+		const y = box.top + box.height / 2;
+		const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+		root.dataset.themeSwitching = "";
+		const transition = document.startViewTransition(() => apply(theme));
+		transition.ready
+			.then(() => {
+				root.animate(
+					{ clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+					{ duration: 520, easing: "cubic-bezier(0.4, 0, 0.2, 1)", pseudoElement: "::view-transition-new(root)" },
+				);
+			})
+			.catch(() => {});
+		transition.finished.finally(() => delete root.dataset.themeSwitching);
+	}
+
+	apply(current());
+
+	for (const button of document.querySelectorAll<HTMLButtonElement>("button[data-theme-toggle]")) {
+		button.addEventListener("click", () => {
+			const next: Theme = current() === "dark" ? "light" : "dark";
+			store(next);
+			switchTo(next, button);
+		});
+	}
+
+	// Follow the device while the person hasn't chosen.
+	prefersLight.addEventListener("change", () => {
+		if (stored() === null) apply(device());
+	});
+
+	// Another tab, or the docs, changed the choice.
+	addEventListener("storage", (event) => {
+		if (event.key === STORAGE_KEY) apply(stored() ?? device());
+	});
+</script>

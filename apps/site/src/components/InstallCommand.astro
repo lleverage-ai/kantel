@@ -16,46 +16,42 @@ interface Props {
 const { id, command = INSTALL_COMMAND, compact = false, next = [] } = Astro.props;
 ---
 
-<div class="w-full max-w-(--container-hero) rounded-card bg-midnight text-paper">
-<div
-	class:list={[
-		"flex w-full items-start gap-3 py-3 pr-3 pl-5",
-		!compact && "sm:items-center",
-	]}
->
-	<span class:list={["py-2 font-mono text-sm text-faint select-none", !compact && "sm:py-0 sm:text-base"]} aria-hidden="true"
-		>$</span
-	>
-	<code
-		id={id}
-		class:list={[
-			"min-w-0 flex-1 py-2 font-mono text-sm break-all",
-			!compact && "sm:overflow-x-auto sm:py-0 sm:text-base sm:break-normal sm:whitespace-nowrap",
-		]}>{command}</code
-	>
-	<button
-		type="button"
-		data-copy={id}
-		class="shrink-0 cursor-pointer rounded-input border border-midnight-2 px-3 py-2 text-sm font-semibold text-paper transition-colors hover:border-faint hover:bg-midnight-2"
-	>
-		<span data-label>Copy</span>
-	</button>
-</div>
-{
-	next.length > 0 && (
-		<ol class="space-y-2 border-t border-midnight-2 py-4 pr-5 pl-5 font-mono text-sm">
-			{next.map((step) => (
-				<li class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-					<span class="text-faint select-none" aria-hidden="true">
-						$
-					</span>
-					<code class="min-w-0 break-all">{step.command}</code>
-					<span class="text-faint"># {step.note}</span>
-				</li>
-			))}
-		</ol>
-	)
-}
+<div class="w-full max-w-(--container-hero) rounded-card bg-plate text-on-plate dark:ring-1 dark:ring-plate-line">
+	<div class:list={["flex w-full items-start gap-3 py-3 pr-3 pl-5", !compact && "sm:items-center"]}>
+		<span
+			class:list={["py-2 font-mono text-sm text-faint select-none", !compact && "sm:py-0 sm:text-base"]}
+			aria-hidden="true">$</span
+		>
+		<code
+			id={id}
+			class:list={[
+				"min-w-0 flex-1 py-2 font-mono text-sm break-all",
+				!compact && "sm:overflow-x-auto sm:py-0 sm:text-base sm:break-normal sm:whitespace-nowrap",
+			]}>{command}</code
+		>
+		<button
+			type="button"
+			data-copy={id}
+			class="shrink-0 cursor-pointer rounded-input border border-plate-line px-3 py-2 text-sm font-semibold text-on-plate transition-colors hover:border-faint hover:bg-plate-line"
+		>
+			<span data-label>Copy</span>
+		</button>
+	</div>
+	{
+		next.length > 0 && (
+			<ol class="space-y-2 border-t border-plate-line px-5 py-4 font-mono text-sm">
+				{next.map((step) => (
+					<li class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+						<span class="text-faint select-none" aria-hidden="true">
+							$
+						</span>
+						<code class="min-w-0 break-all">{step.command}</code>
+						<span class="text-faint"># {step.note}</span>
+					</li>
+				))}
+			</ol>
+		)
+	}
 </div>
 
 <script>

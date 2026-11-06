@@ -3,11 +3,12 @@
    The console's tokens (@kantel/ui's tokens.css) describe a dense product UI on a dark canvas; this page is the
    brand's marketing venue instead: paper as the ground, white for cards, midnight for the one or two emphasis plates,
    and orange as one element per surface. So the page keeps its own small token set here, named after the brand's
-   roles, with the brand's values (paper #f9f7f0, midnight #141e28, orange #ec7523) and the same self-hosted faces. Utilities use only these tokens and Tailwind's 4px spacing step; no arbitrary values.
+   roles, with the brand's values (paper #f9f7f0, midnight #141e28, orange #ec7523) and the same self-hosted faces.
+   Utilities use only these tokens and Tailwind's 4px spacing step; no arbitrary values.
 
    The mocked console (src/components/mocks, src/styles/mocks.css) is the exception: it paints in the console's own
    default theme, so it reads @kantel/ui's tokens directly. Those are custom properties only (--kt-*), on :root and
-   .kt-theme; the page keeps its light colour scheme and only a mock's .kt-theme turns dark. */
+   .kt-theme; the page keeps its own colour scheme and only a mock's .kt-theme turns dark. */
 
 @import "tailwindcss";
 @import "../../../../packages/ui/src/tokens/tokens.css";
@@ -18,21 +19,29 @@
 @import "@fontsource/abhaya-libre/latin-800.css";
 @import "@fontsource-variable/roboto-mono/wght.css";
 
-@theme {
-	/* Colour, in the brand's roles. */
-	--color-paper: #f9f7f0; /* the one page ground */
-	--color-card: #ffffff; /* the only card fill */
-	--color-midnight: #141e28; /* emphasis plates, text */
-	--color-midnight-2: #2c353e; /* body copy; cards on midnight */
-	--color-ink: #252820; /* grey 900: the logo artwork's ink */
-	--color-line: #d8d8d3; /* grey 400: hairlines and structure strokes */
-	--color-card-line: #e7e7e3; /* grey 300: a white card's edge, nothing else */
-	--color-label: #656563; /* grey 700: kickers, labels, captions */
-	--color-faint: #ababa7; /* grey 500: secondary text on midnight */
-	--color-sand: #f0f0e0; /* sand accent: a section break */
-	--color-orange: #ec7523; /* one element per surface */
-	--color-orange-warm: #ff9626; /* its hover */
+/* Colour, in the brand's roles, for both themes. The values live on :root and :root[data-theme="dark"] below and
+   @theme inline maps each to a utility by reference, so switching data-theme restyles every utility at once. The role
+   names are the light theme's: in dark, "paper" is the ground (midnight) and "midnight" the ink (paper). */
+@theme inline {
+	--color-paper: var(--site-paper); /* the one page ground */
+	--color-card: var(--site-card); /* the only card fill */
+	--color-midnight: var(--site-midnight); /* emphasis plates, text */
+	--color-midnight-2: var(--site-midnight-2); /* body copy; a plate's hover */
+	--color-ink: var(--site-ink); /* the logo artwork's ink */
+	--color-line: var(--site-line); /* hairlines and structure strokes */
+	--color-card-line: var(--site-card-line); /* a card's edge, nothing else */
+	--color-label: var(--site-label); /* kickers, labels, captions */
+	--color-orange: var(--site-orange); /* one element per surface */
+	--color-orange-warm: var(--site-orange-warm); /* its hover */
 
+	/* The terminal plate (the install command): midnight in both themes, a shade deeper than the dark ground. */
+	--color-plate: var(--site-plate);
+	--color-plate-line: var(--site-plate-line);
+	--color-on-plate: var(--site-on-plate);
+	--color-faint: var(--site-faint); /* secondary text on the plate */
+}
+
+@theme {
 	/* The brand's three faces. */
 	--font-display: "Abhaya Libre", Georgia, serif;
 	--font-sans: "Public Sans Variable", system-ui, sans-serif;
@@ -55,21 +64,60 @@
 	--radius-tile: 8px;
 	--radius-input: 4px;
 
+	/* A breakpoint under sm, for the header: below it (a 320px phone) the lockup, padding and controls step down so
+	   Docs, Console and the theme toggle all fit. */
+	--breakpoint-xs: 25rem;
+
 	/* Widths: the page, a reading measure and the hero's text column. */
 	--container-page: 76rem;
 	--container-measure: 36rem;
 	--container-hero: 46rem;
 }
 
-/* tokens.css gives :root the console's dark scheme; the page is paper. */
+/* The themes. Light is paper with midnight text, dark is midnight with paper text (never pure white), as the docs
+   (docs.css) are. Which one shows is data-theme on <html>: the device's preference until the person picks one with the
+   header's toggle, set before first paint by the script in Base.astro. tokens.css gives :root the console's dark
+   scheme, so the light theme sets its own. */
 :root {
 	color-scheme: light;
+	--site-paper: #f9f7f0;
+	--site-card: #ffffff;
+	--site-midnight: #141e28;
+	--site-midnight-2: #2c353e;
+	--site-ink: #252820; /* grey 900 */
+	--site-line: #d8d8d3; /* grey 400 */
+	--site-card-line: #e7e7e3; /* grey 300 */
+	--site-label: #656563; /* grey 700 */
+	--site-orange: #ec7523;
+	--site-orange-warm: #ff9626;
+	--site-plate: #141e28;
+	--site-plate-line: #2c353e;
+	--site-on-plate: #f9f7f0;
+	--site-faint: #ababa7; /* grey 500 */
+
 	/* The hero fills most of the first screen under the 4rem header, leaving room for the three steps' heading to show
 	   below it. From the small viewport height so a phone's address bar coming and going never resizes it, and within
 	   sane bounds on very short or very tall screens. A custom property rather than a utility because Tailwind has no
 	   step for a calc() on the viewport. */
 	--hero-height: clamp(34rem, calc(100svh - 12rem), 52rem);
 }
+
+:root[data-theme="dark"] {
+	color-scheme: dark;
+	--site-paper: #141e28;
+	--site-card: #19232e;
+	--site-midnight: #f9f7f0;
+	--site-midnight-2: #d8d8d3; /* grey 400 */
+	--site-ink: #f9f7f0;
+	--site-line: #2c353e;
+	--site-card-line: #2c353e;
+	--site-label: #ababa7; /* grey 500 */
+	--site-plate: #0e151c;
+	--site-plate-line: #2c353e;
+}
+
+/* `dark:` utilities follow the page's theme, not the device's. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 @layer base {
 	html {
@@ -92,4 +140,13 @@
 		outline-offset: 3px;
 		border-radius: var(--radius-input);
 	}
+}
+
+/* The theme switch's reveal (ThemeToggle.astro): the new theme grows out of the toggle as a circle, which its script
+   animates on the new snapshot, so the browser's own cross-fade is off. Plain CSS because view-transition
+   pseudo-elements have no utilities. Only while a switch runs, so nothing else on the page is affected. */
+:root[data-theme-switching]::view-transition-old(root),
+:root[data-theme-switching]::view-transition-new(root) {
+	animation: none;
+	mix-blend-mode: normal;
 }

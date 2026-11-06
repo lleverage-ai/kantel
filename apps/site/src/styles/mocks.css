@@ -20,7 +20,7 @@
 		font-size: var(--kt-text-md);
 		line-height: var(--kt-leading);
 		border-radius: var(--radius-card);
-		border: var(--kt-hairline) solid var(--color-midnight-2);
+		border: var(--kt-hairline) solid var(--color-plate-line);
 		overflow: hidden;
 		padding: var(--kt-step-6);
 		-webkit-font-smoothing: antialiased;
