@@ -163,7 +163,10 @@ type Config struct {
 	DNS []string
 	// AutoSnapshots is how many automatic snapshots each sandbox keeps (default 5).
 	AutoSnapshots int
-	Log           *slog.Logger
+	// KeepForkSnapshots keeps a live fork's snapshot (its disk copied into the fork) rather than giving the fork its
+	// disk and deleting it (Fork).
+	KeepForkSnapshots bool
+	Log               *slog.Logger
 	// Events receives state changes.
 	Events func(proto.SandboxInfo)
 	// Attach tells the host's egress proxy which sandbox (and account, and egress) a network slot is now; Detach that
@@ -584,6 +587,9 @@ func New(cfg Config) (*Manager, error) {
 	// no sandbox has it.
 	m.reapInterruptedBuilds()
 	m.reapInterruptedCreates()
+	// After adopt: a fork it found running has its disk already, and keeps the memory it has mapped.
+	m.reapTransientSnapshots()
+	m.adoptMappedMemory()
 	if err := m.PinBases(); err != nil {
 		// Retried before each image update and prune, which wait for it.
 		m.log.Warn("couldn't pin everything to its images; image updates and prunes wait until it is", "error", err)
@@ -598,9 +604,7 @@ func New(cfg Config) (*Manager, error) {
 		m.PrepareTemplates()
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
-	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
-	snapMems, _ := filepath.Glob(filepath.Join(cfg.Root, "snapshots", "*", "mem"))
-	m.spool.adopt(append(vmMems, snapMems...))
+	m.spool.adopt(spoolLinks(cfg.Root))
 	return m, nil
 }
 
@@ -1066,6 +1070,14 @@ func copySparse(src, dst string) error {
 	return nil
 }
 
+// takeFile moves src to dst: a rename, or (another file system) a sparse copy.
+func takeFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	return copySparse(src, dst)
+}
+
 // newDisk makes an empty sparse ext4 disk of the size.
 func newDisk(path string, gib int) error {
 	f, err := os.Create(path)
@@ -1450,6 +1462,125 @@ func (m *Manager) reapInterruptedCreates() {
 	}
 }
 
+// reapTransientSnapshots deletes the live forks' snapshots (snapshotMeta.Transient) a previous run left: one whose fork
+// was made, or failed, before it could delete it, or whose fork was cut short (reapInterruptedCreates) after taking its
+// disk. None is restored again.
+func (m *Manager) reapTransientSnapshots() {
+	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, "snapshots"))
+	for _, e := range entries {
+		if snap, err := m.readSnapshot(e.Name()); err == nil && snap.Transient {
+			if err := os.RemoveAll(m.snapshotDir(snap.ID)); err != nil {
+				m.log.Warn("a live fork's leftover snapshot", "snapshot", snap.ID, "error", err)
+				continue
+			}
+			m.log.Info("deleted a live fork's snapshot the host's previous run left", "snapshot", snap.ID)
+		}
+	}
+}
+
+// keepMapped keeps a running fork's spooled memory file, and the spool's charge for it, until its machine exits: its
+// Firecracker maps the file, so the RAM is in use until then whether or not the file is deleted. After a daemon
+// restart, adoptMappedMemory finds it again in the machine's mappings.
+func (m *Manager) keepMapped(id, spooled string) {
+	var machine *fc.Machine
+	if s, err := m.get(id); err == nil {
+		s.mu.Lock()
+		machine = s.machine
+		s.mu.Unlock()
+	}
+	if machine == nil {
+		m.spool.cancel(spooled)
+		return
+	}
+	m.releaseOnExit(machine, spooled)
+}
+
+// releaseOnExit gives back a fork's spooled memory once its machine has exited, however it ends.
+func (m *Manager) releaseOnExit(machine *fc.Machine, spooled string) {
+	go func() {
+		<-machine.Done()
+		m.spool.cancel(spooled)
+	}()
+}
+
+// spoolLinks are the memory files that may be links to spooled files: the sandboxes' and the snapshots'.
+func spoolLinks(root string) []string {
+	vmMems, _ := filepath.Glob(filepath.Join(root, "sandboxes", "*", "vm", "mem"))
+	snapMems, _ := filepath.Glob(filepath.Join(root, "snapshots", "*", "mem"))
+	return append(vmMems, snapMems...)
+}
+
+// adoptMappedMemory, after the daemon restarts, deals with the spooled files no sandbox or snapshot links to (those that
+// are linked, spool.adopt queues for the disk): one a running machine maps, a live fork's, is counted again until that
+// machine exits; any other, such as an interrupted live fork's, is deleted. A fork's mapping is found in its
+// Firecracker's /proc maps, so nothing about it needs to have been written down before the restart.
+func (m *Manager) adoptMappedMemory() {
+	if m.cfg.SpoolDir == "" {
+		return
+	}
+	dir := filepath.Clean(m.cfg.SpoolDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	linked := map[string]bool{}
+	for _, link := range spoolLinks(m.cfg.Root) {
+		if dest, err := os.Readlink(link); err == nil {
+			linked[dest] = true
+		}
+	}
+	mapped := map[string]*fc.Machine{}
+	for _, s := range m.sandboxes {
+		// Under its lock: adopt's watch clears it when the machine exits.
+		s.mu.Lock()
+		machine := s.machine
+		s.mu.Unlock()
+		if machine != nil {
+			for _, path := range mappedFiles(machine.Pid(), dir) {
+				mapped[path] = machine
+			}
+		}
+	}
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if !strings.HasSuffix(e.Name(), ".mem") || linked[path] {
+			continue
+		}
+		if machine := mapped[path]; machine != nil && m.spool.adoptMapped(path) {
+			m.releaseOnExit(machine, path)
+			m.log.Info("counting a running fork's spooled memory again", "file", path)
+			continue
+		}
+		// Mapped with the spool now off, it is unlinked: the RAM goes when the machine does.
+		if err := os.Remove(path); err == nil {
+			m.log.Info("deleted spooled memory nothing uses", "file", path)
+		}
+	}
+}
+
+// mappedFiles are the files under dir that process pid maps (/proc/<pid>/maps).
+func mappedFiles(pid int, dir string) []string {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		// address perms offset dev inode path, the path last (and possibly with spaces).
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		path := strings.TrimSuffix(strings.Join(fields[5:], " "), " (deleted)")
+		if strings.HasPrefix(path, dir+"/") && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
 // adoptedSlots are the network slots of the sandboxes adopt found running.
 func (m *Manager) adoptedSlots() map[int]bool {
 	adopted := map[int]bool{}
@@ -1701,6 +1832,9 @@ type sandboxOrigin struct {
 	snapshotDir  string
 	bundleDrives int
 	bundleSlots  []string
+	// takeDisk moves the snapshot's disk into the new sandbox rather than copying it: a live fork's own snapshot, which
+	// nothing else uses and which is deleted once the fork has started (Fork).
+	takeDisk bool
 }
 
 // startOf is a new sandbox's origin as a machine of size: p.From, a snapshot; p.Template, a template's snapshot or its
@@ -1772,6 +1906,12 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 // template and a custom shape cold-boots unless it is made from a snapshot or from a template snapshot built as that
 // shape.
 func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
+	return m.create(ctx, p, false)
+}
+
+// create is Create; takeDisk (a live fork's) moves p.From's disk into the sandbox instead of copying it, which leaves
+// that snapshot without one: the caller deletes it.
+func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk bool) (proto.SandboxInfo, error) {
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
@@ -1810,6 +1950,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		return proto.SandboxInfo{}, err
 	}
 	origin, err := m.startSandbox(ctx, p, size, func(origin sandboxOrigin) error {
+		origin.takeDisk = takeDisk && p.From != ""
 		return m.startMachine(ctx, s, origin, size, p.Egress, t)
 	})
 	if err != nil {
@@ -2106,9 +2247,12 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 		return nil
 	}
 	start := time.Now()
-	if origin.disk == "" {
+	switch {
+	case origin.disk == "":
 		err = newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB)
-	} else {
+	case origin.takeDisk:
+		err = takeFile(origin.disk, filepath.Join(vm, fc.DiskFile))
+	default:
 		err = copySparse(origin.disk, filepath.Join(vm, fc.DiskFile))
 	}
 	if err != nil {
@@ -2408,6 +2552,11 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 
 // Fork makes a new sandbox from the source's current state: a running source is snapshotted live (paused for the
 // snapshot only), a stopped one forks from its newest snapshot.
+//
+// A live fork's snapshot is the fork's alone: the control plane is never told its ID, so nothing restores it again.
+// Unless KeepForkSnapshots is set, the fork takes its disk (a rename, not a second copy of a disk that can be tens of
+// gigabytes) and the snapshot is deleted once the fork has started, so it neither takes the source's disk space nor
+// counts among its automatic snapshots (pruneAuto would drop the memory of the one before it).
 func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxInfo, error) {
 	src, err := m.get(p.SandboxID)
 	if err != nil {
@@ -2416,7 +2565,8 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	t := timings{}
 	start := time.Now()
 	began := start
-	var snapID string
+	var snapID, spooled string
+	live := false
 	src.mu.Lock()
 	switch src.meta.State {
 	case proto.StateRunning:
@@ -2425,11 +2575,12 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "forking a running sandbox needs snapshotId"}
 		}
 		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: true, Tier: Tier}
-		if err := m.liveSnapshot(ctx, src, &snap, t); err != nil {
+		var err error
+		if spooled, err = m.liveSnapshot(ctx, src, &snap, t, !m.cfg.KeepForkSnapshots); err != nil {
 			src.mu.Unlock()
 			return proto.SandboxInfo{}, err
 		}
-		snapID = snap.ID
+		snapID, live = snap.ID, true
 	case proto.StateStopped:
 		latest := m.latestSnapshot(src.meta.ID)
 		if latest == "" {
@@ -2451,9 +2602,28 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		params.Egress = src.meta.Egress
 	}
 	src.mu.Unlock()
-	m.pruneAuto(src.meta.ID)
-	t.step("prune", &start)
-	info, err := m.Create(ctx, params)
+	start = time.Now()
+	takeDisk := live && !m.cfg.KeepForkSnapshots
+	if !takeDisk {
+		m.pruneAuto(src.meta.ID)
+		t.step("prune", &start)
+	}
+	info, err := m.create(ctx, params, takeDisk)
+	if takeDisk {
+		// Started or not, it has no disk now. The fork's machine has the memory file open (and mapped), so it keeps it.
+		if derr := m.DeleteSnapshot(snapID); derr != nil {
+			m.log.Warn("deleting a live fork's snapshot", "snapshot", snapID, "error", derr)
+		}
+		// Its memory, in RAM, was never queued for the disk. A fork that started maps it, which keeps the RAM in use until
+		// its machine exits, so the spool counts it until then.
+		if spooled != "" {
+			if err != nil {
+				m.spool.cancel(spooled)
+			} else {
+				m.keepMapped(p.NewID, spooled)
+			}
+		}
+	}
 	if err != nil {
 		return info, err
 	}
@@ -2463,20 +2633,25 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info.Timings = t
 	info.Source = "fork"
+	// At info: the control plane keeps no host timings, so a host's log is where a slow fork can be taken apart.
+	m.log.Info("fork", "sandbox", p.NewID, "from", p.SandboxID, "size", src.meta.Size, "timings", t)
 	return info, nil
 }
 
 // liveSnapshot snapshots a running sandbox (memory and disk) and lets it carry on. Called with s.mu held.
-func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings) error {
+//
+// transient is a snapshot deleted once used (a live fork's): memory spooled to RAM isn't queued for the disk, and its
+// spool file is returned for the caller to cancel once the snapshot has gone.
+func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings, transient bool) (spooled string, err error) {
 	// Before anything is written: the ID is joined under snapshots/, so one such as ../sandboxes/<id>/vm would put this
 	// sandbox's disk into another's.
 	if !validID(snap.ID) {
-		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+		return "", &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
 	}
 	start := time.Now()
 	sdir := m.snapshotDir(snap.ID)
 	if err := os.MkdirAll(sdir, 0o700); err != nil {
-		return err
+		return "", err
 	}
 	_ = s.guest.Sync(ctx)
 	t.step("sync", &start)
@@ -2484,35 +2659,52 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	// with EOF (seen after a live fork). Drop them so the next call dials afresh.
 	s.guest.Close()
 	if err := s.machine.Pause(ctx); err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		_ = s.machine.Resume(context.Background())
 		s.guest.Close()
 		t.step("resume", &start)
 	}()
-	memWrite, memDone := m.memFile(s.meta.Size, filepath.Join(sdir, "mem"))
+	mem := filepath.Join(sdir, "mem")
+	memWrite, memDone := m.memFile(s.meta.Size, mem)
+	if transient && memWrite != mem {
+		spooled = memWrite
+		memDone = func(ok bool) error {
+			if !ok {
+				m.spool.cancel(spooled)
+				return nil
+			}
+			return os.Symlink(spooled, mem)
+		}
+	}
 	if err := s.machine.Snapshot(ctx, filepath.Join(sdir, "state"), memWrite); err != nil {
 		_ = memDone(false)
 		os.RemoveAll(sdir)
-		return err
+		return "", err
+	}
+	fail := func(err error) (string, error) {
+		os.RemoveAll(sdir)
+		m.spool.cancel(spooled)
+		return "", err
 	}
 	if err := memDone(true); err != nil {
-		os.RemoveAll(sdir)
-		return err
+		return fail(err)
 	}
 	t.step("snapshot", &start)
 	if err := copySparse(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile)); err != nil {
-		os.RemoveAll(sdir)
-		return err
+		return fail(err)
 	}
 	if err := keepDrives(s.vmDir(), sdir, s.meta.BundleSlots); err != nil {
-		os.RemoveAll(sdir)
-		return err
+		return fail(err)
 	}
 	t.step("disk", &start)
-	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile)) + diskUsage(filepath.Join(sdir, "mem"))
-	return m.writeSnapshotMeta(s, snap)
+	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile)) + diskUsage(mem)
+	// Transient before the fork can take its disk: a host restarting in between must find it is no snapshot to keep.
+	if err := m.writeSnapshotMetaAs(s, snap, transient); err != nil {
+		return fail(err)
+	}
+	return spooled, nil
 }
 
 type snapshotMeta struct {
@@ -2527,6 +2719,10 @@ type snapshotMeta struct {
 	// restored from it gets the same, from the links in the snapshot's directory.
 	BundleDrives int      `json:"bundleDrives,omitempty"`
 	BundleSlots  []string `json:"bundleSlots,omitempty"`
+	// Transient is a live fork's own snapshot (Fork): its disk is moved into the fork and it is deleted once the fork
+	// has started. It is in no sandbox's history (snapshotsOf), and one a previous run left is deleted when the host
+	// starts (reapTransientSnapshots), since its disk may be gone.
+	Transient bool `json:"transient,omitempty"`
 }
 
 func (m *Manager) snapshotDir(id string) string {
@@ -2534,11 +2730,16 @@ func (m *Manager) snapshotDir(id string) string {
 }
 
 func (m *Manager) writeSnapshotMeta(s *sandbox, snap *proto.SnapshotInfo) error {
+	return m.writeSnapshotMetaAs(s, snap, false)
+}
+
+// writeSnapshotMetaAs is writeSnapshotMeta, marking the snapshot transient (snapshotMeta.Transient) or not.
+func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, transient bool) error {
 	// The sandbox's base is now the snapshot's too: recorded under the base lock.
 	defer m.holdBases()()
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
-	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest}
+	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest, Transient: transient}
 	if snap.Memory {
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
 	}
@@ -2595,7 +2796,7 @@ func (m *Manager) snapshotsOf(sandboxID string) []snapshotMeta {
 	var out []snapshotMeta
 	for _, e := range entries {
 		snap, err := m.readSnapshot(e.Name())
-		if err == nil && (sandboxID == "" || snap.SandboxID == sandboxID) {
+		if err == nil && !snap.Transient && (sandboxID == "" || snap.SandboxID == sandboxID) {
 			out = append(out, snap)
 		}
 	}
@@ -2664,7 +2865,8 @@ func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (pro
 	switch s.meta.State {
 	case proto.StateRunning:
 		snap.Memory = true
-		return snap, m.liveSnapshot(ctx, s, &snap, timings{})
+		_, err := m.liveSnapshot(ctx, s, &snap, timings{}, false)
+		return snap, err
 	case proto.StateStopped:
 		snap.Memory = s.meta.Memory
 		return snap, m.saveSnapshot(s, &snap, false)
