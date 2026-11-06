@@ -4156,11 +4156,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
 			await mounts.forgetBundle(bundle);
 		}
-		// Its hosts: a revoke that can't be made fails the pass, to be made again.
-		for (const host of await ensureHosts()) {
-			if (host.accountId === accountId && host.state !== "revoked") await revokeStoredHost(host);
-		}
+		// Its templates before its hosts: a template cache's bytes go only over its host's connection, which revoking the
+		// host ends for good. So the pass waits (fails, to be made again) while an entry on a host of the account's that is
+		// connected is still being removed; one on a host that isn't connected can't be removed either way.
 		await templates.retireAccount(accountId);
+		const own = (await ensureHosts()).filter((host) => host.accountId === accountId && host.state !== "revoked");
+		if (own.length > 0) {
+			const connected = await connectedHosts();
+			const ownIds = new Set(own.map((host) => host.id));
+			const waiting = (await store.templateSnapshots.list({ accountId })).filter(
+				(entry) => entry.hostId !== undefined && ownIds.has(entry.hostId) && connected.has(entry.hostId),
+			);
+			if (waiting.length > 0) {
+				throw new KantelError("unavailable", "The account's template caches are still being removed from its hosts");
+			}
+		}
+		// Its hosts: a revoke that can't be made fails the pass, to be made again.
+		for (const host of own) await revokeStoredHost(host);
 		for (const source of await store.bucketSources.list({ accountId })) await store.bucketSources.delete(source.id);
 		for (const invite of await store.invites.list({ accountId })) await store.invites.delete(invite.id);
 		for (const webhook of await store.webhooks.list({ accountId })) await store.webhooks.delete(webhook.id);

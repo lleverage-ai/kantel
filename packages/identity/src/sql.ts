@@ -591,16 +591,23 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		// Their own subject already: a first sign-in racing this one made them with it after this one's subject lookup.
 		// Never recorded twice, or the subject would match two rows and `canSignIn` would count it ambiguous.
 		if (user.user.externalSubject === externalSubject) return user;
+		// Only while the user is there, in the same statement: a link and the user's deletion never pass each other (on
+		// Postgres the user's row is held for it; the deletion removes the row before its subjects, so it waits for this
+		// link and then removes it, or this one finds the user gone).
+		let linked: readonly unknown[];
 		try {
-			await driver.query(
-				"INSERT INTO identity_user_subjects (external_subject, user_id, issuer, created_at) VALUES (?, ?, ?, ?)",
-				[externalSubject, user.user.id, issuer, clock.now()],
+			linked = await driver.query(
+				`INSERT INTO identity_user_subjects (external_subject, user_id, issuer, created_at)
+				SELECT ?, id, ?, ? FROM identity_users WHERE id = ?${driver.dialect === "postgres" ? " FOR SHARE" : ""}
+				RETURNING external_subject`,
+				[externalSubject, issuer, clock.now(), user.user.id],
 			);
 		} catch (error) {
 			const holder = await userBySubject(externalSubject).catch(() => undefined);
 			if (holder !== undefined) return holder;
 			throw error;
 		}
+		if (linked.length === 0) throw forbidden("no user matches this sign-in");
 		// Not when the sign-in has just made or linked the user, which it audited.
 		if (options.audit === false) return user;
 		await emit(
@@ -1716,12 +1723,14 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			const organisationIds = held.map((row) => String(row.organisation_id));
 			// The person first, in one batch, so nobody signs in as them from here on: a role a failure below leaves behind
 			// names a user nobody can sign in as.
+			// The user's row first: a link waiting on it (`linkAnother`) then finds them gone, and one that held it has
+			// committed by now and goes with the subjects below.
 			await driver.batch([
+				sql("DELETE FROM identity_users WHERE id = ?", userId),
 				sql("DELETE FROM identity_user_subjects WHERE user_id = ?", userId),
 				sql("DELETE FROM identity_user_preferences WHERE user_id = ?", userId),
 				sql("DELETE FROM identity_invites WHERE accepted_by = ?", userId),
 				...(email === undefined ? [] : [sql("DELETE FROM identity_invites WHERE email_normalised = ?", email)]),
-				sql("DELETE FROM identity_users WHERE id = ?", userId),
 			]);
 			// Each organisation's roles move on with the delete, as a revocation's do, so a grant checked before it can't
 			// land after it. A grant that lands meanwhile fails the batch, and the delete reads the version again.
