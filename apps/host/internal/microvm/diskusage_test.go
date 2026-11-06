@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
@@ -54,6 +55,14 @@ func TestDiskBreakdownCountsEachFileOnce(t *testing.T) {
 	}
 	saved := snapshot("snap_saved", "saved")
 	file(filepath.Join(saved, "disk.ext4"), 6<<20)
+	// A kept copy of the automatic snapshot: its disk linked, its memory (the sandbox's) too.
+	kept := snapshot("snap_kept", "saved")
+	if err := os.Link(filepath.Join(auto, "disk.ext4"), filepath.Join(kept, "disk.ext4")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(mem, filepath.Join(kept, "mem")); err != nil {
+		t.Fatal(err)
+	}
 
 	seen := fsutil.NewSeen()
 	bundles := fsutil.Allocated(bundle, seen)
@@ -66,9 +75,28 @@ func TestDiskBreakdownCountsEachFileOnce(t *testing.T) {
 	}
 	// The automatic snapshot's memory is the sandbox's, its bundle drive the cache's; both kinds count as snapshots,
 	// which the control plane splits by its own records.
-	want := allocated(filepath.Join(auto, "disk.ext4")) + allocated(filepath.Join(auto, "meta.json")) + allocated(saved)
+	disk := allocated(filepath.Join(auto, "disk.ext4"))
+	meta := func(dir string) int64 { return allocated(filepath.Join(dir, "meta.json")) }
+	want := disk + meta(auto) + allocated(saved) + meta(kept)
 	if got.Snapshots != want {
 		t.Fatalf("snapshots are %d bytes, want %d", got.Snapshots, want)
+	}
+	// By snapshot, the same files: the linked disk is shared by the automatic one and its copy, the memory is in
+	// neither (the sandbox's).
+	if got.SnapshotOwn["snap_auto"] != meta(auto) || got.SnapshotOwn["snap_kept"] != meta(kept) ||
+		got.SnapshotOwn["snap_saved"] != allocated(saved) {
+		t.Fatalf("own bytes: %+v", got.SnapshotOwn)
+	}
+	if len(got.SnapshotShared) != 1 || got.SnapshotShared[0].Bytes != disk ||
+		strings.Join(got.SnapshotShared[0].Snapshots, ",") != "snap_auto,snap_kept" {
+		t.Fatalf("shared: %+v", got.SnapshotShared)
+	}
+	var split int64
+	for _, n := range got.SnapshotOwn {
+		split += n
+	}
+	if split+got.SnapshotShared[0].Bytes != got.Snapshots {
+		t.Fatalf("the split adds up to %d, not %d", split+got.SnapshotShared[0].Bytes, got.Snapshots)
 	}
 	if bundles == 0 {
 		t.Fatal("the bundle image counted nothing")

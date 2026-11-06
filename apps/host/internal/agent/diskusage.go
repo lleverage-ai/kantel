@@ -70,6 +70,7 @@ func (h *Host) measureDisk() proto.DiskUsage {
 		out.TemplatesBytes = b.Templates
 		out.SandboxesBytes = b.Sandboxes
 		out.SnapshotsBytes = b.Snapshots
+		out.SnapshotOwnBytes, out.SnapshotShared = b.SnapshotOwn, b.SnapshotShared
 	}
 	// An isolate's workspace and snapshots are its sandbox's.
 	out.SandboxesBytes += fsutil.Allocated(filepath.Join(h.cfg.Root, "isolate"), seen)

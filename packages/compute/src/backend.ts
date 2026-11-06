@@ -38,6 +38,12 @@ export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
  */
 export type BackendDiskUsage = Omit<computeSchema.HostDiskUsage, "savedSnapshotsBytes" | "automaticSnapshotsBytes"> & {
 	readonly snapshotsBytes: number;
+	/**
+	 * `snapshotsBytes` by snapshot, counting the same files: each ref's files no other holds, and the files several
+	 * hold, by their refs. Absent: the backend doesn't say, and the split goes by the records' sizes.
+	 */
+	readonly snapshotOwnBytes?: { readonly [ref: string]: number };
+	readonly snapshotShared?: readonly SharedSnapshotBytes[];
 };
 
 /** A size a deployment offers for microVMs, and the resources it stands for. */

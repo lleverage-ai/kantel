@@ -16,6 +16,7 @@
  */
 import {
 	type BackendCapabilities,
+	type BackendDiskUsage,
 	type BackendEgress,
 	type BackendFileEntry,
 	type BackendHost,
@@ -48,6 +49,7 @@ import {
 	FILE_STREAM_WINDOW_BYTES,
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
+	type HostDiskUsage,
 	type HostEgress,
 	type HostExecParams,
 	type HostExecRef,
@@ -239,6 +241,22 @@ interface HostSnapshot {
 }
 
 /** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
+/** A host's disk measure as the compute service takes it (`BackendDiskUsage`): its split by snapshot named by ref. */
+function diskByRef(hostId: string, usage: HostDiskUsage): BackendDiskUsage {
+	const { snapshotOwnBytes, snapshotShared, ...rest } = usage;
+	if (snapshotOwnBytes === undefined) return { ...rest };
+	return {
+		...rest,
+		snapshotOwnBytes: Object.fromEntries(
+			Object.entries(snapshotOwnBytes).map(([id, bytes]) => [`${hostId}/${id}`, bytes]),
+		),
+		snapshotShared: (snapshotShared ?? []).map((group) => ({
+			refs: group.snapshots.map((id) => `${hostId}/${id}`),
+			bytes: group.bytes,
+		})),
+	};
+}
+
 const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
 	ref: `${hostId}/${snap.id}`,
 	sizeBytes: snap.sizeBytes,
@@ -743,7 +761,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					features: [...host.features],
 					capacity: { ...host.capacity },
 					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
-					...(host.diskUsage === undefined ? {} : { diskUsage: { ...host.diskUsage } }),
+					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },

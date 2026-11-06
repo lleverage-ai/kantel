@@ -433,6 +433,13 @@ export interface HostDiskUsage {
 	readonly totalBytes: number;
 	readonly usedBytes: number;
 	readonly snapshotsBytes: number;
+	/**
+	 * `snapshotsBytes` by snapshot, the same files: each one's that no other holds, by its ID, and those several hold, by
+	 * their holders (`HostSharedBytes`). The compute plane counts for saved what its saved snapshots hold, each group
+	 * once.
+	 */
+	readonly snapshotOwnBytes?: { readonly [snapshotId: string]: number };
+	readonly snapshotShared?: readonly { readonly snapshots: readonly string[]; readonly bytes: number }[];
 	readonly sandboxesBytes: number;
 	readonly imagesBytes: number;
 	readonly templatesBytes: number;

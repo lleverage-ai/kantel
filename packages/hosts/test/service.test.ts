@@ -211,6 +211,8 @@ describe("hosts service", () => {
 			totalBytes: 1_000,
 			usedBytes: 700,
 			snapshotsBytes: 300,
+			snapshotOwnBytes: { snap_a: 200, snap_b: 40 },
+			snapshotShared: [{ snapshots: ["snap_a", "snap_b"], bytes: 60 }],
 			sandboxesBytes: 250,
 			imagesBytes: 50,
 			templatesBytes: 30,

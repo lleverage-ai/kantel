@@ -914,7 +914,7 @@ What takes the space on a host's disk, as the host measured it last (every few m
 | --- | --- | --- | --- |
 | `totalBytes` | integer | yes | The size of the filesystem that holds the host's files. (minimum 0) |
 | `usedBytes` | integer | yes | What is used on it, by anything. (minimum 0) |
-| `savedSnapshotsBytes` | integer | yes | Saved snapshots: what every account's saved snapshots on the host take, by their `sizeBytes` (each set of bytes once), at most the host's snapshots in all. (minimum 0) |
+| `savedSnapshotsBytes` | integer | yes | Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, each file once. (minimum 0) |
 | `automaticSnapshotsBytes` | integer | yes | The rest of the host's snapshots: automatic ones, and any Kantel has no record of. (minimum 0) |
 | `sandboxesBytes` | integer | yes | Sandboxes' own disks, and their memory while they're stopped. (minimum 0) |
 | `imagesBytes` | integer | yes | Base images: the guest kernel and root filesystems, and templates' root filesystems. (minimum 0) |

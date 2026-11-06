@@ -40,6 +40,23 @@ func OnFilesystemOf(path string) *Seen {
 // isn't there is 0.
 func Allocated(path string, seen *Seen) int64 {
 	var total int64
+	Each(path, seen, func(id FileID, bytes int64) {
+		if seen != nil {
+			seen.Add(id)
+		}
+		total += bytes
+	})
+	return total
+}
+
+// Add counts a file as seen.
+func (s *Seen) Add(id FileID) { s.files[id] = true }
+
+// Each calls each with every regular file under path not in seen and on seen's filesystem (as Allocated counts them),
+// once, with the blocks it has allocated, without adding it to seen: a caller that splits files among several holders
+// adds them once it has. Names a skip leaves out (bundle drives in a snapshot, say). seen may be nil.
+func Each(path string, seen *Seen, each func(id FileID, bytes int64), skip ...func(name string) bool) {
+	visited := map[FileID]bool{}
 	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -61,15 +78,17 @@ func Allocated(path string, seen *Seen) int64 {
 		if dir {
 			return nil
 		}
-		id := FileID{uint64(st.Dev), st.Ino}
-		if seen != nil {
-			if seen.files[id] {
+		for _, leave := range skip {
+			if leave(d.Name()) {
 				return nil
 			}
-			seen.files[id] = true
 		}
-		total += st.Blocks * 512
+		id := FileID{uint64(st.Dev), st.Ino}
+		if visited[id] || (seen != nil && seen.files[id]) {
+			return nil
+		}
+		visited[id] = true
+		each(id, st.Blocks*512)
 		return nil
 	})
-	return total
 }

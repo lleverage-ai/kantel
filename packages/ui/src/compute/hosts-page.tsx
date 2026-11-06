@@ -771,6 +771,19 @@ function AddHostBody({
 	);
 }
 
+/**
+ * A limit's bytes as GB to edit, unrounded, so that reading it back (`limitBytes`) gives the same bytes: the shortest
+ * decimal that does, never in exponent form.
+ */
+export function limitText(bytes: number): string {
+	const gb = bytes / 1024 ** 3;
+	for (let places = 0; places <= 12; places += 1) {
+		const text = gb.toFixed(places);
+		if (limitBytes(text) === bytes) return text;
+	}
+	return gb.toFixed(12);
+}
+
 /** The bytes a limit in GB as typed is: a whole or decimal number of GB. Undefined when it isn't one. */
 export function limitBytes(text: string): number | undefined {
 	const trimmed = text.trim();
@@ -792,11 +805,7 @@ function SnapshotLimitDialog({
 	const [text, setText] = useState<string>();
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
-	const shown =
-		text ??
-		(host?.savedSnapshotLimitBytes === undefined
-			? ""
-			: String(Math.round((host.savedSnapshotLimitBytes / 1024 ** 3) * 10) / 10));
+	const shown = text ?? (host?.savedSnapshotLimitBytes === undefined ? "" : limitText(host.savedSnapshotLimitBytes));
 	const close = () => {
 		setText(undefined);
 		setFailure(undefined);
@@ -817,7 +826,11 @@ function SnapshotLimitDialog({
 		);
 	};
 	const submit = () => {
-		const bytes = limitBytes(shown);
+		// Unchanged: the limit it has, byte for byte.
+		const bytes =
+			text === undefined && host?.savedSnapshotLimitBytes !== undefined
+				? host.savedSnapshotLimitBytes
+				: limitBytes(shown);
 		if (bytes === undefined) {
 			setFailure("Enter a number of GB, such as 50.");
 			return;

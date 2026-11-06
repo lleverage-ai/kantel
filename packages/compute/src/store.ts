@@ -12,7 +12,7 @@
  */
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
+import type { BackendDiskUsage, SandboxTemplateBoot, SharedSnapshotBytes } from "./backend.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /** One kind of record. */
@@ -468,8 +468,24 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 	readonly accountId: string;
 };
 
-/** A host, its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`). */
-export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & { readonly diskUsage?: BackendDiskUsage };
+/**
+ * How a host's snapshots share their files, by ref, as it last said: a refresh (`recordSnapshotSizes`), with each
+ * save's answer since patched in (`withTaken`). `own`: each ref's files no other holds; `shared`: the files several
+ * hold, by their refs. A host's limit on saved bytes counts by it (`retainedBytes`).
+ */
+export interface SnapshotFileLayout {
+	readonly own: { readonly [ref: string]: number };
+	readonly shared: readonly SharedSnapshotBytes[];
+}
+
+/**
+ * A host: its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`), and how
+ * its snapshots share their files (`snapshotFiles`), never answered.
+ */
+export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
+	readonly diskUsage?: BackendDiskUsage;
+	readonly snapshotFiles?: SnapshotFileLayout;
+};
 
 export interface StoredJoinToken {
 	readonly id: string;

@@ -309,11 +309,16 @@ type DiskUsage struct {
 	TotalBytes     int64 `json:"totalBytes"`
 	UsedBytes      int64 `json:"usedBytes"`
 	SnapshotsBytes int64 `json:"snapshotsBytes"`
-	SandboxesBytes int64 `json:"sandboxesBytes"`
-	ImagesBytes    int64 `json:"imagesBytes"`
-	TemplatesBytes int64 `json:"templatesBytes"`
-	BundlesBytes   int64 `json:"bundlesBytes"`
-	OtherBytes     int64 `json:"otherBytes"`
+	// SnapshotOwnBytes and SnapshotShared split SnapshotsBytes by snapshot, counting the same files: each snapshot's
+	// that no other holds (by ID), and those several hold, by their holders. The control plane counts for saved what its
+	// saved snapshots hold, each group once, and the rest for automatic.
+	SnapshotOwnBytes map[string]int64 `json:"snapshotOwnBytes,omitempty"`
+	SnapshotShared   []SharedBytes    `json:"snapshotShared,omitempty"`
+	SandboxesBytes   int64            `json:"sandboxesBytes"`
+	ImagesBytes      int64            `json:"imagesBytes"`
+	TemplatesBytes   int64            `json:"templatesBytes"`
+	BundlesBytes     int64            `json:"bundlesBytes"`
+	OtherBytes       int64            `json:"otherBytes"`
 	// MeasuredAt is when it was measured (Unix milliseconds).
 	MeasuredAt int64 `json:"measuredAt"`
 }

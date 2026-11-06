@@ -1008,7 +1008,7 @@ export interface HostDiskUsage {
 	readonly totalBytes: number;
 	/** What is used on it, by anything. */
 	readonly usedBytes: number;
-	/** Saved snapshots: what every account's saved snapshots on the host take, by their `sizeBytes` (each set of bytes once), at most the host's snapshots in all. */
+	/** Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, each file once. */
 	readonly savedSnapshotsBytes: number;
 	/** The rest of the host's snapshots: automatic ones, and any Kantel has no record of. */
 	readonly automaticSnapshotsBytes: number;
