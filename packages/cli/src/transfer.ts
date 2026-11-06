@@ -643,7 +643,7 @@ export async function uploadTreeArchive(
 		// directory it was moving files through go too. Not after a push that worked, which removed both itself.
 		const leftovers = placed
 			? ""
-			: `; rm -rf ${stage}; find ${into} -name .kantel-in-${id} -type d -prune -exec rm -rf {} + 2>/dev/null`;
+			: `; rm -rf ${stage}; find -L ${into} -name .kantel-in-${id} -type d -prune -exec rm -rf {} + 2>/dev/null`;
 		await run(client, sandboxId, `rm -f ${glob}${leftovers}; true`).catch(() => undefined);
 	}
 	for (const path of sent) onFile?.(remoteJoin(target, path));

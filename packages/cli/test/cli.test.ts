@@ -1471,7 +1471,7 @@ describe("copying files", () => {
 		expect(result.stderr).toContain("sending file by file");
 		expect(result.written.filter((path) => path === "app/a.ts")).toHaveLength(1);
 		expect(commands.at(-1)).toMatch(
-			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find \/home\/user\/app -name \.kantel-in-\1 /,
+			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find -L \/home\/user\/app -name \.kantel-in-\1 /,
 		);
 	});
 
@@ -1514,7 +1514,7 @@ describe("copying files", () => {
 		expect(result.code).not.toBe(0);
 		expect(writes).toBeGreaterThan(0);
 		expect(result.commands.at(-1)).toMatch(
-			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find \/home\/user\/app -name \.kantel-in-\1 /,
+			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find -L \/home\/user\/app -name \.kantel-in-\1 /,
 		);
 	});
 
