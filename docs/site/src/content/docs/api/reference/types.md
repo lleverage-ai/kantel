@@ -1634,6 +1634,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
 | `sizeBytes` | integer | no |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 

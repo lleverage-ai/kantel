@@ -1705,6 +1705,8 @@ export const Snapshot = Type.Object(
 		resources: Type.Optional(SandboxResources),
 		sizeBytes: Type.Optional(Type.Integer()),
 		createdAt: Timestamp,
+		// Who saved or took it: absent for an automatic one, and for one saved before this was kept.
+		createdBy: Type.Optional(CreatedBy),
 		expiresAt: Type.Optional(Timestamp),
 		base: Type.Optional(SandboxBase),
 	},

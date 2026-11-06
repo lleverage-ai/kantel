@@ -391,7 +391,7 @@ function SavedList({
 										<span className="text-fg" title={new Date(entry.createdAt).toLocaleString("en-GB")}>
 											{compactAge(entry.createdAt, now)}
 										</span>
-										<span className={cellSub}>by {entry.createdBy}</span>
+										{entry.createdBy === undefined ? null : <span className={cellSub}>by {entry.createdBy}</span>}
 									</td>
 									<td className={`${td} text-right tabular-nums`} data-phone="pair">
 										{entry.uses.toLocaleString("en-GB")}

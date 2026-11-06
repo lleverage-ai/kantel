@@ -981,7 +981,8 @@ export interface SavedSnapshot {
 	readonly sandboxName: string;
 	readonly kind: SandboxKind;
 	readonly createdAt: number;
-	readonly createdBy: string;
+	/** Who saved it: unknown for one saved before Kantel kept that. */
+	readonly createdBy?: string;
 	readonly sizeBytes: number;
 	/** Sandboxes started from it. */
 	readonly uses: number;

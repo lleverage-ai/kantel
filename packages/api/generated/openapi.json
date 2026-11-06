@@ -16165,6 +16165,9 @@
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
 					},
+					"createdBy": {
+						"$ref": "#/components/schemas/CreatedBy"
+					},
 					"expiresAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."

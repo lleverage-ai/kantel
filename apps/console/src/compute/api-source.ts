@@ -1168,8 +1168,8 @@ function savedSnapshotOf(snapshot: Snapshot, sandboxName: string): UiSavedSnapsh
 		sandboxName,
 		kind: snapshot.sandboxType,
 		createdAt: snapshot.createdAt,
-		// The API doesn't say who saved a snapshot.
-		createdBy: "",
+		// One saved before the API kept who saved it doesn't say.
+		...(snapshot.createdBy === undefined ? {} : { createdBy: actorName(snapshot.createdBy) }),
 		// The API leaves the size out while it is unknown.
 		sizeBytes: snapshot.sizeBytes ?? 0,
 		// The API doesn't count the sandboxes started from a snapshot.
