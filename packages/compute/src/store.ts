@@ -845,6 +845,9 @@ export function joinTokenSpender(store: ComputeStore) {
 	};
 }
 
+/** Personal accounts made for a person get this, then their user ID (`personalAccountIdOf` in auth.ts). */
+export const PERSONAL_ACCOUNT_PREFIX = "acc_p_";
+
 /** Refused: the account a write is for has closed (its person deleted their account) or gone. */
 export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
 
@@ -905,10 +908,48 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 			},
 		};
 	}
+	/**
+	 * A person's records (their user, their memberships, the personal account first made for them), fenced against their
+	 * account deletion: one put or inserted for someone whose deletion is recorded is taken out again and refused. Checked
+	 * once written, so of a write and the deletion's record, one always sees the other: the write finds the deletion, or
+	 * the deletion's passes find the write. Only new writes: the deletion's own updates (closing the account) go through.
+	 */
+	function retired<T extends { readonly id: string }>(
+		collection: Collection<T>,
+		personOf: (record: T) => string | undefined,
+	): Collection<T> {
+		const check = async (record: T): Promise<void> => {
+			const userId = personOf(record);
+			if (userId === undefined || (await store.deletions.get(userId)) === undefined) return;
+			await collection.delete(record.id).catch(() => false);
+			throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
+		};
+		return {
+			get: (id) => collection.get(id),
+			list: (where) => collection.list(where),
+			delete: (id) => collection.delete(id),
+			deleteIf: (id, should) => collection.deleteIf(id, should),
+			update: (id, change, expected) => collection.update(id, change, expected),
+			async put(record) {
+				await collection.put(record);
+				await check(record);
+			},
+			async insert(record) {
+				const inserted = await collection.insert(record);
+				if (inserted) await check(record);
+				return inserted;
+			},
+		};
+	}
 	const byAccount = <T extends { readonly accountId?: string }>(record: T) => record.accountId;
 	const isAccount = <T extends { readonly id: string }>(record: T) => record.id;
 	return {
 		...store,
+		users: retired(store.users, (user) => user.id),
+		members: retired(store.members, (member) => member.userId),
+		accounts: retired(store.accounts, (account) =>
+			account.id.startsWith(PERSONAL_ACCOUNT_PREFIX) ? account.id.slice(PERSONAL_ACCOUNT_PREFIX.length) : undefined,
+		),
 		environments: fenced(store.environments, byAccount),
 		bucketSources: fenced(store.bucketSources, byAccount),
 		webhooks: fenced(store.webhooks, byAccount),

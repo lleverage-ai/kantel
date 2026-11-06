@@ -9,8 +9,14 @@
 import type { computeSchema } from "@kantel/api";
 import { API_KEY_LAST_USED_PRECISION_MS, KantelError } from "@kantel/contracts";
 import { isPlaceholderName, personName } from "./names.ts";
-import type { ComputeStore, StoredAccount, StoredApiKey, StoredUser } from "./store.ts";
-import { randomId, randomSecret, sha256Hex } from "./util.ts";
+import {
+	type ComputeStore,
+	PERSONAL_ACCOUNT_PREFIX,
+	type StoredAccount,
+	type StoredApiKey,
+	type StoredUser,
+} from "./store.ts";
+import { randomSecret, sha256Hex } from "./util.ts";
 
 /** A signed-in person, as the host's authenticator reports them. */
 export interface PersonIdentity {
@@ -140,6 +146,12 @@ export function bearerOf(request: Request): string | undefined {
 	return match?.[1];
 }
 
+/**
+ * The ID of the personal account a person is given when first seen: theirs alone, so a deletion of theirs knows it
+ * without looking for it, however far a sign-in racing the deletion got.
+ */
+export const personalAccountIdOf = (userId: string): string => `${PERSONAL_ACCOUNT_PREFIX}${userId}`;
+
 /** A membership's ID. */
 export const memberId = (accountId: string, userId: string): string => `${accountId}:${userId}`;
 
@@ -189,7 +201,7 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 		return existing;
 	}
 	const account: StoredAccount = {
-		id: randomId("acc"),
+		id: personalAccountIdOf(identity.userId),
 		kind: "personal",
 		name,
 		defaultVisibility: "private",
@@ -203,8 +215,6 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 		createdAt: now,
 		...(identity.email === undefined ? {} : { email: identity.email }),
 	};
-	// The membership first: a personal account is always found by its person's memberships, however far this got (an
-	// account deletion clears every one it finds).
 	await store.members.put({
 		id: memberId(account.id, user.id),
 		accountId: account.id,
@@ -221,11 +231,6 @@ export interface AuthenticateOptions {
 	readonly store: ComputeStore;
 	readonly authenticatePerson?: AuthenticatePerson;
 	readonly now: number;
-	/**
-	 * A sign-in found its person's account deletion only once it had set them up (it began first): the deletion is
-	 * carried on again, durably, to clear what the sign-in made (`ComputeService.reopenDeletion`).
-	 */
-	readonly reopenDeletion?: (userId: string) => Promise<void>;
 }
 
 /**
@@ -295,13 +300,22 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	if ((await store.deletions.get(identity.userId)) !== undefined) {
 		throw new UnauthenticatedError("This account is being deleted");
 	}
-	const user = await ensurePerson(store, identity, now);
+	let user: StoredUser;
+	try {
+		user = await ensurePerson(store, identity, now);
+	} catch (error) {
+		// Refused by the store's fence (`fenceClosedAccounts`): their deletion was recorded as this ran.
+		if ((await store.deletions.get(identity.userId)) !== undefined) {
+			throw new UnauthenticatedError("This account is being deleted");
+		}
+		throw error;
+	}
 	// Checked again once made: a deletion that began as this sign-in ran leaves it nothing, not even what it just made
 	// (a personal account apart from the one the deletion clears, or the user record put back).
+	// Checked again once made: a deletion that began as this sign-in ran never gets a principal back. What the sign-in
+	// wrote is no one's to clear here: a write after the deletion was recorded undid itself (`fenceClosedAccounts`), and
+	// one before it is found by the deletion's passes (`personalAccountIdOf`).
 	if ((await store.deletions.get(identity.userId)) !== undefined) {
-		// What it made goes with the rest, by the deletion's next pass (which finds every personal account of theirs),
-		// not by this call, which could stop partway.
-		await options.reopenDeletion?.(identity.userId);
 		throw new UnauthenticatedError("This account is being deleted");
 	}
 	return {

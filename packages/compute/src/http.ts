@@ -235,7 +235,6 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 					store,
 					now: now(),
 					...(options.authenticatePerson === undefined ? {} : { authenticatePerson: options.authenticatePerson }),
-					reopenDeletion: (userId) => created.reopenDeletion(userId),
 				});
 				const answered = await router(principal, request);
 				if (answered !== undefined) return answered;

@@ -46,6 +46,7 @@ import {
 	newApiKeySecret,
 	type PersonPrincipal,
 	type Principal,
+	personalAccountIdOf,
 	requireGrantable,
 	requirePerson,
 	requireScope,
@@ -427,11 +428,6 @@ export interface ComputeService {
 	 * with none): for a deployment that wakes for them (`wakeAt`).
 	 */
 	carryOnDeletions(): Promise<number | undefined>;
-	/**
-	 * Carries a person's account deletion on again, due now, durably: a sign-in that set them up as it began has made
-	 * something its next pass must clear (a personal account, the user record).
-	 */
-	reopenDeletion(userId: string): Promise<void>;
 	/**
 	 * Counts a use of a sandbox toward its idle stop (`idleStopMinutes`): a relayed port stream opened or carrying bytes
 	 * (SSH, the desktop or browser, a hosted port's request or WebSocket). Cheap enough for every frame: it is kept in
@@ -4066,9 +4062,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			personalAccountId: job.personalAccountId,
 			...(job.email === undefined ? {} : { email: job.email }),
 		};
-		// Every personal account of theirs: the one the deletion began with, and any a sign-in racing it made (each found
-		// by its owner membership, which is written before its account).
-		const personal = new Set([job.personalAccountId]);
+		// Every personal account of theirs: the one the deletion began with, the one a sign-in racing it would make
+		// (`personalAccountIdOf`, written before the deletion was recorded, as one written after undid itself), and any other
+		// their memberships name.
+		const personal = new Set([job.personalAccountId, personalAccountIdOf(userId)]);
 		const memberships = await store.members.list({ userId });
 		for (const member of memberships) {
 			const account = await store.accounts.get(member.accountId);
@@ -7720,12 +7717,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const sandbox = await store.sandboxes.get(sandboxId);
 			if (sandbox === undefined || sandbox.state === "running" || sandbox.state === "deleted") return undefined;
 			return portNotRunningText(sandbox, apiBasePath);
-		},
-
-		async reopenDeletion(userId) {
-			// Running again, due now, whatever stage it had reached: its next pass clears what a racing sign-in made.
-			await store.deletions.update(userId, (current) => ({ ...current, stage: "running", dueAt: now() }));
-			await wakeForDeletions();
 		},
 
 		async carryOnDeletions() {

@@ -2,7 +2,7 @@ import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PersonIdentity } from "../src/auth.ts";
+import { type PersonIdentity, personalAccountIdOf } from "../src/auth.ts";
 import {
 	type BackendCapabilities,
 	DetachedWaitEnded,
@@ -2409,14 +2409,24 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 			return get(id);
 		};
 		expect((await failure(ann.getCaller())).status).toBe(401);
-		// The deletion is carried on again, due now, and its pass finds the account the sign-in made by its membership.
-		expect(await store.deletions.get("usr_ann")).toMatchObject({ stage: "running", dueAt: expect.any(Number) });
-		const made = await store.members.list({ userId: "usr_ann" });
-		expect(made).toHaveLength(1);
-		await finishDeletions(api, store);
+		// Each of its writes found the deletion once written and took itself out: nothing is left for anyone to clear.
 		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
-		expect(await store.accounts.get(made[0]?.accountId ?? "")).toBeUndefined();
+		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toBeUndefined();
 		expect(await store.users.get("usr_ann")).toBeUndefined();
+		// And had any landed before the deletion was recorded, its passes know the account to clear.
+		await store.deletions.update("usr_ann", (current) => ({ ...current, dueAt: 0 }));
+		await finishDeletions(api, store);
+	});
+
+	it("clears the personal account a racing sign-in would make, though no membership names it", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		await ann.deleteCaller();
+		// Written before the deletion was recorded, by a sign-in that stopped before its membership or user.
+		const stray = personalAccountIdOf("usr_ann");
+		await store.accounts.put({ id: stray, kind: "personal", name: "Ann", defaultVisibility: "private", createdAt: 0 });
+		await finishDeletions(api, store);
+		expect(await store.accounts.get(stray)).toBeUndefined();
 	});
 
 	it("clears a personal account a sign-in made and couldn't finish, found by its membership", async () => {
