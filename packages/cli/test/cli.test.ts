@@ -1469,6 +1469,34 @@ describe("copying files", () => {
 		expect(commands.at(-1)).toMatch(/^rm -f \/tmp\/\.kantel-push-[0-9a-f]{12}-\*$/);
 	});
 
+	it("push extracts where the files API would write, a `..` in the destination cleaned as text first", async () => {
+		for (const [to, where] of [
+			["/srv/link/../app", "/srv/app"],
+			["work/../app/", "/home/user/app"],
+		] as const) {
+			const dir = join(configDir, "app");
+			await mkdir(dir, { recursive: true });
+			await writeFile(join(dir, "a.ts"), "export {};\n");
+			const commands: string[] = [];
+			const result = await kantel(["push", "sbx_test1", "app", "--to", to], {
+				configDir: join(configDir, "kantel"),
+				routes: {
+					"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm" }),
+					"PUT /v1/sandboxes/sbx_test1/files": (call) => ({ path: (call.body as Written).path, size: 1 }),
+					"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+						commands.push((call.body as { command: string }).command);
+						return command({ exitCode: 0 });
+					},
+				},
+			});
+			expect(result.code).toBe(0);
+			expect(commands[0]).toContain(`mkdir -p ${where} && test -w ${where}`);
+			expect(commands[1]).toContain(`-C ${where}/.kantel-push-`);
+			expect(commands[1]).toContain(`' ${where} {} +`);
+			expect(commands.join("\n")).not.toContain("..");
+		}
+	});
+
 	it("push removes the parts it sent when sending one fails", async () => {
 		let writes = 0;
 		const result = await pushedToMicrovm({

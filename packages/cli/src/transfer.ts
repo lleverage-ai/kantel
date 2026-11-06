@@ -633,11 +633,11 @@ export async function uploadTreeArchive(
 }
 
 /**
- * A sandbox path as the files API resolves it, for a shell: a relative one under /home/user, as the files API puts it
- * (not the command account's $HOME, which on an image with no `user` is root's).
+ * A sandbox path as the files API resolves it (cleanPath: under /home/user unless absolute, then cleaned as text),
+ * for a shell. Cleaned here too, so the shell never walks a `..` through a link to somewhere the files API, which
+ * drops it first, wouldn't: every way in uses this one path.
  */
-const archiveTargetPath = (target: string): string =>
-	target.startsWith("/") ? target : posix.join("/home/user", target);
+const archiveTargetPath = (target: string): string => posix.resolve("/home/user", target);
 const archiveTarget = (target: string): string => quote(archiveTargetPath(target));
 
 /**
