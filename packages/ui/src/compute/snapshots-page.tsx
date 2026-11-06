@@ -304,7 +304,7 @@ function SavedList({
 	}
 	return (
 		<>
-			<TableFrame>
+			<TableFrame fill>
 				<table className={table}>
 					<thead>
 						<tr>
@@ -491,6 +491,7 @@ function BySandbox({
 				source={source}
 				sandbox={chosen}
 				now={now}
+				fill
 				onBrowse={(snap) => onBrowse(chosen, snap)}
 				onNotice={onNotice}
 			/>
@@ -503,12 +504,15 @@ export function SandboxHistory({
 	source,
 	sandbox,
 	now,
+	fill = false,
 	onBrowse,
 	onNotice,
 }: {
 	source: SnapshotsSource;
 	sandbox: Sandbox;
 	now: number;
+	/** The table fills the room its page leaves (TableFrame's `fill`): on Snapshots, not on a sandbox's own tab. */
+	fill?: boolean;
 	onBrowse: (snap: SandboxSnapshot) => void;
 	onNotice: NoticeSetter;
 }) {
@@ -534,7 +538,7 @@ export function SandboxHistory({
 	}
 	return (
 		<>
-			<TableFrame>
+			<TableFrame fill={fill}>
 				<table className={table}>
 					<thead>
 						<tr>

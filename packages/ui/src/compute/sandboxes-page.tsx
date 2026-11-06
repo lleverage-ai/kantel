@@ -21,6 +21,7 @@ import { ChevronDownIcon, ChevronRightIcon, GlobeIcon, PencilIcon, PlusIcon, Sto
 import { useLoad } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
+import { SideScroll } from "../primitives/side-scroll.tsx";
 import { SliderField } from "../primitives/slider.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
@@ -703,7 +704,7 @@ function SandboxList({
 			))}
 		</ul>
 	) : (
-		<div className="kt-compute-table min-w-0 overflow-x-auto">
+		<SideScroll className="kt-compute-table min-w-0" surface="canvas" fill>
 			<table className="w-full border-collapse text-left text-md">
 				<thead>
 					<tr>
@@ -777,11 +778,12 @@ function SandboxList({
 					))}
 				</tbody>
 			</table>
-		</div>
+		</SideScroll>
 	);
 	return (
-		// Select all sits right over the rows it ticks, closer to them than the page's gap.
-		<div className="flex min-w-0 flex-col gap-2">
+		// Select all sits right over the rows it ticks, closer to them than the page's gap. The table fills the room under
+		// the header and filters (`kt-fill`, base.css), so New and the filters stay in view down a long list.
+		<div className="kt-fill flex min-w-0 flex-col gap-2">
 			<SelectionBar
 				narrow={narrow}
 				count={selected.length}

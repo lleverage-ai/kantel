@@ -175,7 +175,7 @@ export function EgressLog({
 			</ul>
 		) : (
 			// Nothing in a row but a denial takes focus, so the frame does: it scrolls sideways on a narrow window.
-			<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Egress log">
+			<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Egress log" fill>
 				<table className={table}>
 					<thead>
 						<tr>
@@ -222,7 +222,7 @@ export function EgressLog({
 		);
 
 	return (
-		<div className="flex min-w-0 flex-col gap-3">
+		<div className="kt-fill flex min-w-0 flex-col gap-3">
 			{filters}
 			{body}
 		</div>

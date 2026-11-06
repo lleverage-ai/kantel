@@ -16,6 +16,7 @@ import { useLoad } from "../primitives/load.ts";
 import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu } from "../primitives/menu.tsx";
 import { CommandBlock } from "../primitives/one-time-secret.tsx";
+import { SideScroll } from "../primitives/side-scroll.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import {
@@ -259,7 +260,7 @@ function KeyList({
 	}
 
 	return (
-		<div className={tableFrame}>
+		<SideScroll className={tableFrame}>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -300,7 +301,7 @@ function KeyList({
 					</tbody>
 				)}
 			</table>
-		</div>
+		</SideScroll>
 	);
 }
 

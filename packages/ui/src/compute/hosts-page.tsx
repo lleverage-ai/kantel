@@ -17,6 +17,7 @@ import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "../primitives/icons
 import { useLoad } from "../primitives/load.ts";
 import { DownloadIcon, EllipsisIcon, PauseIcon, PlayIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
+import { SideScroll } from "../primitives/side-scroll.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { Badge, StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -271,7 +272,7 @@ export function HostsPage({
 							))}
 						</ul>
 					) : (
-						<div className={tableFrame}>
+						<SideScroll className={tableFrame}>
 							<table className={table}>
 								<thead>
 									<tr>
@@ -310,7 +311,7 @@ export function HostsPage({
 									))}
 								</tbody>
 							</table>
-						</div>
+						</SideScroll>
 					)}
 				</>
 			)}

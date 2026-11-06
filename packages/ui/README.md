@@ -85,6 +85,7 @@ centred on their text within 1px, and a story for every required state; `--only`
 | `TextField` | A labelled single-line input | |
 | `TextAreaField` | A labelled multi-line input, such as a webhook's description | |
 | `PageTabs` | A page's own views, each a link with its address (Egress's Log, Rules, Settings) | The app's pages (use `Sidebar` or `TabBar`); filters with no address (use `SegmentedControl`) |
+| `SideScroll` | Content wider than its column that scrolls sideways, such as a table with more columns than fit: its cut-off edges are shaded and its scrollbar stays at the bottom of the window; with `fill`, a list page's table that scrolls down under its header, with its header row stuck | A compute page's table (use `TableFrame`, which has one); tabs (`PageTabs` scrolls its own row) |
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu); a page's views with their own address (use `PageTabs`) |
 | `CheckboxField` | One on/off choice that takes effect with its form or decision | A setting that applies at once (use `Switch`) |
 | `Switch` | An on/off setting that applies the moment it changes | A choice that waits for a form's Save (use `CheckboxField`) |
