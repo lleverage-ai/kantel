@@ -176,6 +176,35 @@ describe("a host lost mid-call", () => {
 		await expect(service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-plain" })).rejects.toSatisfy(unanswered);
 	});
 
+	it("gives a snapshot of a running sandbox as long as a disk copy too", async () => {
+		const { service, host, hostId } = await setup(50);
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-saved" });
+		const backend = createHostBackend({
+			hosts: service,
+			publicUrl: "https://kantel.test",
+			tickets: createTunnelTickets(createMemoryRelayStore()),
+		});
+		// A live save writes the machine's memory and copies its disk: past the ordinary deadline.
+		host.hold = (method) =>
+			method === "snapshot.save" ? new Promise<void>((resolve) => setTimeout(resolve, 200)) : undefined;
+		const taken = await backend.takeSnapshot("sbx-saved");
+		expect(taken.ref).toMatch(new RegExp(`^${hostId}/`));
+		expect(host.snapshots.map((snapshot) => `${hostId}/${snapshot.id}`)).toContain(taken.ref);
+	});
+
+	it("gives a stop as long as a disk copy, since its automatic snapshot copies the disk", async () => {
+		const { service, host } = await setup(50);
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-stopped" });
+		const backend = createHostBackend({
+			hosts: service,
+			publicUrl: "https://kantel.test",
+			tickets: createTunnelTickets(createMemoryRelayStore()),
+		});
+		host.hold = (method) =>
+			method === "sandbox.stop" ? new Promise<void>((resolve) => setTimeout(resolve, 200)) : undefined;
+		await expect(backend.stop("sbx-stopped", { keepMemory: false })).resolves.toBeDefined();
+	});
+
 	it("says a start whose host went while it waited may have run, and one that never reached its host was refused", async () => {
 		const { service, host } = await setup();
 		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-start" });

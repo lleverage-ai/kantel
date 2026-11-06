@@ -64,6 +64,7 @@ import {
 } from "./protocol.ts";
 import {
 	type CreateSandboxInput,
+	DISK_COPY_TIMEOUT_MS,
 	type HostsService,
 	kantelErrorFromHost,
 	mountHandoff,
@@ -793,10 +794,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
 			// A stopped sandbox's ports stay exposed while it is stopped, so a request to one is told so and why (its idle
 			// stop, say) rather than that nothing is there; nothing reaches a stopped machine. They end when it boots again.
-			const snap = await call<HostSnapshot>(sandboxId, "sandbox.stop", {
-				snapshotId: snapshotId(),
-				memory: keepMemory,
-			});
+			// As long as a disk copy: a stop's automatic snapshot copies the whole disk. Given up on at 120 s, the stop
+			// failed here while the host went on and stopped it.
+			const snap = await call<HostSnapshot>(
+				sandboxId,
+				"sandbox.stop",
+				{ snapshotId: snapshotId(), memory: keepMemory },
+				undefined,
+				DISK_COPY_TIMEOUT_MS,
+			);
 			return takenOn(hostId, snap);
 		},
 		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
@@ -1126,7 +1132,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
-			const snap = await call<HostSnapshot>(sandboxId, "snapshot.save", { snapshotId: snapshotId() });
+			// As long as a fork: a live save writes the machine's memory and copies its whole disk. Given up on sooner, it
+			// went on and saved a snapshot no one knew the ID of.
+			const snap = await call<HostSnapshot>(
+				sandboxId,
+				"snapshot.save",
+				{ snapshotId: snapshotId() },
+				undefined,
+				DISK_COPY_TIMEOUT_MS,
+			);
 			return takenOn(hostId, snap);
 		},
 		async listSnapshotFiles(ref, path) {

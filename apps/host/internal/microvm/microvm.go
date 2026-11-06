@@ -316,7 +316,14 @@ type Manager struct {
 	builders sync.WaitGroup
 	// holdGrowth (tests) makes growDisk give up as a stop or a restart before it would: the growth stays pending.
 	holdGrowth atomic.Bool
-	spool      *spool
+	// statfs measures the file system a stop's snapshot goes on (roomForSnapshot): syscall.Statfs when nil, tests
+	// replace it.
+	statfs func(path string, st *syscall.Statfs_t) error
+	// snapshotRoom guards snapshotReserved: the bytes stops' automatic snapshots have been let copy and haven't
+	// finished copying, which the file system's free space doesn't show yet (roomForSnapshot).
+	snapshotRoom     sync.Mutex
+	snapshotReserved int64
+	spool            *spool
 	// inUse is held (read) from picking a template until restoring it, so a background rebuild swaps it in between
 	// creates (base.go): a named size's (made in New) or a shared template's (made on first use), by name.
 	inUse map[string]*sync.RWMutex
@@ -580,6 +587,8 @@ func New(cfg Config) (*Manager, error) {
 		_ = os.RemoveAll(dir)
 	}
 	_ = os.Remove(filepath.Join(cfg.Root, "pool"))
+	// Before anything reads them: disk copies the previous run left with no record (a crash, or a full disk).
+	m.reapUnpublished()
 	if err := m.adopt(); err != nil {
 		return nil, err
 	}
@@ -1061,8 +1070,15 @@ func hostname(id string) string {
 	return name
 }
 
-// copySparse copies a disk image, keeping holes (cp's SEEK_DATA/SEEK_HOLE).
+// copySparse copies a disk image, keeping holes: a reflink where the file system has them (XFS, btrfs), which shares
+// the source's blocks until either file is written and so takes no room yet, else cp's SEEK_DATA/SEEK_HOLE copy
+// (ext4 has no reflinks).
 func copySparse(src, dst string) error {
+	if exec.Command("cp", "--reflink=always", src, dst).Run() == nil {
+		return nil
+	}
+	// The failed reflink may have made dst (empty, or part written): the sparse copy starts from none.
+	_ = os.Remove(dst)
 	out, err := exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("copy %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
@@ -1476,6 +1492,68 @@ func (m *Manager) reapInterruptedCreates() {
 		}
 		m.log.Info("ended a create the host's previous run left unfinished", "sandbox", started.ID)
 	}
+}
+
+// reapUnpublished deletes, when the host starts, the sandbox and snapshot directories a previous run began and never
+// published: one with no meta.json. A snapshot's meta.json is written last (liveSnapshot, saveSnapshot), and a
+// create's first after its disk is copied (startMachine, restoreParallel), so a crash or a full disk in between leaves
+// a disk copy that adopt, reapInterruptedCreates and every listing pass over, which nothing would ever delete. One
+// whose meta.json is there but doesn't decode is left, with a warning: records are written durably now, but an older
+// host's could be torn, and that directory may hold a sandbox's only disk. Only at startup, when no create or snapshot
+// is under way, and only directories directly under sandboxes/ and snapshots/: their contents are removed without
+// following links (a sandbox's root filesystem and bundle drives, a snapshot's spooled memory), and a sandbox's
+// Firecracker, if one was launched, is ended first. Its network link, made before its record, is the one thing left:
+// the slot is known only from that record.
+func (m *Manager) reapUnpublished() {
+	for _, kind := range []string{"sandboxes", "snapshots"} {
+		root := filepath.Join(m.cfg.Root, kind)
+		entries, _ := os.ReadDir(root)
+		for _, e := range entries {
+			// A link, a file or a name no ID has isn't the host's to remove.
+			if !e.IsDir() || !validID(e.Name()) {
+				continue
+			}
+			dir := filepath.Join(root, e.Name())
+			raw, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+			if err == nil {
+				// Decoded as adopt and readSnapshot decode it.
+				var record any = &meta{}
+				if kind == "snapshots" {
+					record = &snapshotMeta{}
+				}
+				if json.Unmarshal(raw, record) != nil {
+					m.log.Warn("a record that doesn't decode; leaving its directory for an operator", "dir", dir, "bytes", dirUsage(dir))
+				}
+				continue
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				// Unreadable for another reason (an I/O error): it may be whole.
+				m.log.Warn("couldn't read a record; leaving its directory", "dir", dir, "error", err)
+				continue
+			}
+			if kind == "sandboxes" {
+				fc.KillLeftover(filepath.Join(dir, "vm"))
+			}
+			size := dirUsage(dir)
+			if err := os.RemoveAll(dir); err != nil {
+				m.log.Warn("an unpublished directory the host's previous run left", "dir", dir, "error", err)
+				continue
+			}
+			m.log.Info("deleted an unpublished directory the host's previous run left", "dir", dir, "bytes", size)
+		}
+	}
+}
+
+// dirUsage is what the files under dir take on disk, links not followed (a hard-linked file counted in full).
+func dirUsage(dir string) int64 {
+	var n int64
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			n += diskUsage(path)
+		}
+		return nil
+	})
+	return n
 }
 
 // reapTransientSnapshots deletes the live forks' snapshots (snapshotMeta.Transient) a previous run left: one whose fork
@@ -2413,6 +2491,8 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	m.emit(s)
 	snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: s.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: keepMemory, Tier: Tier}
 	if p.SnapshotID != "" {
+		// An error, not a stop answered without its snapshot: the control plane records the snapshot a stop answers
+		// as the sandbox's newest. The sandbox is stopped all the same, its disk and memory kept.
 		if err := m.saveSnapshot(s, &snap, true); err != nil {
 			return snap, err
 		}
@@ -2812,7 +2892,8 @@ func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, tran
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
 	}
 	raw, _ := json.MarshalIndent(sm, "", "  ")
-	return os.WriteFile(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
+	// Durably, by a rename, so a published snapshot's record is never left half written.
+	return fsutil.WriteFileDurably(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
 }
 
 func (m *Manager) readSnapshot(id string) (snapshotMeta, error) {
@@ -2828,17 +2909,29 @@ func (m *Manager) readSnapshot(id string) (snapshotMeta, error) {
 }
 
 // saveSnapshot keeps a stopped sandbox's state as a snapshot: its disk copied, its memory (if any) linked, since a
-// memory file is never written after it is made. Called with s.mu held.
+// memory file is never written after it is made. A stop's (fromStop) is refused, before anything is copied, when the
+// copy could fill the host's disk (roomForSnapshot). Called with s.mu held.
 func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bool) error {
 	if !validID(snap.ID) {
 		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
 	}
+	vm := s.vmDir()
+	release := func() {}
+	if fromStop {
+		var err error
+		if release, err = m.roomForSnapshot(s, filepath.Join(vm, fc.DiskFile)); err != nil {
+			return err
+		}
+	}
 	sdir := m.snapshotDir(snap.ID)
 	if err := os.MkdirAll(sdir, 0o700); err != nil {
+		release()
 		return err
 	}
-	vm := s.vmDir()
-	if err := copySparse(filepath.Join(vm, fc.DiskFile), filepath.Join(sdir, fc.DiskFile)); err != nil {
+	err := copySparse(filepath.Join(vm, fc.DiskFile), filepath.Join(sdir, fc.DiskFile))
+	// Copied (its blocks now show in the free space) or not: the reservation has done its job either way.
+	release()
+	if err != nil {
 		os.RemoveAll(sdir)
 		return err
 	}
@@ -2856,7 +2949,50 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 	if snap.Memory {
 		snap.SizeBytes += diskUsage(filepath.Join(sdir, "mem"))
 	}
-	return m.writeSnapshotMeta(s, snap)
+	if err := m.writeSnapshotMeta(s, snap); err != nil {
+		// Unpublished (a full disk, say): the copy is no snapshot, and nothing that lists snapshots would ever find it.
+		os.RemoveAll(sdir)
+		return err
+	}
+	return nil
+}
+
+// snapshotHeadroom is the free space an automatic snapshot on a stop leaves on the host's disk, beyond its copy of the
+// sandbox's disk: room for the other sandboxes' writes meanwhile.
+const snapshotHeadroom = 10 << 30
+
+// roomForSnapshot refuses a stop's snapshot when the file system it goes on has less free than the sandbox's disk
+// takes (its allocated blocks, which a sparse copy writes again) and snapshotHeadroom, counting the copies other stops
+// have been let make and haven't finished: copied, it would fill the disk every sandbox on the host writes to. Let
+// through, its copy's size is reserved until release is called, once the copy is done or has failed. A file system
+// that can't be measured is let through.
+func (m *Manager) roomForSnapshot(s *sandbox, disk string) (release func(), err error) {
+	statfs := m.statfs
+	if statfs == nil {
+		statfs = syscall.Statfs
+	}
+	size := diskUsage(disk)
+	m.snapshotRoom.Lock()
+	defer m.snapshotRoom.Unlock()
+	var st syscall.Statfs_t
+	if err := statfs(filepath.Join(m.cfg.Root, "snapshots"), &st); err != nil {
+		return func() {}, nil
+	}
+	free := int64(st.Bavail)*st.Bsize - m.snapshotReserved
+	need := size + snapshotHeadroom
+	if free < need {
+		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", need)
+		return nil, &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
+	}
+	m.snapshotReserved += size
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.snapshotRoom.Lock()
+			m.snapshotReserved -= size
+			m.snapshotRoom.Unlock()
+		})
+	}, nil
 }
 
 func (m *Manager) snapshotsOf(sandboxID string) []snapshotMeta {
