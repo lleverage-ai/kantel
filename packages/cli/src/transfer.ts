@@ -611,11 +611,17 @@ export async function uploadTreeArchive(
 		// upload() settles every part it started before it answers, failed or not, so nothing lands after the clean-up.
 		const [, parts] = await Promise.all([pack(), upload()]);
 		if (parts === 0) return { files: 0, bytes: 0 };
-		// The parts' names sort in order, so the glob joins them as they were cut.
+		// The parts' names sort in order, so the glob joins them as they were cut. The tar goes into a directory of its
+		// own inside the destination first, so one that fails part way (a full disk) leaves the destination as it was;
+		// then each file is linked into place, a file already there replaced by the whole new one (no space taken, and
+		// never a half-written file where a whole one was).
+		const into = archiveTarget(target);
+		const stage = quote(posix.join(archiveTargetPath(target), `.kantel-push-${staging.slice(-12)}`));
 		await run(
 			client,
 			sandboxId,
-			`cat ${glob} | tar -xzf - -C ${archiveTarget(target)} --no-same-owner --no-same-permissions`,
+			`mkdir ${stage} && cat ${glob} | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
+				`cp -al --remove-destination ${stage}/. ${into}/; s=$?; rm -rf ${stage}; exit $s`,
 			600_000,
 		);
 	} finally {
@@ -629,8 +635,9 @@ export async function uploadTreeArchive(
  * A sandbox path as the files API resolves it, for a shell: a relative one under /home/user, as the files API puts it
  * (not the command account's $HOME, which on an image with no `user` is root's).
  */
-const archiveTarget = (target: string): string =>
-	quote(target.startsWith("/") ? target : posix.join("/home/user", target));
+const archiveTargetPath = (target: string): string =>
+	target.startsWith("/") ? target : posix.join("/home/user", target);
+const archiveTarget = (target: string): string => quote(archiveTargetPath(target));
 
 /**
  * Whether a tree can go into `target` as an archive: the command account can make and write it, and write /tmp. A
@@ -640,7 +647,11 @@ const archiveTarget = (target: string): string =>
 async function archiveFits(client: KantelClient, sandboxId: string, target: string): Promise<boolean> {
 	const into = archiveTarget(target);
 	try {
-		await run(client, sandboxId, `mkdir -p ${into} && test -w ${into} && test -w /tmp && command -v tar >/dev/null`);
+		await run(
+			client,
+			sandboxId,
+			`mkdir -p ${into} && test -w ${into} && test -w /tmp && command -v tar >/dev/null && cp --help 2>&1 | grep -q -- --remove-destination`,
+		);
 		return true;
 	} catch {
 		return false;

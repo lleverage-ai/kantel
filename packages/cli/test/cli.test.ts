@@ -1390,9 +1390,11 @@ describe("copying files", () => {
 		expect([...names].sort()).toEqual(names.map((_, i) => names[0]?.replace(/\d{6}$/, String(i).padStart(6, "0"))));
 		const prefix = names[0]?.replace(/-\d{6}$/, "");
 		// It checks the destination, extracts into it where the files API would put it, and removes the parts.
+		const stage = `/home/user/app/.kantel-push-${prefix?.slice(-12)}`;
 		expect(commands).toEqual([
-			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null",
-			`cat ${prefix}-* | tar -xzf - -C /home/user/app --no-same-owner --no-same-permissions`,
+			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null && cp --help 2>&1 | grep -q -- --remove-destination",
+			`mkdir ${stage} && cat ${prefix}-* | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
+				`cp -al --remove-destination ${stage}/. /home/user/app/; s=$?; rm -rf ${stage}; exit $s`,
 			`rm -f ${prefix}-*`,
 		]);
 		// The parts, joined in order, are a tar that tar itself extracts to the same tree.
