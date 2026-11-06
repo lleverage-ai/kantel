@@ -2,11 +2,13 @@
  * Copying files between this computer and a sandbox for `kantel scp` and `kantel push`, over the files API only (no
  * SSH, so it works on isolates as well as microVMs). The API reads and writes at most 1 MiB a call. A larger file comes
  * down in 1 MiB ranged reads, and goes up in 768 KiB parts that one command joins, which needs a microVM's shell.
- * A directory is copied file by file, a few at a time.
+ * A directory is copied file by file, a few at a time, into an isolate; into a microVM it goes as one gzipped tar.
  */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { createGzip } from "node:zlib";
 import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { CliError } from "./errors.ts";
 
@@ -68,8 +70,8 @@ async function eachLimited<T>(items: readonly T[], limit: number, work: (item: T
 	await Promise.all(runners);
 }
 
-async function run(client: KantelClient, sandboxId: string, command: string): Promise<string> {
-	const result = await client.runCommand(sandboxId, { command, timeoutMs: 120_000 });
+async function run(client: KantelClient, sandboxId: string, command: string, timeoutMs = 120_000): Promise<string> {
+	const result = await client.runCommand(sandboxId, { command, timeoutMs });
 	if (result.state !== "exited" || result.exitCode !== 0) {
 		const why =
 			result.stderr.trim() || `it ended ${result.state}${result.exitCode === undefined ? "" : ` ${result.exitCode}`}`;
@@ -467,6 +469,174 @@ export async function uploadTree(
 		onFile?.(remote);
 	});
 	return { files: count, bytes: total };
+}
+
+/** A ustar header block for a regular file. Names over the field's 100 bytes go in a pax record before it. */
+function tarHeader(name: Uint8Array, size: number, mode: number, mtime: number, type: string): Uint8Array {
+	const block = new Uint8Array(512);
+	block.set(name.subarray(0, 100), 0);
+	const octal = (value: number, at: number, width: number) =>
+		block.set(Buffer.from(`${value.toString(8).padStart(width - 1, "0")}\0`), at);
+	octal(mode & 0o7777, 100, 8);
+	octal(0, 108, 8);
+	octal(0, 116, 8);
+	octal(size, 124, 12);
+	octal(mtime, 136, 12);
+	block.set(Buffer.from("        "), 148);
+	block.set(Buffer.from(type), 156);
+	block.set(Buffer.from("ustar\x0000"), 257);
+	let sum = 0;
+	for (const byte of block) sum += byte;
+	block.set(Buffer.from(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
+	return block;
+}
+
+/** A pax extended header's record, `<length> <key>=<value>\n`, whose length counts the whole record. */
+function paxRecord(key: string, value: string): Buffer {
+	const rest = Buffer.byteLength(` ${key}=${value}\n`);
+	let length = rest + 1;
+	while (String(length).length + rest !== length) length = String(length).length + rest;
+	return Buffer.from(`${length} ${key}=${value}\n`);
+}
+
+const padding = (size: number): Uint8Array => new Uint8Array((512 - (size % 512)) % 512);
+
+/** The most a file in a ustar header may hold (11 octal digits); larger ones get a pax `size` record. */
+const USTAR_MAX_SIZE = 0o77777777777;
+
+/**
+ * Copies `files` (relative to `root`) into `target` in a microVM as one gzipped tar: it goes up in 768 KiB parts,
+ * a few at a time, and one command joins and extracts them. A tree of many small files is a handful of calls rather
+ * than one a file, which for a repository of 20,000 files is minutes against seconds. Needs the microVM's shell and
+ * tar, so not for an isolate. Deleted local files are left out quietly, as in `uploadTree`.
+ */
+export async function uploadTreeArchive(
+	client: KantelClient,
+	sandboxId: string,
+	root: string,
+	files: readonly string[],
+	target: string,
+	onFile?: (path: string) => void,
+): Promise<Copied> {
+	// Flat files in /tmp, not a directory of them: a directory the files API makes is root's, so the sandbox's user
+	// couldn't remove the parts from it, while /tmp lets each owner remove their own.
+	const staging = `/tmp/.kantel-push-${randomBytes(6).toString("hex")}`;
+	const gzip = createGzip({ level: 1 });
+	const sent: string[] = [];
+	let count = 0;
+	let total = 0;
+
+	const pack = async (): Promise<void> => {
+		const write = (chunk: Uint8Array): Promise<void> | undefined =>
+			gzip.write(chunk) ? undefined : new Promise<void>((resolve) => gzip.once("drain", () => resolve()));
+		try {
+			for (const file of files) {
+				const local = join(root, file);
+				let info: Awaited<ReturnType<typeof stat>>;
+				try {
+					info = await stat(local);
+				} catch {
+					continue; // Tracked by git but deleted here.
+				}
+				if (!info.isFile()) continue;
+				const content = await readFile(local);
+				const path = file.split(sep).join("/");
+				const name = Buffer.from(path);
+				const records: Buffer[] = [];
+				if (name.byteLength > 100) records.push(paxRecord("path", path));
+				if (content.byteLength > USTAR_MAX_SIZE) records.push(paxRecord("size", String(content.byteLength)));
+				const mtime = Math.floor(info.mtimeMs / 1000);
+				if (records.length > 0) {
+					const pax = Buffer.concat(records);
+					await write(tarHeader(Buffer.from("PaxHeader"), pax.byteLength, 0o644, mtime, "x"));
+					await write(pax);
+					await write(padding(pax.byteLength));
+				}
+				const size = content.byteLength > USTAR_MAX_SIZE ? 0 : content.byteLength;
+				// The executable bits as they are here; everything else 0644, as a file put one at a time gets.
+				const mode = (info.mode & 0o111) === 0 ? 0o644 : info.mode & 0o777;
+				await write(tarHeader(name, size, mode, mtime, "0"));
+				await write(content);
+				await write(padding(content.byteLength));
+				sent.push(path);
+				count++;
+				total += content.byteLength;
+			}
+			await write(new Uint8Array(1024));
+			gzip.end();
+		} catch (error) {
+			gzip.destroy(error instanceof Error ? error : new Error(String(error)));
+		}
+	};
+
+	const upload = async (): Promise<number> => {
+		const inFlight = new Set<Promise<void>>();
+		let failure: unknown;
+		let parts = 0;
+		const put = (bytes: Uint8Array) => {
+			const path = `${staging}-${String(parts++).padStart(6, "0")}`;
+			const job: Promise<void> = client
+				.writeFile(sandboxId, { path, content: Buffer.from(bytes).toString("base64"), encoding: "base64" })
+				.then(
+					() => undefined,
+					(error: unknown) => {
+						failure ??= error;
+					},
+				)
+				.finally(() => inFlight.delete(job));
+			inFlight.add(job);
+		};
+		let pending: Buffer[] = [];
+		let pendingBytes = 0;
+		for await (const chunk of gzip as AsyncIterable<Buffer>) {
+			if (failure !== undefined) break;
+			pending.push(chunk);
+			pendingBytes += chunk.byteLength;
+			while (pendingBytes >= PART) {
+				const joined = Buffer.concat(pending);
+				put(joined.subarray(0, PART));
+				pending = [joined.subarray(PART)];
+				pendingBytes = joined.byteLength - PART;
+				while (inFlight.size >= CONCURRENCY) await Promise.race(inFlight);
+			}
+		}
+		if (pendingBytes > 0 && failure === undefined) put(Buffer.concat(pending));
+		await Promise.all(inFlight);
+		if (failure !== undefined) throw failure;
+		return parts;
+	};
+
+	const [, parts] = await Promise.all([pack(), upload()]);
+	if (parts === 0) return { files: 0, bytes: 0 };
+	const into = target === "" ? '"$HOME"' : shellPath(target);
+	const glob = `${quote(staging)}-*`;
+	try {
+		// The parts' names sort in order, so the glob joins them as they were cut.
+		await run(
+			client,
+			sandboxId,
+			`mkdir -p ${into} && cat ${glob} | tar -xzf - -C ${into} --no-same-owner --no-same-permissions; s=$?; rm -f ${glob}; exit $s`,
+			600_000,
+		);
+	} catch (error) {
+		await run(client, sandboxId, `rm -f ${glob}`).catch(() => undefined);
+		throw error;
+	}
+	for (const path of sent) onFile?.(remoteJoin(target, path));
+	return { files: count, bytes: total };
+}
+
+/** Copies `files` into `target` as the sandbox takes it best: one tar into a microVM, file by file into an isolate. */
+export async function uploadTreeTo(
+	client: KantelClient,
+	sandboxId: string,
+	root: string,
+	files: readonly string[],
+	target: string,
+	onFile?: (path: string) => void,
+): Promise<Copied> {
+	const microvm = (await client.getSandbox(sandboxId)).type === "microvm";
+	return (microvm ? uploadTreeArchive : uploadTree)(client, sandboxId, root, files, target, onFile);
 }
 
 /** The files under `path` in the sandbox, relative to it. */

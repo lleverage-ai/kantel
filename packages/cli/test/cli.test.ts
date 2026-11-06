@@ -1337,6 +1337,7 @@ describe("copying files", () => {
 		const result = await kantel(["push", "sbx_test1", "app"], {
 			configDir: join(configDir, "kantel"),
 			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => SANDBOX,
 				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
 					written.push(call.body as Written);
 					return { path: (call.body as Written).path, size: 1 };
@@ -1353,6 +1354,59 @@ describe("copying files", () => {
 		expect(byPath["app/run.sh"]?.mode).toBe("0755");
 	});
 
+	it("push sends a microVM one gzipped tar in parts, which one command extracts and removes", async () => {
+		const dir = join(configDir, "app");
+		const long = `${"deep/".repeat(30)}file.txt`;
+		await mkdir(join(dir, "src"), { recursive: true });
+		await mkdir(join(dir, long, ".."), { recursive: true });
+		await writeFile(join(dir, "src", "a.ts"), "export {};\n");
+		await writeFile(join(dir, long), "long name\n");
+		await writeFile(join(dir, "run.sh"), "#!/bin/sh\n");
+		await chmod(join(dir, "run.sh"), 0o755);
+		// Incompressible, so the archive is cut into more than one part.
+		const big = Buffer.from(Array.from({ length: 2 * 1024 * 1024 }, () => Math.floor(Math.random() * 256)));
+		await writeFile(join(dir, "big.bin"), big);
+		const parts: Written[] = [];
+		const commands: string[] = [];
+		const result = await kantel(["push", "sbx_test1", "app"], {
+			configDir: join(configDir, "kantel"),
+			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm" }),
+				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
+					parts.push(call.body as Written);
+					return { path: (call.body as Written).path, size: 1 };
+				},
+				"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+					commands.push((call.body as { command: string }).command);
+					return command({ exitCode: 0 });
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("Pushed 4 files");
+		expect(parts.length).toBeGreaterThan(1);
+		const names = parts.map((part) => part.path);
+		expect(names.every((name) => /^\/tmp\/\.kantel-push-[0-9a-f]{12}-\d{6}$/.test(name))).toBe(true);
+		expect([...names].sort()).toEqual(names.map((_, i) => names[0]?.replace(/\d{6}$/, String(i).padStart(6, "0"))));
+		expect(commands).toHaveLength(1);
+		const prefix = names[0]?.replace(/-\d{6}$/, "");
+		expect(commands[0]).toBe(
+			`mkdir -p "$HOME"/app && cat ${prefix}-* | tar -xzf - -C "$HOME"/app --no-same-owner --no-same-permissions; s=$?; rm -f ${prefix}-*; exit $s`,
+		);
+		// The parts, joined in order, are a tar that tar itself extracts to the same tree.
+		const archive = Buffer.concat(
+			[...parts].sort((a, b) => a.path.localeCompare(b.path)).map((part) => Buffer.from(part.content, "base64")),
+		);
+		const out = join(configDir, "out");
+		await mkdir(out);
+		execFileSync("tar", ["-xzf", "-", "-C", out], { input: archive });
+		expect(await readFile(join(out, "src", "a.ts"), "utf8")).toBe("export {};\n");
+		expect(await readFile(join(out, long), "utf8")).toBe("long name\n");
+		expect((await readFile(join(out, "big.bin"))).equals(big)).toBe(true);
+		expect((await stat(join(out, "run.sh"))).mode & 0o777).toBe(0o755);
+		expect((await stat(join(out, "src", "a.ts"))).mode & 0o111).toBe(0);
+	});
+
 	/** Pushes with `args`, answering the paths it wrote. */
 	async function pushed(args: readonly string[], options: KantelOptions = {}) {
 		const written: string[] = [];
@@ -1360,6 +1414,7 @@ describe("copying files", () => {
 			configDir: join(configDir, "kantel"),
 			...options,
 			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => SANDBOX,
 				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
 					written.push((call.body as Written).path);
 					return { path: (call.body as Written).path, size: 1 };

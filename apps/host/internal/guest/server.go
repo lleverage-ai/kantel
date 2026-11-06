@@ -897,7 +897,14 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	uid, gid := s.owner(r.URL.Query().Get("user"))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// Each directory it makes is the file's owner's, as the file is: a root-owned one would leave the user unable to
+	// write beside the file (pnpm install in a pushed repository, or joining a large file's parts in it).
+	// Only root can give them away; an agent that isn't (a test) leaves them its own, as the file's chown below does.
+	dirUID, dirGID := uid, gid
+	if os.Geteuid() != 0 {
+		dirUID, dirGID = -1, -1
+	}
+	if err := mkdirAllOwned(filepath.Dir(path), dirUID, dirGID); err != nil {
 		fail(w, 500, err)
 		return
 	}
