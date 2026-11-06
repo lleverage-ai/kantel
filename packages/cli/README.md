@@ -4,7 +4,7 @@ Kantel's command line and MCP server: make sandboxes, run commands in them, move
 and manage API keys from a terminal, a script or a coding agent.
 
 ```sh
-kantel login --url https://kantel.example     # approve it in the browser
+kantel login                                  # approve it in the browser
 kantel new --type microvm
 kantel push sbx_4kq9x2mt .
 kantel exec sbx_4kq9x2mt -- 'cd my-app && npm test'
@@ -35,10 +35,12 @@ The CLI needs Kantel's URL and an API key (`ksk_…`). It takes each from the fi
 2. the environment: `KANTEL_URL`, `KANTEL_API_KEY` and `KANTEL_ACCOUNT`;
 3. `${XDG_CONFIG_HOME:-~/.config}/kantel/config.json`, which `kantel login` writes, readable by you only.
 
-The URL may be given with or without `/v1`; it defaults to `http://127.0.0.1:58090`, a local install.
+The URL may be given with or without `/v1`; it defaults to `https://app.kantel.dev`, the hosted gateway. Give
+`--url` only for a self-hosted Kantel. (`kantel-admin` defaults to the local install it runs beside.)
 
 ```sh
-kantel login --url https://kantel.example                     # the browser sign-in
+kantel login                                                  # the browser sign-in, on app.kantel.dev
+kantel login --url https://kantel.example                     # or on your own Kantel
 printf %s "$KEY" | kantel login --key-stdin --url https://…  # or a key you have
 kantel whoami
 kantel logout

@@ -1747,6 +1747,7 @@ const SECTIONS: readonly Section[] = [
 					"With no key it prints a code and opens Kantel's console, where you approve it; the CLI gets an API key of\n" +
 					"its own (90 days), which you can revoke on the API keys page. With no terminal it prints the URL and code\n" +
 					"and exits; run kantel login --wait to wait for the approval. Running it again shows the same code.\n" +
+					`It signs in to ${DEFAULT_URL} unless you give --url (or KANTEL_URL), for a self-hosted Kantel.\n` +
 					"\n" +
 					"An existing key comes from --key-stdin, which keeps it out of your shell history and process list:\n" +
 					'  printf %s "$KANTEL_API_KEY" | kantel login --key-stdin --url https://kantel.example\n' +

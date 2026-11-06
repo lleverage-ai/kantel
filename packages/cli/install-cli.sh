@@ -195,7 +195,7 @@ main() {
 		say "  bash, zsh: add  export PATH=\"$bin:\$PATH\"  to ~/.bashrc or ~/.zshrc"
 		;;
 	esac
-	say "Next: kantel login --url https://app.kantel.dev (or your own Kantel's URL)"
+	say "Next: kantel login (or kantel login --url <url> for your own Kantel)"
 	if [ "$admin" = 0 ]; then
 		say "Self-hosting? Add kantel-admin with: curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin"
 	fi
