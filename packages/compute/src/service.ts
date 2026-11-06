@@ -3981,9 +3981,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * it is deleted go with the rest of its chain, and the append is refused.
 	 */
 	const chainAppend: typeof e2eChains.append = async (space, ...rest) => {
-		const appended = await e2eChains.append(space, ...rest);
+		const forget = async () => {
+			for (const entry of await store.e2eChain.list({ space })) await store.e2eChain.delete(entry.id);
+		};
+		let appended: Awaited<ReturnType<typeof e2eChains.append>>;
+		try {
+			appended = await e2eChains.append(space, ...rest);
+		} catch (error) {
+			// An append that failed partway may have written some entries: checked all the same, its error kept.
+			if (!(await accountOpen(space))) await forget().catch(() => undefined);
+			throw error;
+		}
 		if (await accountOpen(space)) return appended;
-		for (const entry of await store.e2eChain.list({ space })) await store.e2eChain.delete(entry.id);
+		await forget();
 		throw new KantelError("conflict", "This account is being deleted");
 	};
 
@@ -7762,12 +7772,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const sandbox = await store.sandboxes.get(sandboxId);
 				// A host reports only its own sandboxes; anything else is dropped.
 				if (sandbox === undefined || sandbox.hostId !== hostId) continue;
-				for (const record of batch.slice(-MAX_EGRESS_ENTRIES)) {
-					await store.egress.put(egressEntryFrom(record, sandbox, now()));
-				}
-				// Written, then checked, as a create is (`holdAccount`): a report landing as its account is deleted goes too.
-				if (!(await accountOpen(sandbox.accountId))) {
+				// Written, then checked, as a create is (`holdAccount`): a report landing as its account is deleted goes too,
+				// and so does what one that failed partway wrote, its error kept.
+				const forget = async () => {
 					for (const entry of await store.egress.list({ sandboxId })) await store.egress.delete(entry.id);
+				};
+				try {
+					for (const record of batch.slice(-MAX_EGRESS_ENTRIES)) {
+						await store.egress.put(egressEntryFrom(record, sandbox, now()));
+					}
+				} catch (error) {
+					if (!(await accountOpen(sandbox.accountId))) await forget().catch(() => undefined);
+					throw error;
+				}
+				if (!(await accountOpen(sandbox.accountId))) {
+					await forget();
 					continue;
 				}
 				const log = await egressLog(sandboxId);

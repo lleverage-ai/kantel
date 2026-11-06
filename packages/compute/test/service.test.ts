@@ -2338,6 +2338,40 @@ describe.each(STORES)("deleting your account while a sandbox is being made, stor
 		expect(await store.egress.list({ sandboxId: sandbox.id })).toHaveLength(1);
 	});
 
+	it("drops what a failed egress report wrote before it failed, while its account is being deleted", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ wait: true });
+		const report = (at: number) => ({
+			at,
+			sandboxId: sandbox.id,
+			method: "CONNECT",
+			host: "example.com",
+			port: 443,
+			allowed: true,
+			swapped: [],
+			inspected: false,
+			bytesUp: 0,
+			bytesDown: 0,
+		});
+		await store.accounts.update(personal, (account) => ({
+			...account,
+			retiring: { token: "deleting", at: Date.now() },
+		}));
+		// The first entry lands, the second write fails.
+		const put = store.egress.put.bind(store.egress);
+		let writes = 0;
+		store.egress.put = async (entry) => {
+			if (++writes === 2) throw new Error("the database went away");
+			return put(entry);
+		};
+		await expect(api.service.recordEgress(STUB_HOST_ID, [report(1), report(2)])).rejects.toThrow(
+			"the database went away",
+		);
+		expect(await store.egress.list({ sandboxId: sandbox.id })).toEqual([]);
+	});
+
 	it("lets only the deletion that claimed the account let go of it, when two overlap", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
