@@ -221,7 +221,15 @@ export interface AuthenticateOptions {
 	readonly now: number;
 }
 
-/** The API key a secret is, while it is neither revoked nor expired. */
+/**
+ * Whether the person a key acts for still exists. Deleting an account revokes the keys it finds, but a key made while
+ * the deletion ran may be stored after that: once its person is gone, it works nowhere.
+ */
+async function ownerRemains(store: ComputeStore, key: StoredApiKey): Promise<boolean> {
+	return (await store.users.get(key.ownerUserId)) !== undefined;
+}
+
+/** The API key a secret is, while it is neither revoked nor expired and its person exists. */
 export async function keyForSecret(
 	store: ComputeStore,
 	secret: string,
@@ -230,6 +238,7 @@ export async function keyForSecret(
 	const [key] = await store.apiKeys.list({ secretHash: await sha256Hex(secret) });
 	if (key === undefined || key.revokedAt !== undefined) return undefined;
 	if (key.expiresAt !== undefined && key.expiresAt <= now) return undefined;
+	if (!(await ownerRemains(store, key))) return undefined;
 	return key;
 }
 
@@ -242,6 +251,7 @@ export async function liveKeyPrincipal(
 	const key = await store.apiKeys.get(keyId);
 	if (key === undefined || key.revokedAt !== undefined) return undefined;
 	if (key.expiresAt !== undefined && key.expiresAt <= now) return undefined;
+	if (!(await ownerRemains(store, key))) return undefined;
 	return keyPrincipal(key);
 }
 

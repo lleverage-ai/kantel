@@ -2269,6 +2269,18 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect(await store.users.get("usr_ann")).toBeUndefined();
 	});
 
+	it("lets no key of theirs work once they're gone, even one stored after the deletion revoked theirs", async () => {
+		const store = await make();
+		const { ann, tom, client } = setup(undefined, { store });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "admin" })).code ?? "" });
+		const issued = await ann.createApiKey({ name: "late", preset: "read-only", account: org.id });
+		await ann.deleteCaller();
+		// As if its write had landed after the deletion's sweep: live, in an organisation that goes on.
+		await store.apiKeys.update(issued.key.id, ({ revokedAt: _revoked, ...key }) => key);
+		expect((await failure(client(issued.secret).listMembers(org.id))).status).toBe(401);
+	});
+
 	it("keeps a closed account closed through an update, and never brings back a removed one", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
