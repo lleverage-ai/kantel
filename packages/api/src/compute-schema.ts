@@ -84,6 +84,14 @@ export const SandboxVisibility = Type.Union([Type.Literal("private"), Type.Liter
 		"of its organisation may. A personal account's sandboxes are always `private`.",
 });
 
+export const PersonalTokenPolicy = Type.Union([Type.Literal("allowed"), Type.Literal("blocked")], {
+	title: "PersonalTokenPolicy",
+	description:
+		"Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one " +
+		"is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a " +
+		"personal account. Absent from a gateway before it: `allowed`.",
+});
+
 export const Account = Type.Object(
 	{
 		id: id("The account's ID, such as `acc_7f3k2m9q`."),
@@ -91,6 +99,7 @@ export const Account = Type.Object(
 		name: Type.String(),
 		role: MemberRole,
 		defaultVisibility: SandboxVisibility,
+		personalTokens: Type.Optional(PersonalTokenPolicy),
 		createdAt: Timestamp,
 	},
 	{
@@ -119,6 +128,21 @@ export const Caller = Type.Object(
 					scopes: Type.Array(ApiKeyScope),
 				},
 				{ title: "CallerApiKey", description: "The key the call was signed in with, when it was a key." },
+			),
+		),
+		personalToken: Type.Optional(
+			Type.Object(
+				{
+					id: Type.String(),
+					name: Type.String(),
+					scopes: Type.Optional(Type.Array(ApiKeyScope)),
+					accounts: Type.Optional(Type.Array(Type.String())),
+					expiresAt: Timestamp,
+				},
+				{
+					title: "CallerPersonalToken",
+					description: "The personal access token the call was signed in with, when it was one, and its limits.",
+				},
 			),
 		),
 		accountId: Type.String({ description: "The account the call acts in when it names none." }),
@@ -163,6 +187,7 @@ export const UpdateAccountBody = Type.Object(
 	{
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		defaultVisibility: Type.Optional(SandboxVisibility),
+		personalTokens: Type.Optional(PersonalTokenPolicy),
 	},
 	{ title: "UpdateAccountBody" },
 );
@@ -1787,6 +1812,73 @@ export const IssuedApiKey = Type.Object(
 	{ title: "IssuedApiKey" },
 );
 
+// Personal access tokens: a person's own credential, for the command line and their scripts. A token acts as its
+// person, in every account they belong to (or the ones it names), with their role there, capped by its scopes.
+
+/** The longest a personal access token may last, in days, and how long it lasts unless its maker says. */
+export const PERSONAL_TOKEN_MAX_DAYS = 366;
+export const PERSONAL_TOKEN_DEFAULT_DAYS = 90;
+
+export const PersonalToken = Type.Object(
+	{
+		id: id("The token's ID, such as `pat_5n2p8r`."),
+		name: Type.String(),
+		prefix: Type.String({ description: "The secret's first characters, such as `kpt_5n2p`, to tell tokens apart." }),
+		scopes: Type.Optional(
+			Type.Array(ApiKeyScope, {
+				description:
+					"At most these, on top of the person's role in each account. Absent: whatever their role allows. Never " +
+					"`hosts:admin`: a token doesn't act as a deployment super-admin.",
+			}),
+		),
+		accounts: Type.Optional(
+			Type.Array(Type.String(), {
+				description: "Only these accounts. Absent: every account its person belongs to, ones they join later included.",
+			}),
+		),
+		createdAt: Timestamp,
+		expiresAt: Timestamp,
+		lastUsedAt: Type.Optional(
+			Type.Integer({ description: "When it last signed a call in, to within a minute. Absent until its first use." }),
+		),
+		revokedAt: Type.Optional(Timestamp),
+	},
+	{
+		title: "PersonalToken",
+		description: "A personal access token (`kpt_…`). Its secret is never stored or shown after it is made.",
+	},
+);
+
+export const PersonalTokenList = Type.Object({ items: Type.Array(PersonalToken) }, { title: "PersonalTokenList" });
+
+export const PersonalTokenPath = Type.Object({ tokenId: id("The token's ID.") }, { title: "PersonalTokenPath" });
+
+export const CreatePersonalTokenBody = Type.Object(
+	{
+		name: Type.String({ minLength: 1, maxLength: 100 }),
+		scopes: Type.Optional(Type.Array(ApiKeyScope, { minItems: 1 })),
+		preset: Type.Optional(ApiKeyPreset),
+		accounts: Type.Optional(Type.Array(Type.String(), { minItems: 1, description: "Absent: every account of yours." })),
+		expiresInDays: Type.Optional(
+			Type.Integer({ minimum: 1, maximum: PERSONAL_TOKEN_MAX_DAYS, description: "Default 90, at most 366." }),
+		),
+	},
+	{
+		title: "CreatePersonalTokenBody",
+		description:
+			"`scopes` or a `preset` (or both, which adds them) cap what it may do; with neither, it does whatever your role " +
+			"allows. A token making a token can't make one that does more than it, in more accounts, or for longer.",
+	},
+);
+
+export const IssuedPersonalToken = Type.Object(
+	{
+		token: PersonalToken,
+		secret: Type.String({ description: "The token itself, `kpt_…`. Shown once: store it now." }),
+	},
+	{ title: "IssuedPersonalToken" },
+);
+
 // Signing in a device (the command line) in a browser.
 
 export const StartDeviceLoginBody = Type.Object(
@@ -1797,6 +1889,13 @@ export const StartDeviceLoginBody = Type.Object(
 				maxLength: 100,
 				description:
 					"What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`.",
+			}),
+		),
+		personal: Type.Optional(
+			Type.Boolean({
+				description:
+					"Ask for a personal access token, which acts in every account its approver belongs to, rather than an API " +
+					"key in one account. Default false, for a device from before personal tokens.",
 			}),
 		),
 	},
@@ -1837,8 +1936,14 @@ export const DeviceLoginResult = Type.Object(
 	{
 		state: DeviceLoginState,
 		issued: Type.Optional(IssuedApiKey),
+		token: Type.Optional(IssuedPersonalToken),
 	},
-	{ title: "DeviceLoginResult", description: "With `approved`, the new key and its secret, shown this once." },
+	{
+		title: "DeviceLoginResult",
+		description:
+			"With `approved`, the new key (`issued`) or, for a sign-in that asked for one, personal access token (`token`), " +
+			"and its secret, shown this once.",
+	},
 );
 
 export const DeviceLoginPath = Type.Object(
@@ -1850,6 +1955,9 @@ export const DeviceLoginRequest = Type.Object(
 	{
 		userCode: Type.String(),
 		clientName: Type.String(),
+		personal: Type.Optional(
+			Type.Boolean({ description: "It asks for a personal access token, not an API key in one account." }),
+		),
 		state: DeviceLoginState,
 		createdAt: Timestamp,
 		expiresAt: Timestamp,
@@ -1864,15 +1972,35 @@ export const ApproveDeviceLoginBody = Type.Object(
 	{
 		account: accountQuery,
 		preset: Type.Optional(ApiKeyPreset),
+		personal: Type.Optional(
+			Type.Boolean({
+				description:
+					"True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all " +
+					"of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused.",
+			}),
+		),
+		accounts: Type.Optional(
+			Type.Array(Type.String(), {
+				minItems: 1,
+				description: "For a personal token: only these accounts. Absent: every account of the approver's.",
+			}),
+		),
 		expiresInDays: Type.Optional(
-			Type.Integer({ minimum: 1, maximum: 3650, description: "Default 90. The key stops working after it." }),
+			Type.Integer({
+				minimum: 1,
+				maximum: 3650,
+				description: "Default 90. It stops working after it. A personal token lasts at most 366.",
+			}),
 		),
 	},
 	{
 		title: "ApproveDeviceLoginBody",
 		description:
-			"The key the device gets, in the approver's personal account unless `account` names an organisation. Without " +
-			"`preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.",
+			"What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one " +
+			"acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any " +
+			"other gets an API key " +
+			"in the approver's personal account unless `account` names an organisation, which needs admin or owner there; " +
+			"without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.",
 	},
 );
 
@@ -3347,6 +3475,9 @@ export type SnapshotKind = Static<typeof SnapshotKind>;
 export type ApiKeyScope = Static<typeof ApiKeyScope>;
 export type ApiKeyPreset = Static<typeof ApiKeyPreset>;
 export type ApiKey = Static<typeof ApiKey>;
+export type PersonalToken = Static<typeof PersonalToken>;
+export type PersonalTokenPolicy = Static<typeof PersonalTokenPolicy>;
+export type CreatePersonalTokenBody = Static<typeof CreatePersonalTokenBody>;
 export type ProxySettings = Static<typeof ProxySettings>;
 export type ProxySettingsExpected = Static<typeof ProxySettingsExpected>;
 export type DestinationBinding = Static<typeof DestinationBinding>;

@@ -131,7 +131,11 @@ const TAGS: {
 		order: 6,
 		about: "A sandbox's automatic history and named saved snapshots, and the files in them.",
 	},
-	"api-keys": { title: "API keys", order: 7, about: "Scoped API keys: create, rotate and revoke." },
+	"api-keys": {
+		title: "API keys",
+		order: 7,
+		about: "Scoped API keys, which act in one account, and personal access tokens, which act as you in all of yours.",
+	},
 	auth: {
 		title: "Device sign-in",
 		order: 7.5,

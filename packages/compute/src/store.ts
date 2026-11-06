@@ -79,6 +79,8 @@ export interface StoredAccount {
 	readonly kind: computeSchema.AccountKind;
 	readonly name: string;
 	readonly defaultVisibility: computeSchema.SandboxVisibility;
+	/** An organisation's members' personal tokens may act in it unless `blocked`; absent is `allowed`. */
+	readonly personalTokens?: computeSchema.PersonalTokenPolicy;
 	readonly createdAt: number;
 	/**
 	 * When its person's account deletion closed it (`deleteCaller`), for good: from then on nothing new is stored in it,
@@ -252,6 +254,13 @@ export type StoredApiKey = computeSchema.ApiKey & {
 	readonly secretHash: string;
 	/** The person the key acts for: its maker, or its maker key's person. */
 	readonly ownerUserId: string;
+};
+
+export type StoredPersonalToken = computeSchema.PersonalToken & {
+	/** The SHA-256 hex of the secret. */
+	readonly secretHash: string;
+	/** The person it acts as. */
+	readonly userId: string;
 };
 
 export type StoredWebhook = computeSchema.Webhook & {
@@ -535,6 +544,11 @@ export interface StoredFileUrl {
 	readonly method: "GET" | "PUT";
 	readonly expiresAt: number;
 	readonly createdAt: number;
+	/**
+	 * Who made it (`encodeGrantee`): checked again each time it is used. Such a URL's ID is `boundFileUrlId`'s, so a
+	 * gateway from before it never finds it. Absent from one made before it was kept, whose ID is its token's SHA-256.
+	 */
+	readonly grantee?: string;
 }
 
 /**
@@ -602,8 +616,11 @@ export interface StoredDeviceLogin {
 	readonly state: computeSchema.DeviceLoginState;
 	readonly createdAt: number;
 	readonly expiresAt: number;
-	/** The key made when it was approved, and its secret until the device collects it. */
+	/** It asked for a personal access token rather than an API key. */
+	readonly personal?: boolean;
+	/** The key, or personal token, made when it was approved, and its secret until the device collects it. */
 	readonly apiKeyId?: string;
+	readonly personalTokenId?: string;
 	readonly secret?: string;
 	readonly decidedBy?: string;
 	readonly collectedAt?: number;
@@ -649,6 +666,7 @@ export interface ComputeStore {
 	readonly commands: Collection<StoredCommand>;
 	readonly snapshots: Collection<StoredSnapshot>;
 	readonly apiKeys: Collection<StoredApiKey>;
+	readonly personalTokens: Collection<StoredPersonalToken>;
 	readonly webhooks: Collection<StoredWebhook>;
 	readonly deliveries: Collection<StoredDelivery>;
 	readonly telemetry: Collection<StoredTelemetry>;
@@ -823,6 +841,7 @@ export function createMemoryStore(): ComputeStore {
 		commands: memoryCollection(),
 		snapshots: memoryCollection(),
 		apiKeys: memoryCollection(),
+		personalTokens: memoryCollection(),
 		webhooks: memoryCollection(),
 		deliveries: memoryCollection(),
 		telemetry: memoryCollection(),

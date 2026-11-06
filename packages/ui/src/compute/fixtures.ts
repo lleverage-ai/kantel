@@ -36,6 +36,7 @@ import type {
 	MountSource,
 	OrganisationInvite,
 	OrganisationMember,
+	PersonalToken,
 	Plan,
 	ProxySettings,
 	PublicUrl,
@@ -74,8 +75,10 @@ import { inUseText } from "./mounts.ts";
 import { createTemplateFixtures } from "./template-fixtures.ts";
 import { stubUsage } from "./usage-stub.ts";
 
-/** The code the fixtures' waiting command line showed. */
+/** The code the fixtures' waiting command line showed: an older one, asking for an API key in one account. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
+/** The code of the fixtures' laptop signing in, which asks for a personal access token. */
+export const FIXTURE_PERSONAL_DEVICE_CODE = "MNPQ-RSTV";
 
 /** The moment the fixtures are at: Tuesday 3 November 2026, 10:00 UTC. */
 export const FIXTURE_NOW = Date.UTC(2026, 10, 3, 10, 0, 0);
@@ -894,6 +897,45 @@ export function samplePart(path: string, range: FileRange): FilePart {
 	const start = Math.min(range.offset, bytes.byteLength);
 	return { bytes: bytes.subarray(start, Math.min(start + range.length, bytes.byteLength)), size: bytes.byteLength };
 }
+
+/** Tom's personal access tokens: his laptop's, signed in with kantel login, and a deploy script's in one account. */
+export const PERSONAL_TOKENS: readonly PersonalToken[] = [
+	{
+		id: "pat_laptop",
+		name: "kantel on toms-laptop",
+		prefix: "kpt_7Qd2",
+		createdAt: FIXTURE_NOW - 12 * DAY,
+		expiresAt: FIXTURE_NOW + 78 * DAY,
+		lastUsedAt: FIXTURE_NOW - 4 * MINUTE,
+	},
+	{
+		id: "pat_deploy",
+		name: "Deploy script",
+		prefix: "kpt_Lm9x",
+		scopes: [
+			"sandboxes:read",
+			"sandboxes:write",
+			"exec",
+			"files",
+			"access",
+			"snapshots:read",
+			"snapshots:write",
+			"account:read",
+		],
+		accounts: ["org_lleverage"],
+		createdAt: FIXTURE_NOW - 40 * DAY,
+		expiresAt: FIXTURE_NOW + 2 * DAY,
+		lastUsedAt: FIXTURE_NOW - 6 * HOUR,
+	},
+	{
+		id: "pat_old",
+		name: "kantel on build-02",
+		prefix: "kpt_Rr3a",
+		createdAt: FIXTURE_NOW - 120 * DAY,
+		expiresAt: FIXTURE_NOW - 30 * DAY,
+		lastUsedAt: FIXTURE_NOW - 31 * DAY,
+	},
+];
 
 export const KEYS: readonly ApiKey[] = [
 	{
@@ -1783,6 +1825,12 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const keys = new Map<string, ApiKey>(
 		(empty ? [] : KEYS).map((key) => [key.id, moved(key, ["createdAt", "lastUsedAt", "expiresAt", "revokedAt"])]),
 	);
+	const personalTokens = new Map<string, PersonalToken>(
+		(empty ? [] : PERSONAL_TOKENS).map((token) => [
+			token.id,
+			moved(token, ["createdAt", "lastUsedAt", "expiresAt", "revokedAt"]),
+		]),
+	);
 	const webhooks = new Map<string, Webhook>(
 		(empty ? [] : WEBHOOKS).map((hook) => [
 			hook.id,
@@ -1851,6 +1899,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			{
 				userCode: FIXTURE_DEVICE_CODE,
 				clientName: "kantel on build-01",
+				state: "pending",
+				createdAt: at(base - MINUTE),
+				expiresAt: at(base + 14 * MINUTE),
+			},
+		],
+		[
+			FIXTURE_PERSONAL_DEVICE_CODE,
+			{
+				userCode: FIXTURE_PERSONAL_DEVICE_CODE,
+				clientName: "kantel on toms-laptop",
+				personal: true,
 				state: "pending",
 				createdAt: at(base - MINUTE),
 				expiresAt: at(base + 14 * MINUTE),
@@ -2039,6 +2098,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const renamed = { ...account, name };
 					accounts[at] = renamed;
 					return renamed;
+				}),
+			setPersonalTokens: (accountId, policy) =>
+				gate(() => {
+					const at = accounts.findIndex((account) => account.id === accountId);
+					const account = accounts[at];
+					if (account === undefined) throw new Error(`No account ${accountId}.`);
+					const changed = { ...account, personalTokens: policy };
+					accounts[at] = changed;
+					return changed;
 				}),
 			setRole: (accountId, memberId, role) =>
 				gate(() => {
@@ -2418,6 +2486,30 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,
+		},
+		personalTokens: {
+			list: () => gate(() => [...personalTokens.values()].sort((a, b) => b.createdAt - a.createdAt)),
+			create: (input) =>
+				gate(() => {
+					const secret = fakeSecret("kpt_");
+					const token: PersonalToken = {
+						id: nextId("pat"),
+						name: input.name,
+						prefix: secret.slice(0, 8),
+						...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+						...(input.accounts === undefined ? {} : { accounts: input.accounts }),
+						createdAt: now(),
+						expiresAt: now() + input.expiresInDays * DAY,
+					};
+					personalTokens.set(token.id, token);
+					return { token, secret };
+				}),
+			revoke: (id) =>
+				gate(() => {
+					const revoked = { ...find(personalTokens, id, "personal token"), revokedAt: now() };
+					personalTokens.set(id, revoked);
+					return revoked;
+				}),
 		},
 		keys: {
 			list: (accountId) =>

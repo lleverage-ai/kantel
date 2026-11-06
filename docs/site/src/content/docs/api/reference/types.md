@@ -20,6 +20,7 @@ An account the caller may act in, with the caller's role in it.
 | `name` | string | yes |  |
 | `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
+| `personalTokens` | [PersonalTokenPolicy](/api/reference/types/#personaltokenpolicy) | no |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### AccountJoinToken
@@ -103,13 +104,15 @@ One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"e
 
 ### ApproveDeviceLoginBody
 
-The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.
+What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
-| `expiresInDays` | integer | no | Default 90. The key stops working after it. (minimum 1, maximum 3650) |
+| `personal` | boolean | no | True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused. |
+| `accounts` | string[] | no | For a personal token: only these accounts. Absent: every account of the approver's. |
+| `expiresInDays` | integer | no | Default 90. It stops working after it. A personal token lasts at most 366. (minimum 1, maximum 3650) |
 
 ### BaseImage
 
@@ -314,6 +317,7 @@ Who is calling, the accounts they may act in, and the deployment's mode and what
 | --- | --- | --- | --- |
 | `user` | [CallerUser](/api/reference/types/#calleruser) | no |  |
 | `apiKey` | [CallerApiKey](/api/reference/types/#callerapikey) | no |  |
+| `personalToken` | [CallerPersonalToken](/api/reference/types/#callerpersonaltoken) | no |  |
 | `accountId` | string | yes | The account the call acts in when it names none. |
 | `accounts` | [Account](/api/reference/types/#account)[] | yes |  |
 | `superAdmin` | boolean | yes | Whether the caller may manage the deployment's hosts. |
@@ -330,6 +334,18 @@ The key the call was signed in with, when it was a key.
 | `id` | string | yes |  |
 | `name` | string | yes |  |
 | `scopes` | [ApiKeyScope](/api/reference/types/#apikeyscope)[] | yes |  |
+
+### CallerPersonalToken
+
+The personal access token the call was signed in with, when it was one, and its limits.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `scopes` | [ApiKeyScope](/api/reference/types/#apikeyscope)[] | no |  |
+| `accounts` | string[] | no |  |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### CallerUser
 
@@ -450,6 +466,18 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `name` | string | yes |  (at most 100 characters) |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 
+### CreatePersonalTokenBody
+
+`scopes` or a `preset` (or both, which adds them) cap what it may do; with neither, it does whatever your role allows. A token making a token can't make one that does more than it, in more accounts, or for longer.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  (at most 100 characters) |
+| `scopes` | [ApiKeyScope](/api/reference/types/#apikeyscope)[] | no |  |
+| `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
+| `accounts` | string[] | no | Absent: every account of yours. |
+| `expiresInDays` | integer | no | Default 90, at most 366. (minimum 1, maximum 366) |
+
 ### CreateSandboxBody
 
 Every field is optional: `{}` makes a running isolate in the caller's account.
@@ -539,18 +567,20 @@ A device waiting for a person to approve it, as the approval page shows it.
 | --- | --- | --- | --- |
 | `userCode` | string | yes |  |
 | `clientName` | string | yes |  |
+| `personal` | boolean | no | It asks for a personal access token, not an API key in one account. |
 | `state` | [DeviceLoginState](/api/reference/types/#deviceloginstate) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### DeviceLoginResult
 
-With `approved`, the new key and its secret, shown this once.
+With `approved`, the new key (`issued`) or, for a sign-in that asked for one, personal access token (`token`), and its secret, shown this once.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `state` | [DeviceLoginState](/api/reference/types/#deviceloginstate) | yes |  |
 | `issued` | [IssuedApiKey](/api/reference/types/#issuedapikey) | no |  |
+| `token` | [IssuedPersonalToken](/api/reference/types/#issuedpersonaltoken) | no |  |
 
 ### DeviceLoginState
 
@@ -997,6 +1027,13 @@ A way into an organisation: whoever joins with its code becomes a member.
 | `key` | [ApiKey](/api/reference/types/#apikey) | yes |  |
 | `secret` | string | yes | The key itself, `ksk_…`. Shown once: store it now. |
 
+### IssuedPersonalToken
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `token` | [PersonalToken](/api/reference/types/#personaltoken) | yes |  |
+| `secret` | string | yes | The token itself, `kpt_…`. Shown once: store it now. |
+
 ### JoinOrganisationBody
 
 | Field | Type | Required | Description |
@@ -1084,6 +1121,34 @@ One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketM
 `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it.
 
 One of: `"pending"` or `"ready"` or `"failed"`.
+
+### PersonalToken
+
+A personal access token (`kpt_…`). Its secret is never stored or shown after it is made.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The token's ID, such as `pat_5n2p8r`. |
+| `name` | string | yes |  |
+| `prefix` | string | yes | The secret's first characters, such as `kpt_5n2p`, to tell tokens apart. |
+| `scopes` | [ApiKeyScope](/api/reference/types/#apikeyscope)[] | no | At most these, on top of the person's role in each account. Absent: whatever their role allows. Never `hosts:admin`: a token doesn't act as a deployment super-admin. |
+| `accounts` | string[] | no | Only these accounts. Absent: every account its person belongs to, ones they join later included. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+| `lastUsedAt` | integer | no | When it last signed a call in, to within a minute. Absent until its first use. |
+| `revokedAt` | integer | no | Epoch milliseconds, UTC. |
+
+### PersonalTokenList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [PersonalToken](/api/reference/types/#personaltoken)[] | yes |  |
+
+### PersonalTokenPolicy
+
+Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`.
+
+One of: `"allowed"` or `"blocked"`.
 
 ### PlacementReason
 
@@ -1646,6 +1711,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `clientName` | string | no | What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`. (at most 100 characters) |
+| `personal` | boolean | no | Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens. |
 
 ### StopSandboxBody
 
@@ -1939,6 +2005,7 @@ A template version's definition, never changed once made. Answered with every de
 | --- | --- | --- | --- |
 | `name` | string | no |  (at most 100 characters) |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
+| `personalTokens` | [PersonalTokenPolicy](/api/reference/types/#personaltokenpolicy) | no |  |
 
 ### UpdateEnvironmentBody
 

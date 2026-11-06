@@ -5679,6 +5679,208 @@
 				}
 			}
 		},
+		"/personal-tokens": {
+			"get": {
+				"operationId": "listPersonalTokens",
+				"summary": "List your personal access tokens",
+				"description": "The caller's own personal access tokens, newest first, revoked and expired ones included. A person or a personal token; not an API key.",
+				"tags": ["api-keys"],
+				"responses": {
+					"200": {
+						"description": "The tokens.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PersonalTokenList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createPersonalToken",
+				"summary": "Create a personal access token",
+				"description": "Makes a token that acts as the caller, in every account they belong to or the ones `accounts` names, with their role there, capped by its scopes. Its secret is answered once. It lasts 90 days unless `expiresInDays` says, at most 366. A person, or a personal token making one that does no more than it, in no more accounts, for no longer; not an API key.",
+				"tags": ["api-keys"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreatePersonalTokenBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The token and its secret.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/IssuedPersonalToken"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/personal-tokens/{tokenId}": {
+			"delete": {
+				"operationId": "revokePersonalToken",
+				"summary": "Revoke a personal access token",
+				"description": "It stops working at once, and so does access given with it (tunnels, exposed ports). Your own tokens only; a token may revoke itself, as `kantel logout` does.",
+				"tags": ["api-keys"],
+				"parameters": [
+					{
+						"name": "tokenId",
+						"in": "path",
+						"required": true,
+						"description": "The token's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The token, revoked.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PersonalToken"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/auth/device": {
 			"post": {
 				"operationId": "startDeviceLogin",
@@ -11199,6 +11401,9 @@
 					"defaultVisibility": {
 						"$ref": "#/components/schemas/SandboxVisibility"
 					},
+					"personalTokens": {
+						"$ref": "#/components/schemas/PersonalTokenPolicy"
+					},
 					"createdAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
@@ -11453,15 +11658,27 @@
 					"preset": {
 						"$ref": "#/components/schemas/ApiKeyPreset"
 					},
+					"personal": {
+						"type": "boolean",
+						"description": "True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused."
+					},
+					"accounts": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"description": "For a personal token: only these accounts. Absent: every account of the approver's."
+					},
 					"expiresInDays": {
 						"type": "integer",
 						"minimum": 1,
 						"maximum": 3650,
-						"description": "Default 90. The key stops working after it."
+						"description": "Default 90. It stops working after it. A personal token lasts at most 366."
 					}
 				},
 				"title": "ApproveDeviceLoginBody",
-				"description": "The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin."
+				"description": "What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin."
 			},
 			"BaseImage": {
 				"type": "object",
@@ -12009,6 +12226,9 @@
 					"apiKey": {
 						"$ref": "#/components/schemas/CallerApiKey"
 					},
+					"personalToken": {
+						"$ref": "#/components/schemas/CallerPersonalToken"
+					},
 					"accountId": {
 						"type": "string",
 						"description": "The account the call acts in when it names none."
@@ -12057,6 +12277,36 @@
 				},
 				"title": "CallerApiKey",
 				"description": "The key the call was signed in with, when it was a key."
+			},
+			"CallerPersonalToken": {
+				"type": "object",
+				"required": ["id", "name", "expiresAt"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"scopes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ApiKeyScope"
+						}
+					},
+					"accounts": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "CallerPersonalToken",
+				"description": "The personal access token the call was signed in with, when it was one, and its limits."
 			},
 			"CallerUser": {
 				"type": "object",
@@ -12392,6 +12642,43 @@
 				},
 				"title": "CreateOrganisationBody"
 			},
+			"CreatePersonalTokenBody": {
+				"type": "object",
+				"required": ["name"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"scopes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ApiKeyScope"
+						},
+						"minItems": 1
+					},
+					"preset": {
+						"$ref": "#/components/schemas/ApiKeyPreset"
+					},
+					"accounts": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"description": "Absent: every account of yours."
+					},
+					"expiresInDays": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 366,
+						"description": "Default 90, at most 366."
+					}
+				},
+				"title": "CreatePersonalTokenBody",
+				"description": "`scopes` or a `preset` (or both, which adds them) cap what it may do; with neither, it does whatever your role allows. A token making a token can't make one that does more than it, in more accounts, or for longer."
+			},
 			"CreateProjectBody": {
 				"type": "object",
 				"required": ["name"],
@@ -12688,6 +12975,10 @@
 					"clientName": {
 						"type": "string"
 					},
+					"personal": {
+						"type": "boolean",
+						"description": "It asks for a personal access token, not an API key in one account."
+					},
 					"state": {
 						"$ref": "#/components/schemas/DeviceLoginState"
 					},
@@ -12712,10 +13003,13 @@
 					},
 					"issued": {
 						"$ref": "#/components/schemas/IssuedApiKey"
+					},
+					"token": {
+						"$ref": "#/components/schemas/IssuedPersonalToken"
 					}
 				},
 				"title": "DeviceLoginResult",
-				"description": "With `approved`, the new key and its secret, shown this once."
+				"description": "With `approved`, the new key (`issued`) or, for a sign-in that asked for one, personal access token (`token`), and its secret, shown this once."
 			},
 			"DeviceLoginState": {
 				"anyOf": [
@@ -14072,6 +14366,20 @@
 				},
 				"title": "IssuedApiKey"
 			},
+			"IssuedPersonalToken": {
+				"type": "object",
+				"required": ["token", "secret"],
+				"properties": {
+					"token": {
+						"$ref": "#/components/schemas/PersonalToken"
+					},
+					"secret": {
+						"type": "string",
+						"description": "The token itself, `kpt_…`. Shown once: store it now."
+					}
+				},
+				"title": "IssuedPersonalToken"
+			},
 			"JoinOrganisationBody": {
 				"type": "object",
 				"required": ["code"],
@@ -14279,6 +14587,82 @@
 				],
 				"title": "MountStatus",
 				"description": "`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it."
+			},
+			"PersonalToken": {
+				"type": "object",
+				"required": ["id", "name", "prefix", "createdAt", "expiresAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The token's ID, such as `pat_5n2p8r`."
+					},
+					"name": {
+						"type": "string"
+					},
+					"prefix": {
+						"type": "string",
+						"description": "The secret's first characters, such as `kpt_5n2p`, to tell tokens apart."
+					},
+					"scopes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ApiKeyScope"
+						},
+						"description": "At most these, on top of the person's role in each account. Absent: whatever their role allows. Never `hosts:admin`: a token doesn't act as a deployment super-admin."
+					},
+					"accounts": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Only these accounts. Absent: every account its person belongs to, ones they join later included."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"lastUsedAt": {
+						"type": "integer",
+						"description": "When it last signed a call in, to within a minute. Absent until its first use."
+					},
+					"revokedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "PersonalToken",
+				"description": "A personal access token (`kpt_…`). Its secret is never stored or shown after it is made."
+			},
+			"PersonalTokenList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/PersonalToken"
+						}
+					}
+				},
+				"title": "PersonalTokenList"
+			},
+			"PersonalTokenPolicy": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "allowed"
+					},
+					{
+						"type": "string",
+						"const": "blocked"
+					}
+				],
+				"title": "PersonalTokenPolicy",
+				"description": "Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`."
 			},
 			"PlacementReason": {
 				"anyOf": [
@@ -16002,6 +16386,10 @@
 						"minLength": 1,
 						"maxLength": 100,
 						"description": "What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`."
+					},
+					"personal": {
+						"type": "boolean",
+						"description": "Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens."
 					}
 				},
 				"title": "StartDeviceLoginBody"
@@ -16730,6 +17118,9 @@
 					},
 					"defaultVisibility": {
 						"$ref": "#/components/schemas/SandboxVisibility"
+					},
+					"personalTokens": {
+						"$ref": "#/components/schemas/PersonalTokenPolicy"
 					}
 				},
 				"title": "UpdateAccountBody"

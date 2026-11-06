@@ -10,6 +10,7 @@ import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promise
 import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
 import {
+	type Account,
 	type ApiKey,
 	type ApiKeyPreset,
 	type ApiKeyScope,
@@ -81,7 +82,15 @@ import {
 } from "./environments.ts";
 import { CliError, notRunningOf, UnreachableError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
-import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
+import {
+	openInBrowser,
+	type PendingLogin,
+	readPendingLogin,
+	requestedOf,
+	type SignedIn,
+	startLogin,
+	waitForLogin,
+} from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
 import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } from "./ssh-proxy.ts";
 import {
@@ -259,6 +268,8 @@ interface Section {
 const SANDBOX_TYPES: readonly SandboxType[] = ["isolate", "microvm"];
 const SIZES: readonly SandboxSizeName[] = ["small", "default", "large", "xlarge"];
 const PRESETS: readonly ApiKeyPreset[] = ["agent", "ci", "read-only", "admin"];
+const VISIBILITIES = ["organisation", "private"] as const;
+const ROLES = ["member", "admin", "owner"] as const;
 const SCOPES: readonly ApiKeyScope[] = [
 	"sandboxes:read",
 	"sandboxes:write",
@@ -408,6 +419,152 @@ function callerName(caller: Caller): string {
 	}
 	if (caller.apiKey !== undefined) return `the key ${caller.apiKey.name} (${caller.apiKey.id})`;
 	return "an unknown caller";
+}
+
+/** How the caller signed in, for `login`: `, with a personal token for all your accounts`. */
+function credentialLine(caller: Caller): string {
+	const token = caller.personalToken;
+	if (token !== undefined) {
+		const where = token.accounts === undefined ? "all your accounts" : token.accounts.join(", ");
+		return `, with the personal token ${token.name} for ${where}, until ${timestamp(token.expiresAt)}`;
+	}
+	if (caller.apiKey !== undefined) return `, with the API key ${caller.apiKey.name} for ${caller.accountId} only`;
+	return "";
+}
+
+/** An account as a person reads it: `Acme (acc_7f3k2m9q)`, or `your personal account (…)`. */
+function accountLabel(account: Account): string {
+	return account.kind === "personal" ? `your personal account (${account.id})` : `${account.name} (${account.id})`;
+}
+
+/** An account of yours by ID or by name (`personal` for your personal account). */
+async function accountRef(client: KantelClient, ref: string): Promise<Account> {
+	return isAccountId(ref) ? client.getAccount(ref) : accountNamed(client, ref);
+}
+
+/** The account commands act in: `--account`, `KANTEL_ACCOUNT` or `org use`'s, else the caller's default. */
+async function currentAccountId(ctx: Context, client: KantelClient): Promise<string> {
+	return (await ctx.config()).account ?? (await client.getCaller()).accountId;
+}
+
+/** The account a command names (`ref`, by ID or name), else the one commands act in. */
+async function accountIdOf(ctx: Context, client: KantelClient, ref?: string): Promise<string> {
+	return ref === undefined ? currentAccountId(ctx, client) : (await accountRef(client, ref)).id;
+}
+
+/** The organisation commands act in; a usage error naming how to pick one when it is a personal account. */
+async function organisationOf(ctx: Context, client: KantelClient): Promise<Account> {
+	const account = await client.getAccount(await currentAccountId(ctx, client));
+	if (account.kind !== "organisation") {
+		throw new UsageError(
+			"this acts on an organisation, and commands act in your personal account: pick one with --account <name> or kantel org use <name>",
+		);
+	}
+	return account;
+}
+
+/** A member's user ID from their ID or email. */
+async function memberIdOf(client: KantelClient, accountId: string, ref: string): Promise<string> {
+	if (!ref.includes("@")) return ref;
+	const members = (await client.listMembers(accountId)).items;
+	const found = members.find((member) => member.email?.toLowerCase() === ref.trim().toLowerCase());
+	if (found === undefined) throw new CliError(`no member has the email ${ref}: kantel member list shows them`);
+	return found.userId;
+}
+
+/** Saves `accountId` as the account commands act in, as `org use` does. */
+async function useAccount(ctx: Context, accountId: string): Promise<void> {
+	const stored = await readStoredConfig(ctx.io.configDir);
+	await writeStoredConfig(ctx.io.configDir, { url: stored.url, apiKey: stored.apiKey, account: accountId });
+}
+
+/** Forgets a saved account that has gone (left or deleted), so commands act in the default one again. */
+async function forgetAccount(ctx: Context, accountId: string): Promise<void> {
+	const stored = await readStoredConfig(ctx.io.configDir);
+	if (stored.account !== accountId) return;
+	await writeStoredConfig(ctx.io.configDir, { url: stored.url, apiKey: stored.apiKey });
+	ctx.note("kantel: commands act in your default account again.");
+}
+
+function describeAccount(account: Account): string {
+	return fields([
+		["id", account.id],
+		["name", account.name],
+		["kind", account.kind],
+		["your role", account.role],
+		["new sandboxes", account.defaultVisibility === "organisation" ? "shared with the organisation" : "private"],
+		["personal tokens", account.kind === "organisation" ? (account.personalTokens ?? "allowed") : undefined],
+		["created", timestamp(account.createdAt)],
+	]);
+}
+
+/**
+ * `kantel list --every-account`: the sandboxes in each account the caller may act in, every page of each, with the
+ * account each is in. An account the caller can't list in is named on stderr and left out, and the exit code is 1.
+ */
+async function listEveryAccount(
+	ctx: Context,
+	filters: { readonly all: boolean; readonly mine: boolean },
+): Promise<number> {
+	if (ctx.string("cursor") !== undefined) throw new UsageError("--every-account lists every page: leave out --cursor");
+	const client = await ctx.client();
+	const accounts = (await client.listAccounts()).items;
+	const found: Sandbox[] = [];
+	let failed = false;
+	for (const account of accounts) {
+		let cursor: string | undefined;
+		try {
+			do {
+				const page = await client.listSandboxes({
+					account: account.id,
+					all: filters.all ? true : undefined,
+					mine: filters.mine ? true : undefined,
+					label: pairs(ctx.list("label"), "--label"),
+					host: ctx.string("on"),
+					cursor,
+				});
+				found.push(...page.items);
+				cursor = page.nextCursor;
+			} while (cursor !== undefined);
+		} catch (error) {
+			failed = true;
+			ctx.note(
+				`kantel: couldn't list ${accountLabel(account)}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	ctx.emit({ items: found }, () => {
+		if (found.length === 0) return filters.all ? "No sandboxes." : "No running sandboxes; --all shows stopped ones.";
+		const names = new Map(
+			accounts.map((account) => [account.id, account.kind === "personal" ? "personal" : account.name]),
+		);
+		const rows = found.map((sandbox) => [
+			names.get(sandbox.accountId) ?? sandbox.accountId,
+			sandbox.id,
+			sandbox.name,
+			kindOf(sandbox),
+			stateOf(sandbox),
+			sandbox.createdBy.name ?? sandbox.createdBy.id,
+		]);
+		return table(["ACCOUNT", "ID", "NAME", "TYPE", "STATE", "BY"], rows);
+	});
+	return failed ? 1 : 0;
+}
+
+/**
+ * Revokes the personal token `config` signs in with, as `logout` and a new `login` do; answers whether it did. A token
+ * Kantel no longer takes (revoked, expired) or a Kantel out of reach is left as it is: it can't be used again from here.
+ */
+async function revokeOwnToken(io: Io, config: ResolvedConfig): Promise<boolean> {
+	try {
+		const client = makeClient(io, config);
+		const caller = await client.getCaller();
+		if (caller.personalToken === undefined) return false;
+		await client.revokePersonalToken(caller.personalToken.id);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 const kindOf = (sandbox: Sandbox): string =>
@@ -640,9 +797,17 @@ function runSsh(args: readonly string[], io: Io, env?: Readonly<Record<string, s
 
 const GLOBAL_FLAGS: FlagSpecs = {
 	url: { type: "string", value: "<url>", description: `Kantel's URL (KANTEL_URL; default ${DEFAULT_URL})` },
-	key: { type: "string", value: "<key>", description: "An API key (KANTEL_API_KEY); also --api-key" },
+	key: {
+		type: "string",
+		value: "<key>",
+		description: "A personal access token or API key (KANTEL_API_KEY); also --api-key",
+	},
 	"api-key": { type: "string", value: "<key>", description: "The same as --key", hidden: true },
-	account: { type: "string", value: "<id>", description: "The account to act in (KANTEL_ACCOUNT)" },
+	account: {
+		type: "string",
+		value: "<id|name>",
+		description: "The account to act in, by ID or name (KANTEL_ACCOUNT); default the one kantel org use saved",
+	},
 	json: { type: "boolean", description: "Print Kantel's JSON answer as it is" },
 	help: { type: "boolean", short: "h", description: "Show a command's help" },
 };
@@ -849,12 +1014,17 @@ function hostedPort(value: string): { port: number; public?: true } {
  * The browser sign-in: the new key, or undefined when it only printed the code (no terminal and no `--wait`). It keeps
  * the code until it is used, so running `login` again carries on with it.
  */
-async function browserLogin(ctx: Context, url: string): Promise<IssuedApiKey | undefined> {
+async function browserLogin(ctx: Context, url: string): Promise<SignedIn | undefined> {
 	const client = makeClient(ctx.io, { url });
 	const now = Date.now;
+	const personal = !ctx.boolean("account-key");
+	const kept = await readPendingLogin(ctx.io.configDir, url, now());
+	// A code kept for the other kind of sign-in isn't carried on: this one asks for what it was told to, so --account-key
+	// never collects a personal token, nor a plain login an account's key.
 	const pending: PendingLogin =
-		(await readPendingLogin(ctx.io.configDir, url, now())) ??
-		(await startLogin(client, url, ctx.string("name") ?? `kantel on ${hostname()}`, ctx.io.configDir));
+		kept !== undefined && requestedOf(kept) === (personal ? "personal" : "key")
+			? kept
+			: await startLogin(client, url, ctx.string("name") ?? `kantel on ${hostname()}`, ctx.io.configDir, personal);
 	const interactive = ctx.io.stdout.isTTY === true && !ctx.json;
 	const waiting = interactive || ctx.boolean("wait");
 	const shown = {
@@ -873,7 +1043,11 @@ async function browserLogin(ctx: Context, url: string): Promise<IssuedApiKey | u
 	if (!waiting) {
 		// The same --url, or --wait would sign in to the saved or default URL, where this code isn't known.
 		const flagUrl = ctx.string("url");
-		if (!ctx.json) ctx.note(`Then run: kantel login --wait${flagUrl === undefined ? "" : ` --url ${originOf(url)}`}`);
+		if (!ctx.json) {
+			ctx.note(
+				`Then run: kantel login --wait${personal ? "" : " --account-key"}${flagUrl === undefined ? "" : ` --url ${originOf(url)}`}`,
+			);
+		}
 		return undefined;
 	}
 	if (interactive && !ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) {
@@ -1032,23 +1206,30 @@ const SECTIONS: readonly Section[] = [
 		commands: [
 			{
 				name: "login",
-				summary: "Sign in in the browser, or with an API key, and save it for the commands after",
+				summary: "Sign in in the browser, or with a token or API key, and save it for the commands after",
 				flags: {
 					"key-stdin": {
 						type: "boolean",
-						description: "Read an API key from stdin rather than signing in in the browser",
+						description: "Read a personal access token or API key from stdin rather than signing in in the browser",
+					},
+					"account-key": {
+						type: "boolean",
+						description: "Ask for an API key in one account (picked in the browser) rather than a personal token",
 					},
 					"no-browser": { type: "boolean", description: "Print the sign-in URL but don't open it" },
 					wait: {
 						type: "boolean",
 						description: "Wait for the browser sign-in even with no terminal (agents, scripts)",
 					},
-					name: { type: "string", value: "<name>", description: "The new key's name (default kantel on <host>)" },
+					name: { type: "string", value: "<name>", description: "The new token's name (default kantel on <host>)" },
 				},
 				details:
-					"With no key it prints a code and opens Kantel's console, where you approve it; the CLI gets an API key of\n" +
-					"its own (90 days), which you can revoke on the API keys page. With no terminal it prints the URL and code\n" +
-					"and exits; run kantel login --wait to wait for the approval. Running it again shows the same code.\n" +
+					"With no key it prints a code and opens Kantel's console, where you approve it; the CLI gets a personal\n" +
+					"access token of its own (90 days), which acts as you in every account you belong to: --account, or\n" +
+					"kantel org use, picks the one a command acts in. You can revoke it with kantel token revoke, or under\n" +
+					"Profile in the console. --account-key asks for an API key in one account instead, which needs admin there.\n" +
+					"With no terminal it prints the URL and code and exits; run kantel login --wait to wait for the approval.\n" +
+					"Running it again shows the same code.\n" +
 					`It signs in to ${DEFAULT_URL} unless you give --url (or KANTEL_URL), for a self-hosted Kantel.\n` +
 					"\n" +
 					"An existing key comes from --key-stdin, which keeps it out of your shell history and process list:\n" +
@@ -1062,11 +1243,12 @@ const SECTIONS: readonly Section[] = [
 						if (key === "") throw new UsageError("there was no key on stdin");
 					}
 					const flagAccount = ctx.string("account");
+					let signedIn: SignedIn | undefined;
 					if (key === undefined) {
 						const url = resolveConfig({ url: ctx.string("url") }, ctx.io.env, stored).url;
-						const issued = await browserLogin(ctx, url);
-						if (issued === undefined) return 0;
-						key = issued.secret;
+						signedIn = await browserLogin(ctx, url);
+						if (signedIn === undefined) return 0;
+						key = signedIn.secret;
 					}
 					const flags = { url: ctx.string("url"), apiKey: key, account: flagAccount };
 					const config = resolveConfig(flags, ctx.io.env, stored);
@@ -1078,9 +1260,21 @@ const SECTIONS: readonly Section[] = [
 					if (hasValue(fromEnv) && fromEnv !== key) {
 						ctx.note("kantel: KANTEL_API_KEY is set in your environment, and comes before the saved key.");
 					}
+					// Signing in again replaces the saved token: the one it replaces is revoked, so it doesn't linger. It goes to the
+					// server it was saved for, never the new one, wherever this sign-in is.
+					if (
+						stored.apiKey !== undefined &&
+						stored.apiKey !== key &&
+						stored.apiKey.startsWith("kpt_") &&
+						stored.url !== undefined
+					) {
+						await revokeOwnToken(ctx.io, { url: stored.url, apiKey: stored.apiKey });
+					}
+					const acting = caller.accounts.find((each) => each.id === (account ?? caller.accountId));
 					ctx.emit(caller, () =>
 						[
-							`Signed in to ${originOf(config.url)} as ${callerName(caller)}, in ${caller.accountId}.`,
+							`Signed in to ${originOf(config.url)} as ${callerName(caller)}${credentialLine(caller)}.`,
+							`Commands act in ${acting === undefined ? (account ?? caller.accountId) : accountLabel(acting)}${caller.personalToken === undefined || caller.accounts.length < 2 ? "" : ": kantel org use picks another, or --account for one command"}.`,
 							`Saved to ${path}.`,
 						].join("\n"),
 					);
@@ -1088,28 +1282,37 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "logout",
-				summary: "Forget the saved API key",
+				summary: "Forget the saved token or API key, revoking a personal token",
 				async run(ctx) {
 					const stored = await readStoredConfig(ctx.io.configDir);
 					const path = configFile(ctx.io.configDir);
+					// A personal token is the CLI's own: signing out revokes it, so a copy of the file is no use.
+					const revoked =
+						stored.apiKey?.startsWith("kpt_") === true && stored.url !== undefined
+							? await revokeOwnToken(ctx.io, { url: stored.url, apiKey: stored.apiKey })
+							: false;
 					if (stored.apiKey !== undefined) {
 						await writeStoredConfig(ctx.io.configDir, { url: stored.url, account: stored.account });
 					}
 					if (hasValue(ctx.io.env.KANTEL_API_KEY)) {
 						ctx.note("kantel: KANTEL_API_KEY is still set in your environment.");
 					}
-					ctx.emit({ signedOut: stored.apiKey !== undefined, path }, () =>
-						stored.apiKey === undefined ? "No key was saved." : `Removed the saved key from ${path}.`,
+					ctx.emit({ signedOut: stored.apiKey !== undefined, revoked, path }, () =>
+						stored.apiKey === undefined
+							? "No key was saved."
+							: revoked
+								? `Revoked the saved personal token and removed it from ${path}.`
+								: `Removed the saved key from ${path}.`,
 					);
 				},
 			},
 			{
 				name: "whoami",
-				summary: "Who the key is, and the accounts it may act in",
+				summary: "Who you are signed in as, and the accounts you may act in",
 				async run(ctx) {
 					const config = await ctx.config();
 					const caller = await (await ctx.client()).getCaller();
-					const { apiKey } = caller;
+					const { apiKey, personalToken } = caller;
 					const accounts = caller.accounts.map(
 						(account) => `${account.id} (${account.kind === "personal" ? "personal" : account.name}, ${account.role})`,
 					);
@@ -1118,7 +1321,13 @@ const SECTIONS: readonly Section[] = [
 							["url", originOf(config.url)],
 							["user", caller.user === undefined ? undefined : callerName(caller)],
 							["key", apiKey === undefined ? undefined : `${apiKey.name} (${apiKey.id}): ${apiKey.scopes.join(", ")}`],
-							["account", caller.accountId],
+							[
+								"token",
+								personalToken === undefined
+									? undefined
+									: `${personalToken.name} (${personalToken.id}), personal: ${personalToken.scopes?.join(", ") ?? "as your role allows"}${personalToken.accounts === undefined ? "" : `, in ${personalToken.accounts.join(", ")} only`}, until ${timestamp(personalToken.expiresAt)}`,
+							],
+							["account", config.account ?? caller.accountId],
 							["accounts", accounts.join(", ")],
 							["mode", caller.mode],
 							["super-admin", caller.superAdmin ? "yes" : undefined],
@@ -1299,12 +1508,17 @@ const SECTIONS: readonly Section[] = [
 					label: { type: "string", multiple: true, value: "<k=v>", description: "Only those with this label" },
 					on: { type: "string", value: "<host>", description: "Only those on this host, its name or ID" },
 					mine: { type: "boolean", description: "Only your own, not the ones others share in an organisation" },
+					"every-account": {
+						type: "boolean",
+						description: "In each of your accounts, with an ACCOUNT column (a personal token's)",
+					},
 					cursor: cursorFlag,
 				},
 				async run(ctx) {
 					const config = await ctx.config();
 					const all = ctx.boolean("all");
 					const mine = ctx.boolean("mine");
+					if (ctx.boolean("every-account")) return listEveryAccount(ctx, { all, mine });
 					const page = await (await ctx.client()).listSandboxes({
 						account: config.account,
 						all: all ? true : undefined,
@@ -2529,7 +2743,7 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
-		title: "API keys and organisations",
+		title: "API keys and personal tokens",
 		commands: [
 			{
 				name: "key list",
@@ -2587,30 +2801,378 @@ const SECTIONS: readonly Section[] = [
 				},
 			},
 			{
-				name: "org list",
-				summary: "Your personal account and your organisations",
+				name: "token list",
+				summary: "Your personal access tokens, in every account",
 				async run(ctx) {
-					const accounts = await (await ctx.client()).listAccounts();
-					const rows = accounts.items.map((account) => [account.id, account.kind, account.name, account.role]);
-					ctx.emit(accounts, () => table(["ID", "KIND", "NAME", "ROLE"], rows));
+					const tokens = await (await ctx.client()).listPersonalTokens();
+					const rows = tokens.items.map((token) => [
+						token.id,
+						token.name,
+						token.revokedAt !== undefined ? "revoked" : token.expiresAt <= Date.now() ? "expired" : "active",
+						token.scopes?.join(", ") ?? "as your role allows",
+						token.accounts?.join(", ") ?? "all",
+						timestamp(token.expiresAt),
+						token.lastUsedAt === undefined ? "never" : ago(token.lastUsedAt),
+					]);
+					ctx.emit(tokens, () =>
+						rows.length === 0
+							? "No personal tokens."
+							: table(["ID", "NAME", "STATE", "SCOPES", "ACCOUNTS", "EXPIRES", "LAST USED"], rows),
+					);
+				},
+			},
+			{
+				name: "token create",
+				summary: "Make a personal access token for a script; its secret is shown once",
+				args: [{ name: "name" }],
+				flags: {
+					preset: { type: "string", value: "<agent|ci|read-only|admin>", description: "Cap it at a set of scopes" },
+					scope: {
+						type: "string",
+						multiple: true,
+						value: "<scope>",
+						description: "Cap it at a scope; repeat for more",
+					},
+					only: {
+						type: "string",
+						multiple: true,
+						value: "<account>",
+						description: "Only this account, by ID or name; repeat for more (default all yours)",
+					},
+					"expires-days": { type: "string", value: "<n>", description: "It stops working after this many days (90)" },
+				},
+				details:
+					"A personal token acts as you, in every account you belong to (or the --only ones), with your role there.\n" +
+					"--preset and --scope cap what it may do beyond that. It lasts 90 days unless --expires-days says, at most\n" +
+					"366. For an agent or CI that works in one account, an API key (kantel key create) is usually better: it\n" +
+					`belongs to the account, not to you.\nScopes: ${SCOPES.filter((scope) => scope !== "hosts:admin").join(", ")}.`,
+				async run(ctx) {
+					const client = await ctx.client();
+					const only = await Promise.all(ctx.list("only").map(async (ref) => (await accountRef(client, ref)).id));
+					const issued = await client.createPersonalToken({
+						name: ctx.arg(0),
+						preset: choice(ctx.string("preset"), PRESETS, "--preset"),
+						scopes: choices(ctx.list("scope"), SCOPES, "--scope"),
+						...(only.length === 0 ? {} : { accounts: only }),
+						expiresInDays: whole(ctx.string("expires-days"), "--expires-days"),
+					});
+					ctx.emit(issued, () =>
+						[
+							`${issued.token.id} (${issued.token.name}), until ${timestamp(issued.token.expiresAt)}`,
+							"",
+							`  ${issued.secret}`,
+							"",
+							"Store it now: it isn't shown again. Give it to a script as KANTEL_API_KEY.",
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "token revoke",
+				summary: "Stop one of your personal tokens working",
+				args: ID_ARG,
+				async run(ctx) {
+					const token = await (await ctx.client()).revokePersonalToken(ctx.arg(0));
+					ctx.emit(token, () => `Revoked ${token.id} (${token.name}).`);
+				},
+			},
+		],
+	},
+	{
+		title: "Accounts and organisations",
+		commands: [
+			{
+				name: "org list",
+				summary: "Your personal account and your organisations; * marks the one commands act in",
+				async run(ctx) {
+					const config = await ctx.config();
+					const client = await ctx.client();
+					const [accounts, current] = await Promise.all([client.listAccounts(), currentAccountId(ctx, client)]);
+					const rows = accounts.items.map((account) => [
+						account.id === current ? "*" : "",
+						account.id,
+						account.kind,
+						account.name,
+						account.role,
+					]);
+					ctx.emit(accounts, () => {
+						const listed = table(["", "ID", "KIND", "NAME", "ROLE"], rows);
+						const missing = config.account !== undefined && !accounts.items.some((each) => each.id === current);
+						return missing
+							? `${listed}\n\nkantel acts in ${current}, which you can't reach: kantel org use picks another.`
+							: listed;
+					});
+				},
+			},
+			{
+				name: "org use",
+				summary: "Act in this account from now on, by ID or name (personal for your own)",
+				args: [{ name: "account", optional: true }],
+				flags: { clear: { type: "boolean", description: "Go back to the default: your personal account" } },
+				details: "It is saved with your sign-in; --account (or KANTEL_ACCOUNT) still picks another for one command.",
+				async run(ctx) {
+					const stored = await readStoredConfig(ctx.io.configDir);
+					const ref = ctx.optional(0);
+					if (ctx.boolean("clear") || ref === undefined) {
+						if (!ctx.boolean("clear"))
+							throw new UsageError("name an account (kantel org list shows them), or give --clear");
+						await writeStoredConfig(ctx.io.configDir, { url: stored.url, apiKey: stored.apiKey });
+						ctx.emit({ account: null }, () => "Commands act in your default account again.");
+						return 0;
+					}
+					const account = await accountRef(await ctx.client(), ref);
+					await writeStoredConfig(ctx.io.configDir, { url: stored.url, apiKey: stored.apiKey, account: account.id });
+					if (hasValue(ctx.io.env.KANTEL_ACCOUNT) && ctx.io.env.KANTEL_ACCOUNT !== account.id) {
+						ctx.note("kantel: KANTEL_ACCOUNT is set in your environment, and comes before the saved account.");
+					}
+					ctx.emit(account, () => `Commands act in ${accountLabel(account)} from now on.`);
+				},
+			},
+			{
+				name: "org show",
+				summary: "An account: its kind, your role, and its settings",
+				args: [{ name: "account", optional: true }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await client.getAccount(await accountIdOf(ctx, client, ctx.optional(0)));
+					ctx.emit(account, () => describeAccount(account));
 				},
 			},
 			{
 				name: "org create",
 				summary: "Make an organisation, with you as its owner",
 				args: [{ name: "name" }],
+				flags: {
+					visibility: {
+						type: "string",
+						value: "<organisation|private>",
+						description: "Who sees new sandboxes by default (organisation)",
+					},
+					use: { type: "boolean", description: "Act in it from now on, as kantel org use does" },
+				},
 				async run(ctx) {
-					const account = await (await ctx.client()).createOrganisation({ name: ctx.arg(0) });
-					ctx.emit(account, () => `Created ${account.id} (${account.name}).`);
+					const account = await (await ctx.client()).createOrganisation({
+						name: ctx.arg(0),
+						defaultVisibility: choice(ctx.string("visibility"), VISIBILITIES, "--visibility"),
+					});
+					if (ctx.boolean("use")) await useAccount(ctx, account.id);
+					ctx.emit(
+						account,
+						() =>
+							`Created ${account.name} (${account.id}).${ctx.boolean("use") ? " Commands act in it from now on." : ` Act in it with: kantel org use ${account.id}`}`,
+					);
 				},
 			},
 			{
 				name: "org join",
 				summary: "Join an organisation with an invite's code",
 				args: [{ name: "code" }],
+				flags: { use: { type: "boolean", description: "Act in it from now on, as kantel org use does" } },
 				async run(ctx) {
 					const account = await (await ctx.client()).joinOrganisation({ code: ctx.arg(0) });
+					if (ctx.boolean("use")) await useAccount(ctx, account.id);
 					ctx.emit(account, () => `Joined ${account.name} (${account.id}) as ${account.role}.`);
+				},
+			},
+			{
+				name: "org set",
+				summary: "Change the account's name, default visibility, or whether personal tokens work in it",
+				flags: {
+					name: { type: "string", value: "<name>", description: "Rename it" },
+					visibility: {
+						type: "string",
+						value: "<organisation|private>",
+						description: "Who sees new sandboxes by default",
+					},
+					"personal-tokens": {
+						type: "string",
+						value: "<allowed|blocked>",
+						description: "blocked: members' personal tokens can't act in it (an organisation's)",
+					},
+				},
+				details: "It changes the account commands act in (--account or kantel org use); it needs admin or owner.",
+				async run(ctx) {
+					const client = await ctx.client();
+					const body = {
+						name: ctx.string("name"),
+						defaultVisibility: choice(ctx.string("visibility"), VISIBILITIES, "--visibility"),
+						personalTokens: choice(ctx.string("personal-tokens"), ["allowed", "blocked"] as const, "--personal-tokens"),
+					};
+					if (Object.values(body).every((value) => value === undefined)) {
+						throw new UsageError("say what to change: --name, --visibility or --personal-tokens");
+					}
+					const account = await client.updateAccount(await accountIdOf(ctx, client), body);
+					ctx.emit(account, () => describeAccount(account));
+				},
+			},
+			{
+				name: "org usage",
+				summary: "The account's running time and cost, and its limits",
+				flags: { days: { type: "string", value: "<n>", description: "Over this many days (default 1)" } },
+				async run(ctx) {
+					const client = await ctx.client();
+					const days = whole(ctx.string("days"), "--days") ?? 1;
+					const usage = await client.getAccountUsage(await accountIdOf(ctx, client), {
+						since: Date.now() - days * 24 * 3_600_000,
+					});
+					ctx.emit(usage, () =>
+						fields([
+							["account", usage.accountId],
+							["since", timestamp(usage.since)],
+							["running now", String(usage.running)],
+							["running time", duration(usage.runningSeconds)],
+							["cost", money(usage.cost.total, usage.cost.currency)],
+							...Object.entries(usage.limits ?? {}).map(([name, value]): [string, string] => [
+								`limit ${name}`,
+								String(value),
+							]),
+						]),
+					);
+				},
+			},
+			{
+				name: "org leave",
+				summary: "Leave the organisation (needs --yes)",
+				flags: { yes: { type: "boolean", short: "y", description: "Yes, leave it" } },
+				details: "Your private sandboxes there stay, stopped, for its admins. You need an invite to come back.",
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					if (!ctx.boolean("yes")) {
+						throw new UsageError(
+							`to leave ${account.name} (${account.id}), run: kantel org leave --account ${account.id} --yes`,
+						);
+					}
+					const caller = await client.getCaller();
+					if (caller.user === undefined || caller.apiKey !== undefined) {
+						throw new CliError("an API key can't leave an organisation: sign in as yourself (kantel login)");
+					}
+					await client.removeMember(account.id, caller.user.id);
+					await forgetAccount(ctx, account.id);
+					ctx.emit({ left: account.id }, () => `You left ${account.name}.`);
+				},
+			},
+			{
+				name: "org delete",
+				summary: "Delete the organisation for good (needs --yes; owners only)",
+				flags: { yes: { type: "boolean", short: "y", description: "Yes, delete it: this can't be undone" } },
+				details:
+					"It is refused while it has sandboxes or saved snapshots. Its members, invites, API keys and webhooks go too.",
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					if (!ctx.boolean("yes")) {
+						throw new UsageError(
+							`deleting ${account.name} (${account.id}) is permanent. To delete it, run: kantel org delete --account ${account.id} --yes`,
+						);
+					}
+					await client.deleteOrganisation(account.id);
+					await forgetAccount(ctx, account.id);
+					ctx.emit({ deleted: account.id }, () => `Deleted ${account.name}.`);
+				},
+			},
+			{
+				name: "member list",
+				summary: "The organisation's members and their roles",
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					const members = await client.listMembers(account.id);
+					const rows = members.items.map((member) => [
+						member.userId,
+						member.name,
+						member.email ?? "",
+						member.role,
+						ago(member.joinedAt),
+					]);
+					ctx.emit(members, () => table(["USER", "NAME", "EMAIL", "ROLE", "JOINED"], rows));
+				},
+			},
+			{
+				name: "member role",
+				summary: "Make a member a member, admin or owner",
+				args: [{ name: "user" }, { name: "role" }],
+				details: "<user> is their user ID or email. Changing roles needs admin; making or unmaking an owner, an owner.",
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					const role = choice(ctx.arg(1), ROLES, "the role") ?? "member";
+					const userId = await memberIdOf(client, account.id, ctx.arg(0));
+					const member = await client.updateMember(account.id, userId, { role });
+					ctx.emit(
+						member,
+						() => `${member.name} is ${member.role === "admin" ? "an admin" : `a ${member.role}`} of ${account.name}.`,
+					);
+				},
+			},
+			{
+				name: "member rm",
+				summary: "Remove someone from the organisation",
+				args: [{ name: "user" }],
+				details: "<user> is their user ID or email. Their private sandboxes there stay, stopped, for an admin.",
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					const userId = await memberIdOf(client, account.id, ctx.arg(0));
+					await client.removeMember(account.id, userId);
+					ctx.emit({ removed: userId }, () => `Removed ${ctx.arg(0)} from ${account.name}.`);
+				},
+			},
+			{
+				name: "invite list",
+				summary: "The organisation's open invites",
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					const invites = await client.listInvites(account.id);
+					const rows = invites.items.map((invite) => [
+						invite.id,
+						invite.email ?? "anyone with the code",
+						invite.role,
+						until(invite.expiresAt),
+					]);
+					ctx.emit(invites, () =>
+						rows.length === 0 ? "No open invites." : table(["ID", "FOR", "ROLE", "EXPIRES"], rows),
+					);
+				},
+			},
+			{
+				name: "invite create",
+				summary: "Invite someone to the organisation; its code is shown once",
+				flags: {
+					email: { type: "string", value: "<email>", description: "Only this person may use it, and Kantel emails it" },
+					role: { type: "string", value: "<member|admin|owner>", description: "Their role (member)" },
+					"expires-hours": { type: "string", value: "<n>", description: "It lasts this many hours (168, a week)" },
+				},
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					const invite = await client.createInvite(account.id, {
+						role: choice(ctx.string("role"), ROLES, "--role"),
+						email: ctx.string("email"),
+						expiresInHours: whole(ctx.string("expires-hours"), "--expires-hours"),
+					});
+					ctx.emit(invite, () =>
+						[
+							`Invited ${invite.email ?? "anyone with the code"} to ${account.name} as ${invite.role === "admin" ? "an admin" : `a ${invite.role}`}, until ${timestamp(invite.expiresAt)}.`,
+							...(invite.emailed === true ? ["Kantel emailed them a link to join."] : []),
+							"",
+							`  kantel org join ${invite.code ?? ""}`,
+							"",
+							"The code isn't shown again.",
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "invite revoke",
+				summary: "Stop an invite working",
+				args: ID_ARG,
+				async run(ctx) {
+					const client = await ctx.client();
+					const account = await organisationOf(ctx, client);
+					await client.revokeInvite(account.id, ctx.arg(0));
+					ctx.emit({ revoked: ctx.arg(0) }, () => `Revoked ${ctx.arg(0)}.`);
 				},
 			},
 		],
@@ -3086,7 +3648,10 @@ const GROUPS: { readonly [name: string]: string } = {
 	snapshot: "Take, save, browse and delete snapshots",
 	env: "Environments: the variables, protected secrets, files, repos and grants new sandboxes start with",
 	key: "Make, rotate and revoke scoped API keys",
-	org: "Your organisations",
+	token: "Your personal access tokens, which act as you in every account",
+	org: "Your accounts and organisations: which one commands act in, and their settings",
+	member: "An organisation's members and their roles",
+	invite: "Invite people to an organisation",
 	webhook: "Send the account's events to a URL",
 	telemetry: "Send the account's metrics and events to OpenTelemetry",
 	hosts: "Run your sandboxes on machines of your own (experimental)",
@@ -3276,6 +3841,32 @@ function resolveCommand(argv: readonly string[]): Resolution {
 
 // Running.
 
+/** Account IDs start so: `acc_…`, and a personal account's `acc_p_…`. Anything else names an account by its name. */
+const isAccountId = (value: string): boolean => value.startsWith("acc_");
+
+/** `config` with its account, when it names one by name (`--account Acme`), as that account's ID. */
+async function withAccountId(io: Io, config: ResolvedConfig): Promise<ResolvedConfig> {
+	const named = config.account;
+	if (named === undefined || isAccountId(named)) return config;
+	return { ...config, account: (await accountNamed(makeClient(io, config), named)).id };
+}
+
+/** The account of yours called `name` (case aside), or `personal` for your personal account. */
+async function accountNamed(client: KantelClient, name: string): Promise<Account> {
+	const accounts = (await client.listAccounts()).items;
+	const wanted = name.trim().toLowerCase();
+	const found =
+		wanted === "personal"
+			? accounts.filter((account) => account.kind === "personal")
+			: accounts.filter((account) => account.name.toLowerCase() === wanted);
+	const [only] = found;
+	if (only === undefined) throw new CliError(`you have no account called "${name}": kantel org list shows them`);
+	if (found.length > 1) {
+		throw new CliError(`more than one account is called "${name}": use its ID (${found.map((a) => a.id).join(", ")})`);
+	}
+	return only;
+}
+
 function createContext(
 	io: Io,
 	parsed: ParsedArgs,
@@ -3290,7 +3881,7 @@ function createContext(
 				apiKey: stringFlag(parsed, "key") ?? stringFlag(parsed, "api-key"),
 				account: stringFlag(parsed, "account"),
 			};
-			config = loadConfig(flags, io.env, io.configDir);
+			config = loadConfig(flags, io.env, io.configDir).then((loaded) => withAccountId(io, loaded));
 		}
 		return config;
 	};

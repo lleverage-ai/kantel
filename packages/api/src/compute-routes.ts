@@ -38,6 +38,7 @@ import {
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
 	CreateOrganisationBody,
+	CreatePersonalTokenBody,
 	CreateSandboxBody,
 	CreateTemplateBody,
 	CreateWebhookBody,
@@ -76,6 +77,7 @@ import {
 	InviteList,
 	InvitePath,
 	IssuedApiKey,
+	IssuedPersonalToken,
 	JoinOrganisationBody,
 	ListEventsQuery,
 	ListFilesQuery,
@@ -87,6 +89,9 @@ import {
 	MemberList,
 	MemberPath,
 	PageQueryCompute,
+	PersonalToken,
+	PersonalTokenList,
+	PersonalTokenPath,
 	PollDeviceLoginBody,
 	PortPath,
 	ProxySettings,
@@ -1149,6 +1154,57 @@ export const revokeApiKey = defineRoute({
 });
 
 export const apiKeyRoutes = { listApiKeys, createApiKey, getApiKey, rotateApiKey, revokeApiKey } as const;
+
+// Personal access tokens: the caller's own, made in the console or by `kantel login`.
+
+export const listPersonalTokens = defineRoute({
+	operationId: "listPersonalTokens",
+	method: "GET",
+	path: "/personal-tokens",
+	tag: "api-keys",
+	summary: "List your personal access tokens",
+	description: describe(
+		"The caller's own personal access tokens, newest first, revoked and expired ones included. A person or a personal",
+		"token; not an API key.",
+	),
+	answer: { status: 200, description: "The tokens.", schema: PersonalTokenList },
+	errors: ["forbidden"],
+});
+
+export const createPersonalToken = defineRoute({
+	operationId: "createPersonalToken",
+	method: "POST",
+	path: "/personal-tokens",
+	tag: "api-keys",
+	summary: "Create a personal access token",
+	description: describe(
+		"Makes a token that acts as the caller, in every account they belong to or the ones `accounts` names, with their",
+		"role there, capped by its scopes. Its secret is answered once. It lasts 90 days unless `expiresInDays` says, at",
+		"most 366. A person, or a personal token making one that does no more than it, in no more accounts, for no",
+		"longer; not an API key.",
+	),
+	body: CreatePersonalTokenBody,
+	idempotent: true,
+	answer: { status: 201, description: "The token and its secret.", schema: IssuedPersonalToken },
+	errors: ["invalid", "forbidden"],
+});
+
+export const revokePersonalToken = defineRoute({
+	operationId: "revokePersonalToken",
+	method: "DELETE",
+	path: "/personal-tokens/{tokenId}",
+	tag: "api-keys",
+	summary: "Revoke a personal access token",
+	description: describe(
+		"It stops working at once, and so does access given with it (tunnels, exposed ports). Your own tokens only; a",
+		"token may revoke itself, as `kantel logout` does.",
+	),
+	params: PersonalTokenPath,
+	answer: { status: 200, description: "The token, revoked.", schema: PersonalToken },
+	errors: readErrors,
+});
+
+export const personalTokenRoutes = { listPersonalTokens, createPersonalToken, revokePersonalToken } as const;
 
 // Signing in a device in a browser: the command line's `kantel login`, as RFC 8628's device authorisation grant. The
 // device starts it and polls with no credential; a signed-in person approves it on the console's page, and the device's
@@ -2329,6 +2385,7 @@ export const computeRoutes = {
 	...accessRoutes,
 	...snapshotRoutes,
 	...apiKeyRoutes,
+	...personalTokenRoutes,
 	...deviceLoginRoutes,
 	...proxyRoutes,
 	...environmentComputeRoutes,

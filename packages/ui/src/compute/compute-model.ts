@@ -38,6 +38,8 @@ export interface ComputeAccount {
 	readonly members: number;
 	/** The plan's id on a hosted Kantel. */
 	readonly planId?: string;
+	/** An organisation's: `blocked` when members' personal access tokens can't act in it. Absent is allowed. */
+	readonly personalTokens?: "allowed" | "blocked";
 }
 
 /** The person signed in. */
@@ -88,6 +90,8 @@ export interface AccountsSource {
 	deleteAccount?(): Promise<void>;
 	/** Renames an organisation; needs admin. Absent where the source can't. */
 	rename?(accountId: string, name: string): Promise<ComputeAccount>;
+	/** Allows or blocks members' personal access tokens in an organisation; needs admin. Absent where it can't. */
+	setPersonalTokens?(accountId: string, policy: "allowed" | "blocked"): Promise<ComputeAccount>;
 	/** Changes a member's role; needs admin, and only an owner makes or unmakes an owner. Absent where it can't. */
 	setRole?(accountId: string, memberId: string, role: AccountRole): Promise<OrganisationMember>;
 }
@@ -1177,6 +1181,43 @@ export interface ApiKeysSource {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Personal access tokens
+
+/** A personal access token (`kpt_…`): it acts as its person, in all their accounts or the ones it names. */
+export interface PersonalToken {
+	readonly id: string;
+	readonly name: string;
+	/** `kpt_5n2p`. */
+	readonly prefix: string;
+	/** At most these, on top of the person's role; undefined: whatever their role allows. */
+	readonly scopes?: readonly ApiScope[];
+	/** Only these accounts' IDs; undefined: every account of theirs. */
+	readonly accounts?: readonly string[];
+	readonly createdAt: number;
+	readonly expiresAt: number;
+	readonly lastUsedAt?: number;
+	readonly revokedAt?: number;
+}
+
+/** A token just made: its secret is here once, never again. */
+export interface CreatedPersonalToken {
+	readonly token: PersonalToken;
+	readonly secret: string;
+}
+
+export interface PersonalTokensSource {
+	/** The person's own tokens, revoked ones included. */
+	list(): Promise<readonly PersonalToken[]>;
+	create(input: {
+		readonly name: string;
+		readonly scopes?: readonly ApiScope[];
+		readonly accounts?: readonly string[];
+		readonly expiresInDays: number;
+	}): Promise<CreatedPersonalToken>;
+	revoke(id: string): Promise<PersonalToken>;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Egress proxy
 
 /** What sandboxes may reach: anything, the allowed hosts, or nothing. */
@@ -1807,6 +1848,8 @@ export interface DeviceLogin {
 	readonly userCode: string;
 	/** What is signing in, as it named itself: `kantel on build-01`. */
 	readonly clientName: string;
+	/** It asks for a personal access token, which acts as you in your accounts, not an API key in one. */
+	readonly personal?: boolean;
 	readonly state: DeviceLoginState;
 	readonly createdAt: number;
 	readonly expiresAt: number;
@@ -1815,8 +1858,19 @@ export interface DeviceLogin {
 export interface DeviceLoginsSource {
 	/** The sign-in with this code; rejects when no sign-in has it. */
 	get(userCode: string): Promise<DeviceLogin>;
-	/** Makes the device a key in the account, which its next poll collects. */
-	approve(userCode: string, input: { readonly accountId: string }): Promise<DeviceLogin>;
+	/**
+	 * Makes the device a key in the account, or for a personal sign-in a personal token (in `accounts` only, when given),
+	 * which its next poll collects.
+	 */
+	approve(
+		userCode: string,
+		input: {
+			readonly accountId: string;
+			/** The sign-in asked for a personal token, and the page showed the person what it gets. */
+			readonly personal?: boolean;
+			readonly accounts?: readonly string[];
+		},
+	): Promise<DeviceLogin>;
 	deny(userCode: string): Promise<DeviceLogin>;
 }
 
@@ -1867,6 +1921,8 @@ export interface ComputeSource {
 	readonly sandboxes: SandboxesSource;
 	readonly snapshots: SnapshotsSource;
 	readonly keys: ApiKeysSource;
+	/** The person's own personal access tokens; absent when signed in with a key, or on a gateway without them. */
+	readonly personalTokens?: PersonalTokensSource;
 	readonly proxy: ProxySource;
 	readonly environments: EnvironmentsSource;
 	/** Templates: only where the deployment has turned them on (experimental, `KANTEL_TEMPLATES`). */

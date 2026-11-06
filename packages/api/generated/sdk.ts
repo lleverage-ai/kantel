@@ -14,6 +14,8 @@ export interface Account {
 	readonly role: MemberRole;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
 	readonly defaultVisibility: SandboxVisibility;
+	/** Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`. */
+	readonly personalTokens?: PersonalTokenPolicy;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 }
@@ -106,13 +108,17 @@ export type ApiKeyScope =
 	| "account:admin"
 	| "hosts:admin";
 
-/** The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin. */
+/** What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin. */
 export interface ApproveDeviceLoginBody {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	/** A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`. */
 	readonly preset?: ApiKeyPreset;
-	/** Default 90. The key stops working after it. */
+	/** True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused. */
+	readonly personal?: boolean;
+	/** For a personal token: only these accounts. Absent: every account of the approver's. */
+	readonly accounts?: readonly string[];
+	/** Default 90. It stops working after it. A personal token lasts at most 366. */
 	readonly expiresInDays?: number;
 }
 
@@ -333,6 +339,8 @@ export interface Caller {
 	readonly user?: CallerUser;
 	/** The key the call was signed in with, when it was a key. */
 	readonly apiKey?: CallerApiKey;
+	/** The personal access token the call was signed in with, when it was one, and its limits. */
+	readonly personalToken?: CallerPersonalToken;
 	/** The account the call acts in when it names none. */
 	readonly accountId: string;
 	readonly accounts: readonly Account[];
@@ -351,6 +359,16 @@ export interface CallerApiKey {
 	readonly id: string;
 	readonly name: string;
 	readonly scopes: readonly ApiKeyScope[];
+}
+
+/** The personal access token the call was signed in with, when it was one, and its limits. */
+export interface CallerPersonalToken {
+	readonly id: string;
+	readonly name: string;
+	readonly scopes?: readonly ApiKeyScope[];
+	readonly accounts?: readonly string[];
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
 }
 
 export interface CallerUser {
@@ -484,6 +502,18 @@ export interface CreateOrganisationBody {
 	readonly defaultVisibility?: SandboxVisibility;
 }
 
+/** `scopes` or a `preset` (or both, which adds them) cap what it may do; with neither, it does whatever your role allows. A token making a token can't make one that does more than it, in more accounts, or for longer. */
+export interface CreatePersonalTokenBody {
+	readonly name: string;
+	readonly scopes?: readonly ApiKeyScope[];
+	/** A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`. */
+	readonly preset?: ApiKeyPreset;
+	/** Absent: every account of yours. */
+	readonly accounts?: readonly string[];
+	/** Default 90, at most 366. */
+	readonly expiresInDays?: number;
+}
+
 /** Any other field is refused as `invalid`. */
 export interface CreateProjectBody {
 	/** The project's name, trimmed: not empty, and at most 100 characters. */
@@ -597,6 +627,8 @@ export interface DeviceLogin {
 export interface DeviceLoginRequest {
 	readonly userCode: string;
 	readonly clientName: string;
+	/** It asks for a personal access token, not an API key in one account. */
+	readonly personal?: boolean;
 	/** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
 	readonly state: DeviceLoginState;
 	/** Epoch milliseconds, UTC. */
@@ -605,11 +637,12 @@ export interface DeviceLoginRequest {
 	readonly expiresAt: number;
 }
 
-/** With `approved`, the new key and its secret, shown this once. */
+/** With `approved`, the new key (`issued`) or, for a sign-in that asked for one, personal access token (`token`), and its secret, shown this once. */
 export interface DeviceLoginResult {
 	/** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
 	readonly state: DeviceLoginState;
 	readonly issued?: IssuedApiKey;
+	readonly token?: IssuedPersonalToken;
 }
 
 /** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
@@ -1093,6 +1126,13 @@ export interface IssuedApiKey {
 	readonly secret: string;
 }
 
+export interface IssuedPersonalToken {
+	/** A personal access token (`kpt_…`). Its secret is never stored or shown after it is made. */
+	readonly token: PersonalToken;
+	/** The token itself, `kpt_…`. Shown once: store it now. */
+	readonly secret: string;
+}
+
 export interface JoinOrganisationBody {
 	/** An invite's join code. */
 	readonly code: string;
@@ -1227,6 +1267,34 @@ export type MountSource = BundleMountSource | BucketMountSource;
 
 /** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
 export type MountStatus = "pending" | "ready" | "failed";
+
+/** A personal access token (`kpt_…`). Its secret is never stored or shown after it is made. */
+export interface PersonalToken {
+	/** The token's ID, such as `pat_5n2p8r`. */
+	readonly id: string;
+	readonly name: string;
+	/** The secret's first characters, such as `kpt_5n2p`, to tell tokens apart. */
+	readonly prefix: string;
+	/** At most these, on top of the person's role in each account. Absent: whatever their role allows. Never `hosts:admin`: a token doesn't act as a deployment super-admin. */
+	readonly scopes?: readonly ApiKeyScope[];
+	/** Only these accounts. Absent: every account its person belongs to, ones they join later included. */
+	readonly accounts?: readonly string[];
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+	/** When it last signed a call in, to within a minute. Absent until its first use. */
+	readonly lastUsedAt?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly revokedAt?: number;
+}
+
+export interface PersonalTokenList {
+	readonly items: readonly PersonalToken[];
+}
+
+/** Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`. */
+export type PersonalTokenPolicy = "allowed" | "blocked";
 
 /** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
 export type PlacementReason =
@@ -1889,6 +1957,8 @@ export interface SshAccessBody {
 export interface StartDeviceLoginBody {
 	/** What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`. */
 	readonly clientName?: string;
+	/** Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens. */
+	readonly personal?: boolean;
 }
 
 export interface StopSandboxBody {
@@ -2164,6 +2234,8 @@ export interface UpdateAccountBody {
 	readonly name?: string;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
 	readonly defaultVisibility?: SandboxVisibility;
+	/** Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`. */
+	readonly personalTokens?: PersonalTokenPolicy;
 }
 
 export interface UpdateEnvironmentBody {
@@ -2815,6 +2887,12 @@ export interface KantelClient {
 	rotateApiKey(apiKeyId: string, options?: CallOptions): Promise<IssuedApiKey>;
 	/** Revoke an API key. It stops working at once. A key needs `account:admin`. `DELETE /api-keys/{apiKeyId}` */
 	revokeApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
+	/** List your personal access tokens. The caller's own personal access tokens, newest first, revoked and expired ones included. A person or a personal token; not an API key. `GET /personal-tokens` */
+	listPersonalTokens(options?: CallOptions): Promise<PersonalTokenList>;
+	/** Create a personal access token. Makes a token that acts as the caller, in every account they belong to or the ones `accounts` names, with their role there, capped by its scopes. Its secret is answered once. It lasts 90 days unless `expiresInDays` says, at most 366. A person, or a personal token making one that does no more than it, in no more accounts, for no longer; not an API key. Idempotent with `options.idempotencyKey`. `POST /personal-tokens` */
+	createPersonalToken(body: CreatePersonalTokenBody, options?: CallOptions): Promise<IssuedPersonalToken>;
+	/** Revoke a personal access token. It stops working at once, and so does access given with it (tunnels, exposed ports). Your own tokens only; a token may revoke itself, as `kantel logout` does. `DELETE /personal-tokens/{tokenId}` */
+	revokePersonalToken(tokenId: string, options?: CallOptions): Promise<PersonalToken>;
 	/** Start a device sign-in. Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes. `POST /auth/device` */
 	startDeviceLogin(body?: StartDeviceLoginBody, options?: CallOptions): Promise<DeviceLogin>;
 	/** Poll a device sign-in. Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret. `POST /auth/device/token` */
@@ -3210,6 +3288,11 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			),
 		revokeApiKey: (apiKeyId, callOptions) =>
 			send(options, { method: "DELETE", path: `/api-keys/${encodeURIComponent(apiKeyId)}` }, callOptions),
+		listPersonalTokens: (callOptions) => send(options, { method: "GET", path: "/personal-tokens" }, callOptions),
+		createPersonalToken: (body, callOptions) =>
+			send(options, { method: "POST", path: "/personal-tokens", body, idempotent: true }, callOptions),
+		revokePersonalToken: (tokenId, callOptions) =>
+			send(options, { method: "DELETE", path: `/personal-tokens/${encodeURIComponent(tokenId)}` }, callOptions),
 		startDeviceLogin: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/auth/device", body }, callOptions),
 		pollDeviceLogin: (body, callOptions) =>
