@@ -120,6 +120,7 @@ import type {
 	StoredProxy,
 	StoredSample,
 	StoredSandbox,
+	StoredSavedName,
 	StoredSnapshot,
 	StoredTelemetry,
 	StoredUsageClaim,
@@ -3424,31 +3425,62 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return (await store.snapshots.list({ ref: snapshot.ref, memory: true })).length > 0;
 	}
 
-	// Deleting snapshots: expiry, a delete, a replaced save and a deleted sandbox's history all go through here.
+	// Snapshot records: the state model. Every transition below is one function, a compare-and-set on the record
+	// (`update`, which the SQL store writes only over the version it read); nothing else writes a record's state.
 	//
-	// A record that is going is `deleting`: provisionally (a mark that may be put back to ready) or settling
-	// (`retiring.settling`, never put back), then gone. Its bytes on its host outlive it while any record that isn't
-	// settling has their ref. Every move is a compare-and-set on the record (`update`, which the SQL store writes only
-	// over the version it read), and each mark carries a token of its own.
+	// States (`state`, and `retiring` while it is going):
+	//   pending   `creating`: a save stored, not yet visible by name. `validated` once its bytes are confirmed.
+	//   ready     `ready`: visible, adoptable.
+	//   marked    `deleting`, `retiring` {by, token, at, why, from}, not settling: a delete under way that may be put
+	//             back. Not adoptable; a marked save keeps its name, its count and its account's emptiness.
+	//   settling  `deleting`, `retiring.settling`: never put back. Holds no name; its bytes are released, then it goes.
+	//   gone      no record.
 	//
-	// 1. Every delete marks the record provisionally first: expiry (`markExpiring`, on automatic snapshots on hosts that
-	//    keep their own copies, with refs no other record has, below) and a delete by hand, a replaced save or a deleted
-	//    sandbox's history (`retireSnapshot`). `settleSnapshot` is the only way from a mark to settling: it reads afresh
-	//    what depends on the snapshot (`dependents`: what a sandbox resumes from, its pause, what a never-placed one is to
-	//    be made from) for that very mark (its token), puts the mark back if anything does, and moves nothing if the
-	//    read fails (a delete by hand then puts it back at once).
-	// 2. A provisionally marked saved snapshot keeps its name (`liveSnapshots`: names, counts and emptiness count all but
-	//    settling records), but nothing may adopt it (3). A replacing save stays pending until the save it replaces is
-	//    settling, so a name never has two live saves.
-	// 3. `adopt` is the only way to make something depend on an existing snapshot (a create's or fork's source, a save
-	//    that shares its bytes, a sandbox's newest moved back to an older one): the dependency is written first, then the
-	//    snapshot read again, and anything but ready (or a read that fails) rolls the dependency back.
-	// 4. `releaseBytes` is the only byte delete. It deletes the bytes only once every other record with their ref is
-	//    settling or gone; otherwise it drops the caller's record alone, and the last to settle deletes them. A host
-	//    that can't delete them now leaves the settling record, which the sweep tries again; the record goes last. What
-	//    the record passes on to the others of its bytes (that they hold memory) is passed on first, on every try.
+	// Transitions, each its only writer, and its compare-and-set:
+	//   (new) → pending       saveSnapshot's put. `validated` at once when its bytes are its own (taken, or kept by its
+	//                         host); else set after `adopt` has read its source again (pending, not yet validated).
+	//   pending → ready       `publishSave`, the only way, for a save in the foreground and for the sweep's recovery
+	//                         alike: the name's holder (`StoredSavedName`) moved to it, from none, itself, or a save
+	//                         settling or gone; then pending → ready. One of two at once wins the holder.
+	//   pending → settling    `dropPending`: its replace refused, lost the name, its source gone, its account closed,
+	//                         or the sweep's recovery found it unconfirmed or its name held by a ready save.
+	//   ready → marked        expiry (`markExpiring`: ready, automatic, on a host that keeps copies, its ref no other
+	//                         record's) or a delete by hand, a replace's old save, a deleted sandbox's history
+	//                         (`retireSnapshot`: anything but deleting). A new token each time.
+	//   marked → ready/from   `unmarkRetiring`: by its owner, while it is still the mark with its token, not settling.
+	//   marked → settling     `settleSnapshot`: by its owner (or another process once the mark is past `RETIRE_LEASE_MS`,
+	//                         taking it over with a new token), after reading afresh what depends on it (`dependents`:
+	//                         what a sandbox resumes from, its pause, what a never-placed one is to be made from) for
+	//                         that very token; something does, it is put back; the read fails, nothing moves.
+	//   any → settling        `forceRetire`: an account being deleted, or closed under a save; everything of it goes.
+	//   settling → gone       `releaseBytes`: the bytes deleted once every other record with their ref is settling or
+	//                         gone (else the record alone goes), the memory flag passed on first; the record last. A
+	//                         host that can't delete leaves it settling, and the sweep tries again (any process).
 	//
-	// A process takes over another's mark only once it has held it past `RETIRE_LEASE_MS` (it died, say).
+	// What each actor may see and do:
+	//   create, fork          read the snapshot (ready), store their sandbox, then `adopt`: read it again; anything but
+	//                         ready, or a failed read, removes their sandbox and answers conflict.
+	//   save, replace         put pending; a shared source adopted; the old save (replace) marked and settled, else the
+	//                         pending one dropped (refused: conflict, nothing said deleted; unknown: unavailable, left
+	//                         pending for recovery); then `publishSave`, losing which drops it (conflict).
+	//   manual delete         a running sandbox's newest first moved off it (the pointer, below), then mark and settle;
+	//                         refused, the pointer's own move undone; unknown, nothing undone (unavailable).
+	//   expiry sweep          marks expired automatic snapshots, reads dependents once after all its marks, settles each
+	//                         for its own mark; retries settling records, and provisional marks only past their lease.
+	//   recovery sweep        pending saves past their lease: unconfirmed dropped; else by the name's holder (none,
+	//                         itself, settling or gone: `publishSave`; ready, or another pending one holding it: dropped;
+	//                         marked: a later pass). Automatic snapshots of deleted sandboxes retired again.
+	//   sandbox delete        retires its automatic snapshots (a refusal is retried by the sweep), detaches saved ones.
+	//   account deletion      `forceRetire` on all of its snapshots, retried until their bytes are gone; its names freed.
+	//
+	// The newest pointer (`latestSnapshotId`, with `latestBy`): a stop or take writes a new snapshot's ID; only
+	// `installNewest` writes an existing snapshot's, always through `adopt` (written, read again, put back to none if it
+	// is gone), each write a compare-and-set on the pointer's current ID (and, to undo its own move, its own token), so a
+	// rollback never undoes a newer write, and the pointer never names a snapshot that is going.
+	//
+	// Invariants: a name has at most one ready save; nothing adopts a marked, settling or gone snapshot; no sandbox's
+	// newest, pause or never-placed source names a settling or gone record; bytes are deleted only when every record
+	// naming them is settling; nothing is said deleted that is still ready.
 	//
 	// Expiry never touches bytes another record shares, and sharing can't start under it. A ref is shared only by a save
 	// on a host without `snapshot.keep` (the fallback in `saveSnapshot`): every other save keeps a copy with a ref of its
@@ -3614,6 +3646,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		snapshot: StoredSnapshot,
 		/** What depends on it, read after it was marked (an expiry's one read for all it marked). */
 		read?: ReadonlySet<string>,
+		/**
+		 * The sweep's retry of what is left `deleting`: a provisional mark is taken on only once it is past its lease (its
+		 * owner, this process even, may be at it now: a delete or replace in flight, or this pass's expiry).
+		 */
+		retry = false,
 	): Promise<"kept" | "settling" | "gone"> {
 		const at = now();
 		const mine = (latest: StoredSnapshot) => latest.retiring?.by === retireOwner;
@@ -3622,6 +3659,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		let current = await store.snapshots.get(snapshot.id);
 		if (current === undefined) return "gone";
 		if (current.state !== "deleting") return "kept";
+		// Settling already (by another call, or another process): retired, whoever finishes it.
+		if (current.retiring?.settling === true && !mine(current) && !stale(current)) return "settling";
+		if (retry && current.retiring?.settling !== true && !stale(current)) return "kept";
 		if (!mine(current) || current.retiring?.token === undefined) {
 			current = await store.snapshots.update(current.id, (latest) =>
 				latest.state === "deleting" &&
@@ -3649,7 +3689,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await unmarkRetiring(current.id, token);
 				return "kept";
 			}
-			current = await store.snapshots.update(current.id, (latest) =>
+			const claimed = await store.snapshots.update(current.id, (latest) =>
 				sameMark(latest) && latest.retiring?.settling !== true
 					? {
 							...latest,
@@ -3657,7 +3697,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						}
 					: undefined,
 			);
-			if (current === undefined) return "kept";
+			if (claimed === undefined) {
+				// Not claimed by this call: settled by another (the sweep's retry, say) is retired all the same.
+				const after = await store.snapshots.get(current.id);
+				if (after === undefined) return "gone";
+				return after.retiring?.settling === true ? "settling" : "kept";
+			}
+			current = claimed;
 		}
 		// Claimed: whatever happens from here, it is settling, and the sweep finishes it.
 		return (await releaseBytes(current).catch(() => false)) ? "gone" : "settling";
@@ -3734,37 +3780,49 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Points a sandbox's newest snapshot, while it still names `from`, at the first of `candidates` still there, each by
-	 * `adopt` (written, read again, rolled back to none if it is gone), else at none: so the pointer never names a
-	 * snapshot that is going, rollbacks included. Answers the snapshot it points at, if any.
+	 * The newest-pointer's one writer for an existing snapshot (the pointer's state model, above): points a sandbox's
+	 * newest, while it is still `from` (its snapshot ID and, for a write of this kind, its writer's token), at the first
+	 * of `candidates` still there, each by `adopt` (written with a token of this call's, read again, put back to none if
+	 * it is gone), else at none. Stops, having written nothing more, the moment the pointer is no longer what it expects
+	 * (another writer moved it: a stop, a take, another delete). Answers what it pointed at and the token it wrote under,
+	 * so a rollback undoes only its own write; `moved` false when it wrote nothing.
 	 */
 	async function installNewest(
 		sandboxId: string,
-		from: string | undefined,
+		from: { readonly id: string | undefined; readonly by?: string },
 		candidates: readonly StoredSnapshot[],
-	): Promise<StoredSnapshot | undefined> {
-		const pointAt = (to: StoredSnapshot | undefined, was: string | undefined) =>
-			patchSandbox(sandboxId, (latest) =>
-				latest.latestSnapshotId === was
-					? { ...latest, latestSnapshotId: to?.id, latestSnapshotAt: to?.createdAt }
+	): Promise<{ readonly moved: boolean; readonly to?: StoredSnapshot; readonly by: string }> {
+		const by = randomId("ptr");
+		// A compare-and-set of the pointer: true when it was `wasId` (and `wasBy`) and is now `to`, under this call's token.
+		const pointAt = async (to: StoredSnapshot | undefined, wasId: string | undefined, wasBy: string | undefined) =>
+			(await patchSandbox(sandboxId, (latest) =>
+				latest.latestSnapshotId === wasId && (wasBy === undefined || latest.latestBy === wasBy)
+					? { ...latest, latestSnapshotId: to?.id, latestSnapshotAt: to?.createdAt, latestBy: by }
 					: undefined,
-			).then(() => undefined);
-		let was = from;
+			)) !== undefined;
+		let was: { id: string | undefined; by?: string } = from;
+		let moved = false;
 		for (const candidate of candidates) {
-			if (
-				await adopt(
-					candidate.id,
-					() => pointAt(candidate, was),
-					() => pointAt(undefined, candidate.id),
-				)
-			) {
-				return candidate;
-			}
-			// Rolled back to none: the next is tried from there.
-			was = undefined;
+			let wrote = false;
+			const kept = await adopt(
+				candidate.id,
+				async () => {
+					wrote = await pointAt(candidate, was.id, was.by);
+				},
+				async () => {
+					if (wrote) await pointAt(undefined, candidate.id, by);
+				},
+			);
+			if (!wrote) return { moved, by };
+			moved = true;
+			if (kept) return { moved, to: candidate, by };
+			// Put back to none, under this call's token: the next is tried from there.
+			was = { id: undefined, by };
 		}
-		await pointAt(undefined, was);
-		return undefined;
+		if (was.id !== undefined || from.id !== undefined) {
+			if (await pointAt(undefined, was.id, was.by)) moved = true;
+		}
+		return { moved, by };
 	}
 
 	/** The error a create, fork or save answers when the snapshot it is made from was deleted under it. */
@@ -3783,7 +3841,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(async () => {
 				for (const deleting of await store.snapshots.list({ state: "deleting" })) {
 					if (closing) return;
-					await settleSnapshot(deleting).catch(() => "kept");
+					await settleSnapshot(deleting, undefined, true).catch(() => "kept");
 				}
 				await recoverPendingSaves().catch(() => undefined);
 				await retireOrphans().catch(() => undefined);
@@ -3823,36 +3881,86 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 	}
 
+	/** A saved-snapshot name's holder record's ID (`StoredSavedName`). */
+	const savedNameId = (accountId: string, name: string) => `${accountId}/${name}`;
+
+	/** An account's saved-snapshot names' holders, as it goes. */
+	async function forgetSavedNames(accountId: string): Promise<void> {
+		for (const holder of await store.savedNames.list()) {
+			if (holder.id.startsWith(`${accountId}/`)) await store.savedNames.delete(holder.id);
+		}
+	}
+
+	/**
+	 * A saved-snapshot name's holder (`StoredSavedName`), made if it has none yet: held then by the save of that name
+	 * made before names had holders, if there is one (ready, or marked by a delete not yet settled), the oldest; else by
+	 * none. Of several making it at once, one insert wins and every one reads that.
+	 */
+	async function nameHolder(accountId: string, name: string): Promise<StoredSavedName | undefined> {
+		const id = savedNameId(accountId, name);
+		const held = await store.savedNames.get(id);
+		if (held !== undefined) return held;
+		const [legacy] = (await store.snapshots.list({ accountId, kind: "saved", name }))
+			.filter(
+				(record) => record.state === "ready" || (record.state === "deleting" && record.retiring?.settling !== true),
+			)
+			.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+		await store.savedNames.insert({ id, ...(legacy === undefined ? {} : { snapshotId: legacy.id }), updatedAt: now() });
+		return store.savedNames.get(id);
+	}
+
+	/**
+	 * The one transition of a save to ready (`publishSave`, the state model above), for a save made in the foreground and
+	 * for one the sweep recovers alike: its name's holder moved to it by compare-and-set, from none, from itself, or from
+	 * a save that is settling or gone; then the save moved from pending to ready. Answers the ready save; undefined when
+	 * another save holds the name (ready, provisionally marked, or pending and holding it), or the save is no longer
+	 * pending. Of two at once, the holder's compare-and-set lets one through.
+	 */
+	async function publishSave(pending: StoredSnapshot): Promise<StoredSnapshot | undefined> {
+		if (pending.name === undefined) return undefined;
+		const holder = await nameHolder(pending.accountId, pending.name);
+		if (holder === undefined) return undefined;
+		const was = holder.snapshotId;
+		if (was !== undefined && was !== pending.id) {
+			const current = await store.snapshots.get(was);
+			if (current !== undefined && current.retiring?.settling !== true) return undefined;
+		}
+		const claimed = await store.savedNames.update(holder.id, (latest) =>
+			latest.snapshotId === was ? { ...latest, snapshotId: pending.id, updatedAt: now() } : undefined,
+		);
+		if (claimed === undefined) return undefined;
+		return store.snapshots.update(pending.id, (latest) =>
+			latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
+		);
+	}
+
 	/**
 	 * Finishes the saves a process left pending (`creating`) past `RETIRE_LEASE_MS`, dying between storing a save and
-	 * making it ready (or between retiring the save it replaces and that). One whose bytes were never confirmed
-	 * (`validated`) is let go (`dropPending`, whose byte release keeps bytes another record still has). Otherwise, by the
-	 * other saves of its name: one ready (the one it was to replace, kept after all) lets it go; one still provisionally
-	 * marked, its delete unresolved, leaves it for a later pass; an older pending one goes first; with none, it is made
-	 * ready (the one it replaced has settled or gone).
+	 * making it ready. One whose bytes were never confirmed (`validated`) is let go (`dropPending`, whose byte release
+	 * keeps bytes another record still has). Otherwise by its name's holder: none, itself, or one settling or gone, it is
+	 * made ready (`publishSave`, as a save in the foreground is, so of the two only one wins); one ready, or another
+	 * pending save that holds it, lets it go; one provisionally marked, its delete unresolved, leaves it for a later pass.
 	 */
 	async function recoverPendingSaves(): Promise<void> {
 		const at = now();
 		for (const pending of await store.snapshots.list({ kind: "saved", state: "creating" })) {
 			if (closing) return;
 			if (pending.createdAt + RETIRE_LEASE_MS > at) continue;
-			if (pending.validated !== true) {
+			if (pending.validated !== true || pending.name === undefined) {
 				await dropPending(pending);
 				continue;
 			}
-			const others = (await liveSnapshots({ accountId: pending.accountId, kind: "saved", name: pending.name })).filter(
-				(other) => other.id !== pending.id,
-			);
-			if (others.some((other) => other.state === "ready")) {
+			const holder = await nameHolder(pending.accountId, pending.name);
+			const held =
+				holder?.snapshotId === undefined || holder.snapshotId === pending.id
+					? undefined
+					: await store.snapshots.get(holder.snapshotId);
+			if (held !== undefined && held.retiring?.settling !== true) {
+				if (held.state === "deleting") continue;
 				await dropPending(pending);
 				continue;
 			}
-			const before = (other: StoredSnapshot) =>
-				other.createdAt < pending.createdAt || (other.createdAt === pending.createdAt && other.id < pending.id);
-			if (others.some((other) => other.state === "deleting" || (other.state === "creating" && before(other)))) continue;
-			await store.snapshots.update(pending.id, (latest) =>
-				latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
-			);
+			await publishSave(pending);
 		}
 	}
 
@@ -4649,6 +4757,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Sandboxes (their machines destroyed), saved snapshots, bundles (bytes and all).
 		for (const sandbox of await store.sandboxes.list({ accountId })) await forgetSandbox(sandbox);
 		for (const snapshot of await store.snapshots.list({ accountId })) await forceRetire(snapshot);
+		await forgetSavedNames(accountId);
 		for (const bundle of await store.bundles.list({ accountId })) {
 			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
 			await mounts.forgetBundle(bundle);
@@ -5776,6 +5885,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			await store.telemetry.delete(account.id);
 			await store.proxies.delete(account.id);
+			await forgetSavedNames(account.id);
 			await store.accounts.delete(account.id);
 			return undefined;
 		},
@@ -7397,12 +7507,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						`The saved snapshot ${body.name} can't be replaced now: a sandbox depends on it`,
 					);
 				}
-				const ready = await store.snapshots.update(snapshot.id, (latest) =>
-					latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
-				);
-				// Replaced (or deleted) by another call while it was pending: its record is going already.
-				if (ready === undefined)
+				const ready = await publishSave(snapshot);
+				// Another save holds the name (made ready meanwhile, by another call or the sweep's recovery): this one goes.
+				if (ready === undefined) {
+					await dropPending(snapshot);
 					throw new KantelError("conflict", `The saved snapshot ${body.name} was replaced meanwhile`);
+				}
 				if (existing !== undefined) {
 					await emit("snapshot.deleted", existing.accountId, {
 						snapshotId: existing.id,
@@ -7456,7 +7566,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			// A running sandbox's newest moves back to the one before it first (each tried until one is still there, else
 			// none), so nothing depends on this one once it is settled; and back to it if it can't be deleted after all.
-			let moved: { readonly to: StoredSnapshot | undefined } | undefined;
+			let moved: Awaited<ReturnType<typeof installNewest>> | undefined;
 			const older =
 				current === undefined || current.latestSnapshotId !== snapshot.id
 					? []
@@ -7466,7 +7576,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							),
 						);
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
-				moved = { to: await installNewest(current.id, snapshot.id, older) };
+				moved = await installNewest(current.id, { id: snapshot.id }, older);
 			}
 			const retired = await retireSnapshot(snapshot);
 			// Unknown: nothing is rolled back (its newest stays on the one before it, which is there); the sweep finishes it.
@@ -7477,7 +7587,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Refused: its sandbox's newest goes back to it, while that still names what this moved it to, by adopt like
 				// every pointer write: if it is no longer there, the one before it, and so on, else none.
 				if (current !== undefined && moved !== undefined) {
-					await installNewest(current.id, moved.to?.id, [snapshot, ...older]);
+					// Only its own write is undone: a pointer moved since (a take, a stop) is left as it is.
+					if (moved.moved) await installNewest(current.id, { id: moved.to?.id, by: moved.by }, [snapshot, ...older]);
 				}
 				throw new KantelError("conflict", "A sandbox still depends on this snapshot, or it is being deleted already");
 			}

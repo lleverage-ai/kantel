@@ -1128,7 +1128,8 @@ export const deleteSnapshot = defineRoute({
 	),
 	params: SnapshotPath,
 	answer: { status: 204, description: "Deleted." },
-	errors: changeErrors,
+	// `unavailable`: whether it was deleted is unknown (a write's answer lost); the sweep finishes or undoes it.
+	errors: [...changeErrors, "unavailable"],
 });
 
 export const snapshotRoutes = {

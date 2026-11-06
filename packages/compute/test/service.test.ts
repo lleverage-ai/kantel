@@ -4550,6 +4550,72 @@ describe("snapshot expiry", () => {
 		});
 	}
 
+	it("counts a replaced save another call settled first as replaced, not refused", async () => {
+		const base = createMemoryStore();
+		let hook: (() => Promise<void>) | undefined;
+		const store = {
+			...base,
+			sandboxes: {
+				...base.sandboxes,
+				list: async (where?: Parameters<typeof base.sandboxes.list>[0]) => {
+					const read = await base.sandboxes.list(where);
+					const run = where === undefined ? hook : undefined;
+					if (run !== undefined) {
+						hook = undefined;
+						await run();
+					}
+					return read;
+				},
+			},
+		} as ReturnType<typeof createMemoryStore>;
+		const { tom } = expiring({ store });
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.saveSnapshot({ name: "golden", sandboxId: running.id });
+		// While the replace reads what depends on the old save, another call (the sweep, say) claims it for settling.
+		hook = async () => {
+			await base.snapshots.update(old.id, (current) =>
+				current.retiring === undefined ? undefined : { ...current, retiring: { ...current.retiring, settling: true } },
+			);
+		};
+		const replaced = await tom.saveSnapshot({ name: "golden", sandboxId: running.id, replace: true });
+		expect((await tom.listSnapshots({ kind: "saved" })).items.map((item) => item.id)).toEqual([replaced.id]);
+	});
+
+	it("leaves a newest a take wrote meanwhile when a refused delete undoes its own move", async () => {
+		const base = createMemoryStore();
+		let hook: (() => Promise<void>) | undefined;
+		const store = {
+			...base,
+			snapshots: {
+				...base.snapshots,
+				// The delete reads the sandbox's older snapshots to move its newest back: a take lands first.
+				list: async (where?: Parameters<typeof base.snapshots.list>[0]) => {
+					const run = where?.kind === "automatic" && where.sandboxId !== undefined ? hook : undefined;
+					if (run !== undefined) {
+						hook = undefined;
+						await run();
+					}
+					return base.snapshots.list(where);
+				},
+			},
+		} as ReturnType<typeof createMemoryStore>;
+		const { tom } = expiring({ store });
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		await tom.takeSnapshot(running.id, {});
+		const newest = await tom.takeSnapshot(running.id, {});
+		// A failed create depends on it, so its delete is refused.
+		const [fork] = (await tom.forkSandbox(running.id, { snapshotId: newest.id, wait: true })).items;
+		if (fork === undefined) throw new Error("no fork");
+		await base.sandboxes.update(fork.id, (current) => ({ ...current, hostId: undefined, latestSnapshotId: undefined }));
+		let taken: string | undefined;
+		hook = async () => {
+			taken = (await tom.takeSnapshot(running.id, {})).id;
+		};
+		expect((await failure(tom.deleteSnapshot(newest.id))).code).toBe("conflict");
+		expect(taken).toBeDefined();
+		expect((await base.sandboxes.get(running.id))?.latestSnapshotId).toBe(taken);
+	});
+
 	it("puts a refused delete's newest back only through snapshots still there", async () => {
 		const base = createMemoryStore();
 		let failGet: string | undefined;
@@ -5088,6 +5154,76 @@ describe("snapshot expiry across gateways", () => {
 		expect(released).toContain(ref);
 	});
 
+	it("makes one save ready when a replace and another gateway's recovery race for its name", async () => {
+		const base = createMemoryStore();
+		let hook: (() => Promise<void>) | undefined;
+		const store = {
+			...base,
+			savedNames: {
+				...base.savedNames,
+				// The replace has retired the old save and is about to take the name: the other gateway's recovery runs first.
+				update: async (...args: Parameters<typeof base.savedNames.update>) => {
+					const run = hook;
+					if (run !== undefined) {
+						hook = undefined;
+						await run();
+					}
+					return base.savedNames.update(...args);
+				},
+			},
+		} as ReturnType<typeof createMemoryStore>;
+		const stub = createStubBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const gateway = () => {
+			const api = createComputeApi({
+				backend: stub,
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+			});
+			opened.push(api);
+			return api;
+		};
+		const [a, b] = [gateway(), gateway()];
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				a.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.saveSnapshot({ name: "golden", sandboxId: running.id });
+		// An older replacement whose gateway died before it marked the old save: confirmed, pending, past its lease.
+		const spare = await tom.saveSnapshot({ name: "spare", sandboxId: running.id });
+		await base.snapshots.update(spare.id, (current) => ({
+			...current,
+			name: "golden",
+			state: "creating",
+			validated: true,
+		}));
+		clock.at += RETIRE_LEASE_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+		hook = async () => {
+			await b.service.sweep();
+			await b.service.idle();
+		};
+		const answered = await tom
+			.saveSnapshot({ name: "golden", sandboxId: running.id, replace: true })
+			.then((saved) => ({ ok: saved.id }))
+			.catch((error: unknown) => ({ error }));
+		const ready = (await base.snapshots.list({ kind: "saved", name: "golden" })).filter(
+			(record) => record.state === "ready",
+		);
+		expect(ready).toHaveLength(1);
+		const [holder] = ready;
+		// Name resolution agrees with whoever won: the replace's answer, or the recovered save when the replace lost.
+		if ("ok" in answered) expect(holder?.id).toBe(answered.ok);
+		else expect(holder?.id).toBe(spare.id);
+		const made = await tom.createSandbox({ from: "golden", autoStopMinutes: null, wait: true });
+		expect((await base.sandboxes.get(made.id))?.source?.snapshotId).toBe(holder?.id);
+		expect((await base.snapshots.get(old.id))?.state).not.toBe("ready");
+	});
+
 	it("takes over a mark whose gateway went past its lease, checking what depends on it again", async () => {
 		const { store, released, clock, b, tom, sweep } = replicas();
 		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
@@ -5245,6 +5381,14 @@ describe("snapshot deletes under random interleavings", () => {
 			for (const [key, count] of names) {
 				if (count > 1) throw new Error(`seed ${seed}, ${step}: ${count} live saves named ${key}`);
 			}
+			// A ready save holds its name, where the name has a holder.
+			for (const record of records) {
+				if (record.kind !== "saved" || record.state !== "ready" || record.name === undefined) continue;
+				const holder = await base.savedNames.get(`${record.accountId}/${record.name}`);
+				if (holder !== undefined && holder.snapshotId !== record.id) {
+					throw new Error(`seed ${seed}, ${step}: ${record.id} is ready but ${holder.snapshotId} holds its name`);
+				}
+			}
 			const byIdNow = new Map(records.map((record) => [record.id, record]));
 			for (const event of await base.events.list()) {
 				if (event.type !== "snapshot.deleted" || event.snapshotId === undefined) continue;
@@ -5291,7 +5435,8 @@ describe("snapshot deletes under random interleavings", () => {
 			const running = sandboxes.filter((sandbox) => sandbox.state === "running");
 			const stopped = sandboxes.filter((sandbox) => sandbox.state === "stopped" || sandbox.state === "paused");
 			const snapshots = (await base.snapshots.list()).filter((record) => record.state === "ready");
-			const action = rng.pick([
+			// One to three actors at once, interleaved at every await: the gateways' requests and sweeps alike.
+			const choices = [
 				"take",
 				"take",
 				"save",
@@ -5307,127 +5452,149 @@ describe("snapshot deletes under random interleavings", () => {
 				"advance",
 				"sweep",
 				"sweep",
-			]);
+				"crashSave",
+			] as const;
+			const actions = Array.from({ length: 1 + Math.floor(rng.next() * 3) }, () => rng.pick(choices) ?? "sweep");
+			const action = actions.join("+");
 			const done = async (call: () => Promise<unknown>) => {
 				await call().catch(() => undefined);
 				for (const api of gateways) await api.service.idle();
 			};
-			switch (action) {
-				case "take": {
-					const sandbox = rng.pick(running);
-					if (sandbox !== undefined) await done(() => client().takeSnapshot(sandbox.id, {}));
-					break;
-				}
-				case "save": {
-					const snapshot = rng.pick(snapshots.filter((record) => record.sandboxId !== undefined));
-					if (snapshot?.sandboxId !== undefined) {
-						names += 1;
-						const sandboxId = snapshot.sandboxId;
-						await done(() =>
-							client().saveSnapshot({
-								name: `s${names}`,
-								sandboxId,
-								...(rng.next() < 0.7 ? { snapshotId: snapshot.id } : {}),
-							}),
+			const act = async (action: (typeof choices)[number]) => {
+				switch (action) {
+					case "take": {
+						const sandbox = rng.pick(running);
+						if (sandbox !== undefined) await done(() => client().takeSnapshot(sandbox.id, {}));
+						break;
+					}
+					case "save": {
+						const snapshot = rng.pick(snapshots.filter((record) => record.sandboxId !== undefined));
+						if (snapshot?.sandboxId !== undefined) {
+							names += 1;
+							const sandboxId = snapshot.sandboxId;
+							await done(() =>
+								client().saveSnapshot({
+									name: `s${names}`,
+									sandboxId,
+									...(rng.next() < 0.7 ? { snapshotId: snapshot.id } : {}),
+								}),
+							);
+						}
+						break;
+					}
+					case "delete": {
+						const snapshot = rng.pick(snapshots);
+						if (snapshot !== undefined) await done(() => client().deleteSnapshot(snapshot.id));
+						break;
+					}
+					case "crash": {
+						// A delete whose gateway died between its mark and its settling: the mark is left, for the sweep after
+						// its lease.
+						const snapshot = rng.pick(snapshots);
+						if (snapshot !== undefined) {
+							await base.snapshots.update(snapshot.id, (current) =>
+								current.state !== "ready"
+									? undefined
+									: {
+											...current,
+											state: "deleting",
+											retiring: { by: "gateway-dead", token: "ret_dead", at: clock.at, why: "delete", from: "ready" },
+										},
+							);
+						}
+						break;
+					}
+					case "deleteSaved": {
+						const snapshot = rng.pick(snapshots.filter((record) => record.kind === "saved"));
+						if (snapshot !== undefined) await done(() => client().deleteSnapshot(snapshot.id));
+						break;
+					}
+					case "replace": {
+						// A save under a name already saved, replacing it, from a running sandbox or one of its snapshots.
+						const named = rng.pick(snapshots.filter((record) => record.kind === "saved" && record.name !== undefined));
+						const from = rng.pick(snapshots.filter((record) => record.sandboxId !== undefined));
+						if (named?.name !== undefined && from?.sandboxId !== undefined) {
+							const name = named.name;
+							const sandboxId = from.sandboxId;
+							await done(() =>
+								client().saveSnapshot({
+									name,
+									sandboxId,
+									replace: true,
+									...(rng.next() < 0.7 ? { snapshotId: from.id } : {}),
+								}),
+							);
+						}
+						break;
+					}
+					case "fork": {
+						const snapshot = rng.pick(snapshots.filter((record) => record.kind === "automatic"));
+						if (snapshot?.sandboxId !== undefined) {
+							const sandboxId = snapshot.sandboxId;
+							await done(() => client().forkSandbox(sandboxId, { snapshotId: snapshot.id, wait: true }));
+						}
+						break;
+					}
+					case "stop": {
+						const sandbox = rng.pick(running);
+						if (sandbox !== undefined) {
+							await done(() => client().stopSandbox(sandbox.id, { keepMemory: rng.next() < 0.5, wait: true }));
+						}
+						break;
+					}
+					case "resume": {
+						const sandbox = rng.pick(stopped);
+						if (sandbox !== undefined) await done(() => client().resumeSandbox(sandbox.id, { wait: true }));
+						break;
+					}
+					case "fail": {
+						// A fork whose create failed: never placed, it is to be made from its source (still there, as a create
+						// that failed after it adopted its source would find it).
+						const ready = new Set(snapshots.map((record) => record.id));
+						const sandbox = rng.pick(
+							sandboxes.filter((each) => each.source?.snapshotId !== undefined && ready.has(each.source.snapshotId)),
 						);
+						if (sandbox !== undefined) {
+							await base.sandboxes.update(sandbox.id, (current) => ({
+								...current,
+								state: "error",
+								hostId: undefined,
+								latestSnapshotId: undefined,
+							}));
+						}
+						break;
 					}
-					break;
-				}
-				case "delete": {
-					const snapshot = rng.pick(snapshots);
-					if (snapshot !== undefined) await done(() => client().deleteSnapshot(snapshot.id));
-					break;
-				}
-				case "crash": {
-					// A delete whose gateway died between its mark and its settling: the mark is left, for the sweep after
-					// its lease.
-					const snapshot = rng.pick(snapshots);
-					if (snapshot !== undefined) {
-						await base.snapshots.update(snapshot.id, (current) =>
-							current.state !== "ready"
-								? undefined
-								: {
-										...current,
-										state: "deleting",
-										retiring: { by: "gateway-dead", token: "ret_dead", at: clock.at, why: "delete", from: "ready" },
-									},
-						);
+					case "advance":
+						clock.at += Math.floor(rng.next() * 3 * 24 * 3_600_000);
+						break;
+					case "crashSave": {
+						// A replace whose gateway died once its new save was stored and confirmed, before it marked the old one: a
+						// saved snapshot of another name taken for it, pending, past its lease, its name another live save's.
+						const saved = snapshots.filter((record) => record.kind === "saved" && record.name !== undefined);
+						const target = rng.pick(saved);
+						const stray = rng.pick(saved.filter((record) => record.id !== target?.id));
+						if (target?.name !== undefined && stray !== undefined) {
+							const name = target.name;
+							await base.snapshots.update(stray.id, (current) =>
+								current.state !== "ready"
+									? undefined
+									: { ...current, name, state: "creating", validated: true, createdAt: clock.at - 2 * RETIRE_LEASE_MS },
+							);
+						}
+						break;
 					}
-					break;
-				}
-				case "deleteSaved": {
-					const snapshot = rng.pick(snapshots.filter((record) => record.kind === "saved"));
-					if (snapshot !== undefined) await done(() => client().deleteSnapshot(snapshot.id));
-					break;
-				}
-				case "replace": {
-					// A save under a name already saved, replacing it, from a running sandbox or one of its snapshots.
-					const named = rng.pick(snapshots.filter((record) => record.kind === "saved" && record.name !== undefined));
-					const from = rng.pick(snapshots.filter((record) => record.sandboxId !== undefined));
-					if (named?.name !== undefined && from?.sandboxId !== undefined) {
-						const name = named.name;
-						const sandboxId = from.sandboxId;
-						await done(() =>
-							client().saveSnapshot({
-								name,
-								sandboxId,
-								replace: true,
-								...(rng.next() < 0.7 ? { snapshotId: from.id } : {}),
-							}),
-						);
+					default: {
+						clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+						const api = rng.pick(gateways) ?? gateways[0];
+						sweeping = true;
+						await done(async () => {
+							await api.service.sweep();
+						});
+						sweeping = false;
 					}
-					break;
 				}
-				case "fork": {
-					const snapshot = rng.pick(snapshots.filter((record) => record.kind === "automatic"));
-					if (snapshot?.sandboxId !== undefined) {
-						const sandboxId = snapshot.sandboxId;
-						await done(() => client().forkSandbox(sandboxId, { snapshotId: snapshot.id, wait: true }));
-					}
-					break;
-				}
-				case "stop": {
-					const sandbox = rng.pick(running);
-					if (sandbox !== undefined) {
-						await done(() => client().stopSandbox(sandbox.id, { keepMemory: rng.next() < 0.5, wait: true }));
-					}
-					break;
-				}
-				case "resume": {
-					const sandbox = rng.pick(stopped);
-					if (sandbox !== undefined) await done(() => client().resumeSandbox(sandbox.id, { wait: true }));
-					break;
-				}
-				case "fail": {
-					// A fork whose create failed: never placed, it is to be made from its source (still there, as a create
-					// that failed after it adopted its source would find it).
-					const ready = new Set(snapshots.map((record) => record.id));
-					const sandbox = rng.pick(
-						sandboxes.filter((each) => each.source?.snapshotId !== undefined && ready.has(each.source.snapshotId)),
-					);
-					if (sandbox !== undefined) {
-						await base.sandboxes.update(sandbox.id, (current) => ({
-							...current,
-							state: "error",
-							hostId: undefined,
-							latestSnapshotId: undefined,
-						}));
-					}
-					break;
-				}
-				case "advance":
-					clock.at += Math.floor(rng.next() * 3 * 24 * 3_600_000);
-					break;
-				default: {
-					clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
-					const api = rng.pick(gateways) ?? gateways[0];
-					sweeping = true;
-					await done(async () => {
-						await api.service.sweep();
-					});
-					sweeping = false;
-				}
-			}
+			};
+			await Promise.all(actions.map(act));
 			faults.on = false;
 			expect(violations).toEqual([]);
 			await check(`step ${step} (${action})`);
@@ -5455,7 +5622,9 @@ describe("snapshot deletes under random interleavings", () => {
 		expect(leaked, `seed ${seed}: bytes no record names`).toEqual([]);
 	}
 
-	for (let seed = 1; seed <= 16; seed += 1) {
+	// KANTEL_SNAPSHOT_SEEDS runs more (200, say) locally.
+	const seeds = Number(process.env.KANTEL_SNAPSHOT_SEEDS ?? 16);
+	for (let seed = 1; seed <= seeds; seed += 1) {
 		it(`keeps every snapshot something names and leaks no bytes (seed ${seed})`, async () => {
 			await run(seed);
 		});

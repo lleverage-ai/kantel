@@ -111,7 +111,7 @@ Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snap
 
 - `204`: no body. Deleted.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## List a snapshot's files
 

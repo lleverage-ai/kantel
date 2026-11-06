@@ -92,6 +92,10 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'environments'"
 			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'environments'",
+		// The records naming a snapshot's bytes (`list({ ref })`): every delete reads them just before it releases bytes.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_snapshot_ref ON compute_api_records (((data::jsonb ->> 'ref'))) WHERE kind = 'snapshots'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_ref ON compute_api_records (kind, json_extract(data, '$.ref'))",
 		// No two templates of an account share a name (`templateNameKey`), in the database as environments' names.
 		dialect === "postgres"
 			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_template_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'templates'"
@@ -339,6 +343,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		settings: sqlCollection(driver, "settings"),
 		usageClaims: sqlCollection(driver, "usageClaims"),
 		deletions: sqlCollection(driver, "deletions"),
+		savedNames: sqlCollection(driver, "savedNames"),
 		personWrites: sqlPersonWrites(driver),
 		templates: sqlCollection(driver, TEMPLATES),
 		templateVersions: sqlCollection(driver, TEMPLATE_VERSIONS),

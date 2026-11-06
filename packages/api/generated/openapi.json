@@ -5344,6 +5344,16 @@
 								}
 							}
 						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
 					}
 				}
 			}
