@@ -31,6 +31,21 @@ export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
  */
 export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
 
+/**
+ * What takes the space on a host's disk as the host measures it: `Host.diskUsage` with its snapshots in one
+ * (`snapshotsBytes`), which the compute plane splits into saved and automatic by its own records, as the host can't tell
+ * (a manual take it keeps as saved is automatic here, and a save may share an automatic snapshot's bytes).
+ */
+export type BackendDiskUsage = Omit<computeSchema.HostDiskUsage, "savedSnapshotsBytes" | "automaticSnapshotsBytes"> & {
+	readonly snapshotsBytes: number;
+	/**
+	 * `snapshotsBytes` by snapshot, counting the same files: each ref's files no other holds, and the files several
+	 * hold, by their refs. Absent: the backend doesn't say, and the split goes by the records' sizes.
+	 */
+	readonly snapshotOwnBytes?: { readonly [ref: string]: number };
+	readonly snapshotShared?: readonly SharedSnapshotBytes[];
+};
+
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
 	readonly name: computeSchema.SandboxSizeName;
@@ -65,6 +80,8 @@ export interface BackendHost {
 	 * had free when it started). Absent: it hasn't reported, or the backend doesn't say (the stub).
 	 */
 	readonly freeDiskGb?: number;
+	/** What takes the space on its disk, as it last measured it (`BackendDiskUsage`). Absent: it hasn't said. */
+	readonly diskUsage?: BackendDiskUsage;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**
@@ -622,6 +639,13 @@ export interface SandboxBackend {
 	 * when the host drops the source's bytes.
 	 */
 	keepSnapshot?(ref: string): Promise<TakenSnapshot | undefined>;
+	/**
+	 * The full size of each snapshot on a host now (all its files, shared ones included), by ref: what the periodic
+	 * refresh reads (`snapshot.list`), asked for when a host's limit on saved bytes must count a save recorded before
+	 * full sizes were (`savedBytesOver`). `undefined` when the host doesn't measure its snapshots, whose recorded sizes
+	 * then count no file for one holder only. Throws when the host can't answer. Absent: the same as `undefined`.
+	 */
+	snapshotSizes?(hostId: string): Promise<ReadonlyMap<string, number> | undefined>;
 	listSnapshotFiles(ref: string, path: string): Promise<BackendFileEntry[]>;
 	readSnapshotFile(ref: string, path: string): Promise<Uint8Array>;
 	deleteSnapshot(ref: string): Promise<void>;

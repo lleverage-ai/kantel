@@ -274,5 +274,9 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		// Hosts are the primary's (as for a revoke): the routed backend updates them only where the primary does.
 		...(primary.updateHostAgent === undefined ? {} : { updateHostAgent: primary.updateHostAgent.bind(primary) }),
 		...(primary.checkHostUpdates === undefined ? {} : { checkHostUpdates: primary.checkHostUpdates.bind(primary) }),
+		// On the backend whose host it is; one without it can't say (`undefined`), as a host that doesn't measure.
+		...(primary.snapshotSizes === undefined && fallback.snapshotSizes === undefined
+			? {}
+			: { snapshotSizes: async (hostId: string) => (await forHost(hostId)).snapshotSizes?.(hostId) }),
 	};
 }

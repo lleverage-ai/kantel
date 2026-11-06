@@ -300,3 +300,13 @@ func lookPath(name string) (string, error) {
 	}
 	return "", os.ErrNotExist
 }
+
+// DiskUsed is the used and total bytes of the filesystem holding path (used counts what root's reserve keeps too);
+// zeros when it can't be read.
+func DiskUsed(path string) (used, total int64) {
+	var st syscall.Statfs_t
+	if syscall.Statfs(path, &st) != nil {
+		return 0, 0
+	}
+	return int64(st.Blocks-st.Bfree) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize)
+}

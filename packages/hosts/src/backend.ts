@@ -16,6 +16,7 @@
  */
 import {
 	type BackendCapabilities,
+	type BackendDiskUsage,
 	type BackendEgress,
 	type BackendFileEntry,
 	type BackendHost,
@@ -48,6 +49,7 @@ import {
 	FILE_STREAM_WINDOW_BYTES,
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
+	type HostDiskUsage,
 	type HostEgress,
 	type HostExecParams,
 	type HostExecRef,
@@ -239,6 +241,22 @@ interface HostSnapshot {
 }
 
 /** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
+/** A host's disk measure as the compute service takes it (`BackendDiskUsage`): its split by snapshot named by ref. */
+function diskByRef(hostId: string, usage: HostDiskUsage): BackendDiskUsage {
+	const { snapshotOwnBytes, snapshotShared, ...rest } = usage;
+	if (snapshotOwnBytes === undefined) return { ...rest };
+	return {
+		...rest,
+		snapshotOwnBytes: Object.fromEntries(
+			Object.entries(snapshotOwnBytes).map(([id, bytes]) => [`${hostId}/${id}`, bytes]),
+		),
+		snapshotShared: (snapshotShared ?? []).map((group) => ({
+			refs: group.snapshots.map((id) => `${hostId}/${id}`),
+			bytes: group.bytes,
+		})),
+	};
+}
+
 const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
 	ref: `${hostId}/${snap.id}`,
 	sizeBytes: snap.sizeBytes,
@@ -743,6 +761,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					features: [...host.features],
 					capacity: { ...host.capacity },
 					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
+					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },
@@ -1181,6 +1200,27 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				});
 			// The host's own word on memory: an older automatic snapshot may have lost its own to pruning.
 			return { ...takenOn(hostId, snap), memory: snap.memory === true };
+		},
+		// Each snapshot's full size on the host now, as the refresh reads it; a host that doesn't measure them, none.
+		async snapshotSizes(hostId) {
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.snapshotSizes)) return undefined;
+			const listed = await hosts.hub
+				.call<{ snapshots?: readonly { id?: unknown; sizeBytes?: unknown }[] | null }>(
+					hostId,
+					HostMethods.snapshotList,
+					{ sandboxId: "" },
+				)
+				.catch((error: unknown) => {
+					throw kantelErrorFromHost(error);
+				});
+			const sizes = new Map<string, number>();
+			for (const snap of listed.snapshots ?? []) {
+				const { id, sizeBytes } = snap;
+				if (typeof id !== "string" || typeof sizeBytes !== "number") continue;
+				if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) continue;
+				sizes.set(`${hostId}/${id}`, sizeBytes);
+			}
+			return sizes;
 		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);

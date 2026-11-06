@@ -15,6 +15,7 @@ function Scenario({
 	narrow = false,
 	opened,
 	confirmUpdate,
+	limiting,
 	usage = "live",
 	updateFails = false,
 }: {
@@ -25,6 +26,7 @@ function Scenario({
 	narrow?: boolean;
 	opened?: string;
 	confirmUpdate?: string;
+	limiting?: string;
 	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
 	usage?: "live" | "loading" | "none";
 	/** Update is refused by the host. */
@@ -52,6 +54,7 @@ function Scenario({
 			narrow={narrow}
 			{...(opened === undefined ? {} : { opened })}
 			{...(confirmUpdate === undefined ? {} : { confirmUpdate })}
+			{...(limiting === undefined ? {} : { limiting })}
 			{...(owner === undefined ? {} : { owner })}
 		/>
 	);
@@ -65,6 +68,15 @@ export const Default: Story = () => <Scenario />;
 
 /** A host opened: its CPU, memory and disk over the last 10 minutes, read every 5 seconds. */
 export const Opened: Story = () => <Scenario opened={FIRST} />;
+
+/** A host nearly out of disk opened: its graphs, then what takes its disk and its limit on saved snapshots. */
+export const OpenedNearlyFull: Story = () => <Scenario opened="hst_hetzner_2" />;
+
+/** The saved snapshot limit dialog for a host with one set: Set limit, or Remove limit. */
+export const SnapshotLimit: Story = () => <Scenario limiting="hst_home" />;
+
+/** The saved snapshot limit dialog for a host without one. */
+export const SnapshotLimitNone: Story = () => <Scenario limiting={FIRST} />;
 
 /** A host opened while its first readings load. */
 export const OpenedLoading: Story = () => <Scenario opened={FIRST} usage="loading" />;
@@ -133,6 +145,10 @@ export const MobileUpdating: Story = () => (
 	/>
 );
 MobileUpdating.meta = { width: 390 };
+
+/** The saved snapshot limit dialog on a phone. */
+export const MobileSnapshotLimit: Story = () => <Scenario narrow limiting="hst_home" />;
+MobileSnapshotLimit.meta = { width: 390 };
 
 /** Add host on a phone. */
 export const MobileAdding: Story = () => <Scenario narrow adding />;

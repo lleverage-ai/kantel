@@ -12,10 +12,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { Disclosure, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
-import { compactAge } from "../primitives/format.ts";
+import { bytesText, compactAge } from "../primitives/format.ts";
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
-import { DownloadIcon, EllipsisIcon, PauseIcon, PlayIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { DownloadIcon, EllipsisIcon, PauseIcon, PlayIcon, SettingsIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { SideScroll } from "../primitives/side-scroll.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
@@ -29,6 +29,7 @@ import {
 	type HostsSource,
 	usedShare,
 } from "./compute-model.ts";
+import { HostDiskUsage } from "./host-disk.tsx";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
 import { lineOf, ROW_SPAN_MS, seriesOf } from "./live-usage.ts";
@@ -51,6 +52,8 @@ export interface HostsPageProps {
 	readonly opened?: string;
 	/** The host whose Update dialog is open at first, for a story. */
 	readonly confirmUpdate?: string;
+	/** The host whose saved snapshot limit dialog is open at first, for a story. */
+	readonly limiting?: string;
 }
 
 type NoticeState = { level: "info" | "error"; text: string };
@@ -103,6 +106,7 @@ export function HostsPage({
 	poll = true,
 	opened,
 	confirmUpdate,
+	limiting: limitingAtFirst,
 }: HostsPageProps) {
 	const { state, reload, pending } = useLoad(() => source.list(), [source]);
 	// Hosts changed here, ahead of the next read: a drain shows at once; null is a removed host.
@@ -111,6 +115,7 @@ export function HostsPage({
 	const [removing, setRemoving] = useState<Host>();
 	// By ID, so the dialog shows the host as last read.
 	const [updatingId, setUpdatingId] = useState(confirmUpdate);
+	const [limitingId, setLimitingId] = useState(limitingAtFirst);
 	const [notice, setNotice] = useState<NoticeState>();
 	const now = fixedNow ?? Date.now();
 
@@ -201,6 +206,7 @@ export function HostsPage({
 		onDrain: (on: boolean) => void drain(host, on),
 		onRemove: () => setRemoving(host),
 		...(source.update === undefined ? {} : { onUpdate: () => setUpdatingId(host.id) }),
+		...(source.setSnapshotLimit === undefined ? {} : { onLimit: () => setLimitingId(host.id) }),
 		opened: host.id === opened,
 	});
 
@@ -344,6 +350,21 @@ export function HostsPage({
 					});
 				}}
 			/>
+			<SnapshotLimitDialog
+				host={hosts?.find((host) => host.id === limitingId)}
+				onClose={() => setLimitingId(undefined)}
+				onSet={async (host, bytes) => {
+					if (source.setSnapshotLimit === undefined) return;
+					change(host.id, await source.setSnapshotLimit(host.id, bytes));
+					setNotice({
+						level: "info",
+						text:
+							bytes === null
+								? `No limit on saved snapshots on ${host.name} now.`
+								: `Each account may keep ${bytesText(bytes)} of saved snapshots on ${host.name} now.`,
+					});
+				}}
+			/>
 			<RemoveDialog
 				host={removing}
 				onClose={() => setRemoving(undefined)}
@@ -408,7 +429,13 @@ function HostState({ host, now }: { host: Host; now: number }) {
 }
 
 /** Update when it's out of date, drain or undrain, then Remove: a host's ⋯. */
-function hostMenu(host: Host, onDrain: (on: boolean) => void, onRemove: () => void, onUpdate?: () => void) {
+function hostMenu(
+	host: Host,
+	onDrain: (on: boolean) => void,
+	onRemove: () => void,
+	onUpdate?: () => void,
+	onLimit?: () => void,
+) {
 	const update: MenuEntry[] =
 		onUpdate === undefined || host.updateAvailable === undefined || host.updating !== undefined
 			? []
@@ -435,6 +462,17 @@ function hostMenu(host: Host, onDrain: (on: boolean) => void, onRemove: () => vo
 					disabled: host.state !== "online",
 					onSelect: () => onDrain(true),
 				},
+		...(onLimit === undefined
+			? []
+			: [
+					{
+						kind: "item" as const,
+						id: "snapshot-limit",
+						label: "Saved snapshot limit",
+						icon: <SettingsIcon />,
+						onSelect: onLimit,
+					},
+				]),
 		{ kind: "separator", id: "sep-remove" },
 		{ kind: "item", id: "remove", label: "Remove", icon: <TrashIcon />, danger: true, onSelect: onRemove },
 	];
@@ -496,6 +534,8 @@ type RowProps = {
 	onRemove: () => void;
 	/** Absent: hosts aren't updated from here. */
 	onUpdate?: () => void;
+	/** Absent: the saved snapshot limit isn't set from here. */
+	onLimit?: () => void;
 	/** Its graphs show at first. */
 	opened: boolean;
 };
@@ -510,7 +550,7 @@ const Chevron = ({ open }: { open: boolean }) => (
 	</span>
 );
 
-function HostRow({ host, source, now, onDrain, onRemove, onUpdate, opened }: RowProps) {
+function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, opened }: RowProps) {
 	const labels = Object.entries(host.labels);
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
@@ -565,12 +605,17 @@ function HostRow({ host, source, now, onDrain, onRemove, onUpdate, opened }: Row
 				<td className={open ? cellOpen : cell}>
 					<Agent host={host} />
 				</td>
-				<td className={`${open ? cellOpen : cell} w-0 text-right`}>{hostMenu(host, onDrain, onRemove, onUpdate)}</td>
+				<td className={`${open ? cellOpen : cell} w-0 text-right`}>
+					{hostMenu(host, onDrain, onRemove, onUpdate, onLimit)}
+				</td>
 			</tr>
 			{open ? (
 				<tr className="kt-host-graphs bg-hover" id={graphsId}>
 					<td className={`${cell} pt-1 pb-4 pl-8`} colSpan={COLUMNS}>
-						<HostGraphs host={host} live={live} />
+						<div className="flex min-w-0 flex-col gap-6">
+							<HostGraphs host={host} live={live} />
+							<HostDiskUsage host={host} now={now} />
+						</div>
 					</td>
 				</tr>
 			) : null}
@@ -582,7 +627,7 @@ function HostRow({ host, source, now, onDrain, onRemove, onUpdate, opened }: Row
  * A phone's row: the name with its CPU line and state beside it, then the machine, its vCPU and sandboxes, and ⋯.
  * Tapping it opens its graphs under it.
  */
-function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, opened }: RowProps) {
+function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, opened }: RowProps) {
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
 	const graphsId = `host-graphs-${host.id}`;
@@ -622,11 +667,12 @@ function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, opened }
 						)}
 					</span>
 				</button>
-				{hostMenu(host, onDrain, onRemove, onUpdate)}
+				{hostMenu(host, onDrain, onRemove, onUpdate, onLimit)}
 			</div>
 			{open ? (
-				<div id={graphsId}>
+				<div id={graphsId} className="flex min-w-0 flex-col gap-6">
 					<HostGraphs host={host} live={live} narrow />
+					<HostDiskUsage host={host} now={now} narrow />
 				</div>
 			) : null}
 		</li>
@@ -722,6 +768,110 @@ function AddHostBody({
 				</div>
 			</Disclosure>
 		</div>
+	);
+}
+
+/**
+ * A limit's bytes as GB to edit, unrounded, so that reading it back (`limitBytes`) gives the same bytes: the shortest
+ * decimal that does, never in exponent form.
+ */
+export function limitText(bytes: number): string {
+	const gb = bytes / 1024 ** 3;
+	for (let places = 0; places <= 12; places += 1) {
+		const text = gb.toFixed(places);
+		if (limitBytes(text) === bytes) return text;
+	}
+	return gb.toFixed(12);
+}
+
+/** The bytes a limit in GB as typed is: a whole or decimal number of GB. Undefined when it isn't one. */
+export function limitBytes(text: string): number | undefined {
+	const trimmed = text.trim();
+	if (!/^\d+(\.\d+)?$/.test(trimmed)) return undefined;
+	const bytes = Math.round(Number(trimmed) * 1024 ** 3);
+	return bytes > 0 ? bytes : undefined;
+}
+
+/** Saved snapshot limit: how many GB of saved snapshots each account may keep on the host, or none. */
+function SnapshotLimitDialog({
+	host,
+	onClose,
+	onSet,
+}: {
+	host: Host | undefined;
+	onClose: () => void;
+	onSet: (host: Host, bytes: number | null) => Promise<void>;
+}) {
+	const [text, setText] = useState<string>();
+	const [busy, setBusy] = useState(false);
+	const [failure, setFailure] = useState<string>();
+	const shown = text ?? (host?.savedSnapshotLimitBytes === undefined ? "" : limitText(host.savedSnapshotLimitBytes));
+	const close = () => {
+		setText(undefined);
+		setFailure(undefined);
+		onClose();
+	};
+	const set = (bytes: number | null) => {
+		if (host === undefined) return;
+		setBusy(true);
+		onSet(host, bytes).then(
+			() => {
+				setBusy(false);
+				close();
+			},
+			(caught: unknown) => {
+				setBusy(false);
+				setFailure(messageOf(caught, "Kantel couldn't set the limit. Try again."));
+			},
+		);
+	};
+	const submit = () => {
+		// Unchanged: the limit it has, byte for byte.
+		const bytes =
+			text === undefined && host?.savedSnapshotLimitBytes !== undefined
+				? host.savedSnapshotLimitBytes
+				: limitBytes(shown);
+		if (bytes === undefined) {
+			setFailure("Enter a number of GB, such as 50.");
+			return;
+		}
+		set(bytes);
+	};
+	return (
+		<Dialog
+			open={host !== undefined}
+			title="Saved snapshot limit"
+			onClose={close}
+			onSubmit={submit}
+			actions={
+				<>
+					{host?.savedSnapshotLimitBytes === undefined ? null : (
+						<Button busy={busy} onClick={() => set(null)}>
+							Remove limit
+						</Button>
+					)}
+					<Button onClick={close}>Cancel</Button>
+					<Button type="submit" variant="primary" busy={busy} disabled={shown.trim() === ""}>
+						Set limit
+					</Button>
+				</>
+			}
+		>
+			<p>
+				How much each account may keep in saved snapshots on <strong>{host?.name}</strong>. Saving past it is refused,
+				with what the account has saved here. Snapshots already saved stay.
+			</p>
+			<div className="pt-2">
+				<TextField
+					label="Limit per account (GB)"
+					value={shown}
+					onChange={(event) => setText(event.currentTarget.value)}
+					placeholder="50"
+					inputMode="decimal"
+				/>
+			</div>
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+		</Dialog>
 	);
 }
 

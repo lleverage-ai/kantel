@@ -8,6 +8,7 @@ import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
 	HostDiskLimits,
+	HostDiskUsage,
 	HostFacts,
 	HostImages,
 	HostMemorySource,
@@ -159,7 +160,56 @@ function capacity(value: unknown): HostCapacity {
 		stopped: count(value.stopped, "stopped"),
 		load1: count(value.load1, "load1"),
 		...(builds.length === 0 ? {} : { builds }),
+		...diskUsage(value.disk),
 	};
+}
+
+/** A capacity's disk measure (`HostDiskUsage`): left out, not refused, when it isn't one, so the rest still stands. */
+function diskUsage(value: unknown): { disk?: HostDiskUsage } {
+	if (!isObject(value)) return {};
+	const fields = [
+		"totalBytes",
+		"usedBytes",
+		"snapshotsBytes",
+		"sandboxesBytes",
+		"imagesBytes",
+		"templatesBytes",
+		"bundlesBytes",
+		"otherBytes",
+		"measuredAt",
+	] as const;
+	const disk: { [K in (typeof fields)[number]]?: number } = {};
+	for (const field of fields) {
+		const figure = value[field];
+		if (typeof figure !== "number" || !Number.isSafeInteger(figure) || figure < 0) return {};
+		disk[field] = figure;
+	}
+	return { disk: { ...(disk as HostDiskUsage), ...snapshotSplit(value) } };
+}
+
+/** The most snapshots, or groups of shared files, a disk measure's split by snapshot may name. */
+const MAX_SPLIT_ENTRIES = 10_000;
+
+/**
+ * A disk measure's snapshots by snapshot (`HostDiskUsage.snapshotOwnBytes`, `snapshotShared`): left out whole when any
+ * of it isn't one, and the compute plane then splits by sizes alone.
+ */
+function snapshotSplit(value: Record<string, unknown>): Pick<HostDiskUsage, "snapshotOwnBytes" | "snapshotShared"> {
+	const bytes = (figure: unknown): figure is number =>
+		typeof figure === "number" && Number.isSafeInteger(figure) && figure >= 0;
+	const own = value.snapshotOwnBytes;
+	const shared = value.snapshotShared ?? [];
+	if (!isObject(own) || !Array.isArray(shared)) return {};
+	const entries = Object.entries(own);
+	if (entries.length > MAX_SPLIT_ENTRIES || shared.length > MAX_SPLIT_ENTRIES) return {};
+	if (!entries.every(([id, figure]) => id !== "" && bytes(figure))) return {};
+	const groups: { snapshots: string[]; bytes: number }[] = [];
+	for (const group of shared) {
+		if (!isObject(group) || !bytes(group.bytes) || !Array.isArray(group.snapshots)) return {};
+		if (!group.snapshots.every((id): id is string => typeof id === "string" && id !== "")) return {};
+		groups.push({ snapshots: [...group.snapshots], bytes: group.bytes });
+	}
+	return { snapshotOwnBytes: Object.fromEntries(entries) as { [id: string]: number }, snapshotShared: groups };
 }
 
 /** The most sandboxes one usage tick may name: more than any host runs. */

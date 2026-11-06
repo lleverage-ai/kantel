@@ -983,6 +983,10 @@ export interface Host {
 	readonly lastSeenAt?: number;
 	/** A host's recent CPU and memory, for sparklines. */
 	readonly usage?: UsageSparklines;
+	/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
+	readonly diskUsage?: HostDiskUsage;
+	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
+	readonly savedSnapshotBytesLimit?: number;
 }
 
 export interface HostAllocated {
@@ -996,6 +1000,30 @@ export interface HostCapacity {
 	readonly vcpus: number;
 	readonly memoryMb: number;
 	readonly diskGb: number;
+}
+
+/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
+export interface HostDiskUsage {
+	/** The size of the filesystem that holds the host's files. */
+	readonly totalBytes: number;
+	/** What is used on it, by anything. */
+	readonly usedBytes: number;
+	/** Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, each file once. */
+	readonly savedSnapshotsBytes: number;
+	/** The rest of the host's snapshots: automatic ones, and any Kantel has no record of. */
+	readonly automaticSnapshotsBytes: number;
+	/** Sandboxes' own disks, and their memory while they're stopped. */
+	readonly sandboxesBytes: number;
+	/** Base images: the guest kernel and root filesystems, and templates' root filesystems. */
+	readonly imagesBytes: number;
+	/** Template snapshots, which new sandboxes start from. */
+	readonly templatesBytes: number;
+	/** The cache of bundle images that sandboxes mount. */
+	readonly bundlesBytes: number;
+	/** The rest of the used space: the operating system, logs and other programs. */
+	readonly otherBytes: number;
+	/** Epoch milliseconds, UTC. */
+	readonly measuredAt: number;
 }
 
 export interface HostJoinToken {
@@ -2179,6 +2207,8 @@ export interface UpdateHostBody {
 	};
 	/** Stop placing new sandboxes on it. */
 	readonly draining?: boolean;
+	/** The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. */
+	readonly savedSnapshotBytesLimit?: number | null;
 }
 
 export interface UpdateMemberBody {
@@ -2932,7 +2962,7 @@ export interface KantelClient {
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get a host's usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}/usage` */
 	getHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
+	/** Change a host. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
@@ -2952,7 +2982,7 @@ export interface KantelClient {
 	getAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get one of an account's hosts' usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}/usage` */
 	getAccountHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change one of an account's hosts. Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
+	/** Change one of an account's hosts. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
 	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;

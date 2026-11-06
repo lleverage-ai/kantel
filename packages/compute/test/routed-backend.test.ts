@@ -284,3 +284,41 @@ describe("createRoutedBackend's keepSnapshot", () => {
 		expect(route(keeping([], false), keeping([], false)).keepSnapshot).toBeUndefined();
 	});
 });
+
+describe("createRoutedBackend's snapshotSizes", () => {
+	/** A backend with one host that answers its snapshots' sizes (`measures`), or has no `snapshotSizes`. */
+	const sizing = (hostId: string, calls: string[], measures: boolean): SandboxBackend => {
+		const { snapshotSizes: _none, ...stub } = createStubBackend();
+		const own: SandboxBackend = {
+			...stub,
+			capabilities: async () => ({ types: ["microvm"], sizes: [], hosts: [host(hostId)] }),
+		};
+		return measures
+			? {
+					...own,
+					snapshotSizes: async (asked: string) => {
+						calls.push(asked);
+						return new Map([[`${asked}/snap_1`, 7]]);
+					},
+				}
+			: own;
+	};
+	const route = (primary: SandboxBackend, fallback: SandboxBackend) =>
+		createRoutedBackend({ primary, fallback, holds: async () => false, holdsSnapshot: () => false });
+
+	it("asks the backend whose host it is, and answers none where that backend can't say", async () => {
+		const primary: string[] = [];
+		const fallback: string[] = [];
+		const routed = route(sizing("host_a", primary, true), sizing("host_b", fallback, true));
+		expect(await routed.snapshotSizes?.("host_a")).toEqual(new Map([["host_a/snap_1", 7]]));
+		expect(await routed.snapshotSizes?.("host_b")).toEqual(new Map([["host_b/snap_1", 7]]));
+		expect(primary).toEqual(["host_a"]);
+		expect(fallback).toEqual(["host_b"]);
+		// The fallback's host, on a fallback without it: none, not the primary's answer.
+		const asked: string[] = [];
+		const half = route(sizing("host_a", asked, true), sizing("host_b", [], false));
+		expect(await half.snapshotSizes?.("host_b")).toBeUndefined();
+		expect(asked).toEqual([]);
+		expect(route(sizing("host_a", [], false), sizing("host_b", [], false)).snapshotSizes).toBeUndefined();
+	});
+});

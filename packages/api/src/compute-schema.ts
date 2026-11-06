@@ -2836,6 +2836,36 @@ export const HostState = Type.Union(
 	},
 );
 
+const bytes = (description: string) => Type.Integer({ minimum: 0, description });
+
+export const HostDiskUsage = Type.Object(
+	{
+		totalBytes: bytes("The size of the filesystem that holds the host's files."),
+		usedBytes: bytes("What is used on it, by anything."),
+		savedSnapshotsBytes: bytes(
+			"Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, " +
+				"each file once.",
+		),
+		automaticSnapshotsBytes: bytes(
+			"The rest of the host's snapshots: automatic ones, and any Kantel has no record of.",
+		),
+		sandboxesBytes: bytes("Sandboxes' own disks, and their memory while they're stopped."),
+		imagesBytes: bytes("Base images: the guest kernel and root filesystems, and templates' root filesystems."),
+		templatesBytes: bytes("Template snapshots, which new sandboxes start from."),
+		bundlesBytes: bytes("The cache of bundle images that sandboxes mount."),
+		otherBytes: bytes("The rest of the used space: the operating system, logs and other programs."),
+		measuredAt: Timestamp,
+	},
+	{
+		title: "HostDiskUsage",
+		description:
+			"What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files " +
+			"on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: " +
+			"bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts " +
+			"for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host.",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -2903,6 +2933,16 @@ export const Host = Type.Object(
 		joinedAt: Timestamp,
 		lastSeenAt: Type.Optional(Timestamp),
 		usage: Type.Optional(UsageSparklines),
+		diskUsage: Type.Optional(HostDiskUsage),
+		savedSnapshotBytesLimit: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full " +
+					"size, the files it shares with other snapshots included, so copies that share files count separately. " +
+					"A save past it answers `exhausted`. Absent: no limit.",
+			}),
+		),
 	},
 	{
 		title: "Host",
@@ -2960,6 +3000,13 @@ export const UpdateHostBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		draining: Type.Optional(Type.Boolean({ description: "Stop placing new sandboxes on it." })),
+		savedSnapshotBytesLimit: Type.Optional(
+			Type.Union([Type.Integer({ minimum: 0 }), Type.Null()], {
+				description:
+					"The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); " +
+					"`null` removes the limit.",
+			}),
+		),
 	},
 	{ title: "UpdateHostBody" },
 );
@@ -3385,6 +3432,7 @@ export type Webhook = Static<typeof Webhook>;
 export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
+export type HostDiskUsage = Static<typeof HostDiskUsage>;
 export type HostUsage = Static<typeof HostUsage>;
 export type HostUsagePoint = Static<typeof HostUsagePoint>;
 export type SandboxUsage = Static<typeof SandboxUsage>;

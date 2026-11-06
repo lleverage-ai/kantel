@@ -104,6 +104,8 @@ type Host struct {
 	usageAcks bool
 	// usage samples the host and its sandboxes while RunUsage runs (usage.go).
 	usage *usageSampler
+	// disk is what takes the space on the host's disk, measured now and then for the heartbeat (diskusage.go).
+	disk diskMeasure
 }
 
 // New starts the tiers the host can run.
@@ -348,6 +350,7 @@ func (h *Host) Capacity() proto.Capacity {
 		c.Builds = ids
 	}
 	c.FreeMemoryMiB = max(0, h.memoryBudgetMiB()-used)
+	c.Disk = h.diskUsage()
 	return c
 }
 

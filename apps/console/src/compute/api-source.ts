@@ -1674,6 +1674,23 @@ function hostOf(host: Host): UiHost {
 		// A host not seen since it joined.
 		lastSeenAt: host.lastSeenAt ?? host.joinedAt,
 		joinedAt: host.joinedAt,
+		...(host.diskUsage === undefined
+			? {}
+			: {
+					disk: {
+						totalBytes: host.diskUsage.totalBytes,
+						usedBytes: host.diskUsage.usedBytes,
+						savedSnapshots: host.diskUsage.savedSnapshotsBytes,
+						automaticSnapshots: host.diskUsage.automaticSnapshotsBytes,
+						sandboxes: host.diskUsage.sandboxesBytes,
+						images: host.diskUsage.imagesBytes,
+						templates: host.diskUsage.templatesBytes,
+						bundles: host.diskUsage.bundlesBytes,
+						other: host.diskUsage.otherBytes,
+						measuredAt: host.diskUsage.measuredAt,
+					},
+				}),
+		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 	};
 }
 
@@ -1694,6 +1711,7 @@ function hostsSource({ api }: Context): HostsSource {
 			await api.revokeHost(id);
 		},
 		update: async (id) => hostOf(await api.updateHostAgent(id)),
+		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateHost(id, { savedSnapshotBytesLimit: bytes })),
 		checkForUpdates: () => api.checkHostUpdates(),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
@@ -1791,6 +1809,7 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 			await api.removeAccountHost(id);
 		},
 		update: async (id) => hostOf(await api.updateAccountHostAgent(id)),
+		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateAccountHost(id, { savedSnapshotBytesLimit: bytes })),
 	};
 }
 

@@ -418,6 +418,35 @@ export interface HostCapacity {
 	 * `freeMemoryMiB` and `freeDiskGiB` already leave out. Absent from a host from before it named them.
 	 */
 	readonly builds?: readonly string[];
+	/** What takes the space on its disk, measured every few minutes. Absent until it first is, and from an older host. */
+	readonly disk?: HostDiskUsage;
+}
+
+/**
+ * What takes the space on the filesystem holding a host's files, in bytes, counting only files on that filesystem. Each
+ * file counts once, in the first of these it is in: bundle images, base images, templates, sandboxes, snapshots (memory
+ * a stop's snapshot shares with its sandbox counts for the sandbox). Which snapshots are saved isn't the host's to say:
+ * the compute plane splits `snapshotsBytes` by its own records. `otherBytes` is the rest of the used space: the
+ * operating system, logs, other programs.
+ */
+export interface HostDiskUsage {
+	readonly totalBytes: number;
+	readonly usedBytes: number;
+	readonly snapshotsBytes: number;
+	/**
+	 * `snapshotsBytes` by snapshot, the same files: each one's that no other holds, by its ID, and those several hold, by
+	 * their holders (`HostSharedBytes`). The compute plane counts for saved what its saved snapshots hold, each group
+	 * once.
+	 */
+	readonly snapshotOwnBytes?: { readonly [snapshotId: string]: number };
+	readonly snapshotShared?: readonly { readonly snapshots: readonly string[]; readonly bytes: number }[];
+	readonly sandboxesBytes: number;
+	readonly imagesBytes: number;
+	readonly templatesBytes: number;
+	readonly bundlesBytes: number;
+	readonly otherBytes: number;
+	/** When it was measured (epoch milliseconds). */
+	readonly measuredAt: number;
 }
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";
