@@ -907,6 +907,36 @@ describe("sandboxes", () => {
 		expect((await tom.getSnapshot(iso.id)).sizeBytes).toBe(77);
 	});
 
+	it("records a replacement's size without the save it replaces, which shares its files", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const source = `${STUB_HOST_ID}/snap-auto`;
+		let keeps = 0;
+		// Each keep links the source's 100 bytes of disk: every kept copy shares them with it, and with each other.
+		const backend: SandboxBackend = {
+			...stub,
+			keepSnapshot: async () => {
+				keeps += 1;
+				const refs = [source, ...Array.from({ length: keeps }, (_, at) => `${STUB_HOST_ID}/snap-kept-${at + 1}`)];
+				return {
+					ref: `${STUB_HOST_ID}/snap-kept-${keeps}`,
+					sizeBytes: 104,
+					uniqueBytes: 4,
+					shared: [{ refs, bytes: 100 }],
+				};
+			},
+		};
+		const { tom } = setup(backend, { store });
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const taken = await tom.takeSnapshot(vm.id, {});
+		await store.snapshots.update(taken.id, (current) => ({ ...current, ref: source }));
+		const first = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id });
+		expect(first.sizeBytes).toBe(104);
+		// The replacement keeps the shared files once the first goes: they are its.
+		const replaced = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id, replace: true });
+		expect(replaced.sizeBytes).toBe(104);
+	});
+
 	it("counts the sandboxes made or forked from a snapshot as its uses, deleted ones included", async () => {
 		const { tom } = setup();
 		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });

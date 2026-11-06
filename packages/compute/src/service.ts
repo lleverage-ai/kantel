@@ -3388,14 +3388,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * group of files it shares for the holder the records choose, itself included as a saved record made now. A backend
 	 * that doesn't say how its files are shared answers its size alone.
 	 */
-	async function keptSize(kept: TakenSnapshot): Promise<number> {
+	async function keptSize(kept: TakenSnapshot, replacing: StoredSnapshot | undefined): Promise<number> {
 		if (kept.uniqueBytes === undefined) return kept.sizeBytes;
 		const shared = kept.shared ?? [];
 		const records: Pick<StoredSnapshot, "ref" | "kind" | "createdAt" | "state">[] = [
 			{ ref: kept.ref, kind: "saved", createdAt: now(), state: "ready" },
 		];
 		for (const ref of new Set(shared.flatMap((group) => group.refs))) {
-			if (ref !== kept.ref) records.push(...(await store.snapshots.list({ ref })));
+			if (ref === kept.ref) continue;
+			// Not the save it replaces, which goes once this one is put: its files are this one's to keep.
+			records.push(...(await store.snapshots.list({ ref })).filter((record) => record.id !== replacing?.id));
 		}
 		return attributeSnapshotBytes(records, new Map([[kept.ref, kept.uniqueBytes]]), shared).get(kept.ref) ?? 0;
 	}
@@ -6460,7 +6462,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const from = readyRef(source);
 					const kept = await backend.keepSnapshot?.(from);
 					ref = kept?.ref ?? from;
-					sizeBytes = kept === undefined ? source.sizeBytes : await keptSize(kept);
+					sizeBytes = kept === undefined ? source.sizeBytes : await keptSize(kept, existing);
 					base = kept?.base ?? source.base;
 					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);
