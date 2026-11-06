@@ -31,6 +31,7 @@ import {
 	PLACEHOLDER_RATES,
 	publicOrigin,
 	RETIRE_LEASE_MS,
+	SAVE_ADMISSION_LEASE_MS,
 	SHARED_HOSTS_REFUSED,
 	SHARED_KEY_REFUSED,
 	SNAPSHOT_EXPIRY_EVERY_MS,
@@ -3978,6 +3979,101 @@ describe("hosts", () => {
 		expect(released).toEqual([]);
 		expect((await tom.getSnapshot(other.id)).state).toBe("ready");
 		expect((await store.snapshots.list()).filter((snapshot) => snapshot.name === "three")).toEqual([]);
+	});
+
+	it("takes back a save its gateway left being admitted, once its lease is past, freeing its bytes", async () => {
+		const memory = createMemoryStore();
+		// The gateway dies once the save is stored `creating`: nothing it writes after lands.
+		const died = { yes: false };
+		const store: ComputeStore = {
+			...memory,
+			snapshots: {
+				...memory.snapshots,
+				put: async (record) => {
+					if (died.yes) throw new Error("the gateway died");
+					await memory.snapshots.put(record);
+					if (record.state === "creating") died.yes = true;
+				},
+				update: async (id, change) => {
+					if (died.yes) throw new Error("the gateway died");
+					return memory.snapshots.update(id, change);
+				},
+			},
+		};
+		const { backend, next, released } = sizedBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const dying = setup(backend, { store, now: () => clock.at });
+		const sandbox = await dying.tom.createSandbox({ autoStopMinutes: null, wait: true });
+		await dying.root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+		next.bytes = 40 * MiB;
+		await failure(dying.tom.saveSnapshot({ name: "lost", sandboxId: sandbox.id }));
+		const [left] = (await memory.snapshots.list()).filter((snapshot) => snapshot.name === "lost");
+		expect(left?.state).toBe("creating");
+
+		// Another gateway: the stranded save counts against the limit while its lease runs.
+		const { api, tom } = setup(backend, { store: memory, now: () => clock.at });
+		next.bytes = 20 * MiB;
+		expect((await failure(tom.saveSnapshot({ name: "next", sandboxId: sandbox.id }))).code).toBe("exhausted");
+		clock.at += SAVE_ADMISSION_LEASE_MS - 60_000;
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await memory.snapshots.get(left?.id ?? ""))?.state).toBe("creating");
+		// Past it, the sweep takes it back, its bytes with it, and the next save fits.
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		await api.service.sweep();
+		await api.service.idle();
+		expect(released).toContain(left?.ref);
+		expect(await memory.snapshots.get(left?.id ?? "")).toBeUndefined();
+		expect((await tom.saveSnapshot({ name: "next", sandboxId: sandbox.id })).state).toBe("ready");
+	});
+
+	it("fails an admission the sweep took back meanwhile, its bytes released once", async () => {
+		const memory = createMemoryStore();
+		// The admission's read of the host's limit waits, once the save is stored `creating`.
+		let stored = false;
+		let resume = () => {};
+		const held = new Promise<void>((resolve) => {
+			resume = resolve;
+		});
+		let waiting = false;
+		const store: ComputeStore = {
+			...memory,
+			snapshots: {
+				...memory.snapshots,
+				put: async (record) => {
+					await memory.snapshots.put(record);
+					if (record.state === "creating") stored = true;
+				},
+			},
+			hosts: {
+				...memory.hosts,
+				get: async (id) => {
+					if (stored) {
+						stored = false;
+						waiting = true;
+						await held;
+					}
+					return memory.hosts.get(id);
+				},
+			},
+		};
+		const { backend, next, released } = sizedBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const { api, root, tom } = setup(backend, { store, now: () => clock.at });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+		next.bytes = 10 * MiB;
+		const saving = failure(tom.saveSnapshot({ name: "slow", sandboxId: sandbox.id }));
+		while (!waiting) await new Promise((resolve) => setTimeout(resolve, 5));
+		const [record] = (await memory.snapshots.list()).filter((snapshot) => snapshot.name === "slow");
+		clock.at += SAVE_ADMISSION_LEASE_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+		await api.service.sweep();
+		await api.service.idle();
+		expect(released).toEqual([record?.ref]);
+		resume();
+		expect((await saving).code).toBe("conflict");
+		expect(released).toEqual([record?.ref]);
+		expect((await memory.snapshots.list()).filter((snapshot) => snapshot.name === "slow")).toEqual([]);
 	});
 
 	it("keeps a refused save's bytes recorded until its host deletes them, and tries again", async () => {

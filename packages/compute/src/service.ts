@@ -658,6 +658,11 @@ export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
 export const SNAPSHOT_EXPIRY_START_DELAY_MS = 15 * 60_000;
 /** How long a process holds an expiry's mark (`markExpiring`) before another may take it over. */
 export const RETIRE_LEASE_MS = 10 * 60_000;
+/**
+ * How long a save may stay `creating` while its host's limit admits it (`admitSave`, a few reads) before the sweep
+ * takes it back as one whose gateway died, releasing its bytes (`withdrawSave`).
+ */
+export const SAVE_ADMISSION_LEASE_MS = 10 * 60_000;
 /** The usage readings kept per sandbox: a day of 5-minute means. */
 export const MAX_SAMPLES = 288;
 /** The hourly means kept per sandbox before its day of 5-minute ones (`keptSamples`): six more days, a week in all. */
@@ -3472,7 +3477,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// - `releaseBytes` deletes a settling record's bytes, unless another record has their ref, and then the record; a
 	//   host that can't delete them leaves it settling, and the sweep tries again.
 	// - `withdrawSave` moves a save's own record that its host's limit refused (`admitSave`) from `creating` straight to
-	//   settling: nothing can depend on a snapshot that was never ready. The sweep retries these with expiry off too.
+	//   settling: nothing can depend on a snapshot that was never ready. The sweep retries these with expiry off too, and
+	//   takes back a save left `creating` past `SAVE_ADMISSION_LEASE_MS` the same way.
 	//
 	// A delete by hand, a save and a sandbox's delete are as they were: a delete of a snapshot expiry has marked simply
 	// wins (expiry's compare-and-sets then find no record and do nothing), and a record a delete removes is no holder.
@@ -3638,7 +3644,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Expires automatic snapshots past their `expiresAt` (the model above), at most once each `SNAPSHOT_EXPIRY_EVERY_MS`,
 	 * in the background: first what is left `deleting` (settling ones, and marks past their lease), then the expired,
 	 * marked, one read of what depends on them, and each settled for its own mark. With expiry off, only the settling
-	 * ones (a refused save's bytes, `withdrawSave`) are tried again.
+	 * ones (a refused save's bytes, `withdrawSave`) are tried again. Either way, a save left `creating` past
+	 * `SAVE_ADMISSION_LEASE_MS` (its gateway died) is taken back first.
 	 */
 	function expireSnapshots(): void {
 		const expiring = options.snapshotExpiry === true;
@@ -3648,6 +3655,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		keepGoing(
 			(async () => {
 				const at = now();
+				// A save left `creating` past its lease (its gateway died mid-admission): taken back, its bytes with it.
+				for (const creating of await store.snapshots.list({ state: "creating", kind: "saved" })) {
+					if (closing) return;
+					if (creating.createdAt + SAVE_ADMISSION_LEASE_MS > at) continue;
+					await withdrawSave(creating.id, at).catch(() => undefined);
+				}
 				for (const deleting of await store.snapshots.list({ state: "deleting" })) {
 					if (closing) return;
 					const fresh = deleting.retiring !== undefined && deleting.retiring.at + RETIRE_LEASE_MS > at;
@@ -4361,7 +4374,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * `creating`, so every other save counts it from then on, on any gateway; then the account's total read again with
 	 * it in, and the record made `ready` only when that fits. Of two saves at once, the one that reads second counts
 	 * both: both may be refused, never both let through. Refused, or failing on the way, the record is taken back
-	 * (`withdrawSave`) and the error thrown.
+	 * (`withdrawSave`) and the error thrown. One whose gateway died on the way is taken back by the sweep once it is
+	 * `SAVE_ADMISSION_LEASE_MS` old; `ready` is written only over `creating` (compare-and-set), so an admission the sweep
+	 * took back meanwhile fails, `conflict`, its bytes already released.
 	 */
 	async function admitSave(snapshot: StoredSnapshot, replacing: StoredSnapshot | undefined): Promise<StoredSnapshot> {
 		await store.snapshots.put({ ...snapshot, state: "creating" });
@@ -4371,7 +4386,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const ready = await store.snapshots.update(snapshot.id, (latest) =>
 				latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
 			);
-			if (ready === undefined) throw new KantelError("conflict", "The snapshot was deleted while it was being saved");
+			if (ready === undefined) {
+				throw new KantelError("conflict", "The snapshot was deleted, or given up on, while it was being saved");
+			}
 			return ready;
 		} catch (error) {
 			await withdrawSave(snapshot.id).catch(() => undefined);
@@ -4385,9 +4402,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * (`releaseBytes`). A host that can't delete them now leaves it settling, and the sweep (`expireSnapshots`) tries
 	 * again, so bytes taken for a refused save are never left on the host unrecorded.
 	 */
-	async function withdrawSave(snapshotId: string): Promise<void> {
+	async function withdrawSave(snapshotId: string, expiredBy?: number): Promise<void> {
 		const settling = await store.snapshots.update(snapshotId, (latest) =>
-			latest.state !== "creating"
+			latest.state !== "creating" || (expiredBy !== undefined && latest.createdAt + SAVE_ADMISSION_LEASE_MS > expiredBy)
 				? undefined
 				: {
 						...latest,
