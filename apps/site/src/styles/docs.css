@@ -55,3 +55,35 @@ h1#_top {
 	font-weight: 600;
 	letter-spacing: 0;
 }
+
+/* Scrollbars as the console and the marketing page draw them (@kantel/ui's base.css): thin, a rounded thumb in the
+   border's grey on a clear track, no arrow buttons, for the page, the sidebar and a wide table. Code blocks keep
+   Expressive Code's own, at the size it insets its thumb for. Chromium and Safari draw ::-webkit-scrollbar, Firefox the standard properties: Chromium
+   ignores ::-webkit-scrollbar on an element with scrollbar-width or scrollbar-color set, so those go only to engines
+   without it. 10px thick, its thumb inset 2px, as --kt-scrollbar-size. */
+:not(.expressive-code pre)::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+	background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+	border: 2px solid transparent;
+	border-radius: 999px;
+	background: var(--sl-color-gray-5) padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background-color: var(--sl-color-gray-4);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+	* {
+		scrollbar-width: thin;
+		scrollbar-color: var(--sl-color-gray-5) transparent;
+	}
+}
