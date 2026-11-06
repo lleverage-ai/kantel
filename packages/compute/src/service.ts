@@ -428,6 +428,11 @@ export interface ComputeService {
 	 */
 	carryOnDeletions(): Promise<number | undefined>;
 	/**
+	 * Carries a person's account deletion on again, due now, durably: a sign-in that set them up as it began has made
+	 * something its next pass must clear (a personal account, the user record).
+	 */
+	reopenDeletion(userId: string): Promise<void>;
+	/**
 	 * Counts a use of a sandbox toward its idle stop (`idleStopMinutes`): a relayed port stream opened or carrying bytes
 	 * (SSH, the desktop or browser, a hosted port's request or WebSocket). Cheap enough for every frame: it is kept in
 	 * memory, and written as the sandbox's `lastActiveAt` at most once each `ACTIVITY_WRITE_MS` (the sweep writes what
@@ -4053,41 +4058,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function deletionPass(job: StoredDeletion): Promise<void> {
 		const userId = job.id;
-		const personal = job.personalAccountId;
 		const principal: PersonPrincipal = {
 			kind: "person",
 			userId,
 			name: job.name,
 			superAdmin: false,
-			personalAccountId: personal,
+			personalAccountId: job.personalAccountId,
 			...(job.email === undefined ? {} : { email: job.email }),
 		};
-		// Closed for good: nothing new is stored in it from here (`accountOpen`).
-		await store.accounts.update(personal, (account) =>
-			account.closedAt === undefined ? { ...account, closedAt: now() } : undefined,
-		);
-		// No host joins with a token of theirs, or of the account's, before its hosts are revoked below.
+		// Every personal account of theirs: the one the deletion began with, and any a sign-in racing it made (each found
+		// by its owner membership, which is written before its account).
+		const personal = new Set([job.personalAccountId]);
+		const memberships = await store.members.list({ userId });
+		for (const member of memberships) {
+			const account = await store.accounts.get(member.accountId);
+			if (account === undefined || account.kind === "personal") personal.add(member.accountId);
+		}
+		// No host joins with a token of theirs before the accounts' hosts are revoked below.
 		for (const token of await store.joinTokens.list({ createdBy: userId })) {
 			if (token.usedAt === undefined) await store.joinTokens.delete(token.id);
 		}
-		for (const token of await store.joinTokens.list({ accountId: personal })) await store.joinTokens.delete(token.id);
-		// What the account holds: sandboxes (their machines destroyed), saved snapshots, bundles (bytes and all).
-		for (const sandbox of await store.sandboxes.list({ accountId: personal })) await forgetSandbox(sandbox);
-		for (const snapshot of await store.snapshots.list({ accountId: personal })) {
-			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
-		}
-		for (const bundle of await store.bundles.list({ accountId: personal })) {
-			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
-			await mounts.forgetBundle(bundle);
-		}
-		// Its hosts: a revoke that can't be made fails the pass, to be made again.
-		for (const host of await ensureHosts()) {
-			if (host.accountId === personal && host.state !== "revoked") await revokeStoredHost(host);
-		}
+		for (const accountId of personal) await clearPersonalAccount(accountId);
 		// They leave each organisation as `removeMember` has a member leave: their private sandboxes stay, stopped.
-		for (const member of await store.members.list({ userId })) {
-			if (member.accountId === personal) continue;
+		for (const member of memberships) {
+			if (personal.has(member.accountId)) continue;
 			for (const sandbox of await store.sandboxes.list({ accountId: member.accountId, ownerUserId: userId })) {
 				if (sandbox.visibility === "private" && sandbox.state === "running") {
 					keepGoing((await beginStop(sandbox, false, "Its person deleted their account", principal)).work);
@@ -4105,35 +4099,51 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const kept of await store.idempotency.list()) {
 			if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
 		}
-		// Everything else of the account, as `deleteOrganisation` clears an organisation.
-		await templates.retireAccount(personal);
-		for (const source of await store.bucketSources.list({ accountId: personal })) {
-			await store.bucketSources.delete(source.id);
-		}
-		for (const invite of await store.invites.list({ accountId: personal })) await store.invites.delete(invite.id);
-		for (const webhook of await store.webhooks.list({ accountId: personal })) await store.webhooks.delete(webhook.id);
-		for (const delivery of await store.deliveries.list({ accountId: personal })) {
-			await store.deliveries.delete(delivery.id);
-		}
-		for (const environment of await store.environments.list({ accountId: personal })) {
-			await store.environments.delete(environment.id);
-		}
-		for (const event of await store.events.list({ accountId: personal })) await store.events.delete(event.id);
-		for (const entry of await store.egress.list({ accountId: personal })) await store.egress.delete(entry.id);
-		for (const entry of await store.e2eChain.list({ space: personal })) await store.e2eChain.delete(entry.id);
-		await store.telemetry.delete(personal);
-		await store.proxies.delete(personal);
-		for (const member of await store.members.list({ accountId: personal })) await store.members.delete(member.id);
-		await store.accounts.delete(personal);
 		await store.users.delete(userId);
 		// Signed out and forgotten by sign-in: on every pass, so a session made as the first ran goes in the last.
 		await options.deletePerson?.(userId);
 	}
 
 	/**
-	 * Carries on a person's account deletion, if no other gateway is: a pass, then the next one's time (the last pass,
-	 * after the first; a retry, after a failure). The deletion's record goes once its last pass is done.
+	 * A personal account of a person being deleted, cleared and removed: closed for good first (`accountOpen`), then
+	 * everything it holds. Every step finds only what is left, so it can be made again.
 	 */
+	async function clearPersonalAccount(accountId: string): Promise<void> {
+		await store.accounts.update(accountId, (account) =>
+			account.closedAt === undefined ? { ...account, closedAt: now() } : undefined,
+		);
+		for (const token of await store.joinTokens.list({ accountId })) await store.joinTokens.delete(token.id);
+		// Sandboxes (their machines destroyed), saved snapshots, bundles (bytes and all).
+		for (const sandbox of await store.sandboxes.list({ accountId })) await forgetSandbox(sandbox);
+		for (const snapshot of await store.snapshots.list({ accountId })) {
+			await forgetSnapshot(snapshot);
+			await releaseRef(snapshot.ref);
+		}
+		for (const bundle of await store.bundles.list({ accountId })) {
+			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
+			await mounts.forgetBundle(bundle);
+		}
+		// Its hosts: a revoke that can't be made fails the pass, to be made again.
+		for (const host of await ensureHosts()) {
+			if (host.accountId === accountId && host.state !== "revoked") await revokeStoredHost(host);
+		}
+		await templates.retireAccount(accountId);
+		for (const source of await store.bucketSources.list({ accountId })) await store.bucketSources.delete(source.id);
+		for (const invite of await store.invites.list({ accountId })) await store.invites.delete(invite.id);
+		for (const webhook of await store.webhooks.list({ accountId })) await store.webhooks.delete(webhook.id);
+		for (const delivery of await store.deliveries.list({ accountId })) await store.deliveries.delete(delivery.id);
+		for (const environment of await store.environments.list({ accountId })) {
+			await store.environments.delete(environment.id);
+		}
+		for (const event of await store.events.list({ accountId })) await store.events.delete(event.id);
+		for (const entry of await store.egress.list({ accountId })) await store.egress.delete(entry.id);
+		for (const entry of await store.e2eChain.list({ space: accountId })) await store.e2eChain.delete(entry.id);
+		await store.telemetry.delete(accountId);
+		await store.proxies.delete(accountId);
+		for (const member of await store.members.list({ accountId })) await store.members.delete(member.id);
+		await store.accounts.delete(accountId);
+	}
+
 	/**
 	 * The soonest a running deletion's next pass can be taken, or undefined with none: its due time, or, while a pass
 	 * holds it, when that pass's lease runs out (should it die, the next takes over then).
@@ -7710,6 +7720,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const sandbox = await store.sandboxes.get(sandboxId);
 			if (sandbox === undefined || sandbox.state === "running" || sandbox.state === "deleted") return undefined;
 			return portNotRunningText(sandbox, apiBasePath);
+		},
+
+		async reopenDeletion(userId) {
+			// Running again, due now, whatever stage it had reached: its next pass clears what a racing sign-in made.
+			await store.deletions.update(userId, (current) => ({ ...current, stage: "running", dueAt: now() }));
+			await wakeForDeletions();
 		},
 
 		async carryOnDeletions() {

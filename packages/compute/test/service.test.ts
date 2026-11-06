@@ -2389,7 +2389,7 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 
 	it("leaves nothing of a sign-in that set the person up as their deletion began", async () => {
 		const store = await make();
-		const { ann } = setup(undefined, { store });
+		const { api, ann } = setup(undefined, { store });
 		// Their deletion is recorded while the sign-in is setting them up for the first time.
 		const get = store.users.get.bind(store.users);
 		let once = true;
@@ -2409,8 +2409,40 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 			return get(id);
 		};
 		expect((await failure(ann.getCaller())).status).toBe(401);
+		// The deletion is carried on again, due now, and its pass finds the account the sign-in made by its membership.
+		expect(await store.deletions.get("usr_ann")).toMatchObject({ stage: "running", dueAt: expect.any(Number) });
+		const made = await store.members.list({ userId: "usr_ann" });
+		expect(made).toHaveLength(1);
+		await finishDeletions(api, store);
 		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+		expect(await store.accounts.get(made[0]?.accountId ?? "")).toBeUndefined();
 		expect(await store.users.get("usr_ann")).toBeUndefined();
+	});
+
+	it("clears a personal account a sign-in made and couldn't finish, found by its membership", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		await ann.deleteCaller();
+		// A sign-in that began before the deletion got as far as an owner membership and an account, then stopped.
+		await store.members.put({
+			id: "acc_stray:usr_ann",
+			accountId: "acc_stray",
+			userId: "usr_ann",
+			role: "owner",
+			joinedAt: 0,
+		});
+		await store.accounts.put({
+			id: "acc_stray",
+			kind: "personal",
+			name: "Ann",
+			defaultVisibility: "private",
+			createdAt: 0,
+		});
+		await finishDeletions(api, store);
+		expect(await store.accounts.get("acc_stray")).toBeUndefined();
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
 	});
 
 	it("is woken for after a first pass cut short, and finished by its wakes with no request", async () => {

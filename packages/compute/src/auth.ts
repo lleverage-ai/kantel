@@ -203,7 +203,8 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 		createdAt: now,
 		...(identity.email === undefined ? {} : { email: identity.email }),
 	};
-	await store.accounts.put(account);
+	// The membership first: a personal account is always found by its person's memberships, however far this got (an
+	// account deletion clears every one it finds).
 	await store.members.put({
 		id: memberId(account.id, user.id),
 		accountId: account.id,
@@ -211,6 +212,7 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 		role: "owner",
 		joinedAt: now,
 	});
+	await store.accounts.put(account);
 	await store.users.put(user);
 	return user;
 }
@@ -219,6 +221,11 @@ export interface AuthenticateOptions {
 	readonly store: ComputeStore;
 	readonly authenticatePerson?: AuthenticatePerson;
 	readonly now: number;
+	/**
+	 * A sign-in found its person's account deletion only once it had set them up (it began first): the deletion is
+	 * carried on again, durably, to clear what the sign-in made (`ComputeService.reopenDeletion`).
+	 */
+	readonly reopenDeletion?: (userId: string) => Promise<void>;
 }
 
 /**
@@ -291,13 +298,10 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	const user = await ensurePerson(store, identity, now);
 	// Checked again once made: a deletion that began as this sign-in ran leaves it nothing, not even what it just made
 	// (a personal account apart from the one the deletion clears, or the user record put back).
-	const deletion = await store.deletions.get(identity.userId);
-	if (deletion !== undefined) {
-		if (user.personalAccountId !== deletion.personalAccountId) {
-			await store.members.delete(memberId(user.personalAccountId, user.id));
-			await store.accounts.delete(user.personalAccountId);
-		}
-		await store.users.delete(user.id);
+	if ((await store.deletions.get(identity.userId)) !== undefined) {
+		// What it made goes with the rest, by the deletion's next pass (which finds every personal account of theirs),
+		// not by this call, which could stop partway.
+		await options.reopenDeletion?.(identity.userId);
 		throw new UnauthenticatedError("This account is being deleted");
 	}
 	return {
