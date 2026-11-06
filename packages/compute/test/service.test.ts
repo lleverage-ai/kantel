@@ -2269,6 +2269,45 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect(await store.users.get("usr_ann")).toBeUndefined();
 	});
 
+	it("keeps a closed account closed through an update, and never brings back a removed one", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		await close(store, personal);
+		await ann.updateAccount(personal, { name: "Renamed" });
+		expect(await store.accounts.get(personal)).toMatchObject({ name: "Renamed", closedAt: expect.any(Number) });
+		// Removed by its deletion between the update's read and its write.
+		const update = store.accounts.update.bind(store.accounts);
+		store.accounts.update = async (id, change, expected) => {
+			await store.accounts.delete(id);
+			return update(id, change, expected);
+		};
+		expect((await failure(ann.updateAccount(personal, { name: "Again" }))).code).toBe("not_found");
+		expect(await store.accounts.get(personal)).toBeUndefined();
+	});
+
+	it("destroys what a boot made when its record was deleted while it booted", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const destroyed: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			// Another replica's deletion purges the record while this one boots.
+			create: async (spec) => {
+				const placed = await stub.create(spec);
+				await store.sandboxes.delete(spec.sandboxId);
+				return placed;
+			},
+			destroy: async (sandboxId) => {
+				destroyed.push(sandboxId);
+				return stub.destroy(sandboxId);
+			},
+		};
+		const { ann } = setup(backend, { store });
+		const made = await ann.createSandbox({});
+		await vi.waitFor(() => expect(destroyed).toContain(made.id), { timeout: 10_000 });
+	});
+
 	it("drops a host's egress report for a closed account, and keeps one for an open account", async () => {
 		const store = await make();
 		const { api, ann } = setup(undefined, { store });

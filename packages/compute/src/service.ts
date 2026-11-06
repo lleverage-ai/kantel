@@ -3618,32 +3618,45 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
 				: toRunning(sandbox);
 		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
-		let result = await transition(sandboxId, "starting", publish, ready, written);
-		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
-		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
-		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
-		// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
-		for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
-			const lost = result.lost;
-			if (round >= BOOT_RECONCILE_ROUNDS) {
-				const reason = "Its egress couldn't be applied to it while it started";
-				if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
-				result = await transition(sandboxId, "starting", publish, ready);
-				continue;
-			}
-			try {
-				await deliverEgress(lost);
-				applied = lost.egressRevision;
-			} catch (error) {
-				// Refused for the egress it has still: stopped. One changed since is sent next round.
-				if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
-					return undefined;
+		// Its record deleted while it booted (a delete, or its account's deletion, whose destroy may have come before this
+		// machine existed): what booted is destroyed, so no machine outlives its record.
+		const orphaned = async () => {
+			await backend.destroy(sandboxId).catch(() => undefined);
+			return undefined;
+		};
+		let result: Awaited<ReturnType<typeof transition>>;
+		try {
+			result = await transition(sandboxId, "starting", publish, ready, written);
+			// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
+			// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
+			// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
+			// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
+			for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
+				const lost = result.lost;
+				if (round >= BOOT_RECONCILE_ROUNDS) {
+					const reason = "Its egress couldn't be applied to it while it started";
+					if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
+					result = await transition(sandboxId, "starting", publish, ready);
+					continue;
 				}
-				// A call that didn't get through: tried again, a moment on.
-				await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+				try {
+					await deliverEgress(lost);
+					applied = lost.egressRevision;
+				} catch (error) {
+					// Refused for the egress it has still: stopped. One changed since is sent next round.
+					if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
+						return undefined;
+					}
+					// A call that didn't get through: tried again, a moment on.
+					await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+				}
+				result = await transition(sandboxId, "starting", publish, ready);
 			}
-			result = await transition(sandboxId, "starting", publish, ready);
+		} catch (error) {
+			if (error instanceof KantelError && error.code === "not_found") return orphaned();
+			throw error;
 		}
+		if ("lost" in result && result.lost.state === "deleted") return orphaned();
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
 		if (next.state === "error") {
@@ -5042,12 +5055,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (account.kind === "personal" && body.defaultVisibility === "organisation") {
 				throw new KantelError("invalid", "A personal account's sandboxes are always private");
 			}
-			const updated: StoredAccount = {
-				...account,
-				name: body.name ?? account.name,
-				defaultVisibility: body.defaultVisibility ?? account.defaultVisibility,
-			};
-			await store.accounts.put(updated);
+			// Only the fields asked for, on the account as it is when written: never a stale copy over a closure (`closedAt`)
+			// written meanwhile, nor an account its deletion has removed.
+			const updated = await store.accounts.update(account.id, (current) => ({
+				...current,
+				name: body.name ?? current.name,
+				defaultVisibility: body.defaultVisibility ?? current.defaultVisibility,
+			}));
+			if (updated === undefined) throw notFound("account");
 			return accountView(updated, role);
 		},
 
