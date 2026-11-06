@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { DeviceLogin, IssuedApiKey, KantelClient } from "@kantel/api/sdk";
+import type { DeviceLogin, KantelClient } from "@kantel/api/sdk";
 import { CliError } from "./errors.ts";
 
 /** A sign-in that waits for its approval. */
@@ -23,6 +23,16 @@ export interface PendingLogin {
 	readonly verificationUrlComplete: string;
 	readonly intervalSeconds: number;
 	readonly expiresAt: number;
+	/** It asked for a personal access token, not an API key in one account. */
+	readonly personal?: boolean;
+}
+
+/** What a sign-in's approval hands over: a personal access token or an API key, and its secret. */
+export interface SignedIn {
+	readonly secret: string;
+	readonly kind: "personal_token" | "api_key";
+	readonly name: string;
+	readonly expiresAt?: number;
 }
 
 const pendingFile = (directory: string): string => join(directory, "login-pending.json");
@@ -67,8 +77,18 @@ export async function startLogin(
 	url: string,
 	clientName: string,
 	directory: string,
+	personal = true,
 ): Promise<PendingLogin> {
-	const started: DeviceLogin = await client.startDeviceLogin({ clientName });
+	let started: DeviceLogin;
+	let asked = personal;
+	try {
+		started = await client.startDeviceLogin(personal ? { clientName, personal } : { clientName });
+	} catch (error) {
+		// A Kantel from before personal tokens refuses the field: it signs in with an API key, as it always has.
+		if (!personal || (error as { code?: unknown }).code !== "invalid") throw error;
+		started = await client.startDeviceLogin({ clientName });
+		asked = false;
+	}
 	const pending: PendingLogin = {
 		url,
 		deviceCode: started.deviceCode,
@@ -77,6 +97,7 @@ export async function startLogin(
 		verificationUrlComplete: started.verificationUrlComplete,
 		intervalSeconds: started.intervalSeconds,
 		expiresAt: started.expiresAt,
+		...(asked ? { personal: true } : {}),
 	};
 	await keepPendingLogin(directory, pending);
 	return pending;
@@ -85,7 +106,7 @@ export async function startLogin(
 const EXPIRED = "the sign-in code expired: run kantel login again for a new one";
 
 /**
- * Polls until the sign-in is approved, and answers its key; throws when it is denied or expires, and the pending file
+ * Polls until the sign-in is approved, and answers its token or key; throws when it is denied or expires, and the pending file
  * goes in each case. A network failure leaves it, so `kantel login` again carries on with the same code.
  */
 export async function waitForLogin(
@@ -94,7 +115,7 @@ export async function waitForLogin(
 	directory: string,
 	sleep: (ms: number) => Promise<void>,
 	now: () => number,
-): Promise<IssuedApiKey> {
+): Promise<SignedIn> {
 	const interval = Math.max(1, pending.intervalSeconds) * 1000;
 	const finish = async (error?: CliError): Promise<never> => {
 		await forgetPendingLogin(directory);
@@ -111,9 +132,20 @@ export async function waitForLogin(
 			}
 			throw error;
 		}
+		if (result.state === "approved" && result.token !== undefined) {
+			await forgetPendingLogin(directory);
+			const { token, secret } = result.token;
+			return { secret, kind: "personal_token", name: token.name, expiresAt: token.expiresAt };
+		}
 		if (result.state === "approved" && result.issued !== undefined) {
 			await forgetPendingLogin(directory);
-			return result.issued;
+			const { key, secret } = result.issued;
+			return {
+				secret,
+				kind: "api_key",
+				name: key.name,
+				...(key.expiresAt === undefined ? {} : { expiresAt: key.expiresAt }),
+			};
 		}
 		if (result.state === "denied") return finish(new CliError("the sign-in was denied in the browser"));
 		if (result.state !== "pending" || now() >= pending.expiresAt) return finish(new CliError(EXPIRED));
