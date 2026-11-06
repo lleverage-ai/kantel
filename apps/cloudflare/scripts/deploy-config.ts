@@ -26,11 +26,15 @@
  * - optionally, where account hosts' latest kantel-host release is read (`KANTEL_HOST_RELEASES`: an https URL, or
  *   `off`), as a var of the same name; unset, Kantel's latest GitHub Release.
  *
+ * It also writes `wrangler.console.deploy.json`, the console Worker's (`wrangler.console.jsonc`, `consoleDeployConfig`):
+ * the same, with only the account added. `harbour` reaches it through its ASSETS service binding, so it has no route.
+ *
  * `--mode deploy` needs every variable and refuses to write a config without them. `--mode dry-run` fills a missing
  * one with a placeholder, so `wrangler deploy --dry-run` still checks the whole config's shape before the account is
  * set up. The `dev` environment is dropped: it is local only and never deployed.
  *
  * Usage: node scripts/deploy-config.ts --mode deploy|dry-run [--out wrangler.deploy.json]
+ *          [--console-out wrangler.console.deploy.json]
  */
 // First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
@@ -239,6 +243,11 @@ export type DeployMode = "deploy" | "dry-run";
 export const MODELS_BINDING = "MODELS";
 /** The send_email binding sign-in mail goes through (`src/stack-object.ts`). */
 export const SIGN_IN_MAIL_BINDING = "SIGN_IN_MAIL";
+
+/** The console's own Worker (wrangler.console.jsonc), which `harbour` binds as ASSETS. */
+export const CONSOLE_WORKER = "kantel-console";
+/** The binding `harbour` reaches it through (src/route.ts `RouteEnv`). */
+export const CONSOLE_BINDING = "ASSETS";
 
 /** Stand-ins for a dry run before the account is set up. Never deployed: deploy mode refuses a missing variable. */
 const PLACEHOLDERS: Readonly<Record<Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">, string>> = {
@@ -481,6 +490,17 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 		const problem = instanceTypeProblem(app.instance_type);
 		if (problem !== undefined) throw new Error(`${app.class_name}'s container instance type: ${problem}`);
 	}
+	// The console's files come from their own Worker, never this one's assets: a console change must not make a new
+	// version of this Worker, which would reset every Durable Object and the connections they hold.
+	if ("assets" in raw) {
+		throw new Error(
+			`wrangler.jsonc must not set assets: the console is the ${CONSOLE_WORKER} Worker's, bound as ${CONSOLE_BINDING}`,
+		);
+	}
+	const services = Array.isArray(raw.services) ? (raw.services as { binding?: unknown; service?: unknown }[]) : [];
+	if (!services.some((entry) => entry.binding === CONSOLE_BINDING && entry.service === CONSOLE_WORKER)) {
+		throw new Error(`wrangler.jsonc must bind ${CONSOLE_BINDING} to the ${CONSOLE_WORKER} Worker in services`);
+	}
 	const { $schema: _schema, env: _env, ...base } = raw;
 	const data = {
 		...(values.d1 === undefined
@@ -565,9 +585,33 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 	};
 }
 
+/**
+ * `wrangler.console.jsonc` with the account filled in. Refuses one with a route, a custom domain, workers.dev or a
+ * preview URL: it is reached only through `harbour`'s binding, so Access and `harbour`'s routing stand in front of it.
+ */
+export function consoleDeployConfig(raw: RawConfig, values: Pick<DeployValues, "accountId">): Record<string, unknown> {
+	if (raw.name !== CONSOLE_WORKER) throw new Error(`wrangler.console.jsonc must name the Worker ${CONSOLE_WORKER}`);
+	for (const key of ["account_id", "routes", "route", "durable_objects", "migrations", "services"]) {
+		if (key in raw) throw new Error(`wrangler.console.jsonc must not set ${key}: it only serves the console's files`);
+	}
+	if (raw.workers_dev !== false || raw.preview_urls !== false) {
+		throw new Error("wrangler.console.jsonc must set workers_dev and preview_urls to false: those URLs bypass Access");
+	}
+	const assets = raw.assets as { binding?: unknown; run_worker_first?: unknown } | undefined;
+	if (assets?.binding !== "ASSETS" || assets.run_worker_first !== true) {
+		throw new Error("wrangler.console.jsonc must bind its assets as ASSETS, with run_worker_first true");
+	}
+	const { $schema: _schema, env: _env, ...base } = raw;
+	return { ...base, ...(values.accountId === undefined ? {} : { account_id: values.accountId }) };
+}
+
 async function main(): Promise<void> {
 	const { values: args } = parseArgs({
-		options: { mode: { type: "string" }, out: { type: "string", default: "wrangler.deploy.json" } },
+		options: {
+			mode: { type: "string" },
+			out: { type: "string", default: "wrangler.deploy.json" },
+			"console-out": { type: "string", default: "wrangler.console.deploy.json" },
+		},
 	});
 	const mode = args.mode;
 	if (mode !== "deploy" && mode !== "dry-run") throw new Error("Pass --mode deploy or --mode dry-run");
@@ -578,6 +622,10 @@ async function main(): Promise<void> {
 	const out = resolve(args.out);
 	writeFileSync(out, `${JSON.stringify(deployConfig(rawConfig, values), null, "\t")}\n`);
 	console.log(`Wrote ${out} for ${mode === "deploy" ? `a deploy to ${values.hostname}` : "a dry run"}`);
+	const consoleRaw = experimental_readRawConfig({ config: "wrangler.console.jsonc" }).rawConfig;
+	const consoleOut = resolve(args["console-out"]);
+	writeFileSync(consoleOut, `${JSON.stringify(consoleDeployConfig(consoleRaw, values), null, "\t")}\n`);
+	console.log(`Wrote ${consoleOut}`);
 	const moved = [
 		...(values.d1 === undefined ? [] : [`D1 ${values.d1.name} (${values.d1.id})`]),
 		...(values.r2Bucket === undefined ? [] : [`R2 ${values.r2Bucket}`]),

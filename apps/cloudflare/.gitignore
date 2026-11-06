@@ -4,3 +4,4 @@ dist/
 .dev.vars
 # Written by scripts/deploy-config.ts in the deploy workflow.
 wrangler.deploy.json
+wrangler.console.deploy.json
