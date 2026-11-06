@@ -75,7 +75,7 @@ Adds a snapshot of the sandbox's disk to its history now, without stopping it. K
 
 - `201`: [Snapshot](/api/reference/types/#snapshot) (`application/json`). The snapshot, being taken.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a snapshot
 
@@ -111,7 +111,7 @@ Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snap
 
 - `204`: no body. Deleted.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## List a snapshot's files
 

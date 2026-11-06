@@ -1056,7 +1056,8 @@ export const takeSnapshot = defineRoute({
 	body: TakeSnapshotBody,
 	idempotent: true,
 	answer: { status: 201, description: "The snapshot, being taken.", schema: Snapshot },
-	errors: lifecycleErrors,
+	// `exhausted`: its host hasn't the disk free for it.
+	errors: [...lifecycleErrors, "exhausted"],
 });
 
 export const saveSnapshot = defineRoute({
@@ -1127,7 +1128,8 @@ export const deleteSnapshot = defineRoute({
 	),
 	params: SnapshotPath,
 	answer: { status: 204, description: "Deleted." },
-	errors: changeErrors,
+	// `unavailable`: whether it was deleted is unknown (a write's answer lost); the sweep finishes or undoes it.
+	errors: [...changeErrors, "unavailable"],
 });
 
 export const snapshotRoutes = {

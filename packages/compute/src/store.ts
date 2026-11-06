@@ -148,6 +148,11 @@ export interface StoredSample {
 export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
+	/**
+	 * The token of the last write that pointed `latestSnapshotId` at a snapshot that already existed (`installNewest`),
+	 * so a rollback undoes only its own write. A stop's or take's write of a new snapshot leaves it, and changes the ID.
+	 */
+	readonly latestBy?: string;
 	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
 	readonly env: { readonly [name: string]: string };
 	/**
@@ -246,7 +251,29 @@ export type StoredCommand = computeSchema.Command & {
  * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
  * file system is (`TakenSnapshot.base`), answered as the API's `base`.
  */
-export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
+	readonly ref?: string;
+	readonly base?: string;
+	/**
+	 * A save while it is pending (`creating`): whether its bytes are confirmed, its own (taken, or kept by its host), or
+	 * its source's, shared, read again once it was stored. A pending save left unconfirmed is never made ready.
+	 */
+	readonly validated?: boolean;
+	/**
+	 * While it is `deleting` (`retireSnapshot`): the process that owns the delete, since when, and why (an expiry's mark
+	 * may be put back); `settling` once its bytes are being deleted, after which it is never put back.
+	 */
+	readonly retiring?: {
+		readonly by: string;
+		/** This mark's own, so a mark put back and made again is told from it (`settleSnapshot`). */
+		readonly token?: string;
+		/** The state it is put back to, if it is (ready when absent). */
+		readonly from?: computeSchema.Snapshot["state"];
+		readonly at: number;
+		readonly why?: "delete" | "expiry";
+		readonly settling?: boolean;
+	};
+};
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
@@ -555,6 +582,18 @@ export interface StoredSetting {
  * The deletion is carried on from here, by the call that started it and then by the sweep, never by the person (who
  * can't sign in once it exists), so one that fails partway is finished all the same.
  */
+/**
+ * A saved-snapshot name's holder: its ID `<accountId>/<name>`. A save is made ready only by moving this, by
+ * compare-and-set, to itself (`publishSave`), from none or from a save that is settling or gone, so of saves made ready
+ * at once (a replace and the sweep's recovery, say) exactly one wins, and a name never has two ready saves.
+ */
+export interface StoredSavedName {
+	readonly id: string;
+	/** The save that holds it; absent: none (only before the first save of the name). */
+	readonly snapshotId?: string;
+	readonly updatedAt: number;
+}
+
 export interface StoredDeletion {
 	readonly id: string;
 	/**
@@ -684,6 +723,8 @@ export interface ComputeStore {
 	readonly usageClaims: Collection<StoredUsageClaim>;
 	/** Account deletions under way (`StoredDeletion`). */
 	readonly deletions: Collection<StoredDeletion>;
+	/** Which save holds each saved-snapshot name (`StoredSavedName`): the one record a save is made ready through. */
+	readonly savedNames: Collection<StoredSavedName>;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -844,6 +885,7 @@ export function createMemoryStore(): ComputeStore {
 		settings: memoryCollection(),
 		usageClaims: memoryCollection(),
 		deletions: memoryCollection(),
+		savedNames: memoryCollection(),
 		templates: templates.collection,
 		templateVersions: templateVersions.collection,
 		templateWrites: memoryTemplateWrites(templates, templateVersions),

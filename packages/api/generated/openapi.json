@@ -5172,6 +5172,16 @@
 							}
 						}
 					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"501": {
 						"description": "`not_supported`",
 						"content": {
@@ -5327,6 +5337,16 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
 						"content": {
 							"application/json": {
 								"schema": {
