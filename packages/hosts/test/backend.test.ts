@@ -55,6 +55,9 @@ class FakeHost {
 	processes?: (params: { [key: string]: unknown }) => unknown;
 	/** An error `snapshot.keep` answers instead of keeping, such as a conflict on its ID. */
 	keepRefusal?: { code: string; message: string };
+	/** What `snapshot.list` answers, and whether it refuses instead. */
+	listing: { id: string; sizeBytes?: number }[] = [];
+	listRefusal = false;
 	receive!: (text: string) => void;
 
 	constructor(
@@ -205,6 +208,10 @@ class FakeHost {
 				// As a host whose source has lost its memory to pruning answers.
 				return answer({ id: p.snapshotId, kind: "saved", sizeBytes: 40, memory: false, base: "v2" });
 			}
+			case "snapshot.list":
+				return this.listRefusal
+					? fail("unavailable", "the host is busy")
+					: answer({ snapshots: this.listing, shared: [] });
 			case "host.images":
 				return this.images === undefined
 					? fail("unsupported", "image patching is off on this host")
@@ -741,7 +748,7 @@ describe("a restart on the latest base, checked with the host first", () => {
 
 describe("saving a stopped sandbox on a host", () => {
 	async function connected(features: readonly string[]) {
-		const { service, root } = setup();
+		const { service, root, backend } = setup();
 		const told = { ...facts, features: [...features] };
 		const token = await root.createHostJoinToken({ name: "box-1" });
 		const { hostId } = await service.register({ token: token.token, facts: told });
@@ -753,8 +760,30 @@ describe("saving a stopped sandbox on a host", () => {
 		await root.writeFile(sandbox.id, { path: "/home/user/app.txt", content: "v1" });
 		const stopped = await root.stopSandbox(sandbox.id, { wait: true });
 		const stopSnapshot = String(host.params.find((call) => call.method === "sandbox.stop")?.params.snapshotId);
-		return { service, hostId, root, host, sandbox, stopped, stopSnapshot };
+		return { service, hostId, root, host, backend, sandbox, stopped, stopSnapshot };
 	}
+
+	it("reads each snapshot's full size from a host that measures them, for a limit on saved bytes", async () => {
+		const { hostId, host, backend } = await connected(["snapshot-keep", "snapshot-sizes"]);
+		host.listing = [{ id: "snap_1", sizeBytes: 61 }, { id: "snap_2", sizeBytes: 5 }, { id: "snap_3" }];
+		expect(await backend.snapshotSizes?.(hostId)).toEqual(
+			new Map([
+				[`${hostId}/snap_1`, 61],
+				[`${hostId}/snap_2`, 5],
+			]),
+		);
+		expect(host.params.filter((call) => call.method === "snapshot.list").at(-1)?.params).toEqual({ sandboxId: "" });
+		// A host that can't answer: an error, not a guess.
+		host.listRefusal = true;
+		await expect(backend.snapshotSizes?.(hostId)).rejects.toMatchObject({ code: "unavailable" });
+	});
+
+	it("says nothing of snapshots' full sizes for a host that doesn't measure them, and doesn't ask it", async () => {
+		const { hostId, host, backend } = await connected(["snapshot-keep"]);
+		const asked = host.calls.filter((method) => method === "snapshot.list").length;
+		expect(await backend.snapshotSizes?.(hostId)).toBeUndefined();
+		expect(host.calls.filter((method) => method === "snapshot.list")).toHaveLength(asked);
+	});
 
 	it("keeps the stop's snapshot as one of the save's own on the host, which outlasts the automatic one", async () => {
 		const { root, host, sandbox, stopped, stopSnapshot } = await connected(["snapshot-keep"]);
