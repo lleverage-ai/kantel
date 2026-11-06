@@ -47,8 +47,12 @@ Cloudflare may process data outside the European Economic Area, under the EU's s
 ## How long we keep it
 
 We keep your account and what you set up for as long as you have an account. Audit logs are kept for the retention
-period set on your organisation. When you ask us to delete your account, we delete your data within 30 days, except
-where the law requires us to keep it.
+period set on your organisation.
+
+You can delete your account yourself, in the console under Settings, then Profile. That deletes your account and your
+personal account, with its hosts, environments, webhooks and templates, at once, revokes your API keys and signs you
+out everywhere. What you did in an organisation stays in its audit log for its retention period, and sandboxes you kept
+private there stay with the organisation.
 
 ## Your rights
 
@@ -58,4 +62,5 @@ Netherlands that's the Autoriteit Persoonsgegevens.
 
 ## Changes
 
-We'll update this page when we change how we handle data, and email account holders about significant changes.
+We'll update this page, and the date at its top, when we change how we handle data. Significant changes take effect
+30 days after they're posted here.

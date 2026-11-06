@@ -47,11 +47,11 @@ limited to €100. Nothing in these terms limits liability that can't be limited
 
 ## Ending
 
-You can stop using Kantel and ask us to delete your account at any time. How we handle your data is set out in the
-[privacy policy](/privacy/).
+You can stop using Kantel and delete your account at any time, in the console under Settings, then Profile. How we
+handle your data is set out in the [privacy policy](/privacy/).
 
 ## Changes and law
 
-We may update these terms, and will email account holders before significant changes take effect. Using the service
-after that means you accept them. Dutch law governs these terms, and the courts of Amsterdam settle disputes, unless
+We may update these terms. We'll post the new version here with its date, and significant changes take effect 30 days
+after they're posted. Using the service after that means you accept them. Dutch law governs these terms, and the courts of Amsterdam settle disputes, unless
 your local consumer law says otherwise.
