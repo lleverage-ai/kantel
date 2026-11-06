@@ -55,14 +55,16 @@ const lockup = lockupEndorsed
 			>Skip to the content</a
 		>
 		<header class="sticky top-0 z-20 border-b border-transparent bg-paper/90 backdrop-blur-sm">
-			<nav class="mx-auto flex max-w-(--container-page) items-center justify-between gap-4 px-6 py-4 sm:gap-6 lg:px-12">
-				<a href="/" class="block h-7 text-ink sm:h-8" aria-label="Kantel, by Lleverage: home" set:html={lockup} />
-				<ul class="flex items-center gap-3 text-sm font-semibold sm:gap-8 sm:text-base">
+			<nav
+				class="mx-auto flex max-w-(--container-page) items-center justify-between gap-3 px-4 py-4 xs:gap-4 xs:px-6 sm:gap-6 lg:px-12"
+			>
+				<a href="/" class="block h-5.5 shrink-0 text-ink xs:h-7 sm:h-8" aria-label="Kantel, by Lleverage: home" set:html={lockup} />
+				<ul class="flex items-center gap-2 text-sm font-semibold xs:gap-3 sm:gap-8 sm:text-base">
 					<li><a class="hover:text-label" href="/docs/">Docs</a></li>
 					<li class="hidden sm:block"><a class="hover:text-label" href={GITHUB_URL}>GitHub</a></li>
 					<li>
 						<a
-							class="inline-block rounded-input border border-midnight px-3 py-1.5 transition-colors hover:bg-midnight hover:text-paper"
+							class="inline-block rounded-input border border-midnight px-2.5 py-1.5 xs:px-3 transition-colors hover:bg-midnight hover:text-paper"
 							href={CONSOLE_URL}>Console</a
 						>
 					</li>

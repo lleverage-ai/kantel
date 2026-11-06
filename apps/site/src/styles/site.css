@@ -64,6 +64,10 @@
 	--radius-tile: 8px;
 	--radius-input: 4px;
 
+	/* A breakpoint under sm, for the header: below it (a 320px phone) the lockup, padding and controls step down so
+	   Docs, Console and the theme toggle all fit. */
+	--breakpoint-xs: 25rem;
+
 	/* Widths: the page, a reading measure and the hero's text column. */
 	--container-page: 76rem;
 	--container-measure: 36rem;
