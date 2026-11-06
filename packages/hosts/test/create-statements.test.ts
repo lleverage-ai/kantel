@@ -76,11 +76,11 @@ afterEach(async () => {
 describe("a create on a gateway with shared state", () => {
 	// 28 statements, each its own round, before TASK-4754 cut them.
 	// The sandbox's record is written before its `sandbox.created` event (who may see an event is decided by its sandbox),
-	// so they take two rounds, not one. Four statements and two rounds are account deletion's fences (#757): the key's
+	// so they take two rounds, not one. Four statements and four rounds are account deletion's fences (#757): the key's
 	// person checked against deletions once the key is found, and the account checked once the sandbox is stored
-	// (`holdAccount`), each a round of its own as each needs what comes before it; and each event's account, looked at
-	// alongside its write (`fenceClosedAccounts`), so in no round of its own.
-	it("answers a wait: true create in 20 statements and 12 rounds", async () => {
+	// (`holdAccount`), each a round the create waits on as each needs what comes before it; and each event's account,
+	// checked behind its write (`fenceClosedAccounts`), two rounds counted here that the create doesn't wait for.
+	it("answers a wait: true create in 20 statements and 14 rounds", async () => {
 		const database = await nodeSqliteDatabase.open();
 		closers.push(async () => {
 			// The host's disconnect is recorded after the service closes: let it land first.
@@ -133,7 +133,7 @@ describe("a create on a gateway with shared state", () => {
 		// The trace, when the budget is broken.
 		const trace = statements.map((statement, index) => `${index + 1}. ${statement.slice(0, 140)}`).join("\n");
 		expect(statements.length, trace).toBeLessThanOrEqual(20);
-		expect(rounds, trace).toBeLessThanOrEqual(12);
+		expect(rounds, trace).toBeLessThanOrEqual(14);
 		// The record, then its event: the event's write starts only once the record's has finished.
 		const kinds = sql.kinds;
 		const roundOf = sql.roundOf;

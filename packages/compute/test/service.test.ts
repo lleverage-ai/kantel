@@ -2342,6 +2342,36 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect(await store.snapshots.list({ accountId: personal })).toEqual([]);
 	});
 
+	it("takes out an event whose write was under way as its account closed and went", async () => {
+		const store = await make();
+		const fenced = fenceClosedAccounts(store);
+		const account = {
+			id: "acc_e",
+			kind: "personal" as const,
+			name: "E",
+			defaultVisibility: "private" as const,
+			createdAt: 0,
+		};
+		await store.accounts.put(account);
+		// The event's write is held until the account has closed and its deletion has gone.
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const put = store.events.put.bind(store.events);
+		store.events.put = async (event) => {
+			await held;
+			return put(event);
+		};
+		const event = { id: "evt_late", accountId: account.id } as Parameters<typeof store.events.put>[0];
+		const writing = fenced.events.put(event);
+		await close(store, account.id);
+		await store.accounts.delete(account.id);
+		release();
+		await writing;
+		await vi.waitFor(async () => expect(await store.events.list({ accountId: account.id })).toEqual([]));
+	});
+
 	it("joins no host with a token whose account has closed", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
