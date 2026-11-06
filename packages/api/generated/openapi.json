@@ -5172,6 +5172,16 @@
 							}
 						}
 					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"501": {
 						"description": "`not_supported`",
 						"content": {

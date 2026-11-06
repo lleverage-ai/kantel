@@ -1056,7 +1056,8 @@ export const takeSnapshot = defineRoute({
 	body: TakeSnapshotBody,
 	idempotent: true,
 	answer: { status: 201, description: "The snapshot, being taken.", schema: Snapshot },
-	errors: lifecycleErrors,
+	// `exhausted`: its host hasn't the disk free for it.
+	errors: [...lifecycleErrors, "exhausted"],
 });
 
 export const saveSnapshot = defineRoute({

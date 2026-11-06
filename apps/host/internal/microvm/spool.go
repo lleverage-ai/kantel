@@ -268,3 +268,22 @@ func tmpfs(dir string) bool {
 	}
 	return st.Type == 0x01021994 // TMPFS_MAGIC
 }
+
+// pending is the bytes of memory files still in RAM on their way to the disk: those placed or linked for it (with
+// targets, queued for flush), as charged; 0 without a spool. A live fork's memory, which is mapped and cancelled but
+// never written to the disk, isn't (it counts against the spool's RAM alone). A snapshot's room on the disk is judged
+// with these counted as taken (reserveSnapshotRoom).
+func (sp *spool) pending() int64 {
+	if sp == nil {
+		return 0
+	}
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	var n int64
+	for path, targets := range sp.targets {
+		if len(targets) > 0 {
+			n += sp.charged[path]
+		}
+	}
+	return n
+}

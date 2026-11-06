@@ -70,6 +70,7 @@ import {
 	type SandboxBackend,
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
+	SNAPSHOT_KEEP_FEATURE,
 	type TakenSnapshot,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
@@ -652,6 +653,10 @@ const BASE_ROUTES = [
 ] as const satisfies readonly (keyof SignedInComputeRoutes)[];
 /** How long an automatic snapshot is kept. */
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
+/** How often the sweep looks for automatic snapshots past their `expiresAt` to delete (`expireSnapshots`). */
+export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
+/** How long a process holds a snapshot delete it marked (`retireSnapshot`) before another may take it over. */
+export const RETIRE_LEASE_MS = 10 * 60_000;
 /** The usage readings kept per sandbox: a day of 5-minute means. */
 export const MAX_SAMPLES = 288;
 /** The hourly means kept per sandbox before its day of 5-minute ones (`keptSamples`): six more days, a week in all. */
@@ -1120,6 +1125,11 @@ function hostVersions(host: BackendHost): Pick<StoredHost, "latestVersion" | "up
 		...(host.latestVersion === undefined ? {} : { latestVersion: host.latestVersion }),
 		...(host.updateAvailable === true ? { updateAvailable: true } : {}),
 	};
+}
+
+/** A delete's error that says there was nothing to delete: a backend's `not_found`, or a host's. */
+function goneAlready(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "not_found";
 }
 
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
@@ -1740,6 +1750,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** This process, as the owner of the usage ticks it claims to export (`StoredUsageClaim.owner`). */
 	const usageOwner = crypto.randomUUID();
 	let claimsSweptAt = Number.NEGATIVE_INFINITY;
+	/** When `expireSnapshots` last began a pass. */
+	let snapshotsExpiredAt = Number.NEGATIVE_INFINITY;
+	/** This process, as the owner of the snapshot deletes it marks (`retireSnapshot`). */
+	const retireOwner = crypto.randomUUID();
 	/** Set by `close`: a claim sweep under way stops. */
 	let closing = false;
 
@@ -3399,7 +3413,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return booted;
 	}
 
-	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
 	/**
 	 * Whether a snapshot's bytes hold memory: its own say, or that of another snapshot of the same bytes (a save made
 	 * before saves kept the flag shares its pause's ref but says no). Reads report it, so a client sees what a create
@@ -3411,23 +3424,443 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return (await store.snapshots.list({ ref: snapshot.ref, memory: true })).length > 0;
 	}
 
+	// Deleting snapshots: expiry, a delete, a replaced save and a deleted sandbox's history all go through here.
+	//
+	// A record that is going is `deleting`: provisionally (a mark that may be put back to ready) or settling
+	// (`retiring.settling`, never put back), then gone. Its bytes on its host outlive it while any record that isn't
+	// settling has their ref. Every move is a compare-and-set on the record (`update`, which the SQL store writes only
+	// over the version it read), and each mark carries a token of its own.
+	//
+	// 1. Every delete marks the record provisionally first: expiry (`markExpiring`, on automatic snapshots on hosts that
+	//    keep their own copies, with refs no other record has, below) and a delete by hand, a replaced save or a deleted
+	//    sandbox's history (`retireSnapshot`). `settleSnapshot` is the only way from a mark to settling: it reads afresh
+	//    what depends on the snapshot (`dependents`: what a sandbox resumes from, its pause, what a never-placed one is to
+	//    be made from) for that very mark (its token), puts the mark back if anything does, and moves nothing if the
+	//    read fails (a delete by hand then puts it back at once).
+	// 2. A provisionally marked saved snapshot keeps its name (`liveSnapshots`: names, counts and emptiness count all but
+	//    settling records), but nothing may adopt it (3). A replacing save stays pending until the save it replaces is
+	//    settling, so a name never has two live saves.
+	// 3. `adopt` is the only way to make something depend on an existing snapshot (a create's or fork's source, a save
+	//    that shares its bytes, a sandbox's newest moved back to an older one): the dependency is written first, then the
+	//    snapshot read again, and anything but ready (or a read that fails) rolls the dependency back.
+	// 4. `releaseBytes` is the only byte delete. It deletes the bytes only once every other record with their ref is
+	//    settling or gone; otherwise it drops the caller's record alone, and the last to settle deletes them. A host
+	//    that can't delete them now leaves the settling record, which the sweep tries again; the record goes last. What
+	//    the record passes on to the others of its bytes (that they hold memory) is passed on first, on every try.
+	//
+	// A process takes over another's mark only once it has held it past `RETIRE_LEASE_MS` (it died, say).
+	//
+	// Expiry never touches bytes another record shares, and sharing can't start under it. A ref is shared only by a save
+	// on a host without `snapshot.keep` (the fallback in `saveSnapshot`): every other save keeps a copy with a ref of its
+	// own. So expiry considers only snapshots on hosts that keep their own copies (`keepsCopies`); a host without it
+	// prunes its automatic snapshots itself, as before expiry. And it skips a snapshot whose ref another record has (a
+	// share made before its host could keep copies). On those hosts nothing can newly share a ref, so the check holds.
+
 	/**
-	 * Deletes a snapshot's record. One that holds memory first passes that on to every other record of its bytes (a save
-	 * made before saves kept the flag says no), so none of them stops saying so once it is gone.
+	 * The snapshot records of what `where` names that are live, for names, counts and emptiness: all but settling ones.
+	 * One provisionally marked (a delete under way that may yet be put back) still holds its name and counts, though
+	 * nothing may adopt it; a settling one never comes back, so its name is free.
 	 */
-	async function forgetSnapshot(snapshot: StoredSnapshot): Promise<void> {
-		if (snapshot.memory && snapshot.ref !== undefined) {
-			for (const other of await store.snapshots.list({ ref: snapshot.ref, memory: false })) {
-				await store.snapshots.update(other.id, (latest) => (latest.memory ? undefined : { ...latest, memory: true }));
-			}
-		}
-		await store.snapshots.delete(snapshot.id);
+	async function liveSnapshots(where: Partial<StoredSnapshot>): Promise<StoredSnapshot[]> {
+		return (await store.snapshots.list(where)).filter(
+			(snapshot) => !(snapshot.state === "deleting" && snapshot.retiring?.settling === true),
+		);
 	}
 
-	async function releaseRef(ref: string | undefined): Promise<void> {
-		if (ref === undefined) return;
-		if ((await store.snapshots.list({ ref })).length > 0) return;
-		await backend.deleteSnapshot(ref).catch(() => undefined);
+	/**
+	 * Deletes a snapshot by hand (a delete, a replaced save, a deleted sandbox's history). A short mark first (`deleting`,
+	 * owned, with a token, provisional): from then on nothing can adopt it (`adopt` wants it ready), while its name stays
+	 * taken (`liveSnapshots` counts it). Then what depends on it is read afresh (`settleSnapshot`): if anything does, or
+	 * the read fails, the mark is put back and nothing has changed; otherwise it settles and its bytes are released.
+	 * Answers `retired` (deleted, or settling for the sweep to finish), `refused` (known not to be: something depends on
+	 * it, or it is being deleted already), or `unknown` (a write's answer was lost and what it is couldn't be read: the
+	 * caller rolls nothing back, and the sweep finishes or puts back the mark after `RETIRE_LEASE_MS`).
+	 */
+	async function retireSnapshot(snapshot: StoredSnapshot): Promise<"retired" | "refused" | "unknown"> {
+		let marked: StoredSnapshot | undefined;
+		try {
+			marked = await store.snapshots.update(snapshot.id, (latest) =>
+				latest.state === "deleting"
+					? undefined
+					: {
+							...latest,
+							state: "deleting",
+							retiring: { by: retireOwner, token: randomId("ret"), at: now(), why: "delete", from: latest.state },
+						},
+			);
+		} catch {
+			// The mark may have been written though its answer was lost: the sweep puts it back or settles it after a lease.
+			return "unknown";
+		}
+		if (marked === undefined) return "refused";
+		// settleSnapshot answers `kept` only when it knows nothing was claimed (something depends on it, a read before the
+		// claim failed, or the claim's compare-and-set didn't apply); it throws only when the claim's outcome is unknown.
+		let settled: "kept" | "settling" | "gone" | "unknown";
+		try {
+			settled = await settleSnapshot(marked);
+		} catch {
+			settled = "unknown";
+		}
+		if (settled === "settling" || settled === "gone") return "retired";
+		// Put back now, not after a lease (a no-op for a claim that went through): then read what it is.
+		await unmarkRetiring(marked.id, marked.retiring?.token).catch(() => undefined);
+		if (settled === "kept") return "refused";
+		try {
+			const after = await store.snapshots.get(marked.id);
+			return after === undefined || after.retiring?.settling === true ? "retired" : "refused";
+		} catch {
+			return "unknown";
+		}
+	}
+
+	/**
+	 * Deletes a snapshot of an account being deleted (or closed), whatever depends on it: everything of the account goes.
+	 * Claimed for settling at once, then its bytes released (`releaseBytes`); throws, for the deletion's next pass, while
+	 * its host can't delete them (the settling record stays for that pass, and the sweep).
+	 */
+	async function forceRetire(snapshot: StoredSnapshot): Promise<void> {
+		const settling = await store.snapshots.update(snapshot.id, (latest) =>
+			latest.retiring?.settling === true
+				? latest
+				: {
+						...latest,
+						state: "deleting",
+						retiring: { by: retireOwner, token: randomId("ret"), at: now(), why: "delete", settling: true },
+					},
+		);
+		if (settling === undefined) return;
+		if (!(await releaseBytes(settling))) {
+			throw new KantelError("unavailable", "A snapshot's host couldn't delete its bytes; the deletion tries again");
+		}
+	}
+
+	/**
+	 * Lets a save's own pending record go (its replace refused, or its source gone): nothing can depend on a pending
+	 * record, which nothing adopts, so it settles at once and its bytes are released (`releaseBytes`, retried by the
+	 * sweep while the host can't).
+	 */
+	async function dropPending(snapshot: StoredSnapshot): Promise<void> {
+		const settling = await store.snapshots.update(snapshot.id, (latest) =>
+			latest.state === "creating"
+				? {
+						...latest,
+						state: "deleting",
+						retiring: { by: retireOwner, token: randomId("ret"), at: now(), why: "delete", settling: true },
+					}
+				: undefined,
+		);
+		if (settling !== undefined) await releaseBytes(settling).catch(() => false);
+	}
+
+	/**
+	 * Marks an expired automatic snapshot `deleting`, provisionally, owned by this process (the only provisional marks:
+	 * expiry's, on automatic snapshots, which have no name); undefined when it isn't to be (being deleted, not ready).
+	 */
+	async function markExpiring(snapshotId: string): Promise<StoredSnapshot | undefined> {
+		return store.snapshots.update(snapshotId, (latest) => {
+			if (latest.state !== "ready" || latest.kind !== "automatic") return undefined;
+			return {
+				...latest,
+				state: "deleting",
+				retiring: { by: retireOwner, token: randomId("ret"), at: now(), why: "expiry" },
+			};
+		});
+	}
+
+	/** Puts this process's provisional mark back (`ready`), while it is still the mark with `token`. */
+	async function unmarkRetiring(snapshotId: string, token: string | undefined): Promise<void> {
+		await store.snapshots.update(snapshotId, (latest) => {
+			if (
+				latest.state !== "deleting" ||
+				latest.retiring?.by !== retireOwner ||
+				latest.retiring.token !== token ||
+				latest.retiring.settling === true
+			) {
+				return undefined;
+			}
+			const { retiring, ...rest } = latest;
+			return { ...rest, state: retiring.from ?? "ready" };
+		});
+	}
+
+	/**
+	 * Of `snapshotIds`, those a sandbox depends on, read afresh: what one resumes from (its newest), its pause, and what
+	 * a never-placed one is to be made from. A sandbox deleted, or being deleted (its history goes with it), depends on
+	 * nothing. Throws when the read fails.
+	 */
+	async function dependents(snapshotIds: ReadonlySet<string>): Promise<Set<string>> {
+		const needed = new Set<string>();
+		for (const sandbox of await store.sandboxes.list()) {
+			if (sandbox.state === "deleted" || sandbox.state === "deleting") continue;
+			for (const id of [
+				sandbox.latestSnapshotId,
+				// Its pause, while it is paused or resuming (a running one keeps the field from before).
+				sandbox.state === "paused" || sandbox.state === "starting" ? sandbox.pausedSnapshotId : undefined,
+				// Only while it is what a start makes it from: once placed, it has snapshots of its own.
+				neverPlaced(sandbox) ? sandbox.source?.snapshotId : undefined,
+			]) {
+				if (id !== undefined && snapshotIds.has(id)) needed.add(id);
+			}
+		}
+		return needed;
+	}
+
+	/**
+	 * Carries a `deleting` snapshot on (invariant 1): this process's mark, or one held past `RETIRE_LEASE_MS`, taken over.
+	 * Answers `kept` when it isn't this process's to settle, something depends on it (the mark put back) or a read
+	 * failed; `settling` when its host couldn't delete its bytes yet; `gone` when its record is gone.
+	 */
+	async function settleSnapshot(
+		snapshot: StoredSnapshot,
+		/** What depends on it, read after it was marked (an expiry's one read for all it marked). */
+		read?: ReadonlySet<string>,
+	): Promise<"kept" | "settling" | "gone"> {
+		const at = now();
+		const mine = (latest: StoredSnapshot) => latest.retiring?.by === retireOwner;
+		const stale = (latest: StoredSnapshot) =>
+			latest.retiring === undefined || latest.retiring.at + RETIRE_LEASE_MS <= at;
+		let current = await store.snapshots.get(snapshot.id);
+		if (current === undefined) return "gone";
+		if (current.state !== "deleting") return "kept";
+		if (!mine(current) || current.retiring?.token === undefined) {
+			current = await store.snapshots.update(current.id, (latest) =>
+				latest.state === "deleting" &&
+				((!mine(latest) && stale(latest)) || (mine(latest) && latest.retiring?.token === undefined))
+					? { ...latest, retiring: { ...latest.retiring, by: retireOwner, token: randomId("ret"), at } }
+					: undefined,
+			);
+			if (current === undefined) return "kept";
+		}
+		if (current.retiring?.settling !== true) {
+			// The mark the dependents are read for: settled only while it is still this one (a mark put back and made
+			// again, by this process even, has another token, and its own read).
+			const token = current.retiring?.token;
+			const sameMark = (latest: StoredSnapshot) =>
+				latest.state === "deleting" && mine(latest) && latest.retiring?.token === token && token !== undefined;
+			let needed: boolean;
+			try {
+				// An expiry's one read stands only for the mark it was read after.
+				const fresh = read !== undefined && snapshot.retiring?.token === token;
+				needed = (fresh ? read : await dependents(new Set([current.id]))).has(current.id);
+			} catch {
+				return "kept";
+			}
+			if (needed) {
+				await unmarkRetiring(current.id, token);
+				return "kept";
+			}
+			current = await store.snapshots.update(current.id, (latest) =>
+				sameMark(latest) && latest.retiring?.settling !== true
+					? {
+							...latest,
+							retiring: { ...latest.retiring, by: retireOwner, at: latest.retiring?.at ?? at, settling: true },
+						}
+					: undefined,
+			);
+			if (current === undefined) return "kept";
+		}
+		// Claimed: whatever happens from here, it is settling, and the sweep finishes it.
+		return (await releaseBytes(current).catch(() => false)) ? "gone" : "settling";
+	}
+
+	/**
+	 * Deletes a settling record, and its bytes when no other record that isn't settling has their ref (invariants 3
+	 * and 4). Answers false, the record kept for a retry, when a read failed or the host couldn't delete the bytes;
+	 * bytes the host no longer has count as deleted.
+	 */
+	async function releaseBytes(snapshot: StoredSnapshot): Promise<boolean> {
+		const { ref } = snapshot;
+		if (ref !== undefined) {
+			const others = (await store.snapshots.list({ ref })).filter((other) => other.id !== snapshot.id);
+			// Their memory flag first: once this record goes, none of them may stop saying their bytes hold memory.
+			if (snapshot.memory) {
+				for (const other of others) {
+					if (!other.memory) {
+						await store.snapshots.update(other.id, (latest) =>
+							latest.memory ? undefined : { ...latest, memory: true },
+						);
+					}
+				}
+			}
+			const held = others.some((other) => !(other.state === "deleting" && other.retiring?.settling === true));
+			if (!held) {
+				try {
+					await backend.deleteSnapshot(ref);
+				} catch (error) {
+					if (!goneAlready(error)) return false;
+				}
+			}
+		}
+		await store.snapshots.deleteIf(
+			snapshot.id,
+			(latest) => latest.state === "deleting" && latest.retiring?.settling === true,
+		);
+		return true;
+	}
+
+	/**
+	 * Makes something depend on an existing snapshot (invariant 2): `depend` writes the dependency, then the snapshot is
+	 * read again, and anything but ready has `undo` roll it back. Answers whether the dependency stands.
+	 */
+	async function adopt(snapshotId: string, depend: () => Promise<void>, undo: () => Promise<void>): Promise<boolean> {
+		await depend();
+		// Fails closed: a read that fails is taken for a snapshot that isn't there.
+		const still = await store.snapshots.get(snapshotId).then(
+			(read) => read?.state === "ready",
+			() => false,
+		);
+		if (still) return true;
+		await undo();
+		return false;
+	}
+
+	/**
+	 * Whether the host a snapshot's bytes are on keeps a copy of its own for every save (`snapshot.keep`), so nothing there
+	 * ever shares the snapshot's ref (expiry's precondition, above). The host is its ref's (`<hostId>/<id>`), else its
+	 * sandbox's. A backend that can't keep copies, or a host that can't be told, doesn't.
+	 */
+	async function keepsCopies(snapshot: StoredSnapshot, hosts: ReadonlyMap<string, BackendHost>): Promise<boolean> {
+		if (backend.keepSnapshot === undefined || snapshot.ref === undefined) return false;
+		const slash = snapshot.ref.indexOf("/");
+		const hostId =
+			slash > 0
+				? snapshot.ref.slice(0, slash)
+				: snapshot.sandboxId === undefined
+					? undefined
+					: (await store.sandboxes.get(snapshot.sandboxId))?.hostId;
+		const host = hostId === undefined ? undefined : hosts.get(hostId);
+		// A backend's own hosts that say nothing of features (the stub) keep copies when the backend does.
+		return host !== undefined && (host.features === undefined || host.features.includes(SNAPSHOT_KEEP_FEATURE));
+	}
+
+	/**
+	 * Points a sandbox's newest snapshot, while it still names `from`, at the first of `candidates` still there, each by
+	 * `adopt` (written, read again, rolled back to none if it is gone), else at none: so the pointer never names a
+	 * snapshot that is going, rollbacks included. Answers the snapshot it points at, if any.
+	 */
+	async function installNewest(
+		sandboxId: string,
+		from: string | undefined,
+		candidates: readonly StoredSnapshot[],
+	): Promise<StoredSnapshot | undefined> {
+		const pointAt = (to: StoredSnapshot | undefined, was: string | undefined) =>
+			patchSandbox(sandboxId, (latest) =>
+				latest.latestSnapshotId === was
+					? { ...latest, latestSnapshotId: to?.id, latestSnapshotAt: to?.createdAt }
+					: undefined,
+			).then(() => undefined);
+		let was = from;
+		for (const candidate of candidates) {
+			if (
+				await adopt(
+					candidate.id,
+					() => pointAt(candidate, was),
+					() => pointAt(undefined, candidate.id),
+				)
+			) {
+				return candidate;
+			}
+			// Rolled back to none: the next is tried from there.
+			was = undefined;
+		}
+		await pointAt(undefined, was);
+		return undefined;
+	}
+
+	/** The error a create, fork or save answers when the snapshot it is made from was deleted under it. */
+	const deletedMeanwhile = () => new KantelError("conflict", "The snapshot was deleted while it was being used");
+
+	/**
+	 * Deletes the automatic snapshots past their `expiresAt`, at most once each `SNAPSHOT_EXPIRY_EVERY_MS`, in the
+	 * background, after carrying on the deletes left `deleting` by this process (or by one gone past its lease). Each is
+	 * marked, then settled (`settleSnapshot`), which keeps what a sandbox depends on. The bytes go only once no other
+	 * record has them (`releaseBytes`).
+	 */
+	function expireSnapshots(): void {
+		if (now() - snapshotsExpiredAt < SNAPSHOT_EXPIRY_EVERY_MS) return;
+		snapshotsExpiredAt = now();
+		keepGoing(
+			(async () => {
+				for (const deleting of await store.snapshots.list({ state: "deleting" })) {
+					if (closing) return;
+					await settleSnapshot(deleting).catch(() => "kept");
+				}
+				await recoverPendingSaves().catch(() => undefined);
+				await retireOrphans().catch(() => undefined);
+				const at = now();
+				// One read for the pass: the expired, and how many records name each ref.
+				const all = await store.snapshots.list();
+				const named = new Map<string, number>();
+				for (const snapshot of all) {
+					if (snapshot.ref !== undefined) named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+				}
+				const expired = all.filter(
+					(snapshot) =>
+						snapshot.kind === "automatic" &&
+						snapshot.expiresAt !== undefined &&
+						snapshot.expiresAt <= at &&
+						snapshot.state === "ready",
+				);
+				if (expired.length === 0) return;
+				const hosts = new Map((await backend.capabilities()).hosts.map((host) => [host.id, host]));
+				const marked: StoredSnapshot[] = [];
+				for (const snapshot of expired) {
+					if (snapshot.ref === undefined || !(await keepsCopies(snapshot, hosts))) continue;
+					// Bytes another record shares (from before its host kept copies) are left alone.
+					if ((named.get(snapshot.ref) ?? 0) > 1) continue;
+					const written = await markExpiring(snapshot.id).catch(() => undefined);
+					if (written !== undefined) marked.push(written);
+				}
+				if (marked.length === 0) return;
+				// One read of what depends on them, after every mark; one that fails leaves them marked for the next pass.
+				const read = await dependents(new Set(marked.map((snapshot) => snapshot.id))).catch(() => undefined);
+				if (read === undefined) return;
+				for (const snapshot of marked) {
+					if (closing) return;
+					await settleSnapshot(snapshot, read).catch(() => "kept");
+				}
+			})(),
+		);
+	}
+
+	/**
+	 * Finishes the saves a process left pending (`creating`) past `RETIRE_LEASE_MS`, dying between storing a save and
+	 * making it ready (or between retiring the save it replaces and that): made ready when its bytes were confirmed
+	 * (`validated`) and no other save of the account has its name, live or provisionally deleted (the one it replaced has
+	 * settled or gone); otherwise let go (`dropPending`, whose byte release keeps bytes another record still has).
+	 */
+	async function recoverPendingSaves(): Promise<void> {
+		const at = now();
+		for (const pending of await store.snapshots.list({ kind: "saved", state: "creating" })) {
+			if (closing) return;
+			if (pending.createdAt + RETIRE_LEASE_MS > at) continue;
+			const others = (await liveSnapshots({ accountId: pending.accountId, kind: "saved", name: pending.name })).filter(
+				(other) => other.id !== pending.id,
+			);
+			if (others.length > 0 || pending.validated !== true) {
+				await dropPending(pending);
+				continue;
+			}
+			await store.snapshots.update(pending.id, (latest) =>
+				latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
+			);
+		}
+	}
+
+	/**
+	 * Retires the automatic snapshots of sandboxes that are deleted: a sandbox's delete retires its history,
+	 * and one it couldn't (a read that failed, a fork that still depended on it) is tried again here, every pass, until
+	 * it goes.
+	 */
+	async function retireOrphans(): Promise<void> {
+		const deleted = new Set((await store.sandboxes.list({ state: "deleted" })).map((sandbox) => sandbox.id));
+		if (deleted.size === 0) return;
+		for (const snapshot of await store.snapshots.list({ kind: "automatic" })) {
+			if (closing) return;
+			if (snapshot.state === "deleting" || snapshot.sandboxId === undefined || !deleted.has(snapshot.sandboxId))
+				continue;
+			await retireSnapshot(snapshot).catch(() => false);
+		}
 	}
 
 	/**
@@ -3879,7 +4312,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("conflict", "The snapshot isn't ready");
 			return byId;
 		}
-		const [byName] = await store.snapshots.list({ accountId, kind: "saved", name: from });
+		const [named] = await liveSnapshots({ accountId, kind: "saved", name: from });
+		// Held by a delete under way (or a save not finished): the name is taken, but not by a snapshot to make from.
+		if (named !== undefined && named.state !== "ready") throw new KantelError("conflict", "The snapshot isn't ready");
+		const byName = named;
 		if (byName === undefined || byName.ref === undefined) throw notFound(`snapshot named ${from}`);
 		return byName;
 	}
@@ -3898,7 +4334,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		scope: computeSchema.ApiKeyScope,
 	): Promise<StoredSnapshot> {
 		const snapshot = await store.snapshots.get(snapshotId);
-		if (snapshot === undefined || !(await canSeeSnapshot(principal, snapshot))) throw notFound("snapshot");
+		// One being deleted is gone to every read (`retireSnapshot`).
+		if (snapshot === undefined || snapshot.state === "deleting" || !(await canSeeSnapshot(principal, snapshot))) {
+			throw notFound("snapshot");
+		}
 		requireScope(principal, scope, (await roleIn(store, principal, snapshot.accountId)) ?? "member");
 		return snapshot;
 	}
@@ -4100,10 +4539,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await killCommandsOf(sandbox.id);
 			await backend.destroy(sandbox.id);
 		}
-		for (const snapshot of await store.snapshots.list({ sandboxId: sandbox.id })) {
-			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
-		}
+		for (const snapshot of await store.snapshots.list({ sandboxId: sandbox.id })) await forceRetire(snapshot);
 		for (const command of await store.commands.list({ sandboxId: sandbox.id })) await store.commands.delete(command.id);
 		await store.sandboxes.delete(sandbox.id);
 	}
@@ -4203,10 +4639,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const token of await store.joinTokens.list({ accountId })) await store.joinTokens.delete(token.id);
 		// Sandboxes (their machines destroyed), saved snapshots, bundles (bytes and all).
 		for (const sandbox of await store.sandboxes.list({ accountId })) await forgetSandbox(sandbox);
-		for (const snapshot of await store.snapshots.list({ accountId })) {
-			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
-		}
+		for (const snapshot of await store.snapshots.list({ accountId })) await forceRetire(snapshot);
 		for (const bundle of await store.bundles.list({ accountId })) {
 			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
 			await mounts.forgetBundle(bundle);
@@ -4327,13 +4760,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A snapshot, once stored: forgotten, its bytes released as a delete does (`forgetSnapshot`, `releaseRef`), if its
-	 * account has closed or gone meanwhile, so a snapshot taken as the account was deleted never outlives it.
+	 * A snapshot, once stored: deleted, as an account's deletion deletes it (`forceRetire`), if its account has closed or
+	 * gone meanwhile, so a snapshot taken as the account was deleted never outlives it.
 	 */
 	async function holdSnapshot(snapshot: StoredSnapshot): Promise<void> {
 		if (await accountOpen(snapshot.accountId)) return;
-		await forgetSnapshot(snapshot);
-		await releaseRef(snapshot.ref);
+		await forceRetire(snapshot).catch(() => undefined);
 		throw accountClosed();
 	}
 
@@ -5318,7 +5750,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const sandboxes = (await store.sandboxes.list({ accountId: account.id })).filter(
 				(sandbox) => sandbox.state !== "deleted",
 			);
-			const saved = await store.snapshots.list({ accountId: account.id, kind: "saved" });
+			const saved = await liveSnapshots({ accountId: account.id, kind: "saved" });
 			if (sandboxes.length > 0 || saved.length > 0) {
 				throw new KantelError("conflict", "Delete the organisation's sandboxes and saved snapshots first");
 			}
@@ -5784,7 +6216,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
-				await store.sandboxes.put(sandbox);
+				const put = () => store.sandboxes.put(sandbox);
+				if (from === undefined) await put();
+				else if (!(await adopt(from.id, put, () => store.sandboxes.delete(sandbox.id).then(() => undefined)))) {
+					throw deletedMeanwhile();
+				}
 				await holdAccount(account.id, [sandbox.id]);
 				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
 				// refuses the create, which forgets the sandbox before anything else saw it.
@@ -6034,7 +6470,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(current.mounts === undefined ? {} : { mounts: pendingMounts(current.mounts), mountsAt: undefined }),
 					});
 				}
-				for (const fork of forks) await store.sandboxes.put(fork);
+				const putForks = async () => {
+					for (const fork of forks) await store.sandboxes.put(fork);
+				};
+				const dropForks = async () => {
+					for (const fork of forks) await store.sandboxes.delete(fork.id);
+				};
+				if (snapshot === undefined) await putForks();
+				else if (!(await adopt(snapshot.id, putForks, dropForks))) throw deletedMeanwhile();
 				if (forks[0] !== undefined)
 					await holdAccount(
 						forks[0].accountId,
@@ -6293,8 +6736,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						await backend.destroy(current.id);
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
-								await forgetSnapshot(snapshot);
-								await releaseRef(snapshot.ref);
+								await retireSnapshot(snapshot);
 							} else {
 								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
 								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
@@ -6844,12 +7286,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// A retry would be `conflict` on its own name, or with `replace` save it again and delete the first.
 			return once(principal, "saveSnapshot", { body, idempotencyKey }, async () => {
 				const current = await settledFor(principal, sandbox.id);
-				const [existing] = await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name });
+				const [existing] = await liveSnapshots({ accountId: current.accountId, kind: "saved", name: body.name });
 				if (existing !== undefined && body.replace !== true) {
 					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
 				if (existing === undefined && limits.savedSnapshots !== undefined) {
-					const saved = await store.snapshots.list({ accountId: current.accountId, kind: "saved" });
+					const saved = await liveSnapshots({ accountId: current.accountId, kind: "saved" });
 					if (saved.length >= limits.savedSnapshots) {
 						throw new KantelError("exhausted", `The account may keep ${limits.savedSnapshots} saved snapshots`);
 					}
@@ -6899,7 +7341,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					description: body.description,
 					sandboxId: current.id,
 					sandboxType: current.type,
-					state: "ready",
+					// Pending until the save it replaces has gone, so a name never has two live saves; ready then.
+					state: "creating",
+					// Its bytes known good at once when they are its own (taken now, or kept by its host); its source's,
+					// shared, only once the source is read again after it is stored (below).
+					validated: source === undefined || ref !== source.ref,
 					trigger: "save",
 					memory,
 					...machine,
@@ -6909,21 +7355,55 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref,
 					...(base === undefined ? {} : { base }),
 				};
-				await store.snapshots.put(snapshot);
+				// Its source deleted between the read and the put may have had its bytes deleted too (shared, on a host without
+				// `snapshot.keep`, or before its keep): the save lets itself go rather than name bytes that may be gone.
+				const put = () => store.snapshots.put(snapshot);
+				if (source === undefined) await put();
+				else if (
+					!(await adopt(source.id, put, async () => {
+						await dropPending(snapshot);
+					}))
+				) {
+					throw deletedMeanwhile();
+				}
 				await holdSnapshot(snapshot);
+				if (source !== undefined && !snapshot.validated) {
+					await store.snapshots.update(snapshot.id, (latest) =>
+						latest.state === "creating" && !latest.validated ? { ...latest, validated: true } : undefined,
+					);
+				}
+				// The one it replaces is kept if it can't be deleted (a sandbox depends on it): the replacement goes instead,
+				// and nothing is said deleted.
+				const replaced = existing === undefined ? "retired" : await retireSnapshot(existing);
+				// Unknown: the replacement stays pending, for a retry, or the sweep (`recoverPendingSaves`) to make it ready
+				// once the old one is found settled, or let it go if it is still live.
+				if (replaced === "unknown") {
+					throw new KantelError("unavailable", `Kantel couldn't tell whether ${body.name} was replaced; try again`);
+				}
+				if (replaced === "refused") {
+					await dropPending(snapshot);
+					throw new KantelError(
+						"conflict",
+						`The saved snapshot ${body.name} can't be replaced now: a sandbox depends on it`,
+					);
+				}
+				const ready = await store.snapshots.update(snapshot.id, (latest) =>
+					latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
+				);
+				// Replaced (or deleted) by another call while it was pending: its record is going already.
+				if (ready === undefined)
+					throw new KantelError("conflict", `The saved snapshot ${body.name} was replaced meanwhile`);
 				if (existing !== undefined) {
-					await forgetSnapshot(existing);
-					await releaseRef(existing.ref);
 					await emit("snapshot.deleted", existing.accountId, {
 						snapshotId: existing.id,
 						data: { name: existing.name, actor: actorOf(principal) },
 					});
 				}
-				await emit("snapshot.saved", snapshot.accountId, {
-					snapshotId: snapshot.id,
-					data: { name: snapshot.name, actor: actorOf(principal) },
+				await emit("snapshot.saved", ready.accountId, {
+					snapshotId: ready.id,
+					data: { name: ready.name, actor: actorOf(principal) },
 				});
-				return snapshotView(snapshot);
+				return snapshotView(ready);
 			});
 		},
 
@@ -6964,19 +7444,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", "A stopped sandbox's newest snapshot is what it resumes from");
 				}
 			}
-			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
+			// A running sandbox's newest moves back to the one before it first (each tried until one is still there, else
+			// none), so nothing depends on this one once it is settled; and back to it if it can't be deleted after all.
+			let moved: { readonly to: StoredSnapshot | undefined } | undefined;
+			const older =
+				current === undefined || current.latestSnapshotId !== snapshot.id
+					? []
+					: newestFirst(
+							(await store.snapshots.list({ sandboxId: current.id, kind: "automatic" })).filter(
+								(entry) => entry.state === "ready" && entry.id !== snapshot.id,
+							),
+						);
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
-				const [newest] = newestFirst(
-					(await store.snapshots.list({ sandboxId: current.id, kind: "automatic" })).filter(
-						(entry) => entry.state === "ready",
-					),
-				);
-				await patchSandbox(current.id, (latest) =>
-					latest.latestSnapshotId === snapshot.id
-						? { ...latest, latestSnapshotId: newest?.id, latestSnapshotAt: newest?.createdAt }
-						: undefined,
-				);
+				moved = { to: await installNewest(current.id, snapshot.id, older) };
+			}
+			const retired = await retireSnapshot(snapshot);
+			// Unknown: nothing is rolled back (its newest stays on the one before it, which is there); the sweep finishes it.
+			if (retired === "unknown") {
+				throw new KantelError("unavailable", "Kantel couldn't tell whether the snapshot was deleted; try again");
+			}
+			if (retired === "refused") {
+				// Refused: its sandbox's newest goes back to it, while that still names what this moved it to, by adopt like
+				// every pointer write: if it is no longer there, the one before it, and so on, else none.
+				if (current !== undefined && moved !== undefined) {
+					await installNewest(current.id, moved.to?.id, [snapshot, ...older]);
+				}
+				throw new KantelError("conflict", "A sandbox still depends on this snapshot, or it is being deleted already");
 			}
 			if (snapshot.kind === "saved") {
 				await emit("snapshot.deleted", snapshot.accountId, {
@@ -7941,6 +8434,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			// Each template's cache, against the hosts' runtimes as they are now, in the background (one pass at a time).
 			keepGoing(templates.reconcileAll());
+			expireSnapshots();
 		},
 
 		publishTemplateBase: (input) => templates.publishTemplateBase(input),

@@ -246,7 +246,29 @@ export type StoredCommand = computeSchema.Command & {
  * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
  * file system is (`TakenSnapshot.base`), answered as the API's `base`.
  */
-export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
+	readonly ref?: string;
+	readonly base?: string;
+	/**
+	 * A save while it is pending (`creating`): whether its bytes are confirmed, its own (taken, or kept by its host), or
+	 * its source's, shared, read again once it was stored. A pending save left unconfirmed is never made ready.
+	 */
+	readonly validated?: boolean;
+	/**
+	 * While it is `deleting` (`retireSnapshot`): the process that owns the delete, since when, and why (an expiry's mark
+	 * may be put back); `settling` once its bytes are being deleted, after which it is never put back.
+	 */
+	readonly retiring?: {
+		readonly by: string;
+		/** This mark's own, so a mark put back and made again is told from it (`settleSnapshot`). */
+		readonly token?: string;
+		/** The state it is put back to, if it is (ready when absent). */
+		readonly from?: computeSchema.Snapshot["state"];
+		readonly at: number;
+		readonly why?: "delete" | "expiry";
+		readonly settling?: boolean;
+	};
+};
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */

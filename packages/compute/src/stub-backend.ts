@@ -25,6 +25,7 @@ import {
 	type Placement,
 	type SandboxBackend,
 	type SandboxSpec,
+	SNAPSHOT_KEEP_FEATURE,
 	type SshGrant,
 	type TakenSnapshot,
 	type TemplateBuildSpec,
@@ -278,7 +279,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		nestedVirtualisation: false,
 		capacity: { vcpus: 64, memoryMb: 262_144, diskGb: 2048 },
 		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
-		features: ["egress-policy", CUSTOM_SHAPES_FEATURE],
+		features: ["egress-policy", CUSTOM_SHAPES_FEATURE, SNAPSHOT_KEEP_FEATURE],
 		sizes: SIZES,
 		// The disk it gives a shape off its sizes, as kantel-host's defaults: its smallest size's, up to 1024 GB.
 		disk: { minGb: 10, maxGb: 1024 },
