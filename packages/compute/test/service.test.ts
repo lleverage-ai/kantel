@@ -886,6 +886,25 @@ describe("sandboxes", () => {
 		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(104);
 		// Its source, automatic, is left what is its own.
 		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(10);
+
+		// A host with isolates too: their snapshots say nothing of what is their own, and keep their reported size, while
+		// the microVM ones are still counted by their shared files.
+		const isolate = await tom.createSandbox({ type: "isolate", autoStopMinutes: null, wait: true });
+		const iso = await tom.takeSnapshot(isolate.id, {});
+		const isoRef = `${STUB_HOST_ID}/snap-isolate`;
+		await store.snapshots.update(iso.id, (current) => ({ ...current, ref: isoRef }));
+		await api.service.recordSnapshotSizes(
+			STUB_HOST_ID,
+			[
+				{ ref: source, sizeBytes: 110, uniqueBytes: 10 },
+				{ ref: kept, sizeBytes: 104, uniqueBytes: 4 },
+				{ ref: isoRef, sizeBytes: 77 },
+			],
+			[{ refs: [source, kept], bytes: 100 }],
+		);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(104);
+		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(10);
+		expect((await tom.getSnapshot(iso.id)).sizeBytes).toBe(77);
 	});
 
 	it("counts the sandboxes made or forked from a snapshot as its uses, deleted ones included", async () => {

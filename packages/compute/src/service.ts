@@ -7659,11 +7659,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (reported.size === 0) return;
 			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written.
 			const records = await store.snapshots.list();
-			// A host that says what is each snapshot's own: its shared files counted once, by this plane's records.
-			if (unique.size === reported.size) {
-				const groups = shared.filter((group) => group.refs.every(own) && whole(group.bytes));
+			// Each snapshot whose host says what is its own (a microVM's; an isolate's says nothing): its shared files counted
+			// once, by this plane's records. One that doesn't say keeps the size it was reported with.
+			if (unique.size > 0) {
+				const groups = shared.filter(
+					(group) => whole(group.bytes) && group.refs.every((ref) => own(ref) && unique.has(ref)),
+				);
 				const attributed = attributeSnapshotBytes(records, unique, groups);
-				for (const [ref, bytes] of attributed) reported.set(ref, bytes);
+				for (const ref of unique.keys()) reported.set(ref, attributed.get(ref) ?? 0);
 			}
 			for (const snapshot of records) {
 				const sizeBytes = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);

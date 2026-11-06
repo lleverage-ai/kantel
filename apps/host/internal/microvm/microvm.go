@@ -2955,7 +2955,7 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 		return err
 	}
 	snap.Memory = false
-	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile))
+	snap.SizeBytes = snapshotBytes(sdir)
 	if err := m.writeSnapshotMeta(s, snap); err != nil {
 		os.RemoveAll(sdir)
 		return err
