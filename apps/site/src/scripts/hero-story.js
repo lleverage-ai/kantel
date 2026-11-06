@@ -14,7 +14,8 @@
 // and each scene's own hook moves what doesn't fit that: the forked cards, the CPU meters, the agent's cursor and
 // the requests travelling through the proxy. Every frame is a pure function of time, and only opacity and transform
 // animate, so it composites without layout. It draws at most 30 frames a second, only while on screen and visible.
-// Under reduced motion nothing moves: each scene shows its finished state for a few seconds, then the next.
+// Under reduced motion nothing moves: each scene shows its finished state for a few seconds, then the next, also only
+// while on screen and visible.
 //
 // The stage is laid out at one size (STAGE_W × STAGE_H) and scaled to its column, so a scene's choreography holds at
 // every width.
@@ -312,8 +313,16 @@ export function mountHeroStory(root) {
 		frame = requestAnimationFrame(tick);
 	}
 
-	function play() {
-		if (frame !== 0 || stopped) return;
+	// Exactly one scheduler at a time: animation frames for normal playback, a hold timer under reduced motion, and
+	// neither while the story is off screen, the tab is hidden or it has stopped. Every change of motion preference or
+	// visibility comes through here, so switching modes cancels the old scheduler before starting the new one.
+	let timer = 0;
+	function schedule() {
+		if (frame !== 0) cancelAnimationFrame(frame);
+		frame = 0;
+		window.clearTimeout(timer);
+		timer = 0;
+		if (stopped || !visible || document.hidden) return;
 		if (reduce.matches) {
 			still();
 			return;
@@ -323,41 +332,34 @@ export function mountHeroStory(root) {
 	}
 
 	// Reduced motion: each scene at rest, its work done, for a while, then the next.
-	let timer = 0;
 	function still() {
-		window.clearTimeout(timer);
-		if (stopped || !reduce.matches) return;
 		const i = held % scenes.length;
 		render(starts[i] + scenes[i].dur - FADE - 0.05);
 		timer = window.setTimeout(() => {
 			held += 1;
-			still();
+			if (!stopped && visible && !document.hidden && reduce.matches) still();
 		}, REDUCED_HOLD * 1000);
 	}
 
 	render(0);
 	const seen = new IntersectionObserver(([entry]) => {
 		visible = entry?.isIntersecting ?? true;
-		if (visible) play();
+		schedule();
 	});
 	seen.observe(root);
-	const onVisibility = () => {
-		if (!document.hidden) play();
-	};
-	document.addEventListener("visibilitychange", onVisibility);
-	reduce.addEventListener("change", play);
-	play();
+	document.addEventListener("visibilitychange", schedule);
+	reduce.addEventListener("change", schedule);
+	schedule();
 
 	return {
 		render,
 		stop() {
 			stopped = true;
-			if (frame !== 0) cancelAnimationFrame(frame);
-			window.clearTimeout(timer);
+			schedule();
 			resize.disconnect();
 			seen.disconnect();
-			document.removeEventListener("visibilitychange", onVisibility);
-			reduce.removeEventListener("change", play);
+			document.removeEventListener("visibilitychange", schedule);
+			reduce.removeEventListener("change", schedule);
 		},
 	};
 }
