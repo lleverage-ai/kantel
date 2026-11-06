@@ -39,7 +39,12 @@ export class FakeHost {
 	readonly binary: Uint8Array[] = [];
 	readonly sandboxes = new Map<string, HostSandbox>();
 	/** What `snapshot.list` answers. */
-	snapshots: { readonly id: string; readonly sandboxId: string; readonly base?: string }[] = [];
+	snapshots: {
+		readonly id: string;
+		readonly sandboxId: string;
+		readonly base?: string;
+		readonly sizeBytes?: number;
+	}[] = [];
 	closedWith: { code: number; reason: string } | undefined;
 	connection!: AcceptedHost;
 	freeMemoryMiB = 20_000;

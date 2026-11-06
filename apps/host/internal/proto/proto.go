@@ -232,6 +232,12 @@ const FeatureProcesses = "processes"
 // stopped sandbox's state, or a snapshot from its history, can be saved and outlast both.
 const FeatureSnapshotKeep = "snapshot-keep"
 
+// FeatureSnapshotSizes (HOST_FEATURES.snapshotSizes): snapshot.list answers each snapshot's SizeBytes as the space it
+// takes on the host's disk now, not at the time it was made: the blocks its files have allocated, each file linked into
+// several snapshots counted once (for a saved one before an automatic one, then the oldest), with no memory still spooled to RAM and no bundle images. The
+// control plane reads it now and then to keep its snapshots' sizes up to date.
+const FeatureSnapshotSizes = "snapshot-sizes"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {

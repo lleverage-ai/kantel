@@ -1703,7 +1703,19 @@ export const Snapshot = Type.Object(
 		// from it gets it, unless it asks for another size.
 		size: Type.Optional(SandboxSizeName),
 		resources: Type.Optional(SandboxResources),
-		sizeBytes: Type.Optional(Type.Integer()),
+		sizeBytes: Type.Optional(
+			Type.Integer({
+				description:
+					"The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown.",
+			}),
+		),
+		uses: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it.",
+			}),
+		),
 		createdAt: Timestamp,
 		// Who saved or took it: absent for an automatic one, and for one saved before this was kept.
 		createdBy: Type.Optional(CreatedBy),

@@ -1172,8 +1172,8 @@ function savedSnapshotOf(snapshot: Snapshot, sandboxName: string): UiSavedSnapsh
 		...(snapshot.createdBy === undefined ? {} : { createdBy: actorName(snapshot.createdBy) }),
 		// The API leaves the size out while it is unknown.
 		sizeBytes: snapshot.sizeBytes ?? 0,
-		// The API doesn't count the sandboxes started from a snapshot.
-		uses: 0,
+		// The sandboxes made from it; a gateway from before it counted them doesn't say.
+		uses: snapshot.uses ?? 0,
 		...baseFieldOf(snapshot),
 		memory: snapshot.memory,
 		...(snapshot.resources === undefined

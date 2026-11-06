@@ -8,6 +8,7 @@ import {
 	baseStatus,
 	DEFAULT_BASE_IMAGE_INDEX,
 	hostImageChannel,
+	hostSnapshotLinks,
 	imagePatchingSwitch,
 } from "../src/base-status.ts";
 import { digest, HOST_BEHIND, HOST_LATEST, HOST_OLDEST, HOST_REPOSITORY, INDEX, NOW } from "./base-index-fixture.ts";
@@ -184,5 +185,36 @@ describe("the switches", () => {
 		expect(baseImageIndexUrl(undefined)).toBe(DEFAULT_BASE_IMAGE_INDEX);
 		expect(baseImageIndexUrl("https://mirror.example/index.json")).toBe("https://mirror.example/index.json");
 		expect(() => baseImageIndexUrl("ftp://mirror.example/index.json")).toThrow("KANTEL_BASE_IMAGE_INDEX");
+	});
+});
+
+describe("hostSnapshotLinks", () => {
+	const recorded: string[] = [];
+	const service = {
+		recordBases: async (hostId: string) => {
+			recorded.push(`bases ${hostId}`);
+		},
+		recordSnapshotSizes: async (
+			hostId: string,
+			sizes: readonly { readonly ref: string; readonly sizeBytes: number }[],
+		) => {
+			recorded.push(`sizes ${hostId} ${sizes.length}`);
+		},
+	};
+
+	it("passes on snapshot sizes with image patching off, and no images or bases", async () => {
+		const links = hostSnapshotLinks(service, undefined);
+		await links.recordSnapshotSizes("host_a", [{ ref: "host_a/snap", sizeBytes: 1 }]);
+		expect(recorded).toEqual(["sizes host_a 1"]);
+		expect("images" in links).toBe(false);
+		expect("recordBases" in links).toBe(false);
+	});
+
+	it("adds the images and bases with image patching on", async () => {
+		const links = hostSnapshotLinks(service, { index: async () => INDEX });
+		expect(await links.images?.()).toEqual(hostImageChannel(INDEX));
+		await links.recordBases?.("host_b", {});
+		await links.recordSnapshotSizes("host_b", []);
+		expect(recorded.slice(-2)).toEqual(["bases host_b", "sizes host_b 0"]);
 	});
 });

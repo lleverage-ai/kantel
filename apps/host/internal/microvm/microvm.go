@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -2865,7 +2866,7 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 		m.spool.cancel(spooled)
 		return "", err
 	}
-	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile)) + diskUsage(mem)
+	snap.SizeBytes = snapshotBytes(sdir, nil)
 	// Transient before the fork can take its disk: a host restarting in between must find it is no snapshot to keep.
 	if err := m.writeSnapshotMetaAs(s, snap, transient); err != nil {
 		os.RemoveAll(sdir)
@@ -3137,10 +3138,7 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 			snap.Memory = false
 		}
 	}
-	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile))
-	if snap.Memory {
-		snap.SizeBytes += diskUsage(filepath.Join(sdir, "mem"))
-	}
+	snap.SizeBytes = snapshotBytes(sdir, nil)
 	if err := m.writeSnapshotMeta(s, snap); err != nil {
 		// Unpublished (a full disk, say): the copy is no snapshot, and nothing that lists snapshots would ever find it.
 		os.RemoveAll(sdir)
@@ -3251,6 +3249,76 @@ func (m *Manager) Snapshots(sandboxID string) []proto.SnapshotInfo {
 	return out
 }
 
+// MeasuredSnapshots is Snapshots, each with the space it takes on the disk now (snapshotSizes), not what it took when
+// it was made: memory spooled to RAM since flushed, a memory file pruned since, each file linked into several counted
+// once. For the host's snapshot.list, which the control plane reads to keep its sizes up to date.
+func (m *Manager) MeasuredSnapshots(sandboxID string) []proto.SnapshotInfo {
+	all := m.snapshotsOf("")
+	sizes := m.snapshotSizes(all)
+	var out []proto.SnapshotInfo
+	for _, snap := range all {
+		if sandboxID != "" && snap.SandboxID != sandboxID {
+			continue
+		}
+		info := snap.SnapshotInfo
+		info.SizeBytes = sizes[snap.ID]
+		out = append(out, info)
+	}
+	return out
+}
+
+// snapshotSizes is the space each of snaps (newest first) takes on the disk now (snapshotBytes), each file counted
+// once among them, so the sizes add up to what the snapshots take together. A file linked into several counts for one:
+// a saved snapshot before an automatic one (a kept copy, snapshot.keep, links its source's files, and it is the copy
+// that keeps them once its source is pruned or expires), then the oldest. A copy that shares disk blocks without
+// sharing the file (a reflinked copy) is counted in full, as the file system can't say which blocks are shared.
+func (m *Manager) snapshotSizes(snaps []snapshotMeta) map[string]int64 {
+	seen := map[fileID]bool{}
+	sizes := make(map[string]int64, len(snaps))
+	for _, saved := range []bool{true, false} {
+		for i := len(snaps) - 1; i >= 0; i-- {
+			if (snaps[i].Kind == "saved") == saved {
+				sizes[snaps[i].ID] = snapshotBytes(m.snapshotDir(snaps[i].ID), seen)
+			}
+		}
+	}
+	return sizes
+}
+
+// fileID is a file on the host: its device and inode, the same for every hard link to it.
+type fileID struct{ dev, ino uint64 }
+
+// snapshotBytes is the space a snapshot's directory takes on the disk now: the blocks its regular files have
+// allocated (a sparse disk's holes take none). Left out: a memory file still in RAM, a symlink into the spool until
+// it is flushed to the disk; and its bundle drives, links to the bundle cache's images, which are the cache's. A file
+// in seen is counted already, and one counted here is added to it (nil: each file of this one once).
+func snapshotBytes(dir string, seen map[fileID]bool) int64 {
+	if seen == nil {
+		seen = map[fileID]bool{}
+	}
+	var total int64
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() || strings.HasPrefix(d.Name(), "bundle") {
+			return nil
+		}
+		var st syscall.Stat_t
+		if syscall.Lstat(path, &st) != nil {
+			return nil
+		}
+		id := fileID{uint64(st.Dev), st.Ino}
+		if seen[id] {
+			return nil
+		}
+		seen[id] = true
+		total += st.Blocks * 512
+		return nil
+	})
+	return total
+}
+
+// SaveSnapshot keeps a sandbox's current state under a name, until it is deleted: live for a running sandbox
+// (memory too), from its newest snapshot for a stopped one.
+
 // SaveSnapshot keeps a sandbox's current state under a name, until it is deleted: live for a running sandbox, from its
 // newest snapshot for a stopped one. A running sandbox's save keeps its disk only, unless p.Memory asks for its
 // memory too: a memory file is as big as the machine's memory, and ties a sandbox made from the snapshot to the same
@@ -3343,10 +3411,8 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	if !kept.Memory {
 		kept.BundleDrives, kept.BundleSlots = 0, nil
 	}
-	kept.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile))
-	if kept.Memory {
-		kept.SizeBytes += diskUsage(filepath.Join(sdir, "mem"))
-	}
+	// Its own files in full: it shares them with its source, but it is the one kept (snapshotSizes counts them for it).
+	kept.SizeBytes = snapshotBytes(sdir, nil)
 	raw, _ := json.MarshalIndent(kept, "", "  ")
 	if err := fsutil.WriteFileDurably(filepath.Join(sdir, "meta.json"), raw, 0o600); err != nil {
 		os.RemoveAll(sdir)

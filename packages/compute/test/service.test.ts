@@ -806,6 +806,46 @@ describe("sandboxes", () => {
 		expect(refused.code).toBe("invalid");
 	});
 
+	it("keeps snapshots' sizes as their host measures them now, for every record of the same bytes", async () => {
+		const store = createMemoryStore();
+		const { api, tom } = setup(createStubBackend(), { store });
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const taken = await tom.takeSnapshot(vm.id, {});
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id });
+		const other = await tom.takeSnapshot(vm.id, {});
+		// As a host's snapshots are named: `<hostId>/<id>`, the save sharing its source's.
+		const ref = `${STUB_HOST_ID}/snap-1`;
+		for (const id of [taken.id, saved.id]) {
+			await store.snapshots.update(id, (current) => ({ ...current, ref, sizeBytes: 9_999 }));
+		}
+		// Another host can't say what this one's snapshots take.
+		await api.service.recordSnapshotSizes("host_other", [{ ref, sizeBytes: 1 }]);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(9_999);
+		await api.service.recordSnapshotSizes(STUB_HOST_ID, [
+			{ ref, sizeBytes: 4_096 },
+			{ ref: `${STUB_HOST_ID}/snap-gone`, sizeBytes: 7 },
+		]);
+		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(4_096);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(4_096);
+		expect((await tom.getSnapshot(other.id)).sizeBytes).toBe(other.sizeBytes);
+	});
+
+	it("counts the sandboxes made or forked from a snapshot as its uses, deleted ones included", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id });
+		expect(saved.uses).toBe(0);
+		const first = await tom.createSandbox({ from: "golden", wait: true });
+		await tom.createSandbox({ from: "golden", wait: true });
+		await tom.deleteSandbox(first.id);
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items.find((item) => item.id === saved.id);
+		expect(listed?.uses).toBe(2);
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(2);
+		const taken = await tom.takeSnapshot(vm.id, {});
+		await tom.forkSandbox(vm.id, { snapshotId: taken.id, wait: true });
+		expect((await tom.getSnapshot(taken.id)).uses).toBe(1);
+	});
+
 	it("keeps an older save holding memory once the pause it shares bytes with is deleted", async () => {
 		const store = createMemoryStore();
 		const { tom } = setup(createStubBackend(), { store });

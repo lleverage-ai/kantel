@@ -101,7 +101,7 @@ import {
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
-	hostImageChannel,
+	hostSnapshotLinks,
 	type InviteMailing,
 	imagePatchingSwitch,
 	joinTokenSpender,
@@ -636,15 +636,8 @@ export async function gatewayCompute(options: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
 		},
-		...(baseImages === undefined
-			? {}
-			: {
-					images: async () => {
-						const index = await baseImages.index();
-						return index === undefined ? undefined : hostImageChannel(index);
-					},
-					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
-				}),
+		// Snapshot sizes always; the images and bases only with image patching on.
+		...hostSnapshotLinks(api.service, baseImages),
 		bundle: (hostId, sandboxId, digest) => api.service.bundleForHost(hostId, sandboxId, digest),
 		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
 		activity: (sandboxId) => api.service.noteActivity(sandboxId),

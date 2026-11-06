@@ -9,6 +9,7 @@
  */
 import type { computeSchema } from "@kantel/api";
 import { type BaseImageIndex, freshness, parseIndex } from "./base-images.ts";
+import type { BaseReports } from "./service.ts";
 
 /** The index's entry for the microVM host images (kernel and root file systems), which hosts report by version. */
 export const HOST_BASE_IMAGE = "host";
@@ -170,4 +171,38 @@ export function baseImageIndexUrl(raw: string | undefined): string {
 	if (value === "") return DEFAULT_BASE_IMAGE_INDEX;
 	if (!/^https?:\/\/\S+$/.test(value)) throw new Error("KANTEL_BASE_IMAGE_INDEX is an http(s) URL");
 	return value;
+}
+
+/** What a gateway's hosts link (`HostComputeLink`) needs of the compute service for its hosts' snapshot reports. */
+export interface HostSnapshotReporting {
+	recordBases(hostId: string, reports: BaseReports): Promise<void>;
+	recordSnapshotSizes(
+		hostId: string,
+		sizes: readonly { readonly ref: string; readonly sizeBytes: number }[],
+	): Promise<void>;
+}
+
+/**
+ * The parts of a gateway's hosts link that pass on what hosts report of their snapshots: their sizes on the disk,
+ * always, and with image patching on (`baseImages`, the gateway's cached read of the index), the images hosts should
+ * be on and the bases they report. Both gateways build their link with it, so neither leaves the sizes behind the
+ * image patching switch.
+ */
+export function hostSnapshotLinks(
+	service: HostSnapshotReporting,
+	baseImages: { index(): Promise<BaseImageIndex | undefined> } | undefined,
+) {
+	return {
+		recordSnapshotSizes: (hostId: string, sizes: readonly { readonly ref: string; readonly sizeBytes: number }[]) =>
+			service.recordSnapshotSizes(hostId, sizes),
+		...(baseImages === undefined
+			? {}
+			: {
+					images: async () => {
+						const index = await baseImages.index();
+						return index === undefined ? undefined : hostImageChannel(index);
+					},
+					recordBases: (hostId: string, reports: BaseReports) => service.recordBases(hostId, reports),
+				}),
+	};
 }

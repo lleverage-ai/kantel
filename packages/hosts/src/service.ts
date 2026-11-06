@@ -292,6 +292,15 @@ export interface HostComputeLink {
 		},
 	): Promise<void>;
 	/**
+	 * Updates the sizes of a host's snapshots to what they take on its disk now (`HOST_FEATURES.snapshotSizes`), from its
+	 * snapshot list, read once a connection and every `SNAPSHOT_SIZES_REFRESH_MS`. A snapshot is named by its ref,
+	 * `<hostId>/<id>` (`ComputeService.recordSnapshotSizes`).
+	 */
+	recordSnapshotSizes?(
+		hostId: string,
+		sizes: readonly { readonly ref: string; readonly sizeBytes: number }[],
+	): Promise<void>;
+	/**
 	 * A host's `bucket.fetch`: the bucket source with its credentials opened, or `undefined` unless the sandbox is on
 	 * `hostId` and mounts it (`ComputeService.bucketSourceForHost`).
 	 */
@@ -532,6 +541,9 @@ const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 /** How often a connected host is told again which images Kantel wants it on (image patching): 15 minutes. */
 export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
 
+/** How often a connected host's snapshot list is read again for their sizes (`HOST_FEATURES.snapshotSizes`). */
+export const SNAPSHOT_SIZES_REFRESH_MS = 10 * 60 * 1000;
+
 function labelsOf(value: unknown): { [key: string]: string } {
 	if (value === undefined) return {};
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -690,26 +702,44 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	/** Hosts whose snapshot bases haven't been read on their connection yet (image patching hosts only). */
 	const snapshotBasesDue = new Set<string>();
 	/**
-	 * Reads a host's snapshots once a connection and passes on the bases they report: snapshots saved before the host
-	 * versioned its images have none recorded, and the host pins them when image patching starts.
+	 * When each connected host that measures its snapshots (`HOST_FEATURES.snapshotSizes`) last had its snapshot list
+	 * read for their sizes: absent until its first heartbeat, when it is read.
 	 */
-	const readSnapshotBases = (hostId: string) => {
-		if (!snapshotBasesDue.delete(hostId) || compute?.recordBases === undefined) return;
+	const snapshotSizesReadAt = new Map<string, number>();
+	/** Hosts that measure their snapshots, from their hello. */
+	const measuresSnapshots = new Set<string>();
+	/**
+	 * Reads a host's snapshots, once a connection and then every `SNAPSHOT_SIZES_REFRESH_MS`, and passes on what they
+	 * report: their bases, once a connection (snapshots saved before the host versioned its images have none recorded,
+	 * and the host pins them when image patching starts), and their sizes on the disk now, from a host that measures them.
+	 */
+	const readSnapshots = (hostId: string) => {
 		const link = compute;
+		const bases = snapshotBasesDue.delete(hostId) && link?.recordBases !== undefined;
+		const at = clock.now();
+		const sizes =
+			link?.recordSnapshotSizes !== undefined &&
+			measuresSnapshots.has(hostId) &&
+			at - (snapshotSizesReadAt.get(hostId) ?? Number.NEGATIVE_INFINITY) >= SNAPSHOT_SIZES_REFRESH_MS;
+		if (!bases && !sizes) return;
+		if (sizes) snapshotSizesReadAt.set(hostId, at);
 		report(
 			(async () => {
-				const listed = await hub.call<{ snapshots?: readonly { id?: unknown; base?: unknown }[] | null }>(
-					hostId,
-					HostMethods.snapshotList,
-					{ sandboxId: "" },
-				);
-				const snapshots: { ref: string; base: string }[] = [];
+				const listed = await hub.call<{
+					snapshots?: readonly { id?: unknown; base?: unknown; sizeBytes?: unknown }[] | null;
+				}>(hostId, HostMethods.snapshotList, { sandboxId: "" });
+				const baseReports: { ref: string; base: string }[] = [];
+				const sizeReports: { ref: string; sizeBytes: number }[] = [];
 				for (const snap of listed.snapshots ?? []) {
-					if (typeof snap.id === "string" && typeof snap.base === "string" && snap.base !== "") {
-						snapshots.push({ ref: `${hostId}/${snap.id}`, base: snap.base });
+					if (typeof snap.id !== "string") continue;
+					const ref = `${hostId}/${snap.id}`;
+					if (typeof snap.base === "string" && snap.base !== "") baseReports.push({ ref, base: snap.base });
+					if (typeof snap.sizeBytes === "number" && Number.isSafeInteger(snap.sizeBytes) && snap.sizeBytes >= 0) {
+						sizeReports.push({ ref, sizeBytes: snap.sizeBytes });
 					}
 				}
-				if (snapshots.length > 0) await link.recordBases?.(hostId, { snapshots });
+				if (bases && baseReports.length > 0) await link?.recordBases?.(hostId, { snapshots: baseReports });
+				if (sizes && sizeReports.length > 0) await link?.recordSnapshotSizes?.(hostId, sizeReports);
 			})(),
 		);
 	};
@@ -776,6 +806,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// Its snapshots' bases, once it is welcomed (the hello doesn't carry them): on its first heartbeat.
 		if (facts.value.features?.includes(HOST_FEATURES.imagePatching) === true) snapshotBasesDue.add(hostId);
 		else snapshotBasesDue.delete(hostId);
+		// Its snapshots' sizes, read on its first heartbeat and then every so often, where it measures them.
+		snapshotSizesReadAt.delete(hostId);
+		if (facts.value.features?.includes(HOST_FEATURES.snapshotSizes) === true) measuresSnapshots.add(hostId);
+		else measuresSnapshots.delete(hostId);
 		if (held.size > 0) {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
@@ -839,7 +873,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const capacity = parsed.value;
 			reserved.delete(hostId);
 			refreshImages(hostId);
-			readSnapshotBases(hostId);
+			readSnapshots(hostId);
 			report(
 				(async () => {
 					await store.updateHost(hostId, (host) => ({ ...host, capacity, lastSeenAt: clock.now() }));
@@ -927,6 +961,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			log(`[hosts] host ${hostId} disconnected`);
 			imagesToldAt.delete(hostId);
 			snapshotBasesDue.delete(hostId);
+			snapshotSizesReadAt.delete(hostId);
+			measuresSnapshots.delete(hostId);
 			poolsEnded.delete(hostId);
 			cluster?.release(hostId);
 			report(

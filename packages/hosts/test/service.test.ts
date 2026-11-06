@@ -5,7 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createHostsApi } from "../src/http.ts";
 import { HostCallError } from "../src/hub.ts";
 import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
-import { createHostsService, type HostsService, IMAGES_REFRESH_MS, kantelErrorFromHost } from "../src/service.ts";
+import {
+	createHostsService,
+	type HostsService,
+	IMAGES_REFRESH_MS,
+	kantelErrorFromHost,
+	SNAPSHOT_SIZES_REFRESH_MS,
+} from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
@@ -344,6 +350,58 @@ describe("hosts service", () => {
 		await tick();
 		expect(host.calls.filter((c) => c.method === "snapshot.list")).toHaveLength(1);
 		expect(recorded).toEqual([{ hostId: b.hostId, ref: `${b.hostId}/snap-old`, base: "host-images-1" }]);
+	});
+
+	it("passes on its snapshots' sizes on its first heartbeat and then every so often, from a host that measures them", async () => {
+		let now = 1_000_000;
+		const { service, join } = await setup({ now: () => now });
+		const recorded: { hostId: string; ref: string; sizeBytes: number }[][] = [];
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordSnapshotSizes: async (hostId, sizes) => {
+				recorded.push(sizes.map((size) => ({ hostId, ...size })));
+			},
+		});
+		const heartbeat = (host: FakeHost) =>
+			host.send({
+				type: "heartbeat",
+				heartbeat: {
+					capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} },
+				},
+			});
+		// One that doesn't measure them is never asked.
+		const older = new FakeHost(service, (await join("a")).hostId);
+		older.snapshots = [{ id: "snap-a", sandboxId: "sbx-1", sizeBytes: 5 }];
+		older.connect();
+		await tick();
+		heartbeat(older);
+		await tick();
+		expect(older.calls.map((c) => c.method)).not.toContain("snapshot.list");
+
+		const b = await join("b");
+		const host = new FakeHost(service, b.hostId, [HOST_FEATURES.snapshotSizes]);
+		host.snapshots = [
+			{ id: "snap-1", sandboxId: "sbx-1", sizeBytes: 1_000 },
+			// Nonsense from a host is dropped.
+			{ id: "snap-2", sandboxId: "sbx-1", sizeBytes: -1 },
+		];
+		host.connect();
+		await tick();
+		heartbeat(host);
+		await tick();
+		expect(recorded).toEqual([[{ hostId: b.hostId, ref: `${b.hostId}/snap-1`, sizeBytes: 1_000 }]]);
+		// Not again until the refresh interval has passed.
+		host.snapshots = [{ id: "snap-1", sandboxId: "sbx-1", sizeBytes: 600 }];
+		now += 60_000;
+		heartbeat(host);
+		await tick();
+		expect(recorded).toHaveLength(1);
+		now += SNAPSHOT_SIZES_REFRESH_MS;
+		heartbeat(host);
+		await tick();
+		expect(recorded.at(-1)).toEqual([{ hostId: b.hostId, ref: `${b.hostId}/snap-1`, sizeBytes: 600 }]);
+		expect(host.calls.filter((c) => c.method === "snapshot.list")).toHaveLength(2);
 	});
 
 	it("reads no image index on a heartbeat with image patching off", async () => {

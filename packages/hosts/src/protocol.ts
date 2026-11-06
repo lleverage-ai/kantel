@@ -212,6 +212,13 @@ export const HOST_FEATURES = {
 	 * a save of a stopped sandbox, or of a history entry, shares the automatic snapshot's bytes, which the host may prune.
 	 */
 	snapshotKeep: "snapshot-keep",
+	/**
+	 * `snapshot.list` answers each snapshot's `sizeBytes` as the space it takes on the host's disk now (the blocks its
+	 * files have allocated, a file linked into several snapshots counted once, for a saved one, else the oldest; no memory in RAM),
+	 * not what it took when it was made. Kantel reads it once a connection and every `SNAPSHOT_SIZES_REFRESH_MS` to keep
+	 * its snapshots' sizes up to date. Without it, a snapshot keeps the size it was made with.
+	 */
+	snapshotSizes: "snapshot-sizes",
 } as const;
 
 /**

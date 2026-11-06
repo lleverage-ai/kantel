@@ -478,6 +478,15 @@ export interface ComputeService {
 	 */
 	recordBases(hostId: string, reports: BaseReports): Promise<void>;
 	/**
+	 * Updates the sizes of a host's snapshots to the space they take on its disk now, as it measures them (`snapshot.list`
+	 * with `HOST_FEATURES.snapshotSizes`): only a snapshot whose ref is that host's, and only where the size changed.
+	 * Every record of the same bytes (a save shares its source's ref) gets the same size.
+	 */
+	recordSnapshotSizes(
+		hostId: string,
+		sizes: readonly { readonly ref: string; readonly sizeBytes: number }[],
+	): Promise<void>;
+	/**
 	 * A bundle's tar, for the host that asked (`GET /v1/hosts/bundles/{digest}`): `undefined` unless `sandboxId` is on
 	 * `hostId` (or still starting, so being placed there) and mounts `digest`. Mounts off: always `undefined`.
 	 */
@@ -2164,7 +2173,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 	}
 
-	const snapshotView = (snapshot: StoredSnapshot): computeSchema.Snapshot => ({
+	/**
+	 * How many of an account's sandboxes were made from each snapshot (`source.snapshotId`: a create from it, or a fork
+	 * from it), deleted ones included, by the snapshot's ID: a snapshot's `uses`.
+	 */
+	async function usesIn(accountId: string): Promise<Map<string, number>> {
+		const uses = new Map<string, number>();
+		for (const sandbox of await store.sandboxes.list({ accountId })) {
+			const from = sandbox.source?.snapshotId;
+			if (from !== undefined) uses.set(from, (uses.get(from) ?? 0) + 1);
+		}
+		return uses;
+	}
+
+	/** A snapshot as the API answers it; `uses` from `usesIn`, 0 for one just made. */
+	const snapshotView = (snapshot: StoredSnapshot, uses = 0): computeSchema.Snapshot => ({
 		id: snapshot.id,
 		accountId: snapshot.accountId,
 		kind: snapshot.kind,
@@ -2177,6 +2200,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		memory: snapshot.memory,
 		...recordedMachine(snapshot),
 		sizeBytes: snapshot.sizeBytes,
+		uses,
 		createdAt: snapshot.createdAt,
 		createdBy: snapshot.createdBy,
 		expiresAt: snapshot.expiresAt,
@@ -6328,11 +6352,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (await canSeeSnapshot(principal, snapshot)) visible.push(snapshot);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
+			const uses = page.items.length === 0 ? new Map<string, number>() : await usesIn(account.id);
 			const items = page.items.map((snapshot) =>
-				snapshotView({
-					...snapshot,
-					memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
-				}),
+				snapshotView(
+					{
+						...snapshot,
+						memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
+					},
+					uses.get(snapshot.id) ?? 0,
+				),
 			);
 			return { items, nextCursor: page.nextCursor };
 		},
@@ -6460,7 +6488,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getSnapshot: async (principal, { params }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
-			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) });
+			const uses = (await usesIn(snapshot.accountId)).get(snapshot.id) ?? 0;
+			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) }, uses);
 		},
 
 		listSnapshotFiles: async (principal, { params, query }) => {
@@ -7590,6 +7619,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const { ref } = snapshot;
 				await store.snapshots.update(snapshot.id, (current) =>
 					current.ref === ref && current.base === undefined ? { ...current, base } : undefined,
+				);
+			}
+		},
+
+		async recordSnapshotSizes(hostId, sizes) {
+			const reported = new Map<string, number>();
+			for (const { ref, sizeBytes } of sizes) {
+				if (typeof ref !== "string" || !ref.startsWith(`${hostId}/`)) continue;
+				if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) continue;
+				reported.set(ref, sizeBytes);
+			}
+			if (reported.size === 0) return;
+			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written.
+			for (const snapshot of await store.snapshots.list()) {
+				const sizeBytes = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
+				if (sizeBytes === undefined || snapshot.sizeBytes === sizeBytes) continue;
+				const { ref } = snapshot;
+				await store.snapshots.update(snapshot.id, (current) =>
+					current.ref === ref && current.sizeBytes !== sizeBytes ? { ...current, sizeBytes } : undefined,
 				);
 			}
 		},
