@@ -276,7 +276,9 @@ describe("a host's revocation", () => {
 	});
 
 	for (const kind of testDatabaseKinds()) {
-		it(`sticks in SQL (${kind.name}) when an older record is written over it`, async () => {
+		it(`sticks in SQL (${kind.name}) when an older record is written over it`, {
+			timeout: kind.testTimeoutMs,
+		}, async () => {
 			const db = await kind.open();
 			closers.push(() => void db.close());
 			await migrateHosts(db.driver);

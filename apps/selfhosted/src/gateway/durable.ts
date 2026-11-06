@@ -19,6 +19,7 @@ import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql";
 import { createSqlClusterStore } from "@kantel/hosts/cluster";
 import { createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
+import { createSqlHostReleasesStore } from "@kantel/hosts/releases";
 import { createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
 import { postgresPoolDriver } from "@kantel/sql/postgres";
@@ -104,7 +105,14 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const computeHosts =
 			config.computeHosts === undefined
 				? undefined
-				: gatewayHosts(config.computeHosts, createSqlHostStore(driver), log, cluster?.cluster);
+				: gatewayHosts(
+						config.computeHosts,
+						createSqlHostStore(driver),
+						log,
+						cluster?.cluster,
+						// A release check on one replica has every replica read the release again.
+						createSqlHostReleasesStore(driver),
+					);
 		if (computeHosts !== undefined) closers.push(async () => computeHosts.close());
 		if (cluster !== undefined) {
 			const started = cluster.cluster;

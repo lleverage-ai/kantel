@@ -651,6 +651,11 @@ export interface SandboxBackend {
 	 * with the version it's moving to. Absent: hosts aren't updated from the control plane (the stub).
 	 */
 	updateHostAgent?(hostId: string): Promise<{ readonly version: string }>;
+	/**
+	 * Reads Kantel's latest kantel-host release again now, so hosts behind it show `updateAvailable` at once; at most
+	 * once every 30 seconds (`checked` false within it). Absent: no release is read here (the stub).
+	 */
+	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,

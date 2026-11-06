@@ -1262,6 +1262,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async updateHostAgent(hostId) {
 			return hosts.updateAgent(hostId);
 		},
+		async checkHostUpdates() {
+			return hosts.checkForUpdates();
+		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {
 				if (!(error instanceof KantelError && error.code === "not_found")) throw error;

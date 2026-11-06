@@ -8,6 +8,7 @@
 import { KantelError } from "@kantel/contracts";
 import type { SqlDriver, SqlValue } from "@kantel/sql";
 import type { HostCapacity, HostFacts, SandboxTier } from "./protocol.ts";
+import { hostReleasesSchema } from "./releases.ts";
 
 export interface HostRecord {
 	readonly id: string;
@@ -171,6 +172,8 @@ export function hostsSchema(dialect: SqlDriver["dialect"]): string[] {
 			data TEXT NOT NULL
 		)`,
 		"CREATE INDEX IF NOT EXISTS compute_placements_host ON compute_placements (host_id, created_at)",
+		// When the latest kantel-host release was last checked, for every replica (`createSqlHostReleasesStore`).
+		...hostReleasesSchema(dialect),
 	];
 }
 

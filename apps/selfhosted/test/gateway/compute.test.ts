@@ -272,6 +272,10 @@ describe("the compute plane on the gateway", () => {
 		// A version the operator set is the one hosts run: the release isn't read.
 		expect(computeConfig({ ...env, KANTEL_HOST_VERSION: "0.2.0" })?.hosts?.releasesUrl).toBeUndefined();
 		expect(() => computeConfig({ ...env, KANTEL_HOST_RELEASES: "latest.json" })).toThrow(/KANTEL_HOST_RELEASES/);
+		// The release check's bearer, trimmed; empty is none.
+		const token = "t".repeat(64);
+		expect(computeConfig({ ...env, KANTEL_RELEASE_CHECK_TOKEN: ` ${token}\n` })?.hosts?.releaseToken).toBe(token);
+		expect(computeConfig({ ...env, KANTEL_RELEASE_CHECK_TOKEN: " " })?.hosts).not.toHaveProperty("releaseToken");
 	});
 
 	it("points hosts at Kantel's published images unless KANTEL_COMPUTE_IMAGES says otherwise", () => {

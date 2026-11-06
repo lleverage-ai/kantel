@@ -38,6 +38,13 @@ export interface GatewayVars {
 	 */
 	readonly KANTEL_HOST_RELEASES?: string;
 	/**
+	 * With account hosts and the latest release read: the shared secret the release workflow sends as its bearer to
+	 * `POST /v1/hosts/releases/check` once it publishes a release, so hosts behind it show as out of date at once. A
+	 * Worker secret (`wrangler secret put KANTEL_RELEASE_CHECK_TOKEN`), the same value as the repository's Actions secret
+	 * of that name. Unset, or under 32 characters: every call there is refused, and the release is read hourly as before.
+	 */
+	readonly KANTEL_RELEASE_CHECK_TOKEN?: string;
+	/**
 	 * Image patching (experimental): `experimental` reads the base image index CI publishes, so sandboxes and saved
 	 * snapshots say how far behind their base is, `restart-on-latest` and the admin's image list are served, and account
 	 * hosts are told the host images to fetch. Unset, empty or `off`: off, and those routes answer not_supported.
@@ -117,7 +124,12 @@ export interface GatewayConfig {
 	/** The domain port URLs are under, from KANTEL_COMPUTE_PORTS_DOMAIN. Absent, `HOSTED_PORTS_DOMAIN`. */
 	readonly portsDomain?: string;
 	/** Account hosts, when on: where hosts reach this Worker, and where the latest kantel-host is read (absent, off). */
-	readonly accountHosts?: { readonly publicUrl: string; readonly releasesUrl?: string };
+	readonly accountHosts?: {
+		readonly publicUrl: string;
+		readonly releasesUrl?: string;
+		/** KANTEL_RELEASE_CHECK_TOKEN, with `releasesUrl`: the bearer `POST /v1/hosts/releases/check` takes. */
+		readonly releaseToken?: string;
+	};
 	/** Image patching, when on: where the base image index is read. */
 	readonly imagePatching?: { readonly indexUrl: string };
 	/** Templates, from KANTEL_TEMPLATES=experimental. Absent, off. */
@@ -258,7 +270,12 @@ function accountHostsConfig(vars: GatewayVars): GatewayConfig["accountHosts"] {
 	if (!/^https?:\/\/[^/\s]+/i.test(releases)) {
 		throw new KantelError("invalid", "KANTEL_HOST_RELEASES is an http(s) URL, or `off`");
 	}
-	return { publicUrl: new URL(publicUrl).origin, releasesUrl: releases };
+	const releaseToken = trimmed(vars.KANTEL_RELEASE_CHECK_TOKEN);
+	return {
+		publicUrl: new URL(publicUrl).origin,
+		releasesUrl: releases,
+		...(releaseToken === "" ? {} : { releaseToken }),
+	};
 }
 
 const PUBLIC_ORIGIN = /^https?:\/\/[^/?#\s]+\/?$/i;

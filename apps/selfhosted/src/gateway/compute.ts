@@ -34,6 +34,11 @@
  *                                say which hosts are out of date and update one from the console. A URL answering
  *                                `{"tag_name": "v0.4.2"}` or `{"version": "0.4.2"}`; default Kantel's latest GitHub
  *                                Release (DEFAULT_HOST_RELEASES_URL); `off` reads none
+ *   KANTEL_RELEASE_CHECK_TOKEN   with KANTEL_HOST_RELEASES read: a shared secret (32 characters or more, such as
+ *                                `openssl rand -hex 32`) that `POST /v1/hosts/releases/check` takes as its bearer to
+ *                                read the latest release again at once, as the hosted control plane's release
+ *                                workflow does. Unset, every call there is refused; a super-admin's Check for updates
+ *                                (`POST /v1/admin/hosts/check-for-updates`) works either way
  *   KANTEL_COMPUTE_IMAGES        where `kantel-host install` gets the kernel and images (GET /v1/hosts/images/...): a
  *                                directory this gateway serves (with manifest.json from `kantel-host manifest <dir>`), or
  *                                an http(s) URL it redirects to; `off` serves none. Default: Kantel's published images,
@@ -129,6 +134,7 @@ import {
 	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
+	HOSTS_RELEASE_CHECK_PATH,
 } from "@kantel/hosts/http";
 import { closeQuietly } from "@kantel/hosts/hub";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
@@ -141,7 +147,12 @@ import {
 	type RelayAccess,
 } from "@kantel/hosts/relay-access";
 import type { RelayStore } from "@kantel/hosts/relay-store";
-import { createHostReleases, DEFAULT_HOST_RELEASES_URL, DEFAULT_HOST_UPDATE_URL } from "@kantel/hosts/releases";
+import {
+	createHostReleases,
+	DEFAULT_HOST_RELEASES_URL,
+	DEFAULT_HOST_UPDATE_URL,
+	type HostReleasesStore,
+} from "@kantel/hosts/releases";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
@@ -169,6 +180,8 @@ export interface ComputeHostsConfig {
 	readonly updateUrl?: string;
 	/** Where the latest kantel-host release is read; absent, it isn't (KANTEL_HOST_RELEASES=off). */
 	readonly releasesUrl?: string;
+	/** KANTEL_RELEASE_CHECK_TOKEN: the bearer `POST /v1/hosts/releases/check` takes. Absent, it refuses every call. */
+	readonly releaseToken?: string;
 	readonly images?: string;
 	readonly attributionKey?: string;
 	/** Exposed ports' wildcard name's parent, such as `kantel-ports.example`. */
@@ -220,6 +233,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	if (releasesUrl !== "" && !/^https?:\/\/[^/\s]+/.test(releasesUrl)) {
 		throw new Error("KANTEL_HOST_RELEASES is an http(s) URL, or `off`");
 	}
+	const releaseToken = env.KANTEL_RELEASE_CHECK_TOKEN?.trim() ?? "";
 	const rawImages = env.KANTEL_COMPUTE_IMAGES?.trim() || DEFAULT_HOST_IMAGES;
 	const images = rawImages.toLowerCase() === "off" ? "" : rawImages;
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
@@ -251,6 +265,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version }),
 			...(updateUrl === "" ? {} : { updateUrl }),
 			...(version !== "" || releasesUrl === "" ? {} : { releasesUrl }),
+			...(releaseToken === "" ? {} : { releaseToken }),
 		},
 		...patching,
 	};
@@ -295,6 +310,8 @@ export function gatewayHosts(
 	store: HostStore,
 	log?: (message: string) => void,
 	cluster?: HostCluster,
+	/** Where release checks are recorded for every replica: the database's, with one. Default this gateway's memory. */
+	releasesStore?: HostReleasesStore,
 ): HostsService {
 	return createHostsService({
 		store,
@@ -305,7 +322,13 @@ export function gatewayHosts(
 		...(config.updateUrl === undefined ? {} : { updateUrl: config.updateUrl }),
 		...(config.releasesUrl === undefined
 			? {}
-			: { releases: createHostReleases({ url: config.releasesUrl, ...(log === undefined ? {} : { log }) }) }),
+			: {
+					releases: createHostReleases({
+						url: config.releasesUrl,
+						...(log === undefined ? {} : { log }),
+						...(releasesStore === undefined ? {} : { store: releasesStore }),
+					}),
+				}),
 		...(log === undefined ? {} : { log }),
 	});
 }
@@ -657,6 +680,7 @@ export async function gatewayCompute(options: {
 		const register = createHostsApi({
 			hosts: hosts.service,
 			authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
+			...(hosts.config.releaseToken === undefined ? {} : { releaseToken: hosts.config.releaseToken }),
 		});
 		const images = hosts.config.images === undefined ? undefined : hostImages(hosts.config.images);
 		const desktops = createDesktopRoutes({
@@ -668,6 +692,8 @@ export async function gatewayCompute(options: {
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
 			if (path === HOSTS_REGISTER_PATH || path === HOSTS_E2E_CHAIN_PATH) return register.fetch(request);
+			// The release workflow's (or a cron's) "a release is out", on the release token.
+			if (path === HOSTS_RELEASE_CHECK_PATH) return register.fetch(request);
 			// A bundle's tar for a sandbox the host runs, on the host's credential.
 			if (path.startsWith(`${HOSTS_BUNDLES_PATH}/`)) return register.fetch(request);
 			if (path.startsWith(`${CLUSTER_PATH}/`)) {

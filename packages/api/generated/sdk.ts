@@ -1049,6 +1049,13 @@ export interface HostList {
 	readonly items: readonly Host[];
 }
 
+export interface HostReleaseCheck {
+	/** True when this call read Kantel's latest release again. False when another check was made in the last 30 seconds, whose answer stands: nothing more was read. */
+	readonly checked: boolean;
+	/** The latest kantel-host release now known, which hosts' `latestVersion` and `updateAvailable` follow. Absent when none has been read. */
+	readonly latestVersion?: string;
+}
+
 /** `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked. */
 export type HostState = "online" | "unreachable" | "draining" | "revoked";
 
@@ -2931,6 +2938,8 @@ export interface KantelClient {
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Check for host updates. Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/check-for-updates` */
+	checkHostUpdates(options?: CallOptions): Promise<HostReleaseCheck>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get the public URL. Where hosts reach this control plane: the address join commands give them, and whether only a host on the same machine could use it. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/public-url` */
@@ -3343,6 +3352,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		updateHostAgent: (hostId, callOptions) =>
 			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
+		checkHostUpdates: (callOptions) =>
+			send(options, { method: "POST", path: "/admin/hosts/check-for-updates" }, callOptions),
 		revokeHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),

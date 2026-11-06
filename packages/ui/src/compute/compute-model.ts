@@ -1786,6 +1786,12 @@ export interface HostsSource {
 	 * on. Answers the host with `updating` set. Absent: hosts aren't updated from the console.
 	 */
 	update?(id: string): Promise<Host>;
+	/**
+	 * Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just
+	 * published show Update at once: the deployment's hosts, a super-admin's. Answers the latest version it knows.
+	 * Absent: no Check for updates.
+	 */
+	checkForUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

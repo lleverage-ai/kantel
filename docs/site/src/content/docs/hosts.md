@@ -334,6 +334,18 @@ The control plane checks Kantel's latest `kantel-host` release about once an hou
 
 Nothing updates on its own this way: a host moves only when someone asks. A host that is offline can be updated once it's back. A host in an E2E space refuses an update from the control plane, so update it on the machine. A host on a newer prerelease or its own build isn't marked. To read the latest release from a mirror, set `KANTEL_HOST_RELEASES` to a URL that answers `{"tag_name": "v0.4.2"}` or `{"version": "0.4.2"}`; set it to `off` to stop checking.
 
+### Check for updates now
+
+To see a release that came out within the hour, choose **Check for updates** on the **Hosts** page (a super-admin's, for the deployment's hosts). The control plane reads the latest release again at once, and hosts behind it show **Update to** straight away. `kantel-admin host check-for-updates` and `POST /v1/admin/hosts/check-for-updates` do the same. Every replica of the control plane sees the check through its database and reads again within about 10 seconds. One check every 30 seconds is all that's made: within that, a check answers what the last one found. A check never names a version, and the control plane only trusts what it reads from the release itself.
+
+Kantel's release workflow asks app.kantel.dev for a check as it publishes a release, so hosted users see it within a minute. A self-hosted control plane can be told the same way, from a release hook or a scheduled job of your own: set `KANTEL_RELEASE_CHECK_TOKEN` on the control plane to a secret of at least 32 characters, then call
+
+```sh
+curl -fsS -X POST -H "Authorization: Bearer $KANTEL_RELEASE_CHECK_TOKEN" https://kantel.example.com/v1/hosts/releases/check
+```
+
+It answers `{"checked": true, "latestVersion": "0.4.2"}`, or `"checked": false` within 30 seconds of the last check. Without the setting the control plane refuses these calls (403), and a wrong token is a 401. Either way it still reads the release every hour.
+
 On the machine itself:
 
 ```sh

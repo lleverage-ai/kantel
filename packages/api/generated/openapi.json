@@ -9796,6 +9796,66 @@
 				}
 			}
 		},
+		"/admin/hosts/check-for-updates": {
+			"post": {
+				"operationId": "checkHostUpdates",
+				"summary": "Check for host updates",
+				"description": "Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "What the check found.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostReleaseCheck"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/public-url": {
 			"get": {
 				"operationId": "getPublicUrl",
@@ -14009,6 +14069,21 @@
 					}
 				},
 				"title": "HostList"
+			},
+			"HostReleaseCheck": {
+				"type": "object",
+				"required": ["checked"],
+				"properties": {
+					"checked": {
+						"type": "boolean",
+						"description": "True when this call read Kantel's latest release again. False when another check was made in the last 30 seconds, whose answer stands: nothing more was read."
+					},
+					"latestVersion": {
+						"type": "string",
+						"description": "The latest kantel-host release now known, which hosts' `latestVersion` and `updateAvailable` follow. Absent when none has been read."
+					}
+				},
+				"title": "HostReleaseCheck"
 			},
 			"HostState": {
 				"anyOf": [

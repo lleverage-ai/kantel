@@ -59,6 +59,29 @@ to npm (`publish.sh`).
 - Without `-f publish=true` it stops after printing the GitHub Release it would make and `npm publish --dry-run`,
   which is also what it does on a pull request that touches what it releases.
 
+## Telling the control plane
+
+After the GitHub Release, `check-control-plane.sh` asks app.kantel.dev (the repository variable `KANTEL_PUBLIC_URL`,
+or `https://app.kantel.dev`) to read the latest release now: `POST /v1/hosts/releases/check`, with the
+`KANTEL_RELEASE_CHECK_TOKEN` Actions secret as its bearer. The console then offers hosts the update within a minute,
+rather than within the hour. The call names no version: the control plane reads GitHub's latest release itself, so
+the token can only make it read sooner. The script first waits (up to two minutes, network time included) for
+`releases/latest` to name the new tag, then tries three times, 35 seconds apart, past the control plane's
+30-second gap between checks.
+
+It never fails a release. Without the secret, for a prerelease, or when the control plane refuses or can't be
+reached, it prints a warning, and the control plane still reads the release within the hour. A super-admin's
+**Check for updates** on the Hosts page does the same check by hand.
+
+The token is a shared secret, in two places: the Worker secret `KANTEL_RELEASE_CHECK_TOKEN` on the hosted control
+plane and the repository's Actions secret of the same name. Make it with `openssl rand -hex 32` and set both to the
+same value; to change it, set both again. A self-hosted control plane takes the same setting (in `.env` on the
+Docker Compose stack). Check it from a shell holding the token:
+
+```sh
+KANTEL_RELEASE_CHECK_TOKEN=… tools/release/check-control-plane.sh 0.3.1
+```
+
 The host images (`host-images-*` releases, from `apps/host/guest/release.sh`) are separate, and never the latest
 release, so they don't move `releases/latest`.
 

@@ -7125,6 +7125,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		updateHostAgent: async (principal, { params }) => updateHostAgentOf(await hostFor(principal, params.hostId)),
 
+		checkHostUpdates: async (principal) => {
+			requireScope(principal, "hosts:admin");
+			if (backend.checkHostUpdates === undefined) {
+				throw new KantelError("not_supported", "This deployment doesn't read Kantel's latest kantel-host release");
+			}
+			const found = await backend.checkHostUpdates();
+			return {
+				checked: found.checked,
+				...(found.latestVersion === undefined ? {} : { latestVersion: found.latestVersion }),
+			};
+		},
+
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
 
 		// Base images (image patching, experimental).

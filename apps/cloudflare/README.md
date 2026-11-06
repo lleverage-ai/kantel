@@ -45,7 +45,8 @@ works here as it does there (`src/compute.ts`):
   `KANTEL_SIGN_IN_FROM`, leaving email sign-in off, and so may `KANTEL_ACCOUNT_HOSTS=off`). Someone who signs up there
   may add and use hosts of their own, but never the stub, which stays the deployment organisation's. Hosts can't sign
   in to Access, so an origin behind it needs a bypass for `/v1/hosts/register`, `/v1/hosts/connect`,
-  `/v1/hosts/images/*` and `/v1/hosts/tunnel/*`, each of which checks its own token, credential or ticket. See
+  `/v1/hosts/images/*` and `/v1/hosts/tunnel/*`, each of which checks its own token, credential or ticket (and
+  `/v1/hosts/releases/check`, on `KANTEL_RELEASE_CHECK_TOKEN`, for the release workflow to reach it). See
   `docs/site/src/content/docs/own-hosts.md`.
 - The person Access signs in is a compute person under their Kantel user ID; an admin of the deployment's organisation
   is the compute super-admin. The console sends no credential behind Access, so the gateway gives the compute API
@@ -167,6 +168,23 @@ variables or secret files"), `GET /v1/whoami` says `protectedValues: false` so t
 anything is written, plain variables still work, and the stack object logs at start that the key is missing. A key
 that isn't 32 bytes of base64 stops the object starting, naming the setting and never its value. The deploy's secrets
 file is additive, so a deploy keeps the key.
+
+### Release checks
+
+With account hosts on, the control plane reads Kantel's latest kantel-host release hourly, in the stack object, and
+keeps it in that object's memory. The release workflow asks it to read again as soon as it publishes a release
+(`POST /v1/hosts/releases/check`, `tools/release/check-control-plane.sh`), on a shared secret: the Worker secret
+`KANTEL_RELEASE_CHECK_TOKEN`, the same value as the repository's Actions secret of that name. It is set by hand, never
+by the deploy, and must be at least 32 characters:
+
+```sh
+# From apps/cloudflare. Generate it and set it both here and as the Actions secret; neither shows it again.
+openssl rand -hex 32
+pnpm exec wrangler secret put KANTEL_RELEASE_CHECK_TOKEN --name harbour
+```
+
+Unset, the endpoint refuses every call (403), the workflow step warns, and the release is still read within the
+hour. A super-admin's Check for updates on the Hosts page needs no token.
 
 ### Exposed ports
 

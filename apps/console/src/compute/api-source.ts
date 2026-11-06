@@ -1876,6 +1876,7 @@ function hostsSource({ api }: Context): HostsSource {
 			await api.revokeHost(id);
 		},
 		update: async (id) => hostOf(await api.updateHostAgent(id)),
+		checkForUpdates: () => api.checkHostUpdates(),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
 			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),

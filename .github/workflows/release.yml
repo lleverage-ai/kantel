@@ -166,6 +166,18 @@ jobs:
           tools/release/github-release.sh "$VERSION" "$RUNNER_TEMP/release"
           echo "Released https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION" >>"$GITHUB_STEP_SUMMARY"
 
+      # Tells the hosted control plane the release is out, so its console offers hosts the update now rather than
+      # within the hour. It reads GitHub's latest release itself; the call names no version. Never fails the release:
+      # without the KANTEL_RELEASE_CHECK_TOKEN secret, or when the control plane can't be reached, it warns.
+      - name: Tell the control plane
+        continue-on-error: true
+        # Two minutes for GitHub to name the release, then three tries 35 seconds apart, 30 seconds each at most.
+        timeout-minutes: 6
+        env:
+          KANTEL_RELEASE_CHECK_TOKEN: ${{ secrets.KANTEL_RELEASE_CHECK_TOKEN }}
+          KANTEL_CONTROL_PLANE_URL: ${{ vars.KANTEL_PUBLIC_URL || 'https://app.kantel.dev' }}
+        run: tools/release/check-control-plane.sh "$VERSION"
+
   publish:
     name: Publish to npm
     # After the GitHub Release, so `kantel`'s version is never out before the hosts' files.
