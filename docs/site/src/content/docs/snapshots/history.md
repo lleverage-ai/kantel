@@ -15,7 +15,7 @@ A snapshot is a copy of a sandbox's disk at one moment, and, for a paused microV
 
 | Kind | Made by | Kept |
 | --- | --- | --- |
-| `automatic` | Kantel, as the sandbox runs and at every stop, or you with [Take a snapshot now](#take-a-snapshot-now) | Until it expires (`expiresAt`, 7 days after it was taken), or the sandbox is deleted. A sandbox's newest snapshot is kept past its time, as is one another snapshot record shares bytes with. On a host whose kantel-host can't keep a saved snapshot's own copy, the host prunes old ones itself instead |
+| `automatic` | Kantel, as the sandbox runs and at every stop, or you with [Take a snapshot now](#take-a-snapshot-now) | Until it expires (`expiresAt`, 7 days after it was taken), or the sandbox is deleted. A sandbox's newest snapshot is kept past its time, as is one another snapshot record shares bytes with. On a host whose kantel-host can't keep a saved snapshot's own copy, the host prunes old ones itself instead. Expiry runs on app.kantel.dev; a self-hosted Kantel turns it on with `KANTEL_SNAPSHOT_EXPIRY=on` ([Install](/self-hosting/install/)) |
 | `saved` | You, under a name | Until you delete it, even after its sandbox is gone. See [Saved snapshots](/snapshots/saved/) |
 
 A sandbox's newest snapshot is what a resume or a fork starts from, and the sandbox names it in `latestSnapshotId`.

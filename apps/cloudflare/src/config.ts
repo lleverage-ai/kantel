@@ -66,6 +66,12 @@ export interface GatewayVars {
 	 */
 	readonly KANTEL_TEMPLATES?: string;
 	/**
+	 * Expiry of automatic snapshots: `on` deletes them past their `expiresAt`, on hosts that keep their own copies.
+	 * Unset, empty or `off`: off. The deployment runs one stack object, so it is on (the first pass waits 15 minutes
+	 * after the object starts, past a deploy's overlap with the instance it replaces).
+	 */
+	readonly KANTEL_SNAPSHOT_EXPIRY?: string;
+	/**
 	 * The key environments' protected variables and secret files (and bucket sources' credentials) are sealed with in the
 	 * stack object's SQLite, as self-hosted's (`@kantel/compute/secrets`): 32 random bytes in base64, a Worker secret set
 	 * with `wrangler secret put KANTEL_SECRETS_KEY` (README). Unset: they are refused, and plain variables still work.
@@ -134,6 +140,8 @@ export interface GatewayConfig {
 	readonly imagePatching?: { readonly indexUrl: string };
 	/** Templates, from KANTEL_TEMPLATES=experimental. Absent, off. */
 	readonly templates?: boolean;
+	/** Expiry of automatic snapshots, from KANTEL_SNAPSHOT_EXPIRY=on. Absent, off. */
+	readonly snapshotExpiry?: boolean;
 	/** KANTEL_SECRETS_KEY, checked: 32 bytes in base64. Absent, protected values and secret files are refused. */
 	readonly secretsKey?: string;
 	/**
@@ -188,6 +196,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	const accountHosts = accountHostsConfig(vars);
 	const imagePatching = imagePatchingConfig(vars);
 	const templates = templatesSwitch(vars);
+	const snapshotExpiry = onOffSwitch(vars.KANTEL_SNAPSHOT_EXPIRY, "KANTEL_SNAPSHOT_EXPIRY");
 	const secretsKey = trimmed(vars.KANTEL_SECRETS_KEY);
 	// A key that isn't one is refused here, as the self-hosted gateway refuses to start with it, rather than on the first
 	// protected value. The message names the setting, never the value.
@@ -219,8 +228,17 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		...(accountHosts === undefined ? {} : { accountHosts }),
 		...(imagePatching === undefined ? {} : { imagePatching }),
 		...(templates ? { templates } : {}),
+		...(snapshotExpiry ? { snapshotExpiry } : {}),
 		...(secretsKey === "" ? {} : { secretsKey }),
 	};
+}
+
+/** A switch that is `on` or off (unset, empty or `off`); anything else is refused rather than read as off. */
+function onOffSwitch(raw: string | undefined, name: string): boolean {
+	const value = trimmed(raw).toLowerCase();
+	if (value === "" || value === "off") return false;
+	if (value !== "on") throw new KantelError("invalid", `${name} must be \`on\` or \`off\``);
+	return true;
 }
 
 /** KANTEL_TEMPLATES: off unless it says `experimental`; a typo is refused rather than leaving templates silently off. */

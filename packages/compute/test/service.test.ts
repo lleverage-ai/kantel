@@ -4234,6 +4234,8 @@ describe("snapshot expiry", () => {
 			authenticatePerson: async (request) =>
 				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
 			now: () => clock.at,
+			snapshotExpiry: true,
+			snapshotExpiryDelayMs: 0,
 		});
 		opened.push(api);
 		const tom = createKantelClient({
@@ -4369,6 +4371,103 @@ describe("snapshot expiry", () => {
 		expect((await base.snapshots.get(old.id))?.retiring?.settling).not.toBe(true);
 	});
 
+	it("expires nothing with expiry off, and nothing before its start delay once it is on", async () => {
+		for (const [on, delay] of [
+			[false, 0],
+			[true, 60 * 60_000],
+		] as const) {
+			const store = createMemoryStore();
+			const clock = { at: Date.UTC(2026, 0, 1) };
+			const api = createComputeApi({
+				backend: createStubBackend(),
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+				snapshotExpiry: on,
+				snapshotExpiryDelayMs: delay,
+			});
+			opened.push(api);
+			const tom = createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+			const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+			const old = await tom.takeSnapshot(running.id, {});
+			await tom.takeSnapshot(running.id, {});
+			await store.snapshots.update(old.id, (current) => ({ ...current, expiresAt: clock.at - 1 }));
+			const sweep = async (by: number) => {
+				clock.at += by;
+				await api.service.sweep();
+				await api.service.idle();
+			};
+			if (on) {
+				// Within the delay: kept; past it: expired.
+				await sweep(delay - 1);
+				expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+				await sweep(2);
+				expect(await store.snapshots.get(old.id)).toBeUndefined();
+			} else {
+				await sweep(SNAPSHOT_EXPIRY_EVERY_MS);
+				await sweep(365 * 24 * 3_600_000);
+				expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+			}
+		}
+	});
+
+	it("leaves the source of an older gateway's create alone while expiry waits out its start delay", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const delay = SNAPSHOT_EXPIRY_EVERY_MS * 3;
+		const api = createComputeApi({
+			backend: stub,
+			store,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+			now: () => clock.at,
+			snapshotExpiry: true,
+			snapshotExpiryDelayMs: delay,
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		// Taken long ago (already past its expiry), as by the gateway this one replaced.
+		const old = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		await store.snapshots.update(old.id, (current) => ({ ...current, expiresAt: clock.at - 1 }));
+		// An older gateway's fork, which doesn't adopt: it has read the snapshot ready, and is held before it stores
+		// its sandbox. This gateway sweeps meanwhile, within its start delay.
+		const read = await store.snapshots.get(old.id);
+		expect(read?.state).toBe("ready");
+		for (let pass = 0; pass < 2; pass += 1) {
+			clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+			await api.service.sweep();
+			await api.service.idle();
+		}
+		expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+		// The older gateway stores its fork, never placed yet, made from it.
+		const [made] = (await tom.forkSandbox(running.id, { snapshotId: old.id, wait: true })).items;
+		if (made === undefined) throw new Error("no fork");
+		await store.sandboxes.update(made.id, (current) => ({
+			...current,
+			hostId: undefined,
+			latestSnapshotId: undefined,
+		}));
+		// Past the delay, expiry sees what depends on it, and keeps it.
+		clock.at += delay;
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+	});
+
 	it("expires nothing on a host that can't keep copies, which prunes its own", async () => {
 		const { store, tom, expire, released } = expiring({ oldHost: true });
 		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
@@ -4489,6 +4588,8 @@ describe("snapshot expiry across gateways", () => {
 				authenticatePerson: async (request) =>
 					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
 				now: () => clock.at,
+				snapshotExpiry: true,
+				snapshotExpiryDelayMs: 0,
 			});
 			opened.push(api);
 			return api;
@@ -4656,6 +4757,8 @@ describe("snapshot deletes under random interleavings", () => {
 				authenticatePerson: async (request) =>
 					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
 				now: () => clock.at,
+				snapshotExpiry: true,
+				snapshotExpiryDelayMs: 0,
 			});
 			opened.push(api);
 			return api;

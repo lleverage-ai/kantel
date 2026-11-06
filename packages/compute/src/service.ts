@@ -301,6 +301,15 @@ export interface ComputeServiceOptions {
 	 * `conflict` with `sandbox_starting`. Not counted against a command's own timeout. Default `START_HOLD_MS`, 60 s.
 	 */
 	readonly startHoldMs?: number;
+	/**
+	 * Expiry of automatic snapshots (`expireSnapshots`). Off by default: it relies on every gateway adopting a snapshot
+	 * it makes a sandbox from (`adopt`), so a replicated install turns it on only once every gateway runs a version that
+	 * does. On, the first pass waits `snapshotExpiryDelayMs` after the process starts, so the requests an older version's
+	 * process still had in flight (a single instance being replaced) have ended.
+	 */
+	readonly snapshotExpiry?: boolean;
+	/** How long after it starts a process first expires snapshots. Default `SNAPSHOT_EXPIRY_START_DELAY_MS`, 15 minutes. */
+	readonly snapshotExpiryDelayMs?: number;
 	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
 	readonly startPollMs?: number;
 }
@@ -641,6 +650,11 @@ const BASE_ROUTES = [
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** How often the sweep looks for automatic snapshots past their `expiresAt` to delete (`expireSnapshots`). */
 export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
+/**
+ * How long after it starts a process first expires snapshots (`snapshotExpiry`): longer than any create or fork an older
+ * version's process, replaced by this one, could still have had in flight.
+ */
+export const SNAPSHOT_EXPIRY_START_DELAY_MS = 15 * 60_000;
 /** How long a process holds an expiry's mark (`markExpiring`) before another may take it over. */
 export const RETIRE_LEASE_MS = 10 * 60_000;
 /** The usage readings kept per sandbox: a day of 5-minute means. */
@@ -1718,6 +1732,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	let claimsSweptAt = Number.NEGATIVE_INFINITY;
 	/** When `expireSnapshots` last began a pass. */
 	let snapshotsExpiredAt = Number.NEGATIVE_INFINITY;
+	/** When this process may first expire snapshots (`snapshotExpiryDelayMs` after it started). */
+	const expiryStartsAt = now() + (options.snapshotExpiryDelayMs ?? SNAPSHOT_EXPIRY_START_DELAY_MS);
 	/** This process, as the owner of the expiry marks it makes (`markExpiring`). */
 	const retireOwner = crypto.randomUUID();
 	/** Set by `close`: a claim sweep under way stops. */
@@ -3595,6 +3611,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * marked, one read of what depends on them, and each settled for its own mark.
 	 */
 	function expireSnapshots(): void {
+		if (options.snapshotExpiry !== true) return;
+		if (now() < expiryStartsAt) return;
 		if (now() - snapshotsExpiredAt < SNAPSHOT_EXPIRY_EVERY_MS) return;
 		snapshotsExpiredAt = now();
 		keepGoing(

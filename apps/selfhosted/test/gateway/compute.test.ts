@@ -254,6 +254,16 @@ describe("the compute plane on the gateway", () => {
 		expect(() => computeConfig({ KANTEL_TEMPLATES: "on" })).toThrow(/KANTEL_TEMPLATES/);
 	});
 
+	it("turns snapshot expiry on only for KANTEL_SNAPSHOT_EXPIRY=on, off by default, on the stub or on hosts", () => {
+		expect(computeConfig({})).toEqual({});
+		expect(computeConfig({ KANTEL_SNAPSHOT_EXPIRY: "off" })).toEqual({});
+		expect(computeConfig({ KANTEL_SNAPSHOT_EXPIRY: "on" })).toEqual({ snapshotExpiry: true });
+		expect(
+			computeConfig({ KANTEL_SNAPSHOT_EXPIRY: "on", KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" }),
+		).toMatchObject({ snapshotExpiry: true, hosts: { publicUrl: "http://127.0.0.1:58090" } });
+		expect(() => computeConfig({ KANTEL_SNAPSHOT_EXPIRY: "yes" })).toThrow(/KANTEL_SNAPSHOT_EXPIRY/);
+	});
+
 	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {
 		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
 		expect(computeConfig(env)?.hosts?.desiredVersion).toBeUndefined();
