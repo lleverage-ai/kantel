@@ -3702,8 +3702,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		];
 		for (const ref of new Set(shared.flatMap((group) => group.refs))) {
 			if (ref === kept.ref) continue;
-			// Not the save it replaces, which goes once this one is put: its files are this one's to keep.
-			records.push(...(await store.snapshots.list({ ref })).filter((record) => record.id !== replacing?.id));
+			// Not the save it replaces, which goes once this one is put: its files are this one's to keep. Nor another save
+			// still being admitted (`creating`, `admitSave`): refused, it would take its files with it uncounted, so this one
+			// counts them too until a refresh says which keeps them.
+			records.push(
+				...(await store.snapshots.list({ ref })).filter(
+					(record) => record.id !== replacing?.id && record.state !== "creating",
+				),
+			);
 		}
 		return attributeSnapshotBytes(records, new Map([[kept.ref, kept.uniqueBytes]]), shared).get(kept.ref) ?? 0;
 	}
@@ -4298,13 +4304,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * A host's disk as the API answers it (`Host.diskUsage`): the snapshots the host measured, split by this plane's
-	 * records, as the host can't tell (`BackendDiskUsage`). Saved: what the saved records on it hold (`savedRefsOn`), at
-	 * most what the host measured for its snapshots; automatic: the rest.
+	 * records, as the host can't tell (`BackendDiskUsage`). Saved: what the saved microVM records on it hold
+	 * (`savedRefsOn`), at most what the host measured for its snapshots; automatic: the rest. An isolate's snapshots are
+	 * among its sandbox's files on the host (`sandboxesBytes`), not its snapshots, so its saves aren't counted here.
 	 */
 	async function diskView(hostId: string, measure: BackendDiskUsage): Promise<computeSchema.HostDiskUsage> {
 		const { snapshotsBytes, ...rest } = measure;
+		const microvm = (await store.snapshots.list({ kind: "saved" })).filter(
+			(record) => record.sandboxType !== "isolate",
+		);
 		let saved = 0;
-		for (const size of (await savedRefsOn(hostId, await store.snapshots.list({ kind: "saved" }))).values()) {
+		for (const size of (await savedRefsOn(hostId, microvm)).values()) {
 			saved += size;
 		}
 		saved = Math.min(saved, snapshotsBytes);

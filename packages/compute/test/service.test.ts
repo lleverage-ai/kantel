@@ -3828,8 +3828,12 @@ describe("hosts", () => {
 		disk = measured;
 		await root.createHostJoinToken({});
 		// No saved snapshots: all of it is automatic, a manual take (which a host keeps as saved) included.
-		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
 		await tom.takeSnapshot(sandbox.id, {});
+		// An isolate's save is among its sandbox's files on the host, not its snapshots: it counts for neither.
+		const isolate = await tom.createSandbox({ type: "isolate", autoStopMinutes: null, wait: true });
+		const isolateSave = await tom.saveSnapshot({ name: "isolate", sandboxId: isolate.id });
+		await store.snapshots.update(isolateSave.id, (current) => ({ ...current, sizeBytes: 100 }));
 		expect((await root.listHosts()).items[0]?.diskUsage).toEqual({
 			...rest,
 			savedSnapshotsBytes: 0,
@@ -3914,6 +3918,44 @@ describe("hosts", () => {
 		const unlimited = await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: null });
 		expect(unlimited.savedSnapshotBytesLimit).toBeUndefined();
 		expect((await tom.saveSnapshot({ name: "third", sandboxId: sandbox.id })).name).toBe("third");
+	});
+
+	it("counts the files a copy shares with another save still being admitted as its own", async () => {
+		const store = createMemoryStore();
+		const { backend, next } = sizedBackend();
+		const { root, tom } = setup(backend, { store });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const entry = await tom.takeSnapshot(sandbox.id, {});
+		const entryRef = await refOf(store, entry.id);
+		// Each copy links the entry's 60 MiB of files: they're shared by the entry and every copy.
+		const copies: string[] = [];
+		next.bytes = 61 * MiB;
+		next.unique = MiB;
+		next.shared = (ref) => {
+			copies.push(ref);
+			return [{ refs: [entryRef, ...copies], bytes: 60 * MiB }];
+		};
+		const first = await tom.saveSnapshot({ name: "first", sandboxId: sandbox.id, snapshotId: entry.id });
+		expect(first.sizeBytes).toBe(61 * MiB);
+		// While the first is still being admitted (on another gateway, say), a second copy counts the shared files too:
+		// were the first refused, they would otherwise be left counted for neither.
+		await store.snapshots.update(first.id, (current) => ({ ...current, state: "creating" }));
+		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 100 * MiB });
+		const refused = await failure(tom.saveSnapshot({ name: "second", sandboxId: sandbox.id, snapshotId: entry.id }));
+		expect(refused.code).toBe("exhausted");
+		expect(refused.message).toContain("this one is 61 MiB");
+		// The first refused and gone: the next copy keeps the shared files, and the limit sees them.
+		await store.snapshots.delete(first.id);
+		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+		expect((await failure(tom.saveSnapshot({ name: "third", sandboxId: sandbox.id, snapshotId: entry.id }))).code).toBe(
+			"exhausted",
+		);
+		// Admitted, the first holds them, and a copy beside it counts only its own.
+		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: null });
+		const kept = await tom.saveSnapshot({ name: "kept", sandboxId: sandbox.id, snapshotId: entry.id });
+		const beside = await tom.saveSnapshot({ name: "beside", sandboxId: sandbox.id, snapshotId: entry.id });
+		expect(kept.sizeBytes).toBe(61 * MiB);
+		expect(beside.sizeBytes).toBe(MiB);
 	});
 
 	it("counts the bytes a save shares with its source once, on a host that can't keep copies", async () => {
