@@ -213,9 +213,14 @@ func DiscardSupported(version string) bool {
 	return major > 1 || major == 1 && minor >= 17
 }
 
+// DiskEngine is the writable disk's IO engine, said outright rather than left to Firecracker's default (the same):
+// Sync serves each guest request on the VMM thread, which Barrier relies on, and is the engine discard needs. Async
+// (io_uring) would complete writes on its own, beyond Barrier.
+const DiskEngine = "Sync"
+
 // diskDrive is the writable disk's drive, with discard on when asked (BootConfig.Discard).
 func diskDrive(discard bool) map[string]any {
-	drive := map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false}
+	drive := map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false, "io_engine": DiskEngine}
 	if discard {
 		drive["discard"] = true
 	}
@@ -301,6 +306,17 @@ func (m *Machine) Pause(ctx context.Context) error {
 
 func (m *Machine) Resume(ctx context.Context) error {
 	return m.call(ctx, http.MethodPatch, "/vm", map[string]string{"state": "Resumed"})
+}
+
+// Barrier returns once the VM's VMM thread has handled a request (GET /machine-config) sent now. Firecracker runs every
+// virtio device on that one thread, its block device included, and the disk is on the Sync engine (DiskEngine): each
+// guest write to disk.ext4 is a write the thread makes and finishes before it handles its next event. So when Barrier
+// returns, every write to the disk that was under way when it was called has finished, and raised its IN_MODIFY: a
+// paused VM's disk copy checked for writes after a Barrier can't miss one still in flight. (Firecracker's
+// docs/design.md: "The VMM thread exposes the machine model, minimal legacy device model, MMDS, and VirtIO device
+// emulated Net, Block and Vsock devices"; the API thread hands each request to it.)
+func (m *Machine) Barrier(ctx context.Context) error {
+	return m.call(ctx, http.MethodGet, "/machine-config", nil)
 }
 
 // Snapshot writes a full snapshot of a paused VM: its state and its memory. The disk is the caller's to copy.

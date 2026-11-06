@@ -2852,7 +2852,8 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	}
 	<-diskDone
 	t["disk"] = diskMs
-	if beside && memErr == nil && diskErr == nil && (watch.written() || !unchanged(disk, before)) {
+	// After a Barrier, so a write still under way as the copy ended is in the watch too (copyQuietDisk).
+	if beside && memErr == nil && diskErr == nil && (s.machine.Barrier(ctx) != nil || watch.written() || !unchanged(disk, before)) {
 		m.log.Info("disk written during a live snapshot; copying it again", "sandbox", s.meta.ID)
 		again := time.Now()
 		diskErr = copySparse(disk, filepath.Join(sdir, fc.DiskFile))
@@ -2939,7 +2940,12 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 		os.RemoveAll(sdir)
 		return err
 	}
-	err = copyQuietDisk(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile), diskCopies)
+	barrier := func() error {
+		bctx, cancel := context.WithTimeout(context.Background(), resumeWait)
+		defer cancel()
+		return s.machine.Barrier(bctx)
+	}
+	err = copyQuietDisk(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile), diskCopies, barrier)
 	if rerr := resume(); rerr != nil {
 		err = errors.Join(err, rerr)
 	}
@@ -3003,7 +3009,12 @@ var watchDisk = watchWrites
 // A disk that can't be watched (inotify's instances used up, say) can't be shown quiet by its stamps alone, which a
 // write in the same clock tick leaves as they were: only a reflink, a clone of the file at one instant, is taken of it,
 // and on a file system without them the copy fails rather than risk a torn one.
-func copyQuietDisk(disk, dst string, tries int) error {
+//
+// A write raises its IN_MODIFY as it finishes, so one still under way when a copy ends isn't in the watch yet. barrier
+// (fc.Machine.Barrier: a round trip through the VMM thread, which makes every disk write) is called after each copy and
+// before its watch is read: by its return every write that was under way has finished and is in the watch. A barrier
+// that fails counts as a write.
+func copyQuietDisk(disk, dst string, tries int, barrier func() error) error {
 	for try := 1; ; try++ {
 		watch, werr := watchDisk(disk)
 		if werr != nil {
@@ -3019,7 +3030,8 @@ func copyQuietDisk(disk, dst string, tries int) error {
 			return err
 		}
 		err = copySparse(disk, dst)
-		quiet := !watch.written() && unchanged(disk, before)
+		settled := barrier() == nil
+		quiet := settled && !watch.written() && unchanged(disk, before)
 		watch.close()
 		if err != nil {
 			return err
@@ -3240,9 +3252,9 @@ func (m *Manager) Snapshots(sandboxID string) []proto.SnapshotInfo {
 }
 
 // SaveSnapshot keeps a sandbox's current state under a name, until it is deleted: live for a running sandbox, from its
-// newest snapshot for a stopped one. Its disk only, unless p.Memory asks for its memory too (which a stopped sandbox
-// has only when its stop kept it): a memory file is as big as the machine's memory, and ties a sandbox made from the
-// snapshot to the same machine size.
+// newest snapshot for a stopped one. A running sandbox's save keeps its disk only, unless p.Memory asks for its
+// memory too: a memory file is as big as the machine's memory, and ties a sandbox made from the snapshot to the same
+// machine size. A stopped one's keeps what its stop kept, memory or not, whatever p.Memory says.
 func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error) {
 	s, err := m.get(p.SandboxID)
 	if err != nil {
@@ -3264,7 +3276,8 @@ func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (pro
 		_, err := m.liveSnapshot(ctx, s, &snap, timings{}, false)
 		return snap, err
 	case proto.StateStopped:
-		snap.Memory = p.Memory && s.meta.Memory
+		// As its stop left it, as a save of a stopped sandbox or a history entry is: memory only matters live.
+		snap.Memory = s.meta.Memory
 		return snap, m.saveSnapshot(s, &snap, false)
 	default:
 		return snap, conflict("sandbox %s is %s", s.meta.ID, s.meta.State)

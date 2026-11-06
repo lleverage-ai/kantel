@@ -99,6 +99,10 @@ func TestBootDiscard(t *testing.T) {
 			t.Fatal(err)
 		}
 		disk := api.puts["/drives/disk"]
+		// Barrier, and so a disk-only snapshot's copy, rely on the Sync engine: said outright, never left to a default.
+		if disk["io_engine"] != "Sync" {
+			t.Fatalf("the disk's IO engine is %v, not Sync", disk["io_engine"])
+		}
 		if got, ok := disk["discard"]; discard && got != true || !discard && ok {
 			t.Fatalf("discard %v: disk drive %v", discard, disk)
 		}

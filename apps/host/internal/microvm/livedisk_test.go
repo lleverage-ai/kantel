@@ -27,6 +27,7 @@ import (
 type fakeVMAPI struct {
 	mu         sync.Mutex
 	asked      []string
+	barriers   int
 	paused     bool
 	dropPause  bool
 	failResume bool
@@ -39,6 +40,14 @@ func (f *fakeVMAPI) serve(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/machine-config" {
+			// The barrier: a round trip through the VMM thread.
+			f.mu.Lock()
+			f.barriers++
+			f.mu.Unlock()
+			_, _ = io.WriteString(w, `{"vcpu_count":2,"mem_size_mib":2048}`)
+			return
+		}
 		var body struct {
 			State string `json:"state"`
 		}
@@ -142,6 +151,12 @@ func TestLiveDiskSnapshot(t *testing.T) {
 	if snap.Memory {
 		t.Fatal("a disk-only snapshot says it holds memory")
 	}
+	api.mu.Lock()
+	barriers := api.barriers
+	api.mu.Unlock()
+	if barriers != 1 {
+		t.Fatalf("the copy was checked after %d barriers, want 1", barriers)
+	}
 	if got, _ := os.ReadFile(filepath.Join(m.snapshotDir(snap.ID), fc.DiskFile)); len(got) != 1<<16 {
 		t.Fatalf("the snapshot's disk is %d bytes", len(got))
 	}
@@ -226,7 +241,7 @@ func TestCopyQuietDiskFailsClosedWithoutAWatch(t *testing.T) {
 			_, _ = f.WriteAt([]byte{byte(i)}, int64(i%(1<<20)))
 		}
 	}()
-	err = copyQuietDisk(disk, dst, diskCopies)
+	err = copyQuietDisk(disk, dst, diskCopies, noBarrier)
 	close(stop)
 	<-done
 	if err == nil {
@@ -234,6 +249,42 @@ func TestCopyQuietDiskFailsClosedWithoutAWatch(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a refused copy left a file: %v", err)
+	}
+}
+
+// Saving a stopped sandbox keeps what its stop kept: memory only matters to a running one's save, so a stop that kept
+// memory is saved with it whether memory is asked for or not, and one that didn't is saved without.
+func TestSaveSnapshotOfAStoppedSandboxKeepsWhatItsStopKept(t *testing.T) {
+	for _, stopKept := range []bool{true, false} {
+		for _, asked := range []bool{false, true} {
+			root := t.TempDir()
+			m := &Manager{cfg: Config{Root: root}, log: slog.New(slog.NewTextHandler(io.Discard, nil)), sandboxes: map[string]*sandbox{}}
+			s := &sandbox{dir: filepath.Join(root, "sandboxes", "sbx_stopped"), meta: meta{ID: "sbx_stopped", State: proto.StateStopped, Size: "default", Memory: stopKept}}
+			if err := os.MkdirAll(s.vmDir(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			files := []string{fc.DiskFile}
+			if stopKept {
+				files = append(files, "state", "mem")
+			}
+			for _, name := range files {
+				if err := os.WriteFile(filepath.Join(s.vmDir(), name), []byte(name), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m.sandboxes[s.meta.ID] = s
+			snap, err := m.SaveSnapshot(context.Background(), proto.SnapshotParams{SandboxID: s.meta.ID, SnapshotID: "snap_saved", Name: "saved", Memory: asked})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.Memory != stopKept {
+				t.Fatalf("stop kept memory %v, memory asked %v: the save has memory %v", stopKept, asked, snap.Memory)
+			}
+			_, memErr := os.Stat(filepath.Join(m.snapshotDir(snap.ID), "mem"))
+			if (memErr == nil) != stopKept {
+				t.Fatalf("stop kept memory %v, memory asked %v: the save's memory file: %v", stopKept, asked, memErr)
+			}
+		}
 	}
 }
 
