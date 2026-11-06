@@ -1106,6 +1106,17 @@ describe("hosts", () => {
 		expect(hosts.find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
 	});
 
+	it("sets and removes a host's limit on each account's saved snapshots", async () => {
+		const source = await open(setup().fetchApi);
+		const set = source.hosts?.setSnapshotLimit;
+		if (set === undefined) throw new Error("No saved snapshot limit for a super-admin");
+		expect((await set(STUB_HOST_ID, 50 * 1024 ** 3)).savedSnapshotLimitBytes).toBe(50 * 1024 ** 3);
+		expect((await source.hosts?.list())?.find((host) => host.id === STUB_HOST_ID)?.savedSnapshotLimitBytes).toBe(
+			50 * 1024 ** 3,
+		);
+		expect((await set(STUB_HOST_ID, null)).savedSnapshotLimitBytes).toBeUndefined();
+	});
+
 	it("offers a super-admin Images only where the gateway has image patching on", async () => {
 		const off = await open(setup().fetchApi);
 		expect(off.hosts).toBeDefined();

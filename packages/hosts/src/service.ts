@@ -30,6 +30,7 @@ import {
 	HOST_FEATURES,
 	type HostBucketSource,
 	type HostDiskLimits,
+	type HostDiskUsage,
 	type HostEgress,
 	type HostEgressRecord,
 	type HostFacts,
@@ -169,6 +170,8 @@ export interface HostView {
 	 * `capacity.diskGb` is the same, else what it had free when it started. Absent until it has reported.
 	 */
 	readonly freeDiskGb?: number;
+	/** What takes the space on its disk, from its latest heartbeat that measured it (`HostDiskUsage`). */
+	readonly diskUsage?: HostDiskUsage;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -1037,6 +1040,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				diskGb: reported?.freeDiskGiB ?? facts?.diskGiB ?? 0,
 			},
 			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
+			...(reported?.disk === undefined ? {} : { diskUsage: { ...reported.disk } }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),

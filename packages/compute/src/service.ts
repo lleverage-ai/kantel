@@ -1132,6 +1132,18 @@ function goneAlready(error: unknown): boolean {
 	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "not_found";
 }
 
+/** The host a snapshot's ref names, `<hostId>/<id>` as a host backend's are; undefined for another backend's. */
+function refHost(ref: string): string | undefined {
+	const slash = ref.indexOf("/");
+	return slash > 0 ? ref.slice(0, slash) : undefined;
+}
+
+/** A byte count for a message: in GiB to one decimal place, or MiB below 1 GiB. */
+function bytesText(bytes: number): string {
+	const gib = bytes / 2 ** 30;
+	return gib >= 1 ? `${gib.toFixed(1)} GiB` : `${Math.round(bytes / 2 ** 20)} MiB`;
+}
+
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
 	const { lastSeenAt: knownSeen, ...knownRest } = known;
 	const { lastSeenAt: nextSeen, ...nextRest } = next;
@@ -1889,7 +1901,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const owner = current.accountId ?? accountId;
 					// The version to run is the backend's now; an update under way ends once the host is on it, or isn't
 					// after `HOST_UPDATE_WINDOW_MS` (the host couldn't, and says so in its log).
-					const { latestVersion: _latest, updateAvailable: _available, updating, ...rest } = current;
+					const {
+						latestVersion: _latest,
+						updateAvailable: _available,
+						updating,
+						diskUsage: keptDisk,
+						...rest
+					} = current;
 					const pending =
 						updating !== undefined &&
 						updating.version !== host.version &&
@@ -1907,6 +1925,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
 						capacity: { ...host.capacity },
+						// What its disk holds: the latest measure it sent, else the one kept.
+						...(host.diskUsage === undefined
+							? keptDisk === undefined
+								? {}
+								: { diskUsage: keptDisk }
+							: { diskUsage: { ...host.diskUsage } }),
 						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : current.lastSeenAt),
 					};
 				};
@@ -1931,6 +1955,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
 					capacity: { ...host.capacity },
+					...(host.diskUsage === undefined ? {} : { diskUsage: { ...host.diskUsage } }),
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
 					labels: { ...host.labels },
 					...(accountId === undefined ? {} : { accountId }),
@@ -4237,12 +4262,59 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 	}
 
+	/**
+	 * The host a snapshot's bytes are on: its ref's (`<hostId>/<id>`, a host backend's), else its sandbox's while that
+	 * is placed. Undefined when neither says.
+	 */
+	async function hostOfSnapshot(snapshot: StoredSnapshot): Promise<string | undefined> {
+		const named = snapshot.ref === undefined ? undefined : refHost(snapshot.ref);
+		if (named !== undefined) return named;
+		if (snapshot.sandboxId === undefined) return undefined;
+		return (await store.sandboxes.get(snapshot.sandboxId))?.hostId;
+	}
+
+	/**
+	 * The `exhausted` error for a save of `sandbox`'s bytes (`ref`, of `sizeBytes`) that would take its account's saved
+	 * snapshots on its host past the host's limit (`Host.savedSnapshotBytesLimit`), or undefined when it fits or the host
+	 * sets none. Each set of bytes counts once (a save shares its source's ref), and `replacing`, a save the new one
+	 * replaces, not at all. A ref one of them has already adds nothing.
+	 */
+	async function savedBytesOver(
+		sandbox: StoredSandbox,
+		ref: string | undefined,
+		sizeBytes: number | undefined,
+		replacing: StoredSnapshot | undefined,
+	): Promise<KantelError | undefined> {
+		const hostId = (ref === undefined ? undefined : refHost(ref)) ?? sandbox.hostId;
+		if (hostId === undefined) return undefined;
+		const limit = (await store.hosts.get(hostId))?.savedSnapshotBytesLimit;
+		if (limit === undefined) return undefined;
+		const held = new Map<string, number>();
+		for (const saved of await store.snapshots.list({ accountId: sandbox.accountId, kind: "saved" })) {
+			if (saved.id === replacing?.id || saved.ref === undefined || held.has(saved.ref)) continue;
+			if ((await hostOfSnapshot(saved)) !== hostId) continue;
+			held.set(saved.ref, saved.sizeBytes ?? 0);
+		}
+		let total = 0;
+		for (const size of held.values()) total += size;
+		const adding = ref !== undefined && held.has(ref) ? 0 : (sizeBytes ?? 0);
+		// With nothing to add yet (a save that takes its bytes now), the limit reached already refuses it.
+		if (ref === undefined ? total < limit : total + adding <= limit) return undefined;
+		return new KantelError(
+			"exhausted",
+			`The account may keep ${bytesText(limit)} of saved snapshots on this host, and has ${bytesText(total)}` +
+				(adding > 0 ? `; this one is ${bytesText(adding)}` : "") +
+				". Delete saved snapshots you no longer need, and try again.",
+		);
+	}
+
 	async function changeHost(
 		host: StoredHost,
 		body: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			readonly savedSnapshotBytesLimit?: number | null;
 		},
 	): Promise<computeSchema.Host> {
 		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
@@ -4259,11 +4331,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			let state = current.state;
 			if (body.draining === true) state = "draining";
 			if (body.draining === false && current.state === "draining") state = "online";
+			const { savedSnapshotBytesLimit: kept, ...rest } = current;
+			const limit = body.savedSnapshotBytesLimit === undefined ? kept : (body.savedSnapshotBytesLimit ?? undefined);
 			return {
-				...current,
+				...rest,
 				name: body.name ?? current.name,
 				labels: body.labels === undefined ? current.labels : { ...body.labels },
 				state,
+				...(limit === undefined ? {} : { savedSnapshotBytesLimit: limit }),
 			};
 		});
 		if (revoked) throw new KantelError("conflict", "The host is revoked");
@@ -7044,14 +7119,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
+					// At the host's limit already: nothing is taken.
+					const full = await savedBytesOver(current, undefined, 0, existing);
+					if (full !== undefined) throw full;
 					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
 					ref = taken.ref;
 					sizeBytes = taken.sizeBytes;
 					base = taken.base;
 					memory = taken.memory === true;
+					// Past it with these bytes: they go again.
+					const over = await savedBytesOver(current, ref, sizeBytes, existing);
+					if (over !== undefined) {
+						await releaseRef(ref);
+						throw over;
+					}
 				} else {
 					throw new KantelError("conflict", "The sandbox has no state to save yet");
 				}
+				const over = await savedBytesOver(current, ref, sizeBytes, existing);
+				if (over !== undefined) throw over;
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
 					accountId: current.accountId,

@@ -65,6 +65,8 @@ export interface BackendHost {
 	 * had free when it started). Absent: it hasn't reported, or the backend doesn't say (the stub).
 	 */
 	readonly freeDiskGb?: number;
+	/** What takes the space on its disk, as it last measured it (`Host.diskUsage`). Absent: it hasn't said. */
+	readonly diskUsage?: computeSchema.HostDiskUsage;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**

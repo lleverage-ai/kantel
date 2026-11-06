@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createComputeFixtures } from "./fixtures.ts";
 import { looksLikeOrigin } from "./host-join.tsx";
-import { parseLabels } from "./hosts-page.tsx";
+import { limitBytes, parseLabels } from "./hosts-page.tsx";
 
 describe("the public URL field", () => {
 	it("takes an origin, with or without its trailing slash", () => {
@@ -24,6 +24,17 @@ describe("a new host's labels", () => {
 
 	it("says which pair is wrong", () => {
 		expect(parseLabels("site=fsn1, tier").error).toBe("Write tier as key=value, such as site=fsn1.");
+	});
+});
+
+describe("a saved snapshot limit as typed", () => {
+	it("reads whole and decimal GB", () => {
+		expect(limitBytes("50")).toBe(50 * 1024 ** 3);
+		expect(limitBytes(" 1.5 ")).toBe(1.5 * 1024 ** 3);
+	});
+
+	it("refuses nothing, zero, a negative number and a unit", () => {
+		for (const text of ["", "0", "-5", "50 GB", "abc"]) expect(limitBytes(text)).toBeUndefined();
 	});
 });
 

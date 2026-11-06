@@ -200,6 +200,40 @@ describe("hosts service", () => {
 		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(b.hostId);
 	});
 
+	it("shows what takes a host's disk as its latest heartbeat measured it, and drops a measure that isn't one", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		expect((await service.get(a.hostId)).diskUsage).toBeUndefined();
+		const disk = {
+			totalBytes: 1_000,
+			usedBytes: 700,
+			savedSnapshotsBytes: 100,
+			automaticSnapshotsBytes: 200,
+			sandboxesBytes: 250,
+			imagesBytes: 50,
+			templatesBytes: 30,
+			bundlesBytes: 20,
+			otherBytes: 50,
+			measuredAt: 1_700_000_000_000,
+		};
+		const capacity = { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} };
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, disk } } });
+		await tick();
+		expect((await service.get(a.hostId)).diskUsage).toEqual(disk);
+		// A measure with a figure that isn't one is left out; the heartbeat's free disk still stands.
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { ...capacity, freeDiskGiB: 300, disk: { ...disk, otherBytes: -1 } } },
+		});
+		await tick();
+		const view = await service.get(a.hostId);
+		expect(view.diskUsage).toBeUndefined();
+		expect(view.freeDiskGb).toBe(300);
+	});
+
 	it("shows a host's free disk as its latest heartbeat reports it, not as it was when it connected", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");

@@ -75,7 +75,7 @@ A deployment super-admin only (a key needs `hosts:admin`).
 
 `PATCH /v1/admin/hosts/{hostId}` (SDK method `updateHost`)
 
-Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`).
+Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 

@@ -418,6 +418,28 @@ export interface HostCapacity {
 	 * `freeMemoryMiB` and `freeDiskGiB` already leave out. Absent from a host from before it named them.
 	 */
 	readonly builds?: readonly string[];
+	/** What takes the space on its disk, measured every few minutes. Absent until it first is, and from an older host. */
+	readonly disk?: HostDiskUsage;
+}
+
+/**
+ * What takes the space on the filesystem holding a host's files, in bytes. Each file counts once, in the first of these
+ * it is in: bundle images, base images, templates, sandboxes, automatic snapshots, saved snapshots (memory a stop's
+ * snapshot shares with its sandbox counts for the sandbox). `otherBytes` is the rest of the used space: the operating
+ * system, logs, other programs.
+ */
+export interface HostDiskUsage {
+	readonly totalBytes: number;
+	readonly usedBytes: number;
+	readonly savedSnapshotsBytes: number;
+	readonly automaticSnapshotsBytes: number;
+	readonly sandboxesBytes: number;
+	readonly imagesBytes: number;
+	readonly templatesBytes: number;
+	readonly bundlesBytes: number;
+	readonly otherBytes: number;
+	/** When it was measured (epoch milliseconds). */
+	readonly measuredAt: number;
 }
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";

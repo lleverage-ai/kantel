@@ -886,6 +886,8 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
+| `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
+| `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host (their `sizeBytes`, each set of bytes once). A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
 
@@ -903,6 +905,23 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `vcpus` | integer | yes |  |
 | `memoryMb` | integer | yes |  |
 | `diskGb` | integer | yes |  |
+
+### HostDiskUsage
+
+What takes the space on a host's disk, as the host measured it last (every few minutes). Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, automatic snapshots, saved snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `totalBytes` | integer | yes | The size of the filesystem that holds the host's files. (minimum 0) |
+| `usedBytes` | integer | yes | What is used on it, by anything. (minimum 0) |
+| `savedSnapshotsBytes` | integer | yes | Saved snapshots. (minimum 0) |
+| `automaticSnapshotsBytes` | integer | yes | Automatic snapshots. (minimum 0) |
+| `sandboxesBytes` | integer | yes | Sandboxes' own disks, and their memory while they're stopped. (minimum 0) |
+| `imagesBytes` | integer | yes | Base images: the guest kernel and root filesystems, and templates' root filesystems. (minimum 0) |
+| `templatesBytes` | integer | yes | Template snapshots, which new sandboxes start from. (minimum 0) |
+| `bundlesBytes` | integer | yes | The cache of bundle images that sandboxes mount. (minimum 0) |
+| `otherBytes` | integer | yes | The rest of the used space: the operating system, logs and other programs. (minimum 0) |
+| `measuredAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### HostJoinToken
 
@@ -1954,6 +1973,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `draining` | boolean | no | Stop placing new sandboxes on it. |
+| `savedSnapshotBytesLimit` | integer or null | no | The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. |
 
 ### UpdateMemberBody
 

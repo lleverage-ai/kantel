@@ -743,6 +743,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					features: [...host.features],
 					capacity: { ...host.capacity },
 					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
+					...(host.diskUsage === undefined ? {} : { diskUsage: { ...host.diskUsage } }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },

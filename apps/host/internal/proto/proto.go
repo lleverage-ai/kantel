@@ -295,6 +295,27 @@ type Capacity struct {
 	// memory and disk FreeMemoryMiB and FreeDiskGiB already leave out: a control plane holding room for one of them
 	// stops holding it once a report names it, so it is counted once.
 	Builds []string `json:"builds,omitempty"`
+	// Disk is what takes the space on the host's disk, measured every few minutes; absent until it first is, and from a
+	// host from before it said.
+	Disk *DiskUsage `json:"disk,omitempty"`
+}
+
+// DiskUsage is what takes the space on the filesystem holding a host's Root, in bytes. Each file counts once, in the
+// first of these it is in: bundle images, base images, templates, sandboxes, automatic snapshots, saved snapshots
+// (memory a stop's snapshot shares with its sandbox counts for the sandbox). Other is the rest of the used space: the
+// operating system, logs, other programs, a snapshot being made.
+type DiskUsage struct {
+	TotalBytes              int64 `json:"totalBytes"`
+	UsedBytes               int64 `json:"usedBytes"`
+	SavedSnapshotsBytes     int64 `json:"savedSnapshotsBytes"`
+	AutomaticSnapshotsBytes int64 `json:"automaticSnapshotsBytes"`
+	SandboxesBytes          int64 `json:"sandboxesBytes"`
+	ImagesBytes             int64 `json:"imagesBytes"`
+	TemplatesBytes          int64 `json:"templatesBytes"`
+	BundlesBytes            int64 `json:"bundlesBytes"`
+	OtherBytes              int64 `json:"otherBytes"`
+	// MeasuredAt is when it was measured (Unix milliseconds).
+	MeasuredAt int64 `json:"measuredAt"`
 }
 
 type Heartbeat struct {

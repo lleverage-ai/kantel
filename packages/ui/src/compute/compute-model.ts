@@ -1742,6 +1742,27 @@ export interface Host {
 	readonly labels: Readonly<Record<string, string>>;
 	readonly lastSeenAt: number;
 	readonly joinedAt: number;
+	/** What takes the space on its disk, as it last measured it. Absent until it has. */
+	readonly disk?: HostDisk;
+	/** The most bytes of saved snapshots each account may keep on it. Absent: no limit. */
+	readonly savedSnapshotLimitBytes?: number;
+}
+
+/**
+ * What takes the space on a host's disk, in bytes, each file counted once: memory a stop's snapshot shares with its
+ * sandbox counts for the sandbox. `other` is the rest of what's used: the operating system, logs, other programs.
+ */
+export interface HostDisk {
+	readonly totalBytes: number;
+	readonly usedBytes: number;
+	readonly savedSnapshots: number;
+	readonly automaticSnapshots: number;
+	readonly sandboxes: number;
+	readonly images: number;
+	readonly templates: number;
+	readonly bundles: number;
+	readonly other: number;
+	readonly measuredAt: number;
 }
 
 /** A one-time join token, with the command that uses it. */
@@ -1794,6 +1815,11 @@ export interface HostsSource {
 	 * Absent: no Check for updates.
 	 */
 	checkForUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
+	/**
+	 * Sets the most bytes of saved snapshots each account may keep on the host, or `null` for no limit: a save past it is
+	 * refused. Absent: the limit isn't set from the console.
+	 */
+	setSnapshotLimit?(id: string, bytes: number | null): Promise<Host>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

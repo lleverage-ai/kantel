@@ -3746,6 +3746,84 @@ describe("hosts", () => {
 		expect(await api.fetch(new Request("http://compute.test/elsewhere"))).toBeUndefined();
 	});
 
+	it("shows what takes a host's disk, as the host last measured it", async () => {
+		const stub = createStubBackend();
+		const measured = {
+			totalBytes: 1_000,
+			usedBytes: 600,
+			savedSnapshotsBytes: 100,
+			automaticSnapshotsBytes: 200,
+			sandboxesBytes: 150,
+			imagesBytes: 50,
+			templatesBytes: 40,
+			bundlesBytes: 10,
+			otherBytes: 50,
+			measuredAt: 1_700_000_000_000,
+		};
+		let disk: typeof measured | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				return {
+					...read,
+					hosts: (read.hosts ?? []).map((host) => (disk === undefined ? host : { ...host, diskUsage: disk })),
+				};
+			},
+		};
+		const { root } = setup(backend);
+		expect((await root.getHost(STUB_HOST_ID)).diskUsage).toBeUndefined();
+		disk = measured;
+		await root.createHostJoinToken({});
+		expect((await root.listHosts()).items[0]?.diskUsage).toEqual(measured);
+	});
+
+	it("refuses a save past a host's limit on each account's saved snapshots, set by its admin", async () => {
+		const store = createMemoryStore();
+		const { root, tom, ann } = setup(createStubBackend(), { store });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const first = await tom.saveSnapshot({ name: "first", sandboxId: sandbox.id });
+		// As the host measured it: 40 MiB.
+		await store.snapshots.update(first.id, (current) => ({ ...current, sizeBytes: 40 * 2 ** 20 }));
+		expect((await failure(tom.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 1 }))).code).toBe("forbidden");
+		const limited = await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * 2 ** 20 });
+		expect(limited.savedSnapshotBytesLimit).toBe(50 * 2 ** 20);
+		// Another write keeps it.
+		expect((await root.updateHost(STUB_HOST_ID, { name: "renamed" })).savedSnapshotBytesLimit).toBe(50 * 2 ** 20);
+
+		// Another 20 MiB would take it past.
+		const taken = await tom.takeSnapshot(sandbox.id, {});
+		await store.snapshots.update(taken.id, (current) => ({ ...current, sizeBytes: 20 * 2 ** 20 }));
+		const refused = await failure(tom.saveSnapshot({ name: "second", sandboxId: sandbox.id, snapshotId: taken.id }));
+		expect(refused.code).toBe("exhausted");
+		expect(refused.message).toContain("50 MiB of saved snapshots on this host");
+		expect(refused.message).toContain("has 40 MiB");
+		// Replacing the first with it fits: the first's bytes go.
+		const replaced = await tom.saveSnapshot({
+			name: "first",
+			sandboxId: sandbox.id,
+			snapshotId: taken.id,
+			replace: true,
+		});
+		expect(replaced.name).toBe("first");
+		// Another account's saves count against its own.
+		const own = await ann.createSandbox({ autoStopMinutes: null, wait: true });
+		await ann.saveSnapshot({ name: "anns", sandboxId: own.id });
+
+		// The limit reached: a save of a running sandbox's state now is refused before it's taken.
+		await store.snapshots.update(replaced.id, (current) => ({ ...current, sizeBytes: 50 * 2 ** 20 }));
+		expect((await failure(tom.saveSnapshot({ name: "third", sandboxId: sandbox.id }))).code).toBe("exhausted");
+		// Another save of the same bytes adds nothing, so it fits.
+		expect((await tom.saveSnapshot({ name: "copy", sandboxId: sandbox.id, snapshotId: replaced.id })).name).toBe(
+			"copy",
+		);
+
+		// Removed, saves go through again.
+		const unlimited = await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: null });
+		expect(unlimited.savedSnapshotBytesLimit).toBeUndefined();
+		expect((await tom.saveSnapshot({ name: "third", sandboxId: sandbox.id })).name).toBe("third");
+	});
+
 	it("sets the public URL join commands use, and goes back to the deployment's own", async () => {
 		const { root, tom } = setup();
 		const before = await root.getPublicUrl();

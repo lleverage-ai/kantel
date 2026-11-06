@@ -9360,7 +9360,7 @@
 			"patch": {
 				"operationId": "updateHost",
 				"summary": "Change a host",
-				"description": "Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -10122,7 +10122,7 @@
 			"patch": {
 				"operationId": "updateAccountHost",
 				"summary": "Change one of an account's hosts",
-				"description": "Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"description": "Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
 				"parameters": [
 					{
@@ -13817,6 +13817,14 @@
 					},
 					"usage": {
 						"$ref": "#/components/schemas/UsageSparklines"
+					},
+					"diskUsage": {
+						"$ref": "#/components/schemas/HostDiskUsage"
+					},
+					"savedSnapshotBytesLimit": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The most bytes of saved snapshots each account may keep on this host (their `sizeBytes`, each set of bytes once). A save past it answers `exhausted`. Absent: no limit."
 					}
 				},
 				"title": "Host",
@@ -13856,6 +13864,74 @@
 					}
 				},
 				"title": "HostCapacity"
+			},
+			"HostDiskUsage": {
+				"type": "object",
+				"required": [
+					"totalBytes",
+					"usedBytes",
+					"savedSnapshotsBytes",
+					"automaticSnapshotsBytes",
+					"sandboxesBytes",
+					"imagesBytes",
+					"templatesBytes",
+					"bundlesBytes",
+					"otherBytes",
+					"measuredAt"
+				],
+				"properties": {
+					"totalBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The size of the filesystem that holds the host's files."
+					},
+					"usedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What is used on it, by anything."
+					},
+					"savedSnapshotsBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Saved snapshots."
+					},
+					"automaticSnapshotsBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Automatic snapshots."
+					},
+					"sandboxesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Sandboxes' own disks, and their memory while they're stopped."
+					},
+					"imagesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Base images: the guest kernel and root filesystems, and templates' root filesystems."
+					},
+					"templatesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Template snapshots, which new sandboxes start from."
+					},
+					"bundlesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The cache of bundle images that sandboxes mount."
+					},
+					"otherBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The rest of the used space: the operating system, logs and other programs."
+					},
+					"measuredAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "HostDiskUsage",
+				"description": "What takes the space on a host's disk, as the host measured it last (every few minutes). Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, automatic snapshots, saved snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox."
 			},
 			"HostJoinToken": {
 				"type": "object",
@@ -16778,6 +16854,18 @@
 					"draining": {
 						"type": "boolean",
 						"description": "Stop placing new sandboxes on it."
+					},
+					"savedSnapshotBytesLimit": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"minimum": 0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit."
 					}
 				},
 				"title": "UpdateHostBody"

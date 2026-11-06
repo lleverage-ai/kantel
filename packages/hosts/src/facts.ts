@@ -8,6 +8,7 @@ import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
 	HostDiskLimits,
+	HostDiskUsage,
 	HostFacts,
 	HostImages,
 	HostMemorySource,
@@ -159,7 +160,32 @@ function capacity(value: unknown): HostCapacity {
 		stopped: count(value.stopped, "stopped"),
 		load1: count(value.load1, "load1"),
 		...(builds.length === 0 ? {} : { builds }),
+		...diskUsage(value.disk),
 	};
+}
+
+/** A capacity's disk measure (`HostDiskUsage`): left out, not refused, when it isn't one, so the rest still stands. */
+function diskUsage(value: unknown): { disk?: HostDiskUsage } {
+	if (!isObject(value)) return {};
+	const fields = [
+		"totalBytes",
+		"usedBytes",
+		"savedSnapshotsBytes",
+		"automaticSnapshotsBytes",
+		"sandboxesBytes",
+		"imagesBytes",
+		"templatesBytes",
+		"bundlesBytes",
+		"otherBytes",
+		"measuredAt",
+	] as const;
+	const disk: { [K in (typeof fields)[number]]?: number } = {};
+	for (const field of fields) {
+		const figure = value[field];
+		if (typeof figure !== "number" || !Number.isSafeInteger(figure) || figure < 0) return {};
+		disk[field] = figure;
+	}
+	return { disk: disk as HostDiskUsage };
 }
 
 /** The most sandboxes one usage tick may name: more than any host runs. */

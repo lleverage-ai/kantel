@@ -289,6 +289,12 @@ The host keeps each reading until Kantel confirms it has it, up to the last 120 
 
 A host that predates this sends each reading once, and a reading sent into a connection that then fails is lost. The same applies to a newer host connected to a Kantel that predates it.
 
+### What takes the disk
+
+Every 5 minutes a host also measures what takes the space on its disk and sends it with its next heartbeat. The host record has it as `diskUsage`: the filesystem's size and used bytes, then the bytes of saved snapshots, automatic snapshots, sandboxes (their disks, and their memory while stopped), base images, templates, the bundle cache, and everything else (`otherBytes`, the operating system, logs and other programs). Each file counts once, in the first of those it's in, and in the order bundles, images, templates, sandboxes, then snapshots. So memory a stop's snapshot shares with its sandbox counts for the sandbox. In the console, open a host's row on the Hosts page to see it under the host's graphs. A host that predates this doesn't measure it, and its record has no `diskUsage`.
+
+A host's admin can also limit how much each account keeps in saved snapshots on it, with `savedSnapshotBytesLimit` on the host (`PATCH /v1/admin/hosts/{hostId}`, or `PATCH /v1/hosts/{hostId}` for an account's own host), or **Saved snapshot limit** in the host's menu in the console. A save that would take an account past the limit answers `429` with `exhausted`, saying what the account has saved there. The same bytes saved twice count once. `null` removes the limit.
+
 ### Top processes
 
 A running microVM's busiest processes aren't part of the readings: Kantel asks for them only when something wants them, such as the console's metrics dialog, which asks every 10 seconds while it's open (`GET /v1/sandboxes/{sandboxId}/processes`, which needs the `exec` scope, as running `ps` would). The host passes the request to the guest's agent, which reads `/proc` twice half a second apart and answers the busiest processes by CPU, then memory: each one's PID, command line (up to 1 KiB of it), CPU as a share of one vCPU (150% is one and a half) and resident memory. Nothing is kept.

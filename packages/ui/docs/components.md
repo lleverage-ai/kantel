@@ -343,3 +343,19 @@ composer's icon-only send button.
 New icons come from [lucide](https://lucide.dev) (`lucide-react`, imported one by one so only those used are
 bundled). Give one `className="kt-icon kt-icon-md"` (or `-sm`, or `-lg` for a state's mark) so it sizes like the rest, and `aria-hidden` unless it
 carries meaning on its own.
+
+## Compute parts
+
+### HostDiskUsage
+
+What takes the space on a host's disk (`src/compute/host-disk.tsx`), under its graphs when its row on the Hosts page
+is opened: used of total with a bar (amber from 75%, red from 90%, as the table's capacity bars), then the bytes of
+saved and automatic snapshots, sandboxes, base images, templates, bundles and the rest, and the limit on each account's
+saved snapshots on it. `narrow` puts the figures in one column for a phone. A host that hasn't measured its disk yet
+(just joined, or an older host agent) says so instead.
+
+**Don't use it for** live usage over time (use the host's graphs) or a sandbox's own disk.
+
+**States:** measured, nearly full, with or without a limit, not measured, and a phone; all in its stories.
+
+**Cost:** none: the host measures, every few minutes, and the page shows what it last sent.

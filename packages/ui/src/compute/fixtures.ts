@@ -28,6 +28,7 @@ import type {
 	FilePart,
 	FileRange,
 	Host,
+	HostDisk,
 	HostingMode,
 	ImageBuildReason,
 	ImageFinding,
@@ -1269,6 +1270,35 @@ export const TELEMETRY: TelemetrySettings = {
 	lastExport: { at: FIXTURE_NOW - 30_000, ok: true },
 };
 
+/** A host's disk as it measured it 3 minutes before `FIXTURE_NOW`: its parts in GB, the rest of 6% of it other. */
+function sampleDiskUsage(
+	totalGb: number,
+	parts: {
+		readonly saved: number;
+		readonly automatic: number;
+		readonly sandboxes: number;
+		readonly images: number;
+		readonly templates: number;
+		readonly bundles: number;
+	},
+): HostDisk {
+	const gb = (value: number) => Math.round(value * 1024 ** 3);
+	const other = gb(totalGb * 0.06);
+	const known = gb(parts.saved + parts.automatic + parts.sandboxes + parts.images + parts.templates + parts.bundles);
+	return {
+		totalBytes: gb(totalGb),
+		usedBytes: known + other,
+		savedSnapshots: gb(parts.saved),
+		automaticSnapshots: gb(parts.automatic),
+		sandboxes: gb(parts.sandboxes),
+		images: gb(parts.images),
+		templates: gb(parts.templates),
+		bundles: gb(parts.bundles),
+		other,
+		measuredAt: FIXTURE_NOW - 3 * MINUTE,
+	};
+}
+
 export const HOSTS: readonly Host[] = [
 	{
 		id: "hst_hetzner_1",
@@ -1287,6 +1317,14 @@ export const HOSTS: readonly Host[] = [
 		labels: { site: "fsn1", tier: "microvm" },
 		lastSeenAt: FIXTURE_NOW - 3_000,
 		joinedAt: FIXTURE_NOW - 30 * DAY,
+		disk: sampleDiskUsage(3_840, {
+			saved: 182,
+			automatic: 611,
+			sandboxes: 1_204,
+			images: 38,
+			templates: 96,
+			bundles: 9,
+		}),
 	},
 	{
 		id: "hst_hetzner_2",
@@ -1306,6 +1344,15 @@ export const HOSTS: readonly Host[] = [
 		labels: { site: "fsn1", tier: "microvm" },
 		lastSeenAt: FIXTURE_NOW - 5_000,
 		joinedAt: FIXTURE_NOW - 30 * DAY,
+		disk: sampleDiskUsage(3_840, {
+			saved: 1_310,
+			automatic: 1_906,
+			sandboxes: 288,
+			images: 38,
+			templates: 96,
+			bundles: 4,
+		}),
+		savedSnapshotLimitBytes: 200 * 1024 ** 3,
 	},
 	{
 		id: "hst_home",
@@ -1324,6 +1371,8 @@ export const HOSTS: readonly Host[] = [
 		labels: { owner: "tom", site: "home" },
 		lastSeenAt: FIXTURE_NOW - 2_000,
 		joinedAt: FIXTURE_NOW - 6 * DAY,
+		disk: sampleDiskUsage(1_000, { saved: 41, automatic: 66, sandboxes: 187, images: 21, templates: 24, bundles: 2 }),
+		savedSnapshotLimitBytes: 50 * 1024 ** 3,
 	},
 	{
 		id: "hst_mac",
@@ -1798,7 +1847,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const hosts = new Map<string, Host>(
 		(empty || options.noHosts === true ? [] : HOSTS).map((host) => [
 			host.id,
-			{ ...moved(host, ["lastSeenAt", "joinedAt"]), ...options.hostOverrides?.[host.id] },
+			{
+				...moved(host, ["lastSeenAt", "joinedAt"]),
+				...(host.disk === undefined ? {} : { disk: moved(host.disk, ["measuredAt"]) }),
+				...options.hostOverrides?.[host.id],
+			},
 		]),
 	);
 	/** When each host updating comes back on its new version (wall-clock, so a story sees it finish). */
@@ -2834,6 +2887,13 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						remove: (id) =>
 							gate(() => {
 								hosts.delete(id);
+							}),
+						setSnapshotLimit: (id, bytes) =>
+							gate(() => {
+								const { savedSnapshotLimitBytes: _, ...rest } = find(hosts, id, "host");
+								const host: Host = bytes === null ? rest : { ...rest, savedSnapshotLimitBytes: bytes };
+								hosts.set(id, host);
+								return host;
 							}),
 					},
 					images: {
