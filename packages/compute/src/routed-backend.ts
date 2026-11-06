@@ -242,13 +242,6 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		openSsh: async (id, how) => (await on(id)).openSsh(id, how),
 		openDesktop: async (id, how) => (await on(id)).openDesktop(id, how),
 		openBrowser: async (id, how) => (await on(id)).openBrowser(id, how),
-		async openE2E(id, how) {
-			const backend = await on(id);
-			if (backend.openE2E === undefined) {
-				throw new KantelError("not_supported", "This sandbox isn't on a host that E2E sessions reach");
-			}
-			return backend.openE2E(id, how);
-		},
 		usage: async (id) => (await on(id)).usage(id),
 		...(primary.usageReports === undefined && fallback.usageReports === undefined
 			? {}

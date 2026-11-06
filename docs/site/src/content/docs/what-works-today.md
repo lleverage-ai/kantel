@@ -39,7 +39,6 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 - **Snapshot history and restore**, and **saved snapshots**: their API and CLI run against the stub backend and the host stand-in.
 - **Webhooks**: an endpoint was added on a local install, but delivery and signing are checked in tests only.
 - **OpenTelemetry**: export is unit-tested. No run has checked a real collector receiving the data.
-- **End-to-end encryption**: tested against the host stand-in and in Go tests.
 - **Public ports**: tested against the stand-in and in real-VM tests. A port served at `kantel.run` on the hosted service hasn't been checked live.
 - **Custom sandbox sizes** (the console's vCPU and memory sliders): a real-VM test exists, but wasn't run on VMs for the change. Preset sizes run on real hosts.
 - **The MCP server**: `initialize`, `tools/list` and `tools/call` against the stub backend.

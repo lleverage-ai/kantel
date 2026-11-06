@@ -5,15 +5,12 @@ import (
 	"crypto/ecdh"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 )
 
-// The vectors are packages/e2e/vectors, made by the TypeScript (packages/e2e/test/vectors.ts): the Go host must agree
-// with the devices on every verdict.
+// The vectors are packages/e2e/vectors: noise-ik.json is Cacophony's test vector for Noise_IK_25519_AESGCM_SHA256.
 func readVector(t *testing.T, name string, into any) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "e2e", "vectors", name))
@@ -96,86 +93,5 @@ func TestNoiseMatchesCacophony(t *testing.T) {
 	impostor := &Responder{Prologue: unhex(t, v.Prologue), Static: x25519(t, unhex(t, v.InitEphemeral))}
 	if _, _, err := impostor.ReadMessage1(m1); err == nil {
 		t.Fatal("an impostor read the first message")
-	}
-}
-
-type stateSummary struct {
-	Space   string            `json:"space"`
-	Genesis string            `json:"genesis"`
-	Head    string            `json:"head"`
-	Seq     int               `json:"seq"`
-	Mode    string            `json:"mode"`
-	OnSince string            `json:"onSince"`
-	Members map[string]string `json:"members"`
-	Devices []string          `json:"devices"`
-	Hosts   []string          `json:"hosts"`
-	Allowed map[string]bool   `json:"allowed"`
-}
-
-func summarise(s *State) stateSummary {
-	out := stateSummary{Space: s.Space, Genesis: s.Genesis, Head: s.Head, Seq: s.Seq, Mode: s.Mode, OnSince: s.OnSince, Members: s.Members, Devices: []string{}, Hosts: []string{}, Allowed: map[string]bool{}}
-	for id := range s.Devices {
-		out.Devices = append(out.Devices, id)
-		out.Allowed[id] = s.Allowed(id) == ""
-	}
-	for id := range s.Hosts {
-		out.Hosts = append(out.Hosts, id)
-	}
-	slices.Sort(out.Devices)
-	slices.Sort(out.Hosts)
-	return out
-}
-
-func TestChainVectors(t *testing.T) {
-	var file struct {
-		Cases []struct {
-			Name    string  `json:"name"`
-			Entries []Entry `json:"entries"`
-			Pin     string  `json:"pin"`
-			Extend  *struct {
-				Known []Entry `json:"known"`
-				From  int     `json:"from"`
-			} `json:"extend"`
-			OK    bool          `json:"ok"`
-			Seq   *int          `json:"seq"`
-			State *stateSummary `json:"state"`
-		} `json:"cases"`
-	}
-	readVector(t, "chain.json", &file)
-	if len(file.Cases) < 10 {
-		t.Fatalf("only %d cases", len(file.Cases))
-	}
-	for _, c := range file.Cases {
-		t.Run(c.Name, func(t *testing.T) {
-			var state *State
-			var err error
-			if c.Extend == nil {
-				state, err = VerifyChain(c.Entries, c.Pin)
-			} else {
-				var known *State
-				if known, err = VerifyChain(c.Extend.Known, c.Pin); err != nil {
-					t.Fatalf("the known chain: %v", err)
-				}
-				state, err = ExtendChain(known, c.Entries, c.Extend.From)
-			}
-			if !c.OK {
-				var ce *ChainError
-				if err == nil || !errors.As(err, &ce) {
-					t.Fatalf("verified; the TypeScript refuses entry %d", *c.Seq)
-				}
-				if ce.Seq != *c.Seq {
-					t.Fatalf("refused entry %d (%v); the TypeScript refuses entry %d", ce.Seq, err, *c.Seq)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("refused: %v", err)
-			}
-			got, _ := json.Marshal(summarise(state))
-			want, _ := json.Marshal(c.State)
-			if !bytes.Equal(got, want) {
-				t.Fatalf("state\n got %s\nwant %s", got, want)
-			}
-		})
 	}
 }

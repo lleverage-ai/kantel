@@ -35,7 +35,7 @@ export const sidebar = [
 	},
 	{
 		label: "Accounts and keys",
-		items: ["accounts/organisations", "accounts/api-keys", "e2e"],
+		items: ["accounts/organisations", "accounts/api-keys"],
 	},
 	{
 		label: "Events and monitoring",

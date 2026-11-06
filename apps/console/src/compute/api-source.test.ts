@@ -15,9 +15,8 @@ import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import { KantelError } from "@kantel/contracts";
 import { type ComputeSource, FilesRefusedError } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED, shapesOf } from "./api-source.ts";
+import { apiCompute, SCREENS_NOT_SERVED, shapesOf } from "./api-source.ts";
 import { sandboxMeans } from "./live-usage.ts";
-import { localBridge } from "./local.ts";
 
 const ORIGIN = "https://kantel.test";
 
@@ -175,81 +174,7 @@ describe("sandboxes", () => {
 		expect(await source.sandboxes.get(made.id)).not.toHaveProperty("deleted");
 	});
 
-	it("reads an E2E sandbox's history from its host through kantel console, and others' from the gateway", async () => {
-		const { api, fetchApi } = setup();
-		const plain = await open(fetchApi);
-		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "isolate" });
-		await api.service.idle();
-		expect(await plain.e2e?.mode(accountId)).toBe("off");
-		expect(plain.e2e?.served).toBe("gateway");
-		// The gateway's console frames Browser and Desktop on the page, and reads files and output as ever.
-		expect(plain.sandboxes.screens).toBe("console");
-		await plain.sandboxes.list(accountId);
-		expect(await plain.sandboxes.endToEnd?.(made.id)).toBe(false);
-
-		const calls: { sandboxId: string; method: string; params: { before?: string } }[] = [];
-		// The host's history, newest first, in pages of one: a console that drops the cursor sees only the newest.
-		const kept = [
-			{ id: "c2", command: "make test", startedAt: 2000, endedAt: 2100, device: "d1", deviceLabel: "Ada's laptop" },
-			{
-				id: "c1",
-				command: "make",
-				startedAt: 1000,
-				endedAt: 1250,
-				exitCode: 0,
-				device: "d1",
-				deviceLabel: "Ada's laptop",
-			},
-		];
-		const localFetch: typeof fetch = async (input, init) => {
-			const path = String(input);
-			if (path === "/local/info") {
-				return Response.json({
-					local: true,
-					device: { id: "d1", label: "Ada's laptop" },
-					spaces: [{ id: accountId, mode: "on" }],
-				});
-			}
-			if (path === "/local/e2e") {
-				const call = JSON.parse(String(init?.body)) as (typeof calls)[number];
-				calls.push(call);
-				const from = call.params.before === undefined ? 0 : kept.findIndex((c) => c.id === call.params.before) + 1;
-				const items = kept.slice(from, from + 1);
-				const next = from + 1 < kept.length ? items.at(-1)?.id : undefined;
-				return Response.json({ result: { items, ...(next === undefined ? {} : { next }) } });
-			}
-			return fetchApi(input, init);
-		};
-		// Only on 127.0.0.1 does the console ask for kantel console's bridge.
-		expect(await localBridge(localFetch, "kantel.example.com")).toBeUndefined();
-		const local = await localBridge(localFetch, "127.0.0.1");
-		expect(local?.mode(accountId)).toBe("on");
-		expect(local?.mode("acct_elsewhere")).toBe("off");
-		const source = await apiCompute({
-			headers: () => ({ authorization: "Bearer person-ada" }),
-			fetch: fetchApi,
-			...(local === undefined ? {} : { local }),
-		});
-		expect(source.e2e).toMatchObject({ served: "local", device: "Ada's laptop" });
-		// kantel console's page frames nothing from the gateway: Browser and Desktop open in tabs of their own.
-		expect(source.sandboxes.screens).toBe("tab");
-		// Its files and output can't be read end to end yet; the page says so. Opened straight from its address, the
-		// console reads which account it's in first.
-		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
-		await source.sandboxes.list(accountId);
-		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
-		expect(await source.sandboxes.history(made.id)).toEqual([
-			{ id: "c2", command: "make test", startedAt: 2000, durationMs: 100, by: "Ada's laptop" },
-			{ id: "c1", command: "make", startedAt: 1000, durationMs: 250, exitCode: 0, by: "Ada's laptop" },
-		]);
-		expect(calls).toEqual([
-			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false } },
-			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false, before: "c2" } },
-		]);
-	});
-
-	it("opens a microVM's desktop and browser, and says why not where the gateway refuses them or E2E is on", async () => {
+	it("opens a microVM's desktop and browser, and says why not where the gateway refuses them", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
@@ -276,43 +201,6 @@ describe("sandboxes", () => {
 		expect(refused.ssh).toBe(`kantel ssh ${box.id}`);
 		expect(refused.unavailable).toEqual({ desktop: SCREENS_NOT_SERVED, browser: SCREENS_NOT_SERVED });
 		expect([refused.desktopUrl, refused.desktopViewUrl, refused.browserUrl]).toEqual(["", "", ""]);
-
-		// An end-to-end space: its host refuses the gateway's desktop, so neither is asked for.
-		const local = await localBridge(async (input, init) => {
-			if (String(input) === "/local/info") {
-				return Response.json({
-					local: true,
-					device: { id: "d1", label: "Ada's laptop" },
-					spaces: [{ id: accountId, mode: "strict" }],
-				});
-			}
-			return fetchApi(input, init);
-		}, "127.0.0.1");
-		const asked: string[] = [];
-		const e2e = await apiCompute({
-			headers: () => ({ authorization: "Bearer person-ada" }),
-			fetch: async (input, init) => {
-				const url = input instanceof Request ? input.url : String(input);
-				asked.push(new URL(url, ORIGIN).pathname);
-				return fetchApi(input, init);
-			},
-			...(local === undefined ? {} : { local }),
-		});
-		const inSpace = await e2e.sandboxes.access(made.id);
-		expect(inSpace.unavailable).toEqual({ desktop: SCREENS_NOT_END_TO_END, browser: SCREENS_NOT_END_TO_END });
-		// SSH is E2E v1's own: the host refuses the gateway's, which lets a key in with a command.
-		expect(inSpace.ssh).toBe(`kantel e2e ssh ${made.id}`);
-		expect(inSpace.sshWithoutCli).toBe(false);
-		// `kantel console`'s page is the CLI's own, signed in already; its loopback origin is no gateway to sign in to.
-		if (local !== undefined) {
-			vi.stubGlobal("location", { origin: "http://127.0.0.1:58091" });
-			try {
-				expect((await e2e.sandboxes.access(made.id)).cliLogin).toBeUndefined();
-			} finally {
-				vi.unstubAllGlobals();
-			}
-		}
-		expect(asked.filter((path) => /\/(desktop|browser|ssh)$/.test(path))).toEqual([]);
 	});
 
 	it("shows the CLI's ssh and lets a key in for plain ssh only when asked, with the private key Kantel made", async () => {
@@ -356,117 +244,6 @@ describe("sandboxes", () => {
 		expect(given?.keyFile).toBeUndefined();
 		expect(given?.command).toBe(`ssh -p 2222 ${made.id}@ssh.stub.kantel.invalid`);
 		expect(asked.filter((path) => path.endsWith("/ssh"))).toHaveLength(2);
-	});
-
-	it("lists and reads an E2E sandbox's files over the console's own session, never the gateway's file routes", async () => {
-		const { api, fetchApi } = setup();
-		const plain = await open(fetchApi);
-		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "isolate" });
-		await api.service.idle();
-		const calls: { sandboxId: string; method: string; params: object }[] = [];
-		const gatewayFiles: string[] = [];
-		const bytes = new TextEncoder().encode("Hello, world");
-		const localFetch: typeof fetch = async (input, init) => {
-			const path = String(input);
-			if (path === "/local/info") {
-				return Response.json({
-					local: true,
-					device: { id: "d1", label: "Ada's laptop" },
-					spaces: [{ id: accountId, mode: "on" }],
-				});
-			}
-			if (path === "/local/e2e") {
-				const call = JSON.parse(String(init?.body)) as (typeof calls)[number] & {
-					params: { offset?: number; length?: number };
-				};
-				calls.push(call);
-				if (call.method === "sandbox.files.list") {
-					const entries = [
-						{ name: "readme.txt", path: "/home/user/readme.txt", type: "file", size: 12, modTimeMs: 5 },
-						{ name: "app", path: "/home/user/app", type: "dir", size: 4096 },
-					];
-					return Response.json({ result: { entries } });
-				}
-				const { offset = 0, length = bytes.byteLength } = call.params;
-				const data = btoa(String.fromCharCode(...bytes.subarray(offset, offset + length)));
-				return Response.json({ result: { data, fileSize: bytes.byteLength } });
-			}
-			if (new URL(path, ORIGIN).pathname.includes("/files")) gatewayFiles.push(path);
-			return fetchApi(input, init);
-		};
-		const local = await localBridge(localFetch, "127.0.0.1");
-		const source = await apiCompute({
-			headers: () => ({ authorization: "Bearer person-ada" }),
-			fetch: localFetch,
-			...(local === undefined ? {} : { local }),
-		});
-		const files = source.sandboxes.files;
-		if (files === undefined) throw new Error("No files");
-		const folder = await files.list(made.id, "home/user");
-		expect(folder).toEqual({
-			entries: [
-				{ name: "app", path: "home/user/app", kind: "folder" },
-				{ name: "readme.txt", path: "home/user/readme.txt", kind: "file", sizeBytes: 12, modifiedAt: 5 },
-			],
-			more: false,
-		});
-		const part = await files.read(made.id, "home/user/readme.txt", { offset: 7, length: 5 });
-		expect([new TextDecoder().decode(part.bytes), part.size]).toEqual(["world", 12]);
-		expect(calls).toEqual([
-			{ sandboxId: made.id, method: "sandbox.files.list", params: { path: "/home/user" } },
-			{
-				sandboxId: made.id,
-				method: "sandbox.files.read",
-				params: { path: "/home/user/readme.txt", offset: 7, length: 5 },
-			},
-		]);
-		// The gateway relays the session and serves none of the files.
-		expect(gatewayFiles).toEqual([]);
-	});
-
-	it("tells a host's refusal of a path through `kantel console` from a session that failed", async () => {
-		const { api, fetchApi } = setup();
-		const plain = await open(fetchApi);
-		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "microvm" });
-		await api.service.idle();
-		// What `kantel console` answers: the host's own refusal with its code, else a session that didn't get there.
-		const localFetch: typeof fetch = async (input, init) => {
-			const path = String(input);
-			if (path === "/local/info") return Response.json({ local: true, spaces: [{ id: accountId, mode: "on" }] });
-			if (path === "/local/e2e") {
-				const { params } = JSON.parse(String(init?.body)) as { params: { path: string } };
-				if (params.path === "/home/user") {
-					return Response.json(
-						{ error: { code: "e2e", message: "no such directory", hostCode: "not_found" } },
-						{ status: 502 },
-					);
-				}
-				if (params.path === "/home/user/secret") {
-					return Response.json({ error: { code: "e2e", message: "outside", hostCode: "invalid" } }, { status: 502 });
-				}
-				return Response.json({ error: { code: "e2e", message: "The relay closed the stream" } }, { status: 502 });
-			}
-			return fetchApi(input, init);
-		};
-		const local = await localBridge(localFetch, "127.0.0.1");
-		const source = await apiCompute({
-			headers: () => ({ authorization: "Bearer person-ada" }),
-			fetch: localFetch,
-			...(local === undefined ? {} : { local }),
-		});
-		const files = source.sandboxes.files;
-		if (files === undefined) throw new Error("No files");
-		// A start the image hasn't got, and a read the host won't do: refusals, with no Try again.
-		await expect(files.list(made.id, "home/user")).rejects.toBeInstanceOf(FilesRefusedError);
-		await expect(files.read(made.id, "home/user/secret", { offset: 0, length: 5 })).rejects.toBeInstanceOf(
-			FilesRefusedError,
-		);
-		// The session not getting there is a failure, to try again.
-		const dropped = await files.list(made.id, "tmp").catch((error: unknown) => error);
-		expect(dropped).toBeInstanceOf(Error);
-		expect(dropped).not.toBeInstanceOf(FilesRefusedError);
 	});
 
 	it("lists a microVM's busiest processes through the API, and none where its host or guest agent can't", async () => {
@@ -524,55 +301,6 @@ describe("sandboxes", () => {
 				: fetchApi(input, init);
 		});
 		await expect(failing.sandboxes.processes?.(made.id)).rejects.toThrow("The host isn't connected");
-	});
-
-	it("lists an E2E microVM's processes over the console's own session, never the gateway's route", async () => {
-		const { api, fetchApi } = setup();
-		const plain = await open(fetchApi);
-		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "microvm" });
-		await api.service.idle();
-		const calls: { sandboxId: string; method: string; params: object }[] = [];
-		const gateway: string[] = [];
-		let answer: "list" | "unsupported" | "dropped" = "list";
-		const localFetch: typeof fetch = async (input, init) => {
-			const path = String(input);
-			if (path === "/local/info") return Response.json({ local: true, spaces: [{ id: accountId, mode: "on" }] });
-			if (path === "/local/e2e") {
-				calls.push(JSON.parse(String(init?.body)) as (typeof calls)[number]);
-				if (answer === "unsupported") {
-					// A host from before processes answers the method it doesn't know as unsupported.
-					const error = { code: "e2e", message: "unknown method sandbox.processes", hostCode: "unsupported" };
-					return Response.json({ error }, { status: 502 });
-				}
-				if (answer === "dropped") {
-					return Response.json({ error: { code: "e2e", message: "The relay closed the stream" } }, { status: 502 });
-				}
-				const processes = [{ pid: 7, command: "python3 train.py", cpuPercent: 180.2, memoryBytes: 268_435_456 }];
-				return Response.json({ result: { processes, total: 9, sampleMs: 500 } });
-			}
-			if (new URL(path, ORIGIN).pathname.endsWith("/processes")) gateway.push(path);
-			return fetchApi(input, init);
-		};
-		const local = await localBridge(localFetch, "127.0.0.1");
-		const source = await apiCompute({
-			headers: () => ({ authorization: "Bearer person-ada" }),
-			fetch: localFetch,
-			...(local === undefined ? {} : { local }),
-		});
-		const processes = source.sandboxes.processes;
-		if (processes === undefined) throw new Error("No processes");
-		expect(await processes(made.id)).toEqual([
-			{ pid: 7, command: "python3 train.py", cpuPercent: 180.2, memoryBytes: 268_435_456 },
-		]);
-		expect(calls).toEqual([{ sandboxId: made.id, method: "sandbox.processes", params: {} }]);
-		answer = "unsupported";
-		await expect(processes(made.id)).resolves.toBeUndefined();
-		// A session that didn't get there is a failure, not a host that can't list them.
-		answer = "dropped";
-		await expect(processes(made.id)).rejects.toThrow("The relay closed the stream");
-		// The gateway relays the session and serves none of them.
-		expect(gateway).toEqual([]);
 	});
 
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {

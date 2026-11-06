@@ -76,9 +76,6 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@kantel/e2e":
-        specifier: workspace:*
-        version: link:../../packages/e2e
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
@@ -252,9 +249,6 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@kantel/e2e":
-        specifier: workspace:*
-        version: link:../e2e
     devDependencies:
       esbuild:
         specifier: 0.28.2
@@ -271,9 +265,6 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@kantel/e2e":
-        specifier: workspace:*
-        version: link:../e2e
       "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
@@ -324,9 +315,6 @@ importers:
       "@kantel/cli":
         specifier: workspace:*
         version: link:../cli
-      "@kantel/e2e":
-        specifier: workspace:*
-        version: link:../e2e
 
   packages/identity:
     dependencies:

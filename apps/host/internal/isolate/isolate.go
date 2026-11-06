@@ -1462,7 +1462,7 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return proto.SnapshotInfo{}, err
 	}
-	// Its own save time, and its source's state's time (TakenAt), which E2E provenance is judged on.
+	// Its own save time, and its source's state's time (TakenAt).
 	snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), SizeBytes: src.SizeBytes, Base: src.Base, Tier: Tier}
 	if err := writeJSONFile(filepath.Join(dir, "manifest.json"), man); err != nil {
 		os.RemoveAll(dir)

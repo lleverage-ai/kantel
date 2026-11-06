@@ -694,18 +694,17 @@ export interface SandboxCommand {
 /** How to reach a sandbox, made when asked for: tokens in it are short-lived. */
 export interface SandboxAccess {
 	/**
-	 * The Kantel CLI's command that SSHes in: `kantel ssh <id>`, which lets a key of its own in and needs nothing else,
-	 * or `kantel e2e ssh <id>` end to end. It has no token, so it works whenever it's run.
+	 * The Kantel CLI's command that SSHes in: `kantel ssh <id>`, which lets a key of its own in and needs nothing else.
+	 * It has no token, so it works whenever it's run.
 	 */
 	readonly ssh: string;
 	/**
 	 * Signs the CLI in to the Kantel this console belongs to, once, before `ssh` works: `kantel login --url <gateway>`.
-	 * Absent where the CLI already is (`kantel console` serves the page).
+	 * Absent where there's no gateway to name (the sample data, or a page with no origin).
 	 */
 	readonly cliLogin?: string;
 	/**
-	 * Whether plain `ssh` can get in without the CLI, through `SandboxesSource.sshKey`: not end to end, where the host
-	 * refuses the gateway's SSH. Absent: no.
+	 * Whether plain `ssh` can get in without the CLI, through `SandboxesSource.sshKey`. Absent: no.
 	 */
 	readonly sshWithoutCli?: boolean;
 	/** Its desktop in the browser. */
@@ -738,8 +737,7 @@ export function cliLoginCommand(url: string): string {
 }
 
 /** The CLI's command that SSHes into a sandbox. */
-export const cliSshCommand = (sandboxId: string, endToEnd = false): string =>
-	`kantel ${endToEnd ? "e2e ssh" : "ssh"} ${sandboxId}`;
+export const cliSshCommand = (sandboxId: string): string => `kantel ssh ${sandboxId}`;
 
 /** SSH without the CLI: a key let in for a while, and the plain `ssh` command that connects with it. */
 export interface SandboxSshKey {
@@ -950,16 +948,6 @@ export interface SandboxesSource {
 		list(id: string, path: string): Promise<SandboxFolder>;
 		read(id: string, path: string, range: FileRange): Promise<FilePart>;
 	};
-	/**
-	 * Where Browser and Desktop open: on the sandbox's page ("console", when left out), or each in a tab of its own
-	 * ("tab") where the page can't frame them, as `kantel console`'s page can't.
-	 */
-	readonly screens?: "console" | "tab";
-	/**
-	 * True for a sandbox this console can't yet read files or command output from end to end: its Files tab and a failed
-	 * command say so, and its files aren't read until this answers. False, or absent, for the rest.
-	 */
-	endToEnd?(id: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1039,14 +1027,6 @@ export class FileTooLargeError extends Error {
 	constructor(readonly size?: number) {
 		super("This file is too big to show here.");
 	}
-}
-
-/**
- * A read that needs this browser set up as a device first: an end-to-end space's files are read only over a session
- * of its own, and the gateway, which only relays it, can't. The message says how, in a line.
- */
-export class DeviceSetupError extends Error {
-	override readonly name = "DeviceSetupError";
 }
 
 /**
@@ -1909,44 +1889,6 @@ export interface ComputeSource {
 	readonly billing?: BillingSource;
 	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */
 	readonly devices?: DeviceLoginsSource;
-	/** Where this console's code came from, and each account's end-to-end encryption. Absent, nothing is said. */
-	readonly e2e?: E2ESource;
-}
-
-/** An account's end-to-end encryption, as its signed chain says: off, on, or strict (no hosted console at all). */
-export type E2EMode = "off" | "on" | "strict";
-
-/**
- * What end-to-end encryption means for the console's pages. `local`: `kantel console` serves it from the CLI's own
- * files, and its sandboxes' commands, files and history go to their host over sessions with the CLI's device key.
- * `gateway`: the gateway serves it, so in an end-to-end encrypted account it shows none of that unless this browser
- * is a device in the account's chain (`browser`).
- */
-export interface E2ESource {
-	readonly served: "local" | "gateway";
-	/** This device's label in the chain, when local. */
-	readonly device?: string;
-	mode(accountId: string): Promise<E2EMode>;
-	/** This browser as a device of its own (a `web` device in the chain), when the gateway serves the console. */
-	readonly browser?: BrowserDeviceSource;
-}
-
-/**
- * Where this browser stands in an account's chain. `unpinned`: it trusts no chain there yet, so it needs the genesis an
- * admin gives out of band. `pending`: it trusts the chain but isn't in it; an admin adds it with `command` after
- * checking `fingerprint` with its person. `ready`: it is in, as `label`. `refused`: it can't be (the space is strict,
- * its person isn't a member, or the gateway's chain goes back on one it verified), for `reason`.
- */
-export type BrowserStanding =
-	| { readonly kind: "unpinned" }
-	| { readonly kind: "pending"; readonly command: string; readonly fingerprint: string }
-	| { readonly kind: "ready"; readonly label: string }
-	| { readonly kind: "refused"; readonly reason: string };
-
-export interface BrowserDeviceSource {
-	standing(accountId: string): Promise<BrowserStanding>;
-	/** Trusts the chain from `genesis` (what `kantel e2e status` prints), making this browser's keys if it has none. */
-	trust(accountId: string, genesis: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -7,7 +7,6 @@ import { navigate, searchWithout, useHash, usePathname, useSearch } from "../app
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
 import { createJoinLink } from "./join-link.ts";
-import { localBridge } from "./local.ts";
 import { HOSTING_KEY, safeSession, tabQueryOf } from "./tab-query.ts";
 
 // The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
@@ -110,10 +109,7 @@ async function sourceFor(
 	const wantsSample = hosting === "hosted" || new URLSearchParams(location.search).get("data") === "sample";
 	if (api !== undefined && !wantsSample) {
 		try {
-			// Served by `kantel console`: its bridge reads E2E sandboxes' history from their hosts (local.ts).
-			const local = await localBridge();
-			const options = { ...api, hosting, ...(local === undefined ? {} : { local }) };
-			return { source: namedFor(await apiCompute(options), signedInAs), sample: false };
+			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
 		} catch (error) {
 			if (error instanceof KantelApiError && error.status === 403) return { refused: error.message };
 			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);
@@ -206,7 +202,6 @@ export function ComputeApp({
 			source={sourced.source}
 			pathname={pathname}
 			search={search}
-			hash={hash}
 			navigate={go}
 			base={COMPUTE_BASE}
 			narrow={narrow}

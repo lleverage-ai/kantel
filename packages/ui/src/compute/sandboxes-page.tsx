@@ -93,7 +93,6 @@ import {
 	sandboxesShown,
 	TYPE_FILTERS,
 } from "./sandbox-filters.ts";
-import { popOut } from "./sandbox-screen.tsx";
 import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
 import { buildPollMs, TEMPLATE_POLL_MS } from "./template-view.ts";
 import { resourcesText, templatePickHint } from "./templates-page.tsx";
@@ -1051,31 +1050,13 @@ const follow = (navigate: ((path: string) => void) | undefined) => (event: LinkC
 	navigate(event.currentTarget.getAttribute("href") ?? "");
 };
 
-/** The click on an anchor, as much of it as `follow` and `screenLink` read. */
+/** The click on an anchor, as much of it as `follow` reads. */
 type LinkClick = Pick<
 	MouseEvent<HTMLAnchorElement>,
 	"button" | "metaKey" | "ctrlKey" | "shiftKey" | "preventDefault"
 > & {
 	readonly currentTarget: Pick<HTMLAnchorElement, "getAttribute">;
 };
-
-/**
- * A row's Desktop (or Browser): its page of its own, which the link opens in a new tab, or the screen itself in a tab
- * where the console can't frame it (`screens` "tab"), as on the sandbox's page. `openTab` runs during the click, so
- * the browser lets the tab open.
- */
-export function screenLink(
-	screens: SandboxesSource["screens"],
-	openTab: (view: "browser" | "desktop") => void,
-): (view: "browser" | "desktop") => (event: LinkClick) => void {
-	// The link's own new tab.
-	if (screens !== "tab") return () => () => {};
-	return (view) => (event) => {
-		if (event.button !== 0) return;
-		event.preventDefault();
-		openTab(view);
-	};
-}
 
 /** What a row can do: its buttons, and ⋯ with Stop and the sandbox menu's four. */
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
@@ -1128,8 +1109,7 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const href =
 		pending || sandboxHref === undefined ? undefined : (view?: SandboxRowView) => sandboxHref(sandbox.id, view);
 	const onLink = follow(calls.navigate);
-	const onScreen = screenLink(source.screens, (view) => popOut(view, undefined, () => source.access(sandbox.id)));
-	return { pending, can, windows, screen, resume, recover, actions, href, onLink, onScreen };
+	return { pending, can, windows, screen, resume, recover, actions, href, onLink };
 }
 
 /** The state, in its colour. */
@@ -1185,10 +1165,7 @@ function SandboxRow({
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, can, windows, screen, resume, recover, actions, href, onLink, onScreen } = useRowActions(
-		sandbox,
-		calls,
-	);
+	const { pending, can, windows, screen, resume, recover, actions, href, onLink } = useRowActions(sandbox, calls);
 	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
 	const tone = ticked ? "bg-selected" : "hover:bg-hover";
@@ -1269,7 +1246,6 @@ function SandboxRow({
 								target="_blank"
 								rel="noopener"
 								aria-label={`${screen === "desktop" ? "Desktop" : "Browser"} of ${sandbox.name}`}
-								onClick={onScreen(screen)}
 							>
 								{screen === "desktop" ? <DesktopIcon size="sm" /> : <GlobeIcon size="sm" />}
 							</a>

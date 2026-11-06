@@ -131,7 +131,6 @@ import {
 	DEFAULT_HOST_IMAGES,
 	HOSTS_BUNDLES_PATH,
 	HOSTS_CONNECT_PATH,
-	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
 	HOSTS_RELEASE_CHECK_PATH,
@@ -635,10 +634,6 @@ export async function gatewayCompute(options: {
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
 		recordUsage: (hostId, usage, how) => api.service.recordUsage(hostId, usage, how),
-		e2eChain: {
-			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
-			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
-		},
 		// Snapshot sizes always; the images and bases only with image patching on.
 		...hostSnapshotLinks(api.service, baseImages),
 		bundle: (hostId, sandboxId, digest) => api.service.bundleForHost(hostId, sandboxId, digest),
@@ -671,7 +666,7 @@ export async function gatewayCompute(options: {
 	sweepCompute.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
-		// Registration, and a host's E2E chain and its sandboxes' bundles (on its credential), only: the API serves the
+		// Registration, and its sandboxes' bundles (on its credential), only: the API serves the
 		// operator's routes, so the registry's own admin routes refuse everyone.
 		const register = createHostsApi({
 			hosts: hosts.service,
@@ -687,7 +682,7 @@ export async function gatewayCompute(options: {
 		});
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
-			if (path === HOSTS_REGISTER_PATH || path === HOSTS_E2E_CHAIN_PATH) return register.fetch(request);
+			if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
 			// The release workflow's (or a cron's) "a release is out", on the release token.
 			if (path === HOSTS_RELEASE_CHECK_PATH) return register.fetch(request);
 			// A bundle's tar for a sandbox the host runs, on the host's credential.

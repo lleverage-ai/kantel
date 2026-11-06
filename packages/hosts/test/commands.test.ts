@@ -53,7 +53,7 @@ class CommandHost {
 	 * `lost` before.
 	 */
 	dropOnStart?: "started" | "lost";
-	/** Set: every status get is refused with it, as once its space turns E2E on. */
+	/** Set: every status get is refused with it. */
 	refuseGets?: { code: string; message: string };
 	/** A detached start answered unconfirmed (its guest didn't answer): `started` once the guest has it, `lost` not. */
 	unconfirmStart?: "started" | "lost";
@@ -312,12 +312,12 @@ describe("commands on kantel-host hosts", () => {
 
 	it("ends a detached command whose host refuses for good to say how it went, rather than leave it running", async () => {
 		const { root, host, sandbox } = await setup(true);
-		host.refuseGets = { code: "unsupported", message: "its space is end-to-end encrypted" };
+		host.refuseGets = { code: "unsupported", message: "the host won't answer this" };
 		const started = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
 		await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, started.id)).state).toBe("exited"));
 		const ended = await root.getCommand(sandbox.id, started.id);
 		expect(ended).toMatchObject({ exitCode: 1 });
-		expect(ended.stderr).toContain("end-to-end encrypted");
+		expect(ended.stderr).toContain("won't answer this");
 	});
 
 	it("follows a detached start its sandbox didn't confirm, and ends it with that said when it never started", async () => {

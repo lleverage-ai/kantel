@@ -40,8 +40,7 @@ export function navigate(
 	{ replace = false, drop = [] }: { replace?: boolean; drop?: readonly string[] } = {},
 ): void {
 	const target = navigationTarget(path, searchWithout(location.search, drop));
-	// The same place, fragment and all, adds no entry; a path without the fragment it's at moves off it (a file browser's
-	// `#path=`), as a link would.
+	// The same place, fragment and all, adds no entry; a path without the fragment it's at moves off it, as a link would.
 	if (`${location.pathname}${location.search}${location.hash}` === target) return;
 	if (replace) history.replaceState(null, "", target);
 	else history.pushState(null, "", target);

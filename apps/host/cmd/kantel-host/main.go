@@ -64,8 +64,6 @@ func main() {
 		err = bench(args)
 	case "manifest":
 		err = manifestCmd(args)
-	case "e2e":
-		err = e2eCmd(args)
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
@@ -98,7 +96,6 @@ func usage() {
   bench                                     measure sandbox create, resume and fork on this machine
   run                                       the daemon itself (the service runs it)
   manifest <dir>                            write <dir>/manifest.json for the images in <dir> (for releases)
-  e2e key|status|join [--chain f] <ticket>  end-to-end encryption: this host's keys, its spaces, join a space
   version
 `)
 }

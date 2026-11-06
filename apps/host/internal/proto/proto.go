@@ -328,7 +328,7 @@ type SandboxInfo struct {
 	// Source says how a create was served: "snapshot" (restored from a snapshot), "boot" (a cold boot), or for an
 	// isolate "pool" (an isolate its account's VM had pre-loaded) or "account" (its account's VM already ran).
 	Source string `json:"source,omitempty"`
-	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
+	// Owner is the account the sandbox belongs to (its create's Owner).
 	Owner string `json:"owner,omitempty"`
 	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
 	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
@@ -495,8 +495,7 @@ type SnapshotInfo struct {
 	// Base is the host images version the snapshot's root filesystem is (empty when unknown: images not versioned).
 	Base string `json:"base,omitempty"`
 	// TakenAt is when the state it holds was taken, where that is before CreatedAt: a kept snapshot's (snapshot.keep)
-	// is its source's. E2E provenance is judged on it (TakenAtOrCreated), so a copy made now of older files isn't taken
-	// for a snapshot of a sandbox made since. 0: CreatedAt.
+	// is its source's. 0: CreatedAt.
 	TakenAt int64 `json:"takenAt,omitempty"`
 	// UniqueBytes, from a host with FeatureSnapshotSizes: what of SizeBytes is in files no other snapshot has. The rest
 	// is in SharedBytes groups (snapshot.list's shared, or Shared on a keep's answer).
@@ -505,19 +504,19 @@ type SnapshotInfo struct {
 	Shared []SharedBytes `json:"shared,omitempty"`
 }
 
-// SharedBytes is the bytes of the files a set of snapshots (Snapshots, their IDs, sorted) all hold and no other does:
-// files linked into several snapshots, such as a kept copy and its source. The control plane counts them once.
-type SharedBytes struct {
-	Snapshots []string `json:"snapshots"`
-	Bytes     int64    `json:"bytes"`
-}
-
 // TakenAtOrCreated is when the state a snapshot holds was taken: TakenAt, or CreatedAt where it has none.
 func (s SnapshotInfo) TakenAtOrCreated() int64 {
 	if s.TakenAt != 0 {
 		return s.TakenAt
 	}
 	return s.CreatedAt
+}
+
+// SharedBytes is the bytes of the files a set of snapshots (Snapshots, their IDs, sorted) all hold and no other does:
+// files linked into several snapshots, such as a kept copy and its source. The control plane counts them once.
+type SharedBytes struct {
+	Snapshots []string `json:"snapshots"`
+	Bytes     int64    `json:"bytes"`
 }
 
 // Egress is a sandbox's way out, sent with create, resume and fork.
@@ -788,8 +787,8 @@ type ExecParams struct {
 	TimeoutMs int64             `json:"timeoutMs,omitempty"`
 	Stdin     string            `json:"stdin,omitempty"`
 	Stream    bool              `json:"stream,omitempty"`
-	// Detached, without a CommandID (an E2E device's), starts the command in the background and answers its pid and
-	// the log its output goes to. With a CommandID (FeatureExecControl), see CommandID.
+	// Detached, without a CommandID, starts the command in the background and answers its pid and the log its output
+	// goes to. With a CommandID (FeatureExecControl), see CommandID.
 	Detached bool `json:"detached,omitempty"`
 	// Attribution names the command at the egress proxy (such as an agent's tool call ID).
 	Attribution string `json:"attribution,omitempty"`
@@ -930,14 +929,10 @@ type SnapshotParams struct {
 // PortParams is port.open: binary frames on Stream carry the bytes both ways.
 type PortParams struct {
 	SandboxID string `json:"sandboxId"`
-	// Port is the sandbox's TCP port, or PortE2E: the stream is an E2E session with the host (package e2e), which
-	// names what it wants inside its encryption.
+	// Port is the sandbox's TCP port, 1 to 65535.
 	Port   int    `json:"port"`
 	Stream uint32 `json:"stream"`
 }
-
-// PortE2E is the port.open target that is an E2E session with the host rather than a sandbox port.
-const PortE2E = 0
 
 // FileOpenParams is sandbox.files.open: a file's bytes on Stream, in binary frames as port.open's.
 //

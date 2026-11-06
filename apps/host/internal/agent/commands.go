@@ -269,7 +269,7 @@ func isUnsupported(err error) bool {
 // runCommand is sandbox.exec with a CommandID: a foreground one run so a kill can stop it, a detached one started.
 //
 // A foreground one runs on when the connection its call came on goes (a reconnect, a newer connection taking over):
-// its call's context outlives the session (keptExec), so it ends at its own limit, a kill or a claim on its sandbox.
+// its call's context outlives the session (keptExec), so it ends at its own limit or a kill.
 // Its result is kept, as a detached one's is, for the control plane to fetch by its ID (sandbox.exec.get) on the next
 // connection when its answer had nowhere to go.
 func (h *Host) runCommand(ctx context.Context, t Tier, p proto.ExecParams, onOutput func(stdout, stderr string)) (any, error) {
@@ -335,16 +335,8 @@ func (h *Host) startDetached(ctx context.Context, t Tier, key string, p proto.Ex
 		}
 	}
 	p.Detached, p.Stream = false, false
-	// The gateway's call guard is held until both the call and the run have ended: a delete of the sandbox (or another
-	// made with its ID) claims it, which ends the run and waits for it, so nothing it writes lands in a sandbox after it;
-	// its space turning E2E on ends it, as any plaintext call; and a run that ends before its start is answered doesn't
-	// end the call's context. The session's going doesn't end it (detachedExec).
-	release, owned := shareRelease(ctx)
-	base := ctx
-	if !owned {
-		base = context.WithoutCancel(ctx)
-	}
-	runCtx, cancel := context.WithCancel(base)
+	// Neither the call's answer nor the session's going ends it.
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	run := &commandRun{cancel: cancel, done: make(chan struct{}), detached: true}
 	var refused error
 	if reserved != nil {
@@ -356,11 +348,9 @@ func (h *Host) startDetached(ctx context.Context, t Tier, key string, p proto.Ex
 	}
 	if refused != nil {
 		cancel()
-		release()
 		return nil, refused
 	}
 	go func() {
-		defer release()
 		defer cancel()
 		result, err := t.Exec(runCtx, p, nil)
 		h.runs.end(key, run, result, err)
@@ -368,53 +358,9 @@ func (h *Host) startDetached(ctx context.Context, t Tier, key string, p proto.Ex
 	return proto.ExecStatus{CommandID: p.CommandID, State: proto.ExecRunning}, nil
 }
 
-// releaseKey carries a gateway call's guard release (callRelease) in its context.
-type releaseKey struct{}
-
-// callRelease is a gateway call's guard release (gatewayGuard's done), shared by its owners: the call, and work that
-// outlives it (shareRelease). The guard is released once every owner has let go.
-type callRelease struct {
-	mu     sync.Mutex
-	done   func()
-	owners int
-}
-
-// withRelease puts done in ctx, owned by the call; work that outlives the call may share it.
-func withRelease(ctx context.Context, done func()) (context.Context, *callRelease) {
-	r := &callRelease{done: done, owners: 1}
-	return context.WithValue(ctx, releaseKey{}, r), r
-}
-
-// letGo is one owner letting go; the last releases the guard.
-func (r *callRelease) letGo() {
-	r.mu.Lock()
-	r.owners--
-	last := r.owners == 0
-	r.mu.Unlock()
-	if last {
-		r.done()
-	}
-}
-
-// release is the call letting go of its guard, once it has answered.
-func (r *callRelease) release() { r.letGo() }
-
-// shareRelease makes work that outlives the call an owner of its guard too, and answers its letting go (once). Not
-// owned (a no-op) when the call has none: not the gateway's, or a test's.
-func shareRelease(ctx context.Context) (func(), bool) {
-	r, ok := ctx.Value(releaseKey{}).(*callRelease)
-	if !ok {
-		return func() {}, false
-	}
-	r.mu.Lock()
-	r.owners++
-	r.mu.Unlock()
-	return sync.OnceFunc(r.letGo), true
-}
-
 // keptExec is whether a call is a sandbox.exec with a CommandID, whose run outlives the session it came on: a detached
-// one's guard may be held past the call and the session (startDetached), and a foreground one runs on to its own end
-// when the session goes (runCommand).
+// one runs on its own context (startDetached), and a foreground one runs on to its own end when the session goes
+// (runCommand).
 func keptExec(method string, params json.RawMessage) bool {
 	if method != proto.MethodExec {
 		return false

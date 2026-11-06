@@ -10,9 +10,7 @@ import (
 // (ReadGuest), or, where the guest can't say, the process's resident memory.
 type Process struct {
 	SandboxID string
-	// Owner is the sandbox's space (account), read with it, for the E2E filter.
-	Owner string
-	Pid   int
+	Pid       int
 	// CPUs is the sandbox's allocation (its vCPUs); MemLimitBytes the memory its size gives it.
 	CPUs          float64
 	MemLimitBytes int64
@@ -56,7 +54,6 @@ type Shared struct {
 // Busy is a sandbox's time running commands so far, in seconds (the one in progress counted up to now): a counter.
 type Busy struct {
 	SandboxID string
-	Owner     string
 	Seconds   float64
 }
 

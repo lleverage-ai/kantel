@@ -339,7 +339,7 @@ An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 
 
 The control plane checks Kantel's latest `kantel-host` release about once an hour. The console's **Hosts** page marks a host that runs an older version **Out of date** and counts those hosts over the table. To update one, choose **Update to** *version* from the host's **⋯** menu. The host downloads that release, checks it against the release's `SHA256SUMS` and restarts on it. The row shows **Updating to** *version* until the host connects on the new version, usually within seconds. Its sandboxes keep running, but SSH sessions, terminals and port connections to them through Kantel drop while the host reconnects. `kantel-admin host update <hostId>` and `POST /v1/admin/hosts/{hostId}/update` do the same, and an account's own hosts are updated with `POST /v1/hosts/{hostId}/update`.
 
-Nothing updates on its own this way: a host moves only when someone asks. A host that is offline can be updated once it's back. A host in an E2E space refuses an update from the control plane, so update it on the machine. A host on a newer prerelease or its own build isn't marked. To read the latest release from a mirror, set `KANTEL_HOST_RELEASES` to a URL that answers `{"tag_name": "v0.4.2"}` or `{"version": "0.4.2"}`; set it to `off` to stop checking.
+Nothing updates on its own this way: a host moves only when someone asks. A host that is offline can be updated once it's back. A host on a newer prerelease or its own build isn't marked. To read the latest release from a mirror, set `KANTEL_HOST_RELEASES` to a URL that answers `{"tag_name": "v0.4.2"}` or `{"version": "0.4.2"}`; set it to `off` to stop checking.
 
 ### Check for updates now
 

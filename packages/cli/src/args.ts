@@ -1,8 +1,6 @@
 /**
  * A small argument parser: `--flag value`, `--flag=value`, repeated flags collected in order, booleans (`--flag`,
  * `--flag=false`, `--no-flag`), one-letter aliases (`-h`), and `--`, after which everything is left as it is.
- * With `dashArguments`, a longer word after one dash (a base64url value may start with `-`) is an argument, as a
- * negative number always is: aliases are one letter and aren't bundled, so it can't be a flag.
  */
 import { UsageError } from "./errors.ts";
 
@@ -39,16 +37,8 @@ function booleanOf(name: string, inline: string | undefined): boolean {
 	throw new UsageError(`--${name} takes no value (or true or false), not "${inline}"`);
 }
 
-export interface ParseOptions {
-	/**
-	 * Take a longer word after one dash (`-qWbW…`) as an argument rather than refusing it as an unknown flag. Only for a
-	 * caller that refuses arguments a command doesn't take, so a mistyped `-json` still fails before it runs.
-	 */
-	readonly dashArguments?: boolean;
-}
-
 /** Parses `argv` against `specs`; an unknown flag or a missing value is a `UsageError`. */
-export function parseArgs(argv: readonly string[], specs: FlagSpecs, options: ParseOptions = {}): ParsedArgs {
+export function parseArgs(argv: readonly string[], specs: FlagSpecs): ParsedArgs {
 	const flags: { [name: string]: FlagValue } = {};
 	const positionals: string[] = [];
 	let rest: string[] | undefined;
@@ -98,8 +88,7 @@ export function parseArgs(argv: readonly string[], specs: FlagSpecs, options: Pa
 			}
 			continue;
 		}
-		const dashArgument = options.dashArguments === true && token.length > 2;
-		if (token.length > 1 && token.startsWith("-") && !/^-\d/.test(token) && !dashArgument) {
+		if (token.length > 1 && token.startsWith("-") && !/^-\d/.test(token)) {
 			const name = shorts.get(token.slice(1));
 			const spec = name === undefined ? undefined : specs[name];
 			if (name === undefined || spec === undefined) throw new UsageError(`unknown flag ${token}`);
