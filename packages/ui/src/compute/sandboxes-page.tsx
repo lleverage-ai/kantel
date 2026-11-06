@@ -70,7 +70,7 @@ import {
 } from "./compute-model.ts";
 import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { seriesOf, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf } from "./parts.tsx";
+import { computePage, messageOf, tableFrame, td, th } from "./parts.tsx";
 import {
 	AUTO_STOP_CHOICES,
 	DeleteDialog,
@@ -581,10 +581,12 @@ function SandboxToolbar({
 
 function SandboxesSkeleton() {
 	return (
-		<div className="flex flex-col gap-3 py-2" aria-busy="true">
-			{[0, 1, 2, 3].map((row) => (
-				<Skeleton key={row} />
-			))}
+		<div className={tableFrame} aria-busy="true">
+			<div className="flex flex-col gap-3 p-4">
+				{[0, 1, 2, 3].map((row) => (
+					<Skeleton key={row} />
+				))}
+			</div>
 		</div>
 	);
 }
@@ -704,11 +706,11 @@ function SandboxList({
 			))}
 		</ul>
 	) : (
-		<SideScroll className="kt-compute-table min-w-0" surface="canvas" fill>
+		<SideScroll className={tableFrame} fill>
 			<table className="w-full border-collapse text-left text-md">
 				<thead>
 					<tr>
-						<th className={`${head} w-0 pr-0`} scope="col">
+						<th className={`${th} w-0 pr-0`} scope="col">
 							<TickBox
 								label="Select all sandboxes"
 								checked={allTicked}
@@ -717,47 +719,47 @@ function SandboxList({
 								onChange={tickAll}
 							/>
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							Name / subdomain
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							Sandbox ID
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							State
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							{creatorOf === undefined ? "Created" : "Created / by"}
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							Type
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							<HeadHint label="Stops in">
 								When auto-stop stops it, and saves a snapshot to start from again. Its page can push this back or make
 								it always on.
 							</HeadHint>
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							<HeadHint label="Snapshot">
 								When its latest snapshot was saved: on stop, every so often while it runs, or by a fork. It starts again
 								from this one.
 							</HeadHint>
 						</th>
 						{hosting === "hosted" ? (
-							<th className={`${head} text-right`} scope="col">
+							<th className={`${th} text-right`} scope="col">
 								<HeadHint label="Cost" end>
 									What it has cost this billing period. Billing has the account's total.
 								</HeadHint>
 							</th>
 						) : null}
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							<HeadHint label="Usage">
 								CPU, RAM, disk and IO over the last 10 minutes, as a share of what it has. Click a chart for its metrics
 								over an hour, a day or a week, and its busiest processes.
 							</HeadHint>
 						</th>
-						<th className={head} scope="col">
+						<th className={th} scope="col">
 							<span className="kt-sr-only">Actions</span>
 						</th>
 					</tr>
@@ -835,10 +837,6 @@ function SandboxList({
 		</div>
 	);
 }
-
-/** The table: no frame round it, a hairline under the head and under every row. */
-const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
-const cell = "border-b border-border px-2 py-2 align-middle whitespace-nowrap";
 
 /** A column's heading with a "?" that says what it means. */
 function HeadHint({ label, end = false, children }: { label: string; end?: boolean; children: ReactNode }) {
@@ -1201,7 +1199,7 @@ function SandboxRow({
 			className={`kt-sandbox-row group/row relative ${tone} ${failure === undefined ? "" : "[&>td]:border-b-0 [&>td]:pb-1"}`}
 			data-sandbox={sandbox.id}
 		>
-			<td className={`${cell} w-0 pr-0`}>
+			<td className={`${td} w-0 pr-0`}>
 				{href === undefined ? null : (
 					// biome-ignore lint/a11y/useAnchorContent: a pointer's way in only; the name is the link a keyboard and a screen reader use.
 					<a className="absolute inset-0" href={href()} tabIndex={-1} aria-hidden="true" onClick={onLink} />
@@ -1209,13 +1207,13 @@ function SandboxRow({
 				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
 			</td>
 			{/* The name takes the room the other columns leave, and truncates, so the row's actions never go off the edge. */}
-			<td className={`${cell} w-full min-w-44 max-w-0`}>
+			<td className={`${td} w-full min-w-44 max-w-0`}>
 				<NameCell sandbox={sandbox} href={href?.()} onLink={onLink} calls={calls} />
 			</td>
-			<td className={cell}>
+			<td className={td}>
 				<IdCell sandbox={sandbox} />
 			</td>
-			<td className={cell}>
+			<td className={td}>
 				{sandbox.base?.outdated === true ? (
 					<span className="relative z-1 flex flex-col items-start gap-0.5">
 						<StateLabel state={sandbox.state} />
@@ -1225,7 +1223,7 @@ function SandboxRow({
 					<StateLabel state={sandbox.state} />
 				)}
 			</td>
-			<td className={cell}>
+			<td className={td}>
 				{creator === undefined ? (
 					<When at={sandbox.createdAt} now={now} />
 				) : (
@@ -1237,7 +1235,7 @@ function SandboxRow({
 					</span>
 				)}
 			</td>
-			<td className={cell}>
+			<td className={td}>
 				<Tooltip
 					content={`${sandboxMachineText(sandbox)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
 				>
@@ -1247,19 +1245,19 @@ function SandboxRow({
 					</span>
 				</Tooltip>
 			</td>
-			<td className={cell}>
+			<td className={td}>
 				<Countdown sandbox={sandbox} now={now} live={!fixedNow} />
 			</td>
-			<td className={cell}>
+			<td className={td}>
 				<SnapshotCell sandbox={sandbox} now={now} />
 			</td>
 			{hosting === "hosted" ? (
-				<td className={`${cell} text-right tabular-nums`}>{costText(sandbox.costCents ?? 0)}</td>
+				<td className={`${td} text-right tabular-nums`}>{costText(sandbox.costCents ?? 0)}</td>
 			) : null}
-			<td className={cell}>
+			<td className={td}>
 				<Usage sandbox={sandbox} calls={calls} />
 			</td>
-			<td className={`${cell} w-0 text-right`}>
+			<td className={`${td} w-0 text-right`}>
 				<span className="relative z-1 flex items-center justify-end gap-0.5">
 					{windows && screen !== undefined && href !== undefined ? (
 						// An icon under the pointer, so it takes little room from every row and never covers its usage.
@@ -1308,7 +1306,7 @@ function SandboxRow({
 			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : ""}`}>
 				<td className="border-b border-border p-0" />
 				<td
-					className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error"
+					className="border-b border-border px-3 pt-0 pb-2.5 text-sm text-status-error"
 					colSpan={hosting === "hosted" ? 10 : 9}
 				>
 					{failure}
