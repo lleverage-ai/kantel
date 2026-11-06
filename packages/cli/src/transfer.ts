@@ -606,24 +606,45 @@ export async function uploadTreeArchive(
 		return parts;
 	};
 
-	const [, parts] = await Promise.all([pack(), upload()]);
-	if (parts === 0) return { files: 0, bytes: 0 };
-	const into = target === "" ? '"$HOME"' : shellPath(target);
 	const glob = `${quote(staging)}-*`;
 	try {
+		// upload() settles every part it started before it answers, failed or not, so nothing lands after the clean-up.
+		const [, parts] = await Promise.all([pack(), upload()]);
+		if (parts === 0) return { files: 0, bytes: 0 };
 		// The parts' names sort in order, so the glob joins them as they were cut.
 		await run(
 			client,
 			sandboxId,
-			`mkdir -p ${into} && cat ${glob} | tar -xzf - -C ${into} --no-same-owner --no-same-permissions; s=$?; rm -f ${glob}; exit $s`,
+			`cat ${glob} | tar -xzf - -C ${archiveTarget(target)} --no-same-owner --no-same-permissions`,
 			600_000,
 		);
-	} catch (error) {
+	} finally {
 		await run(client, sandboxId, `rm -f ${glob}`).catch(() => undefined);
-		throw error;
 	}
 	for (const path of sent) onFile?.(remoteJoin(target, path));
 	return { files: count, bytes: total };
+}
+
+/**
+ * A sandbox path as the files API resolves it, for a shell: a relative one under /home/user, as the files API puts it
+ * (not the command account's $HOME, which on an image with no `user` is root's).
+ */
+const archiveTarget = (target: string): string =>
+	quote(target.startsWith("/") ? target : posix.join("/home/user", target));
+
+/**
+ * Whether a tree can go into `target` as an archive: the command account can make and write it, and write /tmp. A
+ * key without `exec`, or a destination under a directory only root may write (which the files API, as root, can),
+ * goes file by file instead.
+ */
+async function archiveFits(client: KantelClient, sandboxId: string, target: string): Promise<boolean> {
+	const into = archiveTarget(target);
+	try {
+		await run(client, sandboxId, `mkdir -p ${into} && test -w ${into} && test -w /tmp && command -v tar >/dev/null`);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** Copies `files` into `target` as the sandbox takes it best: one tar into a microVM, file by file into an isolate. */
@@ -634,9 +655,27 @@ export async function uploadTreeTo(
 	files: readonly string[],
 	target: string,
 	onFile?: (path: string) => void,
+	note?: (line: string) => void,
 ): Promise<Copied> {
-	const microvm = (await client.getSandbox(sandboxId)).type === "microvm";
-	return (microvm ? uploadTreeArchive : uploadTree)(client, sandboxId, root, files, target, onFile);
+	let microvm: boolean;
+	try {
+		microvm = (await client.getSandbox(sandboxId)).type === "microvm";
+	} catch (error) {
+		// A key that may write files but not read the sandbox (no sandboxes:read) still pushes, one file at a time.
+		if (!(error instanceof KantelApiError) || error.code !== "forbidden") throw error;
+		microvm = false;
+	}
+	if (microvm && (await archiveFits(client, sandboxId, target))) {
+		try {
+			return await uploadTreeArchive(client, sandboxId, root, files, target, onFile);
+		} catch (error) {
+			// Extracting failed in the sandbox (a directory in the tree only root may write, say): the files API, as
+			// root, still can. Anything else, such as the sandbox stopping, fails as it is.
+			if (!(error instanceof CliError) || !/^a command in /.test(error.message)) throw error;
+			note?.(`kantel: the archive couldn't be extracted (${error.message}); sending file by file`);
+		}
+	}
+	return uploadTree(client, sandboxId, root, files, target, onFile);
 }
 
 /** The files under `path` in the sandbox, relative to it. */

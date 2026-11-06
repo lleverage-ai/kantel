@@ -2359,7 +2359,15 @@ const SECTIONS: readonly Section[] = [
 						const remote = intoDirectory ? remoteJoin(into, name) : into;
 						if (await isDirectory(local)) {
 							if (!recursive) throw new UsageError(`${from} is a directory: add -r to copy it`);
-							const copied = await uploadTreeTo(client, target.sandboxId, local, await walk(local), remote, log);
+							const copied = await uploadTreeTo(
+								client,
+								target.sandboxId,
+								local,
+								await walk(local),
+								remote,
+								log,
+								(line) => ctx.note(line),
+							);
 							ctx.emit(
 								{ ...copied, to: remote },
 								() => `Copied ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${remote}.`,
@@ -2443,9 +2451,17 @@ const SECTIONS: readonly Section[] = [
 						ctx.note("kantel: --no-default-excludes sends credentials, sign-ins and .env files too");
 					}
 					const target = remotePath(ctx.string("to") ?? basename(root));
-					const copied = await uploadTreeTo(await ctx.client(), sandboxId, root, plan.files, target, (path) => {
-						if (!ctx.json) ctx.note(path);
-					});
+					const copied = await uploadTreeTo(
+						await ctx.client(),
+						sandboxId,
+						root,
+						plan.files,
+						target,
+						(path) => {
+							if (!ctx.json) ctx.note(path);
+						},
+						(line) => ctx.note(line),
+					);
 					const where = target.startsWith("/") ? target : `/home/user/${target}`;
 					ctx.emit(
 						{ ...copied, to: where, skipped: plan.skipped },
