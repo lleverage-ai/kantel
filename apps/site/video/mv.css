@@ -1,0 +1,21 @@
+/* beat-video frame. Size comes from --W/--H (set by mv.js from ?w=&h=). Neutral by default: a brand layer
+   overrides the custom properties below (and adds its own fonts) in a later stylesheet. */
+:root {
+  --mv-bg: #f7f6f2; --mv-ink: #16181c; --mv-muted: #6b6b66; --mv-accent: #e8742a; --mv-dark: #15191f; --mv-on-dark: #f7f6f2;
+  --mv-on-dark-muted: #9a9a95; --mv-hair: #d9d8d2;
+  --mv-display: ui-serif, Georgia, serif; --mv-sans: system-ui, sans-serif; --mv-mono: ui-monospace, Menlo, monospace;
+  --mv-wipe: var(--mv-accent);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #111; }
+body { font-family: var(--mv-sans); color: var(--mv-ink); -webkit-font-smoothing: antialiased; }
+.mv-frame { position: relative; width: var(--W); height: var(--H); overflow: hidden; background: var(--mv-bg); }
+.scene { position: absolute; inset: 0; overflow: hidden; }
+.scene.dark { background: var(--mv-dark); color: var(--mv-on-dark); }
+em { font-style: normal; color: var(--mv-accent); }
+
+#mv-wipe { position: absolute; top: -10%; bottom: -10%; left: -10%; width: 120%; background: var(--mv-wipe); z-index: 100; opacity: 0; pointer-events: none; }
+#mv-flash { position: absolute; inset: 0; background: #fff; z-index: 100; opacity: 0; pointer-events: none; }
+.mv-cursor { position: absolute; left: 0; top: 0; width: 40px; height: 40px; z-index: 50; pointer-events: none; filter: drop-shadow(0 4px 6px rgb(0 0 0 / .25)); }
+.mv-cursor .ring { position: absolute; left: -20px; top: -20px; width: 40px; height: 40px; border-radius: 50%; border: 4px solid var(--mv-accent); opacity: 0; }
+.mv-hud { position: absolute; right: 12px; top: 12px; z-index: 200; padding: 6px 10px; border-radius: 6px; background: rgb(0 0 0 / .7); color: #fff; font: 14px/1 var(--mv-mono); }

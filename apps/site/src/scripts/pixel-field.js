@@ -11,8 +11,8 @@
 //   with the loader's "arrive" flash (on, dip, on), holds, and goes out again. Many small jobs in one bigger system.
 // - One orange: every seventh patch arrives in the brand's orange instead, a few pixels at most, and never two at once.
 //
-// The text sits on top, so the field keeps a quiet zone around it (the children of the element named by the canvas's
-// `data-pixel-quiet`, a heading or paragraph by its lines rather than its whole column): towards the text the pixels
+// The text sits on top, so the field keeps a quiet zone around it (the children of the elements named by the canvas's
+// `data-pixel-quiet`, space-separated ids, a heading or paragraph by its lines rather than its whole column): towards the text the pixels
 // thin out and dim, behind it only a sparse, faint few stay, and no work patch or orange lands there. That keeps every frame legible. The field also dissolves pixel by pixel under the
 // header and into the section below.
 //
@@ -109,14 +109,19 @@ function toRgb(colour, ctx) {
  * and `stop()`.
  *
  * @param {HTMLCanvasElement} canvas
- * @param {{ ink?: string, accent?: string, line?: string, cell?: number, seed?: number, autoplay?: boolean, start?: number, quiet?: Element | null }} [options]
+ * @param {{ ink?: string, accent?: string, line?: string, cell?: number, seed?: number, autoplay?: boolean, start?: number, quiet?: Element | Element[] | null }} [options]
  */
 export function mountPixelField(canvas, options = {}) {
 	const ctx = canvas.getContext("2d");
 	if (ctx === null) return { render() {}, stop() {} };
 	const seed = options.seed ?? 7;
-	const quietElement =
-		options.quiet !== undefined ? options.quiet : document.getElementById(canvas.dataset.pixelQuiet ?? "");
+	/** The elements whose children the field keeps clear of. */
+	const quietElements = (
+		options.quiet !== undefined
+			? [options.quiet].flat()
+			: (canvas.dataset.pixelQuiet ?? "").split(/\s+/).map((id) => document.getElementById(id))
+	).filter((element) => element instanceof Element);
+	const quietChildren = () => quietElements.flatMap((element) => [...element.children]);
 
 	// The page's colours (site.css's --site-* values), read again whenever the theme changes: midnight pixels on paper,
 	// or the console's text colour on its dark canvas. Dark ones are hsl() references to the console's tokens, so the
@@ -161,7 +166,7 @@ export function mountPixelField(canvas, options = {}) {
 
 		// The text's boxes, in the canvas's coordinates: a heading or paragraph by its lines, anything else whole.
 		const quiet = [];
-		for (const child of quietElement?.children ?? []) {
+		for (const child of quietChildren()) {
 			let q = child.getBoundingClientRect();
 			if (/^(H\d|P)$/.test(child.tagName)) {
 				const range = document.createRange();
@@ -359,8 +364,8 @@ export function mountPixelField(canvas, options = {}) {
 		render(clock);
 	});
 	resize.observe(canvas);
-	if (quietElement) resize.observe(quietElement);
-	for (const child of quietElement?.children ?? []) resize.observe(child);
+	for (const element of quietElements) resize.observe(element);
+	for (const child of quietChildren()) resize.observe(child);
 	// A line's width can change when the fonts arrive without its box changing size.
 	document.fonts?.ready.then(() => {
 		if (stopped) return;

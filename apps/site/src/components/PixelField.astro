@@ -1,11 +1,11 @@
 ---
 // The hero's backdrop: a field of Lleverage's upright pixels, lit by drifting clouds, small bursts of work and now and
-// then one orange (src/scripts/pixel-field.js says how). It thins out around the element whose id is `quiet`, the
+// then one orange (src/scripts/pixel-field.js says how). It thins out around the elements whose ids `quiet` names, the
 // text laid over it, so the text stays legible on every frame. Decorative, so hidden from assistive tech; it draws one
 // still frame under reduced motion.
 interface Props {
 	class?: string;
-	/** The id of the element over the field to keep clear, such as the hero's text. */
+	/** The ids of the elements over the field to keep clear, space-separated, such as the hero's text. */
 	quiet?: string;
 }
 const { class: className, quiet } = Astro.props;

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Kantel demo video</title>
+<link rel="stylesheet" href="mv.css">
+<link rel="stylesheet" href="kinds.css">
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<div class="mv-frame"></div>
+<script src="beats.js"></script>
+<script src="credit.js"></script>
+<script>window.FORMAT = "1440x1080";</script>
+<script src="mv.js"></script>
+<script src="kinds.js"></script>
+<script src="content.js"></script>
+<script src="pixel-field.js"></script>
+<script src="field.js"></script>
+<script src="silent-clock.js"></script>
+<script>
+  MV.plan(PLAN);
+  MV.run();
+  // The background draws with every frame the renderer seeks to, and the preview's own playback.
+  const seek = window.seek;
+  window.seek = (t) => { window.drawField(t); seek(t); };
+  window.drawField(Number(new URLSearchParams(location.search).get("t")) || 0);
+</script>
+</body></html>

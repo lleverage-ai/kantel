@@ -1,8 +1,9 @@
 ---
+import HeroStory from "../components/HeroStory.astro";
 // kantel.dev's home: what Kantel is and why you'd want it in one screen, with the console and the CLI's install, then
 // the fastest way to a first sandbox on the hosted service (sign in, add a host with one command, create a sandbox).
 // Self-hosting lives in the docs, with one quiet link here. Claims follow the usage docs (docs/site); the pictures are
-// mocks of the console in its default theme (src/components/mocks), not screenshots.
+// mocks of the console in its default theme (src/components/mocks and the hero's story, HeroStory), not screenshots.
 import InstallCommand from "../components/InstallCommand.astro";
 import AddHost from "../components/mocks/AddHost.astro";
 import SignIn from "../components/mocks/SignIn.astro";
@@ -21,23 +22,26 @@ const step =
 	title="Kantel, by Lleverage: sandboxes for your agents, on your own machines"
 	description="Kantel gives Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already have. Sign in at app.kantel.dev, add a host with one command, and create sandboxes from the console or the CLI."
 >
-	<!-- Hero: what Kantel is and why, and the way in, over the pixel field. Its height is CSS only (--hero-height), so
-	     nothing moves when the field starts drawing. -->
+	<!-- Hero: what Kantel is and why, and the way in, beside the story of what it does (HeroStory), both over the
+	     pixel field, which keeps clear of the copy and runs on behind the story's glass. Side by side on a wide screen, the story under the copy otherwise. Its
+	     height is CSS only (--hero-height), so nothing moves when the field starts drawing. -->
 	<section aria-labelledby="hero" class="relative isolate flex min-h-(--hero-height) items-start sm:items-center">
 		<PixelField class="absolute inset-0 -z-10 h-full" quiet="hero-copy" />
-		<div class="mx-auto w-full max-w-(--container-page) px-6 pt-12 pb-32 sm:py-20 lg:px-12">
+		<div
+			class="mx-auto grid w-full max-w-(--container-page) grid-cols-1 items-center gap-x-16 gap-y-20 px-6 pt-12 pb-32 sm:py-20 lg:px-12 xl:grid-cols-2"
+		>
 			<div id="hero-copy" class="max-w-(--container-hero)">
 				<h1 id="hero" class="font-display text-display-m font-semibold tracking-tight text-balance sm:text-display-l">
-					Sandboxes for your agents, on your own machines
+					Sandboxes for your agents, on <span class="text-orange">your own machines</span>
 				</h1>
 				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
-					Give Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already
-					have. Kantel runs the control plane, and your machines connect out to it, with no ports to open.
+					Give Claude Code, Codex or your own app a microVM to work in. Your machines connect out to Kantel, with no
+					ports to open.
 				</p>
 				<div class="mt-9 flex flex-wrap items-center gap-x-6 gap-y-3">
 					<a
 						href={CONSOLE_URL}
-						class="inline-flex items-center rounded-card bg-midnight px-6 py-4 font-semibold text-paper transition-colors hover:bg-midnight-2"
+						class="inline-flex items-center rounded-card bg-primary px-6 py-4 font-semibold text-on-primary transition-colors hover:bg-primary-hover"
 					>
 						Get started
 					</a>
@@ -49,6 +53,7 @@ const step =
 					<InstallCommand id="install-cli" command={CLI_INSTALL_COMMAND} next={CLI_NEXT_COMMANDS} />
 				</div>
 			</div>
+			<HeroStory id="hero-story" class="w-full max-w-(--container-hero)" />
 		</div>
 	</section>
 
