@@ -585,6 +585,12 @@ export const DEFAULT_HOST_JOIN_COMMAND =
  * the account closed (a request in flight, a host registering) to have landed, so that pass clears it.
  */
 const DELETION_LAST_PASS_MS = 10 * 60_000;
+/**
+ * How long a deletion waits for its account's hosts to finish removing its template caches before revoking them all
+ * the same: long enough for a host that is away for a while to come back, not so long a host gone for good holds the
+ * deletion up for ever.
+ */
+const DELETION_HOST_WAIT_MS = 24 * 60 * 60_000;
 /** How long one gateway carries on a deletion before another may (should it have died). */
 const DELETION_LEASE_MS = 5 * 60_000;
 /** A failed pass is tried again after this, doubling to at most `DELETION_RETRY_MAX_MS`. */
@@ -4084,7 +4090,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const token of await store.joinTokens.list({ createdBy: userId })) {
 			if (token.usedAt === undefined) await store.joinTokens.delete(token.id);
 		}
-		for (const accountId of personal) await clearPersonalAccount(accountId);
+		for (const accountId of personal) await clearPersonalAccount(accountId, job.startedAt);
 		// They leave each organisation as `removeMember` has a member leave: their private sandboxes stay, stopped.
 		for (const member of memberships) {
 			if (personal.has(member.accountId)) continue;
@@ -4141,7 +4147,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * A personal account of a person being deleted, cleared and removed: closed for good first (`accountOpen`), then
 	 * everything it holds. Every step finds only what is left, so it can be made again.
 	 */
-	async function clearPersonalAccount(accountId: string): Promise<void> {
+	async function clearPersonalAccount(accountId: string, startedAt: number): Promise<void> {
 		await store.accounts.update(accountId, (account) =>
 			account.closedAt === undefined ? { ...account, closedAt: now() } : undefined,
 		);
@@ -4157,15 +4163,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await mounts.forgetBundle(bundle);
 		}
 		// Its templates before its hosts: a template cache's bytes go only over its host's connection, which revoking the
-		// host ends for good. So the pass waits (fails, to be made again) while an entry on a host of the account's that is
-		// connected is still being removed; one on a host that isn't connected can't be removed either way.
+		// host ends for good. So the pass waits (fails, to be made again) while an entry on a host of the account's is still
+		// being removed, connected now or not, as one away may come back and finish; for `DELETION_HOST_WAIT_MS` from the
+		// deletion's start, after which a host that hasn't is revoked all the same.
 		await templates.retireAccount(accountId);
 		const own = (await ensureHosts()).filter((host) => host.accountId === accountId && host.state !== "revoked");
-		if (own.length > 0) {
-			const connected = await connectedHosts();
+		if (own.length > 0 && now() - startedAt < DELETION_HOST_WAIT_MS) {
 			const ownIds = new Set(own.map((host) => host.id));
 			const waiting = (await store.templateSnapshots.list({ accountId })).filter(
-				(entry) => entry.hostId !== undefined && ownIds.has(entry.hostId) && connected.has(entry.hostId),
+				(entry) => entry.hostId !== undefined && ownIds.has(entry.hostId),
 			);
 			if (waiting.length > 0) {
 				throw new KantelError("unavailable", "The account's template caches are still being removed from its hosts");

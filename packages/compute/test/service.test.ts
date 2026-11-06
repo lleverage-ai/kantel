@@ -2587,6 +2587,75 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect((await ann.getCaller()).accountId).toBe(personal);
 	});
 
+	it("keeps an away host's credential while its template cache is being removed, for a day at most", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const revoked: string[] = [];
+		let personal = "";
+		const backend: SandboxBackend = {
+			...stub,
+			// One host of Ann's own, away just now.
+			capabilities: async () => {
+				const base = await stub.capabilities();
+				const [template] = base.hosts;
+				if (template === undefined || personal === "") return base;
+				return {
+					...base,
+					hosts: [...base.hosts, { ...template, id: "host_own", connected: false, accountId: personal }],
+				};
+			},
+			revokeHost: async (hostId) => void revoked.push(hostId),
+		};
+		const { api, ann } = setup(backend, { store, accountHosts: true });
+		personal = (await ann.getCaller()).accountId;
+		const entry = { id: "tsn_own", accountId: personal, hostId: "host_own", state: "deleting" };
+		await store.templateSnapshots.put(entry as Parameters<typeof store.templateSnapshots.put>[0]);
+		await ann.deleteCaller();
+		expect(revoked).toEqual([]);
+		expect(await store.deletions.get("usr_ann")).toMatchObject({
+			stage: "running",
+			lastError: expect.stringContaining("template"),
+		});
+		// It comes back and the sweep removes the cache: the deletion carries on and revokes it.
+		await store.templateSnapshots.delete(entry.id);
+		await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({ ...current, dueAt: 0 }));
+		await api.service.carryOnDeletions();
+		expect(revoked).toContain("host_own");
+	});
+
+	it("revokes an account's host after a day though its template cache is still there", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const revoked: string[] = [];
+		let personal = "";
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const base = await stub.capabilities();
+				const [template] = base.hosts;
+				if (template === undefined || personal === "") return base;
+				return {
+					...base,
+					hosts: [...base.hosts, { ...template, id: "host_gone", connected: false, accountId: personal }],
+				};
+			},
+			revokeHost: async (hostId) => void revoked.push(hostId),
+		};
+		const { api, ann } = setup(backend, { store, accountHosts: true });
+		personal = (await ann.getCaller()).accountId;
+		const entry = { id: "tsn_gone", accountId: personal, hostId: "host_gone", state: "deleting" };
+		await store.templateSnapshots.put(entry as Parameters<typeof store.templateSnapshots.put>[0]);
+		await ann.deleteCaller();
+		expect(revoked).toEqual([]);
+		await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({
+			...current,
+			startedAt: Date.now() - 25 * 60 * 60_000,
+			dueAt: 0,
+		}));
+		await api.service.carryOnDeletions();
+		expect(revoked).toContain("host_gone");
+	});
+
 	it("joins no host with a token whose account has closed", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
