@@ -128,7 +128,12 @@ export function pipeTunnel(
 		socket.onclose = (event) => {
 			if (!opened) return finish(255, `the tunnel was refused: ${event.reason || `code ${event.code}`}`);
 			if (event.code === 1000 || event.code === 1005) return finish(0);
-			finish(255, `the tunnel closed: ${event.reason || `code ${event.code}`}`);
+			// Most often Kantel restarting (a deploy closes every tunnel), which ends the SSH session and what it started.
+			finish(
+				255,
+				`the tunnel closed: ${event.reason || `code ${event.code}`}. A command that must outlive the connection ` +
+					"is safer as kantel exec <id> --detach -- <command>, then kantel attach <id> <command>",
+			);
 		};
 	});
 }
