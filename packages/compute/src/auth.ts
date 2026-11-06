@@ -174,6 +174,27 @@ function nameFor(identity: PersonIdentity, existing: StoredUser | undefined): st
  * personal account is named as they are, and renamed with them unless they renamed it (one made while gateways named
  * people by their user ID is).
  */
+/**
+ * A person's owner membership and personal account, each only while they are active (`PersonWrites`) and only if
+ * absent: a retirement landing in between stops the rest, and the deletion that retired them finds whatever had landed
+ * before (by its ID, which is theirs: `personalAccountIdOf`).
+ */
+async function provisionPersonal(
+	store: ComputeStore,
+	user: StoredUser,
+	account: StoredAccount,
+	now: number,
+): Promise<void> {
+	await store.personWrites.insertMember({
+		id: memberId(account.id, user.id),
+		accountId: account.id,
+		userId: user.id,
+		role: "owner",
+		joinedAt: now,
+	});
+	await store.personWrites.insertAccount(account, user.id);
+}
+
 export async function ensurePerson(
 	store: ComputeStore,
 	identity: PersonIdentity,
@@ -186,6 +207,29 @@ export async function ensurePerson(
 	if (existing !== undefined) {
 		// Retired by their account deletion: never let in, nor made again.
 		if (existing.retiredAt !== undefined) throw new KantelError("forbidden", "This account has been deleted");
+		// A first sign-in that stopped after making them, before their membership or account: finished now, as it would
+		// have been (both inserts are only-if-absent and only while they are active, so this can be made any number of
+		// times).
+		if (existing.personalAccountId === personalAccountIdOf(existing.id)) {
+			const [account, member] = await Promise.all([
+				store.accounts.get(existing.personalAccountId),
+				store.members.get(memberId(existing.personalAccountId, existing.id)),
+			]);
+			if (account === undefined || member === undefined) {
+				await provisionPersonal(
+					store,
+					existing,
+					{
+						id: existing.personalAccountId,
+						kind: "personal",
+						name: existing.name,
+						defaultVisibility: "private",
+						createdAt: now,
+					},
+					now,
+				);
+			}
+		}
 		const email = identity.email ?? existing.email;
 		if (existing.name !== name || existing.email !== email || existing.superAdmin !== superAdmin) {
 			// An update of the record as it is, never a write over a retirement that landed meanwhile.
@@ -227,17 +271,7 @@ export async function ensurePerson(
 		if (!again) throw new KantelError("conflict", "This person was being made by another call; try again");
 		return ensurePerson(store, identity, now, false);
 	}
-	// Then their membership and account, each only while they are active (`PersonWrites`): a retirement landing in
-	// between stops the rest, and the deletion that retired them finds whatever had landed before (by its ID, which is
-	// theirs: `personalAccountIdOf`).
-	await store.personWrites.insertMember({
-		id: memberId(account.id, user.id),
-		accountId: account.id,
-		userId: user.id,
-		role: "owner",
-		joinedAt: now,
-	});
-	await store.personWrites.insertAccount(account, user.id);
+	await provisionPersonal(store, user, account, now);
 	const current = await store.users.get(user.id);
 	if (current === undefined || current.retiredAt !== undefined) {
 		throw new KantelError("forbidden", "This account has been deleted");

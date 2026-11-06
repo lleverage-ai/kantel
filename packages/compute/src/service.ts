@@ -4168,8 +4168,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const entry of await store.e2eChain.list({ space: accountId })) await store.e2eChain.delete(entry.id);
 		await store.telemetry.delete(accountId);
 		await store.proxies.delete(accountId);
-		for (const member of await store.members.list({ accountId })) await store.members.delete(member.id);
+		// The account before its memberships: should what follows fail, a membership left names it, for the next pass.
 		await store.accounts.delete(accountId);
+		for (const member of await store.members.list({ accountId })) await store.members.delete(member.id);
 	}
 
 	/**

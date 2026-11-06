@@ -2448,6 +2448,59 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect((await failure(ann.getCaller())).status).toBe(401);
 	});
 
+	it("finishes setting a person up on their next sign-in, when their first stopped partway", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const insertAccount = store.personWrites.insertAccount.bind(store.personWrites);
+		let failOnce = true;
+		store.personWrites.insertAccount = async (account, userId) => {
+			if (failOnce) {
+				failOnce = false;
+				throw new Error("the gateway went away");
+			}
+			return insertAccount(account, userId);
+		};
+		await expect(ann.getCaller()).rejects.toBeDefined();
+		expect(await store.users.get("usr_ann")).toBeDefined();
+		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toBeUndefined();
+		const caller = await ann.getCaller();
+		expect(caller.accountId).toBe(personalAccountIdOf("usr_ann"));
+		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toMatchObject({ kind: "personal" });
+		expect((await ann.listMembers(caller.accountId)).items.map((member) => member.userId)).toEqual(["usr_ann"]);
+	});
+
+	it("keeps a stray account findable until it is gone, should its removal fail", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		await ann.deleteCaller();
+		await store.members.put({
+			id: "acc_stray:usr_ann",
+			accountId: "acc_stray",
+			userId: "usr_ann",
+			role: "owner",
+			joinedAt: 0,
+		});
+		await store.accounts.put({
+			id: "acc_stray",
+			kind: "personal",
+			name: "Ann",
+			defaultVisibility: "private",
+			createdAt: 0,
+		});
+		const remove = store.accounts.delete.bind(store.accounts);
+		let failOnce = true;
+		store.accounts.delete = async (id) => {
+			if (failOnce && id === "acc_stray") {
+				failOnce = false;
+				throw new Error("the database went away");
+			}
+			return remove(id);
+		};
+		await finishDeletions(api, store);
+		expect(await store.accounts.get("acc_stray")).toBeUndefined();
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+	});
+
 	it("clears the personal account a racing sign-in would make, though no membership names it", async () => {
 		const store = await make();
 		const { api, ann } = setup(undefined, { store });
