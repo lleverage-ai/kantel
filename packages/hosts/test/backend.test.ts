@@ -3,7 +3,7 @@
 // files, snapshots and forks; desktop, browser and SSH access come back as signed tunnel URLs.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/compute";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BROWSER_DISPLAY_RECORD, BROWSER_SURFACE_MARK, createHostBackend } from "../src/backend.ts";
 import { createPortRouter } from "../src/ports.ts";
 import type { HostFacts, HostGuest, HostMessage, HostSandbox } from "../src/protocol.ts";
@@ -770,12 +770,19 @@ describe("saving a stopped sandbox on a host", () => {
 		expect((await root.readFile(made.id, { path: "/home/user/app.txt" })).content).toBe("v1");
 	});
 
-	it("refuses to save it on a host from before it could, rather than share bytes the host will prune", async () => {
-		const { root, host, sandbox } = await connected([]);
-		const refused = await failure(root.saveSnapshot({ name: "kept", sandboxId: sandbox.id }));
-		expect(refused.code).toBe("not_supported");
-		expect(host.calls).not.toContain("snapshot.keep");
-		expect((await root.listSnapshots({ kind: "saved" })).items).toEqual([]);
+	it("saves it as before on a host from before it could keep a copy: sharing the stop's snapshot, with a warning", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const { root, host, sandbox } = await connected([]);
+			const saved = await root.saveSnapshot({ name: "kept", sandboxId: sandbox.id });
+			expect(saved).toMatchObject({ kind: "saved", name: "kept" });
+			expect(host.calls).not.toContain("snapshot.keep");
+			// The stop's own bytes, as a save of a stopped sandbox had before.
+			expect((await root.readSnapshotFile(saved.id, { path: "/home/user/app.txt" })).content).toBe("v1");
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("snapshot-keep"));
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	it("answers the host's refusals as Kantel's errors, and stores no save for them", async () => {

@@ -209,7 +209,7 @@ export const HOST_FEATURES = {
 	/**
 	 * `snapshot.keep` (`HostSnapshotKeep`): a saved snapshot made of an existing one (a stop's automatic snapshot, which
 	 * the host prunes and removes with its sandbox) without taking it again, answered as `snapshot.save` is. Without it
-	 * Kantel can't save a stopped sandbox, or a snapshot from its history, on that host.
+	 * a save of a stopped sandbox, or of a history entry, shares the automatic snapshot's bytes, which the host may prune.
 	 */
 	snapshotKeep: "snapshot-keep",
 } as const;

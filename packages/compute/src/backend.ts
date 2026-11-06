@@ -591,9 +591,9 @@ export interface SandboxBackend {
 	 * backend does with automatic snapshots (a host prunes them, and removes them with their sandbox), and deleting
 	 * either ref leaves the other. `ref` stays as it was. The answer's `memory` is whether the new ref holds memory (an
 	 * older automatic snapshot may have lost its own); absent, as `ref` does. It throws `not_found` once `ref`'s bytes are
-	 * gone, and `not_supported` where they can't be kept (a host too old). Absent, or answering `undefined` (a routed
-	 * backend whose `ref` is on a backend without it): the backend never drops an automatic snapshot's bytes on its own,
-	 * so a saved snapshot may share its source's ref.
+	 * gone. Absent, or answering `undefined` (a routed backend whose `ref` is on a backend without it, or a host too old
+	 * to keep a copy): the saved snapshot shares its source's ref, as before there were copies, and on such a host goes
+	 * when the host drops the source's bytes.
 	 */
 	keepSnapshot?(ref: string): Promise<TakenSnapshot | undefined>;
 	listSnapshotFiles(ref: string, path: string): Promise<BackendFileEntry[]>;

@@ -186,6 +186,8 @@ export interface HostBackendOptions {
 	/** Serves exposed ports on the gateway's wildcard name; without it, microVMs expose none. */
 	readonly ports?: PortRouter;
 	readonly now?: () => number;
+	/** Where it warns of what it works around (a host too old for a call); default `console.warn`. */
+	readonly log?: (message: string) => void;
 }
 
 /**
@@ -439,6 +441,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 
 	/** What the host reports doing beyond protocol 1 (`HOST_FEATURES`). */
 	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
+	const warn = options.log ?? ((message: string) => console.warn(message));
 
 	/** Whether the sandbox's host runs commands by Kantel's ID (`execControl`): detached ones, and kills. */
 	async function controlsCommands(sandboxId: string): Promise<boolean> {
@@ -1131,14 +1134,16 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return takenOn(hostId, snap);
 		},
 		// A saved snapshot of a stopped sandbox, or of a history entry: the host links the automatic snapshot's files into
-		// one of its own, which its pruning and the sandbox's delete leave. Asked of a host that says it keeps them.
-		async keepSnapshot(ref): Promise<TakenSnapshot> {
+		// one of its own, which its pruning and the sandbox's delete leave. Asked of a host that says it keeps them; one from
+		// before it could (hosts are updated apart from the control plane) is answered `undefined`, so the save shares the
+		// automatic snapshot's ref as it did before, and the host may still prune it.
+		async keepSnapshot(ref): Promise<TakenSnapshot | undefined> {
 			const { hostId, snapshotId: from } = parseRef(ref);
 			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.snapshotKeep)) {
-				throw new KantelError(
-					"not_supported",
-					"This snapshot's host is too old to save a stopped sandbox: update kantel-host, or start the sandbox and save it running",
+				warn(
+					`hosts: ${hostId} can't keep snapshot ${from} as a copy of its own (no ${HOST_FEATURES.snapshotKeep}): the saved snapshot shares it, and goes when the host prunes it; update kantel-host`,
 				);
+				return undefined;
 			}
 			const params: HostSnapshotKeep = { snapshotId: snapshotId(), from };
 			// The host's errors as Kantel's (a pruned source is `not_found`, a host away `unavailable`), an unanswered call
