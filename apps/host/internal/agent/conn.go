@@ -245,11 +245,19 @@ func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Update
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {
-			if err := update(ctx, proto.UpdateParams{Version: w.DesiredVersion, URL: w.UpdateURL}); err != nil {
+			if err := h.gatewayUpdate(ctx, proto.UpdateParams{Version: w.DesiredVersion, URL: w.UpdateURL}, update); err != nil {
 				h.log.Error("update failed", "error", err)
 			}
 		}()
 	}
+}
+
+// gatewayUpdate runs an update the gateway asked for (a welcome's version, or host.update), one at a time: each one
+// downloads to, probes and renames the same staging file, so two at once could install bytes neither checked.
+func (h *Host) gatewayUpdate(ctx context.Context, p proto.UpdateParams, update Updater) error {
+	h.updating.Lock()
+	defer h.updating.Unlock()
+	return update(ctx, p)
 }
 
 func toError(err error) *proto.Error {
@@ -289,7 +297,7 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 			if update == nil {
 				err = &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't update itself"}
 			} else {
-				err = update(ctx, p)
+				err = s.host.gatewayUpdate(ctx, p, update)
 			}
 		}
 		result = map[string]bool{"ok": err == nil}

@@ -90,6 +90,8 @@ type Host struct {
 	durable map[string]int64
 	// patching is versioned host images, with Config.ImagePatching (images.go).
 	patching imagePatching
+	// updating is one binary update at a time (gatewayUpdate): they all stage the same kantel-host.new.
+	updating sync.Mutex
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
