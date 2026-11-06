@@ -3190,16 +3190,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const grantee = decodeGrantee(text);
 		if (grantee === undefined) return undefined;
 		if (grantee.kind === "key") return liveKeyPrincipal(store, grantee.keyId, now());
+		if (grantee.kind === "token") {
+			// Given with a personal token: it lasts as long as the token, within the token's limits.
+			const token = await liveTokenPrincipal(store, grantee.tokenId, now());
+			return token === undefined || token.userId !== grantee.userId ? undefined : token;
+		}
 		const user = await store.users.get(grantee.userId);
 		// Gone, or being (or having been) deleted: nothing they were given goes on.
 		if (user === undefined || (await store.deletions.get(grantee.userId)) !== undefined) return undefined;
 		if (grantee.session !== undefined && options.sessionLive !== undefined) {
 			if (!(await options.sessionLive(grantee.session))) return undefined;
-		}
-		if (grantee.token !== undefined) {
-			// Given with a personal token: it lasts as long as the token, within the token's limits.
-			const token = await liveTokenPrincipal(store, grantee.token, now());
-			return token === undefined || token.userId !== user.id ? undefined : token;
 		}
 		return {
 			kind: "person",
@@ -5262,6 +5262,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const login = await pendingDeviceLogin(params.userCode);
 			if (login.state !== "pending") throw new KantelError("conflict", `The sign-in is already ${login.state}`);
 			if (login.personal === true) {
+				// Consent to a personal token must be explicit: a console from before them shows an API key in one account and
+				// sends only `account`, and its approval mustn't hand out a token for all of the person's accounts.
+				if (body.personal !== true) {
+					throw new KantelError(
+						"invalid",
+						"This sign-in asks for a personal access token, which acts as you in your accounts: reload the page to approve it",
+					);
+				}
 				// A personal token acts as its approver with their role, so any member may approve one: no account:admin.
 				const { token, secret } = await newPersonalToken(person, {
 					name: login.clientName,

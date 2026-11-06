@@ -545,7 +545,10 @@ export interface StoredFileUrl {
 	readonly method: "GET" | "PUT";
 	readonly expiresAt: number;
 	readonly createdAt: number;
-	/** Who made it (`encodeGrantee`): checked again each time it is used. Absent from one made before it was kept. */
+	/**
+	 * Who made it (`encodeGrantee`): checked again each time it is used. Such a URL's ID is `boundFileUrlId`'s, so a
+	 * gateway from before it never finds it. Absent from one made before it was kept, whose ID is its token's SHA-256.
+	 */
 	readonly grantee?: string;
 }
 

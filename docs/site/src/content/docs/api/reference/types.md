@@ -104,12 +104,13 @@ One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"e
 
 ### ApproveDeviceLoginBody
 
-What the device gets. A sign-in that asked for a personal token (`personal`) gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.
+What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
+| `personal` | boolean | no | True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused. |
 | `accounts` | string[] | no | For a personal token: only these accounts. Absent: every account of the approver's. |
 | `expiresInDays` | integer | no | Default 90. It stops working after it. A personal token lasts at most 366. (minimum 1, maximum 3650) |
 

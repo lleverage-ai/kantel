@@ -89,19 +89,25 @@ export type Principal = KeyPrincipal | PersonPrincipal;
  */
 export type Grantee =
 	| { readonly kind: "key"; readonly keyId: string }
-	| { readonly kind: "person"; readonly userId: string; readonly session?: string; readonly token?: string };
+	| { readonly kind: "person"; readonly userId: string; readonly session?: string }
+	/**
+	 * A personal access token's: a kind of its own, not a `person` with a token beside it, so a gateway from before
+	 * personal tokens can't read it as its person, unlimited, and refuses it instead.
+	 */
+	| { readonly kind: "token"; readonly userId: string; readonly tokenId: string };
 
 /** The grantee a principal is, as the relay keeps it. */
 export function encodeGrantee(principal: Principal): string {
 	const grantee: Grantee =
 		principal.kind === "key"
 			? { kind: "key", keyId: principal.keyId }
-			: {
-					kind: "person",
-					userId: principal.userId,
-					...(principal.session === undefined ? {} : { session: principal.session }),
-					...(principal.token === undefined ? {} : { token: principal.token.id }),
-				};
+			: principal.token !== undefined
+				? { kind: "token", userId: principal.userId, tokenId: principal.token.id }
+				: {
+						kind: "person",
+						userId: principal.userId,
+						...(principal.session === undefined ? {} : { session: principal.session }),
+					};
 	return JSON.stringify(grantee);
 }
 
@@ -114,16 +120,17 @@ export function decodeGrantee(text: string): Grantee | undefined {
 		return undefined;
 	}
 	if (typeof value !== "object" || value === null) return undefined;
-	const record = value as { kind?: unknown; keyId?: unknown; userId?: unknown; session?: unknown; token?: unknown };
+	const record = value as { kind?: unknown; keyId?: unknown; userId?: unknown; session?: unknown; tokenId?: unknown };
 	if (record.kind === "key" && typeof record.keyId === "string") return { kind: "key", keyId: record.keyId };
+	if (record.kind === "token" && typeof record.userId === "string" && typeof record.tokenId === "string") {
+		return { kind: "token", userId: record.userId, tokenId: record.tokenId };
+	}
 	if (record.kind === "person" && typeof record.userId === "string") {
 		if (record.session !== undefined && typeof record.session !== "string") return undefined;
-		if (record.token !== undefined && typeof record.token !== "string") return undefined;
 		return {
 			kind: "person",
 			userId: record.userId,
 			...(record.session === undefined ? {} : { session: record.session }),
-			...(record.token === undefined ? {} : { token: record.token }),
 		};
 	}
 	return undefined;

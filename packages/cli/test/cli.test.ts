@@ -1472,6 +1472,23 @@ describe("login in the browser", () => {
 		});
 		expect(again.code).toBe(0);
 		expect(again.calls.some((call) => call.method === "DELETE" && call.authorization === "Bearer kpt_old")).toBe(true);
+
+		// Signing in to another Kantel revokes the old token on the one it came from, and sends it nowhere else.
+		await writeFile(
+			join(configDir, "config.json"),
+			JSON.stringify({ url: "https://kantel.test/v1", apiKey: "kpt_old" }),
+		);
+		const elsewhere = await kantel(["login", "--key-stdin", "--url", "https://other.test"], {
+			env: {},
+			stdin: input("kpt_new"),
+			routes,
+		});
+		expect(elsewhere.code).toBe(0);
+		const sentOld = elsewhere.calls.filter((call) => call.authorization === "Bearer kpt_old");
+		expect(sentOld.map((call) => `${call.method} ${new URL(call.url).host}`)).toEqual([
+			"GET kantel.test",
+			"DELETE kantel.test",
+		]);
 	});
 
 	it("with --json prints the code as JSON for an agent", async () => {

@@ -1884,7 +1884,12 @@ export interface DeviceLoginsSource {
 	 */
 	approve(
 		userCode: string,
-		input: { readonly accountId: string; readonly accounts?: readonly string[] },
+		input: {
+			readonly accountId: string;
+			/** The sign-in asked for a personal token, and the page showed the person what it gets. */
+			readonly personal?: boolean;
+			readonly accounts?: readonly string[];
+		},
 	): Promise<DeviceLogin>;
 	deny(userCode: string): Promise<DeviceLogin>;
 }

@@ -1980,9 +1980,15 @@ const SECTIONS: readonly Section[] = [
 					if (hasValue(fromEnv) && fromEnv !== key) {
 						ctx.note("kantel: KANTEL_API_KEY is set in your environment, and comes before the saved key.");
 					}
-					// Signing in again replaces the saved token: the one it replaces is revoked, so it doesn't linger.
-					if (stored.apiKey !== undefined && stored.apiKey !== key && stored.apiKey.startsWith("kpt_") && sameServer) {
-						await revokeOwnToken(ctx.io, { url: config.url, apiKey: stored.apiKey });
+					// Signing in again replaces the saved token: the one it replaces is revoked, so it doesn't linger. It goes to the
+					// server it was saved for, never the new one, wherever this sign-in is.
+					if (
+						stored.apiKey !== undefined &&
+						stored.apiKey !== key &&
+						stored.apiKey.startsWith("kpt_") &&
+						stored.url !== undefined
+					) {
+						await revokeOwnToken(ctx.io, { url: stored.url, apiKey: stored.apiKey });
 					}
 					const acting = caller.accounts.find((each) => each.id === (account ?? caller.accountId));
 					ctx.emit(caller, () =>

@@ -377,6 +377,10 @@ function NewTokenDialog({
 	const [failure, setFailure] = useState<string>();
 	const preset = SCOPE_PRESETS.find((entry) => entry.id === access);
 	const valid = name.trim() !== "";
+	// Not closed while its token is being made: its answer, and its one-time secret, would land after a newer dialog.
+	const close = () => {
+		if (!busy) onClose();
+	};
 
 	const submit = () => {
 		if (!valid || busy) return;
@@ -400,11 +404,13 @@ function NewTokenDialog({
 		<Dialog
 			open
 			title="New token"
-			onClose={onClose}
+			onClose={close}
 			onSubmit={submit}
 			actions={
 				<>
-					<Button onClick={onClose}>Cancel</Button>
+					<Button onClick={close} disabled={busy}>
+						Cancel
+					</Button>
 					<Button type="submit" variant="primary" busy={busy} disabled={!valid}>
 						Create
 					</Button>
@@ -462,7 +468,9 @@ function RevokeDialog({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
+	// Not closed while the revoke is on its way: its answer would otherwise close another token's confirmation.
 	const close = () => {
+		if (busy) return;
 		setFailure(undefined);
 		onClose();
 	};
@@ -473,7 +481,9 @@ function RevokeDialog({
 			onClose={close}
 			actions={
 				<>
-					<Button onClick={close}>Cancel</Button>
+					<Button onClick={close} disabled={busy}>
+						Cancel
+					</Button>
 					<Button
 						variant="danger"
 						busy={busy}
@@ -483,7 +493,8 @@ function RevokeDialog({
 							onRevoke(token).then(
 								() => {
 									setBusy(false);
-									close();
+									setFailure(undefined);
+									onClose();
 								},
 								(caught: unknown) => {
 									setBusy(false);

@@ -583,7 +583,7 @@ export function createMounts(deps: MountsDeps) {
 				: Number.POSITIVE_INFINITY,
 		);
 		await store.fileUrls.put({
-			id: await sha256Hex(token),
+			id: await boundFileUrlId(token),
 			sandboxId: running.id,
 			accountId: running.accountId,
 			path,
@@ -926,7 +926,9 @@ export function createMounts(deps: MountsDeps) {
 		},
 
 		async serveFileUrl(token: string, request: Request): Promise<Response> {
-			const grant = await store.fileUrls.get(await sha256Hex(token));
+			// One bound to its maker first; else one made before they were, which lapses within its hour.
+			const grant =
+				(await store.fileUrls.get(await boundFileUrlId(token))) ?? (await store.fileUrls.get(await sha256Hex(token)));
 			if (grant === undefined || grant.expiresAt <= now()) {
 				throw new KantelError("not_found", "This file URL is unknown or has expired");
 			}
@@ -980,3 +982,10 @@ export function createMounts(deps: MountsDeps) {
 }
 
 export type Mounts = ReturnType<typeof createMounts>;
+
+/**
+ * Where a file URL bound to its maker (`StoredFileUrl.grantee`) is kept: not the bare SHA-256 of its token, which a
+ * gateway from before the binding looks up and would serve without checking its maker (a revoked personal token's URL
+ * included). Such a gateway finds nothing there and refuses the URL.
+ */
+export const boundFileUrlId = (token: string): Promise<string> => sha256Hex(`bound:${token}`);

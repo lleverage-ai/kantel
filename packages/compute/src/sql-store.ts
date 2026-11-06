@@ -87,6 +87,10 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_e2e_chain ON compute_api_records (((data::jsonb ->> 'space')), seq) WHERE kind = 'e2eChain'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_space ON compute_api_records (kind, json_extract(data, '$.space'), seq)",
+		// A personal access token by its secret's hash, as every call signed in with one looks it up.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_personal_token ON compute_api_records (((data::jsonb ->> 'secretHash'))) WHERE kind = 'personalTokens'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_secret_hash ON compute_api_records (kind, json_extract(data, '$.secretHash'))",
 		// No two environments of an account share a name (`environmentNameKey`): the write that would make two fails, in
 		// the database, whichever gateway makes it and however long after it read.
 		dialect === "postgres"

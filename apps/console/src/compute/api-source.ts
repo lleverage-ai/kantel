@@ -369,7 +369,10 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			if (userId === undefined) throw notYet("An API key belongs to its account and can't leave it.");
 			await api.removeMember(accountId, userId);
 		},
-		...(caller.user === undefined || caller.apiKey !== undefined ? {} : { deleteAccount: () => api.deleteCaller() }),
+		// Only a person signed in at the console deletes their account: not an API key, nor a personal token.
+		...(caller.user === undefined || caller.apiKey !== undefined || caller.personalToken !== undefined
+			? {}
+			: { deleteAccount: () => api.deleteCaller() }),
 		rename: async (accountId, name) => accountOf(await api.updateAccount(accountId, { name })),
 		setPersonalTokens: async (accountId, policy) =>
 			accountOf(await api.updateAccount(accountId, { personalTokens: policy })),
@@ -1350,6 +1353,7 @@ function devicesSource({ api }: Context): DeviceLoginsSource {
 			deviceLoginOf(
 				await api.approveDeviceLogin(userCode, {
 					account: input.accountId,
+					...(input.personal === true ? { personal: true } : {}),
 					...(input.accounts === undefined ? {} : { accounts: [...input.accounts] }),
 				}),
 			),

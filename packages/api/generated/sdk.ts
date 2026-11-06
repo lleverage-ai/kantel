@@ -108,12 +108,14 @@ export type ApiKeyScope =
 	| "account:admin"
 	| "hosts:admin";
 
-/** What the device gets. A sign-in that asked for a personal token (`personal`) gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin. */
+/** What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin. */
 export interface ApproveDeviceLoginBody {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	/** A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`. */
 	readonly preset?: ApiKeyPreset;
+	/** True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused. */
+	readonly personal?: boolean;
 	/** For a personal token: only these accounts. Absent: every account of the approver's. */
 	readonly accounts?: readonly string[];
 	/** Default 90. It stops working after it. A personal token lasts at most 366. */

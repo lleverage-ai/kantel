@@ -2032,6 +2032,13 @@ export const ApproveDeviceLoginBody = Type.Object(
 	{
 		account: accountQuery,
 		preset: Type.Optional(ApiKeyPreset),
+		personal: Type.Optional(
+			Type.Boolean({
+				description:
+					"True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all " +
+					"of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused.",
+			}),
+		),
 		accounts: Type.Optional(
 			Type.Array(Type.String(), {
 				minItems: 1,
@@ -2049,8 +2056,9 @@ export const ApproveDeviceLoginBody = Type.Object(
 	{
 		title: "ApproveDeviceLoginBody",
 		description:
-			"What the device gets. A sign-in that asked for a personal token (`personal`) gets one acting as the approver, " +
-			"in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key " +
+			"What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one " +
+			"acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any " +
+			"other gets an API key " +
 			"in the approver's personal account unless `account` names an organisation, which needs admin or owner there; " +
 			"without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.",
 	},

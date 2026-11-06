@@ -2,7 +2,7 @@
 // there, capped by its scopes and the accounts it names, and refused by an organisation that blocks them.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { afterEach, describe, expect, it } from "vitest";
-import type { PersonIdentity } from "../src/auth.ts";
+import { decodeGrantee, encodeGrantee, type PersonIdentity } from "../src/auth.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createMemoryStore } from "../src/store.ts";
 import { createStubBackend } from "../src/stub-backend.ts";
@@ -225,6 +225,25 @@ describe("personal access tokens", () => {
 });
 
 describe("personal access tokens, what they can't reach around", () => {
+	it("give access as a grantee of their own kind, which a gateway from before them can't read as their person", () => {
+		const text = encodeGrantee({
+			kind: "person",
+			userId: "usr_tom",
+			name: "Tom",
+			superAdmin: false,
+			personalAccountId: "acc_p_usr_tom",
+			token: { id: "pat_1", name: "t", expiresAt: 1 },
+		});
+		expect(JSON.parse(text)).toEqual({ kind: "token", userId: "usr_tom", tokenId: "pat_1" });
+		expect(decodeGrantee(text)).toEqual({ kind: "token", userId: "usr_tom", tokenId: "pat_1" });
+		// An older gateway's decoder knew only key and person: it refuses this one.
+		const legacy = (value: string) => {
+			const record = JSON.parse(value) as { kind?: string };
+			return record.kind === "key" || record.kind === "person" ? record : undefined;
+		};
+		expect(legacy(text)).toBeUndefined();
+	});
+
 	it("never get an answer kept for their person's other credentials under the same idempotency key", async () => {
 		const { client, tom } = setup();
 		const org = await tom.createOrganisation({ name: "Acme" });
@@ -271,7 +290,7 @@ describe("device sign-in for a personal token", () => {
 		const { client, store, tom } = setup();
 		const device = client(undefined);
 		const started = await device.startDeviceLogin({ personal: true });
-		await tom.approveDeviceLogin(started.userCode, {});
+		await tom.approveDeviceLogin(started.userCode, { personal: true });
 		const [token] = await store.personalTokens.list({ userId: "usr_tom" });
 		if (token === undefined) throw new Error("no token was stored");
 		// As if the poll ran between the approval and the token's write.
@@ -291,7 +310,7 @@ describe("device sign-in for a personal token", () => {
 		const started = await device.startDeviceLogin({ clientName: "kantel on laptop", personal: true });
 		expect(await ann.getDeviceLogin(started.userCode)).toMatchObject({ personal: true, state: "pending" });
 		// A member, not an admin, approves it: the token acts with their role.
-		await ann.approveDeviceLogin(started.userCode, { accounts: [org.id] });
+		await ann.approveDeviceLogin(started.userCode, { personal: true, accounts: [org.id] });
 		const approved = await device.pollDeviceLogin({ deviceCode: started.deviceCode });
 		expect(approved.state).toBe("approved");
 		expect(approved.issued).toBeUndefined();
@@ -300,6 +319,21 @@ describe("device sign-in for a personal token", () => {
 		const caller = await client(approved.token?.secret).getCaller();
 		expect(caller).toMatchObject({ accountId: org.id, user: { id: "usr_ann" } });
 		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "expired" });
+	});
+
+	it("refuses an approval that doesn't say it is for a personal token, as an older console's, storing nothing", async () => {
+		const { client, store, tom } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const device = client(undefined);
+		const started = await device.startDeviceLogin({ personal: true });
+		const refused = await failure(tom.approveDeviceLogin(started.userCode, { account: org.id }));
+		expect(refused.code).toBe("invalid");
+		expect(refused.message).toContain("reload the page");
+		expect(await store.personalTokens.list({ userId: "usr_tom" })).toEqual([]);
+		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "pending" });
+		// The page that shows what it gets approves it.
+		await tom.approveDeviceLogin(started.userCode, { personal: true });
+		expect((await device.pollDeviceLogin({ deviceCode: started.deviceCode })).token?.token.accounts).toBeUndefined();
 	});
 
 	it("still gives a device from before personal tokens an API key", async () => {

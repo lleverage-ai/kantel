@@ -74,6 +74,7 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 				how === "approve"
 					? await source.approve(login.userCode, {
 							accountId: account.id,
+							...(login.personal === true ? { personal: true } : {}),
 							...(login.personal === true && reach === "this" ? { accounts: [account.id] } : {}),
 						})
 					: await source.deny(login.userCode);
@@ -194,6 +195,8 @@ function Decision({
 			{personal ? (
 				<SelectField
 					label="Access"
+					// Fixed while the approval is on its way, so what the page then says it gave is what it asked for.
+					disabled={busy !== undefined}
 					hint="It acts as you, with your role in each account. Revoke it under Profile."
 					value={reach}
 					onChange={(event) => onReach(event.target.value === "this" ? "this" : "all")}
