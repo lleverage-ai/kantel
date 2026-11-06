@@ -31,7 +31,7 @@ import {
 	type InviteMailing,
 	type RateTable,
 } from "./service.ts";
-import { type ComputeStore, createMemoryStore } from "./store.ts";
+import { type ComputeStore, createMemoryStore, fenceClosedAccounts } from "./store.ts";
 import { createTelemetryExporter, type TelemetryExporter } from "./telemetry.ts";
 import { createWebhookDispatcher, type WebhookDispatcher } from "./webhooks.ts";
 
@@ -146,7 +146,7 @@ export function computeErrorResponse(error: unknown): Response {
 
 /** The compute plane's API over a backend, with its webhook dispatcher and telemetry exporter. */
 export function createComputeApi(options: ComputeApiOptions): ComputeApi {
-	const store = options.store ?? createMemoryStore();
+	const store = fenceClosedAccounts(options.store ?? createMemoryStore());
 	const now = options.now ?? (() => Date.now());
 	const basePath = (options.basePath ?? "/v1").replace(/\/+$/, "");
 	const dispatcher = createWebhookDispatcher({

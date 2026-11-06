@@ -11,6 +11,7 @@
  * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
 import type { computeSchema } from "@kantel/api";
+import { KantelError } from "@kantel/contracts";
 import type { SandboxTemplateBoot } from "./backend.ts";
 import type { StoredE2EEntry } from "./e2e.ts";
 import type { SealedValue } from "./secrets.ts";
@@ -841,5 +842,67 @@ export function joinTokenSpender(store: ComputeStore) {
 				...(spent.accountId === undefined ? {} : { accountId: spent.accountId }),
 			};
 		},
+	};
+}
+
+/** Refused: the account a write is for has closed (its person deleted their account) or gone. */
+export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
+
+/**
+ * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
+ * deliveries, telemetry, proxy settings, join tokens) fenced against its deletion: a write is checked once it
+ * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
+ * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
+ * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
+ * fences of their own, which know their lifecycles; events come only from those, on the hot path, and are left to them.
+ */
+export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
+	const open = async (accountId: string) => {
+		const account = await store.accounts.get(accountId);
+		return account !== undefined && account.closedAt === undefined;
+	};
+	function fenced<T extends { readonly id: string }>(
+		collection: Collection<T>,
+		accountOf: (record: T) => string | undefined,
+	): Collection<T> {
+		const check = async (record: T | undefined): Promise<void> => {
+			const accountId = record === undefined ? undefined : accountOf(record);
+			if (record === undefined || accountId === undefined || (await open(accountId))) return;
+			await collection.delete(record.id).catch(() => false);
+			throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
+		};
+		return {
+			get: (id) => collection.get(id),
+			list: (where) => collection.list(where),
+			delete: (id) => collection.delete(id),
+			deleteIf: (id, should) => collection.deleteIf(id, should),
+			async put(record) {
+				await collection.put(record);
+				await check(record);
+			},
+			async insert(record) {
+				const inserted = await collection.insert(record);
+				if (inserted) await check(record);
+				return inserted;
+			},
+			async update(id, change, expected) {
+				const updated = await collection.update(id, change, expected);
+				await check(updated);
+				return updated;
+			},
+		};
+	}
+	const byAccount = <T extends { readonly accountId?: string }>(record: T) => record.accountId;
+	const isAccount = <T extends { readonly id: string }>(record: T) => record.id;
+	return {
+		...store,
+		environments: fenced(store.environments, byAccount),
+		bucketSources: fenced(store.bucketSources, byAccount),
+		webhooks: fenced(store.webhooks, byAccount),
+		deliveries: fenced(store.deliveries, byAccount),
+		joinTokens: fenced(store.joinTokens, byAccount),
+		// Keyed by their account.
+		telemetry: fenced(store.telemetry, isAccount),
+		proxies: fenced(store.proxies, isAccount),
 	};
 }

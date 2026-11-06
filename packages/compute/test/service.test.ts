@@ -31,7 +31,13 @@ import {
 	shapeFor,
 } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore, joinTokenSpender, type StoredCommand } from "../src/store.ts";
+import {
+	type ComputeStore,
+	createMemoryStore,
+	fenceClosedAccounts,
+	joinTokenSpender,
+	type StoredCommand,
+} from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -2304,6 +2310,26 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		await close(store, personal);
 		expect((await failure(ann.runCommand(sandbox.id, { command: "echo hi" }))).code).toBe("conflict");
 		expect(await store.commands.list({ sandboxId: sandbox.id })).toEqual([]);
+	});
+
+	it("takes out again, and refuses, a settings record written into an account that has closed or gone", async () => {
+		const store = await make();
+		const fenced = fenceClosedAccounts(store);
+		const account = {
+			id: "acc_x",
+			kind: "personal" as const,
+			name: "X",
+			defaultVisibility: "private" as const,
+			createdAt: 0,
+		};
+		await store.accounts.put(account);
+		const webhook = (id: string) => ({ id, accountId: account.id }) as Parameters<typeof store.webhooks.put>[0];
+		await fenced.webhooks.put(webhook("whk_open"));
+		await close(store, account.id);
+		await expect(fenced.webhooks.put(webhook("whk_late"))).rejects.toThrow("being deleted");
+		await store.accounts.delete(account.id);
+		await expect(fenced.webhooks.insert(webhook("whk_gone"))).rejects.toThrow("being deleted");
+		expect((await store.webhooks.list({ accountId: account.id })).map((each) => each.id)).toEqual(["whk_open"]);
 	});
 
 	it("joins no host with a token whose account has closed", async () => {
