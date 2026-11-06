@@ -195,6 +195,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SharedTemplate: cfg.MicroVM.SharedTemplates(), TemplateVCPUs: cfg.MicroVM.TemplateVCPUs,
 			TemplateMemoryMiB: cfg.MicroVM.TemplateMemoryMiB, TemplateMaxMemoryMiB: cfg.MicroVM.TemplateMaxMemoryMiB,
 			TemplateDiskGiB: cfg.MicroVM.TemplateDiskGiB,
+			MinDiskGiB:      cfg.MicroVM.MinDiskGiB, MaxDiskGiB: cfg.MicroVM.MaxDiskGiB,
 			// Creates, starts, resumes and template builds are admitted against the host's budget, as Capacity reports it.
 			Budget: h.budgetBeside(microvm.Tier),
 		})
@@ -268,8 +269,12 @@ func (h *Host) makeFacts() proto.Facts {
 	if len(sizes) == 0 {
 		sizes = microvm.DefaultSizes
 	}
+	var disk *proto.DiskLimits
 	if _, ok := h.tiers[microvm.Tier]; !ok {
 		sizes = nil
+	} else {
+		limits := microvm.DiskLimits(sizes, h.cfg.MicroVM.MinDiskGiB, h.cfg.MicroVM.MaxDiskGiB)
+		disk = &limits
 	}
 	total := hostinfo.MemoryMiB()
 	reserve := h.cfg.ReserveMemoryMiB
@@ -306,7 +311,7 @@ func (h *Host) makeFacts() proto.Facts {
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
-		KVM: kvm, Nested: nested && kvm, Tiers: h.Tiers(), Sizes: sizes, Labels: h.cfg.Labels, Egress: h.cfg.Egress,
+		KVM: kvm, Nested: nested && kvm, Tiers: h.Tiers(), Sizes: sizes, Disk: disk, Labels: h.cfg.Labels, Egress: h.cfg.Egress,
 		Features: features,
 	}
 }

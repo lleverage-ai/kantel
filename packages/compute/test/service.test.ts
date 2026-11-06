@@ -586,10 +586,15 @@ describe("sandboxes", () => {
 		expect(same).toMatchObject({ size: "large", state: "running" });
 		const plain = await tom.createSandbox({ from: id, wait: true });
 		expect(plain).toMatchObject({ size: "large", state: "running" });
-		// Its backend is asked for the snapshot's own vCPUs and memory, which its host makes as the snapshot's size.
+		// Its backend is asked for the snapshot's own vCPUs and memory, and the disk it copies, which its host makes as the
+		// snapshot's size.
 		const restore = create.mock.calls.find(([spec]) => spec.sandboxId === plain.id)?.[0];
 		expect(restore?.shape).toEqual(
-			paused?.resources && { vcpus: paused.resources.vcpus, memoryMb: paused.resources.memoryMb },
+			paused?.resources && {
+				vcpus: paused.resources.vcpus,
+				memoryMb: paused.resources.memoryMb,
+				diskGb: paused.resources.diskGb,
+			},
 		);
 	});
 
@@ -952,7 +957,187 @@ describe("sandboxes", () => {
 		});
 	});
 
-	it("offers a host's presets, and any shape where it makes them, promising no disk for one", () => {
+	it("makes a microVM with the disk it asks for, apart from its vCPUs and memory, and keeps it through fork and start", async () => {
+		const { tom } = setup();
+		const shapes = await tom.getSandboxShapes();
+		// From the least the hosts give (the smallest preset's) to the most, the default preset's by default.
+		expect(shapes.microvm?.diskGb).toEqual({ min: 10, max: 1024, step: 1, default: 20 });
+
+		const custom = await tom.createSandbox({
+			type: "microvm",
+			resources: { vcpus: 2, memoryMb: 4096, diskGb: 64 },
+			wait: true,
+		});
+		// Named by the preset its vCPUs and memory are, whatever its disk.
+		expect(custom.size).toBe("default");
+		expect(custom.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 64 });
+		// Disk isn't priced.
+		expect(custom.cost.ratePerHour).toBe(hourlyRate(PLACEHOLDER_RATES, "microvm", { vcpus: 2, memoryMb: 4096 }));
+
+		// A disk alone goes to the default size's vCPUs and memory, or a named size's.
+		const alone = await tom.createSandbox({ type: "microvm", resources: { diskGb: 100 }, wait: true });
+		expect(alone.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 100 });
+		const sized = await tom.createSandbox({ type: "microvm", size: "large", resources: { diskGb: 120 }, wait: true });
+		expect(sized.resources).toEqual({ vcpus: 4, memoryMb: 8192, diskGb: 120 });
+
+		// A fork, from a snapshot or live, has its source's disk; so does a start fresh from its snapshot.
+		const [fork] = (await tom.forkSandbox(custom.id, { wait: true })).items;
+		expect(fork?.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 64 });
+		await tom.stopSandbox(custom.id, { wait: true });
+		const started = await tom.startSandbox(custom.id, { wait: true });
+		expect(started.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 64 });
+		const saved = await tom.saveSnapshot({ name: "disk", sandboxId: custom.id });
+		const fromSaved = await tom.createSandbox({ type: "microvm", from: saved.id, wait: true });
+		expect(fromSaved.resources).toMatchObject({ diskGb: 64 });
+		// Another vCPU count and memory, as the console sends them, or another size: still the snapshot's disk, where it
+		// is bigger than theirs.
+		const reshaped = await tom.createSandbox({
+			type: "microvm",
+			from: saved.id,
+			resources: { vcpus: 2, memoryMb: 4096 },
+			wait: true,
+		});
+		expect(reshaped.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 64 });
+		const larger = await tom.createSandbox({
+			type: "microvm",
+			from: saved.id,
+			resources: { vcpus: 4, memoryMb: 8192 },
+			wait: true,
+		});
+		expect(larger.resources).toEqual({ vcpus: 4, memoryMb: 8192, diskGb: 64 });
+		const [sizedFork] = (await tom.forkSandbox(custom.id, { snapshotId: saved.id, size: "large", wait: true })).items;
+		expect(sizedFork?.resources).toEqual({ vcpus: 4, memoryMb: 8192, diskGb: 64 });
+		// A size whose own disk is bigger: that size, whole.
+		const [xlarge] = (await tom.forkSandbox(custom.id, { snapshotId: saved.id, size: "xlarge", wait: true })).items;
+		expect(xlarge?.resources).toEqual({ vcpus: 8, memoryMb: 16384, diskGb: 80 });
+		expect(xlarge?.size).toBe("xlarge");
+		// A disk another preset has too (large's 40 GB), or smaller than its own size's: still the snapshot's, with its own
+		// vCPUs and memory as the console sends them, or with others.
+		for (const [size, diskGb, vcpus, memoryMb] of [
+			["small", 40, 1, 1024],
+			["default", 15, 2, 4096],
+		] as const) {
+			const made = await tom.createSandbox({ type: "microvm", size, resources: { diskGb }, wait: true });
+			const kept = await tom.saveSnapshot({ name: `${size}-${diskGb}`, sandboxId: made.id });
+			const same = await tom.createSandbox({
+				type: "microvm",
+				from: kept.id,
+				resources: { vcpus, memoryMb },
+				wait: true,
+			});
+			expect(same.resources).toEqual({ vcpus, memoryMb, diskGb });
+		}
+		const small = await tom.createSandbox({ type: "microvm", size: "small", resources: { diskGb: 40 }, wait: true });
+		const smallKept = await tom.saveSnapshot({ name: "small-kept", sandboxId: small.id });
+		const wider = await tom.createSandbox({
+			type: "microvm",
+			from: smallKept.id,
+			resources: { vcpus: 2, memoryMb: 4096 },
+			wait: true,
+		});
+		expect(wider.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 40 });
+		const [defaultFork] = (await tom.forkSandbox(small.id, { snapshotId: smallKept.id, size: "default", wait: true }))
+			.items;
+		expect(defaultFork?.resources).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 40 });
+		// One from a snapshot keeps the snapshot's disk: none may be asked for.
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", from: saved.id, resources: { diskGb: 200 }, wait: true }),
+		);
+		expect(refused.code).toBe("invalid");
+		expect(refused.message).toMatch(/keeps the snapshot's disk/);
+	});
+
+	it("refuses a disk out of range, on an isolate, or beside a size's vCPUs and memory", async () => {
+		const { tom } = setup();
+		const invalid = [
+			{ type: "microvm", resources: { vcpus: 2, memoryMb: 4096, diskGb: 0 } },
+			{ type: "microvm", resources: { vcpus: 2, memoryMb: 4096, diskGb: 2.5 } },
+			{ type: "microvm", resources: { diskGb: 5000 } },
+			{ resources: { memoryMb: 256, diskGb: 20 } },
+			{ resources: { diskGb: 20 } },
+			{ type: "microvm", size: "large", resources: { memoryMb: 8192, diskGb: 60 } },
+		] as const;
+		for (const body of invalid) expect((await failure(tom.createSandbox(body))).code).toBe("invalid");
+		// Within what the API takes but more than any host gives: not_supported, before anything is stored.
+		const big = await failure(
+			tom.createSandbox({ type: "microvm", resources: { vcpus: 2, memoryMb: 4096, diskGb: 2000 } }),
+		);
+		expect(big.code).toBe("not_supported");
+		expect(big.message).toMatch(/2000 GB disk/);
+		const tiny = await failure(tom.createSandbox({ type: "microvm", resources: { diskGb: 4 } }));
+		expect(tiny.code).toBe("not_supported");
+	});
+
+	it("offers a disk apart from the vCPUs and memory only where a host makes custom shapes", () => {
+		const host = {
+			id: "h",
+			name: "h",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 300 },
+			labels: {},
+		} as const;
+		const sizes = [
+			{ name: "small", vcpus: 1, memoryMb: 1024, diskGb: 10 },
+			{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 },
+		] as const;
+		expect(microvmShapes([host], sizes)).not.toHaveProperty("diskGb");
+		const custom = { ...host, features: ["custom-shapes"] };
+		// A host from before it said its limits: its smallest preset's disk, at most its free disk.
+		expect(microvmShapes([custom], sizes)?.diskGb).toEqual({ min: 10, max: 300, step: 1, default: 20 });
+		// One that says: its limits, the most no more than its free disk; across hosts, the least and the most.
+		const said = { ...custom, disk: { minGb: 15, maxGb: 200 } };
+		expect(microvmShapes([said], sizes)?.diskGb).toEqual({ min: 15, max: 200, step: 1, default: 20 });
+		// One without room for its least offers none, and with no other host, no disk may be chosen.
+		const full = { ...said, id: "full", capacity: { ...host.capacity, diskGb: 5 } };
+		expect(microvmShapes([full], sizes)).not.toHaveProperty("diskGb");
+		// The free disk it last reported, not what it had when it started: more or less, and none free as none.
+		expect(microvmShapes([{ ...said, freeDiskGb: 120 }], sizes)?.diskGb).toMatchObject({ max: 120 });
+		expect(microvmShapes([{ ...full, freeDiskGb: 180 }], sizes)?.diskGb).toMatchObject({ max: 180 });
+		expect(microvmShapes([{ ...said, freeDiskGb: 0 }], sizes)).not.toHaveProperty("diskGb");
+		expect(microvmShapes([{ ...said, freeDiskGb: 0 }], sizes)?.custom).toBe(true);
+		// A full host with a big least adds nothing to another's range.
+		const bigFull = { ...said, id: "big", disk: { minGb: 1000, maxGb: 2000 }, freeDiskGb: 0 };
+		const small = { ...said, id: "small", disk: { minGb: 10, maxGb: 100 }, freeDiskGb: 100 };
+		expect(microvmShapes([bigFull, small], sizes)?.diskGb).toEqual({ min: 10, max: 100, step: 1, default: 20 });
+		const roomy = {
+			...said,
+			id: "roomy",
+			disk: { minGb: 30, maxGb: 2000 },
+			capacity: { ...host.capacity, diskGb: 900 },
+		};
+		expect(microvmShapes([said, roomy], sizes)?.diskGb).toEqual({ min: 15, max: 900, step: 1, default: 20 });
+
+		// A whole shape with a disk, checked against the hosts' limits.
+		expect(shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb: 150 }, [said], sizes)).toEqual({
+			vcpus: 3,
+			memoryMb: 4096,
+			diskGb: 150,
+		});
+		expect(() => shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb: 250 }, [said], sizes)).toThrow(/250 GB disk/);
+		// A preset's own numbers and disk need no custom shapes; another disk does.
+		expect(shapeFor("microvm", { vcpus: 2, memoryMb: 2048, diskGb: 20 }, [host], sizes)).toMatchObject({ diskGb: 20 });
+		expect(() => shapeFor("microvm", { vcpus: 2, memoryMb: 2048, diskGb: 40 }, [host], sizes)).toThrow(
+			/No host this sandbox may use/,
+		);
+		// A disk alone is the default size's (`sandboxMachine`).
+		expect(shapeFor("microvm", { diskGb: 40 }, [said], sizes)).toBeUndefined();
+		// A host from before it said its limits is admitted as placement admits it, 1 to 4096 GB, whatever the slider
+		// offers.
+		for (const diskGb of [5, 1500, 4096]) {
+			expect(shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb }, [custom], sizes)).toMatchObject({ diskGb });
+		}
+		// A preset's disk outside the limits, as a custom shape given it by default records it: admitted, as placement does.
+		const high = { ...custom, disk: { minGb: 60, maxGb: 200 } };
+		expect(shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb: 20 }, [high], sizes)).toMatchObject({ diskGb: 20 });
+		expect(() => shapeFor("microvm", { vcpus: 3, memoryMb: 4096, diskGb: 30 }, [high], sizes)).toThrow(/30 GB disk/);
+	});
+
+	it("offers a host's presets, and any shape where it makes them", () => {
 		const host = {
 			id: "h",
 			name: "h",
@@ -971,8 +1156,6 @@ describe("sandboxes", () => {
 		const custom = microvmShapes([{ ...host, features: ["custom-shapes"] }], sizes);
 		expect(custom).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
 		expect(custom?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }]);
-		// A custom shape's disk is its host's to give (and a snapshot's to keep): none is said ahead.
-		expect(custom).not.toHaveProperty("customDisk");
 		expect(microvmShapes([], sizes)).toBeUndefined();
 	});
 
@@ -2162,7 +2345,12 @@ describe("organisations", () => {
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
 		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
 		const [pause] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
-		const own = pause?.resources && { vcpus: pause.resources.vcpus, memoryMb: pause.resources.memoryMb };
+		// Its vCPUs and memory, and the disk it copies.
+		const own = pause?.resources && {
+			vcpus: pause.resources.vcpus,
+			memoryMb: pause.resources.memoryMb,
+			diskGb: pause.resources.diskGb,
+		};
 		expect(own).toBeDefined();
 		failing = true;
 		const made = await tom.createSandbox({ from: pause?.id ?? "", wait: true });

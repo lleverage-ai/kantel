@@ -548,6 +548,20 @@ describe("sandboxes", () => {
 		expect(none.isolate.memoryMb).toEqual(isolate.memoryMb);
 	});
 
+	it("keeps the disk a microVM may ask for, and none where no host takes a disk off its presets", () => {
+		const microvm = {
+			vcpus: { min: 1, max: 8, step: 1, default: 2 },
+			memoryMb: { min: 512, max: 16_384, step: 512, default: 4096 },
+			memoryMbPerVcpu: { min: 512, max: 8192 },
+			presets: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 20 }],
+			custom: true,
+		};
+		const isolate = { memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false };
+		const disk = { min: 10, max: 300, step: 1, default: 20 };
+		expect(shapesOf({ isolate, microvm: { ...microvm, diskGb: disk } }).microvm.diskGb).toEqual(disk);
+		expect(shapesOf({ isolate, microvm }).microvm).not.toHaveProperty("diskGb");
+	});
+
 	it("asks for the shape the sliders chose, and reads what may be chosen from the API", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
@@ -585,6 +599,36 @@ describe("sandboxes", () => {
 		expect(sent[0]).toMatchObject({ type: "microvm", template: "tpl_any" });
 		expect(sent[0]).not.toHaveProperty("resources");
 		expect(sent[1]).toMatchObject({ type: "microvm", template: "tpl_any", resources: { vcpus: 4, memoryMb: 8192 } });
+	});
+
+	it("asks for a microVM's disk where one was chosen, and none where the shape has none", async () => {
+		const { fetchApi } = setup();
+		const sent: Record<string, unknown>[] = [];
+		const recording: typeof fetch = async (input, init) => {
+			const request = new Request(new URL(String(input instanceof Request ? input.url : input), ORIGIN), init);
+			if (request.method === "POST" && new URL(request.url).pathname.endsWith("/sandboxes")) {
+				sent.push((await request.clone().json()) as Record<string, unknown>);
+			}
+			return fetchApi(request);
+		};
+		const source = await open(recording);
+		const accountId = await personalAccount(source);
+		// Only what was sent matters here, whatever the stub backend makes of it.
+		await source.sandboxes
+			.create({ accountId, kind: "microvm", shape: { vcpus: 4, memoryMb: 8192, diskGb: 80 } })
+			.catch(() => undefined);
+		await source.sandboxes
+			.create({ accountId, kind: "microvm", shape: { vcpus: 4, memoryMb: 8192 } })
+			.catch(() => undefined);
+		await source.sandboxes
+			.create({ accountId, kind: "isolate", shape: { vcpus: 0, memoryMb: 256 } })
+			.catch(() => undefined);
+		expect(sent).toHaveLength(3);
+		expect(sent[0]).toMatchObject({ type: "microvm", resources: { vcpus: 4, memoryMb: 8192, diskGb: 80 } });
+		expect(sent[1]).toMatchObject({ type: "microvm", resources: { vcpus: 4, memoryMb: 8192 } });
+		expect(sent[1]?.resources).not.toHaveProperty("diskGb");
+		expect(sent[2]).toMatchObject({ type: "isolate", resources: { memoryMb: 256 } });
+		expect(sent[2]?.resources).not.toHaveProperty("diskGb");
 	});
 
 	it("reads one for its page, sets its auto-stop, and reads its live files and a failed command's output", async () => {

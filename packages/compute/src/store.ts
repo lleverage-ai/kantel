@@ -197,10 +197,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly base?: string;
 	/**
-	 * What it asked for at create: a microVM's vCPUs and memory, an isolate's memory (`vcpus` 0). Absent: made by a named
-	 * size, or before shapes. A fork asks for the same.
+	 * What it asked for at create: a microVM's vCPUs and memory, and its disk where one was asked for (or, once it runs,
+	 * the disk its host gave it); an isolate's memory (`vcpus` 0). Absent: made by a named size, or before shapes. A fork
+	 * asks for the same.
 	 */
-	readonly shape?: { readonly vcpus: number; readonly memoryMb: number };
+	readonly shape?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };
 	/**
 	 * Made from a template: how a fresh boot of it boots, its base and setup as its create resolved them, so a create
 	 * that failed before placing it (`bootAgain`) is made again the same, whatever its template has become since. No

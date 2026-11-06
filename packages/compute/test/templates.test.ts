@@ -102,6 +102,8 @@ function controllableBackend(
 	/** The hosts that build templates' custom images (`TemplateRuntime.customImages`): every one at first. */
 	const customImageHosts = new Set(runtimeHosts);
 	const hostSizes = new Map<string, readonly BackendSize[]>();
+	/** Hosts from before hosts said their disk limits, which copy a template snapshot's disk as it is. */
+	const noDiskLimits = new Set<string>();
 	const refuse = { deletes: false, snapshotHost: false, creates: false };
 	const builds: HeldBuild[] = [];
 	const waiting = new Map<number, (build: HeldBuild) => void>();
@@ -119,7 +121,9 @@ function controllableBackend(
 		return {
 			...offered,
 			sizes: [...(sizes ?? offered.sizes)],
-			hosts: hosts.map((each) => {
+			hosts: hosts.map((full) => {
+				const { disk: _disk, ...legacy } = full;
+				const each = noDiskLimits.has(full.id) ? legacy : full;
 				const only = hostSizes.get(each.id);
 				if (only !== undefined) {
 					return { ...each, sizes: only, features: each.features?.filter((name) => name !== CUSTOM_SHAPES_FEATURE) };
@@ -224,6 +228,7 @@ function controllableBackend(
 		runtimeHosts,
 		customImageHosts,
 		hostSizes,
+		noDiskLimits,
 		refuse,
 		builds,
 		build,
@@ -1422,7 +1427,7 @@ const HOST_SIZES: readonly BackendSize[] = [
 
 describe("a template's machine", () => {
 	it("is exactly its resources, for the build, the snapshot's key, a restore, a fresh boot and the sandbox's record", async () => {
-		const { api, tom, root, build, created, stub } = setup({ sizes: HOST_SIZES });
+		const { api, tom, root, build, created, stub, noDiskLimits } = setup({ sizes: HOST_SIZES });
 		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
 		const template = await tom.createTemplate({ name: "web", spec: SPEC });
 		// 2 vCPUs and 4096 MB, a shape no size has, so named by none; its host gives the disk.
@@ -1445,6 +1450,18 @@ describe("a template's machine", () => {
 		expect(restored).toMatchObject({ resources: shape, template: { start: "snapshot", snapshotId: ready?.id } });
 		expect(restored.resources).toEqual(fresh.resources);
 		expect(specOf(created, restored.id)).toMatchObject({ shape });
+		// A disk chosen: restored on a host that grows the snapshot's disk to it (or boots fresh where it is smaller)...
+		const disk = await tom.createSandbox({ template: "web", resources: { diskGb: 64 }, wait: true });
+		expect(disk).toMatchObject({ resources: { ...shape, diskGb: 64 }, template: { start: "snapshot" } });
+		expect(specOf(created, disk.id).shape).toEqual({ ...shape, diskGb: 64 });
+		// ...but booted fresh on one from before disks were chosen, which would copy the snapshot's disk as it is.
+		noDiskLimits.add(STUB_HOST_ID);
+		const old = await tom.createSandbox({ template: "web", resources: { diskGb: 64 }, wait: true });
+		expect(old).toMatchObject({ resources: { ...shape, diskGb: 64 }, template: { start: "boot" } });
+		expect(specOf(created, old.id).template?.snapshot).toBeUndefined();
+		// Its own machine's disk, none chosen: restored there as before.
+		expect((await tom.createSandbox({ template: "web", wait: true })).template).toMatchObject({ start: "snapshot" });
+		noDiskLimits.delete(STUB_HOST_ID);
 		// Its snapshot lost to the backend: booted fresh as the same machine still.
 		await stub.deleteTemplateSnapshot?.({ snapshotId: ready?.id ?? "", hostId: STUB_HOST_ID });
 		const lost = await tom.createSandbox({ template: "web", wait: true });

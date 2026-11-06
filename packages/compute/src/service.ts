@@ -57,6 +57,7 @@ import {
 	type BackendFileEntry,
 	type BackendHost,
 	type BackendMountStatus,
+	type BackendShape,
 	type BackendSize,
 	type BootOptions,
 	type CommandProgress,
@@ -73,7 +74,9 @@ import { createE2EChains } from "./e2e.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import {
 	type AskedMachine,
+	copiedOn,
 	copiedResources,
+	diskLimitsOf,
 	makesCustom,
 	makesShape,
 	recordedMachine,
@@ -189,6 +192,8 @@ export const MEMORY_MB_PER_VCPU = { min: 512, max: 8192 } as const;
 const MICROVM_MEMORY_STEP_MB = 512;
 /** No host takes more vCPUs than this (Firecracker's limit). */
 const MAX_VCPUS = 32;
+/** No host takes a disk larger than this (`kantel-host`'s most for a custom shape). */
+const MAX_DISK_GB = 4096;
 
 /** Limits on every account, where the deployment sets any. */
 export interface ComputeLimits {
@@ -886,8 +891,10 @@ const floorTo = (value: number, step: number) => Math.floor(value / step) * step
  * What a microVM may be on `hosts` (those the account may use that run microVMs): their presets, and, where a host
  * makes custom shapes, any vCPUs and memory it has. Undefined with no such host.
  *
- * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs. No disk is said
- * for a custom shape: it is the host's to give, and the sandbox's resources say what it got.
+ * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs. A disk may be
+ * asked for apart from the vCPUs and memory where a host makes custom shapes: from the least its hosts give to the most
+ * any gives, no more than the free disk it last reported, the default preset's by default. Without one, a custom
+ * shape's disk is its host's to give, and the sandbox's resources say what it got.
  */
 export function microvmShapes(
 	hosts: readonly BackendHost[],
@@ -897,6 +904,8 @@ export function microvmShapes(
 	const presets = new Map<string, computeSchema.ShapePreset>();
 	let maxVcpus = 1;
 	let maxMemory = MICROVM_MEMORY_STEP_MB;
+	let minDisk: number | undefined;
+	let maxDisk: number | undefined;
 	for (const host of hosts) {
 		const sizes = host.sizes ?? deploymentSizes;
 		for (const size of sizes) {
@@ -908,6 +917,15 @@ export function microvmShapes(
 		if (makesCustom(host)) {
 			maxVcpus = Math.max(maxVcpus, Math.min(MAX_VCPUS, host.capacity.vcpus));
 			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
+			const limits = diskLimitsOf(host, deploymentSizes);
+			// No more than it had free when it last reported (none free is none), else when it started, else its own limit: a
+			// create of more waits for room, so the slider doesn't offer it. A host without room for its least offers none.
+			const reported = host.freeDiskGb ?? (host.capacity.diskGb > 0 ? host.capacity.diskGb : undefined);
+			const free = reported === undefined ? limits.maxGb : Math.min(limits.maxGb, Math.max(0, reported));
+			if (free >= limits.minGb) {
+				minDisk = Math.min(minDisk ?? limits.minGb, limits.minGb);
+				maxDisk = Math.max(maxDisk ?? 0, free);
+			}
 		}
 	}
 	const list = [...presets.values()].sort(
@@ -915,6 +933,15 @@ export function microvmShapes(
 	);
 	const preferred = list.find((preset) => preset.name === "default") ?? list[0];
 	const minMemory = Math.min(MEMORY_MB_PER_VCPU.min, ...list.map((preset) => preset.memoryMb));
+	const disk =
+		minDisk === undefined || maxDisk === undefined
+			? undefined
+			: {
+					min: minDisk,
+					max: Math.min(MAX_DISK_GB, maxDisk),
+					step: 1,
+					default: Math.min(Math.min(MAX_DISK_GB, maxDisk), Math.max(minDisk, preferred?.diskGb ?? minDisk)),
+				};
 	return {
 		vcpus: { min: 1, max: maxVcpus, step: 1, default: preferred?.vcpus ?? Math.min(2, maxVcpus) },
 		memoryMb: {
@@ -924,6 +951,7 @@ export function microvmShapes(
 			default: preferred?.memoryMb ?? Math.min(2048, maxMemory),
 		},
 		memoryMbPerVcpu: { ...MEMORY_MB_PER_VCPU },
+		...(disk === undefined ? {} : { diskGb: disk }),
 		presets: list,
 		custom: hosts.some(makesCustom),
 	};
@@ -940,8 +968,14 @@ export function checkShape(
 	presets: readonly { readonly vcpus: number; readonly memoryMb: number }[] = [],
 ): { readonly vcpus: number; readonly memoryMb: number } {
 	const { memoryMb } = shape;
+	if (memoryMb === undefined) {
+		throw new KantelError("invalid", "resources need memoryMb, unless they give a microVM's diskGb alone");
+	}
 	if (type === "isolate") {
 		const range = computeSchema.ISOLATE_MEMORY_MB;
+		if (shape.diskGb !== undefined) {
+			throw new KantelError("invalid", "An isolate has no disk of its own: it shares its account's VM");
+		}
 		if (shape.vcpus !== undefined && shape.vcpus !== 0) {
 			throw new KantelError("invalid", "An isolate has no vCPUs of its own: it shares its account's VM's CPU");
 		}
@@ -967,10 +1001,26 @@ export function checkShape(
 }
 
 /**
+ * A microVM's disk as a create asks for it (`resources.diskGb`), checked: a whole number of GB, at least 1 and at most
+ * `MAX_DISK_GB`. Whether a host gives that much, and has it free, is `machineFor`'s and placement's to say.
+ */
+export function checkDisk(type: computeSchema.SandboxType, diskGb: number | undefined): number | undefined {
+	if (diskGb === undefined) return undefined;
+	if (type === "isolate") {
+		throw new KantelError("invalid", "An isolate has no disk of its own: it shares its account's VM");
+	}
+	if (!Number.isInteger(diskGb) || diskGb < 1 || diskGb > MAX_DISK_GB) {
+		throw new KantelError("invalid", `A microVM's disk is 1 to ${MAX_DISK_GB} GB, in whole GB`);
+	}
+	return diskGb;
+}
+
+/**
  * A create's shape, checked: what it asked for, against the hosts it may go to (`hosts`), however full they are now.
- * An isolate that asks for nothing gets the default 256 MB; a microVM, its deployment's default size (undefined). A
- * microVM shape none of them can make is `not_supported` before anything is stored, unless `checkHosts` is false (a
- * create from a snapshot, which goes to the snapshot's host and boots as it was).
+ * An isolate that asks for nothing gets the default 256 MB; a microVM, its deployment's default size (undefined), as
+ * one that asks for a disk alone does (its disk is `checkDisk`'s). A microVM shape none of them can make is
+ * `not_supported` before anything is stored, unless `checkHosts` is false (a create from a snapshot, which goes to the
+ * snapshot's host and boots as it was).
  */
 export function shapeFor(
 	type: computeSchema.SandboxType,
@@ -978,20 +1028,32 @@ export function shapeFor(
 	hosts: readonly BackendHost[],
 	deploymentSizes: readonly BackendSize[],
 	checkHosts = true,
-): { readonly vcpus: number; readonly memoryMb: number } | undefined {
+): BackendShape | undefined {
 	if (resources === undefined) {
 		return type === "isolate" ? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default } : undefined;
 	}
+	const diskGb = checkDisk(type, resources.diskGb);
+	if (resources.vcpus === undefined && resources.memoryMb === undefined && diskGb !== undefined) return undefined;
 	const presets = hosts.flatMap((host) => host.sizes ?? deploymentSizes);
-	const shape = checkShape(type, resources, presets);
-	if (type === "microvm" && checkHosts && !hosts.some((host) => makesShape(host, deploymentSizes, shape))) {
-		throw placementError(
-			"not_supported",
-			"no_host_offers_size",
-			`No host this sandbox may use can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB; see getSandboxShapes`,
-		);
-	}
+	const checked = checkShape(type, resources, presets);
+	const shape: BackendShape = diskGb === undefined ? checked : { ...checked, diskGb };
+	if (type === "microvm" && checkHosts) requireMaker(hosts, deploymentSizes, shape);
 	return shape;
+}
+
+/** `not_supported` unless one of `hosts` can make a microVM of `shape` (`makesShape`), however full it is now. */
+export function requireMaker(
+	hosts: readonly BackendHost[],
+	deploymentSizes: readonly BackendSize[],
+	shape: BackendShape,
+): void {
+	if (hosts.some((host) => makesShape(host, deploymentSizes, shape))) return;
+	const disk = shape.diskGb === undefined ? "" : ` and a ${shape.diskGb} GB disk`;
+	throw placementError(
+		"not_supported",
+		"no_host_offers_size",
+		`No host this sandbox may use can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB${disk}; see getSandboxShapes`,
+	);
 }
 
 /** How long an update asked for is shown as under way before it's taken not to have happened: 10 minutes. */
@@ -3499,7 +3561,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A microVM's shape is what its machine runs as, where its backend says: a host that can't resize a stopped or
 				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
 				...(sandbox.type === "microvm" && placement.resources !== undefined
-					? { shape: { vcpus: placement.resources.vcpus, memoryMb: placement.resources.memoryMb } }
+					? {
+							shape: {
+								vcpus: placement.resources.vcpus,
+								memoryMb: placement.resources.memoryMb,
+								// Its disk too, so a fork or a start from its snapshot asks for the disk it has.
+								...(placement.resources.diskGb > 0 ? { diskGb: placement.resources.diskGb } : {}),
+							},
+						}
 					: {}),
 				...(placement.bootedFresh === true && sandbox.template !== undefined
 					? { template: bootedFresh(sandbox.template) }
@@ -5105,8 +5174,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw placementError("unavailable", reason, `No host runs ${type} sandboxes`);
 				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
-				if (body.size !== undefined && body.resources !== undefined) {
+				// A size takes a disk beside it (`resources.diskGb` alone), but not vCPUs or memory.
+				if (
+					body.size !== undefined &&
+					body.resources !== undefined &&
+					(body.resources.vcpus !== undefined || body.resources.memoryMb !== undefined)
+				) {
 					throw new KantelError("invalid", "Give resources or a size, not both");
+				}
+				if (from !== undefined && body.resources?.diskGb !== undefined) {
+					throw new KantelError(
+						"invalid",
+						"A sandbox made from a snapshot keeps the snapshot's disk; leave out diskGb",
+					);
 				}
 				// A snapshot's own size is its machine, whatever the hosts name now (`restoreAsked` decides a snapshot's).
 				if (
@@ -5137,8 +5217,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
 				// its template's resources (unless it names a size), which a template snapshot was built as.
 				const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
+				// A disk asked for alone goes to the machine its size, template or the default gives.
+				const diskAlone =
+					body.resources !== undefined && body.resources.vcpus === undefined && body.resources.memoryMb === undefined
+						? checkDisk(type, body.resources.diskGb)
+						: undefined;
 				const asked =
-					body.resources ?? (template !== undefined && body.size === undefined ? template.spec.resources : undefined);
+					(diskAlone === undefined ? body.resources : undefined) ??
+					(template !== undefined && body.size === undefined ? template.spec.resources : undefined);
 				const shape = shapeFor(type, asked, eligible, capabilities.sizes, from === undefined);
 				const presets = eligible.flatMap((host) => host.sizes ?? capabilities.sizes);
 				// From a snapshot that holds memory: its own machine, and nothing else (`restoreAsked`), refused here rather than
@@ -5146,6 +5232,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const wanted: AskedMachine = {
 					...(body.size === undefined ? {} : { size: body.size }),
 					...(shape === undefined ? {} : { shape }),
+					...(diskAlone === undefined ? {} : { diskGb: diskAlone }),
 				};
 				const machineAsked =
 					type === "microvm" && from !== undefined
@@ -5154,6 +5241,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Its machine, as every create and fork decides it (`sandboxMachine`): the shape asked for, its template's, that of
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
+				// A snapshot's disk is on the host its sandbox is on: another size or shape is that host's.
+				const fromHostId =
+					from?.sandboxId === undefined ? undefined : (await store.sandboxes.get(from.sandboxId))?.hostId;
 				const machine =
 					type !== "microvm"
 						? undefined
@@ -5162,7 +5252,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									? { template: template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES }
 									: from === undefined
 										? undefined
-										: { copies: from },
+										: {
+												copies: from,
+												on: copiedOn(
+													capabilities.hosts.find((host) => host.id === fromHostId),
+													capabilities.sizes,
+												),
+											},
 								machineAsked,
 								presets,
 							);
@@ -5170,14 +5266,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw placementError(
 						"not_supported",
 						"no_host_offers_size",
-						`No host this sandbox may use offers the size ${body.size}`,
+						`No host this sandbox may use offers the size ${body.size ?? "default"}`,
 					);
+				}
+				// A disk asked for alone, on the machine it went to: some host must give it, as `shapeFor` checks a whole shape.
+				if (diskAlone !== undefined && machine?.shape !== undefined) {
+					requireMaker(eligible, capabilities.sizes, machine.shape);
 				}
 				// From the template's newest ready snapshot built as that machine, on its host, or a fresh boot.
 				const start =
 					template === undefined || machine?.shape === undefined
 						? undefined
-						: await templates.startFor(template, { shape: machine.shape, eligibleHosts: hosts });
+						: await templates.startFor(template, {
+								shape: machine.shape,
+								eligibleHosts: hosts,
+								// A disk asked for is given from a template snapshot only by hosts that say their disk limits (this
+								// kantel-host and later), which grow the snapshot's disk to it or boot fresh where it is bigger.
+								restoreOn: eligible.filter((host) => host.disk !== undefined).map((host) => host.id),
+							});
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -5391,7 +5497,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: snapshot === undefined
 							? sandboxMachine({ copies: current }, {}, [])
 							: sandboxMachine(
-									{ copies },
+									{
+										copies,
+										// Its snapshot is on the source's host, which another size is then made as: its preset, keeping a
+										// copied disk bigger than the preset's own.
+										on: await backend.capabilities().then((capabilities) =>
+											copiedOn(
+												capabilities.hosts.find((host) => host.id === current.hostId),
+												capabilities.sizes,
+											),
+										),
+									},
 									// From a snapshot holding memory, only its own machine (`restoreAsked`), refused before any fork is stored.
 									restoreAsked(
 										{ id: snapshot.id, memory: await holdsMemory(snapshot), ...recordedMachine(snapshot) },

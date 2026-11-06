@@ -198,7 +198,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 ==> Install kantel-host 0.3.0
   copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
 ==> Fetch Firecracker and the sandbox images
-  check  images host-images-20261105 from https://kantel.example.com/v1/hosts/images/manifest.json
+  check  images host-images-20261105.1 from https://kantel.example.com/v1/hosts/images/manifest.json
   mkdir  /var/lib/kantel-host (mode 0755)
   mkdir  /var/lib/kantel-host/bin (mode 0755)
   get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
@@ -320,7 +320,9 @@ A host offers three microVM sizes unless its settings say otherwise:
 | `default` | 4 | 2 GiB | 20 GiB |
 | `large` | 4 | 8 GiB | 50 GiB |
 
-A create can also ask for any vCPUs and memory with `resources`, such as `{"type": "microvm", "resources": {"vcpus": 3, "memoryMb": 6144}}`. A shape that matches a size goes as that size; any other goes only to a host whose `kantel-host` makes custom shapes. Its disk is the smallest size's with at least its memory, unless it starts from a snapshot, which keeps that snapshot's disk; the sandbox's `resources` say what it got. A snapshot that holds its sandbox's memory (a pause) restores only into the machine it was taken of, so a create from one leaves `resources` and `size` out, or asks for that machine; another is refused (`invalid`) before anything is made. `GET /v1/sandbox-shapes` says what the hosts you may use offer.
+A create can also ask for any vCPUs and memory with `resources`, such as `{"type": "microvm", "resources": {"vcpus": 3, "memoryMb": 6144}}`. A shape that matches a size goes as that size; any other goes only to a host whose `kantel-host` makes custom shapes. Its disk is the smallest size's with at least its memory, unless it asks for one or starts from a snapshot, which keeps that snapshot's disk; the sandbox's `resources` say what it got. A snapshot that holds its sandbox's memory (a pause) restores only into the machine it was taken of, so a create from one leaves `resources` and `size` out, or asks for that machine; another is refused (`invalid`) before anything is made. `GET /v1/sandbox-shapes` says what the hosts you may use offer.
+
+A microVM's disk can be chosen apart from its vCPUs and memory: `resources.diskGb`, with them or alone (`{"type": "microvm", "size": "large", "resources": {"diskGb": 60}}`), or `kantel new --type microvm --disk 60`. A host gives a disk off its sizes from `microvm.minDiskGiB` to `microvm.maxDiskGiB`, and only when it has that much disk free; `GET /v1/sandbox-shapes` says the range (`microvm.diskGb`), at most the most disk any host you may use had free when it last said. A host keeps a sandbox's disk through a stop, a start and a fork, and a disk is never shrunk.
 
 Hosts keep no warm microVMs waiting for a create, hosted or self-hosted: an idle VM holds its memory, and the machine may be doing other things. A create restores a template snapshot from the host's disk instead, in a few hundred milliseconds. A host keeps one template per vCPU count, whatever the memory and disk: a sandbox restored from it is given the rest of its memory (virtio-mem) and has its disk grown. The host makes the sizes' counts in the background when it starts, about a gigabyte of disk each; the first create of another count boots from scratch, in a few seconds, while that count's template is made for the next. Once one is made, the host removes any template it kept per size (an update from a version before these), as no create uses them. With `microvm.sharedTemplate` set to `false` in the settings file, a host keeps a template per size instead, made the first time the size is asked for, and a shape off the sizes always boots from scratch. `KANTEL_COMPUTE_POOLS`, which once set warm pools, is ignored with a warning. A `kantel-host` from before then is told to keep none, so it makes no more. It can't end a warm VM it already has: its next create of that size takes it, and updating the host (the new version clears them when it starts) ends the rest.
 
@@ -388,6 +390,8 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `usageIntervalSeconds` | `5` | How often the host sends its and its sandboxes' usage, up to `300`. Below `0`, never |
 | `keepForkSnapshots` | `false` | Keep the snapshot a running microVM's fork is made from as one of its source's automatic snapshots, its disk copied into the fork. By default the fork takes that snapshot's disk, one copy of the disk fewer, and the snapshot, which nothing restores again, is deleted once the fork has started |
 | `microvm.sharedTemplate` | `true` | One template snapshot per vCPU count, serving every memory and disk, rather than one per size (see above) |
+| `microvm.minDiskGiB` | the smallest size's disk | The least disk a create may ask for apart from its size (`resources.diskGb`). Less than the smallest size's boots from scratch, as the templates are made with that |
+| `microvm.maxDiskGiB` | `1024` | The most disk a create may ask for apart from its size, at most `4096` |
 | `bundleCacheMiB` | `10240` | The bundle images the host keeps for bundle mounts (experimental) that no sandbox uses now, in MiB, under `bundleCacheDir` (default `/var/lib/kantel-host/bundles`). Images in use are never removed. `-1` turns bundle mounts off |
 | `bundleDrives` | `8` | How many different bundles one microVM can mount, at most 12. Every microVM has that many empty read-only drives for them |
 

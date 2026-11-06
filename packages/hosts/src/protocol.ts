@@ -56,6 +56,15 @@ export interface HostSize {
 	readonly diskGiB: number;
 }
 
+/**
+ * The disk a host gives a microVM off its named sizes (a custom shape), whatever its vCPUs and memory: at least
+ * `minGiB`, at most `maxGiB`. Whether it has that much free now is admission's to say.
+ */
+export interface HostDiskLimits {
+	readonly minGiB: number;
+	readonly maxGiB: number;
+}
+
 /** What a host is: it changes only with its hardware or software. */
 export interface HostFacts {
 	readonly version: string;
@@ -73,6 +82,8 @@ export interface HostFacts {
 	readonly nested: boolean;
 	readonly tiers: readonly SandboxTier[];
 	readonly sizes: readonly HostSize[];
+	/** The disk a custom shape may have, with the microVM tier. Absent from a host from before it said (1 to 4096 GiB). */
+	readonly disk?: HostDiskLimits;
 	readonly labels?: { readonly [key: string]: string };
 	/** `open` (NAT), `proxy` (only through the host's egress proxy) or `none`. */
 	readonly egress: string;

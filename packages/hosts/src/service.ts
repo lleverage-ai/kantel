@@ -30,6 +30,7 @@ import {
 	HOST_E2E_PORT,
 	HOST_FEATURES,
 	type HostBucketSource,
+	type HostDiskLimits,
 	type HostEgress,
 	type HostEgressRecord,
 	type HostFacts,
@@ -151,11 +152,18 @@ export interface HostView {
 	readonly tiers: readonly SandboxTier[];
 	/** The microVM sizes it offers. */
 	readonly sizes: readonly HostSize[];
+	/** The disk it gives a microVM off its sizes, where it says. */
+	readonly disk?: HostDiskLimits;
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
 	/** What it does beyond protocol 1 as first released (`HOST_FEATURES`). */
 	readonly features: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	/**
+	 * The disk it had free when it last reported (its hello or a heartbeat), what placement admits a create against;
+	 * `capacity.diskGb` is the same, else what it had free when it started. Absent until it has reported.
+	 */
+	readonly freeDiskGb?: number;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -183,8 +191,8 @@ export interface CreateSandboxInput {
 	/** A microVM's named size, as asked for before shapes. Default `default`; `shape` wins. */
 	readonly size?: string;
 	/**
-	 * A microVM's vCPUs and memory, or an isolate's memory (`vcpus` 0). A shape off the host's named sizes boots from
-	 * scratch; an isolate's memory is recorded on its host, not enforced.
+	 * A microVM's vCPUs and memory, and its disk where one is chosen, or an isolate's memory (`vcpus` 0). A shape off the
+	 * host's named sizes boots from scratch; an isolate's memory is recorded on its host, not enforced.
 	 */
 	readonly shape?: Shape;
 	/**
@@ -229,6 +237,12 @@ export interface HostTemplateRuntime {
 export const TEMPLATE_BUILD_TIMEOUT_MS = 50 * 60_000;
 /** How long a custom image's template build may take: its build microVM (which the host bounds at 45 minutes) too. */
 export const TEMPLATE_IMAGE_BUILD_TIMEOUT_MS = 100 * 60_000;
+/**
+ * How long a fork, or a create from a sandbox's snapshot, may take: the host writes the machine's memory and copies its
+ * disk, gigabytes each, which on a busy disk took 150-300 s for a 4 vCPU / 16 GB microVM with 16 GB on its disk. Past
+ * the default call timeout the sandbox was put in `error` while its host went on and started it.
+ */
+export const DISK_COPY_TIMEOUT_MS = 30 * 60_000;
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
@@ -528,16 +542,19 @@ const BOOTS: ReadonlySet<string> = new Set([
 	HostMethods.resume,
 ]);
 
-/** A shape as asked: whole vCPUs (0 for an isolate) and memory in MiB, at least 128. */
+/** A shape as asked: whole vCPUs (0 for an isolate) and memory in MiB, at least 128, and a microVM's whole GiB of disk. */
 function shapeIn(shape: Shape, tier: SandboxTier): Shape {
-	const { vcpus, memoryMiB } = shape;
+	const { vcpus, memoryMiB, diskGiB } = shape;
 	if (!Number.isInteger(vcpus) || !Number.isInteger(memoryMiB) || memoryMiB < 128) {
 		throw new KantelError("invalid", "A shape is whole vCPUs and at least 128 MiB of memory");
 	}
 	if (tier === "microvm" ? vcpus < 1 : vcpus !== 0) {
 		throw new KantelError("invalid", tier === "microvm" ? "A microVM has at least 1 vCPU" : "An isolate has no vCPUs");
 	}
-	return { vcpus, memoryMiB };
+	if (diskGiB === undefined) return { vcpus, memoryMiB };
+	if (tier !== "microvm") throw new KantelError("invalid", "An isolate has no disk of its own");
+	if (!Number.isInteger(diskGiB) || diskGiB < 1) throw new KantelError("invalid", "A disk is whole GiB, at least 1");
+	return { vcpus, memoryMiB, diskGiB };
 }
 
 /** Kantel's errors for host calls that were sent and never answered (`HostCallError.unanswered`). */
@@ -955,6 +972,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			...(arch === undefined ? {} : { arch }),
 			tiers: facts?.tiers ?? [],
 			sizes: facts?.sizes ?? [],
+			...(facts?.disk === undefined ? {} : { disk: { ...facts.disk } }),
 			kvm: facts?.kvm ?? false,
 			nestedVirtualisation: facts?.nested ?? false,
 			features: [...(facts?.features ?? [])],
@@ -964,6 +982,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				memoryMb: facts?.memoryMiB ?? 0,
 				diskGb: reported?.freeDiskGiB ?? facts?.diskGiB ?? 0,
 			},
+			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),
@@ -1477,8 +1496,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							...(input.egress === undefined ? {} : { egress: input.egress }),
 							...mountsParam(mounts),
 						},
-						// From a template, as long as a build: a fresh boot pulls its base image and runs its setup.
-						template === undefined ? undefined : { timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS },
+						// From a template, as long as a build: a fresh boot pulls its base image and runs its setup. From a sandbox's
+						// snapshot, as long as its disk takes to copy.
+						template !== undefined
+							? { timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS }
+							: input.from !== undefined
+								? { timeoutMs: DISK_COPY_TIMEOUT_MS }
+								: undefined,
 						chosen.host,
 					);
 					const settled = await settle(placement, sandbox, chosen.host);
@@ -1515,14 +1539,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							? undefined
 							: storedFacts((await store.getHost(source.hostId))?.facts)?.features;
 					const mounts = mountHandoff(features, input.mounts);
-					const sandbox = await onHost<HostSandbox>(source.hostId, HostMethods.fork, {
-						sandboxId,
-						newId,
-						snapshotId: shortId("snap"),
-						...(input.egress === undefined ? {} : { egress: input.egress }),
-						...(input.env === undefined ? {} : { env: input.env }),
-						...mountsParam(mounts),
-					});
+					const sandbox = await onHost<HostSandbox>(
+						source.hostId,
+						HostMethods.fork,
+						{
+							sandboxId,
+							newId,
+							snapshotId: shortId("snap"),
+							...(input.egress === undefined ? {} : { egress: input.egress }),
+							...(input.env === undefined ? {} : { env: input.env }),
+							...mountsParam(mounts),
+						},
+						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+					);
 					const statuses = mounts.status(sandbox);
 					return {
 						sandbox,

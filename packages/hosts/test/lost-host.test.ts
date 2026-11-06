@@ -157,6 +157,25 @@ describe("a host lost mid-call", () => {
 		expect((await store.getPlacement("sbx-fork"))?.state).toBe("starting");
 	});
 
+	it("gives a fork, and a create from a sandbox's snapshot, as long as a disk copy, while a plain create keeps its deadline", async () => {
+		const { store, service, host, hostId } = await setup(50);
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-big" });
+		// The host writes the machine's memory and copies its disk: past the ordinary deadline.
+		const slow = () => new Promise<void>((resolve) => setTimeout(resolve, 200));
+		host.hold = (method) => (method === "sandbox.fork" || method === "sandbox.create" ? slow() : undefined);
+		const fork = await service.sandboxes.fork("sbx-big", { newId: "sbx-big-fork" });
+		expect(fork.sandbox.state).toBe("running");
+		expect((await store.getPlacement("sbx-big-fork"))?.state).toBe("running");
+		const restored = await service.sandboxes.create({
+			tier: "microvm",
+			sandboxId: "sbx-restored",
+			from: "snap-big",
+			hostIds: [hostId],
+		});
+		expect(restored.sandbox.state).toBe("running");
+		await expect(service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-plain" })).rejects.toSatisfy(unanswered);
+	});
+
 	it("says a start whose host went while it waited may have run, and one that never reached its host was refused", async () => {
 		const { service, host } = await setup();
 		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-start" });

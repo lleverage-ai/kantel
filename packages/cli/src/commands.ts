@@ -471,6 +471,12 @@ function callerName(caller: Caller): string {
 const kindOf = (sandbox: Sandbox): string =>
 	sandbox.type === "microvm" && sandbox.size !== undefined ? `microvm ${sandbox.size}` : sandbox.type;
 
+/** A microVM's disk, as its host gave it, for a line about it: ", 60 GB disk"; nothing until it is placed. */
+const diskOf = (sandbox: Sandbox): string =>
+	sandbox.type === "microvm" && sandbox.resources !== undefined && sandbox.resources.diskGb > 0
+		? `, ${sandbox.resources.diskGb} GB disk`
+		: "";
+
 const stateOf = (sandbox: Sandbox): string => {
 	const state = sandbox.placementReason === undefined ? sandbox.state : `${sandbox.state} (${sandbox.placementReason})`;
 	return sandbox.reason === undefined ? state : `${state}: ${sandbox.reason}`;
@@ -1832,6 +1838,11 @@ const SECTIONS: readonly Section[] = [
 						description: "isolate (default): starts in milliseconds; microvm: a full Linux with Docker and SSH",
 					},
 					size: sizeFlag,
+					disk: {
+						type: "string",
+						value: "<GB>",
+						description: "A microVM's disk in GB, whatever its size (default: its size's); within the hosts' limits",
+					},
 					name: { type: "string", value: "<name>", description: "Default: a generated name" },
 					from: {
 						type: "string",
@@ -1877,6 +1888,8 @@ const SECTIONS: readonly Section[] = [
 					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
 					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
+					"--disk sizes a microVM's disk apart from its vCPUs and memory (kantel new --type microvm --size large\n" +
+					"--disk 60). A sandbox made from a snapshot keeps the snapshot's disk.\n\n" +
 					"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
 					"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
 					"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
@@ -1885,6 +1898,14 @@ const SECTIONS: readonly Section[] = [
 					"as every sandbox stays on the host it was placed on. Without it, Kantel picks the host.",
 				async run(ctx) {
 					const hosts = ctx.list("host").map(hostedPort);
+					const type = choice(ctx.string("type"), SANDBOX_TYPES, "--type");
+					const diskGb = whole(ctx.string("disk"), "--disk");
+					if (diskGb !== undefined && type !== "microvm") {
+						throw new UsageError("--disk is a microVM's: add --type microvm (an isolate has no disk of its own)");
+					}
+					if (diskGb !== undefined && ctx.string("from") !== undefined) {
+						throw new UsageError("a sandbox made from a snapshot keeps the snapshot's disk: leave out --disk");
+					}
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
 					// A variable has an =; an environment's name or ID never does.
 					const envs = ctx.list("env");
@@ -1896,8 +1917,9 @@ const SECTIONS: readonly Section[] = [
 					const body = {
 						...(environment === undefined ? {} : { environment }),
 						name: ctx.string("name"),
-						type: choice(ctx.string("type"), SANDBOX_TYPES, "--type"),
+						type,
 						size: choice(ctx.string("size"), SIZES, "--size"),
+						...(diskGb === undefined ? {} : { resources: { diskGb } }),
 						image: ctx.string("image"),
 						from: ctx.string("from"),
 						autoStopMinutes: autoStopOf(ctx.string("auto-stop")),
@@ -1920,7 +1942,7 @@ const SECTIONS: readonly Section[] = [
 					}
 					ctx.emit(ports.length === 0 ? sandbox : { ...sandbox, hostedPorts: ports }, () =>
 						[
-							`Created ${sandbox.id} (${sandbox.name}): ${kindOf(sandbox)}, ${stateOf(sandbox)}.`,
+							`Created ${sandbox.id} (${sandbox.name}): ${kindOf(sandbox)}${diskOf(sandbox)}, ${stateOf(sandbox)}.`,
 							...ports.map((port) => `  Port ${port.port}:      ${port.url}`),
 							`  Run a command:  kantel exec ${sandbox.id} -- echo hello`,
 							`  Stop it:        kantel stop ${sandbox.id}`,

@@ -13,10 +13,14 @@
 import type { computeSchema } from "@kantel/api";
 import type { BackendUsageReport } from "./usage-series.ts";
 
-/** A sandbox's vCPUs (0 for an isolate, which shares its account's VM's CPU) and memory, as asked for. */
+/**
+ * A sandbox's vCPUs (0 for an isolate, which shares its account's VM's CPU) and memory, as asked for, and a microVM's
+ * disk where one was asked for (or kept, from its snapshot or source). Absent: its host gives the disk the shape has.
+ */
 export interface BackendShape {
 	readonly vcpus: number;
 	readonly memoryMb: number;
+	readonly diskGb?: number;
 }
 
 /** A host feature: it makes microVMs of any shape, not only its named sizes (`@kantel/hosts`'s `custom-shapes`). */
@@ -51,8 +55,18 @@ export interface BackendHost {
 	 */
 	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	/**
+	 * The disk it had free when it last reported, which placement admits a create against (`capacity.diskGb` is what it
+	 * had free when it started). Absent: it hasn't reported, or the backend doesn't say (the stub).
+	 */
+	readonly freeDiskGb?: number;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
+	/**
+	 * The disk it gives a microVM off its presets (`custom-shapes`): at least `minGb`, at most `maxGb`. Absent from a
+	 * host from before it said: `machine.ts`'s `diskLimitsOf` stands in.
+	 */
+	readonly disk?: { readonly minGb: number; readonly maxGb: number };
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
 	readonly connected?: boolean;

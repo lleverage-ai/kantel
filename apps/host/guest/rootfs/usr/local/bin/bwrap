@@ -1,0 +1,23 @@
+#!/bin/sh
+# bubblewrap, except for glycin's image loaders: this turns those away, so glycin loads images without its sandbox.
+#
+# GTK 3 loads every icon through gdk-pixbuf, which Ubuntu 26.04 builds on glycin 2.1. glycin runs each image loader in
+# bwrap under an address-space limit (RLIMIT_AS) of 80% of MemAvailable plus SwapFree, less 200 MB. A 1 GB sandbox
+# with its browser, streams and Docker up can have under 300 MB available, which leaves the loader too little to load
+# its own libraries (it exits 127), and GTK aborts on its fallback icon (`Failed to load …/image-missing.svg: Loader
+# process exited early`): Geany and PCManFM die at start, or later when memory dips. When bwrap says it can't make a
+# namespace, glycin runs its loaders unsandboxed, with no limit. glycin 2.2 has GLYCIN_DISABLE_SANDBOX for this; 2.1
+# has only that test. The sandbox is the microVM, and its user has root through sudo, so the loaders' own sandbox
+# protects nothing here.
+#
+# glycin's calls are the ones that give the loader a home at /tmp-home (its availability test and every loader);
+# everything else runs the real bwrap. glycin runs the test once per process under the same limit, so an app that
+# starts with less than about 200 MB available still fails it (nothing runs under a limit of 0); once started, it
+# loads images however low memory gets.
+case " $* " in
+*" --tmpfs /tmp-home "*)
+	echo "bwrap: No permissions to create a new namespace (Kantel: glycin loads images unsandboxed in a sandbox)" >&2
+	exit 1
+	;;
+esac
+exec /usr/bin/bwrap "$@"

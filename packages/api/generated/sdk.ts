@@ -498,9 +498,9 @@ export interface CreateSandboxBody {
 	readonly name?: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type?: SandboxType;
-	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
-	/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
+	/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
 	readonly resources?: SandboxShapeInput;
 	/** A microVM's base image. Default: the deployment's. */
 	readonly image?: string;
@@ -916,7 +916,7 @@ export interface ForkSandboxBody {
 	readonly name?: string;
 	/** Fork from this snapshot of the sandbox. Default: its newest, or its live state. */
 	readonly snapshotId?: string;
-	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
 	/** How many copies; default 1. */
 	readonly count?: number;
@@ -1227,7 +1227,7 @@ export interface MemberList {
 /** `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`. */
 export type MemberRole = "member" | "admin" | "owner";
 
-/** Absent when no host the account may use runs microVMs. */
+/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets, or none has the free disk for its least. */
 export interface MicrovmShapes {
 	readonly vcpus: ShapeRange;
 	readonly memoryMb: ShapeRange;
@@ -1236,9 +1236,10 @@ export interface MicrovmShapes {
 		readonly min: number;
 		readonly max: number;
 	};
+	readonly diskGb?: ShapeRange;
 	/** Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. */
 	readonly presets: readonly ShapePreset[];
-	/** Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. */
+	/** Whether a host takes shapes off the presets; when false, only the presets. Unless a create asks for a disk (`diskGb`), its host gives one; the sandbox's `resources` say what it got. */
 	readonly custom: boolean;
 }
 
@@ -1394,7 +1395,7 @@ export interface ReadSnapshotFileQuery {
 }
 
 export interface ResumeSandboxBody {
-	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
 	/** Answer once it is `running` (or `error`). */
 	readonly wait?: boolean;
@@ -1424,7 +1425,7 @@ export interface Sandbox {
 	readonly subdomain: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type: SandboxType;
-	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
 	/** The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes. */
 	readonly shape?: SandboxShape;
@@ -1639,18 +1640,20 @@ export interface SandboxShape {
 	readonly memoryMb: number;
 }
 
-/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
+/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
 export interface SandboxShapeInput {
 	/** A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. */
 	readonly vcpus?: number;
-	/** Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). */
-	readonly memoryMb: number;
+	/** Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). Needed unless `diskGb` is given alone. */
+	readonly memoryMb?: number;
+	/** A microVM's disk in GB, chosen apart from its vCPUs and memory, within `getSandboxShapes`' `microvm.diskGb`. Alone (with `size` or neither), the vCPUs and memory are that size's or the default's. Default: the disk its host gives the shape. Not for an isolate, or with `from`: a sandbox made from a snapshot keeps the snapshot's disk. */
+	readonly diskGb?: number;
 }
 
 /** What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates. */
 export interface SandboxShapes {
 	readonly isolate: IsolateShapes;
-	/** Absent when no host the account may use runs microVMs. */
+	/** Absent when no host the account may use runs microVMs. `diskGb` is the disk a microVM may ask for (`resources.diskGb`), whatever its vCPUs and memory: within the hosts' limits and the free disk they last reported, its `default` the default preset's. A sandbox no host has the free disk for now goes to `error` with `placementReason` `insufficient_capacity`. `diskGb` is absent when no host takes a disk off its presets, or none has the free disk for its least. */
 	readonly microvm?: MicrovmShapes;
 	/** What an hour costs, per vCPU and GB; absent where it is free. */
 	readonly rates?: ShapeRates;
@@ -1663,7 +1666,7 @@ export interface SandboxShapesQuery {
 	readonly host?: string;
 }
 
-/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 export type SandboxSizeName = "small" | "default" | "large" | "xlarge";
 
 /** What it was made from. */
@@ -1785,7 +1788,7 @@ export interface SetPublicUrlBody {
 }
 
 export interface ShapePreset {
-	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly name: SandboxSizeName;
 	readonly vcpus: number;
 	readonly memoryMb: number;
@@ -1826,7 +1829,7 @@ export interface Snapshot {
 	readonly trigger?: "periodic" | "stop" | "manual" | "save";
 	/** Whether it holds the sandbox's memory as well as its disk (a pause). */
 	readonly memory: boolean;
-	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
 	readonly resources?: SandboxResources;
 	readonly sizeBytes?: number;
@@ -2716,7 +2719,7 @@ export interface KantelClient {
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
 	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. With `host`, from that host alone. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
 	getSandboxShapes(query?: SandboxShapesQuery, options?: CallOptions): Promise<SandboxShapes>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;

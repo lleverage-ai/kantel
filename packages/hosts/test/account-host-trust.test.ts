@@ -129,6 +129,15 @@ describe("an account's own host", () => {
 			ok: true,
 			value: { tiers: ["microvm"] },
 		});
+		// A host's disk limits are kept as it says them; malformed ones are dropped, not refused.
+		expect(parseHostFacts({ ...facts(), disk: { minGiB: 10, maxGiB: 1024 } })).toMatchObject({
+			ok: true,
+			value: { disk: { minGiB: 10, maxGiB: 1024 } },
+		});
+		for (const disk of [{ minGiB: 0, maxGiB: 10 }, { minGiB: 20, maxGiB: 10 }, { minGiB: "1", maxGiB: 10 }, 7]) {
+			const parsed = parseHostFacts({ ...facts(), disk });
+			expect(parsed.ok && parsed.value).not.toHaveProperty("disk");
+		}
 
 		// A hello with malformed facts is refused (4002) and nothing it said is kept.
 		const { hostId } = await service.register({ token: "kth_enrolment", facts: facts() });
@@ -160,6 +169,8 @@ describe("an account's own host", () => {
 
 		const capabilities = await backend.capabilities();
 		expect(capabilities.hosts.map((host) => host.id).sort()).toEqual([own.hostId, shared.hostId].sort());
+		// A malformed report says no free disk at all, rather than a wrong one.
+		expect(capabilities.hosts.find((host) => host.id === own.hostId)).not.toHaveProperty("freeDiskGb");
 		// Another account still gets a sandbox; the bad host counts as offering nothing.
 		const placed = await backend.create(spec("sbx_b", "acc_b", [shared.hostId, own.hostId]));
 		expect(placed.hostId).toBe(shared.hostId);

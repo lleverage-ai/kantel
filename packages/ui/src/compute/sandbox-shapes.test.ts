@@ -5,6 +5,8 @@ import { onStep, sliderPercent } from "../primitives/slider.tsx";
 import {
 	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
+	diskRangeFor,
+	fitDisk,
 	fitMemory,
 	memoryRangeFor,
 	memoryText,
@@ -19,7 +21,7 @@ import {
 	sizeText,
 	vcpuRangeFor,
 } from "./compute-model.ts";
-import { NewSandboxDialog, ShapeFields } from "./sandboxes-page.tsx";
+import { NewSandboxDialog, type NewSandboxForm, newSandboxInput, ShapeFields } from "./sandboxes-page.tsx";
 
 describe("sandbox shapes", () => {
 	it("isolates take 128 to 512 MB in 64 MB steps, 256 by default", () => {
@@ -100,27 +102,112 @@ describe("slider steps", () => {
 });
 
 describe("New sandbox's shapes, as the hosts make them", () => {
-	const presetsOnly: SandboxShapes = {
-		...DEFAULT_SANDBOX_SHAPES,
-		microvm: { ...DEFAULT_SANDBOX_SHAPES.microvm, custom: false },
-	};
-	const fields = (shapes: SandboxShapes, shape: { vcpus: number; memoryMb: number }) =>
+	// Older hosts: only their presets, and no disk off them.
+	const { diskGb: _disk, ...noDisk } = DEFAULT_SANDBOX_SHAPES.microvm;
+	const presetsOnly: SandboxShapes = { ...DEFAULT_SANDBOX_SHAPES, microvm: { ...noDisk, custom: false } };
+	const fields = (
+		shapes: SandboxShapes,
+		shape: { vcpus: number; memoryMb: number; diskGb?: number },
+		diskKept = false,
+		diskInherited = false,
+	) =>
 		renderToStaticMarkup(
 			createElement(ShapeFields, {
 				kind: "microvm",
 				shapes,
 				hosting: "self-hosted",
 				shape,
+				diskKept,
+				diskInherited,
 				onVcpus: () => {},
 				onMemory: () => {},
+				onDisk: () => {},
 				onPreset: () => {},
 			}),
 		);
 
-	it("promises no disk: it is the host's to give, and a snapshot's to keep", () => {
-		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).not.toMatch(/GB disk/);
-		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 3, memoryMb: 6144 })).not.toMatch(/GB disk/);
-		expect(fields(presetsOnly, { vcpus: 4, memoryMb: 8192 })).not.toMatch(/GB disk/);
+	it("offers a disk where the hosts take one off their presets, and not from a snapshot, which keeps its own", () => {
+		const html = fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192, diskGb: 80 });
+		expect(html).toContain("4 vCPU, 8 GB memory, 80 GB disk");
+		expect(html).toContain(">Disk<");
+		expect(html.match(/type="range"/g)).toHaveLength(3);
+		expect(html).toMatch(/min="20" max="500" step="1"[^>]*value="80"/);
+		// From a snapshot: no disk to choose, and it says why.
+		const kept = fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 }, true);
+		expect(kept).not.toMatch(/GB disk/);
+		expect(kept.match(/type="range"/g)).toHaveLength(2);
+		expect(kept).toContain("A sandbox made from a snapshot keeps its disk.");
+		// A template's own machine: its host gives the disk, so none shows as chosen until one is.
+		const inherited = fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 2, memoryMb: 4096 }, false, true);
+		expect(inherited).not.toMatch(/GB disk/);
+		expect(inherited.match(/type="range"/g)).toHaveLength(2);
+		expect(inherited).toContain("Disk: the template&#x27;s own, as its host gives it.");
+		expect(inherited).toContain("Choose a disk");
+		// Hosts that take no disk off their presets: none is offered, whether they make other shapes or only presets.
+		const custom = fields({ ...DEFAULT_SANDBOX_SHAPES, microvm: noDisk }, { vcpus: 3, memoryMb: 6144 });
+		expect(custom).not.toMatch(/GB disk|>Disk</);
+		expect(custom.match(/type="range"/g)).toHaveLength(2);
+		expect(fields(presetsOnly, { vcpus: 4, memoryMb: 8192 })).not.toMatch(/GB disk|>Disk</);
+		// Only presets, even where a disk range is said: each preset's own disk.
+		const listed = { ...DEFAULT_SANDBOX_SHAPES, microvm: { ...DEFAULT_SANDBOX_SHAPES.microvm, custom: false } };
+		expect(diskRangeFor(listed)).toBeUndefined();
+		expect(fields(listed, { vcpus: 4, memoryMb: 8192 })).not.toMatch(/GB disk|>Disk</);
+	});
+
+	it("keeps a disk on its slider's grid, from the hosts' default, and allows none outside its range", () => {
+		expect(diskRangeFor(DEFAULT_SANDBOX_SHAPES)).toEqual({ min: 20, max: 500, step: 1, default: 60 });
+		expect(fitDisk(DEFAULT_SANDBOX_SHAPES)).toBe(60);
+		const read: SandboxShapes = {
+			...DEFAULT_SANDBOX_SHAPES,
+			microvm: { ...DEFAULT_SANDBOX_SHAPES.microvm, diskGb: { min: 10, max: 200, step: 5, default: 42 } },
+		};
+		expect(fitDisk(read)).toBe(40);
+		expect(fitDisk(read, 999)).toBe(200);
+		expect(fitDisk({ ...DEFAULT_SANDBOX_SHAPES, microvm: noDisk })).toBeUndefined();
+		const medium = { vcpus: 4, memoryMb: 8192 };
+		expect(shapeAllowed(DEFAULT_SANDBOX_SHAPES, { ...medium, diskGb: 120 })).toBe(true);
+		expect(shapeAllowed(DEFAULT_SANDBOX_SHAPES, { ...medium, diskGb: 10 })).toBe(false);
+		expect(shapeAllowed(DEFAULT_SANDBOX_SHAPES, { ...medium, diskGb: 501 })).toBe(false);
+		expect(shapeAllowed(DEFAULT_SANDBOX_SHAPES, { vcpus: 5, memoryMb: 8192, diskGb: 501 })).toBe(false);
+		// No disk may be asked for where no host takes one.
+		expect(shapeAllowed({ ...DEFAULT_SANDBOX_SHAPES, microvm: noDisk }, { ...medium, diskGb: 60 })).toBe(false);
+		expect(shapeCreatable(DEFAULT_SANDBOX_SHAPES, "microvm", { ...medium, diskGb: 1000 })).toBe(false);
+		// A preset is still the preset whatever disk it asks for, and the disk isn't priced.
+		expect(presetOf(DEFAULT_SANDBOX_SHAPES, { ...medium, diskGb: 200 })?.name).toBe("medium");
+		expect(shapeCentsPerHour(DEFAULT_SANDBOX_SHAPES, "microvm", { ...medium, diskGb: 400 })).toBe(4);
+	});
+
+	it("sends the disk chosen for a microVM, and none from a snapshot or for an isolate", () => {
+		const form = {
+			accountId: "acct",
+			name: "",
+			kind: "microvm" as const,
+			shape: { vcpus: 4, memoryMb: 8192, diskGb: 80 },
+			shapeChosen: false,
+			from: "",
+			environment: "",
+			autoStop: "never",
+		};
+		expect(newSandboxInput(form).shape).toEqual({ vcpus: 4, memoryMb: 8192, diskGb: 80 });
+		const fromSnapshot = newSandboxInput({ ...form, from: "snap_1" });
+		expect(fromSnapshot.fromSnapshot).toBe("snap_1");
+		expect(fromSnapshot.shape).toEqual({ vcpus: 4, memoryMb: 8192 });
+		expect(fromSnapshot.shape).not.toHaveProperty("diskGb");
+		const isolate = newSandboxInput({ ...form, kind: "isolate", shape: { vcpus: 0, memoryMb: 256, diskGb: 80 } });
+		expect(isolate.shape).toEqual({ vcpus: 0, memoryMb: 256 });
+		expect(newSandboxInput({ ...form, shape: { vcpus: 4, memoryMb: 8192 } }).shape).not.toHaveProperty("diskGb");
+		// A template's own machine sends no shape, so no disk; one chosen goes with the shape.
+		const template = { id: "tpl_1", spec: { vcpus: 2, memoryMb: 4096 } } as NonNullable<NewSandboxForm["template"]>;
+		const own = newSandboxInput({ ...form, shape: { vcpus: 2, memoryMb: 4096 }, template });
+		expect(own).not.toHaveProperty("shape");
+		expect(own.templateId).toBe("tpl_1");
+		const chosen = newSandboxInput({
+			...form,
+			shape: { vcpus: 2, memoryMb: 4096, diskGb: 90 },
+			template,
+			shapeChosen: true,
+		});
+		expect(chosen.shape).toEqual({ vcpus: 2, memoryMb: 4096, diskGb: 90 });
 	});
 
 	it("keeps memory on the slider's grid, so what is sent is what is shown", () => {
@@ -249,5 +336,9 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		const defaults = dialog();
 		expect(defaults).toContain('type="range"');
 		expect(create(defaults)).not.toMatch(/\sdisabled=""/);
+		// The disk starts at the shapes' default: the medium preset's 60 GB.
+		expect(defaults).toContain(">Disk<");
+		expect(defaults).toContain('aria-valuetext="60 GB"');
+		expect(defaults).toContain("4 vCPU, 8 GB memory, 60 GB disk");
 	});
 });
