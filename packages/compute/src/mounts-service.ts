@@ -460,15 +460,16 @@ export function createMounts(deps: MountsDeps) {
 	 * other upload or delete, however it interleaves or stalls, can take bytes from a record. Answers whether the record
 	 * was new; when the account had the digest already, the copy goes and that record stays as it was.
 	 */
-	async function publishBundle(staged: StagedBlob, record: StoredBundle): Promise<boolean> {
-		if ((await store.bundles.get(record.id)) !== undefined) return false;
+	/** Publishes an upload's bytes as `record`, unless the account has the digest already: the generation it kept, if so. */
+	async function publishBundle(staged: StagedBlob, record: StoredBundle): Promise<number | undefined> {
+		if ((await store.bundles.get(record.id)) !== undefined) return undefined;
 		const generation = freshGeneration();
 		await staged.keep(generation);
 		const mine = { ...record, generation };
 		let inserted: boolean | undefined;
 		try {
 			inserted = await store.bundles.insert(mine);
-			return inserted;
+			return inserted ? generation : undefined;
 		} finally {
 			if (inserted !== true) await dropUnpublished(record.id, record.digest, generation);
 		}
@@ -668,6 +669,7 @@ export function createMounts(deps: MountsDeps) {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:write", role);
 			if (request.body === null) throw new KantelError("invalid", "Send the bundle's tar as the request's body");
+			if (!(await deps.accountOpen(account.id))) throw new KantelError("conflict", "This account is being deleted");
 			await bundleStore();
 			const staged = await options.bundles.put(request.body, {
 				maxBytes: maxBundleBytes,
@@ -681,24 +683,20 @@ export function createMounts(deps: MountsDeps) {
 				createdAt: now(),
 				...(principal.userId === undefined ? {} : { createdBy: principal.userId }),
 			};
-			let inserted: boolean;
+			let published: number | undefined;
 			try {
-				inserted = await publishBundle(staged, record);
+				published = await publishBundle(staged, record);
 			} finally {
 				await staged.discard().catch(() => undefined);
 			}
-			if (inserted && !(await deps.accountOpen(account.id))) {
-				// Its account is being deleted: the upload is forgotten, bytes and all, as `deleteBundle` would.
-				// Its bytes first, and its record only once they're gone: should their delete fail, the record stays as what's
-				// left to remove, found by the deletion's last look (which refuses) or kept for a later delete.
-				const stored = await store.bundles.get(record.id);
-				if (stored !== undefined) {
-					await options.bundles.delete(stored.digest, generationOf(stored));
-					await store.bundles.delete(stored.id);
-				}
+			if (published !== undefined && !(await deps.accountOpen(account.id))) {
+				// Its account closed as it uploaded: the upload undoes itself, its own generation only, bytes before record, so
+				// should the bytes not go the record stays to say what is left. A record of another upload is never touched.
+				await options.bundles.delete(record.digest, published);
+				await store.bundles.deleteIf(record.id, (current) => generationOf(current) === published);
 				throw new KantelError("conflict", "This account is being deleted");
 			}
-			if (inserted) return bundleView(record);
+			if (published !== undefined) return bundleView({ ...record, generation: published });
 			// Uploaded again: the bundle it has already, as it was, with 200 rather than 201.
 			const kept = await bundleView((await store.bundles.get(record.id)) ?? record);
 			return new Response(JSON.stringify(kept), {

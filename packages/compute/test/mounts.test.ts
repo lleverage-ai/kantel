@@ -404,7 +404,7 @@ describe("mounts off", () => {
 });
 
 describe("bundles", () => {
-	it("keeps the record of an upload refused as its account is deleted, should its bytes not go", async () => {
+	it("keeps the record of an upload whose account closed as it published, should its bytes not go", async () => {
 		const memory = createMemoryBundleStore();
 		const failing: BundleBlobStore = {
 			...memory,
@@ -414,20 +414,36 @@ describe("bundles", () => {
 		};
 		const { tom, store } = setup({ bundleStore: failing });
 		const personal = (await tom.getCaller()).accountId;
-		await store.accounts.update(personal, (account) => ({
-			...account,
-			retiring: { token: "deleting", at: Date.now() },
-		}));
+		const insert = store.bundles.insert.bind(store.bundles);
+		store.bundles.insert = async (record) => {
+			const inserted = await insert(record);
+			await store.accounts.update(personal, (account) => ({ ...account, closedAt: Date.now() }));
+			return inserted;
+		};
 		await failure(tom.uploadBundle(SKILLS.slice().buffer));
 		expect(await store.bundles.list({ accountId: personal })).toHaveLength(1);
 	});
 
-	it("forgets an upload, bytes and all, that lands while its account is being deleted", async () => {
+	it("undoes an upload, bytes and all, whose account closed as it published", async () => {
+		const { tom, store, bundles } = setup();
+		const personal = (await tom.getCaller()).accountId;
+		const insert = store.bundles.insert.bind(store.bundles);
+		store.bundles.insert = async (record) => {
+			const inserted = await insert(record);
+			await store.accounts.update(personal, (account) => ({ ...account, closedAt: Date.now() }));
+			return inserted;
+		};
+		expect((await failure(tom.uploadBundle(SKILLS.slice().buffer))).code).toBe("conflict");
+		expect(await store.bundles.list({ accountId: personal })).toEqual([]);
+		await bundles.consistent();
+	});
+
+	it("refuses an upload to a closed account before taking its bytes", async () => {
 		const { tom, store, bundles } = setup();
 		const personal = (await tom.getCaller()).accountId;
 		await store.accounts.update(personal, (account) => ({
 			...account,
-			retiring: { token: "deleting", at: Date.now() },
+			closedAt: Date.now(),
 		}));
 		expect((await failure(tom.uploadBundle(SKILLS.slice().buffer))).code).toBe("conflict");
 		expect(await store.bundles.list({ accountId: personal })).toEqual([]);

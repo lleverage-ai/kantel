@@ -64,11 +64,10 @@ export interface StoredAccount {
 	readonly defaultVisibility: computeSchema.SandboxVisibility;
 	readonly createdAt: number;
 	/**
-	 * Its person's account deletion's claim on it (`deleteCaller`): while it is fresh, a sandbox stored in it is forgotten
-	 * before it boots, and another deletion refuses. Only the deletion that made it lets go of it, when it refuses or
-	 * fails; one that died lapses.
+	 * When its person's account deletion closed it (`deleteCaller`), for good: from then on nothing new is stored in it,
+	 * and the deletion, made again if it fails, clears it and removes it.
 	 */
-	readonly retiring?: DeleteClaim;
+	readonly closedAt?: number;
 }
 
 /** A person's role in an account; its ID is `<accountId>:<userId>`. */

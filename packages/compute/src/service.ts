@@ -566,12 +566,6 @@ function withoutPortToken(url: string): string {
  */
 export const DEFAULT_HOST_JOIN_COMMAND =
 	"curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}";
-/**
- * How long an account deletion's claim on its personal account holds (`StoredAccount.retiring`): a deletion that died
- * stops holding it after this, and its person can make sandboxes again.
- */
-const ACCOUNT_DELETE_CLAIM_MS = 10 * 60_000;
-
 /** The console's page where a person approves a device sign-in. */
 export const DEFAULT_DEVICE_LOGIN_URL = "{url}/device";
 /** How long a device sign-in waits for a person, and how often its device may poll. */
@@ -3961,26 +3955,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hostView(updated ?? { ...host, updating });
 	}
 
-	/** Whether an account deletion's claim on `account` is fresh (`StoredAccount.retiring`). */
-	const retiring = (account: StoredAccount) =>
-		account.retiring !== undefined && now() - account.retiring.at < ACCOUNT_DELETE_CLAIM_MS;
-
 	/**
-	 * Checks, once new sandboxes are stored, that their account is neither gone nor held by its person's account deletion
-	 * (`retiring`); otherwise it forgets them, before anything boots or anyone sees them, and refuses. The deletion holds
-	 * the account before it looks for sandboxes again, so of a create and a deletion that overlap, one always sees the
-	 * other: the create stops here, or the deletion finds its sandbox and refuses.
+	 * Whether an account takes new records: it exists, and its person's account deletion hasn't closed it
+	 * (`StoredAccount.closedAt`). Closing is for good, so what lands in a closed account is always the deletion's to
+	 * clear: a write checks before it starts and again once it has written, and undoes itself if the account closed
+	 * meanwhile. Of a write and a deletion that overlap, one always sees the other: the deletion's sweep finds what was
+	 * written before its close, and anything written after finds the account closed.
 	 */
 	async function accountOpen(accountId: string): Promise<boolean> {
 		const account = await store.accounts.get(accountId);
-		return account !== undefined && !retiring(account);
+		return account !== undefined && account.closedAt === undefined;
 	}
 
+	const accountClosed = (): KantelError => new KantelError("conflict", "This account is being deleted");
+
 	/**
-	 * Appends to an account's E2E chain, then checks the account as a create does (`holdAccount`): entries that land as
-	 * it is deleted go with the rest of its chain, and the append is refused.
+	 * Appends to an account's E2E chain while it is open. One that finds it closed once it has written, or that failed
+	 * partway in a closed account, takes the chain with it: a closed account's chain is the deletion's to clear anyway.
 	 */
 	const chainAppend: typeof e2eChains.append = async (space, ...rest) => {
+		if (!(await accountOpen(space))) throw accountClosed();
 		const forget = async () => {
 			for (const entry of await store.e2eChain.list({ space })) await store.e2eChain.delete(entry.id);
 		};
@@ -3988,19 +3982,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		try {
 			appended = await e2eChains.append(space, ...rest);
 		} catch (error) {
-			// An append that failed partway may have written some entries: checked all the same, its error kept.
 			if (!(await accountOpen(space))) await forget().catch(() => undefined);
 			throw error;
 		}
 		if (await accountOpen(space)) return appended;
 		await forget();
-		throw new KantelError("conflict", "This account is being deleted");
+		throw accountClosed();
 	};
 
+	/** New sandboxes, once stored: forgotten, before anything boots or anyone sees them, if their account has closed. */
 	async function holdAccount(accountId: string, sandboxIds: readonly string[]): Promise<void> {
 		if (await accountOpen(accountId)) return;
 		for (const id of sandboxIds) await store.sandboxes.delete(id);
-		throw new KantelError("conflict", "This account is being deleted");
+		throw accountClosed();
 	}
 
 	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
@@ -4843,138 +4837,140 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 		},
 
-		deleteCaller: async (principal) => {
+		deleteCaller: async (principal, _input, request) => {
 			const person = requirePerson(principal);
 			// The deployment's own administrators are its operator's to remove, not their own: the deployment needs one.
 			if (person.superAdmin || (await options.deploymentAdmin?.(person.userId)) === true) {
 				throw new KantelError("forbidden", "A deployment super-admin can't delete their account");
 			}
-			const memberships = await store.members.list({ userId: person.userId });
-			// Refused before anything changes: an organisation keeps an owner, and their own sandboxes are theirs to delete.
-			for (const member of memberships) {
-				if (member.role !== "owner" || member.accountId === person.personalAccountId) continue;
-				if ((await ownerCount(member.accountId)) > 1) continue;
-				const organisation = await store.accounts.get(member.accountId);
-				if (organisation === undefined) continue;
-				throw new KantelError(
-					"conflict",
-					`You're the last owner of ${organisation.name}: make someone else an owner, or delete it, first`,
-				);
-			}
 			const personal = person.personalAccountId;
-			// Bundles too: deleting one (`deleteBundle`) removes its bytes from the deployment's store, which only it checks.
-			const leftOver = async () => {
-				const sandboxes = (await store.sandboxes.list({ accountId: personal })).filter(
-					(sandbox) => sandbox.state !== "deleted",
-				);
-				const saved = await store.snapshots.list({ accountId: personal, kind: "saved" });
-				const bundles = await store.bundles.list({ accountId: personal });
-				if (sandboxes.length > 0 || saved.length > 0 || bundles.length > 0) {
-					throw new KantelError("conflict", "Delete your sandboxes, saved snapshots and bundles first");
-				}
-			};
 			const finish = async () => {
 				await store.users.delete(person.userId);
 				// Last, so a call that fails before here can be made again: until it goes, they can still sign in.
 				await options.deletePerson?.(person.userId);
 			};
+			const account = await store.accounts.get(personal);
 			// A deletion that removed the account and then failed has only the person left to remove: a retry finishes it.
-			if ((await store.accounts.get(personal)) === undefined) {
+			if (account === undefined) {
 				await finish();
 				return undefined;
 			}
-			await leftOver();
-			// Claimed, then looked at again: a create stores its sandbox and then checks the claim (`holdAccount`), so one
-			// that overlaps this is either found here or stopped there. The claim is this call's alone: another deletion
-			// refuses while it is fresh, and only this one lets go of it, on a refusal or a failure.
-			const token = randomSlug(12);
-			const claimed = await store.accounts.update(personal, (account) =>
-				retiring(account) ? undefined : { ...account, retiring: { token, at: now() } },
-			);
-			if (claimed === undefined) throw new KantelError("conflict", "Your account is being deleted already");
-			try {
-				await leftOver();
-
-				// Their hosts first: a revoke that can't be made fails the call before anything else has gone, to be made again.
-				for (const host of await ensureHosts()) {
-					if (host.accountId === personal && host.state !== "revoked") await revokeStoredHost(host);
+			// The checks, while the account is still open: nothing changes on a refusal. Once it has closed, the deletion is
+			// under way and a retry only carries it on.
+			if (account.closedAt === undefined) {
+				for (const member of await store.members.list({ userId: person.userId })) {
+					if (member.role !== "owner" || member.accountId === personal) continue;
+					if ((await ownerCount(member.accountId)) > 1) continue;
+					const organisation = await store.accounts.get(member.accountId);
+					if (organisation === undefined) continue;
+					throw new KantelError(
+						"conflict",
+						`You're the last owner of ${organisation.name}: make someone else an owner, or delete it, first`,
+					);
 				}
-				// They leave each organisation as `removeMember` has a member leave: their private sandboxes stay, stopped. The
-				// stops come before the membership goes, so a call that fails between them finds the organisation again on retry.
-				for (const member of memberships) {
-					if (member.accountId === personal) continue;
-					for (const sandbox of await store.sandboxes.list({
-						accountId: member.accountId,
-						ownerUserId: person.userId,
-					})) {
-						if (sandbox.visibility === "private" && sandbox.state === "running") {
-							keepGoing((await beginStop(sandbox, false, "Its person deleted their account", principal)).work);
-						}
-					}
-					await store.members.delete(member.id);
+				// Bundles too: deleting one (`deleteBundle`) removes its bytes from the deployment's store, which only it checks.
+				if (
+					(await store.sandboxes.list({ accountId: personal })).some((sandbox) => sandbox.state !== "deleted") ||
+					(await store.snapshots.list({ accountId: personal, kind: "saved" })).length > 0 ||
+					(await store.bundles.list({ accountId: personal })).length > 0
+				) {
+					throw new KantelError("conflict", "Delete your sandboxes, saved snapshots and bundles first");
 				}
-				// Nor can a host join any account on a token they made and nobody has spent.
-				for (const token of await store.joinTokens.list({ createdBy: person.userId })) {
-					if (token.usedAt === undefined) await store.joinTokens.delete(token.id);
-				}
-				// Every key that acts for them, in any account, stops working.
-				const keys = await store.apiKeys.list({ ownerUserId: person.userId });
-				for (const key of keys) {
-					if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
-				}
-				// And the answers kept for their retries (`once`), theirs and their keys', go: some hold what they made.
-				const callers = [`user:${person.userId}:`, ...keys.map((key) => `key:${key.id}:`)];
-				for (const kept of await store.idempotency.list()) {
-					if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
-				}
-				// The claim may have lapsed while that ran, letting a create through, or been taken by another deletion. So it is
-				// renewed, only while still this call's, and the account looked at once more before anything of it goes: a
-				// create stored before now is found here, while the person can still reach it, and one after is stopped by the
-				// claim. The account goes only while the claim is still this call's and fresh.
-				const mine = (account: StoredAccount) => account.retiring?.token === token;
-				const renewed = await store.accounts.update(personal, (account) =>
-					mine(account) ? { ...account, retiring: { token, at: now() } } : undefined,
+				// Closed for good: from here nothing new is stored in it (`accountOpen`), and everything below can be made
+				// again, so a deletion that fails partway is finished by a retry.
+				await store.accounts.update(personal, (current) =>
+					current.closedAt === undefined ? { ...current, closedAt: now() } : undefined,
 				);
-				if (renewed === undefined) throw new KantelError("conflict", "Your account is being deleted already");
-				await leftOver();
-				// Their personal account and what it kept, as `deleteOrganisation` clears an organisation.
-				await templates.retireAccount(personal);
-				// Bucket sources, with their sealed credentials, even where mounts are off now.
-				for (const source of await store.bucketSources.list({ accountId: personal })) {
-					await store.bucketSources.delete(source.id);
-				}
-				for (const member of await store.members.list({ accountId: personal })) await store.members.delete(member.id);
-				for (const invite of await store.invites.list({ accountId: personal })) await store.invites.delete(invite.id);
-				for (const webhook of await store.webhooks.list({ accountId: personal }))
-					await store.webhooks.delete(webhook.id);
-				for (const delivery of await store.deliveries.list({ accountId: personal })) {
-					await store.deliveries.delete(delivery.id);
-				}
-				for (const token of await store.joinTokens.list({ accountId: personal }))
-					await store.joinTokens.delete(token.id);
-				for (const environment of await store.environments.list({ accountId: personal })) {
-					await store.environments.delete(environment.id);
-				}
-				// Only those already deleted: one a create made meanwhile keeps its record, and with it its stop and its delete.
-				for (const sandbox of await store.sandboxes.list({ accountId: personal, state: "deleted" })) {
-					for (const command of await store.commands.list({ sandboxId: sandbox.id })) {
-						await store.commands.delete(command.id);
-					}
-					await store.sandboxes.delete(sandbox.id);
-				}
-				for (const event of await store.events.list({ accountId: personal })) await store.events.delete(event.id);
-				for (const entry of await store.egress.list({ accountId: personal })) await store.egress.delete(entry.id);
-				for (const entry of await store.e2eChain.list({ space: personal })) await store.e2eChain.delete(entry.id);
-				await store.telemetry.delete(personal);
-				await store.proxies.delete(personal);
-				const gone = await store.accounts.deleteIf(personal, (account) => mine(account) && retiring(account));
-				if (!gone) throw new KantelError("unavailable", "Deleting your account took too long; try again");
-			} catch (error) {
-				await store.accounts
-					.update(personal, ({ retiring: claim, ...account }) => (claim?.token === token ? account : undefined))
-					.catch(() => undefined);
-				throw error;
 			}
+
+			// What was stored as it closed goes the way anything of theirs does, deleted as the person (whose membership of
+			// the account goes last, so this can always be made again). A write after the close undoes itself.
+			for (const sandbox of await store.sandboxes.list({ accountId: personal })) {
+				if (sandbox.state !== "deleted")
+					await handlers.deleteSandbox(
+						principal,
+						{ params: { sandboxId: sandbox.id }, query: {}, body: undefined },
+						request,
+					);
+			}
+			for (const snapshot of await store.snapshots.list({ accountId: personal, kind: "saved" })) {
+				await handlers.deleteSnapshot(
+					principal,
+					{ params: { snapshotId: snapshot.id }, query: {}, body: undefined },
+					request,
+				);
+			}
+			for (const bundle of await store.bundles.list({ accountId: personal })) {
+				if (mounts === undefined)
+					throw new KantelError("unavailable", "Your bundles can't be deleted here now; try again later");
+				await mounts.handlers.deleteBundle(
+					principal,
+					{ params: { digest: bundle.digest }, query: { account: personal }, body: undefined },
+					request,
+				);
+			}
+
+			// Their hosts: a revoke that can't be made fails the call, to be made again.
+			for (const host of await ensureHosts()) {
+				if (host.accountId === personal && host.state !== "revoked") await revokeStoredHost(host);
+			}
+			// They leave each organisation as `removeMember` has a member leave: their private sandboxes stay, stopped. The
+			// stops come before the membership goes, so a call that fails between them finds the organisation again.
+			for (const member of await store.members.list({ userId: person.userId })) {
+				if (member.accountId === personal) continue;
+				for (const sandbox of await store.sandboxes.list({ accountId: member.accountId, ownerUserId: person.userId })) {
+					if (sandbox.visibility === "private" && sandbox.state === "running") {
+						keepGoing((await beginStop(sandbox, false, "Its person deleted their account", principal)).work);
+					}
+				}
+				await store.members.delete(member.id);
+			}
+			// Nor can a host join any account on a token they made and nobody has spent.
+			for (const token of await store.joinTokens.list({ createdBy: person.userId })) {
+				if (token.usedAt === undefined) await store.joinTokens.delete(token.id);
+			}
+			// Every key that acts for them, in any account, stops working.
+			const keys = await store.apiKeys.list({ ownerUserId: person.userId });
+			for (const key of keys) {
+				if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+			}
+			// And the answers kept for their retries (`once`), theirs and their keys', go: some hold what they made.
+			const callers = [`user:${person.userId}:`, ...keys.map((key) => `key:${key.id}:`)];
+			for (const kept of await store.idempotency.list()) {
+				if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
+			}
+			// Their personal account and what it kept, as `deleteOrganisation` clears an organisation.
+			await templates.retireAccount(personal);
+			// Bucket sources, with their sealed credentials, even where mounts are off now.
+			for (const source of await store.bucketSources.list({ accountId: personal })) {
+				await store.bucketSources.delete(source.id);
+			}
+			for (const invite of await store.invites.list({ accountId: personal })) await store.invites.delete(invite.id);
+			for (const webhook of await store.webhooks.list({ accountId: personal })) await store.webhooks.delete(webhook.id);
+			for (const delivery of await store.deliveries.list({ accountId: personal })) {
+				await store.deliveries.delete(delivery.id);
+			}
+			for (const token of await store.joinTokens.list({ accountId: personal })) await store.joinTokens.delete(token.id);
+			for (const environment of await store.environments.list({ accountId: personal })) {
+				await store.environments.delete(environment.id);
+			}
+			for (const sandbox of await store.sandboxes.list({ accountId: personal })) {
+				// All deleted by now: one that isn't was stored after the sweep above and undoes itself, or is left for a retry.
+				if (sandbox.state !== "deleted")
+					throw new KantelError("unavailable", "Your account is still being cleared; try again");
+				for (const command of await store.commands.list({ sandboxId: sandbox.id })) {
+					await store.commands.delete(command.id);
+				}
+				await store.sandboxes.delete(sandbox.id);
+			}
+			for (const event of await store.events.list({ accountId: personal })) await store.events.delete(event.id);
+			for (const entry of await store.egress.list({ accountId: personal })) await store.egress.delete(entry.id);
+			for (const entry of await store.e2eChain.list({ space: personal })) await store.e2eChain.delete(entry.id);
+			await store.telemetry.delete(personal);
+			await store.proxies.delete(personal);
+			// Their own membership last, then the account: until then a retry can still act in it as them.
+			for (const member of await store.members.list({ accountId: personal })) await store.members.delete(member.id);
+			await store.accounts.delete(personal);
 			await finish();
 			return undefined;
 		},
@@ -7770,10 +7766,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			for (const [sandboxId, batch] of bySandbox) {
 				const sandbox = await store.sandboxes.get(sandboxId);
-				// A host reports only its own sandboxes; anything else is dropped.
+				// A host reports only its own sandboxes, in an open account; anything else is dropped.
 				if (sandbox === undefined || sandbox.hostId !== hostId) continue;
-				// Written, then checked, as a create is (`holdAccount`): a report landing as its account is deleted goes too,
-				// and so does what one that failed partway wrote, its error kept.
+				if (!(await accountOpen(sandbox.accountId))) continue;
+				// Checked again once written (`accountOpen`): a report that lands as its account closes goes, and so does what
+				// one that failed partway wrote, its error kept.
 				const forget = async () => {
 					for (const entry of await store.egress.list({ sandboxId })) await store.egress.delete(entry.id);
 				};

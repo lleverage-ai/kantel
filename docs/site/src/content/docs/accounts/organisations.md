@@ -152,7 +152,7 @@ Its owner can delete an organisation (`DELETE /v1/accounts/{accountId}`, `delete
 
 In the console, **Settings → Profile → Delete account**; through the API, `DELETE /v1/whoami` (`deleteCaller`), signed in as yourself, not with an API key. It deletes your personal account with its hosts, environments, webhooks and templates, revokes every API key that acts for you in any account, takes you out of every organisation, and signs you out everywhere. Sandboxes you kept `private` in an organisation stay there, stopped, as when you leave it.
 
-It answers `409` with `conflict` while your personal account has sandboxes, saved snapshots or bundles, or while you're the last owner of an organisation: make someone else an owner, or delete the organisation, first. A deployment's super-admin can't delete their own account. Signing in again afterwards makes a new, empty account.
+It answers `409` with `conflict` while your personal account has sandboxes, saved snapshots or bundles, or while you're the last owner of an organisation: make someone else an owner, or delete the organisation, first. A deployment's super-admin can't delete their own account. Once those checks pass, your personal account is closed for good: nothing new can be made in it. If the deletion fails partway, make the same call again to finish it. Signing in again afterwards makes a new, empty account.
 
 ## Usage and limits
 

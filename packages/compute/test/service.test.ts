@@ -2169,103 +2169,72 @@ const STORES: readonly { readonly name: string; readonly make: () => Promise<Com
 ];
 const sqlTimeout = pgliteDatabase.testTimeoutMs === undefined ? {} : { timeout: pgliteDatabase.testTimeoutMs };
 
-describe.each(STORES)("deleting your account while a sandbox is being made, stored $name", sqlTimeout, ({ make }) => {
-	/** Runs `during` once, just after a deletion claims the personal account and before it looks again. */
-	const onClaim = (store: ComputeStore, during: () => Promise<void>) => {
-		const update = store.accounts.update.bind(store.accounts);
-		let done = false;
-		store.accounts.update = async (id, change, expected) => {
-			const updated = await update(id, change, expected);
-			if (!done && updated?.retiring !== undefined) {
-				done = true;
-				await during();
-			}
-			return updated;
-		};
-	};
+describe.each(STORES)("deleting your account as things are being made, stored $name", sqlTimeout, ({ make }) => {
+	const close = (store: ComputeStore, accountId: string) =>
+		store.accounts.update(accountId, (account) => ({ ...account, closedAt: Date.now() }));
+	const report = (sandboxId: string, at = 1) => ({
+		at,
+		sandboxId,
+		method: "CONNECT",
+		host: "example.com",
+		port: 443,
+		allowed: true,
+		swapped: [],
+		inspected: false,
+		bytesUp: 0,
+		bytesDown: 0,
+	});
 
-	it("stops a create that stores its sandbox once a deletion has claimed the account", async () => {
+	it("refuses a create in a closed account, leaving no record", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
 		const personal = (await ann.getCaller()).accountId;
-		await store.accounts.update(personal, (account) => ({ ...account, retiring: { token: "other", at: Date.now() } }));
+		await close(store, personal);
 		expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
 		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
-		// A claim that lapsed, from a deletion that died, holds nothing.
-		await store.accounts.update(personal, (account) => ({ ...account, retiring: { token: "other", at: 0 } }));
-		await ann.createSandbox({ wait: true });
 	});
 
-	it("refuses, and lets go of its claim, when a create stored its sandbox just before it", async () => {
+	it("deletes a sandbox stored just as the account closed, and finishes", async () => {
 		const store = await make();
-		const { ann } = setup(undefined, { store });
+		const deleted: string[] = [];
+		const { ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
 		const personal = (await ann.getCaller()).accountId;
-		const made = await ann.createSandbox({ wait: true });
-		const record = await store.sandboxes.get(made.id);
-		await ann.deleteSandbox(made.id);
-		// The create's record, landing between the deletion's two looks.
-		onClaim(store, async () => {
-			if (record !== undefined) await store.sandboxes.put({ ...record, id: "sbx_raced", state: "starting" });
-		});
-		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
-		expect((await store.accounts.get(personal))?.retiring).toBeUndefined();
-	});
-
-	it("goes no further once its claim lapsed and another deletion took it over", async () => {
-		const store = await make();
-		let clock = Date.now();
-		const { ann } = setup(undefined, { store, now: () => clock });
-		const personal = (await ann.getCaller()).accountId;
-		// Partway through, the claim lapses and a newer deletion claims the account.
-		const list = store.idempotency.list.bind(store.idempotency);
-		store.idempotency.list = async (where) => {
-			clock += 11 * 60_000;
-			await store.accounts.update(personal, (account) => ({ ...account, retiring: { token: "newer", at: clock } }));
-			return list(where);
-		};
-		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
-		const account = await store.accounts.get(personal);
-		expect(account?.retiring?.token).toBe("newer");
-	});
-
-	it("renews a lapsed claim before its last look, so a create after that is stopped", async () => {
-		const store = await make();
-		let clock = Date.now();
-		const { ann } = setup(undefined, { store, now: () => clock });
-		const personal = (await ann.getCaller()).accountId;
-		const list = store.idempotency.list.bind(store.idempotency);
-		store.idempotency.list = async (where) => {
-			clock += 11 * 60_000;
-			return list(where);
-		};
-		// A create authorised before the deletion began stores its sandbox after the deletion's last look, just before the
-		// account goes.
-		let release = () => {};
-		const gate = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const put = store.sandboxes.put.bind(store.sandboxes);
-		let paused = false;
-		store.sandboxes.put = async (record) => {
-			if (!paused && record.accountId === personal) {
-				paused = true;
-				await gate;
-			}
-			return put(record);
-		};
-		const creating = failure(ann.createSandbox({}));
-		await vi.waitFor(() => expect(paused).toBe(true));
-		const deleteIf = store.accounts.deleteIf.bind(store.accounts);
-		let raced: KantelApiError | undefined;
-		store.accounts.deleteIf = async (id, should) => {
-			release();
-			raced = await creating;
-			return deleteIf(id, should);
+		const raced = await ann.createSandbox({ wait: true });
+		// The deletion's first look doesn't see it, as if it were stored just after.
+		const list = store.sandboxes.list.bind(store.sandboxes);
+		let first = true;
+		store.sandboxes.list = async (where) => {
+			const all = await list(where);
+			if (!first) return all;
+			first = false;
+			return all.filter((sandbox) => sandbox.id !== raced.id);
 		};
 		await ann.deleteCaller();
-		expect(raced?.code).toBe("conflict");
+		expect(deleted).toEqual(["usr_ann"]);
 		expect(await store.accounts.get(personal)).toBeUndefined();
-		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
+		expect(await store.sandboxes.get(raced.id)).toBeUndefined();
+	});
+
+	it("is finished by a retry after failing partway, and the closed account takes nothing new meanwhile", async () => {
+		const store = await make();
+		const deleted: string[] = [];
+		const { ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
+		const personal = (await ann.getCaller()).accountId;
+		const listWebhooks = store.webhooks.list.bind(store.webhooks);
+		let failOnce = true;
+		store.webhooks.list = async (where) => {
+			if (failOnce) {
+				failOnce = false;
+				throw new Error("the database went away");
+			}
+			return listWebhooks(where);
+		};
+		await expect(ann.deleteCaller()).rejects.toBeDefined();
+		expect((await store.accounts.get(personal))?.closedAt).toBeDefined();
+		expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
+		await ann.deleteCaller();
+		expect(deleted).toEqual(["usr_ann"]);
+		expect(await store.accounts.get(personal)).toBeUndefined();
 	});
 
 	it("finishes on a retry when a deletion removed the account and then failed", async () => {
@@ -2290,105 +2259,48 @@ describe.each(STORES)("deleting your account while a sandbox is being made, stor
 		expect(await store.users.get("usr_ann")).toBeUndefined();
 	});
 
-	it("leaves a sandbox its last look finds where its person can still reach it", async () => {
+	it("lets two deletions that overlap both carry it on, ending with the account gone", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
-		const made = await ann.createSandbox({ wait: true });
-		const record = await store.sandboxes.get(made.id);
-		await ann.deleteSandbox(made.id);
-		// Stored as the claim is renewed, just before the last look.
-		const update = store.accounts.update.bind(store.accounts);
-		let claims = 0;
-		store.accounts.update = async (id, change, expected) => {
-			const updated = await update(id, change, expected);
-			if (updated?.retiring !== undefined && ++claims === 2 && record !== undefined) {
-				await store.sandboxes.put({ ...record, id: "sbx_late", state: "stopped" });
-			}
-			return updated;
-		};
-		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
-		expect(await ann.getSandbox("sbx_late")).toMatchObject({ id: "sbx_late", state: "stopped" });
+		const personal = (await ann.getCaller()).accountId;
+		const results = await Promise.allSettled([ann.deleteCaller(), ann.deleteCaller()]);
+		expect(results.some((result) => result.status === "fulfilled")).toBe(true);
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toBeUndefined();
 	});
 
-	it("drops a host's egress report that lands while its account is being deleted", async () => {
+	it("drops a host's egress report for a closed account, and keeps one for an open account", async () => {
 		const store = await make();
 		const { api, ann } = setup(undefined, { store });
 		const personal = (await ann.getCaller()).accountId;
 		const sandbox = await ann.createSandbox({ wait: true });
-		const report = {
-			at: 1,
-			sandboxId: sandbox.id,
-			method: "CONNECT",
-			host: "example.com",
-			port: 443,
-			allowed: true,
-			swapped: [],
-			inspected: false,
-			bytesUp: 0,
-			bytesDown: 0,
-		};
-		await store.accounts.update(personal, (account) => ({
-			...account,
-			retiring: { token: "deleting", at: Date.now() },
-		}));
-		await api.service.recordEgress(STUB_HOST_ID, [report]);
-		expect(await store.egress.list({ sandboxId: sandbox.id })).toEqual([]);
-		await store.accounts.update(personal, ({ retiring: _claim, ...account }) => account);
-		await api.service.recordEgress(STUB_HOST_ID, [report]);
+		await api.service.recordEgress(STUB_HOST_ID, [report(sandbox.id)]);
 		expect(await store.egress.list({ sandboxId: sandbox.id })).toHaveLength(1);
+		await close(store, personal);
+		await api.service.recordEgress(STUB_HOST_ID, [report(sandbox.id, 2)]);
+		// A closed account's log is the deletion's to clear; nothing new is added to it.
+		expect((await store.egress.list({ sandboxId: sandbox.id })).length).toBeLessThanOrEqual(1);
 	});
 
-	it("drops what a failed egress report wrote before it failed, while its account is being deleted", async () => {
+	it("drops what an egress report wrote when its account closed as it wrote, failed or not", async () => {
 		const store = await make();
 		const { api, ann } = setup(undefined, { store });
 		const personal = (await ann.getCaller()).accountId;
 		const sandbox = await ann.createSandbox({ wait: true });
-		const report = (at: number) => ({
-			at,
-			sandboxId: sandbox.id,
-			method: "CONNECT",
-			host: "example.com",
-			port: 443,
-			allowed: true,
-			swapped: [],
-			inspected: false,
-			bytesUp: 0,
-			bytesDown: 0,
-		});
-		await store.accounts.update(personal, (account) => ({
-			...account,
-			retiring: { token: "deleting", at: Date.now() },
-		}));
-		// The first entry lands, the second write fails.
+		// The first entry lands and the account closes; the second write fails.
 		const put = store.egress.put.bind(store.egress);
 		let writes = 0;
 		store.egress.put = async (entry) => {
-			if (++writes === 2) throw new Error("the database went away");
-			return put(entry);
+			writes++;
+			if (writes === 2) throw new Error("the database went away");
+			const written = await put(entry);
+			await close(store, personal);
+			return written;
 		};
-		await expect(api.service.recordEgress(STUB_HOST_ID, [report(1), report(2)])).rejects.toThrow(
-			"the database went away",
-		);
+		await expect(
+			api.service.recordEgress(STUB_HOST_ID, [report(sandbox.id, 1), report(sandbox.id, 2)]),
+		).rejects.toThrow("the database went away");
 		expect(await store.egress.list({ sandboxId: sandbox.id })).toEqual([]);
-	});
-
-	it("lets only the deletion that claimed the account let go of it, when two overlap", async () => {
-		const store = await make();
-		const { ann } = setup(undefined, { store });
-		const personal = (await ann.getCaller()).accountId;
-		let second: Promise<unknown> | undefined;
-		// A second deletion starts while the first holds its claim: it's refused, and the first's claim stays.
-		onClaim(store, async () => {
-			second = failure(ann.deleteCaller());
-			expect(((await second) as KantelApiError).code).toBe("conflict");
-			expect((await store.accounts.get(personal))?.retiring).toBeDefined();
-			// So a create now is still stopped.
-			expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
-		});
-		await ann.deleteCaller();
-		expect(second).toBeDefined();
-		expect(await store.accounts.get(personal)).toBeUndefined();
-		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
 	});
 });
 
