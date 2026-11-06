@@ -3494,13 +3494,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Of `snapshotIds`, those a sandbox depends on, read afresh: what one resumes from (its newest), its pause while it is
-	 * paused or resuming, and what a never-placed one is to be made from. A sandbox deleted, or being deleted, depends on
-	 * nothing. Throws when the read fails.
+	 * paused or resuming, and what a never-placed one is to be made from. Only a deleted sandbox depends on nothing: one
+	 * being deleted may yet fail back to `error`, as it was. Throws when the read fails.
 	 */
 	async function dependents(snapshotIds: ReadonlySet<string>): Promise<Set<string>> {
 		const needed = new Set<string>();
 		for (const sandbox of await store.sandboxes.list()) {
-			if (sandbox.state === "deleted" || sandbox.state === "deleting") continue;
+			if (sandbox.state === "deleted") continue;
 			for (const id of [
 				sandbox.latestSnapshotId,
 				sandbox.state === "paused" || sandbox.state === "starting" ? sandbox.pausedSnapshotId : undefined,

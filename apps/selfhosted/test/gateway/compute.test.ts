@@ -1,5 +1,6 @@
 // The compute plane on the self-hosted gateway, through its fetch handler: the super-admin's key drives a sandbox
 // through the SDK, makes a scoped key that works, and the gateway's own routes and keys are as they were.
+import { readFileSync } from "node:fs";
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type CallContext, EMAIL_OTP_ISSUER, externalSubjectOf, type Role } from "@kantel/contracts";
 import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
@@ -252,6 +253,13 @@ describe("the compute plane on the gateway", () => {
 			computeConfig({ KANTEL_TEMPLATES: "experimental", KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" }),
 		).toMatchObject({ templates: true, hosts: { publicUrl: "http://127.0.0.1:58090" } });
 		expect(() => computeConfig({ KANTEL_TEMPLATES: "on" })).toThrow(/KANTEL_TEMPLATES/);
+	});
+
+	it("is given KANTEL_SNAPSHOT_EXPIRY and the other compute switches by the Compose stack, off unless set", () => {
+		const compose = readFileSync(new URL("../../../../deploy/compose/compose.yaml", import.meta.url), "utf8");
+		for (const name of ["KANTEL_SNAPSHOT_EXPIRY", "KANTEL_TEMPLATES", "KANTEL_MOUNTS", "KANTEL_ACCOUNT_HOSTS"]) {
+			expect(compose).toContain(`${name}: \${${name}:-}`);
+		}
 	});
 
 	it("turns snapshot expiry on only for KANTEL_SNAPSHOT_EXPIRY=on, off by default, on the stub or on hosts", () => {

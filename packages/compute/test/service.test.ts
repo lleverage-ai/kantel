@@ -4608,6 +4608,72 @@ describe("snapshot expiry across gateways", () => {
 		return { store, released, clock, a, b, tom, sweep };
 	}
 
+	it("keeps the source of a never-placed sandbox whose delete is under way, which may fail back to error", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		let hook: (() => Promise<void>) | undefined;
+		let failing: string | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			destroy: async (sandboxId) => {
+				if (sandboxId === failing) {
+					const run = hook;
+					hook = undefined;
+					if (run !== undefined) await run();
+					throw new KantelError("unavailable", "The host is away");
+				}
+				await stub.destroy(sandboxId);
+			},
+		};
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const gateway = () => {
+			const api = createComputeApi({
+				backend,
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+				snapshotExpiry: true,
+				snapshotExpiryDelayMs: 0,
+			});
+			opened.push(api);
+			return api;
+		};
+		const [a, b] = [gateway(), gateway()];
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				a.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const source = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		// A fork whose create failed: never placed, it is to be made from the snapshot.
+		const [fork] = (await tom.forkSandbox(running.id, { snapshotId: source.id, wait: true })).items;
+		if (fork === undefined) throw new Error("no fork");
+		await store.sandboxes.update(fork.id, (current) => ({
+			...current,
+			state: "error",
+			hostId: undefined,
+			latestSnapshotId: undefined,
+		}));
+		await store.snapshots.update(source.id, (current) => ({ ...current, expiresAt: clock.at - 1 }));
+		// Its delete is under way (deleting) when the other gateway expires snapshots; then its destroy fails.
+		failing = fork.id;
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		hook = async () => {
+			expect((await store.sandboxes.get(fork.id))?.state).toBe("deleting");
+			await b.service.sweep();
+			await b.service.idle();
+		};
+		await tom.deleteSandbox(fork.id).catch(() => undefined);
+		await a.service.idle();
+		expect(hook).toBeUndefined();
+		expect((await store.sandboxes.get(fork.id))?.state).toBe("error");
+		expect((await store.snapshots.get(source.id))?.state).toBe("ready");
+	});
+
 	it("leaves another gateway's mark alone, and expires what it puts back on a later pass", async () => {
 		const { store, released, clock, b, tom, sweep } = replicas();
 		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
