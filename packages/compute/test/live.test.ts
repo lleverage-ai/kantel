@@ -245,6 +245,33 @@ describe("the live feed", () => {
 		expect(annWatch.closed?.code).toBe(1000);
 	});
 
+	it("ends a deleted person's watch, though a membership of theirs is put back, and tells others still", async () => {
+		const store = createMemoryStore();
+		const { api, tom, ann } = setup({ store });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "member" })).code ?? "" });
+		const annWatch = watch(ann, org.id);
+		const tomWatch = watch(tom, org.id);
+		await annWatch.until(() => hellos(annWatch) === 1 && hellos(tomWatch) === 1, "hellos");
+		const membership = await store.members.get(`${org.id}:usr_ann`);
+		await ann.deleteCaller();
+		// As a write that read her membership before the deletion and landed after would: it is back.
+		if (membership !== undefined) await store.members.put(membership);
+		const made = await tom.createSandbox({ account: org.id, visibility: "organisation", wait: true });
+		await tomWatch.until(() => tomWatch.states(made.id).length > 0, "tom's frame");
+		await annWatch.until(() => annWatch.closed !== undefined, "ann's end");
+		expect(annWatch.states(made.id)).toEqual([]);
+		// And once her deletion has finished, its record kept for good, a watch of hers is refused outright.
+		for (let round = 0; round < 5 && (await store.deletions.get("usr_ann"))?.stage === "running"; round++) {
+			await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({ ...current, dueAt: 0 }));
+			await api.service.carryOnDeletions();
+		}
+		expect((await store.deletions.get("usr_ann"))?.stage).toBe("done");
+		const again = watch(ann, org.id);
+		await again.until(() => again.closed !== undefined, "the refusal");
+		expect(again.frames.filter((frame) => frame.type === "sandbox")).toEqual([]);
+	});
+
 	it("passes changes to the other gateways through a relay, takes theirs, and says hello again after a gap", async () => {
 		const relayed: SandboxChange[] = [];
 		let receive: ((change: SandboxChange) => void) | undefined;

@@ -3058,14 +3058,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * A watcher as they are now: a key's current scopes and limits, or a person whose sign-in is still live; undefined once
-	 * the key is revoked or expired, or the sign-in has ended.
+	 * the key is revoked or expired, the sign-in has ended, or the person has deleted their account (their deletion is
+	 * recorded, or their user record retired), whatever memberships of theirs remain.
 	 */
 	async function watcherNow(principal: Principal): Promise<Principal | undefined> {
 		if (principal.kind === "key") return liveKeyPrincipal(store, principal.keyId, now());
 		if (principal.session !== undefined && options.sessionLive !== undefined) {
 			if (!(await options.sessionLive(principal.session))) return undefined;
 		}
-		return (await store.users.get(principal.userId)) === undefined ? undefined : principal;
+		const [user, deletion] = await Promise.all([
+			store.users.get(principal.userId),
+			store.deletions.get(principal.userId),
+		]);
+		return user === undefined || user.retiredAt !== undefined || deletion !== undefined ? undefined : principal;
 	}
 
 	/** Whether the caller may see a sandbox in an account where they have `role`. */
@@ -5290,7 +5295,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (target.role === "owner" && body.role !== "owner" && (await ownerCount(params.accountId)) <= 1) {
 				throw new KantelError("conflict", "The last owner stays an owner");
 			}
-			await store.members.put({ ...target, role: body.role });
+			// The membership as it is now, never one an account deletion (or a removal) took away meanwhile put back.
+			const changed = await store.members.update(target.id, (current) => ({ ...current, role: body.role }));
+			if (changed === undefined) throw notFound("member");
 			const [member] = (await membersView(params.accountId)).filter((entry) => entry.userId === params.userId);
 			if (member === undefined) throw notFound("member");
 			return member;
