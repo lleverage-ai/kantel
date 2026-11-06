@@ -289,6 +289,17 @@ export async function authenticate(request: Request, options: AuthenticateOption
 		throw new UnauthenticatedError("This account is being deleted");
 	}
 	const user = await ensurePerson(store, identity, now);
+	// Checked again once made: a deletion that began as this sign-in ran leaves it nothing, not even what it just made
+	// (a personal account apart from the one the deletion clears, or the user record put back).
+	const deletion = await store.deletions.get(identity.userId);
+	if (deletion !== undefined) {
+		if (user.personalAccountId !== deletion.personalAccountId) {
+			await store.members.delete(memberId(user.personalAccountId, user.id));
+			await store.accounts.delete(user.personalAccountId);
+		}
+		await store.users.delete(user.id);
+		throw new UnauthenticatedError("This account is being deleted");
+	}
 	return {
 		kind: "person",
 		userId: user.id,

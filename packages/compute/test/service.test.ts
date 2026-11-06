@@ -68,6 +68,7 @@ function setup(
 		| "deletePerson"
 		| "deploymentAdmin"
 		| "accountHosts"
+		| "wakeAt"
 		| "now"
 	> = {},
 ) {
@@ -2370,6 +2371,46 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		release();
 		await writing;
 		await vi.waitFor(async () => expect(await store.events.list({ accountId: account.id })).toEqual([]));
+	});
+
+	it("keeps its last pass for when it is due, and asks the deployment to wake for it", async () => {
+		const store = await make();
+		const wakes: number[] = [];
+		const { api, ann } = setup(undefined, { store, wakeAt: (at) => void wakes.push(at) });
+		await ann.deleteCaller();
+		const after = await store.deletions.get("usr_ann");
+		expect(after).toMatchObject({ stage: "running", clearedAt: expect.any(Number) });
+		// A sweep, or a deletion call holding an older copy, straight after: the last pass waits its turn.
+		const next = await api.service.carryOnDeletions();
+		expect(next).toBe(after?.dueAt);
+		expect(await store.deletions.get("usr_ann")).toMatchObject({ stage: "running" });
+		await vi.waitFor(() => expect(wakes).toContain(after?.dueAt));
+	});
+
+	it("leaves nothing of a sign-in that set the person up as their deletion began", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		// Their deletion is recorded while the sign-in is setting them up for the first time.
+		const get = store.users.get.bind(store.users);
+		let once = true;
+		store.users.get = async (id) => {
+			if (once && id === "usr_ann") {
+				once = false;
+				await store.deletions.put({
+					id: "usr_ann",
+					stage: "running",
+					personalAccountId: "acc_before",
+					name: "Ann",
+					startedAt: 0,
+					dueAt: Number.MAX_SAFE_INTEGER,
+					attempts: 0,
+				});
+			}
+			return get(id);
+		};
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+		expect(await store.users.get("usr_ann")).toBeUndefined();
 	});
 
 	it("joins no host with a token whose account has closed", async () => {

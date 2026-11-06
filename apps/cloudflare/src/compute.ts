@@ -370,6 +370,8 @@ export interface StackComputeOptions {
 	readonly sessionLive?: (session: string) => Promise<boolean>;
 	/** Removes a person from sign-in once they delete their account (`ComputeServiceOptions.deletePerson`). */
 	readonly deletePerson?: (userId: string) => Promise<void>;
+	/** Wakes the stack object for the next account deletion pass (`ComputeServiceOptions.wakeAt`): its alarm. */
+	readonly wakeAt?: (at: number) => Promise<void> | void;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
 	readonly sql?: SqlDriver;
 	readonly now?: () => number;
@@ -565,6 +567,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			personOf(options.authenticator, options.identity, request, options.adminOrganisationId, own !== undefined),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.deletePerson === undefined ? {} : { deletePerson: options.deletePerson }),
+		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
 		...(deploymentAdmin === undefined ? {} : { deploymentAdmin }),
 		// The stub is its members', account hosts on or off: with them on, people outside get in for hosts of their own,
 		// and a key one of them made then must stay off the stub once they are off.

@@ -264,6 +264,11 @@ export interface ComputeServiceOptions {
 	 */
 	readonly deletePerson?: (userId: string) => Promise<void>;
 	/**
+	 * Wakes the deployment at `at` to carry on account deletions (`carryOnDeletions`), where nothing else would: the hosted
+	 * stack object sleeps between requests. Absent, the sweep carries them on (self-hosted sweeps on a timer).
+	 */
+	readonly wakeAt?: (at: number) => Promise<void> | void;
+	/**
 	 * Whether a person administers the deployment, whichever organisation a call names: `deleteCaller` refuses them, as
 	 * the deployment needs its administrators. Absent, `superAdmin` on the call alone decides.
 	 */
@@ -417,6 +422,11 @@ export interface ComputeService {
 	 * cache (which notices hosts' runtimes changing).
 	 */
 	sweep(): Promise<void>;
+	/**
+	 * Carries on every account deletion whose pass is due, waiting for each, and answers when the next is due (undefined
+	 * with none): for a deployment that wakes for them (`wakeAt`).
+	 */
+	carryOnDeletions(): Promise<number | undefined>;
 	/**
 	 * Counts a use of a sandbox toward its idle stop (`idleStopMinutes`): a relayed port stream opened or carrying bytes
 	 * (SSH, the desktop or browser, a hosted port's request or WebSocket). Cheap enough for every frame: it is kept in
@@ -4124,10 +4134,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Carries on a person's account deletion, if no other gateway is: a pass, then the next one's time (the last pass,
 	 * after the first; a retry, after a failure). The deletion's record goes once its last pass is done.
 	 */
+	/** The soonest a running deletion's next pass is due, or undefined with none. */
+	async function nextDeletionDue(): Promise<number | undefined> {
+		const due = (await store.deletions.list({ stage: "running" })).map((deletion) => deletion.dueAt);
+		return due.length === 0 ? undefined : Math.min(...due);
+	}
+
+	/** Tells the deployment when to wake for the next deletion pass (`ComputeServiceOptions.wakeAt`). */
+	function wakeForDeletions(): void {
+		if (options.wakeAt === undefined) return;
+		const wake = options.wakeAt;
+		keepGoing(
+			nextDeletionDue().then((at) => {
+				if (at !== undefined) return wake(at);
+			}),
+		);
+	}
+
 	async function carryOnDeletion(userId: string): Promise<void> {
 		const token = randomSlug(12);
+		// Only a running deletion whose pass is due now, as stored now: a caller holding an older copy can't bring its last
+		// pass forward, nor take one another gateway is carrying on.
 		const job = await store.deletions.update(userId, (current) =>
-			current.lease !== undefined && current.lease.until > now()
+			current.stage !== "running" ||
+			current.dueAt > now() ||
+			(current.lease !== undefined && current.lease.until > now())
 				? undefined
 				: { ...current, lease: { token, until: now() + DELETION_LEASE_MS } },
 		);
@@ -4149,6 +4180,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						}
 					: undefined,
 			);
+			wakeForDeletions();
 			throw error;
 		}
 		if (job.clearedAt === undefined) {
@@ -4157,6 +4189,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const { lastError: _error, ...rest } = released(current);
 				return { ...rest, clearedAt: now(), dueAt: now() + DELETION_LAST_PASS_MS, attempts: 0 };
 			});
+			wakeForDeletions();
 		} else {
 			// Done: kept as the user ID alone, for good, so it is never let in or made afresh again.
 			await store.deletions.update(userId, (current) =>
@@ -7668,6 +7701,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const sandbox = await store.sandboxes.get(sandboxId);
 			if (sandbox === undefined || sandbox.state === "running" || sandbox.state === "deleted") return undefined;
 			return portNotRunningText(sandbox, apiBasePath);
+		},
+
+		async carryOnDeletions() {
+			for (const deletion of await store.deletions.list({ stage: "running" })) {
+				if (deletion.dueAt <= now()) await carryOnDeletion(deletion.id).catch(() => undefined);
+			}
+			return nextDeletionDue();
 		},
 
 		async sweep() {

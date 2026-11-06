@@ -81,9 +81,16 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 	/** How the stack is built beyond its config and storage; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {
 		const binding = this.env.SIGN_IN_MAIL;
+		const wakeAt = (at: number) => this.wakeAt(at);
 		return binding === undefined
-			? {}
-			: { mail: { binding, counts: this.mailCounts(), defer: (work) => this.ctx.waitUntil(work) } };
+			? { wakeAt }
+			: { wakeAt, mail: { binding, counts: this.mailCounts(), defer: (work) => this.ctx.waitUntil(work) } };
+	}
+
+	/** Arms the alarm for `at`, unless one is armed sooner already. */
+	protected async wakeAt(at: number): Promise<void> {
+		const armed = await this.ctx.storage.getAlarm();
+		if (armed === null || at < armed) await this.ctx.storage.setAlarm(at);
 	}
 
 	/** Each day's mail count, in this object's storage. */
@@ -131,10 +138,15 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 	}
 
 	/**
-	 * An alarm an older version armed (a session's wake, a schedule) fires once more after the upgrade: there is nothing
-	 * left to run, so it is answered and not armed again.
+	 * Carries on account deletions whose pass is due, then arms the alarm for the next one: they finish though no request
+	 * comes. (An alarm an older version armed, for a session's wake or a schedule, finds nothing due and isn't armed
+	 * again.)
 	 */
-	override async alarm(): Promise<void> {}
+	override async alarm(): Promise<void> {
+		const { stack } = await this.ready();
+		const next = await stack.compute.api.service.carryOnDeletions();
+		if (next !== undefined) await this.wakeAt(next);
+	}
 
 	override async fetch(request: Request): Promise<Response> {
 		let gateway: Gateway;

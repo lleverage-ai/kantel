@@ -812,6 +812,8 @@ export function createMounts(deps: MountsDeps) {
 		 * the same upload's. A failed byte delete throws and leaves the record, so the deletion tries again.
 		 */
 		async forgetBundle(bundle: StoredBundle): Promise<void> {
+			// The deployment's own bundle store, as `deleteBundle` checks: a gateway with another refuses, before anything goes.
+			await bundleStore();
 			await options.bundles.delete(bundle.digest, generationOf(bundle));
 			await store.bundles.deleteIf(bundle.id, (current) => generationOf(current) === generationOf(bundle));
 		},

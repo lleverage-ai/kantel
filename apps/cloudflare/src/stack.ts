@@ -154,6 +154,8 @@ export interface StackOptions {
 		readonly counts: MailCounts;
 		readonly defer?: (work: Promise<unknown>) => void;
 	};
+	/** Wakes the stack object for the next account deletion pass: its alarm (`stack-object.ts`). */
+	readonly wakeAt?: (at: number) => Promise<void> | void;
 }
 
 /** Email-code sign-in and open sign-up on the public origin (`config.emailSignIn`). */
@@ -313,6 +315,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					sessionLive: async (session: string) => (await otpStores.sessions.find(session, clock.now())) !== undefined,
 				}),
 		// Someone who deletes their account is signed out, then forgotten by sign-in and sign-up alike.
+		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
 		deletePerson: async (userId: string) => {
 			await otpStores?.sessions.deleteForUser(userId);
 			await identity.deleteUser(systemContext("compute"), userId);

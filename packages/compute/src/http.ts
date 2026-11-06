@@ -82,6 +82,8 @@ export interface ComputeApiOptions {
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
 	/** Removes a person from sign-in once they delete their account (`ComputeServiceOptions.deletePerson`). */
 	readonly deletePerson?: (userId: string) => Promise<void>;
+	/** Wakes the deployment for the next account deletion pass (`ComputeServiceOptions.wakeAt`). */
+	readonly wakeAt?: (at: number) => Promise<void> | void;
 	/** Whether a person administers the deployment (`ComputeServiceOptions.deploymentAdmin`). */
 	readonly deploymentAdmin?: (userId: string) => Promise<boolean>;
 	/**
@@ -180,6 +182,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 		...(options.deletePerson === undefined ? {} : { deletePerson: options.deletePerson }),
+		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
 		...(options.deploymentAdmin === undefined ? {} : { deploymentAdmin: options.deploymentAdmin }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
