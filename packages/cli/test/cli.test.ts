@@ -1391,10 +1391,11 @@ describe("copying files", () => {
 		const prefix = names[0]?.replace(/-\d{6}$/, "");
 		// It checks the destination, extracts into it where the files API would put it, and removes the parts.
 		const stage = `/home/user/app/.kantel-push-${prefix?.slice(-12)}`;
+		const place = `for d; do mkdir -p "$0/$d" && find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$0/$d" || exit 1; done`;
 		expect(commands).toEqual([
-			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null && cp --help 2>&1 | grep -q -- --remove-destination",
+			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null && mv --help 2>&1 | grep -q -- --target-directory",
 			`mkdir ${stage} && cat ${prefix}-* | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
-				`cp -al --remove-destination ${stage}/. /home/user/app/; s=$?; rm -rf ${stage}; exit $s`,
+				`(cd ${stage} && find . -type d -exec sh -c '${place}' /home/user/app {} +); s=$?; rm -rf ${stage}; exit $s`,
 			`rm -f ${prefix}-*`,
 		]);
 		// The parts, joined in order, are a tar that tar itself extracts to the same tree.

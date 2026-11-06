@@ -612,16 +612,17 @@ export async function uploadTreeArchive(
 		const [, parts] = await Promise.all([pack(), upload()]);
 		if (parts === 0) return { files: 0, bytes: 0 };
 		// The parts' names sort in order, so the glob joins them as they were cut. The tar goes into a directory of its
-		// own inside the destination first, so one that fails part way (a full disk) leaves the destination as it was;
-		// then each file is linked into place, a file already there replaced by the whole new one (no space taken, and
-		// never a half-written file where a whole one was).
+		// own inside the destination first, so one that fails part way (a full disk) leaves the destination as it was.
+		// Then each file is moved into place, a directory at a time: on one file system a move is a rename, so a file
+		// already there is replaced by the whole new one in one step, never missing and never half written.
 		const into = archiveTarget(target);
 		const stage = quote(posix.join(archiveTargetPath(target), `.kantel-push-${staging.slice(-12)}`));
+		const place = `for d; do mkdir -p "$0/$d" && find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$0/$d" || exit 1; done`;
 		await run(
 			client,
 			sandboxId,
 			`mkdir ${stage} && cat ${glob} | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
-				`cp -al --remove-destination ${stage}/. ${into}/; s=$?; rm -rf ${stage}; exit $s`,
+				`(cd ${stage} && find . -type d -exec sh -c ${quote(place)} ${into} {} +); s=$?; rm -rf ${stage}; exit $s`,
 			600_000,
 		);
 	} finally {
@@ -650,7 +651,7 @@ async function archiveFits(client: KantelClient, sandboxId: string, target: stri
 		await run(
 			client,
 			sandboxId,
-			`mkdir -p ${into} && test -w ${into} && test -w /tmp && command -v tar >/dev/null && cp --help 2>&1 | grep -q -- --remove-destination`,
+			`mkdir -p ${into} && test -w ${into} && test -w /tmp && command -v tar >/dev/null && mv --help 2>&1 | grep -q -- --target-directory`,
 		);
 		return true;
 	} catch {
