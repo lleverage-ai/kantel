@@ -296,6 +296,9 @@ func (h *Host) makeFacts() proto.Facts {
 			break
 		}
 	}
+	if h.listsProcesses() {
+		features = append(features, proto.FeatureProcesses)
+	}
 	if h.cfg.usageInterval() > 0 {
 		features = append(features, proto.FeatureUsage, proto.FeatureUsageAcks)
 	}
@@ -876,6 +879,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		entries, err := t.ListFiles(ctx, p)
 		return map[string]any{"entries": entries}, err
+	case proto.MethodProcesses:
+		p, err := decode[proto.ProcessesParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.listProcesses(ctx, p)
 	case proto.MethodSnapshotList:
 		p, err := decode[proto.SnapshotParams](params)
 		if err != nil {

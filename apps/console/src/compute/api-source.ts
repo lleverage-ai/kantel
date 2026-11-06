@@ -27,6 +27,7 @@ import {
 	type EnvironmentRepo as ApiRepo,
 	type SandboxEgress as ApiSandboxEgress,
 	type SandboxMount as ApiSandboxMount,
+	type SandboxProcess as ApiSandboxProcess,
 	type SandboxShapes as ApiSandboxShapes,
 	type Template as ApiTemplate,
 	type TemplateSnapshot as ApiTemplateSnapshot,
@@ -89,6 +90,7 @@ import type {
 	EgressGrant as UiGrant,
 	SandboxEgress as UiSandboxEgress,
 	SandboxImage as UiSandboxImage,
+	SandboxProcess as UiSandboxProcess,
 	SandboxShapes as UiSandboxShapes,
 	Template as UiTemplate,
 	TemplateSnapshot as UiTemplateSnapshot,
@@ -846,6 +848,21 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(latest.diskUsedBytes === undefined ? {} : { diskGb: gb(latest.diskUsedBytes) }),
 			};
 		},
+		// A microVM's busiest processes, which its guest agent reads when asked. Their command lines are its content, so end
+		// to end they come over this console's session to its host, as its files do.
+		processes: async (id) => {
+			try {
+				const host = await filesHost(context, id);
+				if (host !== undefined) {
+					const { processes } = await host.call<{ processes: ApiSandboxProcess[] | null }>(id, "sandbox.processes", {});
+					return (processes ?? []).map(processOf);
+				}
+				return (await api.listSandboxProcesses(id)).items.map(processOf);
+			} catch (error) {
+				if (unlistedProcesses(error)) return undefined;
+				throw error;
+			}
+		},
 		rename: async (id, name) => view(await api.updateSandbox(id, { name })),
 		ports: async (id) => (await api.listPorts(id)).items.map(portOf),
 		exposePort: async (id, port, isPublic) => portOf(await api.exposePort(id, { port, public: isPublic })),
@@ -873,6 +890,28 @@ function sandboxesSource(context: Context): SandboxesSource {
 		},
 	};
 }
+
+/** A process as the API and a host's session both answer it. */
+const processOf = (process: ApiSandboxProcess): UiSandboxProcess => ({
+	pid: process.pid,
+	command: process.command,
+	cpuPercent: process.cpuPercent,
+	memoryBytes: process.memoryBytes,
+});
+
+/**
+ * Whether a read of a sandbox's processes says they can't be listed, rather than failing: its host, guest agent or tier
+ * can't (`not_supported` from the API, `unsupported` from the host itself, as a host answers a method from after it), or
+ * the gateway is from before the route (404). The dialog then says its host can't list them yet.
+ */
+export const unlistedProcesses = (error: unknown): boolean =>
+	(error instanceof KantelApiError && (error.code === "not_supported" || error.status === 404)) ||
+	(error instanceof Error &&
+		error.name === "SessionError" &&
+		"answered" in error &&
+		error.answered === true &&
+		"code" in error &&
+		error.code === "unsupported");
 
 /** A part of a running sandbox's file: over its host's E2E session where its space has one, else through the API. */
 async function readSandboxFile(context: Context, id: string, path: string, range: FileRange): Promise<FilePart> {

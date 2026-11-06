@@ -210,6 +210,59 @@ describe("sandboxes", () => {
 		expect(kills).toEqual([held.id]);
 	});
 
+	it("lists a running microVM's busiest processes from its backend, and says when they can't be listed", async () => {
+		const stub = createStubBackend();
+		const asked: { id: string; limit: number }[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			processes: async (id, limit) => {
+				asked.push({ id, limit });
+				return {
+					processes: [
+						{ pid: 812, command: "yes", cpuPercent: 99.5, memoryBytes: 1_048_576 },
+						{ pid: 1, command: "/sbin/init", cpuPercent: 0, memoryBytes: 8_388_608 },
+					],
+					total: 37,
+				};
+			},
+		};
+		const { tom, client } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		expect(await tom.listSandboxProcesses(vm.id)).toEqual({
+			items: [
+				{ pid: 812, command: "yes", cpuPercent: 99.5, memoryBytes: 1_048_576 },
+				{ pid: 1, command: "/sbin/init", cpuPercent: 0, memoryBytes: 8_388_608 },
+			],
+			total: 37,
+		});
+		await tom.listSandboxProcesses(vm.id, { limit: 3 });
+		expect(asked).toEqual([
+			{ id: vm.id, limit: 10 },
+			{ id: vm.id, limit: 3 },
+		]);
+		expect((await failure(tom.listSandboxProcesses(vm.id, { limit: 51 }))).code).toBe("invalid");
+
+		// Command lines are what `ps` shows: a key needs `exec`, as running it would.
+		const reader = client((await tom.createApiKey({ name: "reader", preset: "read-only" })).secret);
+		expect((await failure(reader.listSandboxProcesses(vm.id))).code).toBe("forbidden");
+		const runner = client((await tom.createApiKey({ name: "runner", scopes: ["sandboxes:read", "exec"] })).secret);
+		expect((await runner.listSandboxProcesses(vm.id)).total).toBe(37);
+
+		// An isolate's aren't listed, and nor are any where the backend can't list them.
+		const isolate = await tom.createSandbox({ type: "isolate", wait: true });
+		const refused = await failure(tom.listSandboxProcesses(isolate.id));
+		expect(refused.code).toBe("not_supported");
+		expect(refused.message).toContain("isolate");
+		const plain = setup(stub).tom;
+		const elsewhere = await plain.createSandbox({ type: "microvm", wait: true });
+		expect((await failure(plain.listSandboxProcesses(elsewhere.id))).code).toBe("not_supported");
+
+		// A stopped one has none to list.
+		await tom.stopSandbox(vm.id, { wait: true });
+		expect((await failure(tom.listSandboxProcesses(vm.id))).details).toMatchObject({ code: "sandbox_stopped" });
+		expect(asked).toHaveLength(3);
+	});
+
 	it("marks a command killed when its backend can't stop it, and says so", async () => {
 		const stub = createStubBackend();
 		const backend: SandboxBackend = {
@@ -1308,10 +1361,10 @@ describe("sandboxes", () => {
 });
 
 describe("idle stop", () => {
-	function clocked(store?: ReturnType<typeof createMemoryStore>) {
+	function clocked(store?: ReturnType<typeof createMemoryStore>, backend: SandboxBackend = createStubBackend()) {
 		const clock = { at: Date.UTC(2026, 0, 1) };
 		const api = createComputeApi({
-			backend: createStubBackend(),
+			backend,
 			...(store === undefined ? {} : { store }),
 			authenticatePerson: async (request) =>
 				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
@@ -1377,6 +1430,35 @@ describe("idle stop", () => {
 		expect(resumed.reason).toBeUndefined();
 		expect(resumed.lastActiveAt).toBe(clock.at);
 		expect(await api.service.portNotRunning(sandbox.id)).toBeUndefined();
+	});
+
+	it("doesn't count reading its processes as a use, so an open metrics dialog doesn't hold off its idle stop", async () => {
+		const stub = createStubBackend();
+		const { clock, tom, after } = clocked(undefined, {
+			...stub,
+			processes: async () => ({
+				processes: [{ pid: 1, command: "/sbin/init", cpuPercent: 0, memoryBytes: 4096 }],
+				total: 1,
+			}),
+		});
+		const started = clock.at;
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			autoStopMinutes: null,
+			idleStopMinutes: 5,
+			wait: true,
+		});
+		// A dialog left open reads them every 10 seconds; past five minutes it stops all the same.
+		for (let read = 0; read < 30; read++) {
+			await after(10_000);
+			expect((await tom.listSandboxProcesses(sandbox.id)).total).toBe(1);
+		}
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(started);
+		await after(60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect([stopped.state, stopped.reason]).toEqual(["stopped", "idle-stop"]);
+		// And then there are none to read.
+		expect((await failure(tom.listSandboxProcesses(sandbox.id))).details).toMatchObject({ code: "sandbox_stopped" });
 	});
 
 	it("counts relayed traffic, writing it at most once a window and the rest at the sweep", async () => {

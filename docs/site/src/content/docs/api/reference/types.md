@@ -1394,6 +1394,22 @@ One of: `"sandbox_starting"` or `"sandbox_stopping"` or `"sandbox_stopped"` or `
 | `items` | [Sandbox](/api/reference/types/#sandbox)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
+### SandboxProcess
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pid` | integer | yes |  (minimum 1) |
+| `command` | string | yes | Its command line, its arguments joined by spaces (at most 1 KiB of it), or its name in brackets where it has none, as `ps` writes a kernel thread's. |
+| `cpuPercent` | number | yes | Its CPU over a short sample, as a share of one vCPU in percent: 150 is one and a half. (minimum 0) |
+| `memoryBytes` | integer | yes | Its resident memory (RSS). (minimum 0) |
+
+### SandboxProcessList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [SandboxProcess](/api/reference/types/#sandboxprocess)[] | yes | By CPU, then memory, most first. |
+| `total` | integer | yes | How many processes the sandbox has. (minimum 0) |
+
 ### SandboxProtectedVariable
 
 A protected variable as one sandbox has it: never its value.

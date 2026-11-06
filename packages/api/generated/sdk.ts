@@ -1613,6 +1613,28 @@ export interface SandboxPage {
 	readonly nextCursor?: string;
 }
 
+export interface SandboxProcess {
+	readonly pid: number;
+	/** Its command line, its arguments joined by spaces (at most 1 KiB of it), or its name in brackets where it has none, as `ps` writes a kernel thread's. */
+	readonly command: string;
+	/** Its CPU over a short sample, as a share of one vCPU in percent: 150 is one and a half. */
+	readonly cpuPercent: number;
+	/** Its resident memory (RSS). */
+	readonly memoryBytes: number;
+}
+
+export interface SandboxProcessesQuery {
+	/** How many to list: default 10, at most 50. */
+	readonly limit?: number;
+}
+
+export interface SandboxProcessList {
+	/** By CPU, then memory, most first. */
+	readonly items: readonly SandboxProcess[];
+	/** How many processes the sandbox has. */
+	readonly total: number;
+}
+
 /** A protected variable as one sandbox has it: never its value. */
 export interface SandboxProtectedVariable {
 	readonly name: string;
@@ -2748,6 +2770,12 @@ export interface KantelClient {
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox's usage. CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
 	getSandboxUsage(sandboxId: string, query?: UsageQuery, options?: CallOptions): Promise<SandboxUsage>;
+	/** List a sandbox's busiest processes. A running microVM's busiest processes, as `top` would list them: each one's CPU over a short sample (about half a second, read when asked) and resident memory, by CPU, then memory. Read from the sandbox's guest agent and kept nowhere. A sandbox that isn't running is `conflict`. An isolate, which shares its runtime with the account's other isolates, is `not_supported`, as is a sandbox whose host or guest agent is from before they could be listed. Command lines are what the sandbox runs, arguments and all, so this needs the scope that running `ps` would. A key needs `exec`. `GET /sandboxes/{sandboxId}/processes` */
+	listSandboxProcesses(
+		sandboxId: string,
+		query?: SandboxProcessesQuery,
+		options?: CallOptions,
+	): Promise<SandboxProcessList>;
 	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit unless `timeoutMs` gives one. A call to a sandbox that is starting waits for it to run, up to 60 seconds, apart from `timeoutMs`. A stopped, paused or failed sandbox is `conflict`, with a `SandboxNotRunning` in `details`: resume it first. A key needs `exec`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
 	runCommand(sandboxId: string, body: RunCommandBody, options?: CallOptions): Promise<Command>;
 	/** List a sandbox's commands. Its commands, newest first, also while it is stopped. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands` */
@@ -3086,6 +3114,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			),
 		getSandboxUsage: (sandboxId, query, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/usage`, query }, callOptions),
+		listSandboxProcesses: (sandboxId, query, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/processes`, query },
+				callOptions,
+			),
 		runCommand: (sandboxId, body, callOptions) =>
 			send(
 				options,

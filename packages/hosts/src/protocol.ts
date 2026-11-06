@@ -200,7 +200,39 @@ export const HOST_FEATURES = {
 	 * 30 s).
 	 */
 	execControl: "exec-control",
+	/**
+	 * `sandbox.processes` (`HostProcessesParams`): a running microVM's busiest processes, from its guest agent, answered
+	 * `HostProcessList`. An isolate's, and a sandbox's whose guest agent is from before it could, are `unsupported`.
+	 * Without it Kantel asks no host for processes.
+	 */
+	processes: "processes",
 } as const;
+
+/** `sandbox.processes`' params: at most `limit` processes (the host's default 10 without one, at most 50). */
+export interface HostProcessesParams {
+	readonly limit?: number;
+}
+
+/** One of a sandbox's processes, as its guest measured it over a short sample (the Go side's `Process`). */
+export interface HostProcess {
+	readonly pid: number;
+	/** Its command line (at most 1 KiB of it), or `[name]` where it has none (a kernel thread). */
+	readonly command: string;
+	/** Its CPU over the sample, as a share of one vCPU in percent: 150 is one and a half. */
+	readonly cpuPercent: number;
+	/** Its resident memory. */
+	readonly memoryBytes: number;
+}
+
+/**
+ * `sandbox.processes`' answer: the busiest processes by CPU, then memory, most first; `total` how many the sandbox has,
+ * and `sampleMs` how long the CPU was measured over.
+ */
+export interface HostProcessList {
+	readonly processes: readonly HostProcess[] | null;
+	readonly total: number;
+	readonly sampleMs: number;
+}
 
 /**
  * `sandbox.exec`'s params (the Go side's `ExecParams`). The host fills in `sandboxId`; `stdin` is base64. With no
@@ -727,6 +759,8 @@ export const HostMethods = {
 	fileWrite: "sandbox.files.write",
 	fileDelete: "sandbox.files.delete",
 	fileList: "sandbox.files.list",
+	/** `HostProcessesParams` (`HOST_FEATURES.processes`): a running sandbox's busiest processes, `HostProcessList`. */
+	processes: "sandbox.processes",
 	snapshotList: "snapshot.list",
 	snapshotSave: "snapshot.save",
 	snapshotDelete: "snapshot.delete",

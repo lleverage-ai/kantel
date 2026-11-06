@@ -20,6 +20,7 @@ import {
 	type BackendFileEntry,
 	type BackendHost,
 	type BackendMount,
+	type BackendProcessList,
 	type BackendSize,
 	type BootOptions,
 	type BuiltTemplate,
@@ -56,6 +57,7 @@ import {
 	type HostGuest,
 	HostMethods,
 	type HostMount,
+	type HostProcessList,
 	type HostSandbox,
 	type HostTemplateBoot,
 	type SandboxTier,
@@ -1103,6 +1105,24 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async listFiles(sandboxId, path) {
 			const { entries } = await call<{ entries: HostFileEntry[] | null }>(sandboxId, "sandbox.files.list", { path });
 			return (entries ?? []).map(fileEntry);
+		},
+		// Asked of a host that says it lists them; one from before it could isn't asked. An isolate's, and a sandbox's
+		// whose guest agent is older, are the host's `unsupported`, so `not_supported` here too.
+		async processes(sandboxId, limit): Promise<BackendProcessList> {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.processes)) {
+				throw new KantelError("not_supported", "This sandbox's host can't list its processes");
+			}
+			const list = await call<HostProcessList>(sandboxId, HostMethods.processes, { limit });
+			return {
+				processes: (list.processes ?? []).map(({ pid, command, cpuPercent, memoryBytes }) => ({
+					pid,
+					command,
+					cpuPercent,
+					memoryBytes,
+				})),
+				total: list.total,
+			};
 		},
 		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);

@@ -793,16 +793,48 @@ export function ProcessTable({ processes }: { processes: readonly SandboxProcess
 /** Top processes, as far as the source and the sandbox let it read them. */
 function Processes({ sandbox, source }: { sandbox: Sandbox; source: SandboxesSource }) {
 	const running = sandbox.state === "running";
-	const list = source.processes;
+	// An isolate shares its account's runtime, whose processes are the other isolates' too: none are asked for.
+	const list = sandbox.kind === "isolate" ? undefined : source.processes;
+	// `null`: its host or guest agent can't list them (undefined is no answer yet).
 	const read = usePolled(
-		running && list !== undefined ? () => list(sandbox.id) : undefined,
+		running && list !== undefined ? async () => (await list(sandbox.id)) ?? null : undefined,
 		`${sandbox.id}/${running}`,
 		PROCESSES_POLL_MS,
 	);
+	return <ProcessesSection sandbox={sandbox} listed={list !== undefined} read={read} />;
+}
+
+/**
+ * A read of a sandbox's processes: `null` once its host or guest agent has said it can't list them, `undefined` (in an
+ * error) when none has been read yet.
+ */
+export type ProcessesRead = Read<readonly SandboxProcess[] | null> & { readonly reload: () => void };
+
+/**
+ * Top processes as read so far: not running; an isolate's, which aren't listed; a host or guest agent that can't list
+ * them (`listed` false: the source has no read); loading; an error; none; or the table.
+ */
+export function ProcessesSection({
+	sandbox,
+	listed,
+	read,
+}: {
+	sandbox: Sandbox;
+	listed: boolean;
+	read: ProcessesRead;
+}) {
+	const running = sandbox.state === "running";
+	const isolate = sandbox.kind === "isolate";
+	const unlisted = !listed || (read.status !== "loading" && read.value === null);
 	let body: ReactNode;
 	if (!running) body = <p className="m-0 text-sm text-muted">It isn't running, so it has no processes.</p>;
-	else if (list === undefined)
-		body = <p className="m-0 text-sm text-muted">This sandbox's host can't list its processes yet.</p>;
+	else if (isolate)
+		body = (
+			<p className="m-0 text-sm text-muted">
+				Not listed for an isolate: it shares its runtime with the account's other isolates.
+			</p>
+		);
+	else if (unlisted) body = <p className="m-0 text-sm text-muted">This sandbox's host can't list its processes yet.</p>;
 	else if (read.status === "loading")
 		body = (
 			<div className="flex flex-col gap-3 py-1" aria-busy="true">
@@ -824,16 +856,16 @@ function Processes({ sandbox, source }: { sandbox: Sandbox; source: SandboxesSou
 				{messageOf(read.error, "Kantel couldn't list its processes.")}
 			</Notice>
 		);
-	else if (read.value !== undefined && read.value.length === 0)
+	else if (read.value !== undefined && read.value !== null && read.value.length === 0)
 		body = <p className="m-0 text-sm text-muted">No processes are using any CPU.</p>;
-	else body = read.value === undefined ? null : <ProcessTable processes={read.value} />;
+	else body = read.value === undefined || read.value === null ? null : <ProcessTable processes={read.value} />;
 	return (
 		<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${sandbox.id}-processes`}>
 			<div className="flex min-h-control-xs items-center justify-between gap-2">
 				<h3 id={`${sandbox.id}-processes`} className="m-0 text-md font-strong text-fg">
 					Top processes (by CPU)
 				</h3>
-				{running && list !== undefined && read.status !== "loading" ? (
+				{running && !unlisted && read.status !== "loading" ? (
 					<IconButton
 						size="xs"
 						variant="ghost"

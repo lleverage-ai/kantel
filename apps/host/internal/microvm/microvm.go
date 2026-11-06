@@ -3236,6 +3236,27 @@ func (m *Manager) ListFiles(ctx context.Context, p proto.FileParams) ([]proto.Fi
 	return out, err
 }
 
+// ListProcesses answers a running sandbox's busiest processes, from its guest agent (GET /processes). An agent from
+// before it could list them (a sandbox booted, or resumed from memory, on an older image) is ErrUnsupported.
+func (m *Manager) ListProcesses(ctx context.Context, p proto.ProcessesParams) (proto.ProcessList, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return proto.ProcessList{}, err
+	}
+	list, err := client.Processes(ctx, p.Limit)
+	if guest.IsNotFound(err) {
+		return proto.ProcessList{}, &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's guest agent is from before it could list its processes"}
+	}
+	if err != nil {
+		return proto.ProcessList{}, err
+	}
+	out := proto.ProcessList{Processes: make([]proto.Process, len(list.Processes)), Total: list.Total, SampleMs: list.SampleMs}
+	for i, proc := range list.Processes {
+		out.Processes[i] = proto.Process(proc)
+	}
+	return out, nil
+}
+
 // DialPort opens a stream to a port on a running sandbox's loopback (22 SSH, 5901 the desktop's VNC, 9222
 // Chromium's DevTools, or an app's).
 func (m *Manager) DialPort(ctx context.Context, id string, port int) (net.Conn, error) {

@@ -2742,6 +2742,118 @@
 				}
 			}
 		},
+		"/sandboxes/{sandboxId}/processes": {
+			"get": {
+				"operationId": "listSandboxProcesses",
+				"summary": "List a sandbox's busiest processes",
+				"description": "A running microVM's busiest processes, as `top` would list them: each one's CPU over a short sample (about half a second, read when asked) and resident memory, by CPU, then memory. Read from the sandbox's guest agent and kept nowhere. A sandbox that isn't running is `conflict`. An isolate, which shares its runtime with the account's other isolates, is `not_supported`, as is a sandbox whose host or guest agent is from before they could be listed. Command lines are what the sandbox runs, arguments and all, so this needs the scope that running `ps` would. A key needs `exec`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"description": "How many to list: default 10, at most 50.",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 50
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its busiest processes.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxProcessList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/sandboxes/{sandboxId}/commands": {
 			"post": {
 				"operationId": "runCommand",
@@ -15386,6 +15498,50 @@
 					}
 				},
 				"title": "SandboxPage"
+			},
+			"SandboxProcess": {
+				"type": "object",
+				"required": ["pid", "command", "cpuPercent", "memoryBytes"],
+				"properties": {
+					"pid": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"command": {
+						"type": "string",
+						"description": "Its command line, its arguments joined by spaces (at most 1 KiB of it), or its name in brackets where it has none, as `ps` writes a kernel thread's."
+					},
+					"cpuPercent": {
+						"type": "number",
+						"minimum": 0,
+						"description": "Its CPU over a short sample, as a share of one vCPU in percent: 150 is one and a half."
+					},
+					"memoryBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Its resident memory (RSS)."
+					}
+				},
+				"title": "SandboxProcess"
+			},
+			"SandboxProcessList": {
+				"type": "object",
+				"required": ["items", "total"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxProcess"
+						},
+						"description": "By CPU, then memory, most first."
+					},
+					"total": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many processes the sandbox has."
+					}
+				},
+				"title": "SandboxProcessList"
 			},
 			"SandboxProtectedVariable": {
 				"type": "object",

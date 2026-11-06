@@ -22,9 +22,11 @@ import (
 // delete, snapshots) but not reach its content: commands, files, snapshot contents and ports are served only inside
 // E2E sessions from the chain's devices, which the gateway relays as a port.open of port 0 and can't read.
 
-// contentMethods are the calls that read or change what is in a sandbox.
+// contentMethods are the calls that read or change what is in a sandbox. Its processes' command lines are content too:
+// they hold what was typed, arguments and all.
 var contentMethods = []string{
 	proto.MethodExec, proto.MethodFileRead, proto.MethodFileWrite, proto.MethodFileDelete, proto.MethodFileList,
+	proto.MethodProcesses,
 }
 
 // sessionMethods are what a device may call in an E2E session, on the session's sandbox only.

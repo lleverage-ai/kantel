@@ -298,3 +298,27 @@ CPU, memory, running time and cost per interval, and in `series` its readings as
 - `200`: [SandboxUsage](/api/reference/types/#sandboxusage) (`application/json`). The usage.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## List a sandbox's busiest processes
+
+`GET /v1/sandboxes/{sandboxId}/processes` (SDK method `listSandboxProcesses`)
+
+A running microVM's busiest processes, as `top` would list them: each one's CPU over a short sample (about half a second, read when asked) and resident memory, by CPU, then memory. Read from the sandbox's guest agent and kept nowhere. A sandbox that isn't running is `conflict`. An isolate, which shares its runtime with the account's other isolates, is `not_supported`, as is a sandbox whose host or guest agent is from before they could be listed. Command lines are what the sandbox runs, arguments and all, so this needs the scope that running `ps` would. A key needs `exec`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `limit` | integer | no | How many to list: default 10, at most 50. (minimum 1, maximum 50) |
+
+**Answers**
+
+- `200`: [SandboxProcessList](/api/reference/types/#sandboxprocesslist) (`application/json`). Its busiest processes.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
