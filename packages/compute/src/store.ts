@@ -850,11 +850,12 @@ export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
 
 /**
  * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
- * deliveries, telemetry, proxy settings, join tokens) fenced against its deletion: a write is checked once it
+ * deliveries, telemetry, proxy settings, join tokens, events) fenced against its deletion: a write is checked once it
  * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
  * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
  * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
- * fences of their own, which know their lifecycles; events come only from those, on the hot path, and are left to them.
+ * fences of their own, which know their lifecycles. Events, written on every sandbox's change, look at their account
+ * alongside the write, so they cost no round trip; one racing the close is cleared by the deletion's passes.
  */
 export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 	const open = async (accountId: string) => {
@@ -864,12 +865,17 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 	function fenced<T extends { readonly id: string }>(
 		collection: Collection<T>,
 		accountOf: (record: T) => string | undefined,
+		/** Look at the account alongside the write rather than after it: no round trip added, for writes on a hot path. */
+		alongside = false,
 	): Collection<T> {
+		const refuse = async (record: T): Promise<never> => {
+			await collection.delete(record.id).catch(() => false);
+			throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
+		};
 		const check = async (record: T | undefined): Promise<void> => {
 			const accountId = record === undefined ? undefined : accountOf(record);
 			if (record === undefined || accountId === undefined || (await open(accountId))) return;
-			await collection.delete(record.id).catch(() => false);
-			throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
+			await refuse(record);
 		};
 		return {
 			get: (id) => collection.get(id),
@@ -877,6 +883,12 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 			delete: (id) => collection.delete(id),
 			deleteIf: (id, should) => collection.deleteIf(id, should),
 			async put(record) {
+				const accountId = accountOf(record);
+				if (alongside && accountId !== undefined) {
+					const [, isOpen] = await Promise.all([collection.put(record), open(accountId)]);
+					if (!isOpen) await refuse(record);
+					return;
+				}
 				await collection.put(record);
 				await check(record);
 			},
@@ -901,6 +913,8 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		webhooks: fenced(store.webhooks, byAccount),
 		deliveries: fenced(store.deliveries, byAccount),
 		joinTokens: fenced(store.joinTokens, byAccount),
+		// Written on every sandbox's change, so looked at alongside: one read more, no round trip more.
+		events: fenced(store.events, byAccount, true),
 		// Keyed by their account.
 		telemetry: fenced(store.telemetry, isAccount),
 		proxies: fenced(store.proxies, isAccount),

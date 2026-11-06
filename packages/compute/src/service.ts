@@ -3749,6 +3749,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(taken.base === undefined ? {} : { base: taken.base }),
 				};
 				await store.snapshots.put(snapshot);
+				await holdSnapshot(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
 					withState(current, keepMemory ? "paused" : "stopped", {
 						latestSnapshotId: snapshot.id,
@@ -4173,6 +4174,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: undefined,
 			);
 		}
+	}
+
+	/**
+	 * A snapshot, once stored: forgotten, its bytes released as a delete does (`forgetSnapshot`, `releaseRef`), if its
+	 * account has closed or gone meanwhile, so a snapshot taken as the account was deleted never outlives it.
+	 */
+	async function holdSnapshot(snapshot: StoredSnapshot): Promise<void> {
+		if (await accountOpen(snapshot.accountId)) return;
+		await forgetSnapshot(snapshot);
+		await releaseRef(snapshot.ref);
+		throw accountClosed();
 	}
 
 	/** New sandboxes, once stored: forgotten, before anything boots or anyone sees them, if their account has closed. */
@@ -6629,6 +6641,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(taken.base === undefined ? {} : { base: taken.base }),
 				};
 				await store.snapshots.put(snapshot);
+				await holdSnapshot(snapshot);
 				await patchSandbox(current.id, (latest) => ({
 					...latest,
 					latestSnapshotId: snapshot.id,
@@ -6703,6 +6716,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(base === undefined ? {} : { base }),
 				};
 				await store.snapshots.put(snapshot);
+				await holdSnapshot(snapshot);
 				if (existing !== undefined) {
 					await forgetSnapshot(existing);
 					await releaseRef(existing.ref);

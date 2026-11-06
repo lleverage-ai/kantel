@@ -2332,6 +2332,16 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect((await store.webhooks.list({ accountId: account.id })).map((each) => each.id)).toEqual(["whk_open"]);
 	});
 
+	it("forgets a snapshot taken as its account closed", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ type: "microvm", wait: true });
+		await close(store, personal);
+		expect((await failure(ann.takeSnapshot(sandbox.id, {}))).code).toBe("conflict");
+		expect(await store.snapshots.list({ accountId: personal })).toEqual([]);
+	});
+
 	it("joins no host with a token whose account has closed", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
