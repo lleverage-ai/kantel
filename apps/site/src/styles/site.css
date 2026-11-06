@@ -74,8 +74,8 @@
 	--container-hero: 46rem;
 }
 
-/* The themes. Light is paper with midnight text, dark is midnight with paper text (never pure white), as the docs
-   (docs.css) are. Which one shows is data-theme on <html>: the device's preference until the person picks one with the
+/* The themes. Light is paper with midnight text; dark is the console's dark theme (below), as the docs
+   (docs.css) are, in the console's greys. Which one shows is data-theme on <html>: the device's preference until the person picks one with the
    header's toggle, set before first paint by the script in Base.astro. tokens.css gives :root the console's dark
    scheme, so the light theme sets its own. */
 :root {
@@ -103,17 +103,22 @@
 }
 
 :root[data-theme="dark"] {
+	/* The console's dark theme (@kantel/ui's dark.css, on :root here since the page never sets data-kt-theme): its
+	   near-neutral greys rather than the brand's blue midnight, so the site and the product look like one thing. By
+	   reference, so it follows the console when that palette changes. The orange stays the brand's. */
 	color-scheme: dark;
-	--site-paper: #141e28;
-	--site-card: #19232e;
-	--site-midnight: #f9f7f0;
-	--site-midnight-2: #d8d8d3; /* grey 400 */
-	--site-ink: #f9f7f0;
-	--site-line: #2c353e;
-	--site-card-line: #2c353e;
-	--site-label: #ababa7; /* grey 500 */
-	--site-plate: #0e151c;
-	--site-plate-line: #2c353e;
+	--site-paper: var(--kt-canvas);
+	--site-card: var(--kt-panel);
+	--site-midnight: var(--kt-text);
+	--site-midnight-2: var(--kt-text-muted);
+	--site-ink: var(--kt-text);
+	--site-line: var(--kt-border);
+	--site-card-line: var(--kt-border);
+	--site-label: var(--kt-text-faint);
+	--site-plate: var(--kt-panel);
+	--site-plate-line: var(--kt-border-strong);
+	--site-on-plate: var(--kt-text);
+	--site-faint: var(--kt-text-faint);
 }
 
 /* `dark:` utilities follow the page's theme, not the device's. */
