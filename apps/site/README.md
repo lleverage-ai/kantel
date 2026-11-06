@@ -8,6 +8,7 @@ served from Cloudflare Workers static assets.
 | `/` | The marketing page, `src/pages/index.astro` |
 | `/install.sh` | The self-hosted installer, `public/install.sh`, served as is |
 | `/cli.sh`, `/install-cli.sh` | The CLI's installer, `packages/cli/install-cli.sh`, copied in at build time (see below) |
+| `/privacy/`, `/terms/` | The privacy policy and terms of service, Markdown in `src/pages` with `src/layouts/Legal.astro` |
 | `/docs/` | The usage docs in `docs/site`, copied in at build time (see below) |
 
 ## Building it

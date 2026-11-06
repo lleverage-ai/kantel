@@ -1,0 +1,19 @@
+---
+// The privacy policy and the terms: Markdown pages (src/pages/privacy.md, terms.md) in the marketing shell, at a
+// reading measure. The child selectors style the rendered Markdown, which has no classes of its own.
+import Base from "./Base.astro";
+
+const { frontmatter } = Astro.props;
+---
+
+<Base title={`${frontmatter.title}: Kantel`} description={frontmatter.description}>
+	<article
+		class="mx-auto max-w-(--container-page) px-6 py-16 text-body text-midnight-2 lg:px-12 lg:py-20 [&_a]:underline [&_a]:underline-offset-4 [&_a:hover]:text-midnight [&_h2]:mt-12 [&_h2]:font-display [&_h2]:text-display-s [&_h2]:font-semibold [&_h2]:text-midnight [&_li]:mt-2 [&_p]:mt-4 [&_ul]:mt-4 [&_ul]:list-disc [&_ul]:pl-6"
+	>
+		<div class="max-w-(--container-measure)">
+			<h1 class="font-display text-display-m font-semibold text-midnight">{frontmatter.title}</h1>
+			<p class="mt-4 text-sm text-label">Last updated {frontmatter.updated}</p>
+			<slot />
+		</div>
+	</article>
+</Base>
