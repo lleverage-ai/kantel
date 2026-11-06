@@ -15,27 +15,23 @@ type DiskBreakdown struct {
 	Templates int64
 	// Sandboxes are the sandboxes' own files: their disks, and their memory after a stop.
 	Sandboxes int64
-	// Automatic and Saved are the snapshots of each kind: memory a stop shares with its sandbox counts for the sandbox.
-	Automatic int64
-	Saved     int64
+	// Snapshots are the snapshots' files, of either kind: memory a stop's snapshot shares with its sandbox counts for
+	// the sandbox. Which of them are saved isn't the host's to say (a snapshot it saved may be one the control plane
+	// keeps as automatic, and one it kept automatic may be saved there), so the control plane splits them by its own
+	// records.
+	Snapshots int64
 }
 
 // DiskBreakdown measures the tier's files (DiskBreakdown) in that order: images, templates, sandboxes, then
-// snapshots, oldest first.
-func (m *Manager) DiskBreakdown(seen fsutil.Seen) DiskBreakdown {
+// snapshots.
+func (m *Manager) DiskBreakdown(seen *fsutil.Seen) DiskBreakdown {
 	var out DiskBreakdown
 	out.Images = fsutil.Allocated(filepath.Join(m.cfg.Root, "images"), seen)
 	out.Templates = fsutil.Allocated(filepath.Join(m.cfg.Root, "templates"), seen) +
 		fsutil.Allocated(filepath.Join(m.cfg.Root, templateSnapshotsDir), seen)
 	out.Sandboxes = fsutil.Allocated(filepath.Join(m.cfg.Root, "sandboxes"), seen)
-	snaps := m.snapshotsOf("")
-	for i := len(snaps) - 1; i >= 0; i-- {
-		n := fsutil.Allocated(m.snapshotDir(snaps[i].ID), seen)
-		if snaps[i].Kind == "saved" {
-			out.Saved += n
-		} else {
-			out.Automatic += n
-		}
+	for _, snap := range m.snapshotsOf("") {
+		out.Snapshots += fsutil.Allocated(m.snapshotDir(snap.ID), seen)
 	}
 	return out
 }

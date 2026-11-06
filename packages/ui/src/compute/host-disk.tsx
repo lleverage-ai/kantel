@@ -7,7 +7,7 @@
 import { bytesText, compactAge } from "../primitives/format.ts";
 import { type Host, type HostDisk, usedShare } from "./compute-model.ts";
 
-/** What takes the space, in the order the host counts it, each with its label. */
+/** What takes the space, each with its label: snapshots first, split into saved and automatic by Kantel's records. */
 const PARTS: readonly { readonly key: keyof HostDisk; readonly label: string }[] = [
 	{ key: "savedSnapshots", label: "Saved snapshots" },
 	{ key: "automaticSnapshots", label: "Automatic snapshots" },
@@ -62,7 +62,9 @@ export function HostDiskUsage({ host, now, narrow = false }: HostDiskUsageProps)
 			>
 				<span className={`block h-full rounded-full ${tone}`} style={{ width: `${Math.round(share * 100)}%` }} />
 			</span>
-			<dl className={`m-0 grid min-w-0 gap-x-6 gap-y-1 text-sm ${narrow ? "grid-cols-1" : "grid-cols-4"}`}>
+			<dl
+				className={`m-0 grid min-w-0 gap-x-6 gap-y-1 text-sm ${narrow ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4"}`}
+			>
 				{PARTS.map((part) => (
 					<div key={part.key} className="flex min-w-0 items-baseline justify-between gap-2">
 						<dt className="truncate text-muted">{part.label}</dt>

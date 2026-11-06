@@ -210,8 +210,7 @@ describe("hosts service", () => {
 		const disk = {
 			totalBytes: 1_000,
 			usedBytes: 700,
-			savedSnapshotsBytes: 100,
-			automaticSnapshotsBytes: 200,
+			snapshotsBytes: 300,
 			sandboxesBytes: 250,
 			imagesBytes: 50,
 			templatesBytes: 30,

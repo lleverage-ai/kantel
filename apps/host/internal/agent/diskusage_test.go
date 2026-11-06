@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -63,5 +64,26 @@ func TestMeasureDiskWithoutTiers(t *testing.T) {
 	known := got.BundlesBytes + got.ImagesBytes + got.SandboxesBytes
 	if got.OtherBytes != max(0, got.UsedBytes-known) {
 		t.Fatalf("other is %d, want used %d less %d", got.OtherBytes, got.UsedBytes, known)
+	}
+}
+
+// A bundle cache on another filesystem than Root's isn't part of Root's used space, so it counts nothing.
+func TestMeasureDiskCountsOnlyRootsFilesystem(t *testing.T) {
+	root := t.TempDir()
+	var at, st syscall.Stat_t
+	if err := syscall.Stat(root, &at); err != nil {
+		t.Fatal(err)
+	}
+	cache, err := os.MkdirTemp("/dev/shm", "bundles-")
+	if err != nil || syscall.Stat(cache, &st) != nil || st.Dev == at.Dev {
+		t.Skip("no other filesystem for the bundle cache")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cache) })
+	if err := os.WriteFile(filepath.Join(cache, "a.erofs"), make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Host{cfg: Config{Root: root, BundleCacheDir: cache}}
+	if got := h.measureDisk(); got.BundlesBytes != 0 {
+		t.Fatalf("a bundle cache on another filesystem counted %d bytes", got.BundlesBytes)
 	}
 }

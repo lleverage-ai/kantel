@@ -983,7 +983,7 @@ export interface Host {
 	readonly lastSeenAt?: number;
 	/** A host's recent CPU and memory, for sparklines. */
 	readonly usage?: UsageSparklines;
-	/** What takes the space on a host's disk, as the host measured it last (every few minutes). Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, automatic snapshots, saved snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. */
+	/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
 	readonly diskUsage?: HostDiskUsage;
 	/** The most bytes of saved snapshots each account may keep on this host (their `sizeBytes`, each set of bytes once). A save past it answers `exhausted`. Absent: no limit. */
 	readonly savedSnapshotBytesLimit?: number;
@@ -1002,15 +1002,15 @@ export interface HostCapacity {
 	readonly diskGb: number;
 }
 
-/** What takes the space on a host's disk, as the host measured it last (every few minutes). Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, automatic snapshots, saved snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. */
+/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
 export interface HostDiskUsage {
 	/** The size of the filesystem that holds the host's files. */
 	readonly totalBytes: number;
 	/** What is used on it, by anything. */
 	readonly usedBytes: number;
-	/** Saved snapshots. */
+	/** Saved snapshots: what every account's saved snapshots on the host take, by their `sizeBytes` (each set of bytes once), at most the host's snapshots in all. */
 	readonly savedSnapshotsBytes: number;
-	/** Automatic snapshots. */
+	/** The rest of the host's snapshots: automatic ones, and any Kantel has no record of. */
 	readonly automaticSnapshotsBytes: number;
 	/** Sandboxes' own disks, and their memory while they're stopped. */
 	readonly sandboxesBytes: number;

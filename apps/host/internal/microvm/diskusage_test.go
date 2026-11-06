@@ -55,7 +55,7 @@ func TestDiskBreakdownCountsEachFileOnce(t *testing.T) {
 	saved := snapshot("snap_saved", "saved")
 	file(filepath.Join(saved, "disk.ext4"), 6<<20)
 
-	seen := fsutil.Seen{}
+	seen := fsutil.NewSeen()
 	bundles := fsutil.Allocated(bundle, seen)
 	got := m.DiskBreakdown(seen)
 	if got.Images != allocated(filepath.Join(root, "images")) || got.Templates != allocated(filepath.Join(root, "templates")) {
@@ -64,12 +64,11 @@ func TestDiskBreakdownCountsEachFileOnce(t *testing.T) {
 	if got.Sandboxes != allocated(filepath.Join(root, "sandboxes")) {
 		t.Fatalf("sandboxes: %d", got.Sandboxes)
 	}
-	// The automatic snapshot's memory is the sandbox's, its bundle drive the cache's.
-	if want := allocated(filepath.Join(auto, "disk.ext4")) + allocated(filepath.Join(auto, "meta.json")); got.Automatic != want {
-		t.Fatalf("automatic snapshots are %d bytes, want %d", got.Automatic, want)
-	}
-	if want := allocated(saved); got.Saved != want {
-		t.Fatalf("saved snapshots are %d bytes, want %d", got.Saved, want)
+	// The automatic snapshot's memory is the sandbox's, its bundle drive the cache's; both kinds count as snapshots,
+	// which the control plane splits by its own records.
+	want := allocated(filepath.Join(auto, "disk.ext4")) + allocated(filepath.Join(auto, "meta.json")) + allocated(saved)
+	if got.Snapshots != want {
+		t.Fatalf("snapshots are %d bytes, want %d", got.Snapshots, want)
 	}
 	if bundles == 0 {
 		t.Fatal("the bundle image counted nothing")

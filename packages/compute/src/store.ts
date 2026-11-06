@@ -12,7 +12,7 @@
  */
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { SandboxTemplateBoot } from "./backend.ts";
+import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /** One kind of record. */
@@ -468,7 +468,8 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 	readonly accountId: string;
 };
 
-export type StoredHost = computeSchema.Host;
+/** A host, its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`). */
+export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & { readonly diskUsage?: BackendDiskUsage };
 
 export interface StoredJoinToken {
 	readonly id: string;

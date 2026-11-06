@@ -13893,12 +13893,12 @@
 					"savedSnapshotsBytes": {
 						"type": "integer",
 						"minimum": 0,
-						"description": "Saved snapshots."
+						"description": "Saved snapshots: what every account's saved snapshots on the host take, by their `sizeBytes` (each set of bytes once), at most the host's snapshots in all."
 					},
 					"automaticSnapshotsBytes": {
 						"type": "integer",
 						"minimum": 0,
-						"description": "Automatic snapshots."
+						"description": "The rest of the host's snapshots: automatic ones, and any Kantel has no record of."
 					},
 					"sandboxesBytes": {
 						"type": "integer",
@@ -13931,7 +13931,7 @@
 					}
 				},
 				"title": "HostDiskUsage",
-				"description": "What takes the space on a host's disk, as the host measured it last (every few minutes). Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, automatic snapshots, saved snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox."
+				"description": "What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host."
 			},
 			"HostJoinToken": {
 				"type": "object",

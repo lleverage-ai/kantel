@@ -170,8 +170,7 @@ function diskUsage(value: unknown): { disk?: HostDiskUsage } {
 	const fields = [
 		"totalBytes",
 		"usedBytes",
-		"savedSnapshotsBytes",
-		"automaticSnapshotsBytes",
+		"snapshotsBytes",
 		"sandboxesBytes",
 		"imagesBytes",
 		"templatesBytes",

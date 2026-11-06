@@ -53,6 +53,7 @@ import {
 } from "./auth.ts";
 import {
 	type BackendCapabilities,
+	type BackendDiskUsage,
 	type BackendEgress,
 	type BackendEgressGrant,
 	type BackendFileEntry,
@@ -2879,10 +2880,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, ...rest } = host;
+		const { updating, diskUsage, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
 			...rest,
+			...(diskUsage === undefined ? {} : { diskUsage: await diskView(host.id, diskUsage) }),
 			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
 			allocated: {
@@ -3469,6 +3471,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	//   the adopter sees the mark.
 	// - `releaseBytes` deletes a settling record's bytes, unless another record has their ref, and then the record; a
 	//   host that can't delete them leaves it settling, and the sweep tries again.
+	// - `withdrawSave` moves a save's own record that its host's limit refused (`admitSave`) from `creating` straight to
+	//   settling: nothing can depend on a snapshot that was never ready. The sweep retries these with expiry off too.
 	//
 	// A delete by hand, a save and a sandbox's delete are as they were: a delete of a snapshot expiry has marked simply
 	// wins (expiry's compare-and-sets then find no record and do nothing), and a record a delete removes is no holder.
@@ -3633,11 +3637,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Expires automatic snapshots past their `expiresAt` (the model above), at most once each `SNAPSHOT_EXPIRY_EVERY_MS`,
 	 * in the background: first what is left `deleting` (settling ones, and marks past their lease), then the expired,
-	 * marked, one read of what depends on them, and each settled for its own mark.
+	 * marked, one read of what depends on them, and each settled for its own mark. With expiry off, only the settling
+	 * ones (a refused save's bytes, `withdrawSave`) are tried again.
 	 */
 	function expireSnapshots(): void {
-		if (options.snapshotExpiry !== true) return;
-		if (now() < expiryStartsAt) return;
+		const expiring = options.snapshotExpiry === true;
+		if (expiring && now() < expiryStartsAt) return;
 		if (now() - snapshotsExpiredAt < SNAPSHOT_EXPIRY_EVERY_MS) return;
 		snapshotsExpiredAt = now();
 		keepGoing(
@@ -3646,9 +3651,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const deleting of await store.snapshots.list({ state: "deleting" })) {
 					if (closing) return;
 					const fresh = deleting.retiring !== undefined && deleting.retiring.at + RETIRE_LEASE_MS > at;
-					if (deleting.retiring?.settling !== true && fresh) continue;
+					if (deleting.retiring?.settling !== true && (fresh || !expiring)) continue;
 					await settleSnapshot(deleting).catch(() => "kept");
 				}
+				if (!expiring) return;
 				// One read for the pass: the expired, and how many records name each ref.
 				const all = await store.snapshots.list();
 				const named = new Map<string, number>();
@@ -3683,9 +3689,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A kept copy's size (`keepSnapshot`) as a refresh will count it (`attributeSnapshotBytes`): its own bytes, and each
-	 * group of files it shares for the holder the records choose, itself included as a saved record made now. A backend
-	 * that doesn't say how its files are shared answers its size alone.
+	 * A save's new bytes' size (a kept copy, `keepSnapshot`, or a live save's `takeSnapshot`) as a refresh will count it
+	 * (`attributeSnapshotBytes`): its own bytes, and each group of files it shares for the holder the records choose,
+	 * itself included as a saved record made now. A backend that doesn't say how its files are shared answers its size
+	 * alone.
 	 */
 	async function keptSize(kept: TakenSnapshot, replacing: StoredSnapshot | undefined): Promise<number> {
 		if (kept.uniqueBytes === undefined) return kept.sizeBytes;
@@ -4274,38 +4281,111 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * The `exhausted` error for a save of `sandbox`'s bytes (`ref`, of `sizeBytes`) that would take its account's saved
-	 * snapshots on its host past the host's limit (`Host.savedSnapshotBytesLimit`), or undefined when it fits or the host
-	 * sets none. Each set of bytes counts once (a save shares its source's ref), and `replacing`, a save the new one
-	 * replaces, not at all. A ref one of them has already adds nothing.
+	 * The refs of `hostId` that saved records of `saved` hold, each with its size: a record's size counts every file
+	 * several snapshots share once, for one holder, a saved one first (`attributeSnapshotBytes`), so adding them up
+	 * counts each shared file once; records of the same ref (a save that shares its source's) count once. A record being
+	 * deleted holds nothing.
+	 */
+	async function savedRefsOn(hostId: string, saved: readonly StoredSnapshot[]): Promise<Map<string, number>> {
+		const held = new Map<string, number>();
+		for (const record of saved) {
+			if (record.kind !== "saved" || record.state === "deleting" || record.ref === undefined) continue;
+			if ((await hostOfSnapshot(record)) !== hostId) continue;
+			held.set(record.ref, Math.max(held.get(record.ref) ?? 0, record.sizeBytes ?? 0));
+		}
+		return held;
+	}
+
+	/**
+	 * A host's disk as the API answers it (`Host.diskUsage`): the snapshots the host measured, split by this plane's
+	 * records, as the host can't tell (`BackendDiskUsage`). Saved: what the saved records on it hold (`savedRefsOn`), at
+	 * most what the host measured for its snapshots; automatic: the rest.
+	 */
+	async function diskView(hostId: string, measure: BackendDiskUsage): Promise<computeSchema.HostDiskUsage> {
+		const { snapshotsBytes, ...rest } = measure;
+		let saved = 0;
+		for (const size of (await savedRefsOn(hostId, await store.snapshots.list({ kind: "saved" }))).values()) {
+			saved += size;
+		}
+		saved = Math.min(saved, snapshotsBytes);
+		return { ...rest, savedSnapshotsBytes: saved, automaticSnapshotsBytes: snapshotsBytes - saved };
+	}
+
+	/**
+	 * The `exhausted` error when an account's saved snapshots on a host are past the host's limit
+	 * (`Host.savedSnapshotBytesLimit`), or undefined when they aren't or it sets none. Each ref counts by its records'
+	 * size, which already counts every file several snapshots share once, for one holder (`attributeSnapshotBytes`, a
+	 * saved one first), so the sum counts each shared file once; records of the same ref (a save that shares its
+	 * source's) count once. A save being deleted counts nothing, nor does `replacing`, the save a new one replaces.
+	 *
+	 * `adding`: a save's own record, stored already (`creating`, `admitSave`). Without one (a live save about to take
+	 * its bytes), the limit reached already refuses.
 	 */
 	async function savedBytesOver(
-		sandbox: StoredSandbox,
-		ref: string | undefined,
-		sizeBytes: number | undefined,
+		accountId: string,
+		hostId: string | undefined,
 		replacing: StoredSnapshot | undefined,
+		adding?: StoredSnapshot,
 	): Promise<KantelError | undefined> {
-		const hostId = (ref === undefined ? undefined : refHost(ref)) ?? sandbox.hostId;
 		if (hostId === undefined) return undefined;
 		const limit = (await store.hosts.get(hostId))?.savedSnapshotBytesLimit;
 		if (limit === undefined) return undefined;
-		const held = new Map<string, number>();
-		for (const saved of await store.snapshots.list({ accountId: sandbox.accountId, kind: "saved" })) {
-			if (saved.id === replacing?.id || saved.ref === undefined || held.has(saved.ref)) continue;
-			if ((await hostOfSnapshot(saved)) !== hostId) continue;
-			held.set(saved.ref, saved.sizeBytes ?? 0);
-		}
+		const records = (await store.snapshots.list({ accountId, kind: "saved" })).filter(
+			(saved) => saved.id !== replacing?.id && saved.id !== adding?.id,
+		);
+		const held = await savedRefsOn(hostId, records);
 		let total = 0;
 		for (const size of held.values()) total += size;
-		const adding = ref !== undefined && held.has(ref) ? 0 : (sizeBytes ?? 0);
-		// With nothing to add yet (a save that takes its bytes now), the limit reached already refuses it.
-		if (ref === undefined ? total < limit : total + adding <= limit) return undefined;
+		const own = adding?.ref === undefined || held.has(adding.ref) ? 0 : (adding.sizeBytes ?? 0);
+		if (adding === undefined ? total < limit : total + own <= limit) return undefined;
 		return new KantelError(
 			"exhausted",
 			`The account may keep ${bytesText(limit)} of saved snapshots on this host, and has ${bytesText(total)}` +
-				(adding > 0 ? `; this one is ${bytesText(adding)}` : "") +
+				(own > 0 ? `; this one is ${bytesText(own)}` : "") +
 				". Delete saved snapshots you no longer need, and try again.",
 		);
+	}
+
+	/**
+	 * Admits a save's record against its host's limit on saved snapshot bytes (`savedBytesOver`): stored first,
+	 * `creating`, so every other save counts it from then on, on any gateway; then the account's total read again with
+	 * it in, and the record made `ready` only when that fits. Of two saves at once, the one that reads second counts
+	 * both: both may be refused, never both let through. Refused, or failing on the way, the record is taken back
+	 * (`withdrawSave`) and the error thrown.
+	 */
+	async function admitSave(snapshot: StoredSnapshot, replacing: StoredSnapshot | undefined): Promise<StoredSnapshot> {
+		await store.snapshots.put({ ...snapshot, state: "creating" });
+		try {
+			const over = await savedBytesOver(snapshot.accountId, await hostOfSnapshot(snapshot), replacing, snapshot);
+			if (over !== undefined) throw over;
+			const ready = await store.snapshots.update(snapshot.id, (latest) =>
+				latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
+			);
+			if (ready === undefined) throw new KantelError("conflict", "The snapshot was deleted while it was being saved");
+			return ready;
+		} catch (error) {
+			await withdrawSave(snapshot.id).catch(() => undefined);
+			throw error;
+		}
+	}
+
+	/**
+	 * Takes back a save's record that wasn't admitted (`admitSave`) as expiry deletes a snapshot: settling, then its
+	 * bytes deleted unless another record has their ref (a save that shares its source's), then the record
+	 * (`releaseBytes`). A host that can't delete them now leaves it settling, and the sweep (`expireSnapshots`) tries
+	 * again, so bytes taken for a refused save are never left on the host unrecorded.
+	 */
+	async function withdrawSave(snapshotId: string): Promise<void> {
+		const settling = await store.snapshots.update(snapshotId, (latest) =>
+			latest.state !== "creating"
+				? undefined
+				: {
+						...latest,
+						state: "deleting",
+						retiring: { by: retireOwner, token: randomId("ret"), at: now(), settling: true },
+					},
+		);
+		if (settling !== undefined) await releaseBytes(settling);
 	}
 
 	async function changeHost(
@@ -7080,7 +7160,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// A retry would be `conflict` on its own name, or with `replace` save it again and delete the first.
 			return once(principal, "saveSnapshot", { body, idempotencyKey }, async () => {
 				const current = await settledFor(principal, sandbox.id);
-				const [existing] = await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name });
+				// Not a refused save of the name still having its bytes deleted (`withdrawSave`).
+				const [existing] = (
+					await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name })
+				).filter((saved) => saved.state !== "deleting");
 				if (existing !== undefined && body.replace !== true) {
 					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
@@ -7114,30 +7197,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const from = readyRef(source);
 					const kept = await backend.keepSnapshot?.(from);
 					ref = kept?.ref ?? from;
-					sizeBytes = kept === undefined ? source.sizeBytes : await keptSize(kept, existing);
+					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
+					sizeBytes =
+						kept === undefined ? source.sizeBytes : await keptSize(kept, existing).catch(() => kept.sizeBytes);
 					base = kept?.base ?? source.base;
 					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
 					// At the host's limit already: nothing is taken.
-					const full = await savedBytesOver(current, undefined, 0, existing);
+					const full = await savedBytesOver(current.accountId, current.hostId, existing);
 					if (full !== undefined) throw full;
 					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
 					ref = taken.ref;
-					sizeBytes = taken.sizeBytes;
+					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
 					base = taken.base;
 					memory = taken.memory === true;
-					// Past it with these bytes: they go again.
-					const over = await savedBytesOver(current, ref, sizeBytes, existing);
-					if (over !== undefined) {
-						await releaseRef(ref);
-						throw over;
-					}
 				} else {
 					throw new KantelError("conflict", "The sandbox has no state to save yet");
 				}
-				const over = await savedBytesOver(current, ref, sizeBytes, existing);
-				if (over !== undefined) throw over;
+				// Stored and counted before it's let through, so saves at once can't pass the limit together; refused, its
+				// new bytes go again (a shared source's stay).
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
 					accountId: current.accountId,
@@ -7156,7 +7235,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref,
 					...(base === undefined ? {} : { base }),
 				};
-				await store.snapshots.put(snapshot);
+				await admitSave(snapshot, existing);
 				await holdSnapshot(snapshot);
 				if (existing !== undefined) {
 					await forgetSnapshot(existing);

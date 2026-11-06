@@ -31,6 +31,15 @@ export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
  */
 export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
 
+/**
+ * What takes the space on a host's disk as the host measures it: `Host.diskUsage` with its snapshots in one
+ * (`snapshotsBytes`), which the compute plane splits into saved and automatic by its own records, as the host can't tell
+ * (a manual take it keeps as saved is automatic here, and a save may share an automatic snapshot's bytes).
+ */
+export type BackendDiskUsage = Omit<computeSchema.HostDiskUsage, "savedSnapshotsBytes" | "automaticSnapshotsBytes"> & {
+	readonly snapshotsBytes: number;
+};
+
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
 	readonly name: computeSchema.SandboxSizeName;
@@ -65,8 +74,8 @@ export interface BackendHost {
 	 * had free when it started). Absent: it hasn't reported, or the backend doesn't say (the stub).
 	 */
 	readonly freeDiskGb?: number;
-	/** What takes the space on its disk, as it last measured it (`Host.diskUsage`). Absent: it hasn't said. */
-	readonly diskUsage?: computeSchema.HostDiskUsage;
+	/** What takes the space on its disk, as it last measured it (`BackendDiskUsage`). Absent: it hasn't said. */
+	readonly diskUsage?: BackendDiskUsage;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**

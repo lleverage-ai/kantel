@@ -51,9 +51,11 @@ func (h *Host) diskUsage() *proto.DiskUsage {
 	return &out
 }
 
-// measureDisk walks the host's files (proto.DiskUsage), each counted once, in the order the categories say.
+// measureDisk walks the host's files (proto.DiskUsage), each counted once, in the order the categories say, and only
+// those on the filesystem holding Root, whose used and total it reports: a bundle cache on another disk, or a mount
+// under a walked directory, counts nothing.
 func (h *Host) measureDisk() proto.DiskUsage {
-	seen := fsutil.Seen{}
+	seen := fsutil.OnFilesystemOf(h.cfg.Root)
 	used, total := hostinfo.DiskUsed(h.cfg.Root)
 	out := proto.DiskUsage{TotalBytes: total, UsedBytes: used}
 	bundles := h.cfg.BundleCacheDir
@@ -67,13 +69,11 @@ func (h *Host) measureDisk() proto.DiskUsage {
 		out.ImagesBytes += b.Images
 		out.TemplatesBytes = b.Templates
 		out.SandboxesBytes = b.Sandboxes
-		out.AutomaticSnapshotsBytes = b.Automatic
-		out.SavedSnapshotsBytes = b.Saved
+		out.SnapshotsBytes = b.Snapshots
 	}
 	// An isolate's workspace and snapshots are its sandbox's.
 	out.SandboxesBytes += fsutil.Allocated(filepath.Join(h.cfg.Root, "isolate"), seen)
-	known := out.BundlesBytes + out.ImagesBytes + out.TemplatesBytes + out.SandboxesBytes +
-		out.AutomaticSnapshotsBytes + out.SavedSnapshotsBytes
+	known := out.BundlesBytes + out.ImagesBytes + out.TemplatesBytes + out.SandboxesBytes + out.SnapshotsBytes
 	out.OtherBytes = max(0, used-known)
 	out.MeasuredAt = time.Now().UnixMilli()
 	return out

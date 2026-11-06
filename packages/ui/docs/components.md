@@ -351,8 +351,10 @@ carries meaning on its own.
 What takes the space on a host's disk (`src/compute/host-disk.tsx`), under its graphs when its row on the Hosts page
 is opened: used of total with a bar (amber from 75%, red from 90%, as the table's capacity bars), then the bytes of
 saved and automatic snapshots, sandboxes, base images, templates, bundles and the rest, and the limit on each account's
-saved snapshots on it. `narrow` puts the figures in one column for a phone. A host that hasn't measured its disk yet
-(just joined, or an older host agent) says so instead.
+saved snapshots on it. The figures are in four columns on a wide screen, two on a small one and one on a phone;
+`narrow` puts them in one column whatever the width. The host measures its snapshots together, and saved and automatic
+come from Kantel's records. A host that hasn't measured its disk yet (just joined, or an older host agent) says so
+instead.
 
 **Don't use it for** live usage over time (use the host's graphs) or a sandbox's own disk.
 
