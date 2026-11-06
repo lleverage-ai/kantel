@@ -1,7 +1,8 @@
 ---
-// The marketing page's shell: head, the header with the endorsed lockup, and the footer.
+// The marketing page's shell: head, the header with the endorsed lockup and the theme toggle, and the footer.
 import "../styles/site.css";
 import lockupEndorsed from "../assets/brand/kantel-lockup-endorsed-on-light.svg?raw";
+import ThemeToggle from "../components/ThemeToggle.astro";
 import { CONSOLE_URL, GITHUB_URL, LLEVERAGE_URL, SITE_URL } from "../site.mjs";
 
 interface Props {
@@ -9,21 +10,39 @@ interface Props {
 	description: string;
 }
 const { title, description } = Astro.props;
-const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
+// The light lockup, with its ink as currentColor so it takes the theme's (text-ink); the orange stays.
+const lockup = lockupEndorsed
+	.replace("<svg ", '<svg class="h-full w-auto" ')
+	.replaceAll('fill="#252820"', 'fill="currentColor"');
 ---
 
 <!doctype html>
-<html lang="en-GB">
+<html lang="en-GB" data-theme="light">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!-- The theme before first paint, so a dark page never flashes paper: the person's choice under Starlight's key
+		     (shared with the docs), else the device's. ThemeToggle keeps it in step afterwards. -->
+		<script is:inline>
+			(() => {
+				let theme = null;
+				try {
+					theme = localStorage.getItem("starlight-theme");
+				} catch {}
+				if (theme !== "light" && theme !== "dark") {
+					theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+				}
+				document.documentElement.dataset.theme = theme;
+			})();
+		</script>
 		<title>{title}</title>
 		<meta name="description" content={description} />
 		<link rel="canonical" href={new URL(Astro.url.pathname, SITE_URL)} />
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 		<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
 		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-		<meta name="theme-color" content="#f9f7f0" />
+		<meta name="theme-color" content="#f9f7f0" media="(prefers-color-scheme: light)" />
+		<meta name="theme-color" content="#141e28" media="(prefers-color-scheme: dark)" />
 		<meta property="og:title" content={title} />
 		<meta property="og:description" content={description} />
 		<meta property="og:type" content="website" />
@@ -38,7 +57,7 @@ const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
 		<header class="sticky top-0 z-20 border-b border-transparent bg-paper/90 backdrop-blur-sm">
 			<nav class="mx-auto flex max-w-(--container-page) items-center justify-between gap-4 px-6 py-4 sm:gap-6 lg:px-12">
 				<a href="/" class="block h-7 text-ink sm:h-8" aria-label="Kantel, by Lleverage: home" set:html={lockup} />
-				<ul class="flex items-center gap-4 text-sm font-semibold sm:gap-8 sm:text-base">
+				<ul class="flex items-center gap-3 text-sm font-semibold sm:gap-8 sm:text-base">
 					<li><a class="hover:text-label" href="/docs/">Docs</a></li>
 					<li class="hidden sm:block"><a class="hover:text-label" href={GITHUB_URL}>GitHub</a></li>
 					<li>
@@ -47,6 +66,7 @@ const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
 							href={CONSOLE_URL}>Console</a
 						>
 					</li>
+					<li class="flex"><ThemeToggle /></li>
 				</ul>
 			</nav>
 		</header>

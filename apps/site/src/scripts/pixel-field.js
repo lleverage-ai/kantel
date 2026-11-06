@@ -108,15 +108,24 @@ function hexToRgb(hex) {
 export function mountPixelField(canvas, options = {}) {
 	const ctx = canvas.getContext("2d");
 	if (ctx === null) return { render() {}, stop() {} };
-	const styles = getComputedStyle(canvas);
-	const colour = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
-	const ink = hexToRgb(options.ink ?? colour("--color-midnight", "#141e28"));
-	const accent = options.accent ?? colour("--color-orange", "#ec7523");
-	const line = options.line ?? colour("--color-line", "#d8d8d3");
 	const seed = options.seed ?? 7;
 	const quietElement =
 		options.quiet !== undefined ? options.quiet : document.getElementById(canvas.dataset.pixelQuiet ?? "");
-	const inkLevels = Array.from({ length: 21 }, (_, i) => `rgba(${ink[0]},${ink[1]},${ink[2]},${(i / 20).toFixed(2)})`);
+
+	// The page's colours (site.css's --site-* values), read again whenever the theme changes: midnight pixels on paper,
+	// or paper pixels on midnight.
+	let accent = "";
+	let line = "";
+	let inkLevels = [];
+	function readColours() {
+		const styles = getComputedStyle(canvas);
+		const colour = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+		const ink = hexToRgb(options.ink ?? colour("--site-midnight", "#141e28"));
+		accent = options.accent ?? colour("--site-orange", "#ec7523");
+		line = options.line ?? colour("--site-line", "#d8d8d3");
+		inkLevels = Array.from({ length: 21 }, (_, i) => `rgba(${ink[0]},${ink[1]},${ink[2]},${(i / 20).toFixed(2)})`);
+	}
+	readColours();
 
 	let width = 0;
 	let height = 0;
@@ -351,6 +360,11 @@ export function mountPixelField(canvas, options = {}) {
 		layout();
 		render(clock);
 	});
+	const theme = new MutationObserver(() => {
+		readColours();
+		render(clock);
+	});
+	theme.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 	const seen = new IntersectionObserver(([entry]) => {
 		visible = entry?.isIntersecting ?? true;
 		if (visible) play();
@@ -373,6 +387,7 @@ export function mountPixelField(canvas, options = {}) {
 			stopped = true;
 			if (frame !== 0) cancelAnimationFrame(frame);
 			resize.disconnect();
+			theme.disconnect();
 			seen.disconnect();
 			document.removeEventListener("visibilitychange", onVisibility);
 			reduce.removeEventListener("change", onMotion);
