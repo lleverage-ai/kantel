@@ -59,6 +59,8 @@ type Server struct {
 	upstream atomic.Value
 	// commands are those run with an ID (commands.go).
 	commands commands
+	// trimming is held while a trim of the disk runs (trimDisk): one at a time.
+	trimming sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {

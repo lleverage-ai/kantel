@@ -99,8 +99,15 @@ type fstrimRange struct {
 
 // trimDisk discards the disk's free blocks (fstrim), so that with discard on the drive (Firecracker's, from v1.17) the
 // host punches holes where deleted files were, and a snapshot copies none of them. The host asks before it saves a
-// snapshot. A device without discard answers 501 (EOPNOTSUPP); an older agent 404: either way nothing to do.
-func (s *Server) trimDisk(w http.ResponseWriter, r *http.Request) {
+// snapshot. A device without discard answers 501 (EOPNOTSUPP); an older agent 404: either way nothing to do. One trim
+// at a time: the ioctl runs on after the host stops waiting for it, and another asked for meanwhile answers 409 at
+// once rather than queue behind it.
+func (s *Server) trimDisk(w http.ResponseWriter, _ *http.Request) {
+	if !s.trimming.TryLock() {
+		fail(w, 409, errors.New("a trim of the disk is already running"))
+		return
+	}
+	defer s.trimming.Unlock()
 	trimmed, err := TrimFS(diskDevice)
 	if errors.Is(err, unix.EOPNOTSUPP) {
 		fail(w, 501, err)

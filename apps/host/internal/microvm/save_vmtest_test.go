@@ -78,6 +78,11 @@ func TestDiskOnlySave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// pauseMachine resumes a VM whose pause answer was lost, which may not have paused: resuming a running VM must be
+	// harmless.
+	if err := s.machine.Resume(ctx); err != nil {
+		t.Fatalf("resuming a running VM: %v", err)
+	}
 	disk := filepath.Join(s.vmDir(), fc.DiskFile)
 	const dir = "/var/tmp/kantel-vmtest"
 	run(src, "mkdir -p "+dir+" && echo kept > "+dir+"/marker && sync")
