@@ -2587,40 +2587,47 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect((await ann.getCaller()).accountId).toBe(personal);
 	});
 
-	it("keeps an away host's credential while its template cache is being removed, for a day at most", async () => {
+	it("keeps an away host's credential until its template cache's bytes are deleted, templates on or off", async () => {
 		const store = await make();
 		const stub = createStubBackend();
-		const revoked: string[] = [];
+		const order: string[] = [];
 		let personal = "";
+		let away = true;
 		const backend: SandboxBackend = {
 			...stub,
-			// One host of Ann's own, away just now.
+			// One host of Ann's own, away at first.
 			capabilities: async () => {
 				const base = await stub.capabilities();
 				const [template] = base.hosts;
 				if (template === undefined || personal === "") return base;
 				return {
 					...base,
-					hosts: [...base.hosts, { ...template, id: "host_own", connected: false, accountId: personal }],
+					hosts: [...base.hosts, { ...template, id: "host_own", connected: !away, accountId: personal }],
 				};
 			},
-			revokeHost: async (hostId) => void revoked.push(hostId),
+			deleteTemplateSnapshot: async ({ snapshotId }) => {
+				if (away) throw new KantelError("unavailable", "The host isn't connected");
+				order.push(`deleted ${snapshotId}`);
+			},
+			revokeHost: async (hostId) => void order.push(`revoked ${hostId}`),
 		};
+		// Templates off on this deployment: nothing but the deletion tries the bytes again.
 		const { api, ann } = setup(backend, { store, accountHosts: true });
 		personal = (await ann.getCaller()).accountId;
-		const entry = { id: "tsn_own", accountId: personal, hostId: "host_own", state: "deleting" };
+		const entry = { id: "tsn_own", accountId: personal, templateId: "tpl_gone", hostId: "host_own", state: "deleting" };
 		await store.templateSnapshots.put(entry as Parameters<typeof store.templateSnapshots.put>[0]);
 		await ann.deleteCaller();
-		expect(revoked).toEqual([]);
+		expect(order).toEqual([]);
 		expect(await store.deletions.get("usr_ann")).toMatchObject({
 			stage: "running",
 			lastError: expect.stringContaining("template"),
 		});
-		// It comes back and the sweep removes the cache: the deletion carries on and revokes it.
-		await store.templateSnapshots.delete(entry.id);
+		// It comes back: the deletion's next pass deletes the bytes, then revokes it.
+		away = false;
 		await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({ ...current, dueAt: 0 }));
 		await api.service.carryOnDeletions();
-		expect(revoked).toContain("host_own");
+		expect(order).toEqual(["deleted tsn_own", "revoked host_own"]);
+		expect(await store.templateSnapshots.get(entry.id)).toBeUndefined();
 	});
 
 	it("revokes an account's host after a day though its template cache is still there", async () => {
@@ -2638,6 +2645,10 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 					...base,
 					hosts: [...base.hosts, { ...template, id: "host_gone", connected: false, accountId: personal }],
 				};
+			},
+			// Gone for good: its bytes can't be deleted.
+			deleteTemplateSnapshot: async () => {
+				throw new KantelError("unavailable", "The host isn't connected");
 			},
 			revokeHost: async (hostId) => void revoked.push(hostId),
 		};
