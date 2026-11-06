@@ -1398,7 +1398,7 @@ describe("copying files", () => {
 			'find "$t" -mindepth 1 -maxdepth 1 -print0 | xargs -0 -r mv -f -t "$top/$d"; s=$?; rm -rf "$t"; [ $s -eq 0 ]; } || exit 1; done';
 		expect(commands).toEqual([
 			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null && mv --help 2>&1 | grep -q -- --target-directory",
-			`mkdir ${stage} && cat ${prefix}-* | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
+			`umask 022 && mkdir ${stage} && cat ${prefix}-* | tar -xzf - -C ${stage} --no-same-owner --same-permissions && ` +
 				`(cd ${stage} && find . -type d -exec sh -c '${place}' /home/user/app ${id} {} +); s=$?; rm -rf ${stage}; exit $s`,
 			`rm -f ${prefix}-*; true`,
 		]);

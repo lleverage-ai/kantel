@@ -633,7 +633,9 @@ export async function uploadTreeArchive(
 		await run(
 			client,
 			sandboxId,
-			`mkdir ${stage} && cat ${glob} | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
+			// Modes as the files API sets them, whatever the account's umask: each file's own (0644, or its executable
+			// bits), and 0755 for each directory made.
+			`umask 022 && mkdir ${stage} && cat ${glob} | tar -xzf - -C ${stage} --no-same-owner --same-permissions && ` +
 				`(cd ${stage} && find . -type d -exec sh -c ${quote(place)} ${into} ${id} {} +); s=$?; rm -rf ${stage}; exit $s`,
 			600_000,
 		);
