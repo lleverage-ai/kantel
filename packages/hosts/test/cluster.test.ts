@@ -257,7 +257,9 @@ describe("gateway replicas", () => {
 		expect(b.service.hub.connected(hostId)).toBe(false);
 	});
 
-	it("record claims in SQL with epochs, so an old release never erases a newer claim", async () => {
+	it("record claims in SQL with epochs, so an old release never erases a newer claim", {
+		timeout: pgliteDatabase.testTimeoutMs,
+	}, async () => {
 		const database = await pgliteDatabase.open();
 		opened.push({ close: () => void database.close() });
 		await migrateRelay(database.driver);

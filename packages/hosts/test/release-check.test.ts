@@ -108,8 +108,8 @@ describe("a release check", () => {
 	});
 });
 
-function sharedBy(name: string, open: () => Promise<HostReleasesStore>) {
-	describe(`readers sharing a store (${name})`, () => {
+function sharedBy(name: string, open: () => Promise<HostReleasesStore>, timeout?: number) {
+	describe(`readers sharing a store (${name})`, { ...(timeout === undefined ? {} : { timeout }) }, () => {
 		it("has every reader read again once one of them checks", async () => {
 			const store = await open();
 			const { state, fetcher } = github("0.3.0");
@@ -191,14 +191,18 @@ function sharedBy(name: string, open: () => Promise<HostReleasesStore>) {
 sharedBy("memory", async () => createMemoryHostReleasesStore());
 
 for (const kind of testDatabaseKinds()) {
-	sharedBy(kind.name, async () => {
-		const database = await kind.open();
-		cleanups.push(() => database.close());
-		// The registry's migration makes the table, twice over as every start does.
-		await migrateHosts(database.driver);
-		await migrateHosts(database.driver);
-		return createSqlHostReleasesStore(database.driver);
-	});
+	sharedBy(
+		kind.name,
+		async () => {
+			const database = await kind.open();
+			cleanups.push(() => database.close());
+			// The registry's migration makes the table, twice over as every start does.
+			await migrateHosts(database.driver);
+			await migrateHosts(database.driver);
+			return createSqlHostReleasesStore(database.driver);
+		},
+		kind.testTimeoutMs,
+	);
 }
 
 describe("POST /v1/hosts/releases/check", () => {
