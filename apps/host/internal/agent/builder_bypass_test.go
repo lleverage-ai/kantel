@@ -195,6 +195,16 @@ func (n *builderNet) connect(t *testing.T, authority string) int {
 	return res.StatusCode
 }
 
+// waitRefusals waits up to 5 seconds for the proxy to have recorded at least want refusals, which it can do just after
+// the refused client has its answer.
+func (n *builderNet) waitRefusals(t *testing.T, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for n.refusals.Load() < want && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // noPrivateRequest fails the test if anything reached the private endpoint.
 func (n *builderNet) noPrivateRequest(t *testing.T) {
 	t.Helper()
@@ -222,6 +232,9 @@ func TestBuilderDNSRebindingReachesNoPrivateAddress(t *testing.T) {
 	if got := n.connect(t, "registry.test:"+n.port); got == http.StatusOK {
 		t.Fatalf("after the name rebound to the loopback, the proxy opened a tunnel (%d)", got)
 	}
+	// A refusal found while forwarding is recorded after its answer is written (egress.Proxy's finish), so the second
+	// refusal can land a moment after the client has its answer: wait for it rather than read the count at once.
+	n.waitRefusals(t, 2)
 	if n.public.Load() != 1 || n.refusals.Load() < 2 {
 		t.Fatalf("public requests %d, refusals %d", n.public.Load(), n.refusals.Load())
 	}
