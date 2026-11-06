@@ -8,7 +8,6 @@ const URL = "wss://app.kantel.dev/v1/hosts/tunnel/C9Kd0r-jfuU36OaE.PUuh3fNVUMx2M
 describe("the SSH box's commands", () => {
 	it("leads with the CLI's command, which carries no token, and installs the CLI from kantel.dev", () => {
 		expect(cliSshCommand("sbx_3ucrku3aio")).toBe("kantel ssh sbx_3ucrku3aio");
-		expect(cliSshCommand("sbx_3ucrku3aio", true)).toBe("kantel e2e ssh sbx_3ucrku3aio");
 		expect(CLI_INSTALL_COMMAND).toBe("curl -fsSL https://kantel.dev/cli.sh | sh");
 	});
 

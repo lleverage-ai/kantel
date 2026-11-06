@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -51,11 +50,8 @@ func (c Config) usageInterval() time.Duration {
 // samples the control plane hasn't had yet.
 type usageSampler struct {
 	// Where the readings come from: the tiers and /proc, or a test's.
-	processes func() []usage.Process
-	shared    func() []usage.Shared
-	// public says whether a sandbox of this owner (space) is the control plane's to see: not one in an E2E space.
-	// It takes the owner read with the sandbox, so it never has to look the sandbox up (and wait on its lock).
-	public      func(owner string) bool
+	processes   func() []usage.Process
+	shared      func() []usage.Shared
 	readHostCPU func() (usage.HostCPU, error)
 	readMemory  func() (usage.Memory, error)
 	readDisk    func() (usage.Disk, error)
@@ -67,8 +63,6 @@ type usageSampler struct {
 	counters *usage.Counters
 	hostCPU  usage.HostCPU
 	hostAt   time.Time
-	// taken is the owner of each sandbox in the last reading (take's, for keep).
-	taken map[string]string
 
 	mu sync.Mutex
 	// queue is what waits, oldest first, in Seq order: samples not yet sent on the current link, and with acks those
@@ -87,13 +81,10 @@ type usageSampler struct {
 	dropped     int
 	unconfirmed int
 	latest      *proto.UsageSample
-	// owners is the owner of each sandbox in a queued sample, to check again as it leaves.
-	owners map[string]string
 }
 
 func (h *Host) newUsageSampler() *usageSampler {
 	s := &usageSampler{
-		public:      h.usageVisible,
 		readHostCPU: usage.ReadHostCPU,
 		readMemory:  usage.ReadMemory,
 		readDisk:    func() (usage.Disk, error) { return usage.ReadDisk(h.cfg.Root) },
@@ -162,12 +153,11 @@ func (s *usageSampler) take() (proto.UsageSample, bool) {
 	return out, true
 }
 
-// sandboxes reads every running sandbox the control plane may see (not one in an E2E space), answering those with
+// sandboxes reads every running sandbox, answering those with
 // a figure: a microVM's Firecracker process (and its guest's own memory figures), and each account's isolate runtime
 // shared out among its sandboxes.
 func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []proto.SandboxUsage {
 	out := []proto.SandboxUsage{}
-	s.taken = map[string]string{}
 	// The isolates first, and each runtime read as soon as its sandboxes' command times were (Shared), so the two
 	// cover the same interval.
 	for _, sh := range s.shared() {
@@ -177,11 +167,8 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 	var asks []statsAsk
 	for _, p := range procs {
 		if p.Held {
-			// Mid-operation, so unread (its owner too): keep following it.
+			// Mid-operation, so unread: keep following it.
 			s.counters.Keep("microvm/" + p.SandboxID)
-			continue
-		}
-		if !s.public(p.Owner) {
 			continue
 		}
 		cpu, err := s.readCPU(p.Pid)
@@ -193,7 +180,6 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 			continue
 		}
 		used, source := s.microVMMemory(p)
-		s.taken[p.SandboxID] = p.Owner
 		reading := proto.SandboxUsage{
 			ID: p.SandboxID, Kind: microvm.Tier, CPU: usage.Utilisation(grew, over, p.CPUs),
 			MemUsedBytes: used, MemLimitBytes: p.MemLimitBytes, MemSource: source,
@@ -322,14 +308,11 @@ func (s *usageSampler) isolates(mem usage.Memory, sh usage.Shared) []proto.Sandb
 	busy := map[string]float64{}
 	var shown []usage.Busy
 	for _, b := range sh.Sandboxes {
-		// The runtime is part of the epoch: a sandbox moved to another runtime starts again. Every one is read, E2E's
-		// too, so the runtime's CPU is shared out among all that ran in it.
+		// The runtime is part of the epoch: a sandbox moved to another runtime starts again.
 		grew, _, ok := s.counters.Delta("isolate-busy/"+b.SandboxID, sh.Key, b.Seconds, at)
 		if ok {
 			busy[b.SandboxID] = grew
-			if s.public(b.Owner) {
-				shown = append(shown, b)
-			}
+			shown = append(shown, b)
 		}
 	}
 	if !runtimeOK {
@@ -343,7 +326,6 @@ func (s *usageSampler) isolates(mem usage.Memory, sh usage.Shared) []proto.Sandb
 	given := usage.Attribute(cpuSeconds, busy)
 	out := make([]proto.SandboxUsage, 0, len(shown))
 	for _, b := range shown {
-		s.taken[b.SandboxID] = b.Owner
 		out = append(out, proto.SandboxUsage{
 			ID: b.SandboxID, Kind: isolate.Tier, CPU: usage.Utilisation(given[b.SandboxID], over, sh.CPUs),
 			MemUsedBytes: rss / n, MemLimitBytes: limit / n, MemSource: proto.MemSourceRSS,
@@ -378,36 +360,6 @@ func (s *usageSampler) keep(sample proto.UsageSample) {
 		}
 		s.queue = slices.Delete(s.queue, 0, over)
 	}
-	// The owners of what waits: the last reading's, and those still queued.
-	owners := make(map[string]string, len(s.taken))
-	for _, q := range s.queue {
-		for _, u := range q.Sandboxes {
-			if owner, ok := s.taken[u.ID]; ok {
-				owners[u.ID] = owner
-			} else if owner, ok := s.owners[u.ID]; ok {
-				owners[u.ID] = owner
-			}
-		}
-	}
-	s.owners = owners
-}
-
-// leaving is a queued sample as it leaves: without a sandbox whose space turned E2E on while it waited, by the owner
-// it was read with, so sending never looks a sandbox up (and waits on its lock) either.
-func (s *usageSampler) leaving(sample proto.UsageSample, visible func(owner string) bool) proto.UsageSample {
-	sample.Sandboxes = slices.DeleteFunc(slices.Clone(sample.Sandboxes), func(u proto.SandboxUsage) bool {
-		owner, ok := s.ownerOf(u.ID)
-		return !ok || !visible(owner)
-	})
-	return sample
-}
-
-// ownerOf is the owner of a sandbox in a queued sample, as it was read.
-func (s *usageSampler) ownerOf(sandboxID string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	owner, ok := s.owners[sandboxID]
-	return owner, ok
 }
 
 // flush sends on link what waits and hasn't gone on it yet, oldest first, one message a sample; a send that fails
@@ -513,12 +465,6 @@ func (h *Host) RunUsage(ctx context.Context) {
 // (packages/hosts/src/hub.ts answers a type it doesn't know with nothing, and keeps the connection), and one that
 // predates FeatureUsageAcks ignores Run and Seq, so this needs no gate.
 func (h *Host) sendUsage(link *caller, sample proto.UsageSample) error {
-	h.mu.Lock()
-	s := h.usage
-	h.mu.Unlock()
-	if s != nil {
-		sample = s.leaving(sample, h.usageVisible)
-	}
 	if link == nil {
 		return errDisconnected
 	}
@@ -535,16 +481,6 @@ func (h *Host) usageAcked(seq uint64) {
 	if s != nil {
 		s.acked(seq)
 	}
-}
-
-// usageVisible says whether a sandbox of owner (its space) is the control plane's to see: all are, unless the host
-// has joined an E2E space, and then only one of a space with E2E off (as egressPublic, from the owner read with the
-// sandbox rather than by looking it up).
-func (h *Host) usageVisible(owner string) bool {
-	if h.e2e == nil || len(h.e2e.Spaces()) == 0 {
-		return true
-	}
-	return owner != "" && h.e2eMode(owner) == e2e.ModeOff
 }
 
 // LatestUsage is the newest sample, if the host samples (RunUsage) and has one.

@@ -33,7 +33,7 @@ func (m *Manager) Processes() []usage.Process {
 			continue
 		}
 		running := s.meta.State == proto.StateRunning && s.machine != nil
-		id, owner, sizeName, pid, dir, agent := s.meta.ID, s.meta.Owner, s.meta.Size, 0, "", s.guest
+		id, sizeName, pid, dir, agent := s.meta.ID, s.meta.Size, 0, "", s.guest
 		if running {
 			pid, dir = s.machine.Pid(), s.machine.Dir
 		}
@@ -41,7 +41,7 @@ func (m *Manager) Processes() []usage.Process {
 		if !running || pid <= 0 {
 			continue
 		}
-		p := usage.Process{SandboxID: id, Owner: owner, Pid: pid, ReadGuest: func(ctx context.Context) (usage.Memory, error) {
+		p := usage.Process{SandboxID: id, Pid: pid, ReadGuest: func(ctx context.Context) (usage.Memory, error) {
 			return guestMemory(ctx, dir)
 		}}
 		if agent != nil {

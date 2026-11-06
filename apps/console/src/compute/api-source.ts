@@ -61,7 +61,6 @@ import {
 	type WebhookDelivery,
 	type WebhookLastDelivery,
 } from "@kantel/api/sdk";
-import { DeviceTrustError } from "@kantel/e2e/device";
 import type {
 	AccountsSource,
 	ApiKeysSource,
@@ -71,7 +70,6 @@ import type {
 	ComputeViewer,
 	DeviceLogin,
 	DeviceLoginsSource,
-	E2EMode,
 	EgressSource,
 	EnvironmentsSource,
 	FilePart,
@@ -102,16 +100,13 @@ import {
 	cliLoginCommand,
 	cliSshCommand,
 	DEFAULT_SANDBOX_SHAPES,
-	DeviceSetupError,
 	FilesRefusedError,
 	FileTooLargeError,
 	sameProxySettings,
 	sshWithoutCliCommand,
 } from "@kantel/ui";
-import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import { type LiveSandboxes, liveSandboxes } from "./live-sandboxes.ts";
 import { liveUsage, withUsage } from "./live-usage.ts";
-import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
 // `@kantel/ui` exports the sources but not every record they carry, so the records are read off the sources' methods.
 type UiMember = Awaited<ReturnType<AccountsSource["members"]>>[number];
@@ -217,10 +212,6 @@ export interface ComputeApiOptions {
 	readonly onUnauthenticated?: () => void;
 	/** Default `self-hosted`. */
 	readonly hosting?: HostingMode;
-	/** `kantel console`'s bridge, when it serves this page (local.ts). */
-	readonly local?: LocalBridge;
-	/** Where this browser keeps its device keys when the gateway serves the page (default IndexedDB), for tests. */
-	readonly browser?: Omit<BrowserDeviceOptions, "gateway" | "user">;
 }
 
 /** What every source shares: the client, how the console runs, and the domain sandbox addresses are under. */
@@ -237,8 +228,6 @@ interface Context {
 	 * Every environment the console reads goes in.
 	 */
 	readonly environmentNames: Map<string, string>;
-	/** Sandboxes' accounts by ID, as last read: which one's chain decides where its commands are read from. */
-	readonly sandboxAccounts: Map<string, string>;
 	/** One raw call with the client's options, for a route the generated SDK doesn't have yet. */
 	readonly call: <T>(call: ApiCall) => Promise<T>;
 	/**
@@ -246,9 +235,6 @@ interface Context {
 	 * UI shows the name and the bucket where it knows them. Every bucket source the console reads goes in.
 	 */
 	readonly bucketSources: Map<string, { readonly name: string; readonly bucket: string }>;
-	readonly local?: LocalBridge;
-	/** This browser as a device of its own, when the gateway serves the page to a person (browser-device.ts). */
-	readonly browser?: BrowserDevice;
 	/** The sandboxes' live changes, one stream per account (live-sandboxes.ts). */
 	readonly live: LiveSandboxes;
 }
@@ -663,15 +649,8 @@ function portOf(port: ExposedPort): UiPort {
 
 function sandboxesSource(context: Context): SandboxesSource {
 	const { api } = context;
-	const view = (sandbox: Sandbox) => {
-		context.sandboxAccounts.set(sandbox.id, sandbox.accountId);
-		return sandboxOf(sandbox, context);
-	};
+	const view = (sandbox: Sandbox) => sandboxOf(sandbox, context);
 	return {
-		// `kantel console`'s page frames nothing from the gateway, so Browser and Desktop open in tabs of their own.
-		screens: context.local === undefined ? "console" : "tab",
-		// End to end, the host refuses the gateway's file reads, and the history it keeps carries no output yet.
-		endToEnd: async (id) => (await endToEndHost(context, id)) !== undefined,
 		watch: (accountId, changed) => context.live.watch(accountId, changed),
 		list: async (accountId) => {
 			const sandboxes = await allPages((cursor) =>
@@ -747,12 +726,9 @@ function sandboxesSource(context: Context): SandboxesSource {
 			// someone asks. The browser is driven where it runs, on the desktop, so its page is a desktop page too; while
 			// Chromium is still starting, the API refuses it and the desktop's stands in.
 			//
-			// Desktop and Browser that can't open are said so rather than opened onto an error page: in an end-to-end space
-			// (its host refuses the gateway's plaintext desktop; E2E sessions carry commands and files only so far), and
-			// where the gateway refuses them (`not_supported`: a deployment that doesn't serve this sandbox's desktop).
-			const endToEnd = await spaceEndToEnd(context, id);
+			// Desktop and Browser that can't open are said so rather than opened onto an error page: where the gateway
+			// refuses them (`not_supported`: a deployment that doesn't serve this sandbox's desktop).
 			const screen = async <T>(open: () => Promise<T>): Promise<Opened<T>> => {
-				if (endToEnd) return { refused: SCREENS_NOT_END_TO_END };
 				try {
 					return { value: await open() };
 				} catch (error) {
@@ -780,15 +756,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(browserRefused === undefined ? {} : { browser: browserRefused }),
 			};
 			return {
-				// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
-				// command) the host refuses, so there's no plain ssh either.
-				ssh: cliSshCommand(id, endToEnd),
-				// The CLI signs in to the gateway that serves this page, under /v1 on its origin. `kantel console`'s page is the
-				// CLI's own, signed in already, and its loopback origin isn't a gateway.
-				...(context.local === undefined && globalThis.location?.origin !== undefined
-					? { cliLogin: cliLoginCommand(globalThis.location.origin) }
-					: {}),
-				sshWithoutCli: !endToEnd,
+				ssh: cliSshCommand(id),
+				// The CLI signs in to the gateway that serves this page, under /v1 on its origin.
+				...(globalThis.location?.origin !== undefined ? { cliLogin: cliLoginCommand(globalThis.location.origin) } : {}),
+				sshWithoutCli: true,
 				// What can't open has no address: nothing links or frames it.
 				desktopUrl: desktopUrl ?? "",
 				desktopViewUrl: (desktopRefused === undefined ? watch.value?.url : undefined) ?? "",
@@ -822,12 +793,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...shown,
 			};
 		},
-		history: async (id) => {
-			// End to end, the host keeps the history and the gateway has none of it.
-			const host = await endToEndHost(context, id);
-			if (host !== undefined) return hostHistory((params) => host.call<HostCommandPage>(id, "sandbox.history", params));
-			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
-		},
+		history: async (id) => (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf),
 		get: async (id) => {
 			const sandbox = await api.getSandbox(id);
 			await Promise.all([
@@ -849,15 +815,9 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(latest.diskUsedBytes === undefined ? {} : { diskGb: gb(latest.diskUsedBytes) }),
 			};
 		},
-		// A microVM's busiest processes, which its guest agent reads when asked. Their command lines are its content, so end
-		// to end they come over this console's session to its host, as its files do.
+		// A microVM's busiest processes, which its guest agent reads when asked.
 		processes: async (id) => {
 			try {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const { processes } = await host.call<{ processes: ApiSandboxProcess[] | null }>(id, "sandbox.processes", {});
-					return (processes ?? []).map(processOf);
-				}
 				return (await api.listSandboxProcesses(id)).items.map(processOf);
 			} catch (error) {
 				if (unlistedProcesses(error)) return undefined;
@@ -868,20 +828,11 @@ function sandboxesSource(context: Context): SandboxesSource {
 		ports: async (id) => (await api.listPorts(id)).items.map(portOf),
 		exposePort: async (id, port, isPublic) => portOf(await api.exposePort(id, { port, public: isPublic })),
 		hidePort: (id, port) => api.hidePort(id, String(port)),
-		// Read on demand, a folder or a part of a file at a time, and kept nowhere: not here, nor by the gateway. End to
-		// end, both go to the host over this console's own session (the CLI's device under `kantel console`, this
-		// browser's own on the gateway's console), which the gateway only relays as ciphertext; it can read none of it
-		// itself, and the host would refuse it if it asked. Otherwise the gateway's API reads them from the host.
+		// Read on demand, a folder or a part of a file at a time, and kept nowhere: not here, nor by the gateway. The
+		// gateway's API reads them from the host.
 		files: {
 			list: (id, path) =>
 				refusing(async () => {
-					const host = await filesHost(context, id);
-					if (host !== undefined) {
-						const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
-							path: absolute(path),
-						});
-						return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
-					}
 					const { items, more } = await firstPages((cursor) =>
 						api.listFiles(id, { path: absolute(path), ...after(cursor) }),
 					);
@@ -892,7 +843,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 	};
 }
 
-/** A process as the API and a host's session both answer it. */
+/** A process as the API answers it. */
 const processOf = (process: ApiSandboxProcess): UiSandboxProcess => ({
 	pid: process.pid,
 	command: process.command,
@@ -902,29 +853,14 @@ const processOf = (process: ApiSandboxProcess): UiSandboxProcess => ({
 
 /**
  * Whether a read of a sandbox's processes says they can't be listed, rather than failing: its host, guest agent or tier
- * can't (`not_supported` from the API, `unsupported` from the host itself, as a host answers a method from after it), or
- * the gateway is from before the route (404). The dialog then says its host can't list them yet.
+ * can't (`not_supported`), or the gateway is from before the route (404). The dialog then says its host can't list
+ * them yet.
  */
 export const unlistedProcesses = (error: unknown): boolean =>
-	(error instanceof KantelApiError && (error.code === "not_supported" || error.status === 404)) ||
-	(error instanceof Error &&
-		error.name === "SessionError" &&
-		"answered" in error &&
-		error.answered === true &&
-		"code" in error &&
-		error.code === "unsupported");
+	error instanceof KantelApiError && (error.code === "not_supported" || error.status === 404);
 
-/** A part of a running sandbox's file: over its host's E2E session where its space has one, else through the API. */
+/** A part of a running sandbox's file, through the API. */
 async function readSandboxFile(context: Context, id: string, path: string, range: FileRange): Promise<FilePart> {
-	const host = await filesHost(context, id);
-	if (host !== undefined) {
-		const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
-			path: absolute(path),
-			offset: range.offset,
-			length: range.length,
-		});
-		return hostPart(fromBase64(answer.data), answer.fileSize, range);
-	}
 	// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
 	const file = await context.api.readFile(id, {
 		path: absolute(path),
@@ -938,7 +874,7 @@ async function readSandboxFile(context: Context, id: string, path: string, range
 /**
  * A read whose refusal (a path outside what the sandbox has, such as anything but an isolate's /workspace, or one that
  * isn't there) is the UI's refusal, which it shows as a line and never offers to try again. Anything else (the host
- * unreachable, a dropped session) is as it was, for Try again.
+ * unreachable) is as it was, for Try again.
  */
 async function refusing<T>(read: () => Promise<T>): Promise<T> {
 	try {
@@ -949,107 +885,22 @@ async function refusing<T>(read: () => Promise<T>): Promise<T> {
 	}
 }
 
-/**
- * The API's and a host's codes for a path a sandbox won't read: `invalid` outside it, `not_found` absent. A host's is its
- * own answer to the call, over this browser's session or `kantel console`'s (`answered`); a session that failed to open,
- * with the same codes for a host not in the chain, is a failure, not a refusal.
- */
-const refusedPath = (error: unknown): error is Error & { readonly code: string } =>
-	error instanceof Error &&
-	"code" in error &&
-	(error.code === "invalid" || error.code === "not_found") &&
-	(error instanceof KantelApiError ||
-		(error.name === "SessionError" && "answered" in error && error.answered === true));
+/** The API's codes for a path a sandbox won't read: `invalid` outside it, `not_found` absent. */
+const refusedPath = (error: unknown): error is KantelApiError =>
+	error instanceof KantelApiError && (error.code === "invalid" || error.code === "not_found");
 
 /** Desktop and Browser where the gateway refuses them: this deployment doesn't serve the sandbox's screens yet. */
 export const SCREENS_NOT_SERVED = "Not available here yet";
-/** Desktop and Browser in an end-to-end space: its E2E sessions carry commands and files, not screens, so far. */
-export const SCREENS_NOT_END_TO_END = "Not end to end yet";
 
 /** A screen's access, or why it can't open. */
 type Opened<T> =
 	| { readonly value: T; readonly refused?: undefined }
 	| { readonly refused: string; readonly value?: undefined };
 
-/** The account a sandbox is in, as last read, else asked for. */
-async function sandboxAccount(context: Context, id: string): Promise<string> {
-	let account = context.sandboxAccounts.get(id);
-	if (account === undefined) {
-		account = (await context.api.getSandbox(id)).accountId;
-		context.sandboxAccounts.set(id, account);
-	}
-	return account;
-}
-
-/**
- * Whether a sandbox's space is end to end (E2E on or strict), where its host refuses the gateway's plaintext desktop:
- * as this console's keys have its chain, else as the gateway has it. A chain that can't be read counts as off: the
- * screens are then tried, and their host's refusal shown.
- */
-async function spaceEndToEnd(context: Context, id: string): Promise<boolean> {
-	try {
-		const account = await sandboxAccount(context, id);
-		if (context.local !== undefined) return context.local.mode(account) !== "off";
-		const mode = (await context.browser?.mode(account)) ?? (await chainMode(context, account));
-		return mode !== "off";
-	} catch {
-		return false;
-	}
-}
-
-/**
- * How this console reaches an end-to-end sandbox's host, or undefined for a sandbox it reads through the gateway (its
- * account has E2E off, or this console has no keys). `kantel console` reaches it through the CLI's device; the gateway's
- * console through this browser's own, once it's a device in the chain.
- */
-async function endToEndHost(
-	context: Context,
-	id: string,
-): Promise<{ call<T>(sandboxId: string, method: string, params?: object): Promise<T> } | undefined> {
-	const { local, browser } = context;
-	if (local === undefined && browser === undefined) return undefined;
-	const account = await sandboxAccount(context, id);
-	if (local !== undefined && local.mode(account) !== "off") return local;
-	if (browser !== undefined) {
-		// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
-		// answers no chain, or one that goes back on it, throws rather than reading as off. Where it trusts none yet,
-		// the gateway's word is all there is, and a space on E2E then gets the session's refusal to set it up.
-		const mode = (await browser.mode(account)) ?? (await chainMode(context, account));
-		if (mode !== "off") return browser;
-	}
-	return undefined;
-}
-
-/**
- * The host to read an end-to-end sandbox's files from, or undefined to read them through the gateway. Where this browser
- * isn't a device in the space's chain yet, a short line to set it up, never a read through the gateway.
- */
-async function filesHost(context: Context, id: string): ReturnType<typeof endToEndHost> {
-	const host = await endToEndHost(context, id);
-	if (host === undefined) return undefined;
-	return {
-		call: async <T>(sandboxId: string, method: string, params?: object): Promise<T> => {
-			try {
-				return await host.call<T>(sandboxId, method, params);
-			} catch (error) {
-				if (error instanceof DeviceTrustError) throw new DeviceSetupError(deviceSetupLine(error));
-				throw error;
-			}
-		},
-	};
-}
-
-/** What the Files tab says where this browser can't read a space's files end to end yet. */
-function deviceSetupLine(error: DeviceTrustError): string {
-	return error.problem === "unpinned"
-		? "End-to-end encrypted: set this browser up as a device (the strip at the top) to see its files."
-		: `End-to-end encrypted: ${error.message.replace(/\.$/, "")}.`;
-}
-
 /** The API reads at most this much of a file at a time. */
 const MAX_READ_BYTES = 1024 * 1024;
 
-/** Standard base64 (the API's and a host's `data`) as bytes. */
+/** Standard base64 (the API's `content`) as bytes. */
 function fromBase64(text: string): Uint8Array {
 	const binary = atob(text);
 	const out = new Uint8Array(binary.length);
@@ -1060,82 +911,6 @@ function fromBase64(text: string): Uint8Array {
 /** A file's content as the API answered it, as bytes. */
 function contentBytes(file: { readonly encoding: "utf8" | "base64"; readonly content: string }): Uint8Array {
 	return file.encoding === "base64" ? fromBase64(file.content) : new TextEncoder().encode(file.content);
-}
-
-/** A host's answer to a ranged read; one from before ranged reads answers the whole file, without its size. */
-function hostPart(bytes: Uint8Array, fileSize: number | undefined, range: FileRange): FilePart {
-	if (fileSize !== undefined) return { bytes, size: fileSize };
-	const start = Math.min(range.offset, bytes.byteLength);
-	return { bytes: bytes.subarray(start, Math.min(start + range.length, bytes.byteLength)), size: bytes.byteLength };
-}
-
-/** A folder's entry as a host lists it over an E2E session (`kantel-host`'s own shape). */
-interface HostFileEntry {
-	readonly name: string;
-	readonly path: string;
-	readonly type: string;
-	readonly size: number;
-	readonly modTimeMs?: number;
-}
-
-function hostEntryOf(entry: HostFileEntry): UiSnapshotEntry {
-	const folder = entry.type === "dir";
-	return {
-		name: entry.name,
-		path: entry.path.replace(/^\/+/, ""),
-		kind: folder ? "folder" : "file",
-		...(folder ? {} : { sizeBytes: entry.size }),
-		...(entry.modTimeMs === undefined ? {} : { modifiedAt: entry.modTimeMs }),
-	};
-}
-
-/** Every page of a sandbox's history its host keeps, by its cursor; the list shows no output, so none is carried. */
-async function hostHistory(read: (params: object) => Promise<HostCommandPage>): Promise<UiCommand[]> {
-	const commands = await allPages(async (cursor) => {
-		const page = await read({ limit: 100, output: false, ...(cursor === undefined ? {} : { before: cursor }) });
-		return { items: page.items, ...(page.next === undefined || page.next === "" ? {} : { nextCursor: page.next }) };
-	});
-	return commands.map(hostCommandOf);
-}
-
-function hostCommandOf(command: HostCommand): UiCommand {
-	return {
-		id: command.id,
-		command: command.command ?? (command.argv ?? []).join(" "),
-		startedAt: command.startedAt,
-		durationMs: Math.max(0, command.endedAt - command.startedAt),
-		...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }),
-		// The device that ran it, by its label in the chain.
-		by: command.deviceLabel ?? command.device,
-	};
-}
-
-/** An account's mode, for the strip over the page: from its chain's entries as the gateway has them, not verified. */
-async function chainMode(context: Context, accountId: string): Promise<E2EMode> {
-	const { entries } = await context.api.getE2EChain(accountId);
-	let mode: E2EMode = "off";
-	for (const entry of entries) {
-		try {
-			const payload = JSON.parse(new TextDecoder().decode(base64url(entry.payload))) as {
-				readonly type?: string;
-				readonly body?: { readonly mode?: string };
-			};
-			const named = payload.body?.mode;
-			const sets = payload.type === "genesis" || payload.type === "mode";
-			if (sets && (named === "on" || named === "strict" || named === "off")) mode = named;
-		} catch {
-			// An entry that doesn't read says nothing here; hosts and devices refuse the chain.
-		}
-	}
-	return mode;
-}
-
-function base64url(text: string): Uint8Array {
-	const padded = text
-		.replaceAll("-", "+")
-		.replaceAll("_", "/")
-		.padEnd(Math.ceil(text.length / 4) * 4, "=");
-	return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2244,66 +2019,6 @@ const pageHost = (): string | undefined => {
 };
 
 /**
- * This browser as `person`'s device, for as long as the session that found them is the tab's. Its gateway calls carry
- * that session's headers as they were (`asThem`), never the tab's current ones, so one person's keys never go with
- * another's credentials. Before each thing it does it checks the tab is still signed in as that session and the gateway
- * still says it is that person; once either isn't so it is retired for good, and the page must be loaded again. Behind
- * Cloudflare Access the credential is a cookie the page can't read and could change after that check, so the session's
- * URL is asked for as `person` too: the gateway gives it only to that person's sign-in, in the same call.
- */
-function sessionDevice(
-	person: string,
-	signedIn: { readonly [name: string]: string } | undefined,
-	options: ComputeApiOptions,
-	asThem: KantelClient,
-): BrowserDevice | undefined {
-	const credential = (headers: { readonly [name: string]: string } | undefined) =>
-		Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
-	let retired: string | undefined;
-	const retire = (reason: string): never => {
-		retired ??= reason;
-		throw new DeviceTrustError("refused", retired);
-	};
-	const ENDED =
-		"This page's sign-in has ended or another has replaced it: load the page again to use this browser's keys";
-	const user = async () => {
-		if (retired !== undefined) retire(retired);
-		const now = options.headers === undefined ? undefined : await options.headers();
-		if (credential(now) !== credential(signedIn)) retire(ENDED);
-		let who: string | undefined;
-		try {
-			who = (await asThem.getCaller()).user?.id;
-		} catch (error) {
-			if (error instanceof KantelApiError && (error.status === 401 || error.status === 403)) retire(ENDED);
-			throw error;
-		}
-		if (who !== person) retire(ENDED);
-		return person;
-	};
-	const openE2E = async (id: string) => {
-		try {
-			return await asThem.openE2E(id, { user: person });
-		} catch (error) {
-			// Another sign-in than the one this device is for: the same as the check above failing.
-			if (error instanceof KantelApiError && (error.status === 401 || error.status === 403)) {
-				const now = await asThem.getCaller().then(
-					(caller) => caller.user?.id,
-					() => undefined,
-				);
-				if (now !== person) retire(ENDED);
-			}
-			throw error;
-		}
-	};
-	return browserDevice({
-		...options.browser,
-		// The chain is only data, verified from this browser's pin whoever asked for it; the session's URL is the grant.
-		gateway: { openE2E, getE2EChain: (space) => asThem.getE2EChain(space) },
-		user,
-	});
-}
-
-/**
  * The compute console on the gateway this console is served by. Asks who is calling first: a gateway that doesn't
  * serve the compute routes answers 404, this throws, and the console shows no compute pages. The
  * hosts and images sources are there only for a deployment super-admin; billing isn't, as the API has no plans.
@@ -2321,16 +2036,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		fetch: watched,
 	};
 	const api = createKantelClient(clientOptions);
-	// The probe: the routes are served, and who is calling, with the session's headers as they are now, kept: what
-	// this browser does as a device it does as that session, and no later one.
-	const signedIn = options.headers === undefined ? undefined : await options.headers();
-	const asSignedIn = (fetch: typeof globalThis.fetch) =>
-		createKantelClient({
-			baseUrl: options.baseUrl ?? "/v1",
-			...(signedIn === undefined ? {} : { headers: () => signedIn }),
-			fetch,
-		});
-	const caller = await asSignedIn(watched).getCaller();
+	// The probe: the routes are served, and who is calling.
+	const caller = await api.getCaller();
 
 	// The domain sandbox addresses are under. A deployment that has one names it on the caller (`sandboxDomain`): the
 	// hosted service's is kantel.run, a domain apart from the console's, so the page's own host is never it. One that
@@ -2341,13 +2048,6 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 	const named = caller.sandboxDomain?.trim().toLowerCase() || undefined;
 	let learned: string | undefined;
 	const fallback = pageHost() ?? "localhost";
-	const { local } = options;
-	// Only a person has a device of their own here; `kantel console` uses the CLI's instead.
-	const person = caller.user?.id;
-	const browser =
-		local === undefined && person !== undefined
-			? sessionDevice(person, signedIn, options, asSignedIn(doFetch))
-			: undefined;
 	const context: Context = {
 		api,
 		hosting: options.hosting ?? "self-hosted",
@@ -2357,11 +2057,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		},
 		caller,
 		environmentNames: new Map(),
-		sandboxAccounts: new Map(),
 		call: <T>(call: ApiCall) => send<T>(clientOptions, call),
 		bucketSources: new Map(),
-		...(local === undefined ? {} : { local }),
-		...(browser === undefined ? {} : { browser }),
 		live: liveSandboxes(api),
 	};
 	// What the deployment offers beyond the core, each asked once: an account's own hosts, for anyone but a super-admin,
@@ -2401,17 +2098,5 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		...(mountsOffered ? { mounts: mountsSource(context) } : {}),
 		// Only a person approves a device; a console signed in with a key has nothing to approve with.
 		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
-		e2e:
-			local === undefined
-				? {
-						served: "gateway",
-						mode: (accountId) => chainMode(context, accountId),
-						...(browser === undefined ? {} : { browser }),
-					}
-				: {
-						served: "local",
-						...(local.info.device === undefined ? {} : { device: local.info.device.label }),
-						mode: async (accountId) => local.mode(accountId),
-					},
 	};
 }

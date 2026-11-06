@@ -32,7 +32,6 @@
 	},
 	"devDependencies": {
 		"@kantel/api": "workspace:*",
-		"@kantel/cli": "workspace:*",
-		"@kantel/e2e": "workspace:*"
+		"@kantel/cli": "workspace:*"
 	}
 }

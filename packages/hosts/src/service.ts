@@ -27,7 +27,6 @@ import {
 } from "./hub.ts";
 import {
 	HOST_CLOSE_REVOKED,
-	HOST_E2E_PORT,
 	HOST_FEATURES,
 	type HostBucketSource,
 	type HostDiskLimits,
@@ -342,28 +341,12 @@ export interface HostComputeLink {
 		usage: HostUsageReport & { readonly sandboxes: readonly HostSandboxUsage[] },
 		options?: { readonly shared?: boolean },
 	): Promise<void>;
-	/** An organisation's E2E chain for the host (`ComputeService.hostE2EChain`), and the host's own entries to it. */
-	readonly e2eChain?: {
-		read(hostId: string, space: string): Promise<readonly E2EChainEntry[]>;
-		append(
-			hostId: string,
-			space: string,
-			from: number,
-			entries: readonly E2EChainEntry[],
-		): Promise<readonly E2EChainEntry[]>;
-	};
 	/**
 	 * The host images Kantel wants hosts on, for their welcome (image patching, experimental): from the base image index's
 	 * `host` entry, its `stable` version. Absent (the feature off), or undefined (no such version), the welcome has none
 	 * and hosts keep the images they have. A failure is logged and the welcome goes without, so a host still connects.
 	 */
 	images?(): Promise<HostImageChannel | undefined>;
-}
-
-/** A chain entry as the gateway passes it on: opaque to it, verified by hosts and devices (`@kantel/e2e`). */
-export interface E2EChainEntry {
-	readonly payload: string;
-	readonly sig: string;
 }
 
 export interface HostsServiceOptions {
@@ -436,14 +419,6 @@ export interface HostsService {
 	}): Promise<{ readonly hostId: string; readonly credential: string }>;
 	/** The host a credential is for, unless it is unknown or revoked. */
 	authenticate(credential: string): Promise<HostRecord | undefined>;
-	/** A space's E2E chain, for a host (`HostComputeLink.e2eChain`); `unavailable` before the compute plane is linked. */
-	e2eChain(hostId: string, space: string): Promise<readonly E2EChainEntry[]>;
-	appendE2EChain(
-		hostId: string,
-		space: string,
-		from: number,
-		entries: readonly E2EChainEntry[],
-	): Promise<readonly E2EChainEntry[]>;
 	/**
 	 * A bundle's tar, for a host (`GET /v1/hosts/bundles/{digest}`): `undefined` unless the sandbox is on `hostId` and
 	 * mounts it; `unavailable` before the compute plane is linked.
@@ -469,7 +444,7 @@ export interface HostsService {
 	 * release's SHA256SUMS and restarts into it, its sandboxes running on. Answers once the binary is in place, with the
 	 * version it is moving to; the host connects again on it a few seconds later. `conflict` when it's revoked or already
 	 * on that version (or a newer one), `unavailable` when it isn't connected or no version is known, and `not_supported`
-	 * when the host refuses (one in an E2E space is updated on the machine).
+	 * when the host refuses.
 	 */
 	updateAgent(hostId: string): Promise<{ readonly version: string }>;
 	/**
@@ -1371,14 +1346,6 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			log(`[hosts] host ${hostId} (${name}) joined with token ${token.id}${into}`);
 			return { hostId, credential };
 		},
-		async e2eChain(hostId, space) {
-			if (compute?.e2eChain === undefined) throw new KantelError("unavailable", "This gateway keeps no E2E chains");
-			return compute.e2eChain.read(hostId, space);
-		},
-		async appendE2EChain(hostId, space, from, entries) {
-			if (compute?.e2eChain === undefined) throw new KantelError("unavailable", "This gateway keeps no E2E chains");
-			return compute.e2eChain.append(hostId, space, from, entries);
-		},
 		async bundle(hostId, sandboxId, digest) {
 			if (compute?.bundle === undefined) throw new KantelError("unavailable", "This gateway keeps no bundles");
 			return compute.bundle(hostId, sandboxId, digest);
@@ -1712,10 +1679,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return store.getPlacement(sandboxId);
 			},
 			async openPort(sandboxId, port, sink) {
-				// Port 0 is the host's E2E responder for the sandbox (`HOST_E2E_PORT`), which only the host can read.
-				if (!Number.isInteger(port) || port < HOST_E2E_PORT || port > 65_535) {
-					throw new KantelError("invalid", "Not a port");
-				}
+				if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new KantelError("invalid", "Not a port");
 				const placement = await placementOf(sandboxId);
 				// Every relayed stream is someone using the sandbox: its opening, and its bytes either way, count toward its
 				// idle stop. An open stream that carries nothing (an SSH session left alone) doesn't.

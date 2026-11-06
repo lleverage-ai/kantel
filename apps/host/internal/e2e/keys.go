@@ -1,9 +1,6 @@
-// Package e2e is the host's half of Kantel Connect's end-to-end encryption: its keys, the space chain it verifies,
-// and the Noise IK sessions people's devices open to it through the gateway's relay. The TypeScript half is
-// packages/e2e; both pass the vectors in packages/e2e/vectors.
-//
-// A host that holds a space's chain with its mode `on` or `strict` serves that space's sandbox content (commands,
-// files, ports) only inside sessions from the chain's devices, and refuses it in plaintext calls from the gateway.
+// Package e2e holds the handshake (Noise IK, noise.go) and the keys (key IDs, fingerprints) for a future end-to-end
+// encryption design (lleverage-ai/kantel#784). Nothing uses it yet. The TypeScript counterpart is packages/e2e; both
+// pass Cacophony's Noise vector in packages/e2e/vectors.
 package e2e
 
 import (
@@ -24,7 +21,7 @@ var b64 = base64.RawURLEncoding.Strict()
 
 var base64urlChars = regexp.MustCompile(`^[A-Za-z0-9_-]*$`)
 
-// B64 is base64url without padding, as the chain writes keys, signatures and hashes.
+// B64 is base64url without padding, as keys, signatures and hashes are written.
 func B64(b []byte) string { return b64.EncodeToString(b) }
 
 // FromB64 decodes base64url without padding, and only the one encoding of its bytes.
@@ -97,12 +94,4 @@ func Fingerprint(publicKeys ...[]byte) string {
 	}
 	d := hex.EncodeToString(h.Sum(nil)[:10])
 	return d[0:4] + "-" + d[4:8] + "-" + d[8:12] + "-" + d[12:16] + "-" + d[16:20]
-}
-
-// verify reports whether sig is pub's Ed25519 signature over msg; a key or signature of the wrong size is simply not.
-func verify(pub, msg, sig []byte) bool {
-	if len(pub) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
-		return false
-	}
-	return ed25519.Verify(ed25519.PublicKey(pub), msg, sig)
 }

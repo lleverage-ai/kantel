@@ -10,10 +10,10 @@
 #
 # The same line works in bash, zsh and fish: the script runs under sh whatever your shell is. It
 #   1. checks Node.js 22 or later is installed: each command is one JavaScript file, for Linux and macOS alike;
-#   2. downloads kantel.js, kantel-console.tar.gz and SHA256SUMS from the release (kantel-admin.js too, with
-#      --admin), and checks each file's SHA-256;
-#   3. puts them in ~/.local/share/kantel (KANTEL_HOME) as kantel.mjs and console/ (the files `kantel console`
-#      serves), links ~/.local/bin/kantel to it, and says how to put ~/.local/bin on your PATH if it isn't.
+#   2. downloads kantel.js and SHA256SUMS from the release (kantel-admin.js too, with --admin), and checks each
+#      file's SHA-256;
+#   3. puts them in ~/.local/share/kantel (KANTEL_HOME) as kantel.mjs, links ~/.local/bin/kantel to it, and says how
+#      to put ~/.local/bin on your PATH if it isn't.
 # Run it again to update; a running command keeps its file.
 #
 # `kantel-admin`, the operator CLI that installs and upgrades a self-hosted control plane, comes with --admin. Once
@@ -105,7 +105,6 @@ main() {
 	*) say "warning: Kantel's commands are tested on Linux and macOS, not $(uname -s)" ;;
 	esac
 	command -v curl >/dev/null 2>&1 || die "needs curl"
-	command -v tar >/dev/null 2>&1 || die "needs tar"
 	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
 		die "needs sha256sum (coreutils) or shasum to check the download"
 	command -v node >/dev/null 2>&1 ||
@@ -136,12 +135,6 @@ main() {
 	curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download $base/SHA256SUMS"
 	assets=""
 	for command in $commands; do assets="$assets $command.js"; done
-	# The console's files, which `kantel console` serves: a release from before it had them installs without.
-	console=0
-	if [ -n "$(listed kantel-console.tar.gz)" ]; then
-		console=1
-		assets="$assets kantel-console.tar.gz"
-	fi
 	for asset in $assets; do
 		say "Downloading $asset from $base"
 		curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" || die "couldn't download $base/$asset"
@@ -151,11 +144,6 @@ main() {
 		[ "$got" = "$want" ] || die "$asset's SHA-256 is $got, but SHA256SUMS says $want; not installing it"
 	done
 	say "Checked the download against SHA256SUMS"
-	if [ "$console" = 1 ]; then
-		mkdir "$work/unpacked"
-		tar -xzf "$work/kantel-console.tar.gz" -C "$work/unpacked" || die "couldn't unpack kantel-console.tar.gz"
-		[ -f "$work/unpacked/console/index.html" ] || die "kantel-console.tar.gz has no console/index.html"
-	fi
 
 	# Each file goes in as <command>.mjs, so Node runs it as an ES module whatever its version and whatever
 	# package.json is above it, and the command on the PATH is a link to it (Node follows the link to the .mjs). A
@@ -166,17 +154,6 @@ main() {
 		fi
 	done
 	mkdir -p "$lib" "$bin"
-	# The console goes in first, so the kantel that finds it is this release's. A rename into place, as the commands.
-	if [ "$console" = 1 ]; then
-		rm -rf "$lib/console.new" "$lib/console.old"
-		mv "$work/unpacked/console" "$lib/console.new"
-		[ -d "$lib/console" ] && mv "$lib/console" "$lib/console.old"
-		mv "$lib/console.new" "$lib/console"
-		rm -rf "$lib/console.old"
-		say "Installed the console in $lib/console, for kantel console"
-	else
-		say "This release has no console files: kantel console needs --dir"
-	fi
 	for command in $commands; do
 		cp "$work/$command.js" "$lib/$command.mjs.new"
 		chmod 0755 "$lib/$command.mjs.new"

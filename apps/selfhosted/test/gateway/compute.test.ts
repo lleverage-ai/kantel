@@ -548,19 +548,8 @@ describe("the compute plane on the gateway", () => {
 			}),
 		);
 		expect(registered.status).toBe(201);
-		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
+		const { hostId } = (await registered.json()) as { hostId: string };
 		expect((await service.get(hostId)).accountId).toBe(joinToken.accountId);
-		// Its account's E2E chain, on its credential (`kantel-host e2e join`): through the gateway, not only the hosts API.
-		const chain = (auth: string) =>
-			gateway.fetch(
-				new Request(`http://gateway.test/v1/hosts/e2e/chain?space=${joinToken.accountId}`, {
-					headers: { authorization: `Bearer ${auth}` },
-				}),
-			);
-		const read = await chain(credential);
-		expect(read.status).toBe(200);
-		expect(await read.json()).toEqual({ entries: [] });
-		expect((await chain("khc_wrong")).status).toBe(401);
 		const listed = (await otto.listAccountHosts()).items;
 		expect(listed.map((host) => [host.id, host.name, host.accountId])).toEqual([
 			[hostId, "otto-box", joinToken.accountId],

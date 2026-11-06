@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
-import { DeviceSetupError } from "./compute-model.ts";
 import { API_SERVER, type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 import { computePage } from "./parts.tsx";
 import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
@@ -99,25 +98,6 @@ export const FileLarge: Story = () => <Browser initial={{ path: "var/log", file:
 export const FileLoading: Story = () => (
 	<Browser initial={{ path: "home/user", file: "notes.md" }} options={{ hang: true }} />
 );
-
-/** An end-to-end sandbox's files where this browser isn't a device yet: one line, and nothing read. */
-export const EndToEndSetup: Story = () => {
-	const [source] = useState(() => {
-		const setup = () =>
-			Promise.reject(
-				new DeviceSetupError(
-					"End-to-end encrypted: set this browser up as a device (the strip at the top) to see its files.",
-				),
-			);
-		return { list: setup, read: setup };
-	});
-	const [at, setAt] = useState<FilesAt>({ path: "home/user" });
-	return (
-		<div className={computePage}>
-			<SnapshotFiles source={source} snapshotId="sbx_e2e" at={at} now={FIXTURE_NOW} onNavigate={setAt} />
-		</div>
-	);
-};
 
 /** An empty folder, in one line. */
 export const FolderEmpty: Story = () => <Browser initial={{ path: "home/user/app/node_modules" }} />;

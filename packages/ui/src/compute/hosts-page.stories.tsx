@@ -27,7 +27,7 @@ function Scenario({
 	confirmUpdate?: string;
 	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
 	usage?: "live" | "loading" | "none";
-	/** Update is refused, as a host in an E2E space refuses it. */
+	/** Update is refused by the host. */
 	updateFails?: boolean;
 }) {
 	const [source] = useState(() => {
@@ -36,9 +36,7 @@ function Scenario({
 			? {
 					...fixture,
 					update: async () => {
-						throw new Error(
-							"This host has joined an E2E space, so it is updated on the machine: run sudo kantel-host update there.",
-						);
+						throw new Error("This host couldn't update itself: run sudo kantel-host update on the machine.");
 					},
 				}
 			: fixture;
@@ -77,7 +75,7 @@ export const OpenedOffline: Story = () => <Scenario opened="hst_mac" />;
 /** A host out of date, its Update dialog open. Update shows it updating, and back on 0.4.2 a few seconds later. */
 export const ConfirmUpdate: Story = () => <Scenario confirmUpdate="hst_hetzner_2" />;
 
-/** Update refused by the host: one in an E2E space is updated on the machine. */
+/** Update refused by the host: its reason, and how to update it on the machine. */
 export const UpdateRefused: Story = () => <Scenario confirmUpdate="hst_hetzner_2" updateFails />;
 
 /** A host part way through an update: its agent column says so until it's back on the new version. */

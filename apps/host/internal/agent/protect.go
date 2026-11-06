@@ -623,11 +623,6 @@ func toEgressRecord(r egress.Record) proto.EgressRecord {
 
 // sendEgress sends one batch as an "egress" event over the current connection.
 func (h *Host) sendEgress(batch []proto.EgressRecord) error {
-	// Again as it leaves, for a space that turned E2E on while its records waited.
-	batch = slices.DeleteFunc(slices.Clone(batch), func(r proto.EgressRecord) bool { return !h.egressPublic(r.SandboxID) })
-	if len(batch) == 0 {
-		return nil
-	}
 	h.mu.Lock()
 	c := h.link
 	h.mu.Unlock()

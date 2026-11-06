@@ -131,23 +131,3 @@ Starts the sandbox's Chromium if it isn't running, and answers a live view URL a
 - `201`: [BrowserAccess](/api/reference/types/#browseraccess) (`application/json`). The browser's URLs.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
-
-## Open an end-to-end encrypted session
-
-`POST /v1/sandboxes/{sandboxId}/e2e` (SDK method `openE2E`)
-
-A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one. It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running guest is refused in the session. A key needs `access`.
-
-**Path parameters**
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `sandboxId` | string | yes | The sandbox's ID. |
-
-**Body**: [E2EAccessBody](/api/reference/types/#e2eaccessbody)
-
-**Answers**
-
-- `201`: [E2EAccess](/api/reference/types/#e2eaccess) (`application/json`). Where to open it.
-
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).

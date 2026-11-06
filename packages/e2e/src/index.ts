@@ -1,18 +1,12 @@
 /**
- * End-to-end encryption between people's devices and their own hosts, so a Kantel gateway (kantel.dev or a
- * self-hosted one) carries a space's sandbox traffic without being able to read or forge it. See README.md for the
- * wire format and what it protects and what it doesn't.
+ * The handshake and keys for end-to-end encryption between a client and an organisation's own hosts, a design deferred
+ * for now (https://github.com/lleverage-ai/kantel/issues/784). Nothing uses this package yet. The Go host has the same
+ * pieces in `apps/host/internal/e2e`, and both check Noise against Cacophony's vector.
  *
- *   keys.ts       device and host keys, IDs and fingerprints
- *   chain.ts      the space chain: the signed, hash-chained log of members, devices, hosts and the E2E switch
- *   noise.ts      Noise_IK_25519_AESGCM_SHA256
- *   session.ts    a device's session with a host over a relay stream, and RPC on it
- *   responder.ts  the host's side, in TypeScript (hosts run the Go one)
- *   testing.ts    an in-memory relay that records every byte, for tests
+ *   bytes.ts  byte helpers
+ *   keys.ts   Ed25519 and X25519 keys from 32-byte seeds, key IDs and fingerprints (WebCrypto only)
+ *   noise.ts  Noise_IK_25519_AESGCM_SHA256
  */
 export * from "./bytes.ts";
-export * from "./chain.ts";
 export * from "./keys.ts";
 export * from "./noise.ts";
-export * from "./responder.ts";
-export * from "./session.ts";

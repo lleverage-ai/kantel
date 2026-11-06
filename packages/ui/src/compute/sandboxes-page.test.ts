@@ -22,7 +22,7 @@ import {
 	type SandboxFilters,
 	TYPE_FILTERS,
 } from "./sandbox-filters.ts";
-import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
+import { sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
 import {
 	countdownText,
@@ -34,7 +34,6 @@ import {
 	requestedTemplate,
 	SandboxesPage,
 	sandboxesShown,
-	screenLink,
 	shortId,
 	showsCpu,
 } from "./sandboxes-page.tsx";
@@ -93,17 +92,6 @@ describe("a sandbox's logs", () => {
 		expect(made({ environment: dev })).toBe("Started from dev");
 		expect(made({})).toBe("Created");
 	});
-
-	it("says a failed command's output isn't available only for an end-to-end sandbox's failure with none", () => {
-		const failedBare = { id: "c1", command: "make", startedAt: 1, exitCode: 2, by: "" };
-		const entries = (command: typeof failedBare & { output?: string }) =>
-			sandboxTimeline(box("api", "running"), [command], []);
-		expect(outputUnavailable(entries(failedBare), true)).toBe(true);
-		// The hosted console reads output, and says nothing.
-		expect(outputUnavailable(entries(failedBare), false)).toBe(false);
-		expect(outputUnavailable(entries({ ...failedBare, output: "error" }), true)).toBe(false);
-		expect(outputUnavailable(entries({ ...failedBare, exitCode: 0 }), true)).toBe(false);
-	});
 });
 
 describe("a sandbox's page", () => {
@@ -124,12 +112,10 @@ describe("a sandbox's page", () => {
 		expect(stoppedByText({ state: "running", stopReason: "idle-stop" })).toBeUndefined();
 	});
 
-	it("shows Browser and Desktop in the console, and on Overview where they open in a tab of their own", () => {
-		const running = { inTab: false, windows: true, known: true, tabs };
+	it("shows Browser and Desktop in the console, and Overview where it has none to show", () => {
+		const running = { windows: true, known: true, tabs };
 		for (const screen of ["desktop", "watch", "browser"] as const) {
 			expect(sandboxViewShown(screen, running)).toBe(screen);
-			// kantel console can't frame them: an address for one shows Overview, and they open in a tab.
-			expect(sandboxViewShown(screen, { ...running, inTab: true })).toBe("overview");
 			// Nothing to show once it's known to have none.
 			expect(sandboxViewShown(screen, { ...running, windows: false })).toBe("overview");
 			expect(sandboxViewShown(screen, { ...running, windows: false, known: false })).toBe(screen);
@@ -138,42 +124,7 @@ describe("a sandbox's page", () => {
 		expect(sandboxViewShown("egress", running)).toBe("overview");
 	});
 
-	it("opens a row's Desktop in a tab where the console can't frame it, and leaves its link's new tab elsewhere", () => {
-		const click = (button = 0) => {
-			const event = {
-				button,
-				metaKey: false,
-				ctrlKey: false,
-				shiftKey: false,
-				prevented: false,
-				preventDefault() {
-					event.prevented = true;
-				},
-				currentTarget: { getAttribute: () => "/sandboxes/sbx_a/desktop" },
-			};
-			return event;
-		};
-		const tabs: string[] = [];
-		const openTab = (view: string) => tabs.push(view);
-
-		const local = click();
-		screenLink("tab", openTab)("desktop")(local);
-		expect([local.prevented, tabs]).toEqual([true, ["desktop"]]);
-		// Not a primary click: left to the browser.
-		const middle = click(1);
-		screenLink("tab", openTab)("browser")(middle);
-		expect([middle.prevented, tabs]).toEqual([false, ["desktop"]]);
-
-		// The console's screen page, in the new tab its link opens: the click is the browser's.
-		for (const screens of ["console", undefined] as const) {
-			const hosted = click();
-			screenLink(screens, openTab)("desktop")(hosted);
-			expect(hosted.prevented).toBe(false);
-		}
-		expect(tabs).toEqual(["desktop"]);
-	});
-
-	it("reads a running sandbox's files (over E2E where it is), and no snapshot of an end-to-end one", () => {
+	it("reads a running sandbox's files from its host, and a stopped one's from its latest snapshot", () => {
 		const source = {
 			files: {
 				list: async () => ({ entries: [], more: false }),
@@ -182,20 +133,11 @@ describe("a sandbox's page", () => {
 		};
 		const running = { state: "running" as const };
 		const snapshot = { id: "snap_1", takenAt: 0 };
-		const yes = { status: "ready", value: true } as const;
-		const no = { status: "ready", value: false } as const;
 		const stopped = { ...running, state: "stopped" as const, snapshot };
-		// Running, its files from the host; the source reads them over the space's E2E session where it has one.
-		expect(filesShown(running, source, no)).toBe("live");
-		expect(filesShown(running, source, yes)).toBe("live");
-		expect(filesShown(running, source, { status: "loading" })).toBe("live");
-		// Stopped, its latest snapshot, but only once it's known it isn't end to end: the host serves those to no one.
-		expect(filesShown(stopped, source, no)).toBe("snapshot");
-		expect(filesShown(stopped, source, { status: "loading" })).toBe("checking");
-		expect(filesShown(stopped, source, { status: "error", error: new Error("no chain") })).toBe("unchecked");
-		expect(filesShown(stopped, source, yes)).toBe("sealed");
-		expect(filesShown({ ...running, state: "stopped" }, source, no)).toBe("none");
-		expect(filesShown(running, {}, no)).toBe("none");
+		expect(filesShown(running, source)).toBe("live");
+		expect(filesShown(stopped, source)).toBe("snapshot");
+		expect(filesShown({ ...running, state: "stopped" }, source)).toBe("none");
+		expect(filesShown(running, {})).toBe("none");
 	});
 });
 

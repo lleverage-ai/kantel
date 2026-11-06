@@ -5,7 +5,6 @@ A Kantel release is one version of everything, on the GitHub Release `v<version>
 | What | From | How people get it |
 | --- | --- | --- |
 | `kantel.js`, the user CLI and MCP server (Node.js 22+) | `packages/cli` | `install-cli.sh` installs it as `kantel` |
-| `kantel-console.tar.gz`, the console's files, which `kantel console` serves on 127.0.0.1 | `apps/console` | `install-cli.sh` puts them in `~/.local/share/kantel/console`; the npm package has them in `console/` |
 | `kantel-admin.js`, the operator CLI (Node.js 22+) | `packages/admin` | `install-cli.sh --admin` installs it as `kantel-admin`, or `curl -fsSLo kantel-admin …/releases/latest/download/kantel-admin.js` |
 | `install-cli.sh`, the CLIs' installer | `packages/cli/install-cli.sh` | `curl -fsSL https://kantel.dev/cli.sh \| sh` (kantel.dev serves the repository's copy, unstamped, which installs the latest release), or this release's own stamped copy |
 | `kantel-host-linux-amd64`, `kantel-host-linux-arm64`, the host agent | `apps/host` | `install.sh` downloads it |
@@ -15,7 +14,7 @@ A Kantel release is one version of everything, on the GitHub Release `v<version>
 Both one-liners work pasted into bash, zsh and fish: the scripts run under `sh`.
 
 `install-cli.sh` needs no sudo: it puts the files in `~/.local/share/kantel` (`KANTEL_HOME`) as `kantel.mjs`,
-`kantel-admin.mjs` (with `--admin`) and `console/`, so Node runs them as ES modules whatever is around them, and links
+and `kantel-admin.mjs` (with `--admin`), so Node runs them as ES modules whatever is around them, and links
 `~/.local/bin/kantel` (and `~/.local/bin/kantel-admin`) to them. An update keeps a `kantel-admin` it installed before
 unless given `--no-admin`. `sh -s -- --dir DIR` links them elsewhere, and `--version V` installs a release other than
 the script's own. Run it again to update.

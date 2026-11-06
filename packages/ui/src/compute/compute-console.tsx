@@ -23,17 +23,7 @@ import { AccountEgressPage, EGRESS_TABS, type EgressTab } from "./account-egress
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
-import { BrowserDeviceDialog } from "./browser-device.tsx";
-import type {
-	BrowserStanding,
-	ComputeAccount,
-	ComputeSource,
-	ComputeViewer,
-	E2EMode,
-	E2ESource,
-	HostsSource,
-	SandboxKind,
-} from "./compute-model.ts";
+import type { ComputeAccount, ComputeSource, ComputeViewer, HostsSource, SandboxKind } from "./compute-model.ts";
 import { DeviceLoginPage } from "./device-page.tsx";
 import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
@@ -183,13 +173,11 @@ function sandboxViewPath(base: string, sandboxId: string, view: SandboxView, que
 const FILES_PARAMS = ["path", "file", "snapshot"] as const;
 
 /**
- * Where a file browser is, from the address: its query, `?path=/home/user&file=notes.md`, or for an end-to-end sandbox
- * its fragment, `#path=/home/user&file=notes.md`, which the fragment wins. `path=/` is the root; without `path`, where
- * the browser starts (an isolate's /workspace, a microVM's /home/user).
+ * Where a file browser is, from the address's query, `?path=/home/user&file=notes.md`. `path=/` is the root; without
+ * `path`, where the browser starts (an isolate's /workspace, a microVM's /home/user).
  */
-export function filesAtOf(search: string, hash = ""): FilesAt {
-	const fragment = new URLSearchParams(hash.replace(/^#/, ""));
-	const params = fragment.has("path") || fragment.has("file") ? fragment : new URLSearchParams(search);
+export function filesAtOf(search: string): FilesAt {
+	const params = new URLSearchParams(search);
 	const named = params.get("path");
 	const folder = named === null ? {} : { path: named.replace(/^\/+|\/+$/g, "") };
 	const file = params.get("file") ?? "";
@@ -218,20 +206,6 @@ export function filesSearch(search: string, at: FilesAt, snapshot?: string): str
 /** `search` without a file browser's place, with its `?` when anything is left. */
 export function searchWithoutFiles(search: string): string {
 	return filesSearch(search, {});
-}
-
-/**
- * An end-to-end sandbox's place in the file browser as the address's fragment, `#path=/home/user&file=notes.md`. A
- * browser never sends a fragment, in a request or a `Referer`, so its folder and file names stay out of the gateway's
- * sight as its files do; Back, Forward and copied links work as with the query.
- */
-export function filesHash(at: FilesAt): string {
-	const params = new URLSearchParams();
-	const path = pathParam(at);
-	if (path !== undefined) params.set("path", path);
-	if (at.file !== undefined) params.set("file", at.file);
-	const fragment = params.toString().replaceAll("%2F", "/");
-	return fragment === "" ? "" : `#${fragment}`;
 }
 
 /** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
@@ -274,8 +248,6 @@ export interface ComputeConsoleProps {
 	readonly pathname: string;
 	/** The address's query: `?new` opens New sandbox. */
 	readonly search?: string;
-	/** The address's fragment, with its `#`: where an end-to-end sandbox's file browser is. */
-	readonly hash?: string;
 	/** Goes to a path in the app without reloading the page. */
 	readonly navigate: (path: string) => void;
 	/** Where the console lives. Default `/compute`. */
@@ -315,66 +287,6 @@ const SHELL_NARROW = "grid-rows-[auto_minmax(0,1fr)_auto]";
 const MAIN = "flex min-h-0 min-w-0 flex-col overflow-y-auto bg-canvas";
 const MAIN_WIDE = "kt-scroll-rounded my-2 mr-2 rounded-panel border border-border";
 
-/**
- * What the strip over the page says about end-to-end encryption in this account, and in which tone; undefined for
- * nothing (the gateway's console in an account without it says nothing). `setup` offers to make this browser a device
- * in the chain (or show where it stands), from `standing`.
- */
-export function e2eStrip(
-	e2e: E2ESource | undefined,
-	mode: E2EMode | undefined,
-	standing?: BrowserStanding,
-): { readonly text: string; readonly tone: "done" | "waiting" | "idle"; readonly setup?: string } | undefined {
-	if (e2e === undefined || mode === undefined) return undefined;
-	if (e2e.served === "local") {
-		if (mode === "off") {
-			return {
-				tone: "idle",
-				text: "Served by kantel console on this computer. End-to-end encryption is off here.",
-			};
-		}
-		const device = e2e.device === undefined ? "this device's key" : `the key of ${e2e.device}`;
-		return {
-			tone: "done",
-			text: `Served by kantel console on this computer. Commands and their history go to each sandbox's host end to end, with ${device}.`,
-		};
-	}
-	if (mode === "off") return undefined;
-	if (mode === "on" && e2e.browser !== undefined && standing !== undefined) {
-		if (standing.kind === "ready") {
-			return {
-				tone: "done",
-				text: `End-to-end encryption is on here. This browser is a device in the chain (${standing.label}), so commands and their history go to each sandbox's host end to end.`,
-				setup: "About this browser",
-			};
-		}
-		if (standing.kind === "refused") {
-			return {
-				tone: "waiting",
-				text: `End-to-end encryption is on here. ${standing.reason.replace(/\.$/, "")}. Run kantel console on your computer to see commands and files.`,
-			};
-		}
-		return {
-			tone: "waiting",
-			text: "End-to-end encryption is on here. This console shows commands and files once this browser is a device in the chain, or run kantel console on your computer.",
-			setup: standing.kind === "pending" ? "Waiting for an admin" : "Use this browser",
-		};
-	}
-	return {
-		tone: "waiting",
-		text:
-			mode === "strict"
-				? "End-to-end encryption is strict here, so this console can't show commands or files and no browser is let in. Run kantel console on your computer to see them."
-				: "End-to-end encryption is on here, so this console can't show commands or files. Run kantel console on your computer to see them.",
-	};
-}
-
-const STRIP_TONES = {
-	done: "bg-status-done-soft text-status-done",
-	waiting: "bg-status-waiting-soft text-status-waiting",
-	idle: "text-muted",
-} as const;
-
 /** The pages under Settings: your profile and the account's own settings, each at the address it had before. */
 const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set([
 	"profile",
@@ -391,7 +303,6 @@ export function ComputeConsole({
 	source,
 	pathname,
 	search = "",
-	hash = "",
 	navigate,
 	base = "/compute",
 	now,
@@ -446,28 +357,6 @@ export function ComputeConsole({
 		},
 		[base, navigate],
 	);
-
-	const e2eMode = useLoad(
-		() =>
-			source.e2e !== undefined && account !== undefined
-				? source.e2e.mode(account.id).catch(() => undefined)
-				: Promise.resolve(undefined),
-		[source, account?.id],
-	);
-	const mode = e2eMode.state.status === "ready" ? e2eMode.state.value : undefined;
-	const browserDevice = source.e2e?.browser;
-	const standing = useLoad(
-		() =>
-			browserDevice !== undefined && account !== undefined && mode === "on"
-				? browserDevice
-						.standing(account.id)
-						.catch((error: unknown): BrowserStanding => ({ kind: "refused", reason: messageOf(error, "Unknown") }))
-				: Promise.resolve(undefined),
-		[browserDevice, account?.id, mode],
-	);
-	const standingNow = standing.state.status === "ready" ? standing.state.value : undefined;
-	const strip = e2eStrip(source.e2e, mode, standingNow);
-	const [deviceOpen, setDeviceOpen] = useState(false);
 
 	const route = parseComputePath(pathname, base) ?? { page: "sandboxes" as const };
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
@@ -655,7 +544,6 @@ export function ComputeConsole({
 						now={now}
 						base={base}
 						search={search}
-						hash={hash}
 						navigate={navigate}
 						noHosts={noHosts}
 						narrow={narrow}
@@ -783,31 +671,6 @@ export function ComputeConsole({
 						{source.hosting === "hosted" ? "Hosted demo on sample data." : "Sample data."} Nothing here is real.
 					</p>
 				) : null}
-				{strip === undefined ? null : (
-					<div
-						className={`kt-e2e-strip flex items-center gap-3 border-b border-border py-1.5 text-sm ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
-					>
-						<p className="m-0 min-w-0 flex-1">{strip.text}</p>
-						{strip.setup === undefined ? null : (
-							<Button size="sm" onClick={() => setDeviceOpen(true)}>
-								{strip.setup}
-							</Button>
-						)}
-					</div>
-				)}
-				{browserDevice === undefined || account === undefined ? null : (
-					<BrowserDeviceDialog
-						open={deviceOpen}
-						accountName={account.name}
-						standing={standing.state.status === "loading" ? undefined : standingNow}
-						onTrust={async (genesis) => {
-							await browserDevice.trust(account.id, genesis);
-							standing.reload();
-						}}
-						onCheck={() => standing.reload()}
-						onClose={() => setDeviceOpen(false)}
-					/>
-				)}
 				{failed !== undefined ? (
 					<div className={`flex min-h-full flex-col ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<ConsoleUnavailable
@@ -845,7 +708,6 @@ export function ComputeConsole({
 								now={now}
 								base={base}
 								search={search}
-								hash={hash}
 								navigate={navigate}
 								noHosts={noHosts}
 								narrow={narrow}
@@ -926,7 +788,6 @@ function PageFor({
 	now,
 	base,
 	search,
-	hash,
 	navigate,
 	noHosts,
 	narrow,
@@ -953,7 +814,6 @@ function PageFor({
 	now: number | undefined;
 	base: string;
 	search: string;
-	hash: string;
 	navigate: (path: string) => void;
 	/** There's no host yet: the deployment's, for a super-admin, or the account's own. */
 	noHosts: boolean;
@@ -1009,13 +869,8 @@ function PageFor({
 						: { templateHref: (id: string) => computePath("templates", base, id) })}
 					navigate={navigate}
 					narrow={narrow}
-					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search, hash) } : {})}
-					filesHref={(at, sealed) => {
-						const files = sandboxPath(base, route.sandboxId ?? "", "files");
-						return sealed
-							? `${files}${searchWithoutFiles(search)}${filesHash(at)}`
-							: `${files}${filesSearch(search, at)}`;
-					}}
+					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search) } : {})}
+					filesHref={(at) => `${sandboxPath(base, route.sandboxId ?? "", "files")}${filesSearch(search, at)}`}
 					{...timing}
 				/>
 			) : (

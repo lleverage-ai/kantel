@@ -13,7 +13,7 @@ import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx"
 import { CopyButton } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { CheckIcon, ClockIcon, GlobeIcon, MinusCircleIcon, StopIcon } from "../primitives/icons.tsx";
-import { type Loaded, useLoad, useReloadOn } from "../primitives/load.ts";
+import { useLoad, useReloadOn } from "../primitives/load.ts";
 import {
 	DesktopIcon,
 	EllipsisIcon,
@@ -60,7 +60,7 @@ import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
-import { popOut, SandboxViewer, type ScreenView } from "./sandbox-screen.tsx";
+import { SandboxViewer, type ScreenView } from "./sandbox-screen.tsx";
 import { SandboxSsh } from "./sandbox-ssh.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
 import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
@@ -87,14 +87,14 @@ const isScreen = (view: SandboxView): view is ScreenView =>
 	view === "desktop" || view === "watch" || view === "browser";
 
 /**
- * The view the page shows for the one asked for. A screen goes to Overview where it opens in a tab of its own instead
- * (`inTab`) or has nothing to show (a known sandbox without one: stopped, or an isolate), as does a tab it hasn't.
+ * The view the page shows for the one asked for. A screen goes to Overview where it has nothing to show (a known
+ * sandbox without one: stopped, or an isolate), as does a tab it hasn't.
  */
 export function sandboxViewShown(
 	asked: SandboxView,
-	{ inTab, windows, known, tabs }: { inTab: boolean; windows: boolean; known: boolean; tabs: readonly SandboxTab[] },
+	{ windows, known, tabs }: { windows: boolean; known: boolean; tabs: readonly SandboxTab[] },
 ): SandboxView {
-	if (isScreen(asked)) return inTab || (!windows && known) ? "overview" : asked;
+	if (isScreen(asked)) return !windows && known ? "overview" : asked;
 	return tabs.includes(asked) ? asked : "overview";
 }
 
@@ -141,7 +141,7 @@ export interface SandboxPageProps {
 	/** Where the Files tab is, as the address names it: its folder and open file. The page keeps its own when absent. */
 	readonly filesAt?: FilesAt;
 	/** The address of the Files tab at a folder and file; with `navigate`, the tab moves through the address. */
-	readonly filesHref?: (at: FilesAt, sealed: boolean) => string;
+	readonly filesHref?: (at: FilesAt) => string;
 }
 
 /** The state, in its colour. */
@@ -234,7 +234,7 @@ export function SandboxPage({
 	const routed = navigate !== undefined && filesHref !== undefined;
 	const files = routed ? (filesAt ?? {}) : ownFiles;
 	const goFiles = (at: FilesAt) => {
-		if (routed) navigate(filesHref(at, sealed));
+		if (routed) navigate(filesHref(at));
 		else setOwnFiles(at);
 	};
 	const asked = controlled ?? own;
@@ -265,7 +265,7 @@ export function SandboxPage({
 	useFollowSandboxes(source, sandbox?.accountId, reload, { id: sandboxId, onDeleted: () => setDeleted(true) });
 
 	const windows = running && sandbox?.kind === "microvm";
-	const { access, read: readAccess, fresh: freshAccess, stale: accessStale } = useAccess(source, sandboxId, windows);
+	const { access, read: readAccess, stale: accessStale } = useAccess(source, sandboxId, windows);
 
 	const tabsShown: readonly SandboxTab[] = [
 		"overview",
@@ -274,8 +274,6 @@ export function SandboxPage({
 		"snapshots",
 		"files",
 	];
-	// Browser and Desktop each in a tab of their own, where the page can't frame them (`kantel console`).
-	const inTab = source.screens === "tab";
 	// A screen its image lacks (no desktop in it, say) is never opened: its address shows Overview, which says so.
 	const lacked =
 		sandbox !== undefined && isScreen(asked)
@@ -283,15 +281,10 @@ export function SandboxPage({
 			: false;
 	const view = lacked
 		? "overview"
-		: sandboxViewShown(asked, { inTab, windows, known: sandbox !== undefined, tabs: tabsShown });
+		: sandboxViewShown(asked, { windows, known: sandbox !== undefined, tabs: tabsShown });
 	// A screen mounts a new connection: old access is read again first. Overview shows none.
 	const opensScreens = isScreen;
 	const go = (next: SandboxView) => {
-		if (inTab && isScreen(next)) {
-			// The tab opens now and goes to the screen once fresh access is read.
-			popOut(next, undefined, freshAccess);
-			return;
-		}
 		if (opensScreens(next) && next !== view && accessStale()) readAccess();
 		if (navigate === undefined) setOwn(next);
 		else navigate(href(next));
@@ -317,15 +310,6 @@ export function SandboxPage({
 	useEffect(() => {
 		if (fellBack) navigate?.(href(view));
 	}, [fellBack]);
-
-	// Whether its files and output can be read here, or only end to end; the gateway's console may ask its chain.
-	const e2e = useLoad(
-		async () => (source.endToEnd === undefined ? false : source.endToEnd(sandboxId)),
-		[source, sandboxId],
-	);
-	// Its file browser's place goes in the address's fragment unless it's known not to be end to end: a fragment never
-	// reaches the gateway, so neither do the names of the files it reads over its own session.
-	const sealed = !(e2e.state.status === "ready" && !e2e.state.value);
 
 	const counts = useLoad(async () => {
 		const [history, log] = await Promise.all([
@@ -466,17 +450,12 @@ export function SandboxPage({
 					{label}
 				</Button>
 			) : (
-				// A page of its own in a new tab, its address to share; where the console can't frame it, the screen itself.
+				// A page of its own in a new tab, its address to share.
 				<a
 					className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
 					href={href(to)}
 					target="_blank"
 					rel="noopener"
-					onClick={(event) => {
-						if (!inTab || event.metaKey || event.ctrlKey || event.shiftKey) return;
-						event.preventDefault();
-						go(to);
-					}}
 				>
 					{icon}
 					<span className={buttonLabelClass}>{label}</span>
@@ -675,14 +654,7 @@ export function SandboxPage({
 					usageKey={state}
 				/>
 			) : view === "logs" ? (
-				<SandboxLogs
-					source={source}
-					snapshots={snapshots}
-					sandbox={sandbox}
-					now={now}
-					narrow={narrow}
-					endToEnd={e2e.state.status === "ready" && e2e.state.value}
-				/>
+				<SandboxLogs source={source} snapshots={snapshots} sandbox={sandbox} now={now} narrow={narrow} />
 			) : view === "egress" && egress !== undefined ? (
 				<EgressPage
 					source={egress}
@@ -699,11 +671,9 @@ export function SandboxPage({
 					snapshots={snapshots}
 					sandbox={sandbox}
 					now={now}
-					endToEnd={e2e.state}
-					onRecheck={e2e.reload}
 					at={files}
 					onNavigate={goFiles}
-					{...(filesHref === undefined ? {} : { href: (at: FilesAt) => filesHref(at, sealed) })}
+					{...(filesHref === undefined ? {} : { href: filesHref })}
 				/>
 			)}
 		</div>
@@ -1075,21 +1045,15 @@ function SnapshotsTab({
 }
 
 /**
- * What the Files tab shows: what's in it now while it runs, read from its host (over an E2E session where its space
- * has one: the source decides); its latest snapshot's files while it's stopped, or nothing before it has one. An
- * end-to-end sandbox's snapshots can't be read here (the host serves their contents to no one): one line says so, and
- * no snapshot is read until it's known whether it is one.
+ * What the Files tab shows: what's in it now while it runs, read from its host; its latest snapshot's files while it's
+ * stopped, or nothing before it has one.
  */
 export function filesShown(
 	sandbox: Pick<Sandbox, "state" | "snapshot">,
 	source: Pick<SandboxesSource, "files">,
-	endToEnd: Loaded<boolean>,
-): "live" | "checking" | "unchecked" | "sealed" | "snapshot" | "none" {
+): "live" | "snapshot" | "none" {
 	if (sandbox.state === "running" && source.files !== undefined) return "live";
-	if (sandbox.snapshot === undefined) return "none";
-	if (endToEnd.status === "loading") return "checking";
-	if (endToEnd.status === "error") return "unchecked";
-	return endToEnd.value ? "sealed" : "snapshot";
+	return sandbox.snapshot === undefined ? "none" : "snapshot";
 }
 
 /** What's in it now, while it runs; its latest snapshot's files while it's stopped. */
@@ -1098,8 +1062,6 @@ function FilesTab({
 	snapshots,
 	sandbox,
 	now,
-	endToEnd,
-	onRecheck,
 	at,
 	onNavigate,
 	href,
@@ -1108,34 +1070,14 @@ function FilesTab({
 	snapshots: SnapshotsSource;
 	sandbox: Sandbox;
 	now: number;
-	endToEnd: Loaded<boolean>;
-	onRecheck: () => void;
 	at: FilesAt;
 	onNavigate: (at: FilesAt) => void;
 	href?: (at: FilesAt) => string;
 }) {
-	const shown = filesShown(sandbox, source, endToEnd);
+	const shown = filesShown(sandbox, source);
 	const files = source.files;
 	// An isolate's files are its /workspace only; a microVM's open at /home/user and go up to /.
 	const browse = { at, now, onNavigate, root: filesRoot(sandbox.kind), ...(href === undefined ? {} : { href }) };
-	if (shown === "checking") return <Skeleton width="40%" />;
-	if (shown === "unchecked" && endToEnd.status === "error") {
-		return (
-			<Notice
-				level="error"
-				action={
-					<Button size="sm" onClick={onRecheck}>
-						Try again
-					</Button>
-				}
-			>
-				{messageOf(endToEnd.error, "Kantel couldn't check how to read its files.")}
-			</Notice>
-		);
-	}
-	if (shown === "sealed") {
-		return <p className="m-0 text-sm text-muted">End-to-end encrypted: start it to see its files.</p>;
-	}
 	if (shown === "live" && files !== undefined) {
 		return (
 			<div className="flex min-w-0 flex-col gap-3">

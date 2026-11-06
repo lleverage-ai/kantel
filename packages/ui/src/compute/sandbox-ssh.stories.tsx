@@ -62,13 +62,8 @@ export const WithoutCli: Story = () => <Scenario open />;
 /** Letting the key in failed: the reason, and the button to try again. */
 export const WithoutCliFails: Story = () => <Scenario open fail />;
 
-/** End to end: `kantel e2e ssh`, and no plain ssh, which the host refuses. */
-export const EndToEnd: Story = () => (
-	<Scenario access={{ ...ACCESS, ssh: `kantel e2e ssh ${ID}`, sshWithoutCli: false }} />
-);
-
-/** `kantel console`'s page: the CLI serves it, signed in already, so there's no sign-in line. */
-export const LocalConsole: Story = () => (
+/** Where there's no gateway to name (the sample data): no sign-in line. */
+export const NoSignIn: Story = () => (
 	<Scenario access={{ ssh: ACCESS.ssh, sshWithoutCli: true, desktopUrl: "", desktopViewUrl: "", browserUrl: "" }} />
 );
 

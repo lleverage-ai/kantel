@@ -77,10 +77,6 @@ function timeText(at: number, now: number): string {
 const failed = (entry: LogEntry): boolean =>
 	entry.kind === "command" && entry.command.exitCode !== undefined && entry.command.exitCode !== 0;
 
-/** Whether to say a failed command's output can't be read end to end yet: one shown has none to open. */
-export const outputUnavailable = (entries: readonly LogEntry[], endToEnd: boolean): boolean =>
-	endToEnd && entries.some((entry) => failed(entry) && entry.kind === "command" && entry.command.output === undefined);
-
 const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2 align-middle";
 
@@ -90,15 +86,12 @@ export function SandboxLogs({
 	sandbox,
 	now,
 	narrow = false,
-	endToEnd = false,
 }: {
 	source: Pick<SandboxesSource, "history">;
 	snapshots: { history(sandboxId: string): Promise<readonly SandboxSnapshot[]> };
 	sandbox: Sandbox;
 	now: number;
 	narrow?: boolean;
-	/** Its commands' output can't be read end to end yet: a line says so over a failed command's. */
-	endToEnd?: boolean;
 }) {
 	const { state, reload, pending } = useLoad(
 		() => Promise.all([source.history(sandbox.id), snapshots.history(sandbox.id)]),
@@ -160,9 +153,6 @@ export function SandboxLogs({
 					<Switch label="Follow" checked={follow} onChange={setFollow} disabled={sandbox.state !== "running"} />
 				)}
 			</div>
-			{outputUnavailable(entries, endToEnd) ? (
-				<p className="m-0 text-sm text-muted">Output isn't available end to end yet.</p>
-			) : null}
 			{entries.length === 0 ? (
 				<p className="m-0 text-sm text-muted">
 					{filter === "commands" ? "No commands have run in it yet." : "Nothing yet."}
