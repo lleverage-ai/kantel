@@ -2875,9 +2875,13 @@ func (m *Manager) snapshotsOf(sandboxID string) []snapshotMeta {
 	return out
 }
 
+// latestSnapshot is a stopped sandbox's newest automatic snapshot: its state at its last stop. A saved one, which may
+// hold an older state (a kept history entry, newer by its CreatedAt), never is.
 func (m *Manager) latestSnapshot(sandboxID string) string {
 	for _, snap := range m.snapshotsOf(sandboxID) {
-		return snap.ID
+		if snap.Kind == "auto" {
+			return snap.ID
+		}
 	}
 	return ""
 }
@@ -2986,7 +2990,8 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		return proto.SnapshotInfo{}, err
 	}
 	kept := src
-	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), Memory: src.Memory, Base: src.Base, Tier: Tier}
+	// Its own save time, and its source's state's time (TakenAt), which E2E provenance is judged on.
+	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), Memory: src.Memory, Base: src.Base, Tier: Tier}
 	if kept.Memory {
 		ok := os.Link(filepath.Join(from, "state"), filepath.Join(sdir, "state")) == nil &&
 			m.spool.link(filepath.Join(from, "mem"), filepath.Join(sdir, "mem")) == nil

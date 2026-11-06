@@ -53,6 +53,8 @@ class FakeHost {
 	 * guest agent is from before it could.
 	 */
 	processes?: (params: { [key: string]: unknown }) => unknown;
+	/** An error `snapshot.keep` answers instead of keeping, such as a conflict on its ID. */
+	keepRefusal?: { code: string; message: string };
 	receive!: (text: string) => void;
 
 	constructor(
@@ -196,6 +198,7 @@ class FakeHost {
 				this.snapshots.delete(String(p.snapshotId));
 				return answer({ ok: true });
 			case "snapshot.keep": {
+				if (this.keepRefusal !== undefined) return fail(this.keepRefusal.code, this.keepRefusal.message);
 				const from = this.snapshots.get(String(p.from));
 				if (from === undefined) return fail("not_found", `no snapshot ${String(p.from)} on this host`);
 				this.snapshots.set(String(p.snapshotId), new Map(from));
@@ -746,7 +749,7 @@ describe("saving a stopped sandbox on a host", () => {
 		await root.writeFile(sandbox.id, { path: "/home/user/app.txt", content: "v1" });
 		const stopped = await root.stopSandbox(sandbox.id, { wait: true });
 		const stopSnapshot = String(host.params.find((call) => call.method === "sandbox.stop")?.params.snapshotId);
-		return { root, host, sandbox, stopped, stopSnapshot };
+		return { service, hostId, root, host, sandbox, stopped, stopSnapshot };
 	}
 
 	it("keeps the stop's snapshot as one of the save's own on the host, which outlasts the automatic one", async () => {
@@ -773,5 +776,31 @@ describe("saving a stopped sandbox on a host", () => {
 		expect(refused.code).toBe("not_supported");
 		expect(host.calls).not.toContain("snapshot.keep");
 		expect((await root.listSnapshots({ kind: "saved" })).items).toEqual([]);
+	});
+
+	it("answers the host's refusals as Kantel's errors, and stores no save for them", async () => {
+		const { service, hostId, root, host, sandbox, stopSnapshot } = await connected(["snapshot-keep"]);
+		// The host pruned the stop's snapshot: the source is gone.
+		const pruned = host.snapshots.get(stopSnapshot);
+		host.snapshots.delete(stopSnapshot);
+		const gone = await failure(root.saveSnapshot({ name: "kept", sandboxId: sandbox.id }));
+		expect([gone.status, gone.code]).toEqual([404, "not_found"]);
+		if (pruned !== undefined) host.snapshots.set(stopSnapshot, pruned);
+
+		// A refusal frees its idempotency key: the same key, once the host takes it, saves.
+		host.keepRefusal = { code: "conflict", message: "snapshot snap_x already exists on this host" };
+		const once = { idempotencyKey: "save-kept" };
+		const refused = await failure(root.saveSnapshot({ name: "kept", sandboxId: sandbox.id }, once));
+		expect([refused.status, refused.code]).toEqual([409, "conflict"]);
+		host.keepRefusal = undefined;
+		const saved = await root.saveSnapshot({ name: "kept", sandboxId: sandbox.id }, once);
+		expect(saved).toMatchObject({ kind: "saved", name: "kept" });
+		expect((await root.saveSnapshot({ name: "kept", sandboxId: sandbox.id }, once)).id).toBe(saved.id);
+
+		// The host is away: unavailable, not the compute API's own failure.
+		service.hub.disconnect(hostId, 1001, "gone");
+		const away = await failure(root.saveSnapshot({ name: "away", sandboxId: sandbox.id }));
+		expect([away.status, away.code]).toEqual([503, "unavailable"]);
+		expect((await root.listSnapshots({ kind: "saved" })).items.map((item) => item.name)).toEqual(["kept"]);
 	});
 });

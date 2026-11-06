@@ -1141,7 +1141,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				);
 			}
 			const params: HostSnapshotKeep = { snapshotId: snapshotId(), from };
-			const snap = await hosts.hub.call<HostSnapshot>(hostId, HostMethods.snapshotKeep, params);
+			// The host's errors as Kantel's (a pruned source is `not_found`, a host away `unavailable`), an unanswered call
+			// still marked as one: the host may have made the snapshot.
+			const snap = await hosts.hub
+				.call<HostSnapshot>(hostId, HostMethods.snapshotKeep, params)
+				.catch((error: unknown) => {
+					throw kantelErrorFromHost(error);
+				});
 			// The host's own word on memory: an older automatic snapshot may have lost its own to pruning.
 			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},

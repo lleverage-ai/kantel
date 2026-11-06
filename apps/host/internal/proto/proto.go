@@ -486,6 +486,18 @@ type SnapshotInfo struct {
 	Tier      string `json:"tier"`
 	// Base is the host images version the snapshot's root filesystem is (empty when unknown: images not versioned).
 	Base string `json:"base,omitempty"`
+	// TakenAt is when the state it holds was taken, where that is before CreatedAt: a kept snapshot's (snapshot.keep)
+	// is its source's. E2E provenance is judged on it (TakenAtOrCreated), so a copy made now of older files isn't taken
+	// for a snapshot of a sandbox made since. 0: CreatedAt.
+	TakenAt int64 `json:"takenAt,omitempty"`
+}
+
+// TakenAtOrCreated is when the state a snapshot holds was taken: TakenAt, or CreatedAt where it has none.
+func (s SnapshotInfo) TakenAtOrCreated() int64 {
+	if s.TakenAt != 0 {
+		return s.TakenAt
+	}
+	return s.CreatedAt
 }
 
 // Egress is a sandbox's way out, sent with create, resume and fork.

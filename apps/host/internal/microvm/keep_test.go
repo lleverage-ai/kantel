@@ -274,3 +274,53 @@ func TestKeepSnapshotOfSpooledMemory(t *testing.T) {
 		}
 	}
 }
+
+// A kept history entry is newer by its save time than the sandbox's last stop, but holds an older state: a stopped
+// sandbox's fork, which takes its latest snapshot, takes the stop's. The kept one has its own save time, and its
+// source's taken time.
+func TestAKeptHistoryEntryIsNoStoppedSandboxsLatest(t *testing.T) {
+	f := newKeepFixture(t)
+	f.auto("snap_v1", 1, false)
+	f.auto("snap_v2", 2, true)
+	info := f.keep("snap_v1", "snap_k")
+	if info.CreatedAt <= 2 || info.TakenAt != 1 || info.SandboxID != "sbx_1" {
+		t.Fatalf("kept %+v", info)
+	}
+	if got := f.m.latestSnapshot("sbx_1"); got != "snap_v2" {
+		t.Fatalf("latest snapshot %q, want the last stop's", got)
+	}
+	// A kept copy of a kept one keeps the first source's taken time.
+	if again := f.keep("snap_k", "snap_k2"); again.TakenAt != 1 {
+		t.Fatalf("kept again %+v", again)
+	}
+}
+
+// After a reboot emptied the RAM spool, a source's memory is a symlink to nothing: the kept snapshot is its disk alone,
+// so a sandbox made from it boots rather than failing to restore.
+func TestKeepSnapshotOfMemoryLostToAReboot(t *testing.T) {
+	for _, withSpool := range []bool{true, false} {
+		f := newKeepFixture(t)
+		if withSpool {
+			f.m.spool = newSpool(filepath.Join(f.root, "spool"), 1<<20, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		}
+		f.auto("snap_a", 1, true)
+		src := filepath.Join(f.m.snapshotDir("snap_a"), "mem")
+		_ = os.Remove(src)
+		if err := os.Symlink(filepath.Join(f.root, "spool", "gone.mem"), src); err != nil {
+			t.Fatal(err)
+		}
+		if info := f.keep("snap_a", "snap_k"); info.Memory {
+			t.Fatalf("spool %v: kept a dangling memory file as memory", withSpool)
+		}
+		kept, err := f.m.readSnapshot("snap_k")
+		if err != nil || kept.Memory || kept.BundleDrives != 0 {
+			t.Fatalf("spool %v: kept meta %+v, %v", withSpool, kept, err)
+		}
+		for _, name := range []string{"state", "mem", bundleDriveFile(0)} {
+			if _, err := os.Lstat(filepath.Join(f.m.snapshotDir("snap_k"), name)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("spool %v: %s kept without memory: %v", withSpool, name, err)
+			}
+		}
+		f.read("snap_k", fc.DiskFile)
+	}
+}
