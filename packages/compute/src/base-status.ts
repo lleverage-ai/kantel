@@ -8,8 +8,9 @@
  * never patched underneath; this only says how far behind it is.
  */
 import type { computeSchema } from "@kantel/api";
+import type { SharedSnapshotBytes } from "./backend.ts";
 import { type BaseImageIndex, freshness, parseIndex } from "./base-images.ts";
-import type { BaseReports } from "./service.ts";
+import type { BaseReports, SnapshotSizeReport } from "./service.ts";
 
 /** The index's entry for the microVM host images (kernel and root file systems), which hosts report by version. */
 export const HOST_BASE_IMAGE = "host";
@@ -178,7 +179,8 @@ export interface HostSnapshotReporting {
 	recordBases(hostId: string, reports: BaseReports): Promise<void>;
 	recordSnapshotSizes(
 		hostId: string,
-		sizes: readonly { readonly ref: string; readonly sizeBytes: number }[],
+		sizes: readonly SnapshotSizeReport[],
+		shared?: readonly SharedSnapshotBytes[],
 	): Promise<void>;
 }
 
@@ -193,8 +195,11 @@ export function hostSnapshotLinks(
 	baseImages: { index(): Promise<BaseImageIndex | undefined> } | undefined,
 ) {
 	return {
-		recordSnapshotSizes: (hostId: string, sizes: readonly { readonly ref: string; readonly sizeBytes: number }[]) =>
-			service.recordSnapshotSizes(hostId, sizes),
+		recordSnapshotSizes: (
+			hostId: string,
+			sizes: readonly SnapshotSizeReport[],
+			shared?: readonly SharedSnapshotBytes[],
+		) => service.recordSnapshotSizes(hostId, sizes, shared),
 		...(baseImages === undefined
 			? {}
 			: {

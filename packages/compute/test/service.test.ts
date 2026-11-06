@@ -14,6 +14,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { restoreAsked } from "../src/machine.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
+	attributeSnapshotBytes,
 	checkShape,
 	HOST_REVOKED_REASON,
 	hourlyRate,
@@ -828,6 +829,63 @@ describe("sandboxes", () => {
 		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(4_096);
 		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(4_096);
 		expect((await tom.getSnapshot(other.id)).sizeBytes).toBe(other.sizeBytes);
+	});
+
+	it("counts each shared file once, for a saved record before an automatic one, then the one recorded first", () => {
+		const records = [
+			{ ref: "h/auto", kind: "automatic" as const, createdAt: 1, state: "ready" as const },
+			{ ref: "h/kept", kind: "saved" as const, createdAt: 2, state: "ready" as const },
+			// A manual take: saved on its host, automatic here.
+			{ ref: "h/manual", kind: "automatic" as const, createdAt: 3, state: "ready" as const },
+			{ ref: "h/older", kind: "automatic" as const, createdAt: 0, state: "ready" as const },
+		];
+		const unique = new Map([
+			["h/auto", 10],
+			["h/kept", 4],
+			["h/manual", 6],
+			["h/older", 1],
+		]);
+		const sizes = attributeSnapshotBytes(records, unique, [
+			{ refs: ["h/auto", "h/kept"], bytes: 100 },
+			{ refs: ["h/manual", "h/older"], bytes: 50 },
+			// Held by nothing recorded: counted for none.
+			{ refs: ["h/gone", "h/lost"], bytes: 7 },
+		]);
+		expect(Object.fromEntries(sizes)).toEqual({ "h/auto": 10, "h/kept": 104, "h/manual": 6, "h/older": 51 });
+	});
+
+	it("records a kept copy's size as the next refresh counts it", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const source = `${STUB_HOST_ID}/snap-auto`;
+		const kept = `${STUB_HOST_ID}/snap-kept`;
+		// A host that keeps by linking: the copy's 100 bytes of disk are its source's file.
+		const backend: SandboxBackend = {
+			...stub,
+			keepSnapshot: async () => ({
+				ref: kept,
+				sizeBytes: 104,
+				uniqueBytes: 4,
+				shared: [{ refs: [source, kept], bytes: 100 }],
+			}),
+		};
+		const { api, tom } = setup(backend, { store });
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const taken = await tom.takeSnapshot(vm.id, {});
+		await store.snapshots.update(taken.id, (current) => ({ ...current, ref: source }));
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id });
+		expect(saved.sizeBytes).toBe(104);
+		await api.service.recordSnapshotSizes(
+			STUB_HOST_ID,
+			[
+				{ ref: source, sizeBytes: 110, uniqueBytes: 10 },
+				{ ref: kept, sizeBytes: 104, uniqueBytes: 4 },
+			],
+			[{ refs: [source, kept], bytes: 100 }],
+		);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(104);
+		// Its source, automatic, is left what is its own.
+		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(10);
 	});
 
 	it("counts the sandboxes made or forked from a snapshot as its uses, deleted ones included", async () => {

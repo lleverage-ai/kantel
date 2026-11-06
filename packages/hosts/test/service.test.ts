@@ -404,6 +404,48 @@ describe("hosts service", () => {
 		expect(host.calls.filter((c) => c.method === "snapshot.list")).toHaveLength(2);
 	});
 
+	it("passes on what of each snapshot is its own and the files several share, by their refs", async () => {
+		let now = 1_000_000;
+		const { service, join } = await setup({ now: () => now });
+		const recorded: { sizes: unknown; shared: unknown }[] = [];
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordSnapshotSizes: async (_hostId, sizes, shared) => {
+				recorded.push({ sizes, shared });
+			},
+		});
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId, [HOST_FEATURES.snapshotSizes]);
+		host.snapshots = [
+			{ id: "snap-auto", sandboxId: "sbx-1", sizeBytes: 110, uniqueBytes: 10 },
+			{ id: "snap-kept", sandboxId: "sbx-1", sizeBytes: 104, uniqueBytes: 4 },
+		];
+		host.shared = [
+			{ snapshots: ["snap-auto", "snap-kept"], bytes: 100 },
+			// Nonsense from a host is dropped.
+			{ snapshots: ["snap-auto"], bytes: 5 },
+			{ snapshots: ["snap-auto", "snap-kept"], bytes: -1 },
+		];
+		host.connect();
+		await tick();
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
+		});
+		await tick();
+		now += 1;
+		expect(recorded).toEqual([
+			{
+				sizes: [
+					{ ref: `${a.hostId}/snap-auto`, sizeBytes: 110, uniqueBytes: 10 },
+					{ ref: `${a.hostId}/snap-kept`, sizeBytes: 104, uniqueBytes: 4 },
+				],
+				shared: [{ refs: [`${a.hostId}/snap-auto`, `${a.hostId}/snap-kept`], bytes: 100 }],
+			},
+		]);
+	});
+
 	it("reads no image index on a heartbeat with image patching off", async () => {
 		let now = 1_000_000;
 		const { service, join } = await setup({ now: () => now });

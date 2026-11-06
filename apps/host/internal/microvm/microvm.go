@@ -2866,7 +2866,7 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 		m.spool.cancel(spooled)
 		return "", err
 	}
-	snap.SizeBytes = snapshotBytes(sdir, nil)
+	snap.SizeBytes = snapshotBytes(sdir)
 	// Transient before the fork can take its disk: a host restarting in between must find it is no snapshot to keep.
 	if err := m.writeSnapshotMetaAs(s, snap, transient); err != nil {
 		os.RemoveAll(sdir)
@@ -3138,7 +3138,7 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 			snap.Memory = false
 		}
 	}
-	snap.SizeBytes = snapshotBytes(sdir, nil)
+	snap.SizeBytes = snapshotBytes(sdir)
 	if err := m.writeSnapshotMeta(s, snap); err != nil {
 		// Unpublished (a full disk, say): the copy is no snapshot, and nothing that lists snapshots would ever find it.
 		os.RemoveAll(sdir)
@@ -3249,54 +3249,90 @@ func (m *Manager) Snapshots(sandboxID string) []proto.SnapshotInfo {
 	return out
 }
 
-// MeasuredSnapshots is Snapshots, each with the space it takes on the disk now (snapshotSizes), not what it took when
-// it was made: memory spooled to RAM since flushed, a memory file pruned since, each file linked into several counted
-// once. For the host's snapshot.list, which the control plane reads to keep its sizes up to date.
-func (m *Manager) MeasuredSnapshots(sandboxID string) []proto.SnapshotInfo {
+// MeasuredSnapshots is Snapshots, each measured as it is on the disk now (measureSnapshots), not as it was made:
+// memory spooled to RAM since flushed, a memory file pruned since. With the groups of files several of them share, of
+// the snapshots listed, so the control plane can count each of those once, for the snapshot its own records say keeps
+// it. For the host's snapshot.list (FeatureSnapshotSizes).
+func (m *Manager) MeasuredSnapshots(sandboxID string) ([]proto.SnapshotInfo, []proto.SharedBytes) {
 	all := m.snapshotsOf("")
-	sizes := m.snapshotSizes(all)
+	held, unique, shared := m.measureSnapshots(all)
+	listed := map[string]bool{}
 	var out []proto.SnapshotInfo
 	for _, snap := range all {
 		if sandboxID != "" && snap.SandboxID != sandboxID {
 			continue
 		}
+		listed[snap.ID] = true
 		info := snap.SnapshotInfo
-		info.SizeBytes = sizes[snap.ID]
+		info.SizeBytes, info.UniqueBytes = held[snap.ID], unique[snap.ID]
 		out = append(out, info)
 	}
-	return out
-}
-
-// snapshotSizes is the space each of snaps (newest first) takes on the disk now (snapshotBytes), each file counted
-// once among them, so the sizes add up to what the snapshots take together. A file linked into several counts for one:
-// a saved snapshot before an automatic one (a kept copy, snapshot.keep, links its source's files, and it is the copy
-// that keeps them once its source is pruned or expires), then the oldest. A copy that shares disk blocks without
-// sharing the file (a reflinked copy) is counted in full, as the file system can't say which blocks are shared.
-func (m *Manager) snapshotSizes(snaps []snapshotMeta) map[string]int64 {
-	seen := map[fileID]bool{}
-	sizes := make(map[string]int64, len(snaps))
-	for _, saved := range []bool{true, false} {
-		for i := len(snaps) - 1; i >= 0; i-- {
-			if (snaps[i].Kind == "saved") == saved {
-				sizes[snaps[i].ID] = snapshotBytes(m.snapshotDir(snaps[i].ID), seen)
+	var groups []proto.SharedBytes
+	for _, group := range shared {
+		for _, id := range group.Snapshots {
+			if listed[id] {
+				groups = append(groups, group)
+				break
 			}
 		}
 	}
-	return sizes
+	return out, groups
+}
+
+// measureSnapshots measures snaps' files on the disk now (snapshotFiles): held is all a snapshot's files take, unique
+// what of that is in no other of snaps, and shared the rest, by the set of snapshots that hold it: bytes of files linked
+// into several, one entry per set of holders (sorted), so the list is bounded by how they share, not by their files.
+func (m *Manager) measureSnapshots(snaps []snapshotMeta) (held, unique map[string]int64, shared []proto.SharedBytes) {
+	type file struct {
+		bytes   int64
+		holders []string
+	}
+	files := map[fileID]*file{}
+	held, unique = map[string]int64{}, map[string]int64{}
+	for _, snap := range snaps {
+		held[snap.ID], unique[snap.ID] = 0, 0
+		snapshotFiles(m.snapshotDir(snap.ID), func(id fileID, bytes int64) {
+			held[snap.ID] += bytes
+			f := files[id]
+			if f == nil {
+				f = &file{bytes: bytes}
+				files[id] = f
+			}
+			f.holders = append(f.holders, snap.ID)
+		})
+	}
+	groups := map[string]*proto.SharedBytes{}
+	for _, f := range files {
+		if len(f.holders) == 1 {
+			unique[f.holders[0]] += f.bytes
+			continue
+		}
+		sort.Strings(f.holders)
+		key := strings.Join(f.holders, ",")
+		group := groups[key]
+		if group == nil {
+			group = &proto.SharedBytes{Snapshots: f.holders}
+			groups[key] = group
+		}
+		group.Bytes += f.bytes
+	}
+	for _, group := range groups {
+		shared = append(shared, *group)
+	}
+	sort.Slice(shared, func(i, j int) bool {
+		return strings.Join(shared[i].Snapshots, ",") < strings.Join(shared[j].Snapshots, ",")
+	})
+	return held, unique, shared
 }
 
 // fileID is a file on the host: its device and inode, the same for every hard link to it.
 type fileID struct{ dev, ino uint64 }
 
-// snapshotBytes is the space a snapshot's directory takes on the disk now: the blocks its regular files have
-// allocated (a sparse disk's holes take none). Left out: a memory file still in RAM, a symlink into the spool until
-// it is flushed to the disk; and its bundle drives, links to the bundle cache's images, which are the cache's. A file
-// in seen is counted already, and one counted here is added to it (nil: each file of this one once).
-func snapshotBytes(dir string, seen map[fileID]bool) int64 {
-	if seen == nil {
-		seen = map[fileID]bool{}
-	}
-	var total int64
+// snapshotFiles calls each with every file a snapshot's directory has on the disk now, and the blocks it has allocated
+// (a sparse disk's holes take none), each file once. Left out: a memory file still in RAM, a symlink into the spool
+// until it is flushed to the disk; and its bundle drives, links to the bundle cache's images, which are the cache's.
+func snapshotFiles(dir string, each func(id fileID, bytes int64)) {
+	seen := map[fileID]bool{}
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() || strings.HasPrefix(d.Name(), "bundle") {
 			return nil
@@ -3310,9 +3346,15 @@ func snapshotBytes(dir string, seen map[fileID]bool) int64 {
 			return nil
 		}
 		seen[id] = true
-		total += st.Blocks * 512
+		each(id, st.Blocks*512)
 		return nil
 	})
+}
+
+// snapshotBytes is all a snapshot's directory takes on the disk now (snapshotFiles), shared files included.
+func snapshotBytes(dir string) int64 {
+	var total int64
+	snapshotFiles(dir, func(_ fileID, bytes int64) { total += bytes })
 	return total
 }
 
@@ -3412,13 +3454,24 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		kept.BundleDrives, kept.BundleSlots = 0, nil
 	}
 	// Its own files in full: it shares them with its source, but it is the one kept (snapshotSizes counts them for it).
-	kept.SizeBytes = snapshotBytes(sdir, nil)
+	kept.SizeBytes = snapshotBytes(sdir)
 	raw, _ := json.MarshalIndent(kept, "", "  ")
 	if err := fsutil.WriteFileDurably(filepath.Join(sdir, "meta.json"), raw, 0o600); err != nil {
 		os.RemoveAll(sdir)
 		return proto.SnapshotInfo{}, err
 	}
-	return kept.SnapshotInfo, nil
+	// What of it is its own, and what it shares (with its source, at least): the control plane counts the shared files
+	// for one of their holders, as it does from snapshot.list, so the size it records now is the one a refresh gives.
+	answer := kept.SnapshotInfo
+	held, unique, shared := m.measureSnapshots(m.snapshotsOf(""))
+	answer.SizeBytes = held[answer.ID]
+	answer.UniqueBytes = unique[answer.ID]
+	for _, group := range shared {
+		if slices.Contains(group.Snapshots, answer.ID) {
+			answer.Shared = append(answer.Shared, group)
+		}
+	}
+	return answer, nil
 }
 
 // DeleteSnapshot removes a snapshot.

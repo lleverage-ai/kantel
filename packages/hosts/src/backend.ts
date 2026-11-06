@@ -234,6 +234,9 @@ interface HostSnapshot {
 	readonly memory?: boolean;
 	/** The host images version its root file system is (image patching); absent when unknown. */
 	readonly base?: string;
+	/** What of `sizeBytes` is its own, and the files it shares, by holder (`HOST_FEATURES.snapshotSizes`, a keep). */
+	readonly uniqueBytes?: number;
+	readonly shared?: readonly { readonly snapshots: readonly string[]; readonly bytes: number }[] | null;
 }
 
 /** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
@@ -242,6 +245,15 @@ const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
 	sizeBytes: snap.sizeBytes,
 	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
 	...(snap.memory === true ? { memory: true } : {}),
+	...(typeof snap.uniqueBytes === "number"
+		? {
+				uniqueBytes: snap.uniqueBytes,
+				shared: (snap.shared ?? []).map((group) => ({
+					refs: group.snapshots.map((id) => `${hostId}/${id}`),
+					bytes: group.bytes,
+				})),
+			}
+		: {}),
 });
 
 interface HostFileEntry {

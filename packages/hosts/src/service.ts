@@ -293,12 +293,14 @@ export interface HostComputeLink {
 	): Promise<void>;
 	/**
 	 * Updates the sizes of a host's snapshots to what they take on its disk now (`HOST_FEATURES.snapshotSizes`), from its
-	 * snapshot list, read once a connection and every `SNAPSHOT_SIZES_REFRESH_MS`. A snapshot is named by its ref,
-	 * `<hostId>/<id>` (`ComputeService.recordSnapshotSizes`).
+	 * snapshot list, read once a connection and every `SNAPSHOT_SIZES_REFRESH_MS`: each snapshot's bytes and what of them
+	 * are its own, and the files several share, by their refs. A snapshot is named by its ref, `<hostId>/<id>`
+	 * (`ComputeService.recordSnapshotSizes`).
 	 */
 	recordSnapshotSizes?(
 		hostId: string,
-		sizes: readonly { readonly ref: string; readonly sizeBytes: number }[],
+		sizes: readonly { readonly ref: string; readonly sizeBytes: number; readonly uniqueBytes?: number }[],
+		shared?: readonly { readonly refs: readonly string[]; readonly bytes: number }[],
 	): Promise<void>;
 	/**
 	 * A host's `bucket.fetch`: the bucket source with its credentials opened, or `undefined` unless the sandbox is on
@@ -544,6 +546,9 @@ export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
 /** How often a connected host's snapshot list is read again for their sizes (`HOST_FEATURES.snapshotSizes`). */
 export const SNAPSHOT_SIZES_REFRESH_MS = 10 * 60 * 1000;
 
+/** The most groups of shared files a host's snapshot list may name (`HostSharedBytes`). */
+export const MAX_SHARED_GROUPS = 10_000;
+
 function labelsOf(value: unknown): { [key: string]: string } {
 	if (value === undefined) return {};
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -726,20 +731,39 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		report(
 			(async () => {
 				const listed = await hub.call<{
-					snapshots?: readonly { id?: unknown; base?: unknown; sizeBytes?: unknown }[] | null;
+					snapshots?: readonly { id?: unknown; base?: unknown; sizeBytes?: unknown; uniqueBytes?: unknown }[] | null;
+					shared?: readonly { snapshots?: unknown; bytes?: unknown }[] | null;
 				}>(hostId, HostMethods.snapshotList, { sandboxId: "" });
+				const bytes = (value: unknown): value is number =>
+					typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 				const baseReports: { ref: string; base: string }[] = [];
-				const sizeReports: { ref: string; sizeBytes: number }[] = [];
+				const sizeReports: { ref: string; sizeBytes: number; uniqueBytes?: number }[] = [];
 				for (const snap of listed.snapshots ?? []) {
 					if (typeof snap.id !== "string") continue;
 					const ref = `${hostId}/${snap.id}`;
 					if (typeof snap.base === "string" && snap.base !== "") baseReports.push({ ref, base: snap.base });
-					if (typeof snap.sizeBytes === "number" && Number.isSafeInteger(snap.sizeBytes) && snap.sizeBytes >= 0) {
-						sizeReports.push({ ref, sizeBytes: snap.sizeBytes });
+					if (bytes(snap.sizeBytes)) {
+						sizeReports.push({
+							ref,
+							sizeBytes: snap.sizeBytes,
+							...(bytes(snap.uniqueBytes) ? { uniqueBytes: snap.uniqueBytes } : {}),
+						});
+					}
+				}
+				// The files several snapshots share, by their holders: at most one group per set of holders, so as many as
+				// the snapshots at most in practice; a list longer than that is a host's mistake, and is left out.
+				const shared: { refs: string[]; bytes: number }[] = [];
+				const groups = Array.isArray(listed.shared) ? listed.shared : [];
+				if (groups.length <= MAX_SHARED_GROUPS) {
+					for (const group of groups) {
+						const ids = group.snapshots;
+						if (!bytes(group.bytes) || !Array.isArray(ids) || ids.length < 2) continue;
+						if (!ids.every((id): id is string => typeof id === "string")) continue;
+						shared.push({ refs: ids.map((id) => `${hostId}/${id}`), bytes: group.bytes });
 					}
 				}
 				if (bases && baseReports.length > 0) await link?.recordBases?.(hostId, { snapshots: baseReports });
-				if (sizes && sizeReports.length > 0) await link?.recordSnapshotSizes?.(hostId, sizeReports);
+				if (sizes && sizeReports.length > 0) await link?.recordSnapshotSizes?.(hostId, sizeReports, shared);
 			})(),
 		);
 	};

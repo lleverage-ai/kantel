@@ -902,15 +902,18 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		var out []proto.SnapshotInfo
+		shared := []proto.SharedBytes{}
 		for _, name := range h.order {
-			// Each snapshot's size as it is on the disk now, where the tier measures it (FeatureSnapshotSizes).
+			// Each snapshot as it is on the disk now, where the tier measures it (FeatureSnapshotSizes).
 			if measured, ok := h.tiers[name].(SnapshotMeasurer); ok {
-				out = append(out, measured.MeasuredSnapshots(p.SandboxID)...)
+				snaps, groups := measured.MeasuredSnapshots(p.SandboxID)
+				out = append(out, snaps...)
+				shared = append(shared, groups...)
 			} else {
 				out = append(out, h.tiers[name].Snapshots(p.SandboxID)...)
 			}
 		}
-		return map[string]any{"snapshots": out}, nil
+		return map[string]any{"snapshots": out, "shared": shared}, nil
 	case proto.MethodSnapshotSave:
 		p, err := decode[proto.SnapshotParams](params)
 		if err != nil {
@@ -1005,5 +1008,5 @@ var _ = exec.Command
 // SnapshotMeasurer is a tier that measures its snapshots as they are on the disk now (FeatureSnapshotSizes): the
 // host's snapshot.list answers its snapshots with those sizes, not the ones they had when they were made.
 type SnapshotMeasurer interface {
-	MeasuredSnapshots(sandboxID string) []proto.SnapshotInfo
+	MeasuredSnapshots(sandboxID string) ([]proto.SnapshotInfo, []proto.SharedBytes)
 }
