@@ -135,6 +135,8 @@ function sizedBackend(options: { oldHost?: boolean } = {}) {
 	const released: string[] = [];
 	const failing = { deletes: false };
 	const takes = { count: 0, gate: undefined as Promise<void> | undefined };
+	// What the host says each snapshot takes in full now (`snapshotSizes`), or that it can't answer.
+	const measured = { sizes: undefined as Map<string, number> | undefined, offline: false };
 	const sized = (taken: TakenSnapshot): TakenSnapshot => ({
 		...taken,
 		sizeBytes: next.bytes,
@@ -152,13 +154,17 @@ function sizedBackend(options: { oldHost?: boolean } = {}) {
 			await takes.gate;
 			return taken;
 		},
+		snapshotSizes: async () => {
+			if (measured.offline) throw new KantelError("unavailable", "The host is away");
+			return measured.sizes;
+		},
 		deleteSnapshot: async (ref) => {
 			if (failing.deletes) throw new KantelError("unavailable", "The host is away");
 			released.push(ref);
 			await stub.deleteSnapshot(ref);
 		},
 	};
-	return { backend, next, released, failing, takes };
+	return { backend, next, released, failing, takes, measured };
 }
 
 /**
@@ -3980,6 +3986,36 @@ describe("hosts", () => {
 		await limit(122);
 		const second = await copy("second");
 		expect(second.state).toBe("ready");
+	});
+
+	it("reads the full size of a save recorded before full sizes were from its host, refusing when it can't", async () => {
+		const { store, next, measured, takes, tom, sandbox, copy, limit } = await linkingCopies();
+		// A holds the 60 MiB both copies share; B, beside it, was recorded at its own 1 MiB, before full sizes were.
+		const a = await copy("a");
+		const b = await copy("b");
+		const bRef = await refOf(store, b.id);
+		for (const old of [a, b]) {
+			await store.snapshots.update(old.id, ({ fullSizeBytes: _, ...current }) => current);
+		}
+		await tom.deleteSnapshot(a.id);
+		await limit(100);
+		// An unrelated 70 MiB would fit were B counted at 1 MiB; the host says it takes 61, so it doesn't.
+		measured.sizes = new Map([[bRef, 61 * MiB]]);
+		next.bytes = 70 * MiB;
+		next.unique = undefined;
+		const refused = await failure(tom.saveSnapshot({ name: "big", sandboxId: sandbox.id }));
+		expect(refused.code).toBe("exhausted");
+		expect(refused.message).toContain("has 61 MiB; this one is 70 MiB");
+		expect((await store.snapshots.get(b.id))?.fullSizeBytes).toBe(61 * MiB);
+		// A host that can't answer refuses the save, nothing taken, rather than count less.
+		await store.snapshots.update(b.id, ({ fullSizeBytes: _, ...current }) => current);
+		measured.offline = true;
+		const before = takes.count;
+		expect((await failure(tom.saveSnapshot({ name: "big", sandboxId: sandbox.id }))).code).toBe("unavailable");
+		expect(takes.count).toBe(before);
+		// With no limit, the host isn't asked.
+		await limit(null);
+		expect((await tom.saveSnapshot({ name: "big", sandboxId: sandbox.id })).state).toBe("ready");
 	});
 
 	it("counts a save still being admitted at its full size, and frees it once withdrawn", async () => {

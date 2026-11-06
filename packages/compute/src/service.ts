@@ -4320,6 +4320,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return held;
 	}
 
+	/**
+	 * `saved` with a full size for each live save on `hostId` recorded before full sizes were (`fullSizeBytes`), whose
+	 * `sizeBytes` may count files it shares for another holder only: read from the host now (`snapshotSizes`, as the
+	 * refresh reads it) and written back. A host that doesn't measure its snapshots never attributed their sizes, which
+	 * stand. A host that can't answer refuses the save, `unavailable`, rather than count less than the saves keep.
+	 */
+	async function withFullSizes(hostId: string, saved: readonly StoredSnapshot[]): Promise<readonly StoredSnapshot[]> {
+		const legacy: StoredSnapshot[] = [];
+		for (const record of saved) {
+			if (record.fullSizeBytes !== undefined || record.state === "deleting" || record.ref === undefined) continue;
+			if ((await hostOfSnapshot(record)) === hostId) legacy.push(record);
+		}
+		if (legacy.length === 0 || backend.snapshotSizes === undefined) return saved;
+		let sizes: ReadonlyMap<string, number> | undefined;
+		try {
+			sizes = await backend.snapshotSizes(hostId);
+		} catch {
+			throw new KantelError(
+				"unavailable",
+				"The host couldn't say how much its saved snapshots take, which its limit on saved snapshots needs. Try again once it's back.",
+			);
+		}
+		if (sizes === undefined) return saved;
+		const filled = new Map<string, StoredSnapshot>();
+		for (const record of legacy) {
+			const fullSizeBytes = record.ref === undefined ? undefined : sizes.get(record.ref);
+			if (fullSizeBytes === undefined) continue;
+			filled.set(record.id, { ...record, fullSizeBytes });
+			await store.snapshots
+				.update(record.id, (current) =>
+					current.ref === record.ref && current.fullSizeBytes === undefined ? { ...current, fullSizeBytes } : undefined,
+				)
+				.catch(() => undefined);
+		}
+		return saved.map((record) => filled.get(record.id) ?? record);
+	}
+
 	/** A save's full size, its shared files included, which a host's limit counts it at (`fullSizeBytes`). */
 	const fullSize = (record: StoredSnapshot): number => record.fullSizeBytes ?? record.sizeBytes ?? 0;
 
@@ -4372,8 +4409,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (hostId === undefined) return undefined;
 		const limit = (await store.hosts.get(hostId))?.savedSnapshotBytesLimit;
 		if (limit === undefined) return undefined;
-		const records = (await store.snapshots.list({ accountId, kind: "saved" })).filter(
-			(saved) => saved.id !== replacing?.id && saved.id !== adding?.id,
+		const records = await withFullSizes(
+			hostId,
+			(await store.snapshots.list({ accountId, kind: "saved" })).filter(
+				(saved) => saved.id !== replacing?.id && saved.id !== adding?.id,
+			),
 		);
 		const held = await savedRefsOn(hostId, records, fullSize);
 		let total = 0;
@@ -7250,7 +7290,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
 					sizeBytes =
 						kept === undefined ? source.sizeBytes : await keptSize(kept, existing).catch(() => kept.sizeBytes);
-					fullSizeBytes = kept === undefined ? (source.fullSizeBytes ?? source.sizeBytes) : kept.sizeBytes;
+					// Sharing its source's ref: the source's full size, where recorded (else read from the host when counted).
+					fullSizeBytes = kept === undefined ? source.fullSizeBytes : kept.sizeBytes;
 					base = kept?.base ?? source.base;
 					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);

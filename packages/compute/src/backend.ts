@@ -639,6 +639,13 @@ export interface SandboxBackend {
 	 * when the host drops the source's bytes.
 	 */
 	keepSnapshot?(ref: string): Promise<TakenSnapshot | undefined>;
+	/**
+	 * The full size of each snapshot on a host now (all its files, shared ones included), by ref: what the periodic
+	 * refresh reads (`snapshot.list`), asked for when a host's limit on saved bytes must count a save recorded before
+	 * full sizes were (`savedBytesOver`). `undefined` when the host doesn't measure its snapshots, whose recorded sizes
+	 * then count no file for one holder only. Throws when the host can't answer. Absent: the same as `undefined`.
+	 */
+	snapshotSizes?(hostId: string): Promise<ReadonlyMap<string, number> | undefined>;
 	listSnapshotFiles(ref: string, path: string): Promise<BackendFileEntry[]>;
 	readSnapshotFile(ref: string, path: string): Promise<Uint8Array>;
 	deleteSnapshot(ref: string): Promise<void>;

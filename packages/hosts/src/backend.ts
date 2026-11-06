@@ -1201,6 +1201,27 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// The host's own word on memory: an older automatic snapshot may have lost its own to pruning.
 			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},
+		// Each snapshot's full size on the host now, as the refresh reads it; a host that doesn't measure them, none.
+		async snapshotSizes(hostId) {
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.snapshotSizes)) return undefined;
+			const listed = await hosts.hub
+				.call<{ snapshots?: readonly { id?: unknown; sizeBytes?: unknown }[] | null }>(
+					hostId,
+					HostMethods.snapshotList,
+					{ sandboxId: "" },
+				)
+				.catch((error: unknown) => {
+					throw kantelErrorFromHost(error);
+				});
+			const sizes = new Map<string, number>();
+			for (const snap of listed.snapshots ?? []) {
+				const { id, sizeBytes } = snap;
+				if (typeof id !== "string" || typeof sizeBytes !== "number") continue;
+				if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) continue;
+				sizes.set(`${hostId}/${id}`, sizeBytes);
+			}
+			return sizes;
+		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);
 			const { entries } = await hosts.hub.call<{ entries: HostFileEntry[] | null }>(hostId, "snapshot.tree", {
