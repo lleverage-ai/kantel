@@ -4396,9 +4396,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function noteFiles(taken: TakenSnapshot, sandboxHost: string | undefined): Promise<void> {
 		const hostId = refHost(taken.ref) ?? sandboxHost;
 		if (hostId === undefined || taken.uniqueBytes === undefined) return;
-		await store.hosts
-			.update(hostId, (current) => ({ ...current, snapshotFiles: withTaken(current.snapshotFiles, taken) }))
-			.catch(() => undefined);
+		try {
+			// The refs still there: those a record names, and those the host's answer names (bytes a delete couldn't
+			// remove are still shared).
+			const alive = new Set<string>([taken.ref, ...(taken.shared ?? []).flatMap((group) => group.refs)]);
+			for (const record of await store.snapshots.list()) if (record.ref !== undefined) alive.add(record.ref);
+			await store.hosts.update(hostId, (current) => ({
+				...current,
+				snapshotFiles: withTaken(current.snapshotFiles, taken, alive),
+			}));
+		} catch {
+			// Left to the next refresh.
+		}
 	}
 
 	/**
@@ -8604,17 +8613,46 @@ export function retainedBytes(layout: SnapshotFileLayout | undefined, refs: Read
 }
 
 /**
+ * `layout` as the host has it now that only `alive` refs remain (refs a record still names; a host measures only the
+ * snapshots it still has): each group's holders without the gone ones, a group left with one holder its own files and
+ * one with none dropped, and groups left with the same holders merged. A shared file is then named by the holders
+ * that still hold it, as a host's next answer names it.
+ */
+export function withoutGone(
+	layout: SnapshotFileLayout | undefined,
+	alive: ReadonlySet<string>,
+): SnapshotFileLayout | undefined {
+	if (layout === undefined) return undefined;
+	const own: { [ref: string]: number } = {};
+	for (const [ref, bytes] of Object.entries(layout.own)) if (alive.has(ref)) own[ref] = bytes;
+	const groups = new Map<string, SharedSnapshotBytes>();
+	for (const group of layout.shared) {
+		const refs = [...new Set(group.refs.filter((ref) => alive.has(ref)))].sort();
+		const [only] = refs;
+		if (refs.length === 1 && only !== undefined) own[only] = (own[only] ?? 0) + group.bytes;
+		if (refs.length < 2) continue;
+		const key = refs.join(" ");
+		groups.set(key, { refs, bytes: (groups.get(key)?.bytes ?? 0) + group.bytes });
+	}
+	return { own, shared: [...groups.values()] };
+}
+
+/**
  * `layout` with a new snapshot's answer in it (`TakenSnapshot.uniqueBytes`, `shared`): its own files, and each group
- * of files it now shares, taken out of the group (or the one ref's own files) they were in before it. Undefined, or as
- * it was, when the answer doesn't say how its files are shared.
+ * of files it now shares, taken out of the group (or the one ref's own files) they were in before it. The layout is
+ * first reconciled with the refs still `alive` (`withoutGone`), so a group whose holder was deleted, withdrawn or
+ * replaced since the last refresh matches the answer, which names only the snapshots the host still has. Undefined,
+ * or as it was, when the answer doesn't say how its files are shared.
  */
 export function withTaken(
 	layout: SnapshotFileLayout | undefined,
 	taken: TakenSnapshot,
+	alive?: ReadonlySet<string>,
 ): SnapshotFileLayout | undefined {
 	if (taken.uniqueBytes === undefined) return layout;
-	const own: { [ref: string]: number } = { ...layout?.own, [taken.ref]: taken.uniqueBytes };
-	let shared = [...(layout?.shared ?? [])];
+	const current = alive === undefined ? layout : withoutGone(layout, alive);
+	const own: { [ref: string]: number } = { ...current?.own, [taken.ref]: taken.uniqueBytes };
+	let shared = [...(current?.shared ?? [])];
 	const same = (a: readonly string[], b: readonly string[]) =>
 		a.length === b.length && a.every((ref) => b.includes(ref));
 	for (const group of taken.shared ?? []) {
