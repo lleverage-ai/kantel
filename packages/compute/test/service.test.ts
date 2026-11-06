@@ -1361,10 +1361,10 @@ describe("sandboxes", () => {
 });
 
 describe("idle stop", () => {
-	function clocked(store?: ReturnType<typeof createMemoryStore>) {
+	function clocked(store?: ReturnType<typeof createMemoryStore>, backend: SandboxBackend = createStubBackend()) {
 		const clock = { at: Date.UTC(2026, 0, 1) };
 		const api = createComputeApi({
-			backend: createStubBackend(),
+			backend,
 			...(store === undefined ? {} : { store }),
 			authenticatePerson: async (request) =>
 				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
@@ -1430,6 +1430,35 @@ describe("idle stop", () => {
 		expect(resumed.reason).toBeUndefined();
 		expect(resumed.lastActiveAt).toBe(clock.at);
 		expect(await api.service.portNotRunning(sandbox.id)).toBeUndefined();
+	});
+
+	it("doesn't count reading its processes as a use, so an open metrics dialog doesn't hold off its idle stop", async () => {
+		const stub = createStubBackend();
+		const { clock, tom, after } = clocked(undefined, {
+			...stub,
+			processes: async () => ({
+				processes: [{ pid: 1, command: "/sbin/init", cpuPercent: 0, memoryBytes: 4096 }],
+				total: 1,
+			}),
+		});
+		const started = clock.at;
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			autoStopMinutes: null,
+			idleStopMinutes: 5,
+			wait: true,
+		});
+		// A dialog left open reads them every 10 seconds; past five minutes it stops all the same.
+		for (let read = 0; read < 30; read++) {
+			await after(10_000);
+			expect((await tom.listSandboxProcesses(sandbox.id)).total).toBe(1);
+		}
+		expect((await tom.getSandbox(sandbox.id)).lastActiveAt).toBe(started);
+		await after(60_000);
+		const stopped = await tom.getSandbox(sandbox.id);
+		expect([stopped.state, stopped.reason]).toEqual(["stopped", "idle-stop"]);
+		// And then there are none to read.
+		expect((await failure(tom.listSandboxProcesses(sandbox.id))).details).toMatchObject({ code: "sandbox_stopped" });
 	});
 
 	it("counts relayed traffic, writing it at most once a window and the rest at the sweep", async () => {
