@@ -4134,21 +4134,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Carries on a person's account deletion, if no other gateway is: a pass, then the next one's time (the last pass,
 	 * after the first; a retry, after a failure). The deletion's record goes once its last pass is done.
 	 */
-	/** The soonest a running deletion's next pass is due, or undefined with none. */
+	/**
+	 * The soonest a running deletion's next pass can be taken, or undefined with none: its due time, or, while a pass
+	 * holds it, when that pass's lease runs out (should it die, the next takes over then).
+	 */
 	async function nextDeletionDue(): Promise<number | undefined> {
-		const due = (await store.deletions.list({ stage: "running" })).map((deletion) => deletion.dueAt);
+		const due = (await store.deletions.list({ stage: "running" })).map((deletion) =>
+			Math.max(deletion.dueAt, deletion.lease?.until ?? 0),
+		);
 		return due.length === 0 ? undefined : Math.min(...due);
 	}
 
-	/** Tells the deployment when to wake for the next deletion pass (`ComputeServiceOptions.wakeAt`). */
-	function wakeForDeletions(): void {
-		if (options.wakeAt === undefined) return;
-		const wake = options.wakeAt;
-		keepGoing(
-			nextDeletionDue().then((at) => {
-				if (at !== undefined) return wake(at);
-			}),
-		);
+	/** Asks the deployment to wake at `at` (`ComputeServiceOptions.wakeAt`), and waits: a failure is the caller's. */
+	async function wake(at: number): Promise<void> {
+		await options.wakeAt?.(at);
+	}
+
+	/** Asks the deployment to wake for the soonest next deletion pass. */
+	async function wakeForDeletions(): Promise<void> {
+		const at = await nextDeletionDue();
+		if (at !== undefined) await wake(at);
 	}
 
 	async function carryOnDeletion(userId: string): Promise<void> {
@@ -4164,7 +4169,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 		if (job === undefined) return;
 		const mine = (current: StoredDeletion) => current.lease?.token === token;
-		if (job.stage === "done") return;
+		// A wake for when this lease runs out, before any work: should this pass die, the next takes over then.
+		await wake(job.lease?.until ?? now() + DELETION_LEASE_MS);
 		const released = ({ lease: _lease, ...current }: StoredDeletion) => current;
 		try {
 			await deletionPass(job);
@@ -4180,7 +4186,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						}
 					: undefined,
 			);
-			wakeForDeletions();
+			await wakeForDeletions();
 			throw error;
 		}
 		if (job.clearedAt === undefined) {
@@ -4189,7 +4195,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const { lastError: _error, ...rest } = released(current);
 				return { ...rest, clearedAt: now(), dueAt: now() + DELETION_LAST_PASS_MS, attempts: 0 };
 			});
-			wakeForDeletions();
+			await wakeForDeletions();
 		} else {
 			// Done: kept as the user ID alone, for good, so it is never let in or made afresh again.
 			await store.deletions.update(userId, (current) =>
@@ -5095,6 +5101,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				) {
 					throw new KantelError("conflict", "Delete your sandboxes, saved snapshots and bundles first");
 				}
+				// A wake first, covering the first pass's lease: should it be cut off, the deletion is carried on with no
+				// request needed. One that can't be arranged refuses the deletion before anything changes.
+				await wake(now() + DELETION_LEASE_MS);
 				await store.deletions.insert({
 					id: person.userId,
 					stage: "running",

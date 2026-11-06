@@ -2413,6 +2413,55 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect(await store.users.get("usr_ann")).toBeUndefined();
 	});
 
+	it("is woken for after a first pass cut short, and finished by its wakes with no request", async () => {
+		const store = await make();
+		const wakes: number[] = [];
+		const deleted: string[] = [];
+		const { api, ann } = setup(undefined, {
+			store,
+			wakeAt: (at) => void wakes.push(at),
+			deletePerson: async (userId) => void deleted.push(userId),
+		});
+		const personal = (await ann.getCaller()).accountId;
+		const listWebhooks = store.webhooks.list.bind(store.webhooks);
+		let failOnce = true;
+		store.webhooks.list = async (where) => {
+			if (failOnce) {
+				failOnce = false;
+				throw new Error("the gateway went away");
+			}
+			return listWebhooks(where);
+		};
+		const before = Date.now();
+		await ann.deleteCaller();
+		// A wake was asked for before anything changed, within a lease of the start.
+		expect(wakes.length).toBeGreaterThan(0);
+		expect(Math.min(...wakes)).toBeLessThanOrEqual(before + 5 * 60_000 + 1000);
+		// Each wake carries the deletion on (as the hosted alarm does), until it is done.
+		for (let round = 0; round < 5 && (await store.deletions.get("usr_ann"))?.stage === "running"; round++) {
+			await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({ ...current, dueAt: 0 }));
+			await api.service.carryOnDeletions();
+		}
+		expect((await store.deletions.get("usr_ann"))?.stage).toBe("done");
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(deleted).toContain("usr_ann");
+	});
+
+	it("refuses the deletion, changing nothing, when no wake can be arranged", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, {
+			store,
+			wakeAt: () => {
+				throw new Error("no alarm");
+			},
+		});
+		const personal = (await ann.getCaller()).accountId;
+		await expect(ann.deleteCaller()).rejects.toBeDefined();
+		expect(await store.deletions.get("usr_ann")).toBeUndefined();
+		expect((await store.accounts.get(personal))?.closedAt).toBeUndefined();
+		expect((await ann.getCaller()).accountId).toBe(personal);
+	});
+
 	it("joins no host with a token whose account has closed", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
