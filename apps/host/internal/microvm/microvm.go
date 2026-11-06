@@ -319,7 +319,11 @@ type Manager struct {
 	// statfs measures the file system a stop's snapshot goes on (roomForSnapshot): syscall.Statfs when nil, tests
 	// replace it.
 	statfs func(path string, st *syscall.Statfs_t) error
-	spool  *spool
+	// snapshotRoom guards snapshotReserved: the bytes stops' automatic snapshots have been let copy and haven't
+	// finished copying, which the file system's free space doesn't show yet (roomForSnapshot).
+	snapshotRoom     sync.Mutex
+	snapshotReserved int64
+	spool            *spool
 	// inUse is held (read) from picking a template until restoring it, so a background rebuild swaps it in between
 	// creates (base.go): a named size's (made in New) or a shared template's (made on first use), by name.
 	inUse map[string]*sync.RWMutex
@@ -2912,16 +2916,22 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
 	}
 	vm := s.vmDir()
+	release := func() {}
 	if fromStop {
-		if err := m.roomForSnapshot(s, filepath.Join(vm, fc.DiskFile)); err != nil {
+		var err error
+		if release, err = m.roomForSnapshot(s, filepath.Join(vm, fc.DiskFile)); err != nil {
 			return err
 		}
 	}
 	sdir := m.snapshotDir(snap.ID)
 	if err := os.MkdirAll(sdir, 0o700); err != nil {
+		release()
 		return err
 	}
-	if err := copySparse(filepath.Join(vm, fc.DiskFile), filepath.Join(sdir, fc.DiskFile)); err != nil {
+	err := copySparse(filepath.Join(vm, fc.DiskFile), filepath.Join(sdir, fc.DiskFile))
+	// Copied (its blocks now show in the free space) or not: the reservation has done its job either way.
+	release()
+	if err != nil {
 		os.RemoveAll(sdir)
 		return err
 	}
@@ -2952,24 +2962,37 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 const snapshotHeadroom = 10 << 30
 
 // roomForSnapshot refuses a stop's snapshot when the file system it goes on has less free than the sandbox's disk
-// takes (its allocated blocks, which a sparse copy writes again) and snapshotHeadroom: copied, it would fill the disk
-// every sandbox on the host writes to. A file system that can't be measured is let through.
-func (m *Manager) roomForSnapshot(s *sandbox, disk string) error {
+// takes (its allocated blocks, which a sparse copy writes again) and snapshotHeadroom, counting the copies other stops
+// have been let make and haven't finished: copied, it would fill the disk every sandbox on the host writes to. Let
+// through, its copy's size is reserved until release is called, once the copy is done or has failed. A file system
+// that can't be measured is let through.
+func (m *Manager) roomForSnapshot(s *sandbox, disk string) (release func(), err error) {
 	statfs := m.statfs
 	if statfs == nil {
 		statfs = syscall.Statfs
 	}
+	size := diskUsage(disk)
+	m.snapshotRoom.Lock()
+	defer m.snapshotRoom.Unlock()
 	var st syscall.Statfs_t
 	if err := statfs(filepath.Join(m.cfg.Root, "snapshots"), &st); err != nil {
-		return nil
+		return func() {}, nil
 	}
-	free := int64(st.Bavail) * st.Bsize
-	need := diskUsage(disk) + snapshotHeadroom
-	if free >= need {
-		return nil
+	free := int64(st.Bavail)*st.Bsize - m.snapshotReserved
+	need := size + snapshotHeadroom
+	if free < need {
+		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", need)
+		return nil, &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
 	}
-	m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", need)
-	return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, free>>30, diskUsage(disk)>>30, snapshotHeadroom>>30)}
+	m.snapshotReserved += size
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.snapshotRoom.Lock()
+			m.snapshotReserved -= size
+			m.snapshotRoom.Unlock()
+		})
+	}, nil
 }
 
 func (m *Manager) snapshotsOf(sandboxID string) []snapshotMeta {

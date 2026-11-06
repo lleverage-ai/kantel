@@ -234,3 +234,53 @@ func TestCopySparseKeepsHoles(t *testing.T) {
 		t.Fatalf("the copy takes %d bytes: its holes were filled", diskUsage(dst))
 	}
 }
+
+// Stops' snapshots copying at once share the free space: one let through reserves its copy until it is done, so a
+// second can't be let through against space the first is about to take, and a failed copy gives its reservation back.
+func TestStopSnapshotsReserveTheirRoom(t *testing.T) {
+	m, s := stoppedSandbox(t)
+	disk := filepath.Join(s.vmDir(), fc.DiskFile)
+	if err := os.WriteFile(disk, make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	size := diskUsage(disk)
+	if size <= 0 {
+		t.Skip("no allocated blocks to measure on this file system")
+	}
+	// Room for one copy and its headroom, not two.
+	m.statfs = func(_ string, st *syscall.Statfs_t) error {
+		st.Bsize, st.Bavail = 1, uint64(snapshotHeadroom+size+size/2)
+		return nil
+	}
+	first, err := m.roomForSnapshot(s, disk)
+	if err != nil {
+		t.Fatalf("the first: %v", err)
+	}
+	var perr *proto.Error
+	if _, err := m.roomForSnapshot(s, disk); !errors.As(err, &perr) || perr.Code != proto.ErrCapacity {
+		t.Fatalf("a second while the first copies: %v, want a capacity error", err)
+	}
+	first()
+	first() // once only
+	second, err := m.roomForSnapshot(s, disk)
+	if err != nil {
+		t.Fatalf("once the first is done: %v", err)
+	}
+	second()
+	if m.snapshotReserved != 0 {
+		t.Fatalf("%d bytes still reserved", m.snapshotReserved)
+	}
+
+	// A copy that fails (its source gone) gives its room back.
+	broken := proto.SnapshotInfo{ID: "snap_broken", SandboxID: s.meta.ID, Kind: "auto"}
+	if err := os.Remove(disk); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveSnapshot(s, &broken, true); err == nil {
+		t.Fatal("a copy of a missing disk succeeded")
+	}
+	absent(t, m.snapshotDir(broken.ID))
+	if m.snapshotReserved != 0 {
+		t.Fatalf("a failed copy left %d bytes reserved", m.snapshotReserved)
+	}
+}
