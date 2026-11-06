@@ -1,0 +1,393 @@
+---
+// The hero's story: what Kantel does in six short scenes, each under a caption whose words rise in. Your agent asks
+// for a computer; the heavy work runs in sandboxes, forked to try fixes at once; a sandbox has a desktop and browser
+// for computer use; secrets reach only where they're bound, through the egress proxy; it all runs on machines you
+// own; and a snapshot starts the next sandbox in a second. src/scripts/hero-story.js plays it, and the data-* timings
+// below (seconds from each scene's start) are its script.
+//
+// It sits on a pane of frosted glass over the pixel field (.glass, below). Each scene is centred in the stage (its data-frame, measured
+// once laid out), the stage in the card, and the caption under it, over a timeline of the scenes.
+//
+// It's the demo video's best moments (apps/site/video) as live HTML on the page's own ground, so it sits in the hero
+// over the pixel field. The pieces of product are the console's, in its dark theme (src/styles/mocks.css), with copy
+// and names from the console and the docs. The stage is laid out at 520 × 400 (w-130 h-100) and scaled to its column.
+// One picture to assistive tech, described by its label.
+import "../styles/mocks.css";
+import lockupOnDark from "../assets/brand/kantel-lockup-horizontal-on-dark.svg?raw";
+
+interface Props {
+	id?: string;
+	class?: string;
+}
+const { id, class: className } = Astro.props;
+const lockup = lockupOnDark.replace("<svg ", '<svg class="h-5 w-auto" aria-hidden="true" ');
+
+const scenes = [
+	{ id: "agent", dur: 6, caption: ["Your agent asks for", "a computer."] },
+	{ id: "fork", dur: 6, caption: ["Heavy work runs", "in sandboxes."] },
+	{ id: "desktop", dur: 6, caption: ["It gets a", "desktop and browser."] },
+	{ id: "secrets", dur: 7, caption: ["Secrets it", "never sees."] },
+	{ id: "hosts", dur: 6, caption: ["On machines", "you own."] },
+	{ id: "snapshot", dur: 6, caption: ["Set up once,", "start in a second."] },
+];
+const dur = Object.fromEntries(scenes.map((s) => [s.id, s.dur]));
+
+const fixes = [
+	{ name: "fix-1", result: "2 failing", ok: false, done: 3.0, seed: 1.2 },
+	{ name: "fix-2", result: "1 failing", ok: false, done: 3.3, seed: 2.7 },
+	{ name: "fix-3", result: "All 1,287 passing", ok: true, done: 3.6, seed: 4.1 },
+	{ name: "fix-4", result: "3 failing", ok: false, done: 3.9, seed: 5.6 },
+];
+
+const hosts = [
+	{ name: "homelab", system: "Debian 13, x86_64", left: "left-0", at: 0.3, lit: 8 },
+	{ name: "build-01", system: "Ubuntu 24.04", left: "left-45", at: 0.8, lit: 6 },
+	{ name: "fsn1-04", system: "Ubuntu 24.04, 48 vCPU", left: "left-90", at: 1.3, lit: 10 },
+];
+// The order a host's cells light in, so they fill like sandboxes being placed rather than left to right.
+const cellOrder = [3, 8, 0, 10, 5, 1, 11, 6, 2, 9, 4, 7];
+
+const kids = [0, 1, 2, 3, 4, 5].map((i) => ({
+	left: i % 2 === 0 ? "left-62" : "left-97",
+	top: ["top-6", "top-25", "top-44"][Math.floor(i / 2)],
+	x: i % 2 === 0 ? 248 : 388,
+	y: [52, 128, 204][Math.floor(i / 2)],
+	at: 1.8 + i * 0.2,
+}));
+const images = ["debian:trixie", "alpine:3.22", "python:3.13-slim", "ubuntu:24.04"];
+
+const label =
+	"An animation of Kantel at work, in six scenes. A coding agent asks Kantel for a microVM and runs the tests in it. It forks the sandbox into four to try four fixes at once, and one passes. The agent fills in a form in a sandbox's own desktop browser. A protected token stays a placeholder inside the sandbox; the egress proxy swaps in the real value only for the host it's bound to and refuses it anywhere else. Three Linux machines join as hosts by connecting out, with no ports to open. A saved snapshot starts six sandboxes in under a second, and any Linux image can boot as a microVM.";
+---
+
+<figure
+	id={id}
+	class:list={["glass m-0 rounded-card p-6 select-none sm:p-8", className]} role="img" aria-label={label} data-hero-story>
+	<div data-stage class="relative aspect-13/10 w-full">
+		<div data-stage-inner class="absolute top-0 left-0 h-100 w-130 origin-top-left text-(--kt-text)">
+			<!-- 1. The agent's terminal. -->
+			<div data-scene="agent" data-dur={dur.agent} class="invisible absolute inset-0">
+				<div data-frame class="absolute inset-0">
+				<div class="m-card absolute inset-x-0 top-6 overflow-hidden shadow-2xl">
+					<div class="flex items-center gap-2 border-b m-line px-4 py-2.5 m-sm m-muted">
+						<span class="mr-1 flex gap-1.5">
+							<span class="size-2.5 rounded-full bg-(--kt-border-strong)"></span>
+							<span class="size-2.5 rounded-full bg-(--kt-border-strong)"></span>
+							<span class="size-2.5 rounded-full bg-(--kt-border-strong)"></span>
+						</span>
+						<span class="m-fg m-strong">Your agent</span>
+						<span>~/acme/app</span>
+					</div>
+					<div class="m-code px-5 py-4 whitespace-normal">
+						<div class="whitespace-pre"><span class="text-orange">&gt;</span> <span data-type="0.3" data-dur="1.6">Run the tests on a clean machine and fix what fails.</span><span data-caret class="ml-0.5 inline-block h-4 w-2 translate-y-0.5 bg-orange"></span></div>
+						<div class="mt-3 whitespace-pre" data-in="2.2"><span class="text-orange">●</span> kantel <span class="f">sandbox_create</span>  microvm, 16 vCPU, 32 GB</div>
+						<div class="whitespace-pre" data-in="2.8"><span class="s">  ✓ sbx_7f3k2m9q running in 1.2 s</span></div>
+						<div class="whitespace-pre" data-in="3.4"><span class="text-orange">●</span> kantel <span class="f">sandbox_exec</span>  pnpm test</div>
+						<div class="whitespace-pre" data-in="4.1">  1,284 passing, <span class="text-(--kt-status-error)">3 failing</span></div>
+						<div class="whitespace-pre" data-in="4.7"><span class="text-orange">●</span> kantel <span class="f">sandbox_fork</span>  count 4</div>
+					</div>
+				</div>
+				</div>
+			</div>
+
+			<!-- 2. Four forks, one fix each; one passes. -->
+			<div data-scene="fork" data-dur={dur.fork} class="invisible absolute inset-0">
+				<div data-frame class="absolute inset-0">
+				<div class="absolute inset-x-0 top-6 grid grid-cols-2 gap-4">
+					{
+						fixes.map((fix, i) => (
+							<div
+								data-card
+								class="m-card relative p-4 shadow-2xl"
+								style={`z-index: ${4 - i}`}
+								data-on="4.6"
+								data-on-class={fix.ok ? "ring-2 ring-orange" : "brightness-75"}
+							>
+								<div class="flex items-center justify-between">
+									<span class="m-strong">{fix.name}</span>
+									<span class="flex items-center gap-1.5 m-xs text-(--kt-status-done)">
+										<span class="m-dot" />
+										Running
+									</span>
+								</div>
+								<p class="mt-1 m-xs m-muted">MicroVM, 16 vCPU, 32 GB</p>
+								<div class="mt-4 h-1.5 overflow-hidden rounded-full bg-(--kt-sunken)">
+									<div
+										data-meter
+										data-done={fix.done}
+										data-seed={fix.seed}
+										class="h-full origin-left rounded-full bg-(--kt-status-working)"
+									/>
+								</div>
+								<div class="relative mt-4 h-6 m-mono">
+									<span data-out={fix.done} class="absolute inset-y-0 left-0 flex items-center m-muted">
+										<span class="mr-2 text-orange">$</span>pnpm test
+									</span>
+									<span data-pop={fix.done} class:list={["absolute top-0 left-0 m-badge", fix.ok ? "m-done" : "m-error"]}>
+										{fix.result}
+									</span>
+								</div>
+							</div>
+						))
+					}
+				</div>
+				</div>
+			</div>
+
+			<!-- 3. The sandbox's desktop, with its browser, driven by the agent. -->
+			<div data-scene="desktop" data-dur={dur.desktop} class="invisible absolute inset-0">
+				<div data-frame class="absolute inset-0">
+				<div class="m-card absolute inset-x-0 top-4 overflow-hidden shadow-2xl">
+					<div class="flex items-center justify-between border-b m-line px-4 py-2.5 m-sm">
+						<span class="m-muted">browser-agent / <span class="m-fg m-strong">Desktop</span></span>
+						<span class="flex rounded-(--kt-radius-control) bg-(--kt-sunken) p-0.5 m-xs">
+							<span class="rounded-(--kt-radius-sm) bg-(--kt-border-strong) px-2.5 py-0.5">Control</span>
+							<span class="px-2.5 py-0.5 m-muted">Watch</span>
+						</span>
+					</div>
+					<div data-screen class="relative bg-(--kt-sunken) p-4">
+						<div class="overflow-hidden rounded-(--kt-radius-sm) bg-(--kt-canvas) shadow-xl">
+							<div class="flex items-center gap-3 bg-(--kt-panel) px-3 py-2 m-xs">
+								<span class="m-strong">Chromium</span>
+								<span class="flex-1 rounded-(--kt-radius-xs) bg-(--kt-sunken) px-2 py-0.5 m-mono m-muted">shop.example.com/checkout</span>
+							</div>
+							<div class="px-5 pt-4 pb-5 m-sm">
+								<p class="m-strong">Delivery details</p>
+								<div data-target="name" class="relative mt-3 flex h-8 items-center rounded-(--kt-radius-xs) border border-(--kt-border-input) px-3">
+									<span data-out="1.1" class="absolute left-3 m-faint">Full name</span>
+									<span data-type="1.1" data-dur="0.8">Ada Lovelace</span>
+								</div>
+								<div data-target="email" class="relative mt-2 flex h-8 items-center rounded-(--kt-radius-xs) border border-(--kt-border-input) px-3">
+									<span data-out="2.6" class="absolute left-3 m-faint">Email</span>
+									<span data-type="2.6" data-dur="0.9">ada@acme.dev</span>
+								</div>
+								<div class="mt-3 flex items-center gap-3">
+									<span data-target="order" class="m-button m-primary">Place order</span>
+									<span data-pop="4.3" class="text-(--kt-status-done)">Order placed ✓</span>
+								</div>
+							</div>
+						</div>
+						<span data-ring class="absolute top-0 left-0 size-6 rounded-full border-2 border-orange opacity-0"></span>
+						<svg data-cursor class="absolute top-0 left-0 size-5 opacity-0" viewBox="0 0 24 24" aria-hidden="true">
+							<path d="M3 2l7 19 2.6-7.4L20 11z" fill="#ec7523" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"></path>
+						</svg>
+					</div>
+				</div>
+				<span data-pop="0.6" class="m-raised absolute right-4 bottom-4 flex items-center gap-2 px-3 py-1.5 m-xs shadow-xl">
+					<span class="m-dot text-(--kt-status-done)"></span>
+					Playwright connected over CDP
+				</span>
+				</div>
+			</div>
+
+			<!-- 4. A protected token through the egress proxy: swapped for GitHub, refused for anywhere else. -->
+			<div data-scene="secrets" data-dur={dur.secrets} class="invisible absolute inset-0">
+				<div data-frame class="absolute inset-0">
+				<svg class="absolute inset-0 size-full overflow-visible" viewBox="0 0 520 400" fill="none" aria-hidden="true">
+					<path data-path="a" d="M260 104 L260 144" class="stroke-(--kt-border-strong)" stroke-width="2" stroke-dasharray="6 6"></path>
+					<path data-path="b" d="M220 216 C 220 246, 120 234, 120 264" class="stroke-(--kt-border-strong)" stroke-width="2" stroke-dasharray="6 6"></path>
+					<path data-path="c" d="M300 216 C 300 246, 400 234, 400 264" class="stroke-(--kt-border-strong)" stroke-width="2" stroke-dasharray="6 6"></path>
+				</svg>
+				<div class="m-card absolute inset-x-12 top-0 h-26 p-4 shadow-2xl">
+					<div class="flex items-center justify-between m-xs">
+						<span class="m-muted">Sandbox</span>
+						<span class="m-badge m-accent">GH_TOKEN protected</span>
+					</div>
+					<p class="mt-2 m-mono"><span class="text-orange">$</span> <span data-type="0.4" data-dur="0.6">echo $GH_TOKEN</span></p>
+					<p data-in="1.0" class="m-mono m-muted">kph_7Qx2mR0cV9pLwE3nT8aZ…</p>
+				</div>
+				<div data-on="2.3" data-off="2.9" data-on-class="ring-2 ring-orange" class="absolute inset-x-16 top-36 h-18 rounded-(--kt-radius)">
+					<div data-on="4.9" data-off="5.5" data-on-class="ring-2 ring-(--kt-status-error)" class="m-card flex size-full items-center gap-3 px-4 shadow-2xl">
+						<svg class="size-7 shrink-0 text-orange" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true">
+							<path d="M8 1.75l5 2v4c0 3.2-2.2 5.4-5 6.5-2.8-1.1-5-3.3-5-6.5v-4z"></path>
+						</svg>
+						<span class="min-w-0 flex-1">
+							<span class="block whitespace-nowrap m-strong">Egress proxy</span>
+							<span class="block m-xs m-muted">On your host</span>
+						</span>
+						<span class="relative h-5 w-28 shrink-0 m-mono">
+							<span data-in="1.9" data-out="2.4" class="absolute inset-0 text-right m-muted">kph_7Qx2…</span>
+							<span data-in="2.4" data-out="4.3" class="absolute inset-0 text-right text-orange">ghp_••••••••</span>
+							<span data-in="4.8" data-out="5.0" class="absolute inset-0 text-right m-muted">kph_7Qx2…</span>
+							<span data-in="5.25" class="absolute inset-0 text-right text-(--kt-status-error)">Not bound</span>
+						</span>
+					</div>
+				</div>
+				<div class="m-card absolute top-66 left-0 h-20 w-60 p-4 shadow-2xl">
+					<p class="m-mono m-strong">api.github.com</p>
+					<span data-pop="3.4" class="mt-2 m-badge m-done">200 OK</span>
+				</div>
+				<div class="m-card absolute top-66 right-0 h-20 w-60 p-4 shadow-2xl">
+					<p class="m-mono m-strong">webhook.site</p>
+					<span data-pop="5.2" class="mt-2 m-badge m-error">Denied</span>
+				</div>
+				<span data-dot class="absolute top-0 left-0 -mt-1.25 -ml-1.25 size-2.5 rounded-full bg-orange opacity-0 shadow-lg"></span>
+				<span data-dot class="absolute top-0 left-0 -mt-1.25 -ml-1.25 size-2.5 rounded-full bg-orange opacity-0 shadow-lg"></span>
+				</div>
+			</div>
+
+			<!-- 5. Hosts of your own, connecting out to the control plane. -->
+			<div data-scene="hosts" data-dur={dur.hosts} class="invisible absolute inset-0">
+				<div data-frame class="absolute inset-0">
+				<svg class="absolute inset-0 size-full overflow-visible" viewBox="0 0 520 400" fill="none" aria-hidden="true">
+					<path data-path d="M80 196 C 80 130, 200 130, 200 64" class="stroke-(--kt-border-strong)" stroke-width="2" stroke-dasharray="6 6"></path>
+					<path data-path d="M260 196 L260 64" class="stroke-(--kt-border-strong)" stroke-width="2" stroke-dasharray="6 6"></path>
+					<path data-path d="M440 196 C 440 130, 320 130, 320 64" class="stroke-(--kt-border-strong)" stroke-width="2" stroke-dasharray="6 6"></path>
+				</svg>
+				<div data-in="0" class="m-card absolute top-0 left-33 flex h-16 w-64 items-center justify-between px-4 shadow-2xl">
+					<span class="block h-5" set:html={lockup} />
+					<span class="text-right">
+						<span class="block m-xs m-strong">Control plane</span>
+						<span class="block m-mono m-xs m-muted">app.kantel.dev</span>
+					</span>
+				</div>
+				{hosts.map((_, i) => <span data-blip class="absolute top-0 left-0 -mt-1 -ml-1 size-2 rounded-full bg-orange opacity-0 shadow-lg" />)}
+				<div class="absolute inset-x-0 top-28 z-10 flex justify-center">
+					<span data-pop="2.6" class="m-raised rounded-full px-3 py-1 m-xs shadow-xl">Connects out. No ports to open.</span>
+				</div>
+				{
+					hosts.map((host) => (
+						<div data-pop={host.at} class:list={["m-card absolute top-49 h-36 w-40 p-3 shadow-2xl", host.left]}>
+							<div class="flex items-center justify-between gap-2">
+								<span class="truncate m-sm m-strong">{host.name}</span>
+								<span class="relative h-4 w-14 shrink-0 m-xs">
+									<span data-out={host.at + 1} class="absolute inset-0 text-right text-(--kt-status-working)">
+										Joining
+									</span>
+									<span data-in={host.at + 1} class="absolute inset-0 text-right text-(--kt-status-done)">
+										Online
+									</span>
+								</span>
+							</div>
+							<p class="mt-0.5 truncate m-xs m-muted">{host.system}</p>
+							<div class="mt-3 grid grid-cols-6 gap-1.5">
+								{cellOrder.map((order) => (
+									<span class="relative aspect-square rounded-(--kt-radius-xs) bg-(--kt-sunken)">
+										{order < host.lit && (
+											<span
+												data-in={(host.at + 1.3 + order * 0.25).toFixed(2)}
+												class="absolute inset-0 rounded-(--kt-radius-xs) bg-(--kt-status-done)"
+											/>
+										)}
+									</span>
+								))}
+							</div>
+						</div>
+					))
+				}
+				</div>
+			</div>
+
+			<!-- 6. A saved snapshot starts six sandboxes; any Linux image boots too. -->
+			<div data-scene="snapshot" data-dur={dur.snapshot} class="invisible absolute inset-0">
+				<div data-frame class="absolute inset-0">
+				<svg class="absolute inset-0 size-full overflow-visible" viewBox="0 0 520 400" fill="none" aria-hidden="true">
+					<path data-draw="1.0" pathLength="1" stroke-dasharray="1 1" stroke-dashoffset="1" d="M96 112 L96 152" class="stroke-orange" stroke-width="2"></path>
+					{
+						kids.map((kid) => (
+							<path
+								data-draw={kid.at - 0.2}
+								pathLength="1"
+								stroke-dasharray="1 1"
+								stroke-dashoffset="1"
+								d={`M192 196 C 224 196, 216 ${kid.y}, ${kid.x} ${kid.y}`}
+								class="stroke-(--kt-border-strong)"
+								stroke-width="2"
+							/>
+						))
+					}
+				</svg>
+				<div data-in="0" data-on="0.9" data-off="1.4" data-on-class="ring-2 ring-orange" class="m-card absolute top-6 left-0 h-22 w-48 p-4 shadow-2xl">
+					<p class="m-sm m-strong">base-builder</p>
+					<p class="mt-1 m-xs m-muted">Node 22, pnpm, deps installed</p>
+				</div>
+				<div data-pop="1.2" class="m-card absolute top-38 left-0 h-22 w-48 p-4 shadow-2xl ring-1 ring-orange">
+					<div class="flex items-center justify-between">
+						<span class="m-sm m-strong">node22-base</span>
+						<span class="m-badge m-accent">Saved</span>
+					</div>
+					<p class="mt-1 m-xs m-muted">Snapshot, 3.4 GB</p>
+				</div>
+				{
+					kids.map((kid) => (
+						<div data-pop={kid.at} class:list={["m-card absolute flex h-14 w-33 items-center justify-between px-3 m-sm shadow-2xl", kid.left, kid.top]}>
+							<span class="flex items-center gap-1.5 text-(--kt-status-done)">
+								<span class="m-dot" />
+								Running
+							</span>
+							<span class="m-mono m-muted">0.9 s</span>
+						</div>
+					))
+				}
+				<div class="absolute inset-x-0 top-68">
+					<p data-in="3.4" class="m-xs m-muted">Or boot any Linux image</p>
+					<div class="mt-2 flex flex-wrap gap-2">
+						{images.map((image, i) => <span data-pop={(3.6 + i * 0.15).toFixed(2)} class="m-raised rounded-full px-3 py-1 m-mono m-xs">{image}</span>)}
+					</div>
+				</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- The captions, centred under the stage and over the timeline, stacked in one cell so the tallest sets the
+	     height and nothing moves when they change. -->
+	<div class="mt-6 grid text-center">
+		{
+			scenes.map((scene) => (
+				<p
+					data-caption
+					class="invisible col-start-1 row-start-1 font-display text-2xl leading-tight font-semibold text-balance sm:text-3xl"
+				>
+					{scene.caption[0].split(" ").map((word) => (
+						<>
+							<span data-word class="inline-block">
+								{word}
+							</span>{" "}
+						</>
+					))}
+					{scene.caption[1].split(" ").map((word, i, all) => (
+						<>
+							<span data-word class="inline-block text-orange">
+								{word}
+							</span>
+							{i < all.length - 1 ? " " : ""}
+						</>
+					))}
+				</p>
+			))
+		}
+	</div>
+
+	<!-- Where the story is: one bar per scene, the current one filling. -->
+	<div class="mt-5 flex gap-1.5" aria-hidden="true">
+		{
+			scenes.map(() => (
+				<span class="h-0.5 flex-1 overflow-hidden rounded-full bg-line">
+					<span data-bar class="block h-full origin-left bg-midnight" />
+				</span>
+			))
+		}
+	</div>
+</figure>
+
+<style>
+	/* Frosted glass over the pixel field: a blur and lift of what's behind, a translucent fill, a hairline edge, a lit
+	   top edge and a soft drop. Plain CSS because it layers two shadows and a backdrop filter, which utilities would
+	   spell as arbitrary values; the colours are the site's --site-glass tokens (site.css), one set per theme. */
+	.glass {
+		background: var(--site-glass);
+		border: 1px solid var(--site-glass-edge);
+		box-shadow:
+			inset 0 1px 0 0 var(--site-glass-highlight),
+			0 32px 64px -32px var(--site-glass-shadow);
+		-webkit-backdrop-filter: blur(14px) saturate(1.4);
+		backdrop-filter: blur(14px) saturate(1.4);
+	}
+</style>
+
+<script>
+	import { mountHeroStory } from "../scripts/hero-story.js";
+
+	for (const root of document.querySelectorAll<HTMLElement>("[data-hero-story]")) mountHeroStory(root);
+</script>

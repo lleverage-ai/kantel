@@ -34,7 +34,13 @@
 	--color-orange: var(--site-orange); /* one element per surface */
 	--color-orange-warm: var(--site-orange-warm); /* its hover */
 
-	/* The terminal plate (the install command): midnight in both themes, a shade deeper than the dark ground. */
+	/* The primary action (Get started): the console's primary button, orange with dark text, in each theme. */
+	--color-primary: var(--site-primary);
+	--color-primary-hover: var(--site-primary-hover);
+	--color-on-primary: var(--site-on-primary);
+
+	/* The terminal plate (the install command): the console's dark panel on paper, and a step deeper than the ground
+	   in dark, so it stands off the page in both. */
 	--color-plate: var(--site-plate);
 	--color-plate-line: var(--site-plate-line);
 	--color-on-plate: var(--site-on-plate);
@@ -90,10 +96,22 @@
 	--site-label: #656563; /* grey 700 */
 	--site-orange: #ec7523;
 	--site-orange-warm: #ff9626;
-	--site-plate: #141e28;
-	--site-plate-line: #2c353e;
-	--site-on-plate: #f9f7f0;
-	--site-faint: #ababa7; /* grey 500 */
+	/* The console's light primary (@kantel/ui's light.css). Copied, not referenced: the page never sets
+	   data-kt-theme, so the --kt-* properties here are always dark's. */
+	--site-primary: hsl(23 89.4% 52%);
+	--site-primary-hover: hsl(23 89.4% 46%);
+	--site-on-primary: hsl(210 33.3% 11.8%);
+	/* The plate is the console's dark panel in light too, by reference (the --kt-* properties are dark's). */
+	--site-plate: var(--kt-panel);
+	--site-plate-line: var(--kt-border-strong);
+	--site-on-plate: var(--kt-text);
+	--site-faint: var(--kt-text-faint);
+	/* Glass (the hero's story): the card colour, thin enough for the pixel field to show through blurred, with an edge
+	   of the ink, a lit top edge and a soft drop. After @kantel/ui's --kt-glass-outline and --kt-glass-highlight. */
+	--site-glass: color-mix(in srgb, var(--site-card) 42%, transparent);
+	--site-glass-edge: color-mix(in srgb, var(--site-midnight) 10%, transparent);
+	--site-glass-highlight: rgb(255 255 255 / 0.75);
+	--site-glass-shadow: rgb(20 30 40 / 0.18);
 
 	/* The hero fills most of the first screen under the 4rem header, leaving room for the three steps' heading to show
 	   below it. From the small viewport height so a phone's address bar coming and going never resizes it, and within
@@ -115,10 +133,14 @@
 	--site-line: var(--kt-border);
 	--site-card-line: var(--kt-border);
 	--site-label: var(--kt-text-faint);
-	--site-plate: var(--kt-panel);
-	--site-plate-line: var(--kt-border-strong);
-	--site-on-plate: var(--kt-text);
-	--site-faint: var(--kt-text-faint);
+	--site-primary: var(--kt-primary);
+	--site-primary-hover: var(--kt-primary-hover);
+	--site-on-primary: var(--kt-primary-fg);
+	/* A step under the canvas, which the console has no token for, so the plate reads as a terminal on the page. */
+	--site-plate: hsl(220 6% 7.5%);
+	--site-glass-highlight: rgb(255 255 255 / 0.06);
+	--site-glass-shadow: rgb(0 0 0 / 0.55);
+	--site-plate-line: var(--kt-border);
 }
 
 /* `dark:` utilities follow the page's theme, not the device's. */
