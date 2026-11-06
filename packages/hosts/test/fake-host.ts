@@ -39,7 +39,15 @@ export class FakeHost {
 	readonly binary: Uint8Array[] = [];
 	readonly sandboxes = new Map<string, HostSandbox>();
 	/** What `snapshot.list` answers. */
-	snapshots: { readonly id: string; readonly sandboxId: string; readonly base?: string }[] = [];
+	snapshots: {
+		readonly id: string;
+		readonly sandboxId: string;
+		readonly base?: string;
+		readonly sizeBytes?: number;
+		readonly uniqueBytes?: number;
+	}[] = [];
+	/** What `snapshot.list` answers beside them: the files several share, by holder. */
+	shared: { readonly snapshots: readonly string[]; readonly bytes: number }[] = [];
 	closedWith: { code: number; reason: string } | undefined;
 	connection!: AcceptedHost;
 	freeMemoryMiB = 20_000;
@@ -309,6 +317,7 @@ export class FakeHost {
 			case "snapshot.list":
 				return answer({
 					snapshots: this.snapshots.filter((s) => params.sandboxId === "" || s.sandboxId === params.sandboxId),
+					shared: this.shared,
 				});
 			case "template.build": {
 				const build = message.params as { snapshotId: string };

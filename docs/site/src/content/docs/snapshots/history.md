@@ -52,6 +52,8 @@ Snapshots come newest first, in pages like sandboxes. Each is a [Snapshot](/api/
 
 `trigger` says what took it: `periodic` while the sandbox ran, `stop` at a stop or pause, `manual` when you asked, and `save` for a saved snapshot. `memory` is `true` for a pause, which kept the sandbox's memory too. A snapshot is usable once its `state` is `ready`.
 
+`sizeBytes` is the space the snapshot takes on its host's disk now, and Kantel updates it every few minutes from what the host measures. It counts the blocks the snapshot's files have allocated. A file several snapshots share counts once: for a saved snapshot before an automatic one, otherwise for the oldest. So a snapshot you save from a sandbox's history shows the files it shares with that automatic snapshot, and the automatic one shows only what is its own. A size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file, such as a reflinked copy, counts in full. Memory that hasn't been written to the disk yet doesn't count. `uses` counts the sandboxes made or forked from the snapshot, including deleted ones.
+
 Without `sandboxId`, the list has the account's [saved snapshots](/snapshots/saved/#list-saved-snapshots). `kind=automatic` or `kind=saved` narrows a list to one kind.
 
 ## Take a snapshot now

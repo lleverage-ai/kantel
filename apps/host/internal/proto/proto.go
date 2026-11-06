@@ -232,6 +232,14 @@ const FeatureProcesses = "processes"
 // stopped sandbox's state, or a snapshot from its history, can be saved and outlast both.
 const FeatureSnapshotKeep = "snapshot-keep"
 
+// FeatureSnapshotSizes (HOST_FEATURES.snapshotSizes): snapshot.list answers each snapshot as it is on the host's disk
+// now, not at the time it was made: SizeBytes all its files take (allocated blocks, no memory still spooled to RAM and
+// no bundle images), UniqueBytes what of that no other snapshot shares, and beside the list, shared: the bytes of files
+// several snapshots hold, by set of holders. The control plane counts each shared group once, for the holder its own
+// records say keeps it, and reads the list now and then to keep its snapshots' sizes up to date. snapshot.keep's answer
+// carries its UniqueBytes and Shared alike.
+const FeatureSnapshotSizes = "snapshot-sizes"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -490,6 +498,18 @@ type SnapshotInfo struct {
 	// is its source's. E2E provenance is judged on it (TakenAtOrCreated), so a copy made now of older files isn't taken
 	// for a snapshot of a sandbox made since. 0: CreatedAt.
 	TakenAt int64 `json:"takenAt,omitempty"`
+	// UniqueBytes, from a host with FeatureSnapshotSizes: what of SizeBytes is in files no other snapshot has. The rest
+	// is in SharedBytes groups (snapshot.list's shared, or Shared on a keep's answer).
+	UniqueBytes int64 `json:"uniqueBytes,omitempty"`
+	// Shared, on snapshot.keep's answer only: the groups of files the new snapshot shares with others.
+	Shared []SharedBytes `json:"shared,omitempty"`
+}
+
+// SharedBytes is the bytes of the files a set of snapshots (Snapshots, their IDs, sorted) all hold and no other does:
+// files linked into several snapshots, such as a kept copy and its source. The control plane counts them once.
+type SharedBytes struct {
+	Snapshots []string `json:"snapshots"`
+	Bytes     int64    `json:"bytes"`
 }
 
 // TakenAtOrCreated is when the state a snapshot holds was taken: TakenAt, or CreatedAt where it has none.

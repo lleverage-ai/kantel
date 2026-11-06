@@ -52,7 +52,7 @@ import {
 	createComputeApi,
 	createMemoryStore,
 	createRoutedBackend,
-	hostImageChannel,
+	hostSnapshotLinks,
 	type InviteMailing,
 	joinTokenSpender,
 	type PersonIdentity,
@@ -593,15 +593,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
 		},
-		...(baseImages === undefined
-			? {}
-			: {
-					images: async () => {
-						const index = await baseImages.index();
-						return index === undefined ? undefined : hostImageChannel(index);
-					},
-					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
-				}),
+		// Snapshot sizes always; the images and bases only with image patching on.
+		...hostSnapshotLinks(api.service, baseImages),
 	});
 	own?.bind(
 		(grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId),

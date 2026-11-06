@@ -212,6 +212,14 @@ export const HOST_FEATURES = {
 	 * a save of a stopped sandbox, or of a history entry, shares the automatic snapshot's bytes, which the host may prune.
 	 */
 	snapshotKeep: "snapshot-keep",
+	/**
+	 * `snapshot.list` answers each snapshot as it is on the host's disk now, not as it was made: `sizeBytes` all its files
+	 * take (allocated blocks, no memory still in RAM), `uniqueBytes` what of that no other snapshot shares, and beside the
+	 * list, `shared` (`HostSharedBytes`): the files several hold, by set of holders. Kantel counts each group once, for the
+	 * holder its own records say keeps it, reading the list once a connection and every `SNAPSHOT_SIZES_REFRESH_MS`; a
+	 * keep's answer carries the same. Without it, a snapshot keeps the size it was made with.
+	 */
+	snapshotSizes: "snapshot-sizes",
 } as const;
 
 /**
@@ -487,6 +495,20 @@ export interface HostSnapshot {
 	readonly tier: SandboxTier;
 	/** The host images version its root file system is; absent when unknown (images not versioned). */
 	readonly base?: string;
+	/** What of `sizeBytes` is in files no other snapshot has (`HOST_FEATURES.snapshotSizes`). */
+	readonly uniqueBytes?: number;
+	/** On `snapshot.keep`'s answer: the groups of files it shares with other snapshots (`HostSharedBytes`). */
+	readonly shared?: readonly HostSharedBytes[] | null;
+}
+
+/**
+ * The bytes of the files a set of a host's snapshots (`snapshots`, their IDs) all hold and no other does: files linked
+ * into several (a kept copy and its source, say). On `snapshot.list`'s answer beside the snapshots
+ * (`HOST_FEATURES.snapshotSizes`), one entry per set of holders. Kantel counts each once, for one holder.
+ */
+export interface HostSharedBytes {
+	readonly snapshots: readonly string[];
+	readonly bytes: number;
 }
 
 /** A sandbox's way out, sent with create, resume and fork. The host holds the token; the sandbox never sees it. */

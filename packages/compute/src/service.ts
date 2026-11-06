@@ -67,6 +67,8 @@ import {
 	type Placement,
 	type SandboxBackend,
 	type SandboxTemplateBoot,
+	type SharedSnapshotBytes,
+	type TakenSnapshot,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
@@ -477,6 +479,18 @@ export interface ComputeService {
 	 * version or a digest).
 	 */
 	recordBases(hostId: string, reports: BaseReports): Promise<void>;
+	/**
+	 * Updates the sizes of a host's snapshots to the space they take on its disk now, as it measures them (`snapshot.list`
+	 * with `HOST_FEATURES.snapshotSizes`): only a snapshot whose ref is that host's, and only where the size changed.
+	 * Where the host says what is each snapshot's own (`uniqueBytes`) and which files several share (`shared`), each
+	 * shared file counts once, for the holder this plane's records say keeps it (`attributeSnapshotBytes`). Every record
+	 * of the same bytes (a save shares its source's ref) gets the same size.
+	 */
+	recordSnapshotSizes(
+		hostId: string,
+		sizes: readonly SnapshotSizeReport[],
+		shared?: readonly SharedSnapshotBytes[],
+	): Promise<void>;
 	/**
 	 * A bundle's tar, for the host that asked (`GET /v1/hosts/bundles/{digest}`): `undefined` unless `sandboxId` is on
 	 * `hostId` (or still starting, so being placed there) and mounts `digest`. Mounts off: always `undefined`.
@@ -2164,7 +2178,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 	}
 
-	const snapshotView = (snapshot: StoredSnapshot): computeSchema.Snapshot => ({
+	/**
+	 * How many of an account's sandboxes were made from each snapshot (`source.snapshotId`: a create from it, or a fork
+	 * from it), deleted ones included, by the snapshot's ID: a snapshot's `uses`.
+	 */
+	async function usesIn(accountId: string): Promise<Map<string, number>> {
+		const uses = new Map<string, number>();
+		for (const sandbox of await store.sandboxes.list({ accountId })) {
+			const from = sandbox.source?.snapshotId;
+			if (from !== undefined) uses.set(from, (uses.get(from) ?? 0) + 1);
+		}
+		return uses;
+	}
+
+	/** A snapshot as the API answers it; `uses` from `usesIn`, 0 for one just made. */
+	const snapshotView = (snapshot: StoredSnapshot, uses = 0): computeSchema.Snapshot => ({
 		id: snapshot.id,
 		accountId: snapshot.accountId,
 		kind: snapshot.kind,
@@ -2177,6 +2205,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		memory: snapshot.memory,
 		...recordedMachine(snapshot),
 		sizeBytes: snapshot.sizeBytes,
+		uses,
 		createdAt: snapshot.createdAt,
 		createdBy: snapshot.createdBy,
 		expiresAt: snapshot.expiresAt,
@@ -3352,6 +3381,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (ref === undefined) return;
 		if ((await store.snapshots.list({ ref })).length > 0) return;
 		await backend.deleteSnapshot(ref).catch(() => undefined);
+	}
+
+	/**
+	 * A kept copy's size (`keepSnapshot`) as a refresh will count it (`attributeSnapshotBytes`): its own bytes, and each
+	 * group of files it shares for the holder the records choose, itself included as a saved record made now. A backend
+	 * that doesn't say how its files are shared answers its size alone.
+	 */
+	async function keptSize(kept: TakenSnapshot, replacing: StoredSnapshot | undefined): Promise<number> {
+		if (kept.uniqueBytes === undefined) return kept.sizeBytes;
+		const shared = kept.shared ?? [];
+		const records: Pick<StoredSnapshot, "ref" | "kind" | "createdAt" | "state">[] = [
+			{ ref: kept.ref, kind: "saved", createdAt: now(), state: "ready" },
+		];
+		for (const ref of new Set(shared.flatMap((group) => group.refs))) {
+			if (ref === kept.ref) continue;
+			// Not the save it replaces, which goes once this one is put: its files are this one's to keep.
+			records.push(...(await store.snapshots.list({ ref })).filter((record) => record.id !== replacing?.id));
+		}
+		return attributeSnapshotBytes(records, new Map([[kept.ref, kept.uniqueBytes]]), shared).get(kept.ref) ?? 0;
 	}
 
 	/**
@@ -6328,11 +6376,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (await canSeeSnapshot(principal, snapshot)) visible.push(snapshot);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
+			const uses = page.items.length === 0 ? new Map<string, number>() : await usesIn(account.id);
 			const items = page.items.map((snapshot) =>
-				snapshotView({
-					...snapshot,
-					memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
-				}),
+				snapshotView(
+					{
+						...snapshot,
+						memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
+					},
+					uses.get(snapshot.id) ?? 0,
+				),
 			);
 			return { items, nextCursor: page.nextCursor };
 		},
@@ -6410,7 +6462,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const from = readyRef(source);
 					const kept = await backend.keepSnapshot?.(from);
 					ref = kept?.ref ?? from;
-					sizeBytes = kept?.sizeBytes ?? source.sizeBytes;
+					sizeBytes = kept === undefined ? source.sizeBytes : await keptSize(kept, existing);
 					base = kept?.base ?? source.base;
 					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);
@@ -6460,7 +6512,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getSnapshot: async (principal, { params }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
-			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) });
+			const uses = (await usesIn(snapshot.accountId)).get(snapshot.id) ?? 0;
+			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) }, uses);
 		},
 
 		listSnapshotFiles: async (principal, { params, query }) => {
@@ -7594,6 +7647,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 		},
 
+		async recordSnapshotSizes(hostId, sizes, shared = []) {
+			const own = (ref: unknown): ref is string => typeof ref === "string" && ref.startsWith(`${hostId}/`);
+			const whole = (value: unknown): value is number =>
+				typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+			const reported = new Map<string, number>();
+			const unique = new Map<string, number>();
+			for (const { ref, sizeBytes, uniqueBytes } of sizes) {
+				if (!own(ref) || !whole(sizeBytes)) continue;
+				reported.set(ref, sizeBytes);
+				if (whole(uniqueBytes)) unique.set(ref, uniqueBytes);
+			}
+			if (reported.size === 0) return;
+			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written.
+			const records = await store.snapshots.list();
+			// Each snapshot whose host says what is its own (a microVM's; an isolate's says nothing): its shared files counted
+			// once, by this plane's records. One that doesn't say keeps the size it was reported with.
+			if (unique.size > 0) {
+				const groups = shared.filter(
+					(group) => whole(group.bytes) && group.refs.every((ref) => own(ref) && unique.has(ref)),
+				);
+				const attributed = attributeSnapshotBytes(records, unique, groups);
+				for (const ref of unique.keys()) reported.set(ref, attributed.get(ref) ?? 0);
+			}
+			for (const snapshot of records) {
+				const sizeBytes = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
+				if (sizeBytes === undefined || snapshot.sizeBytes === sizeBytes) continue;
+				const { ref } = snapshot;
+				await store.snapshots.update(snapshot.id, (current) =>
+					current.ref === ref && current.sizeBytes !== sizeBytes ? { ...current, sizeBytes } : undefined,
+				);
+			}
+		},
+
 		async recordEgress(hostId, records) {
 			const bySandbox = new Map<string, ReportedEgress[]>();
 			for (const record of records) {
@@ -7645,6 +7731,49 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 /** A boot's base for the sandbox's record: the base and when it was put on it (0: not said); nothing when not said. */
 function placedBase(placement: Placement): { base?: string; baseAt?: number } {
 	return placement.base === undefined ? {} : { base: placement.base, baseAt: placement.baseAt ?? 0 };
+}
+
+/** A snapshot's size as its host measures it (`ComputeService.recordSnapshotSizes`), by its ref. */
+export interface SnapshotSizeReport {
+	readonly ref: string;
+	/** All its files take, shared ones included. */
+	readonly sizeBytes: number;
+	/** What of that is in files no other snapshot holds; absent from a host that doesn't say. */
+	readonly uniqueBytes?: number;
+}
+
+/**
+ * Each ref's size with every shared file counted once (`ComputeService.recordSnapshotSizes`, and a keep's answer): its
+ * own bytes (`unique`), and each group of shared files (`shared`) for one of its holders, chosen by the records: a ref
+ * an API-saved record has first (a kept copy keeps its files once its automatic source expires; a manual take, which a
+ * host keeps as saved, is automatic here), then the one recorded first, then by ref. A group none of whose holders has
+ * a record counts for none of them.
+ */
+export function attributeSnapshotBytes(
+	records: readonly Pick<StoredSnapshot, "ref" | "kind" | "createdAt" | "state">[],
+	unique: ReadonlyMap<string, number>,
+	shared: readonly SharedSnapshotBytes[],
+): Map<string, number> {
+	const saved = new Set<string>();
+	const first = new Map<string, number>();
+	for (const record of records) {
+		if (record.ref === undefined || record.state === "deleting") continue;
+		if (record.kind === "saved") saved.add(record.ref);
+		first.set(record.ref, Math.min(first.get(record.ref) ?? Number.POSITIVE_INFINITY, record.createdAt));
+	}
+	const sizes = new Map(unique);
+	for (const group of shared) {
+		const [keeper] = group.refs
+			.filter((ref) => first.has(ref))
+			.sort(
+				(a, b) =>
+					Number(saved.has(b)) - Number(saved.has(a)) ||
+					(first.get(a) ?? 0) - (first.get(b) ?? 0) ||
+					a.localeCompare(b),
+			);
+		if (keeper !== undefined) sizes.set(keeper, (sizes.get(keeper) ?? 0) + group.bytes);
+	}
+	return sizes;
 }
 
 /** What a host says its sandboxes and snapshots are on (`ComputeService.recordBases`). */

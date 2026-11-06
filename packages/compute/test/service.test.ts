@@ -14,6 +14,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { restoreAsked } from "../src/machine.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
+	attributeSnapshotBytes,
 	checkShape,
 	HOST_REVOKED_REASON,
 	hourlyRate,
@@ -804,6 +805,152 @@ describe("sandboxes", () => {
 			tom.createSandbox({ type: "microvm", from: "old-save", resources: { vcpus: 2, memoryMb: 4096 } }),
 		);
 		expect(refused.code).toBe("invalid");
+	});
+
+	it("keeps snapshots' sizes as their host measures them now, for every record of the same bytes", async () => {
+		const store = createMemoryStore();
+		const { api, tom } = setup(createStubBackend(), { store });
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const taken = await tom.takeSnapshot(vm.id, {});
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id });
+		const other = await tom.takeSnapshot(vm.id, {});
+		// As a host's snapshots are named: `<hostId>/<id>`, the save sharing its source's.
+		const ref = `${STUB_HOST_ID}/snap-1`;
+		for (const id of [taken.id, saved.id]) {
+			await store.snapshots.update(id, (current) => ({ ...current, ref, sizeBytes: 9_999 }));
+		}
+		// Another host can't say what this one's snapshots take.
+		await api.service.recordSnapshotSizes("host_other", [{ ref, sizeBytes: 1 }]);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(9_999);
+		await api.service.recordSnapshotSizes(STUB_HOST_ID, [
+			{ ref, sizeBytes: 4_096 },
+			{ ref: `${STUB_HOST_ID}/snap-gone`, sizeBytes: 7 },
+		]);
+		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(4_096);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(4_096);
+		expect((await tom.getSnapshot(other.id)).sizeBytes).toBe(other.sizeBytes);
+	});
+
+	it("counts each shared file once, for a saved record before an automatic one, then the one recorded first", () => {
+		const records = [
+			{ ref: "h/auto", kind: "automatic" as const, createdAt: 1, state: "ready" as const },
+			{ ref: "h/kept", kind: "saved" as const, createdAt: 2, state: "ready" as const },
+			// A manual take: saved on its host, automatic here.
+			{ ref: "h/manual", kind: "automatic" as const, createdAt: 3, state: "ready" as const },
+			{ ref: "h/older", kind: "automatic" as const, createdAt: 0, state: "ready" as const },
+		];
+		const unique = new Map([
+			["h/auto", 10],
+			["h/kept", 4],
+			["h/manual", 6],
+			["h/older", 1],
+		]);
+		const sizes = attributeSnapshotBytes(records, unique, [
+			{ refs: ["h/auto", "h/kept"], bytes: 100 },
+			{ refs: ["h/manual", "h/older"], bytes: 50 },
+			// Held by nothing recorded: counted for none.
+			{ refs: ["h/gone", "h/lost"], bytes: 7 },
+		]);
+		expect(Object.fromEntries(sizes)).toEqual({ "h/auto": 10, "h/kept": 104, "h/manual": 6, "h/older": 51 });
+	});
+
+	it("records a kept copy's size as the next refresh counts it", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const source = `${STUB_HOST_ID}/snap-auto`;
+		const kept = `${STUB_HOST_ID}/snap-kept`;
+		// A host that keeps by linking: the copy's 100 bytes of disk are its source's file.
+		const backend: SandboxBackend = {
+			...stub,
+			keepSnapshot: async () => ({
+				ref: kept,
+				sizeBytes: 104,
+				uniqueBytes: 4,
+				shared: [{ refs: [source, kept], bytes: 100 }],
+			}),
+		};
+		const { api, tom } = setup(backend, { store });
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const taken = await tom.takeSnapshot(vm.id, {});
+		await store.snapshots.update(taken.id, (current) => ({ ...current, ref: source }));
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id });
+		expect(saved.sizeBytes).toBe(104);
+		await api.service.recordSnapshotSizes(
+			STUB_HOST_ID,
+			[
+				{ ref: source, sizeBytes: 110, uniqueBytes: 10 },
+				{ ref: kept, sizeBytes: 104, uniqueBytes: 4 },
+			],
+			[{ refs: [source, kept], bytes: 100 }],
+		);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(104);
+		// Its source, automatic, is left what is its own.
+		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(10);
+
+		// A host with isolates too: their snapshots say nothing of what is their own, and keep their reported size, while
+		// the microVM ones are still counted by their shared files.
+		const isolate = await tom.createSandbox({ type: "isolate", autoStopMinutes: null, wait: true });
+		const iso = await tom.takeSnapshot(isolate.id, {});
+		const isoRef = `${STUB_HOST_ID}/snap-isolate`;
+		await store.snapshots.update(iso.id, (current) => ({ ...current, ref: isoRef }));
+		await api.service.recordSnapshotSizes(
+			STUB_HOST_ID,
+			[
+				{ ref: source, sizeBytes: 110, uniqueBytes: 10 },
+				{ ref: kept, sizeBytes: 104, uniqueBytes: 4 },
+				{ ref: isoRef, sizeBytes: 77 },
+			],
+			[{ refs: [source, kept], bytes: 100 }],
+		);
+		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(104);
+		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(10);
+		expect((await tom.getSnapshot(iso.id)).sizeBytes).toBe(77);
+	});
+
+	it("records a replacement's size without the save it replaces, which shares its files", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const source = `${STUB_HOST_ID}/snap-auto`;
+		let keeps = 0;
+		// Each keep links the source's 100 bytes of disk: every kept copy shares them with it, and with each other.
+		const backend: SandboxBackend = {
+			...stub,
+			keepSnapshot: async () => {
+				keeps += 1;
+				const refs = [source, ...Array.from({ length: keeps }, (_, at) => `${STUB_HOST_ID}/snap-kept-${at + 1}`)];
+				return {
+					ref: `${STUB_HOST_ID}/snap-kept-${keeps}`,
+					sizeBytes: 104,
+					uniqueBytes: 4,
+					shared: [{ refs, bytes: 100 }],
+				};
+			},
+		};
+		const { tom } = setup(backend, { store });
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const taken = await tom.takeSnapshot(vm.id, {});
+		await store.snapshots.update(taken.id, (current) => ({ ...current, ref: source }));
+		const first = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id });
+		expect(first.sizeBytes).toBe(104);
+		// The replacement keeps the shared files once the first goes: they are its.
+		const replaced = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id, snapshotId: taken.id, replace: true });
+		expect(replaced.sizeBytes).toBe(104);
+	});
+
+	it("counts the sandboxes made or forked from a snapshot as its uses, deleted ones included", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: vm.id });
+		expect(saved.uses).toBe(0);
+		const first = await tom.createSandbox({ from: "golden", wait: true });
+		await tom.createSandbox({ from: "golden", wait: true });
+		await tom.deleteSandbox(first.id);
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items.find((item) => item.id === saved.id);
+		expect(listed?.uses).toBe(2);
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(2);
+		const taken = await tom.takeSnapshot(vm.id, {});
+		await tom.forkSandbox(vm.id, { snapshotId: taken.id, wait: true });
+		expect((await tom.getSnapshot(taken.id)).uses).toBe(1);
 	});
 
 	it("keeps an older save holding memory once the pause it shares bytes with is deleted", async () => {

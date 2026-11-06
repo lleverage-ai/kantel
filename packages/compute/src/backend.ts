@@ -361,6 +361,19 @@ export interface TakenSnapshot {
 	readonly base?: string;
 	/** Whether it holds the sandbox's memory, which restores only into the machine it was taken of. Absent: no. */
 	readonly memory?: boolean;
+	/**
+	 * Where the backend says how its files are shared (a host with `snapshot-sizes`): what of `sizeBytes` is its own, and
+	 * the files it shares with other snapshots, by the refs that hold them. The compute plane counts the shared files once
+	 * (`attributeSnapshotBytes`), as it does on a refresh.
+	 */
+	readonly uniqueBytes?: number;
+	readonly shared?: readonly SharedSnapshotBytes[];
+}
+
+/** The bytes of the files a set of snapshots (`refs`) all hold and no other does. */
+export interface SharedSnapshotBytes {
+	readonly refs: readonly string[];
+	readonly bytes: number;
 }
 
 export interface ExecRequest {

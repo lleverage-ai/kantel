@@ -1633,7 +1633,8 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `memory` | boolean | yes | Whether it holds the sandbox's memory as well as its disk (a pause). |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
-| `sizeBytes` | integer | no |  |
+| `sizeBytes` | integer | no | The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. |
+| `uses` | integer | no | How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. (minimum 0) |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |

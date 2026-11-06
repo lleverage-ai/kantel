@@ -897,6 +897,11 @@ describe("snapshots", () => {
 		const saved = await source.snapshots.save(sandbox.id, "golden");
 		expect(saved).toMatchObject({ name: "golden", accountId, sandboxId: sandbox.id, sandboxName: sandbox.name });
 		expect((await source.snapshots.saved(accountId)).map((entry) => entry.id)).toEqual([saved.id]);
+		expect(saved.uses).toBe(0);
+		// A sandbox made from it is a use.
+		await source.sandboxes.create({ accountId, kind: "isolate", fromSnapshot: "golden" });
+		await api.service.idle();
+		expect((await source.snapshots.saved(accountId)).map((entry) => entry.uses)).toEqual([1]);
 
 		await source.snapshots.removeSaved(saved.id);
 		expect(await source.snapshots.saved(accountId)).toEqual([]);

@@ -304,6 +304,12 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.listsProcesses() {
 		features = append(features, proto.FeatureProcesses)
 	}
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(SnapshotMeasurer); ok {
+			features = append(features, proto.FeatureSnapshotSizes)
+			break
+		}
+	}
 	if h.cfg.usageInterval() > 0 {
 		features = append(features, proto.FeatureUsage, proto.FeatureUsageAcks)
 	}
@@ -896,10 +902,18 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		var out []proto.SnapshotInfo
+		shared := []proto.SharedBytes{}
 		for _, name := range h.order {
-			out = append(out, h.tiers[name].Snapshots(p.SandboxID)...)
+			// Each snapshot as it is on the disk now, where the tier measures it (FeatureSnapshotSizes).
+			if measured, ok := h.tiers[name].(SnapshotMeasurer); ok {
+				snaps, groups := measured.MeasuredSnapshots(p.SandboxID)
+				out = append(out, snaps...)
+				shared = append(shared, groups...)
+			} else {
+				out = append(out, h.tiers[name].Snapshots(p.SandboxID)...)
+			}
 		}
-		return map[string]any{"snapshots": out}, nil
+		return map[string]any{"snapshots": out, "shared": shared}, nil
 	case proto.MethodSnapshotSave:
 		p, err := decode[proto.SnapshotParams](params)
 		if err != nil {
@@ -990,3 +1004,9 @@ func (h *Host) DialPort(ctx context.Context, id string, port int) (net.Conn, err
 }
 
 var _ = exec.Command
+
+// SnapshotMeasurer is a tier that measures its snapshots as they are on the disk now (FeatureSnapshotSizes): the
+// host's snapshot.list answers its snapshots with those sizes, not the ones they had when they were made.
+type SnapshotMeasurer interface {
+	MeasuredSnapshots(sandboxID string) ([]proto.SnapshotInfo, []proto.SharedBytes)
+}
