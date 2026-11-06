@@ -34,13 +34,26 @@ const fits: Edges = { width: undefined, start: false, end: false, reachable: tru
 const focusable =
 	'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-function measure(scroller: HTMLElement): Edges {
+/**
+ * What the scroller's content needs. `railRoom` is given while it's scrolling down with its own scrollbars: the height
+ * the pinned bar and the gap over it take, which leaving would give back to the bar. It stays tall until the content
+ * would fit with that bar back in place of its own, so the choice of bars can't undo itself (leaving makes it tall
+ * again) and flicker between the two at one height.
+ */
+function measure(scroller: HTMLElement, railRoom?: number): Edges {
 	const { scrollWidth, clientWidth, scrollLeft, scrollHeight, clientHeight } = scroller;
 	// A pixel of slack: zoom and fractional sizes leave the scroll size a rounding over the client size.
-	const scrolls = getComputedStyle(scroller).overflowX !== "visible";
-	const tall = scrolls && scrollHeight > clientHeight + 1;
-	if (scrollWidth <= clientWidth + 1 && !tall) return scrolls ? fits : { ...fits, scrolls };
+	const style = getComputedStyle(scroller);
+	const scrolls = style.overflowX !== "visible";
 	const wide = scrollWidth > clientWidth + 1;
+	let room = clientHeight;
+	if (railRoom !== undefined) {
+		// Its own bottom scrollbar goes when it leaves, and the pinned bar comes back if it's still too wide.
+		const borders = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+		room += scroller.offsetHeight - clientHeight - borders - (wide ? railRoom : 0);
+	}
+	const tall = scrolls && scrollHeight > room + 1;
+	if (!wide && !tall) return scrolls ? fits : { ...fits, scrolls };
 	return {
 		width: wide ? scrollWidth : undefined,
 		start: wide && scrollLeft > 1,
@@ -65,14 +78,15 @@ const same = (a: Edges, b: Edges) =>
 
 /**
  * The header row of a table in a scroller that scrolls down, stuck to its top on the content's ground: over a row's own
- * layers (a row link's content is lifted to z-1 over its overlay). Its hairline is a shadow:
- * a collapsed border stays with the rows when the cell sticks.
+ * layers (a row link's content is lifted to z-1 over its overlay). Its hairline is a shadow: a collapsed border stays
+ * with the rows when the cell sticks. The scroller's scroll padding is the header's height, so a control focused by Tab
+ * is brought out from under it.
  */
 const stickyHead = {
 	raised:
-		"[&>table>thead_th]:sticky [&>table>thead_th]:top-0 [&>table>thead_th]:z-2 [&>table>thead_th]:bg-raised [&>table>thead_th]:shadow-[inset_0_-1px_0_var(--kt-border)]",
+		"scroll-pt-control-md [&>table>thead_th]:sticky [&>table>thead_th]:top-0 [&>table>thead_th]:z-2 [&>table>thead_th]:bg-raised [&>table>thead_th]:shadow-[inset_0_-1px_0_var(--kt-border)]",
 	canvas:
-		"[&>table>thead_th]:sticky [&>table>thead_th]:top-0 [&>table>thead_th]:z-2 [&>table>thead_th]:bg-canvas [&>table>thead_th]:shadow-[inset_0_-1px_0_var(--kt-border)]",
+		"scroll-pt-control-md [&>table>thead_th]:sticky [&>table>thead_th]:top-0 [&>table>thead_th]:z-2 [&>table>thead_th]:bg-canvas [&>table>thead_th]:shadow-[inset_0_-1px_0_var(--kt-border)]",
 } as const;
 
 /**
@@ -97,13 +111,20 @@ export function SideScroll({
 	const scroller = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
 	const [edges, setEdges] = useState<Edges>(fits);
+	// Whether it's scrolling down with its own bars, and the room the pinned bar took when last shown (until then, about a
+	// scrollbar and the column's gap): measure's way back to the pinned bar.
+	const mode = useRef({ scrolling: false, railRoom: 24 });
 	useLayoutEffect(() => {
 		const box = scroller.current;
 		if (box === null) return;
 		const update = () => {
-			const next = measure(box);
-			setEdges((current) => (same(current, next) ? current : next));
 			const rail = bar.current;
+			if (rail !== null && !rail.hidden) {
+				mode.current.railRoom = rail.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
+			}
+			const next = measure(box, mode.current.scrolling ? mode.current.railRoom : undefined);
+			mode.current.scrolling = fill && next.tall;
+			setEdges((current) => (same(current, next) ? current : next));
 			if (rail !== null && rail.scrollLeft !== box.scrollLeft) rail.scrollLeft = box.scrollLeft;
 		};
 		update();
@@ -122,7 +143,7 @@ export function SideScroll({
 			children.disconnect();
 			box.removeEventListener("scroll", update);
 		};
-	}, []);
+	}, [fill]);
 	const follow = () => {
 		const box = scroller.current;
 		const rail = bar.current;
