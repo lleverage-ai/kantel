@@ -112,6 +112,10 @@
 	--site-glass-edge: color-mix(in srgb, var(--site-midnight) 10%, transparent);
 	--site-glass-highlight: rgb(255 255 255 / 0.75);
 	--site-glass-shadow: rgb(20 30 40 / 0.18);
+	/* A scrollbar's thumb and its hover: the console's light --kt-border-strong and --kt-text-disabled (light.css),
+	   copied for the same reason as the primary. */
+	--site-scrollbar: hsl(60 6% 78%);
+	--site-scrollbar-hover: hsl(60 1.8% 56.1%);
 
 	/* The hero fills most of the first screen under the 4rem header, leaving room for the three steps' heading to show
 	   below it. From the small viewport height so a phone's address bar coming and going never resizes it, and within
@@ -141,6 +145,8 @@
 	--site-glass-highlight: rgb(255 255 255 / 0.06);
 	--site-glass-shadow: rgb(0 0 0 / 0.55);
 	--site-plate-line: var(--kt-border);
+	--site-scrollbar: var(--kt-border-strong);
+	--site-scrollbar-hover: var(--kt-text-disabled);
 }
 
 /* `dark:` utilities follow the page's theme, not the device's. */
@@ -166,6 +172,38 @@
 		outline: 2px solid var(--color-orange);
 		outline-offset: 3px;
 		border-radius: var(--radius-input);
+	}
+
+	/* Scrollbars as the console draws them (@kantel/ui's base.css): thin, a rounded thumb on a clear track, no arrow
+	   buttons, in the theme's greys, for the page's own and any panel that scrolls (the install command on a phone).
+	   Pseudo-elements, which utilities can't reach, so CSS. Chromium and Safari draw ::-webkit-scrollbar, Firefox the
+	   standard properties: Chromium ignores ::-webkit-scrollbar on an element with scrollbar-width or scrollbar-color
+	   set, so those go only to engines without it. In the base layer, so an element's own utility still wins. */
+	::-webkit-scrollbar {
+		width: var(--kt-scrollbar-size);
+		height: var(--kt-scrollbar-size);
+	}
+
+	::-webkit-scrollbar-track,
+	::-webkit-scrollbar-corner {
+		background: transparent;
+	}
+
+	::-webkit-scrollbar-thumb {
+		border: var(--kt-step-0_5) solid transparent;
+		border-radius: var(--kt-radius-full);
+		background: var(--site-scrollbar) padding-box;
+	}
+
+	::-webkit-scrollbar-thumb:hover {
+		background-color: var(--site-scrollbar-hover);
+	}
+
+	@supports not selector(::-webkit-scrollbar) {
+		* {
+			scrollbar-width: thin;
+			scrollbar-color: var(--site-scrollbar) transparent;
+		}
 	}
 }
 
