@@ -2147,6 +2147,41 @@ describe("deleting your account, beyond the basics", () => {
 	});
 });
 
+describe("deleting your account while a sandbox is being made", () => {
+	it("stops a create that stores its sandbox once the deletion holds the account", async () => {
+		const store = createMemoryStore();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		await store.accounts.update(personal, (account) => ({ ...account, retiringAt: 1 }));
+		expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
+		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
+	});
+
+	it("refuses, and lets go of the account, when a create stored its sandbox before the hold", async () => {
+		const store = createMemoryStore();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const made = await ann.createSandbox({ wait: true });
+		const record = await store.sandboxes.get(made.id);
+		await ann.deleteSandbox(made.id);
+		// The create's record lands just as the deletion takes its hold: after its first look, before its second.
+		const update = store.accounts.update.bind(store.accounts);
+		let raced = false;
+		store.accounts.update = async (id, change, expected) => {
+			const updated = await update(id, change, expected);
+			if (!raced && updated?.retiringAt !== undefined && record !== undefined) {
+				raced = true;
+				await store.sandboxes.put({ ...record, id: "sbx_raced", state: "starting" });
+			}
+			return updated;
+		};
+		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
+		expect((await store.accounts.get(personal))?.retiringAt).toBeUndefined();
+		await store.sandboxes.delete("sbx_raced");
+		await ann.createSandbox({ wait: true });
+	});
+});
+
 describe("organisations", () => {
 	it("creates an organisation, invites someone and lets them join", async () => {
 		const { tom, ann } = setup();
