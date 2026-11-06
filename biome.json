@@ -10,7 +10,9 @@
 			"!**/.wrangler",
 			"!**/*.jsonl",
 			"!**/*.md",
-			"!images/browser/agent"
+			"!images/browser/agent",
+			"!apps/site/video/{mv,kinds}.{js,css}",
+			"!apps/site/video/{beats.js,beats.json,credit.js,format.json}"
 		]
 	},
 	"formatter": {
