@@ -2775,6 +2775,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								updateDone.set(id, Date.now() + 8_000);
 								return next;
 							}),
+						// The release the sample hosts are behind.
+						checkForUpdates: () => gate(() => ({ checked: true, latestVersion: "0.4.2" })),
 						usage: (id, since) =>
 							gate(() => {
 								const host = find(hosts, id, "host");

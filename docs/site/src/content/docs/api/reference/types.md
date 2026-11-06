@@ -955,6 +955,13 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | --- | --- | --- | --- |
 | `items` | [Host](/api/reference/types/#host)[] | yes |  |
 
+### HostReleaseCheck
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `checked` | boolean | yes | True when this call read Kantel's latest release again. False when another check was made in the last 30 seconds, whose answer stands: nothing more was read. |
+| `latestVersion` | string | no | The latest kantel-host release now known, which hosts' `latestVersion` and `updateAvailable` follow. Absent when none has been read. |
+
 ### HostState
 
 `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked.

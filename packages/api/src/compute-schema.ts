@@ -3111,6 +3111,24 @@ export const PublicUrl = Type.Object(
 	{ title: "PublicUrl" },
 );
 
+export const HostReleaseCheck = Type.Object(
+	{
+		checked: Type.Boolean({
+			description:
+				"True when this call read Kantel's latest release again. False when another check was made in the last 30 " +
+				"seconds, whose answer stands: nothing more was read.",
+		}),
+		latestVersion: Type.Optional(
+			Type.String({
+				description:
+					"The latest kantel-host release now known, which hosts' `latestVersion` and `updateAvailable` follow. Absent " +
+					"when none has been read.",
+			}),
+		),
+	},
+	{ title: "HostReleaseCheck" },
+);
+
 export const SetPublicUrlBody = Type.Object(
 	{
 		publicUrl: Type.Union([Type.String({ maxLength: 2048 }), Type.Null()], {

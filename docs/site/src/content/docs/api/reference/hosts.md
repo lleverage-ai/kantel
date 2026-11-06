@@ -151,6 +151,18 @@ Asks the host to update its host agent to `latestVersion`, which it does when `u
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Check for host updates
+
+`POST /v1/admin/hosts/check-for-updates` (SDK method `checkHostUpdates`)
+
+Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [HostReleaseCheck](/api/reference/types/#hostreleasecheck) (`application/json`). What the check found.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Get the public URL
 
 `GET /v1/admin/public-url` (SDK method `getPublicUrl`)

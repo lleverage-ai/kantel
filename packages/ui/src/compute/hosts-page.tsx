@@ -170,6 +170,29 @@ export function HostsPage({
 			{narrow ? "Add" : "Add host"}
 		</Button>
 	);
+
+	// The deployment's hosts only: Kantel's latest release read again now, rather than within the hour.
+	const [checking, setChecking] = useState(false);
+	const check = owner === undefined ? source.checkForUpdates : undefined;
+	const checkForUpdates = async () => {
+		if (check === undefined) return;
+		setChecking(true);
+		try {
+			const found = await check();
+			setNotice({
+				level: "info",
+				text:
+					found.latestVersion === undefined
+						? "Kantel couldn't find a kantel-host release."
+						: `The latest kantel-host is ${found.latestVersion}. Hosts behind it show Update.`,
+			});
+			reload();
+		} catch (caught) {
+			setNotice({ level: "error", text: messageOf(caught, "Kantel couldn't check for updates. Try again.") });
+		} finally {
+			setChecking(false);
+		}
+	};
 	const rows = (host: Host) => ({
 		host,
 		source,
@@ -185,7 +208,16 @@ export function HostsPage({
 			{/* The title and Add on one line, on a phone too, as Sandboxes has them. */}
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center justify-between gap-4 border-b border-border pb-3">
 				<h1 className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}>Hosts</h1>
-				{addButton}
+				{check === undefined ? (
+					addButton
+				) : (
+					<div className="flex flex-none items-center gap-2">
+						<Button size="md" icon={<DownloadIcon size="sm" />} busy={checking} onClick={() => void checkForUpdates()}>
+							{narrow ? "Updates" : "Check for updates"}
+						</Button>
+						{addButton}
+					</div>
+				)}
 			</header>
 			{owner === undefined ? null : (
 				<p className="m-0 max-w-[60ch] text-muted">

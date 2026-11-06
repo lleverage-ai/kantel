@@ -73,6 +73,7 @@ import {
 	HostJoinToken,
 	HostList,
 	HostPath,
+	HostReleaseCheck,
 	HostUsage,
 	HostUsageQuery,
 	Invite,
@@ -1950,6 +1951,24 @@ export const updateHostAgent = defineRoute({
 	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
 });
 
+export const checkHostUpdates = defineRoute({
+	operationId: "checkHostUpdates",
+	method: "POST",
+	path: "/admin/hosts/check-for-updates",
+	tag: "hosts",
+	summary: "Check for host updates",
+	description: describe(
+		"Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release",
+		"just published show `updateAvailable` at once. It reads the release itself and names no version. At most one",
+		"check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the",
+		"deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the",
+		"release can't be read.",
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "What the check found.", schema: HostReleaseCheck },
+	errors: ["forbidden", "unavailable", "not_supported"],
+});
+
 export const createHostJoinToken = defineRoute({
 	operationId: "createHostJoinToken",
 	method: "POST",
@@ -2023,6 +2042,7 @@ export const hostRoutes = {
 	getHostUsage,
 	updateHost,
 	updateHostAgent,
+	checkHostUpdates,
 	revokeHost,
 	getPublicUrl,
 	setPublicUrl,

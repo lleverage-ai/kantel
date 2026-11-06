@@ -100,6 +100,9 @@ services:
       KANTEL_HOST_VERSION: ${KANTEL_HOST_VERSION:-}
       KANTEL_HOST_UPDATE_URL: ${KANTEL_HOST_UPDATE_URL:-}
       KANTEL_HOST_RELEASES: ${KANTEL_HOST_RELEASES:-}
+      # The bearer POST /v1/hosts/releases/check takes, to read the latest
+      # kantel-host release now: at least 32 characters. Empty refuses those calls.
+      KANTEL_RELEASE_CHECK_TOKEN: ${KANTEL_RELEASE_CHECK_TOKEN:-}
       KANTEL_COMPUTE_PORTS_DOMAIN: ${KANTEL_COMPUTE_PORTS_DOMAIN:-}
       KANTEL_EGRESS_ATTRIBUTION_KEY: ${KANTEL_EGRESS_ATTRIBUTION_KEY:-}
       # Seals environments' protected values and secret files in the

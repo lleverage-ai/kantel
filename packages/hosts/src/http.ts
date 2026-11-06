@@ -7,6 +7,8 @@
  *   POST   /v1/hosts/e2e/chain                  host.add to it (`kantel-host e2e join`)
  *   GET    /v1/hosts/bundles/{digest}?sandboxId=…  with the host's credential: a bundle's tar, for a sandbox on that
  *                                               host that mounts it
+ *   POST   /v1/hosts/releases/check             with the release token as a bearer: read the latest kantel-host release
+ *                                               again now (the release workflow, once it publishes one)
  *   GET    /v1/admin/hosts                      the operator's: hosts, join tokens, drain and revoke, as in
  *   POST   /v1/admin/hosts/join-tokens          docs/site/src/content/docs/api/reference/hosts.md
  *   GET    /v1/admin/hosts/{id}
@@ -22,6 +24,7 @@
 import { isKantelError, KantelError } from "@kantel/contracts";
 import type { HostEgress, SandboxTier } from "./protocol.ts";
 import type { HostsService } from "./service.ts";
+import { sameSecret, sha256Hex } from "./tunnel.ts";
 
 export const HOSTS_REGISTER_PATH = "/v1/hosts/register";
 export const HOSTS_E2E_CHAIN_PATH = "/v1/hosts/e2e/chain";
@@ -31,6 +34,15 @@ export const HOSTS_BUNDLES_PATH = "/v1/hosts/bundles";
 const BUNDLE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 /** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches from the control plane. */
 export const HOSTS_IMAGES_PATH = "/v1/hosts/images";
+/**
+ * `POST /v1/hosts/releases/check`, with `Authorization: Bearer <release token>`: the release workflow's call once a
+ * release is out, so hosts behind it show as out of date at once rather than within the hour. It names no version:
+ * the control plane reads the latest release itself (`HostsService.checkForUpdates`), so a forged call can't make a
+ * host install anything, and one within `CHECK_GAP_MS` of the last reads nothing.
+ */
+export const HOSTS_RELEASE_CHECK_PATH = "/v1/hosts/releases/check";
+/** The shortest release token taken: a shorter one is as good as none, and every call is refused. */
+export const RELEASE_TOKEN_MIN_LENGTH = 32;
 
 /**
  * Kantel's published host images (kernel, sandbox and isolate images, manifest.json): a GitHub Release on
@@ -45,6 +57,7 @@ export function isHostsPath(path: string): boolean {
 	return (
 		path === HOSTS_REGISTER_PATH ||
 		path === HOSTS_E2E_CHAIN_PATH ||
+		path === HOSTS_RELEASE_CHECK_PATH ||
 		path === ADMIN_HOSTS ||
 		path.startsWith(`${ADMIN_HOSTS}/`) ||
 		path === ADMIN_SANDBOXES ||
@@ -56,6 +69,36 @@ export interface HostsApiOptions {
 	readonly hosts: HostsService;
 	/** Resolves for the deployment's operator; throws (a KantelError `forbidden` or `unauthenticated`) otherwise. */
 	authorizeAdmin(request: Request): Promise<void>;
+	/**
+	 * The shared secret the release workflow sends as its bearer to `HOSTS_RELEASE_CHECK_PATH`
+	 * (KANTEL_RELEASE_CHECK_TOKEN).
+	 * Absent, or shorter than `RELEASE_TOKEN_MIN_LENGTH`: every call there is refused.
+	 */
+	readonly releaseToken?: string;
+}
+
+/**
+ * Checks a release check's bearer: undefined when it's the release token, else the refusal. 403 when this control
+ * plane has no token (so takes no checks at all), 401 when the bearer is missing or wrong. Both are hashed before
+ * they're compared, so the time taken depends on neither the token's length nor where they differ.
+ */
+export async function releaseCheckRefusal(request: Request, token: string | undefined): Promise<Response | undefined> {
+	const expected = token?.trim() ?? "";
+	if (expected.length < RELEASE_TOKEN_MIN_LENGTH) {
+		return json(
+			{ error: { code: "forbidden", message: "This control plane takes no release checks: it has no release token" } },
+			403,
+		);
+	}
+	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+	const [given, wanted] = await Promise.all([sha256Hex(bearer), sha256Hex(expected)]);
+	if (bearer !== "" && sameSecret(given, wanted)) return undefined;
+	return new Response(
+		JSON.stringify({
+			error: { code: "unauthenticated", message: "A release check needs the release token as its bearer" },
+		}),
+		{ status: 401, headers: { "content-type": "application/json", "www-authenticate": "Bearer" } },
+	);
 }
 
 const STATUS: { readonly [code: string]: number } = {
@@ -287,6 +330,13 @@ export function createHostsApi(options: HostsApiOptions) {
 						}),
 						201,
 					);
+				}
+				if (path === HOSTS_RELEASE_CHECK_PATH) {
+					if (request.method !== "POST") return json({ error: { code: "invalid", message: "POST only" } }, 405);
+					const refusal = await releaseCheckRefusal(request, options.releaseToken);
+					if (refusal !== undefined) return refusal;
+					// Any body is ignored: the version is read from the release URL, never taken from the caller.
+					return json(await hosts.checkForUpdates());
 				}
 				if (path === HOSTS_E2E_CHAIN_PATH) return await chain(request);
 				if (path.startsWith(`${HOSTS_BUNDLES_PATH}/`)) return await bundle(request, path);

@@ -386,6 +386,10 @@ describe("deploy config", () => {
 		expect(() => deployConfig({ ...rawConfig, workers_dev: true }, values)).toThrow(/bypass Access/);
 		const { preview_urls: _, ...noPreviewSetting } = rawConfig;
 		expect(() => deployConfig(noPreviewSetting, values)).toThrow(/bypass Access/);
+		// The release workflow's token is a Worker secret, set by hand: as a var, it would show in the dashboard.
+		expect(() => deployConfig({ ...rawConfig, vars: { KANTEL_RELEASE_CHECK_TOKEN: "x" } }, values)).toThrow(
+			/must not set KANTEL_RELEASE_CHECK_TOKEN as a var/,
+		);
 	});
 });
 

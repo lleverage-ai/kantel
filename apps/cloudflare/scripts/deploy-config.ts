@@ -52,6 +52,13 @@ export const DEPLOY_VARIABLES = [
 
 export type DeployVariable = (typeof DEPLOY_VARIABLES)[number];
 
+/**
+ * Worker secrets set by hand (`wrangler secret put`), never by the deploy: KANTEL_RELEASE_CHECK_TOKEN, which the release
+ * workflow sends to `POST /v1/hosts/releases/check` (src/config.ts; tools/release/README.md). Like the vault's, never a
+ * var.
+ */
+export const WORKER_SECRETS = ["KANTEL_RELEASE_CHECK_TOKEN"] as const;
+
 /** Set only to move the data: each overrides what `wrangler.jsonc` names. */
 export const OPTIONAL_DEPLOY_VARIABLES = [
 	"KANTEL_D1_DATABASE_NAME",
@@ -490,7 +497,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 	};
 	const vars = typeof raw.vars === "object" && raw.vars !== null ? raw.vars : {};
 	// A var would show the value in the dashboard, and wrangler refuses a var and a secret of one name.
-	for (const name of VAULT_SECRETS) {
+	for (const name of [...VAULT_SECRETS, ...WORKER_SECRETS]) {
 		if (name in vars) throw new Error(`wrangler.jsonc must not set ${name} as a var: it is a Worker secret`);
 	}
 	return {

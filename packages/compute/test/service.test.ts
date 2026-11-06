@@ -2765,6 +2765,23 @@ describe("hosts", () => {
 		expect(back.updateAvailable).toBeUndefined();
 	});
 
+	it("checks for host updates for the super-admin only, where the backend reads releases", async () => {
+		const stub = createStubBackend();
+		let checks = 0;
+		const { root, tom } = setup({
+			...stub,
+			async checkHostUpdates() {
+				checks += 1;
+				return checks === 1 ? { checked: true, latestVersion: "0.3.1" } : { checked: false };
+			},
+		});
+		expect((await failure(tom.checkHostUpdates())).code).toBe("forbidden");
+		expect(checks).toBe(0);
+		expect(await root.checkHostUpdates()).toEqual({ checked: true, latestVersion: "0.3.1" });
+		expect(await root.checkHostUpdates()).toEqual({ checked: false });
+		expect((await failure(setup().root.checkHostUpdates())).code).toBe("not_supported");
+	});
+
 	it("refuses an update where the backend doesn't update hosts", async () => {
 		const { root } = setup();
 		expect((await failure(root.updateHostAgent(STUB_HOST_ID))).code).toBe("not_supported");

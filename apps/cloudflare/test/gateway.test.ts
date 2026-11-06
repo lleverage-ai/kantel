@@ -88,6 +88,15 @@ describe("gateway config", () => {
 			gatewayConfig({ ...on, KANTEL_HOST_RELEASES: "https://dl.example/latest.json" }).accountHosts?.releasesUrl,
 		).toBe("https://dl.example/latest.json");
 		expect(() => gatewayConfig({ ...on, KANTEL_HOST_RELEASES: "latest" })).toThrow(/KANTEL_HOST_RELEASES/);
+		// The release workflow's token, the Worker secret: only where the release is read, as nothing else uses it.
+		const token = "t".repeat(64);
+		expect(gatewayConfig({ ...on, KANTEL_RELEASE_CHECK_TOKEN: ` ${token} ` }).accountHosts?.releaseToken).toBe(token);
+		expect(gatewayConfig({ ...on, KANTEL_RELEASE_CHECK_TOKEN: " " }).accountHosts).not.toHaveProperty("releaseToken");
+		expect(
+			gatewayConfig({ ...on, KANTEL_HOST_RELEASES: "off", KANTEL_RELEASE_CHECK_TOKEN: token }).accountHosts,
+		).toEqual({
+			publicUrl: "https://app.kantel.dev",
+		});
 	});
 
 	it("refuses an admin email that is not one", () => {

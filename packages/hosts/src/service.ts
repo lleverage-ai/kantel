@@ -51,7 +51,13 @@ import {
 	needsEgressPolicy,
 	type SandboxTier,
 } from "./protocol.ts";
-import { DEFAULT_HOST_UPDATE_URL, type HostReleases, needsUpdate, plainVersion } from "./releases.ts";
+import {
+	DEFAULT_HOST_UPDATE_URL,
+	type HostReleases,
+	needsUpdate,
+	plainVersion,
+	type ReleaseCheck,
+} from "./releases.ts";
 import {
 	type Candidate,
 	hostSizeNamed,
@@ -450,6 +456,14 @@ export interface HostsService {
 	 * when the host refuses (one in an E2E space is updated on the machine).
 	 */
 	updateAgent(hostId: string): Promise<{ readonly version: string }>;
+	/**
+	 * Reads Kantel's latest kantel-host release again now (`HostReleases.check`), rather than on its hourly schedule, so
+	 * hosts behind a release just published show as out of date at once: on every replica sharing the store. Done at most
+	 * every `CHECK_GAP_MS`; within it, `checked` is false and nothing is read. `not_supported` when this control plane
+	 * reads no release (the operator set the version, or KANTEL_HOST_RELEASES is `off`), `unavailable` when it can't be
+	 * read.
+	 */
+	checkForUpdates(): Promise<ReleaseCheck>;
 	readonly sandboxes: {
 		create(input: CreateSandboxInput): Promise<SandboxPlacement>;
 		fork(
@@ -1366,6 +1380,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 			log(`[hosts] ${host.name} (${hostId}) is updating kantel-host from ${version ?? "unknown"} to ${to}`);
 			return { version: to };
+		},
+		async checkForUpdates() {
+			const check = options.releases?.check;
+			// The operator's version is the one hosts run: the latest release isn't what they're compared with.
+			if (check === undefined || options.desiredVersion !== undefined) {
+				throw new KantelError("not_supported", "This control plane doesn't read Kantel's latest kantel-host release");
+			}
+			try {
+				const found = await check.call(options.releases);
+				if (found.checked) log(`[hosts] checked the latest kantel-host: ${found.latestVersion ?? "none"}`);
+				return found;
+			} catch (error) {
+				throw new KantelError("unavailable", error instanceof Error ? error.message : String(error));
+			}
 		},
 		async revoke(hostId) {
 			const host = await hostOf(hostId);

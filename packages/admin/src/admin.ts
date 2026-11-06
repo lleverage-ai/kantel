@@ -601,6 +601,22 @@ const COMMANDS: readonly CommandSpec[] = [
 		},
 	},
 	{
+		name: "host check-for-updates",
+		usage: "host check-for-updates",
+		summary: "Read Kantel's latest kantel-host release again now, rather than within the hour",
+		details:
+			"Hosts behind a release just published then show as out of date in `host list` at once. At most one check every " +
+			"30 seconds; within it nothing more is read.",
+		async run(ctx) {
+			const found = await (await ctx.client()).checkHostUpdates();
+			ctx.emit(found, () =>
+				found.checked
+					? `latest kantel-host: ${found.latestVersion ?? "none read"}`
+					: `checked in the last 30 seconds; latest kantel-host: ${found.latestVersion ?? "none read"}`,
+			);
+		},
+	},
+	{
 		name: "host revoke",
 		usage: "host revoke <hostId> --yes",
 		summary: "Revoke a host's credential and close its connection",

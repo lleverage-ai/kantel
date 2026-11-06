@@ -205,6 +205,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_REPLICA_URL` | With several gateways, where the others reach this one on your private network, such as `http://10.0.3.7:8080` |
 | `KANTEL_HOST_VERSION`, `KANTEL_HOST_UPDATE_URL` | The `kantel-host` version hosts should run, and where they get it. See [Update a host](/hosts/#update-a-host) |
 | `KANTEL_HOST_RELEASES` | Where the latest `kantel-host` release is read, to mark out-of-date hosts in the console. Default Kantel's latest GitHub Release; `off` reads none. See [Update a host](/hosts/#update-a-host) |
+| `KANTEL_RELEASE_CHECK_TOKEN` | A secret of 32 characters or more (`openssl rand -hex 32`) that `POST /v1/hosts/releases/check` takes as its bearer, to read the latest release now rather than within the hour. Unset, those calls are refused. See [Check for updates now](/hosts/#check-for-updates-now) |
 
 For example:
 

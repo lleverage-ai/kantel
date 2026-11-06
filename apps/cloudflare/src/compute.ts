@@ -80,6 +80,7 @@ import {
 	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
+	HOSTS_RELEASE_CHECK_PATH,
 } from "@kantel/hosts/http";
 import { type AcceptedHost, closeQuietly, type HostSocket } from "@kantel/hosts/hub";
 import { openPortWebSocket, type PortWebSocket } from "@kantel/hosts/port-websocket";
@@ -93,7 +94,7 @@ import {
 import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
 import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
-import { createHostReleases } from "@kantel/hosts/releases";
+import { createHostReleases, createSqlHostReleasesStore } from "@kantel/hosts/releases";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
@@ -384,7 +385,12 @@ export interface StackComputeOptions {
 	 * Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker, and where the latest kantel-host
 	 * release is read (`releasesUrl`; absent, it isn't, and no host is said to be out of date). Absent, off.
 	 */
-	readonly accountHosts?: { readonly publicUrl: string; readonly releasesUrl?: string };
+	readonly accountHosts?: {
+		readonly publicUrl: string;
+		readonly releasesUrl?: string;
+		/** KANTEL_RELEASE_CHECK_TOKEN: the bearer `POST /v1/hosts/releases/check` takes. Absent, it refuses every call. */
+		readonly releaseToken?: string;
+	};
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
 	readonly templates?: boolean;
 	/**
@@ -661,6 +667,7 @@ async function accountHostsSide(
 		readonly portsDomain: string;
 		readonly relayLimits?: RelayLimits;
 		readonly releasesUrl?: string;
+		readonly releaseToken?: string;
 		readonly fetch?: typeof fetch;
 	},
 	sql: SqlDriver | undefined,
@@ -691,6 +698,9 @@ async function accountHostsSide(
 					url: config.releasesUrl,
 					...(config.fetch === undefined ? {} : { fetch: config.fetch }),
 					log: (message) => console.warn(message),
+					// Every request is this one object's, so what it keeps in memory is already every reader's. Checks are recorded
+					// in its SQLite as well, so the gap between them holds across the object being evicted or redeployed.
+					...(sql === undefined ? {} : { store: createSqlHostReleasesStore(sql) }),
 				});
 	const service = createHostsService({
 		store: hostStore,
@@ -755,6 +765,7 @@ async function accountHostsSide(
 	const register = createHostsApi({
 		hosts: service,
 		authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
+		...(config.releaseToken === undefined ? {} : { releaseToken: config.releaseToken }),
 	});
 	return {
 		service,
@@ -785,6 +796,13 @@ async function accountHostsSide(
 				if (path === HOSTS_E2E_CHAIN_PATH) {
 					if (request.method !== "POST") return register.fetch(request);
 					const bounded = await buffered(request, HOST_E2E_CHAIN_BODY_LIMIT);
+					return bounded instanceof Response ? bounded : register.fetch(bounded);
+				}
+				// The release workflow's "a release is out", on the release token. It names no version, so its body (bounded, as
+				// anyone can send one) is never read.
+				if (path === HOSTS_RELEASE_CHECK_PATH) {
+					if (request.method !== "POST") return register.fetch(request);
+					const bounded = await buffered(request, HOST_RELEASE_CHECK_BODY_LIMIT);
 					return bounded instanceof Response ? bounded : register.fetch(bounded);
 				}
 				if (path.startsWith(`${HOSTS_IMAGES_PATH}/`)) return hostImage(request, path);
@@ -1088,6 +1106,8 @@ export const HOST_REGISTER_BODY_LIMIT = 64 * 1024;
 
 /** A host's chain append is its one signed host.add, with room for a few more entries. */
 export const HOST_E2E_CHAIN_BODY_LIMIT = 256 * 1024;
+/** The most of a release check's body read: it carries nothing the control plane uses. */
+export const HOST_RELEASE_CHECK_BODY_LIMIT = 4 * 1024;
 
 /** `GET /v1/hosts/images/{file}`: Kantel's published images, as a self-hosted gateway serves them by default. */
 function hostImage(request: Request, path: string): Response {
