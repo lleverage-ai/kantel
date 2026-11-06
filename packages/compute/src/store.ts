@@ -12,7 +12,7 @@
  */
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { BackendDiskUsage, SandboxTemplateBoot, SharedSnapshotBytes } from "./backend.ts";
+import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /** One kind of record. */
@@ -249,6 +249,12 @@ export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 	readonly ref?: string;
 	readonly base?: string;
 	/**
+	 * All its files take on its host's disk, those it shares with other snapshots included, as the host last said (a
+	 * keep, a live save, a refresh), where `sizeBytes` counts shared files for one holder only. A host's limit on saved
+	 * bytes counts each save at this, its full size (`savedBytesOver`). Absent: `sizeBytes`.
+	 */
+	readonly fullSizeBytes?: number;
+	/**
 	 * While expiry deletes it (`deleting`): the process whose mark it is, the mark's token, since when; `settling` once its
 	 * bytes are being deleted, after which it is never put back.
 	 */
@@ -468,24 +474,8 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 	readonly accountId: string;
 };
 
-/**
- * How a host's snapshots share their files, by ref, as it last said: a refresh (`recordSnapshotSizes`), with each
- * save's answer since patched in (`withTaken`). `own`: each ref's files no other holds; `shared`: the files several
- * hold, by their refs. A host's limit on saved bytes counts by it (`retainedBytes`).
- */
-export interface SnapshotFileLayout {
-	readonly own: { readonly [ref: string]: number };
-	readonly shared: readonly SharedSnapshotBytes[];
-}
-
-/**
- * A host: its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`), and how
- * its snapshots share their files (`snapshotFiles`), never answered.
- */
-export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
-	readonly diskUsage?: BackendDiskUsage;
-	readonly snapshotFiles?: SnapshotFileLayout;
-};
+/** A host, its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`). */
+export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & { readonly diskUsage?: BackendDiskUsage };
 
 export interface StoredJoinToken {
 	readonly id: string;

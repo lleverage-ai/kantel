@@ -887,7 +887,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
-| `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host (their `sizeBytes`, each set of bytes once). A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
+| `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
 

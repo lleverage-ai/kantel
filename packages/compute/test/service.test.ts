@@ -961,6 +961,9 @@ describe("sandboxes", () => {
 		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(104);
 		// Its source, automatic, is left what is its own.
 		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(10);
+		// Each keeps its full size too, shared files included, which a host's limit on saved bytes counts.
+		expect((await store.snapshots.get(saved.id))?.fullSizeBytes).toBe(104);
+		expect((await store.snapshots.get(taken.id))?.fullSizeBytes).toBe(110);
 
 		// A host with isolates too: their snapshots say nothing of what is their own, and keep their reported size, while
 		// the microVM ones are still counted by their shared files.
@@ -3920,29 +3923,14 @@ describe("hosts", () => {
 		await ann.saveSnapshot({ name: "anns", sandboxId: own.id });
 
 		// The limit reached: a save of a running sandbox's state now is refused before it's taken.
-		await store.snapshots.update(replaced.id, (current) => ({ ...current, sizeBytes: 50 * MiB }));
+		await store.snapshots.update(replaced.id, (current) => ({
+			...current,
+			sizeBytes: 50 * MiB,
+			fullSizeBytes: 50 * MiB,
+		}));
 		const before = takes.count;
 		expect((await failure(tom.saveSnapshot({ name: "third", sandboxId: sandbox.id }))).code).toBe("exhausted");
 		expect(takes.count).toBe(before);
-
-		// A copy whose files are linked from one already saved counts only what is its own (`attributeSnapshotBytes`): 1
-		// MiB of its 51 fits a limit of 60 MiB.
-		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 60 * MiB });
-		const replacedRef = await refOf(store, replaced.id);
-		// As a refresh has them: the copy's 50 MiB are its source's files.
-		await store.hosts.update(STUB_HOST_ID, (current) => ({
-			...current,
-			snapshotFiles: {
-				own: { [takenRef]: 0, [replacedRef]: 0 },
-				shared: [{ refs: [takenRef, replacedRef], bytes: 50 * MiB }],
-			},
-		}));
-		next.bytes = 51 * MiB;
-		next.unique = MiB;
-		next.shared = (ref) => [{ refs: [takenRef, replacedRef, ref], bytes: 50 * MiB }];
-		const linked = await tom.saveSnapshot({ name: "linked", sandboxId: sandbox.id, snapshotId: taken.id });
-		expect(linked.sizeBytes).toBe(MiB);
-		next.unique = undefined;
 
 		// Removed, saves go through again.
 		const unlimited = await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: null });
@@ -3976,54 +3964,35 @@ describe("hosts", () => {
 		return { ...sized, store, tom, sandbox, copy, limit };
 	}
 
-	it("counts the files a copy shares with another save still being admitted as its own", async () => {
-		const { store, backend, copy, limit } = await linkingCopies();
-		const first = await copy("first");
-		expect(first.sizeBytes).toBe(61 * MiB);
-		// While the first is still being admitted (on another gateway, say), a second copy's size counts the shared files
-		// too: were the first refused, they would otherwise be left in neither's size.
-		await store.snapshots.update(first.id, (current) => ({ ...current, state: "creating" }));
+	it("counts each save at its full size: copies that share files count apart", async () => {
+		const { store, released, copy, limit } = await linkingCopies();
 		await limit(100);
-		const second = await copy("second");
-		expect(second.sizeBytes).toBe(61 * MiB);
-		// The first refused and withdrawn, its bytes deleted: the second keeps the shared files, still counted.
-		const firstRef = await refOf(store, first.id);
-		await backend.deleteSnapshot(firstRef);
-		await store.snapshots.delete(first.id);
-		await limit(50);
-		const refused = await failure(copy("third"));
+		const first = await copy("first");
+		// Its size counts the files it shares (it holds them); its full size is the same 61 MiB.
+		expect(first.sizeBytes).toBe(61 * MiB);
+		// A second copy sharing the same 60 MiB counts its full 61 MiB too: 122 MiB, past 100.
+		const refused = await failure(copy("second"));
 		expect(refused.code).toBe("exhausted");
-		expect(refused.message).toContain("has 61 MiB");
-		// A copy beside the second, the host's answer without the first: 62 MiB in all, which fits 62.
-		await limit(62);
-		const beside = await copy("beside");
-		expect(beside.sizeBytes).toBe(MiB);
+		expect(refused.message).toContain("has 61 MiB; this one is 61 MiB");
+		expect(released).toHaveLength(1);
+		expect((await store.snapshots.list()).filter((snapshot) => snapshot.name === "second")).toEqual([]);
+		// Up to 122 MiB, both fit.
+		await limit(122);
+		const second = await copy("second");
+		expect(second.state).toBe("ready");
 	});
 
-	it("counts files a deleted or replaced save shared once, while another save still holds them", async () => {
-		const { next, tom, sandbox, copy, limit } = await linkingCopies();
+	it("counts a save still being admitted at its full size, and frees it once withdrawn", async () => {
+		const { store, backend, copy, limit } = await linkingCopies();
+		const first = await copy("first");
+		// The first still being admitted (on another gateway, say): it counts, so a second copy doesn't fit 100 MiB.
+		await store.snapshots.update(first.id, (current) => ({ ...current, state: "creating" }));
 		await limit(100);
-		// A holds the 60 MiB the two copies share; B, beside it, is charged only its own.
-		const a = await copy("a");
-		const b = await copy("b");
-		expect([a.sizeBytes, b.sizeBytes]).toEqual([61 * MiB, MiB]);
-		// A deleted, before any refresh: B still keeps the 60 MiB, so an unrelated 70 MiB doesn't fit.
-		await tom.deleteSnapshot(a.id);
-		next.bytes = 70 * MiB;
-		next.unique = undefined;
-		const refused = await failure(tom.saveSnapshot({ name: "big", sandboxId: sandbox.id }));
-		expect(refused.code).toBe("exhausted");
-		expect(refused.message).toContain("has 61 MiB; this one is 70 MiB");
-		// C beside B, the host's answer without A: the 60 MiB once, 62 MiB in all, which fits 62.
-		next.bytes = 61 * MiB;
-		next.unique = MiB;
-		await limit(62);
-		await copy("c");
-		// C replaced by D: still 62 MiB, which fits; then E beside them is 1 MiB too many.
-		await copy("c", true);
-		const over = await failure(copy("e"));
-		expect(over.code).toBe("exhausted");
-		expect(over.message).toContain("has 62 MiB; this one is 1 MiB");
+		expect((await failure(copy("second"))).message).toContain("has 61 MiB; this one is 61 MiB");
+		// Withdrawn, its bytes deleted: the second fits.
+		await backend.deleteSnapshot(await refOf(store, first.id));
+		await store.snapshots.delete(first.id);
+		expect((await copy("second")).state).toBe("ready");
 	});
 
 	it("counts the bytes a save shares with its source once, on a host that can't keep copies", async () => {

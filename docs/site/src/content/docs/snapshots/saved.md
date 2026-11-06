@@ -101,7 +101,7 @@ A saved snapshot's `sandboxId` is the sandbox it came from, and is gone once tha
 
 A deployment may cap how many saved snapshots an account keeps. Saving past the cap answers `429` with `exhausted`. Your account's usage shows the cap as `limits.savedSnapshots`; see [Accounts and organisations](/accounts/organisations/#usage-and-limits).
 
-A host's admin may also limit how many bytes of saved snapshots each account keeps on that host (`savedSnapshotBytesLimit` on the [host](/hosts/#what-takes-the-disk)). A save that would take the account past it answers `429` with `exhausted`, saying how much the account has saved there, and the bytes it took for the save are deleted again. Files saves share count once, so saving the same bytes twice adds only what is new.
+A host's admin may also limit how many bytes of saved snapshots each account keeps on that host (`savedSnapshotBytesLimit` on the [host](/hosts/#what-takes-the-disk)). A save that would take the account past it answers `429` with `exhausted`, saying how much the account has saved there, and the bytes it took for the save are deleted again. Each saved snapshot counts at its full size, including the files it shares with other snapshots, so copies that share files count separately.
 
 ## Delete a saved snapshot
 

@@ -2938,8 +2938,9 @@ export const Host = Type.Object(
 			Type.Integer({
 				minimum: 0,
 				description:
-					"The most bytes of saved snapshots each account may keep on this host (their `sizeBytes`, each set of bytes " +
-					"once). A save past it answers `exhausted`. Absent: no limit.",
+					"The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full " +
+					"size, the files it shares with other snapshots included, so copies that share files count separately. " +
+					"A save past it answers `exhausted`. Absent: no limit.",
 			}),
 		),
 	},

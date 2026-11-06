@@ -104,7 +104,6 @@ import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sea
 import type {
 	ComputeStore,
 	RunPeriod,
-	SnapshotFileLayout,
 	StoredAccount,
 	StoredApiKey,
 	StoredCommand,
@@ -2886,7 +2885,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, diskUsage, snapshotFiles: _files, ...rest } = host;
+		const { updating, diskUsage, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
 			...rest,
@@ -4304,39 +4303,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * The refs of `hostId` that saved records of `saved` hold, each with its size: a record's size counts every file
-	 * several snapshots share once, for one holder, a saved one first (`attributeSnapshotBytes`), so adding them up
-	 * counts each shared file once; records of the same ref (a save that shares its source's) count once. A record being
-	 * deleted holds nothing.
+	 * The refs of `hostId` that saved records of `saved` hold, each with its size by `sizeOf`; records of the same ref (a
+	 * save that shares its source's) count once. A record being deleted holds nothing.
 	 */
-	async function savedRefsOn(hostId: string, saved: readonly StoredSnapshot[]): Promise<Map<string, number>> {
+	async function savedRefsOn(
+		hostId: string,
+		saved: readonly StoredSnapshot[],
+		sizeOf: (record: StoredSnapshot) => number = (record) => record.sizeBytes ?? 0,
+	): Promise<Map<string, number>> {
 		const held = new Map<string, number>();
 		for (const record of saved) {
 			if (record.kind !== "saved" || record.state === "deleting" || record.ref === undefined) continue;
 			if ((await hostOfSnapshot(record)) !== hostId) continue;
-			held.set(record.ref, Math.max(held.get(record.ref) ?? 0, record.sizeBytes ?? 0));
+			held.set(record.ref, Math.max(held.get(record.ref) ?? 0, sizeOf(record)));
 		}
 		return held;
 	}
 
+	/** A save's full size, its shared files included, which a host's limit counts it at (`fullSizeBytes`). */
+	const fullSize = (record: StoredSnapshot): number => record.fullSizeBytes ?? record.sizeBytes ?? 0;
+
 	/**
 	 * A host's disk as the API answers it (`Host.diskUsage`): the snapshots the host measured, split by this plane's
 	 * records, as the host can't tell (`BackendDiskUsage`). Saved: what the saved records on it hold of the files the
-	 * host counted as snapshots (its split by snapshot, `retainedBytes`: each one's own, and each group a saved one
-	 * holds, once), so files it counted elsewhere first (a stop's memory, a bundle drive, another filesystem's) are in
-	 * neither; automatic: the rest. A ref its split doesn't name (an isolate's, whose snapshots are its sandbox's files)
-	 * counts nothing. From a backend that doesn't split, the records' sizes, at most the snapshots in all.
+	 * host counted as snapshots, by its split by snapshot in this very measure (each saved ref's own files, and each
+	 * group a saved one holds, once), so files it counted elsewhere first (a stop's memory, a bundle drive, another
+	 * filesystem's) are in neither; automatic: the rest. A ref its split doesn't name (an isolate's, whose snapshots are
+	 * its sandbox's files) counts nothing. From a backend that doesn't split, the records' sizes, at most the snapshots
+	 * in all. For display only: the limit counts by full sizes (`savedBytesOver`).
 	 */
 	async function diskView(hostId: string, measure: BackendDiskUsage): Promise<computeSchema.HostDiskUsage> {
 		const { snapshotsBytes, snapshotOwnBytes, snapshotShared, ...rest } = measure;
 		const held = await savedRefsOn(hostId, await store.snapshots.list({ kind: "saved" }));
-		let saved: number;
+		let saved = 0;
 		if (snapshotOwnBytes !== undefined) {
-			const named = new Map([...held.keys()].map((ref) => [ref, 0]));
-			saved = retainedBytes({ own: snapshotOwnBytes, shared: snapshotShared ?? [] }, named);
+			for (const ref of held.keys()) saved += snapshotOwnBytes[ref] ?? 0;
+			for (const group of snapshotShared ?? []) {
+				if (group.refs.some((ref) => held.has(ref))) saved += group.bytes;
+			}
 		} else {
 			// An isolate's snapshots are among its sandbox's files on the host, not its snapshots.
-			saved = 0;
 			const microvm = (await store.snapshots.list({ kind: "saved" })).filter(
 				(record) => record.sandboxType !== "isolate",
 			);
@@ -4348,13 +4354,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * The `exhausted` error when an account's saved snapshots on a host are past the host's limit
-	 * (`Host.savedSnapshotBytesLimit`), or undefined when they aren't or it sets none. What they keep is worked out now,
-	 * from how the host's snapshots share their files (`StoredHost.snapshotFiles`, `retainedBytes`): each saved ref's
-	 * own files, and each group of files any of them holds, once. So a holder deleted or refused leaves shared files
-	 * counted while another save holds them, whatever the records' sizes said when they were attributed. A ref the
-	 * host hasn't said that of counts its records' size; records of the same ref (a save that shares its source's)
-	 * count once. A save being deleted counts nothing, nor does `replacing`, the save a new one replaces; others still
-	 * `creating` count, as they may yet be let through.
+	 * (`Host.savedSnapshotBytesLimit`), or undefined when they aren't or it sets none. Each saved snapshot counts at its
+	 * full size (`fullSizeBytes`), the files it shares with others included: copies that share files count apart, so the
+	 * total is never less than what they keep, however they share. Records of the same ref (a save that shares its
+	 * source's) count once. A save being deleted counts nothing, nor does `replacing`, the save a new one replaces;
+	 * others still `creating` count, as they may yet be let through.
 	 *
 	 * `adding`: a save's own record, stored already (`creating`, `admitSave`). Without one (a live save about to take
 	 * its bytes), the limit reached already refuses.
@@ -4366,19 +4370,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		adding?: StoredSnapshot,
 	): Promise<KantelError | undefined> {
 		if (hostId === undefined) return undefined;
-		const host = await store.hosts.get(hostId);
-		const limit = host?.savedSnapshotBytesLimit;
+		const limit = (await store.hosts.get(hostId))?.savedSnapshotBytesLimit;
 		if (limit === undefined) return undefined;
 		const records = (await store.snapshots.list({ accountId, kind: "saved" })).filter(
 			(saved) => saved.id !== replacing?.id && saved.id !== adding?.id,
 		);
-		const held = await savedRefsOn(hostId, records);
-		const total = retainedBytes(host?.snapshotFiles, held);
-		let own = 0;
-		if (adding?.ref !== undefined && !held.has(adding.ref)) {
-			const withIt = new Map(held).set(adding.ref, adding.sizeBytes ?? 0);
-			own = retainedBytes(host?.snapshotFiles, withIt) - total;
-		}
+		const held = await savedRefsOn(hostId, records, fullSize);
+		let total = 0;
+		for (const size of held.values()) total += size;
+		const own = adding?.ref === undefined || held.has(adding.ref) ? 0 : fullSize(adding);
 		if (adding === undefined ? total < limit : total + own <= limit) return undefined;
 		return new KantelError(
 			"exhausted",
@@ -4386,28 +4386,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				(own > 0 ? `; this one is ${bytesText(own)}` : "") +
 				". Delete saved snapshots you no longer need, and try again.",
 		);
-	}
-
-	/**
-	 * Patches a save's answer into how its host's snapshots share their files (`withTaken`, `StoredHost.snapshotFiles`),
-	 * before it is admitted, so the limit counts its files as they are now rather than as the last refresh had them. A
-	 * write that fails leaves it to the next refresh.
-	 */
-	async function noteFiles(taken: TakenSnapshot, sandboxHost: string | undefined): Promise<void> {
-		const hostId = refHost(taken.ref) ?? sandboxHost;
-		if (hostId === undefined || taken.uniqueBytes === undefined) return;
-		try {
-			// The refs still there: those a record names, and those the host's answer names (bytes a delete couldn't
-			// remove are still shared).
-			const alive = new Set<string>([taken.ref, ...(taken.shared ?? []).flatMap((group) => group.refs)]);
-			for (const record of await store.snapshots.list()) if (record.ref !== undefined) alive.add(record.ref);
-			await store.hosts.update(hostId, (current) => ({
-				...current,
-				snapshotFiles: withTaken(current.snapshotFiles, taken, alive),
-			}));
-		} catch {
-			// Left to the next refresh.
-		}
 	}
 
 	/**
@@ -7245,6 +7223,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				let ref: string;
 				let sizeBytes: number | undefined;
+				// All its files take, shared ones included: what the host's limit counts it at.
+				let fullSizeBytes: number | undefined;
 				// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
 				let base: string | undefined;
 				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
@@ -7266,11 +7246,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (source !== undefined) {
 					const from = readyRef(source);
 					const kept = await backend.keepSnapshot?.(from);
-					if (kept !== undefined) await noteFiles(kept, current.hostId);
 					ref = kept?.ref ?? from;
 					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
 					sizeBytes =
 						kept === undefined ? source.sizeBytes : await keptSize(kept, existing).catch(() => kept.sizeBytes);
+					fullSizeBytes = kept === undefined ? (source.fullSizeBytes ?? source.sizeBytes) : kept.sizeBytes;
 					base = kept?.base ?? source.base;
 					memory = kept?.memory ?? (await holdsMemory(source));
 					if (recordsMachine(source)) machine = recordedMachine(source);
@@ -7279,9 +7259,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const full = await savedBytesOver(current.accountId, current.hostId, existing);
 					if (full !== undefined) throw full;
 					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
-					await noteFiles(taken, current.hostId);
 					ref = taken.ref;
 					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
+					fullSizeBytes = taken.sizeBytes;
 					base = taken.base;
 					memory = taken.memory === true;
 				} else {
@@ -7302,6 +7282,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					memory,
 					...machine,
 					sizeBytes,
+					...(fullSizeBytes === undefined ? {} : { fullSizeBytes }),
 					createdAt: now(),
 					createdBy: actorOf(principal),
 					ref,
@@ -8496,6 +8477,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (whole(uniqueBytes)) unique.set(ref, uniqueBytes);
 			}
 			if (reported.size === 0) return;
+			const full = new Map(reported);
 			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written.
 			const records = await store.snapshots.list();
 			// Each snapshot whose host says what is its own (a microVM's; an isolate's says nothing): its shared files counted
@@ -8506,16 +8488,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 				const attributed = attributeSnapshotBytes(records, unique, groups);
 				for (const ref of unique.keys()) reported.set(ref, attributed.get(ref) ?? 0);
-				// And how they share their files, as the host has them now, which a limit on saved bytes counts by.
-				const layout: SnapshotFileLayout = { own: Object.fromEntries(unique), shared: groups };
-				await store.hosts.update(hostId, (current) => ({ ...current, snapshotFiles: layout }));
 			}
 			for (const snapshot of records) {
-				const sizeBytes = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
-				if (sizeBytes === undefined || snapshot.sizeBytes === sizeBytes) continue;
+				if (snapshot.ref === undefined) continue;
+				const sizeBytes = reported.get(snapshot.ref);
+				// All its files, shared ones included: what a host's limit on saved bytes counts it at.
+				const fullSizeBytes = full.get(snapshot.ref);
+				if (sizeBytes === undefined || fullSizeBytes === undefined) continue;
+				if (snapshot.sizeBytes === sizeBytes && snapshot.fullSizeBytes === fullSizeBytes) continue;
 				const { ref } = snapshot;
 				await store.snapshots.update(snapshot.id, (current) =>
-					current.ref === ref && current.sizeBytes !== sizeBytes ? { ...current, sizeBytes } : undefined,
+					current.ref === ref && (current.sizeBytes !== sizeBytes || current.fullSizeBytes !== fullSizeBytes)
+						? { ...current, sizeBytes, fullSizeBytes }
+						: undefined,
 				);
 			}
 		},
@@ -8595,85 +8580,6 @@ export interface SnapshotSizeReport {
 	readonly sizeBytes: number;
 	/** What of that is in files no other snapshot holds; absent from a host that doesn't say. */
 	readonly uniqueBytes?: number;
-}
-
-/**
- * What `refs` keep on their host's disk together, by how its snapshots share their files (`layout`): each one's own
- * files, and each group of files any of them holds, once, whoever else holds it too. So deleting one holder of shared
- * files leaves them counted while another of `refs` holds them. A ref the layout doesn't know counts the size it maps
- * to (its records' size).
- */
-export function retainedBytes(layout: SnapshotFileLayout | undefined, refs: ReadonlyMap<string, number>): number {
-	let total = 0;
-	for (const [ref, size] of refs) total += layout?.own[ref] ?? size;
-	for (const group of layout?.shared ?? []) {
-		if (group.refs.some((ref) => refs.has(ref))) total += group.bytes;
-	}
-	return total;
-}
-
-/**
- * `layout` as the host has it now that only `alive` refs remain (refs a record still names; a host measures only the
- * snapshots it still has): each group's holders without the gone ones, a group left with one holder its own files and
- * one with none dropped, and groups left with the same holders merged. A shared file is then named by the holders
- * that still hold it, as a host's next answer names it.
- */
-export function withoutGone(
-	layout: SnapshotFileLayout | undefined,
-	alive: ReadonlySet<string>,
-): SnapshotFileLayout | undefined {
-	if (layout === undefined) return undefined;
-	const own: { [ref: string]: number } = {};
-	for (const [ref, bytes] of Object.entries(layout.own)) if (alive.has(ref)) own[ref] = bytes;
-	const groups = new Map<string, SharedSnapshotBytes>();
-	for (const group of layout.shared) {
-		const refs = [...new Set(group.refs.filter((ref) => alive.has(ref)))].sort();
-		const [only] = refs;
-		if (refs.length === 1 && only !== undefined) own[only] = (own[only] ?? 0) + group.bytes;
-		if (refs.length < 2) continue;
-		const key = refs.join(" ");
-		groups.set(key, { refs, bytes: (groups.get(key)?.bytes ?? 0) + group.bytes });
-	}
-	return { own, shared: [...groups.values()] };
-}
-
-/**
- * `layout` with a new snapshot's answer in it (`TakenSnapshot.uniqueBytes`, `shared`): its own files, and each group
- * of files it now shares, taken out of the group (or the one ref's own files) they were in before it. The layout is
- * first reconciled with the refs still `alive` (`withoutGone`), so a group whose holder was deleted, withdrawn or
- * replaced since the last refresh matches the answer, which names only the snapshots the host still has. Undefined,
- * or as it was, when the answer doesn't say how its files are shared.
- */
-export function withTaken(
-	layout: SnapshotFileLayout | undefined,
-	taken: TakenSnapshot,
-	alive?: ReadonlySet<string>,
-): SnapshotFileLayout | undefined {
-	if (taken.uniqueBytes === undefined) return layout;
-	const current = alive === undefined ? layout : withoutGone(layout, alive);
-	const own: { [ref: string]: number } = { ...current?.own, [taken.ref]: taken.uniqueBytes };
-	let shared = [...(current?.shared ?? [])];
-	const same = (a: readonly string[], b: readonly string[]) =>
-		a.length === b.length && a.every((ref) => b.includes(ref));
-	for (const group of taken.shared ?? []) {
-		if (!group.refs.includes(taken.ref)) continue;
-		const before = group.refs.filter((ref) => ref !== taken.ref);
-		const [only] = before;
-		if (before.length === 1 && only !== undefined) {
-			const was = own[only];
-			if (was !== undefined) own[only] = Math.max(0, was - group.bytes);
-		} else {
-			shared = shared.flatMap((known) =>
-				!same(known.refs, before)
-					? [known]
-					: known.bytes > group.bytes
-						? [{ refs: known.refs, bytes: known.bytes - group.bytes }]
-						: [],
-			);
-		}
-		shared.push({ refs: [...group.refs], bytes: group.bytes });
-	}
-	return { own, shared };
 }
 
 /**

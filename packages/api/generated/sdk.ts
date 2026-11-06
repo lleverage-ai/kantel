@@ -985,7 +985,7 @@ export interface Host {
 	readonly usage?: UsageSparklines;
 	/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
 	readonly diskUsage?: HostDiskUsage;
-	/** The most bytes of saved snapshots each account may keep on this host (their `sizeBytes`, each set of bytes once). A save past it answers `exhausted`. Absent: no limit. */
+	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
 	readonly savedSnapshotBytesLimit?: number;
 }
 
