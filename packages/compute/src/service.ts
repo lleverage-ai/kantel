@@ -6240,6 +6240,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(detached ? { detached: true } : {}),
 				};
 				await store.commands.put(command);
+				// Checked once stored, as a create is: a command landing as its sandbox's account is deleted (its sandbox gone
+				// or the account closed) is forgotten and never run.
+				if ((await store.sandboxes.get(current.id)) === undefined || !(await accountOpen(current.accountId))) {
+					await store.commands.delete(command.id);
+					throw accountClosed();
+				}
 				const controller = new AbortController();
 				runningCommands.set(command.id, controller);
 				// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a

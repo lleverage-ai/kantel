@@ -253,6 +253,11 @@ export const DISK_COPY_TIMEOUT_MS = 30 * 60_000;
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
 	/**
+	 * Whether an account still takes hosts. Asked once a host joined with an account's token is stored: one whose account
+	 * closed meanwhile (its person deleted their account) is revoked before its credential is handed back.
+	 */
+	accountOpen?(accountId: string): Promise<boolean>;
+	/**
 	 * Spends the token with this SHA-256 hex once: its name and labels, and the account an account's join token joins
 	 * the host to; or undefined if unknown, used or expired.
 	 */
@@ -1294,6 +1299,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				joinedAt: now,
 				...(facts === undefined ? {} : { facts }),
 			});
+			if (
+				token.accountId !== undefined &&
+				joinTokens.accountOpen !== undefined &&
+				!(await joinTokens.accountOpen(token.accountId))
+			) {
+				await store.updateHost(hostId, (host) => ({ ...host, revoked: true }));
+				throw new KantelError("forbidden", "The account this token joins is being deleted");
+			}
 			const into = token.accountId === undefined ? "" : ` into account ${token.accountId}`;
 			log(`[hosts] host ${hostId} (${name}) joined with token ${token.id}${into}`);
 			return { hostId, credential };

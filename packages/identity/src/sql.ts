@@ -1632,13 +1632,6 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			) {
 				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
-			// A stored sign-in for a user who is gone resolves no one, and changes nothing.
-			if (identity.userId !== undefined) {
-				const [bound] = await driver.query<{ id: unknown }>("SELECT id FROM identity_users WHERE id = ?", [
-					identity.userId,
-				]);
-				if (bound === undefined) throw forbidden("no user matches this sign-in");
-			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
 			const email =
 				identity.emailVerified === true && typeof identity.email === "string"
@@ -1648,6 +1641,11 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			// the user's read go out together: every API call signs in, and on D1 each read is a round trip (TASK-4486).
 			// `external_subject` is UNIQUE, so at most one user matches.
 			const [pending, found] = await Promise.all([pendingInvitesTo(email), userBySubject(externalSubject)]);
+			// A stored sign-in (`userId`) is its user's by its subject, or no one's: never linked, made or matched by email,
+			// so one from before its user was deleted changes nothing for whoever has that email now.
+			if (identity.userId !== undefined && found?.user.id !== identity.userId) {
+				throw forbidden("no user matches this sign-in");
+			}
 			let stored = found;
 			// Someone who signs in with this email another of Kantel's ways (an email code, GitHub, Google) is this person.
 			const signsInWithKantel =

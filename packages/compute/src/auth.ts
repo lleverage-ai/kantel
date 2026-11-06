@@ -222,13 +222,12 @@ export interface AuthenticateOptions {
 }
 
 /**
- * Whether the person a key acts for still exists and isn't being deleted. Deleting an account revokes the keys it finds,
- * but a key made while the deletion ran may be stored after that: from the moment the deletion is accepted, it works
- * nowhere.
+ * Whether the person a key acts for hasn't deleted their account. Deleting an account revokes the keys it finds, but a
+ * key made while the deletion ran may be stored after that: from the moment the deletion is accepted (its record, kept
+ * for good, `StoredDeletion`), it works nowhere.
  */
 async function ownerRemains(store: ComputeStore, key: StoredApiKey): Promise<boolean> {
-	const [user, deletion] = await Promise.all([store.users.get(key.ownerUserId), store.deletions.get(key.ownerUserId)]);
-	return user !== undefined && deletion === undefined;
+	return (await store.deletions.get(key.ownerUserId)) === undefined;
 }
 
 /** The API key a secret is, while it is neither revoked nor expired and its person exists. */

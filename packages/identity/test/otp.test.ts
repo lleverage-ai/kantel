@@ -554,6 +554,13 @@ describe("a session started before the rename", () => {
 		const h = await harness(backends[0] as Backend);
 		const legacy = "hbs_started-before-the-rename";
 		const now = h.clock.now();
+		// Signed in once, as anyone with a session has been: their email code's subject is theirs.
+		await h.identity.signIn(WORKER, {
+			issuer: EMAIL_OTP_ISSUER,
+			subject: "ada@example.test",
+			email: "ada@example.test",
+			emailVerified: true,
+		});
 		await h.sessions.create({
 			id: "ses_legacy",
 			tokenHash: await hashSessionToken(legacy),

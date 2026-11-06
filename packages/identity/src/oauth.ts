@@ -443,6 +443,7 @@ export function createOAuthSignIn(options: OAuthSignInOptions): OAuthSignIn {
 			if (isKantelError(cause, "forbidden")) return unauthenticated();
 			throw cause;
 		}
+		if (signedIn.user.id !== session.userId) return unauthenticated();
 		const body: OtpVerifyResponse = {
 			token,
 			expiresAt: session.expiresAt,

@@ -194,8 +194,9 @@ export interface ExternalIdentity {
 	readonly emailVerified?: boolean;
 	readonly name?: string;
 	/**
-	 * The user a stored sign-in (a Kantel session) was made for: `signIn` resolves it as that user or not at all, and
-	 * refuses before it links, makes or invites anyone once that user is gone (deleted their account).
+	 * The user a stored sign-in (a Kantel session) was made for: `signIn` resolves it by its subject as that user or not
+	 * at all. It never links, makes or matches anyone by email, so one outliving its user (who deleted their account)
+	 * changes nothing for whoever has that email now; it still accepts invites to its own user's email.
 	 */
 	readonly userId?: UserId;
 }

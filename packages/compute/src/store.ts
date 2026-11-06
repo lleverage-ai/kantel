@@ -818,6 +818,10 @@ export function createMemoryStore(): ComputeStore {
  */
 export function joinTokenSpender(store: ComputeStore) {
 	return {
+		async accountOpen(accountId: string) {
+			const account = await store.accounts.get(accountId);
+			return account !== undefined && account.closedAt === undefined;
+		},
 		async spendJoinToken(hash: string, hostId: string, now: number) {
 			const [token] = await store.joinTokens.list({ tokenHash: hash });
 			if (token === undefined) return undefined;

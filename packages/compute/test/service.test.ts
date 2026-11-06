@@ -2296,6 +2296,16 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		expect(await store.webhooks.list({ accountId: personal })).toEqual([]);
 	});
 
+	it("forgets a command stored as its account closed, and never runs it", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ wait: true });
+		await close(store, personal);
+		expect((await failure(ann.runCommand(sandbox.id, { command: "echo hi" }))).code).toBe("conflict");
+		expect(await store.commands.list({ sandboxId: sandbox.id })).toEqual([]);
+	});
+
 	it("joins no host with a token whose account has closed", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });

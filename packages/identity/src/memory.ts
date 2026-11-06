@@ -790,13 +790,16 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			) {
 				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
-			// A stored sign-in for a user who is gone resolves no one, and changes nothing.
-			if (identity.userId !== undefined && !users.has(identity.userId)) throw forbidden("no user matches this sign-in");
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
 			// Made or first linked by one of Kantel's own sign-ins: with the email code's subject, as the SQL directory does,
 			// and the provider's beside it.
 			const primary = kantelPrimarySubject(identity) ?? externalSubject;
 			const match = signInMatch(identity);
+			// A stored sign-in (`userId`) is its user's by its subject, or no one's: never linked, made or matched by email,
+			// so one from before its user was deleted changes nothing for whoever has that email now.
+			if (identity.userId !== undefined && (match?.link !== false || match.stored.user.id !== identity.userId)) {
+				throw forbidden("no user matches this sign-in");
+			}
 			const pending = pendingInvitesTo(verifiedEmail(identity));
 			const first = pending[0];
 			if (match === undefined && first === undefined) throw forbidden("no user matches this sign-in");
