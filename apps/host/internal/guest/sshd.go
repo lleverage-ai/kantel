@@ -301,7 +301,7 @@ func (s *SSHServer) start(sess *session, username string, ch ssh.Channel, argv [
 	cmd.WaitDelay = 0
 	if shell && argv == nil {
 		// A login shell, as sshd starts one: argv[0] "-sh".
-		cmd.Args[0] = "-" + filepath.Base(sh)
+		setArgv0(cmd, "-"+filepath.Base(sh))
 	}
 	if sess.pty != nil {
 		ptmx, pts, err := openPTY()

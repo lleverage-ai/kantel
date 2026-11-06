@@ -756,6 +756,33 @@ describe("sandboxes", () => {
 		expect(wrong.calls).toEqual([]);
 	});
 
+	it("sizes a microVM with --vcpus and --memory, beside --disk", async () => {
+		const routes = { "POST /v1/sandboxes": () => SANDBOX };
+		const created = await kantel(["new", "--type", "microvm", "--vcpus", "8", "--memory", "16", "--disk", "60"], {
+			routes,
+		});
+		expect(created.code).toBe(0);
+		expect(created.calls[0]?.body).toEqual({
+			type: "microvm",
+			resources: { vcpus: 8, memoryMb: 16384, diskGb: 60 },
+			wait: true,
+		});
+		const half = await kantel(["new", "--type", "microvm", "--vcpus", "1", "--memory", "0.5"], { routes });
+		expect(half.calls[0]?.body).toMatchObject({ resources: { vcpus: 1, memoryMb: 512 } });
+		for (const [args, message] of [
+			[["--type", "microvm", "--vcpus", "8"], "give --vcpus and --memory together"],
+			[["--type", "microvm", "--memory", "lots", "--vcpus", "2"], "--memory is in GB"],
+			[["--vcpus", "2", "--memory", "4"], "are a microVM's"],
+			[["--type", "microvm", "--size", "large", "--vcpus", "2", "--memory", "4"], "not both"],
+			[["--type", "microvm", "--from", "snap_1", "--vcpus", "2", "--memory", "4"], "that snapshot's machine"],
+		] as const) {
+			const refused = await kantel(["new", ...args], { routes });
+			expect(refused.code).toBe(2);
+			expect(refused.stderr).toContain(message);
+			expect(refused.calls).toEqual([]);
+		}
+	});
+
 	it("sets an idle stop with --idle-stop on new and extend, apart from the auto-stop", async () => {
 		const idle = { ...SANDBOX, idleStopMinutes: 30, idleStopsAt: Date.now() + 30 * 60_000 };
 		const routes = {

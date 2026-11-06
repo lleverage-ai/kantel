@@ -189,6 +189,7 @@ func (s *Server) startCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	started := time.Now()
+	oomBefore := OOMKills()
 	if err := cmd.Start(); err != nil {
 		cancel()
 		s.commands.end(req.ID, run, ExecResult{ExitCode: 127, Stderr: err.Error() + "\n"})
@@ -199,6 +200,9 @@ func (s *Server) startCommand(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer cancel()
 		err := cmd.Wait()
+		if note := OOMNote(oomBefore); note != "" {
+			_, _ = stderr.Write([]byte(note))
+		}
 		result := ExecResult{
 			Stdout: string(stdout.bytes()), Stderr: string(stderr.bytes()), Truncated: stdout.cut() || stderr.cut(),
 			DurationMs: time.Since(started).Milliseconds(), Pid: pid, ExitCode: exitCode(err),

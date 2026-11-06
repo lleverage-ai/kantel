@@ -52,6 +52,9 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "ssh-access" {
 		os.Exit(sshAccess(os.Stdout, os.Stderr))
 	}
+	if len(os.Args) >= 2 && os.Args[1] == guest.ExecCommandVerb {
+		guest.ExecCommandMain(os.Args[2:])
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		fmt.Fprintln(os.Stderr, "usage: kantel-guest serve [--bridge addr=hostport ...] [--injected --init systemd|kantel] | kantel-guest doctor | kantel-guest init | kantel-guest ssh-access")
 		os.Exit(2)
@@ -79,12 +82,19 @@ func main() {
 		StateFile: guest.MountsStateFile,
 	}
 	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1, Mounts: mounts}
+	if self, err := os.Executable(); err == nil && guest.UsableTrampoline(self) {
+		server.Trampoline = self
+	} else {
+		log.Printf("commands keep the agent's OOM score: %s isn't executable by every user (%v)", self, err)
+	}
 	if *injected {
 		// Its SSH server's key, before the first identity (ssh-access prints its fingerprint).
 		if err := guest.EnsureHostKey(); err != nil {
 			log.Printf("ssh host key: %v", err)
 		}
 	}
+	// Runs the kernel's OOM killer when the machine thrashes for memory, rather than letting it, and this agent, stall.
+	guest.StartMemoryWatch(context.Background(), &guest.MemoryWatch{})
 	// Mounts a previous run of the agent had: their FUSE servers ended with it.
 	go mounts.Restore(context.Background())
 	if l, err := net.Listen("tcp", guest.LocalProxyAddr); err == nil {
