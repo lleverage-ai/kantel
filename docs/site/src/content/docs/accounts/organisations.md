@@ -44,7 +44,7 @@ curl -s "$KANTEL_URL/v1/whoami" -H "authorization: Bearer $KANTEL_API_KEY"
 }
 ```
 
-An API key always acts in the account it was made in. A person acts in their personal account unless a call names an organisation they belong to, with `account` in its body or query. `superAdmin` says whether the caller may manage the deployment's hosts, and `mode` whether this is a self-hosted install (`selfhosted`) or a hosted service (`hosted`).
+An API key always acts in the account it was made in. A person, or their [personal access token](/accounts/api-keys/#personal-access-tokens), acts in their personal account unless a call names an organisation they belong to, with `account` in its body or query. Signed in with a token, `whoami` also answers `personalToken`, with any limits it has; a token limited to one account acts there by default. `superAdmin` says whether the caller may manage the deployment's hosts, and `mode` whether this is a self-hosted install (`selfhosted`) or a hosted service (`hosted`).
 
 To list the accounts with their kind and your role in each, call `GET /v1/accounts` (`listAccounts`), which needs `account:read`.
 
@@ -144,13 +144,26 @@ Only an owner can make someone an owner or take it away, and the last owner stay
 
 Remove a member with `DELETE /v1/accounts/{accountId}/members/{userId}` (`removeMember`). A member can leave the same way, with their own user ID; the last owner can't. Sandboxes the person kept `private` stay in the organisation, stopped, for an admin to delete or share.
 
+## Personal access tokens
+
+Members' personal access tokens act in an organisation with each member's own role, unless an admin blocks them. Blocked, a call made with one there answers `403`, and members use the console or one of the organisation's API keys. Their tokens still work in their other accounts:
+
+```sh
+curl -s -X PATCH "$KANTEL_URL/v1/accounts/acc_7f3k2m9q" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"personalTokens": "blocked"}'
+```
+
+In the console it is **Allow personal access tokens** under **Settings**, **General**, and from the command line `kantel org set --personal-tokens blocked`. An account answers its setting as `personalTokens`. A personal account always allows its own person's tokens.
+
 ## Delete an organisation
 
 Its owner can delete an organisation (`DELETE /v1/accounts/{accountId}`, `deleteOrganisation`), signed in, once it has no sandboxes and no saved snapshots left; until then it answers `409` with `conflict`. A personal account can't be deleted this way: delete your account instead.
 
 ## Delete your account
 
-In the console, **Settings → Profile → Delete account**; through the API, `DELETE /v1/whoami` (`deleteCaller`), signed in as yourself, not with an API key. It deletes your personal account with its hosts, environments, webhooks and templates, revokes every API key that acts for you in any account, takes you out of every organisation, and signs you out everywhere. Sandboxes you kept `private` in an organisation stay there, stopped, as when you leave it.
+In the console, **Settings → Profile → Delete account**; through the API, `DELETE /v1/whoami` (`deleteCaller`), signed in as yourself, not with an API key or a personal token. It deletes your personal account with its hosts, environments, webhooks and templates, revokes every API key that acts for you in any account and every personal token of yours, takes you out of every organisation, and signs you out everywhere. Sandboxes you kept `private` in an organisation stay there, stopped, as when you leave it.
 
 It answers `409` with `conflict` while your personal account has sandboxes, saved snapshots or bundles, or while you're the last owner of an organisation: make someone else an owner, or delete the organisation, first. A deployment's super-admin can't delete their own account. Once those checks pass, the deletion is accepted: your personal account is closed for good, you're signed out and can't sign in as that person again, and Kantel carries the deletion on in the background until everything has gone, a final pass included a few minutes later. Signing in again afterwards makes a new, empty account.
 

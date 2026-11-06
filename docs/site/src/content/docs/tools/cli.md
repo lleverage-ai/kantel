@@ -45,15 +45,18 @@ kantel login --url https://kantel.example.com
 Open this page and check the code matches: BCDF-GHJK
   https://kantel.example.com/device?code=BCDF-GHJK
 Waiting for you to approve it in the browser…
-Signed in to https://kantel.example.com as Ada <ada@example.com>, in acc_8w3zkfuz4d.
+Signed in to https://kantel.example.com as Ada <ada@example.com>, with the personal token kantel on build-01 for all your accounts, until 2027-02-04 18:20 UTC.
+Commands act in your personal account (acc_p_usr_8w3z): kantel org use picks another, or --account for one command.
 Saved to /home/ada/.config/kantel/config.json.
 ```
 
-It opens Kantel's console at a page that asks you to approve the sign-in, signed in as yourself. Check the code there matches the one in your terminal, pick the account, and select **Approve**. The command gets an API key of its own, named after your machine (`kantel on build-01`), that lasts 90 days: you can see and revoke it on the console's **API keys** page. Approving needs admin or owner in the account, as making any key does. A code lasts 15 minutes.
+It opens Kantel's console at a page that asks you to approve the sign-in, signed in as yourself. Check the code there matches the one in your terminal, choose whether it may act in all your accounts or only the one the console has open, and select **Approve**. The command gets a [personal access token](/accounts/api-keys/#personal-access-tokens) of its own, named after your machine (`kantel on build-01`), that lasts 90 days. It acts as you, with your role in each account, so one sign-in reaches your personal account and every organisation you belong to. Any member can approve one. You can see and revoke it under **Profile** in the console, or with `kantel token revoke`, and `kantel logout` revokes it. A code lasts 15 minutes.
+
+`kantel login --account-key` asks for an [API key](/accounts/api-keys/) in one account instead, as `kantel` did before personal tokens, and needs admin or owner there. A Kantel from before personal tokens always gives an API key.
 
 Add `--no-browser` to print the page without opening it, such as over SSH. Without a terminal, as when a coding agent runs it, `kantel login` prints the page and code and stops; `kantel login --wait` then waits for your approval with the same code. With `--json` it prints them as `{"event": "login_pending", "url": …, "code": …}`.
 
-If you already have a [scoped API key](/accounts/api-keys/), pipe it in instead, which keeps it out of your shell's history and the process list:
+If you already have a personal token or a [scoped API key](/accounts/api-keys/), pipe it in instead, which keeps it out of your shell's history and the process list:
 
 ```sh
 printf '%s' "$KANTEL_API_KEY" | kantel login --key-stdin --url http://127.0.0.1:58090
@@ -78,7 +81,31 @@ Each setting comes from the first place that has it:
 2. the environment: `KANTEL_URL`, `KANTEL_API_KEY` and `KANTEL_ACCOUNT`;
 3. the saved file.
 
-Without any of them, the address is `https://app.kantel.dev`, the hosted service. A key always acts in the account it was made in, which `whoami` shows.
+Without any of them, the address is `https://app.kantel.dev`, the hosted service. An API key always acts in the account it was made in, which `whoami` shows.
+
+## Your accounts
+
+Signed in with a personal token, `kantel` acts in your personal account unless you say otherwise. `--account` (or `KANTEL_ACCOUNT`) picks another for one command, by its ID or its name, and `kantel org use` picks one for every command after:
+
+```sh
+kantel org list                      # your accounts; * marks the one commands act in
+kantel new --account Acme            # this one command, in Acme
+kantel org use Acme                  # every command from now on
+kantel org use personal              # back to your personal account (or --clear)
+```
+
+To find sandboxes wherever they are, `kantel list --every-account` lists each account's, with an ACCOUNT column; add `--mine` for only the ones you made, and `--all` for the stopped ones too.
+
+```
+ACCOUNT   ID              NAME           TYPE     STATE    BY
+personal  sbx_nltrmmaccl  mine-personal  isolate  running  Ann
+Acme      sbx_g76bfzmqw6  toms-shared    isolate  running  Tom
+Acme      sbx_q6qe3cst3z  mine-at-acme   isolate  running  Ann
+```
+
+The rest of an account is yours to run from here too, as far as your role allows: `kantel org show`, `kantel org set --name … --visibility … --personal-tokens allowed|blocked`, `kantel org usage`, `kantel org leave` and `kantel org delete`, `kantel member list|role|rm` (a member by user ID or email) and `kantel invite list|create|revoke`. Each acts on the account commands act in. An organisation can [block personal tokens](/accounts/organisations/#personal-access-tokens); then its members use the console or one of its API keys there.
+
+Two things need you at the console, not a token: approving another device's sign-in, and deleting your account.
 
 ## A first sandbox
 
@@ -242,14 +269,15 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 
 | Group | Commands |
 | --- | --- |
-| Signing in | `login [--key-stdin] [--no-browser] [--wait]`, `logout`, `whoami` |
-| [Sandboxes](/sandboxes/lifecycle/) | `new`, `list [--all] [--mine]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
+| Signing in | `login [--key-stdin] [--no-browser] [--wait] [--account-key]`, `logout`, `whoami`, `token list`, `token create [--preset] [--scope]… [--only <account>]…`, `token revoke` |
+| [Accounts and organisations](/accounts/organisations/) | `org list`, `org use <account>`, `org show`, `org create [--visibility] [--use]`, `org join`, `org set`, `org usage [--days]`, `org leave --yes`, `org delete --yes`, `member list`, `member role`, `member rm`, `invite list`, `invite create [--email] [--role]`, `invite revoke` |
+| [Sandboxes](/sandboxes/lifecycle/) | `new`, `list [--all] [--mine] [--every-account]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
 | [Commands](/sandboxes/commands-and-files/) | `exec [-d] [--timeout <s>]`, `attach`, `ps`, `kill` |
 | [Files](/sandboxes/commands-and-files/) | `scp [-r]`, `push`, `files ls`, `files cat`, `files put`, `files get`, `files rm` |
 | [Ports](/sandboxes/public-ports/), [SSH](/sandboxes/ssh/), [desktop and browser](/sandboxes/desktop-and-browser/) | `host <id> <port>`, `port list`, `port hide`, `ssh`, `desktop`, `browser` |
 | [Snapshots](/snapshots/history/) | `snapshot list`, `take`, `save <sandboxId> <name>`, `files`, `rm` |
 | [Environments](/sandboxes/environments/) and [egress](/sandboxes/egress-proxy/) | `env list`, `env create`, `env show`, `env delete`, `env set [--protected] [--bind …] [--value-stdin] [--keep-value]`, `env unset`, `env file`, `env file rm`, `env repo add`, `env repo rm`, `env grant`, `env grant rm`, `egress [--denied]`, `grant`, `grant rm` |
-| [API keys](/accounts/api-keys/) and [organisations](/accounts/organisations/) | `key list`, `key create`, `key rotate`, `key revoke`, `org list`, `org create`, `org join` |
+| [API keys](/accounts/api-keys/) | `key list`, `key create`, `key rotate`, `key revoke` |
 | [Webhooks](/monitoring/webhooks/), events and [OpenTelemetry](/monitoring/opentelemetry/) | `webhook list`, `webhook create`, `webhook rm`, `webhook test`, `events`, `telemetry get`, `telemetry set`, `telemetry rm` |
 | [Your own hosts](/own-hosts/) (experimental): machines of your own | `hosts add [name]`, `hosts list`, `hosts info`, `hosts drain [--off]`, `hosts rm` |
 | [Coding agents](/coding-agents/) | `init`, `mcp`, `agents` |
