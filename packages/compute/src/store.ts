@@ -56,6 +56,23 @@ export interface StoredUser {
 	readonly superAdmin: boolean;
 	readonly personalAccountId: string;
 	readonly createdAt: number;
+	/**
+	 * When their account deletion retired them: kept for good, with nothing else of theirs, so nothing is made for them
+	 * again (`PersonWrites`) and they are never let back in.
+	 */
+	readonly retiredAt?: number;
+}
+
+/**
+ * A person's first records, written only while they are active: their user record exists and isn't retired. Checked in
+ * the same write, so a retirement and one of these never pass each other: the write lands first (and the deletion that
+ * retired them finds it), or it doesn't land. (SQL: one conditional insert, which on Postgres holds the user's row.)
+ */
+export interface PersonWrites {
+	/** Inserts a personal account of `userId`'s; whether it did (not when it is there already, or they aren't active). */
+	insertAccount(account: StoredAccount, userId: string): Promise<boolean>;
+	/** Inserts a membership; whether it did (not when it is there already, or its person isn't active). */
+	insertMember(member: StoredMember): Promise<boolean>;
 }
 
 export interface StoredAccount {
@@ -667,6 +684,8 @@ export interface ComputeStore {
 	readonly usageClaims: Collection<StoredUsageClaim>;
 	/** Account deletions under way (`StoredDeletion`). */
 	readonly deletions: Collection<StoredDeletion>;
+	/** A person's first records, only while they are active. */
+	readonly personWrites: PersonWrites;
 }
 
 /**
@@ -778,10 +797,30 @@ function memoryTemplateWrites(
 export function createMemoryStore(): ComputeStore {
 	const templates = memoryTable<StoredTemplate>(templateNameKey);
 	const templateVersions = memoryTable<StoredTemplateVersion>();
+	const users = memoryTable<StoredUser>();
+	const accounts = memoryTable<StoredAccount>();
+	const members = memoryTable<StoredMember>();
+	// Read and written with no await between, so nothing else runs in the middle.
+	const active = (userId: string) => {
+		const user = users.records.get(userId);
+		return user !== undefined && user.retiredAt === undefined;
+	};
 	return {
-		users: memoryCollection(),
-		accounts: memoryCollection(),
-		members: memoryCollection(),
+		users: users.collection,
+		accounts: accounts.collection,
+		members: members.collection,
+		personWrites: {
+			async insertAccount(account, userId) {
+				if (!active(userId) || accounts.records.has(account.id)) return false;
+				accounts.records.set(account.id, structuredClone(account));
+				return true;
+			},
+			async insertMember(member) {
+				if (!active(member.userId) || members.records.has(member.id)) return false;
+				members.records.set(member.id, structuredClone(member));
+				return true;
+			},
+		},
 		invites: memoryCollection(),
 		sandboxes: memoryCollection(),
 		commands: memoryCollection(),
@@ -908,48 +947,10 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 			},
 		};
 	}
-	/**
-	 * A person's records (their user, their memberships, the personal account first made for them), fenced against their
-	 * account deletion: one put or inserted for someone whose deletion is recorded is taken out again and refused. Checked
-	 * once written, so of a write and the deletion's record, one always sees the other: the write finds the deletion, or
-	 * the deletion's passes find the write. Only new writes: the deletion's own updates (closing the account) go through.
-	 */
-	function retired<T extends { readonly id: string }>(
-		collection: Collection<T>,
-		personOf: (record: T) => string | undefined,
-	): Collection<T> {
-		const check = async (record: T): Promise<void> => {
-			const userId = personOf(record);
-			if (userId === undefined || (await store.deletions.get(userId)) === undefined) return;
-			await collection.delete(record.id).catch(() => false);
-			throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
-		};
-		return {
-			get: (id) => collection.get(id),
-			list: (where) => collection.list(where),
-			delete: (id) => collection.delete(id),
-			deleteIf: (id, should) => collection.deleteIf(id, should),
-			update: (id, change, expected) => collection.update(id, change, expected),
-			async put(record) {
-				await collection.put(record);
-				await check(record);
-			},
-			async insert(record) {
-				const inserted = await collection.insert(record);
-				if (inserted) await check(record);
-				return inserted;
-			},
-		};
-	}
 	const byAccount = <T extends { readonly accountId?: string }>(record: T) => record.accountId;
 	const isAccount = <T extends { readonly id: string }>(record: T) => record.id;
 	return {
 		...store,
-		users: retired(store.users, (user) => user.id),
-		members: retired(store.members, (member) => member.userId),
-		accounts: retired(store.accounts, (account) =>
-			account.id.startsWith(PERSONAL_ACCOUNT_PREFIX) ? account.id.slice(PERSONAL_ACCOUNT_PREFIX.length) : undefined,
-		),
 		environments: fenced(store.environments, byAccount),
 		bucketSources: fenced(store.bucketSources, byAccount),
 		webhooks: fenced(store.webhooks, byAccount),

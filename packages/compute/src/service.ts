@@ -120,6 +120,7 @@ import type {
 	StoredSnapshot,
 	StoredTelemetry,
 	StoredUsageClaim,
+	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
 import { UniqueViolation, usageClaimId } from "./store.ts";
@@ -4062,6 +4063,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			personalAccountId: job.personalAccountId,
 			...(job.email === undefined ? {} : { email: job.email }),
 		};
+		// Retired first, for good: from here nothing more is made for them (`PersonWrites`), so what the accounts below hold
+		// is all there will be. Their record stays, with nothing of theirs but their ID, so no sign-in makes them afresh.
+		await retireUser(job);
 		// Every personal account of theirs: the one the deletion began with, the one a sign-in racing it would make
 		// (`personalAccountIdOf`, written before the deletion was recorded, as one written after undid itself), and any other
 		// their memberships name.
@@ -4096,9 +4100,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const kept of await store.idempotency.list()) {
 			if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
 		}
-		await store.users.delete(userId);
 		// Signed out and forgotten by sign-in: on every pass, so a session made as the first ran goes in the last.
 		await options.deletePerson?.(userId);
+	}
+
+	/** Retires a person's user record (`StoredUser.retiredAt`), making a retired one should theirs be missing. */
+	async function retireUser(job: StoredDeletion): Promise<void> {
+		const retired = (current?: StoredUser): StoredUser => ({
+			id: job.id,
+			name: "",
+			superAdmin: false,
+			personalAccountId: current?.personalAccountId ?? job.personalAccountId,
+			createdAt: current?.createdAt ?? job.startedAt,
+			retiredAt: now(),
+		});
+		for (let attempt = 0; attempt < 5; attempt++) {
+			const current = await store.users.get(job.id);
+			if (current?.retiredAt !== undefined) return;
+			if (current === undefined) {
+				if (await store.users.insert(retired())) return;
+				continue;
+			}
+			if (
+				(await store.users.update(job.id, (latest) =>
+					latest.retiredAt === undefined ? retired(latest) : undefined,
+				)) !== undefined
+			) {
+				return;
+			}
+		}
+		throw new KantelError("unavailable", "The person kept changing while they were retired; the deletion tries again");
 	}
 
 	/**

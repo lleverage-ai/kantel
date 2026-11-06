@@ -2265,7 +2265,9 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		await finishDeletions(api, store);
 		expect(deleted.length).toBeGreaterThan(0);
 		expect(await store.accounts.get(personal)).toBeUndefined();
-		expect(await store.users.get("usr_ann")).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toEqual(
+			expect.objectContaining({ name: "", retiredAt: expect.any(Number) }),
+		);
 	});
 
 	it("finishes the person's removal from sign-in when that fails after their records are gone", async () => {
@@ -2409,13 +2411,41 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 			return get(id);
 		};
 		expect((await failure(ann.getCaller())).status).toBe(401);
-		// Each of its writes found the deletion once written and took itself out: nothing is left for anyone to clear.
-		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
-		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toBeUndefined();
-		expect(await store.users.get("usr_ann")).toBeUndefined();
-		// And had any landed before the deletion was recorded, its passes know the account to clear.
+		// What it made landed before the deletion retired them; the deletion's passes clear it, by its account's ID.
 		await store.deletions.update("usr_ann", (current) => ({ ...current, dueAt: 0 }));
 		await finishDeletions(api, store);
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toEqual(
+			expect.objectContaining({ name: "", retiredAt: expect.any(Number) }),
+		);
+	});
+
+	it("makes nothing more for a person once they are retired, however late a first sign-in's writes come", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		await ann.deleteCaller();
+		await finishDeletions(api, store);
+		// A first sign-in's account and membership, arriving after the retirement: refused in the same write.
+		const account = personalAccountIdOf("usr_ann");
+		expect(
+			await store.personWrites.insertAccount(
+				{ id: account, kind: "personal", name: "Ann", defaultVisibility: "private", createdAt: 0 },
+				"usr_ann",
+			),
+		).toBe(false);
+		expect(
+			await store.personWrites.insertMember({
+				id: `${account}:usr_ann`,
+				accountId: account,
+				userId: "usr_ann",
+				role: "owner",
+				joinedAt: 0,
+			}),
+		).toBe(false);
+		expect(await store.accounts.get(account)).toBeUndefined();
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+		expect((await failure(ann.getCaller())).status).toBe(401);
 	});
 
 	it("clears the personal account a racing sign-in would make, though no membership names it", async () => {
@@ -2528,7 +2558,9 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		const results = await Promise.allSettled([ann.deleteCaller(), ann.deleteCaller()]);
 		expect(results.some((result) => result.status === "fulfilled")).toBe(true);
 		expect(await store.accounts.get(personal)).toBeUndefined();
-		expect(await store.users.get("usr_ann")).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toEqual(
+			expect.objectContaining({ name: "", retiredAt: expect.any(Number) }),
+		);
 	});
 
 	it("lets no key of theirs work once they're gone, even one stored after the deletion revoked theirs", async () => {

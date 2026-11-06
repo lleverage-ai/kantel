@@ -174,20 +174,27 @@ function nameFor(identity: PersonIdentity, existing: StoredUser | undefined): st
  * personal account is named as they are, and renamed with them unless they renamed it (one made while gateways named
  * people by their user ID is).
  */
-export async function ensurePerson(store: ComputeStore, identity: PersonIdentity, now: number): Promise<StoredUser> {
+export async function ensurePerson(
+	store: ComputeStore,
+	identity: PersonIdentity,
+	now: number,
+	again = true,
+): Promise<StoredUser> {
 	const existing = await store.users.get(identity.userId);
 	const superAdmin = identity.superAdmin === true;
 	const name = nameFor(identity, existing);
 	if (existing !== undefined) {
+		// Retired by their account deletion: never let in, nor made again.
+		if (existing.retiredAt !== undefined) throw new KantelError("forbidden", "This account has been deleted");
 		const email = identity.email ?? existing.email;
 		if (existing.name !== name || existing.email !== email || existing.superAdmin !== superAdmin) {
-			const updated: StoredUser = {
-				...existing,
-				name,
-				superAdmin,
-				...(email === undefined ? {} : { email }),
-			};
-			await store.users.put(updated);
+			// An update of the record as it is, never a write over a retirement that landed meanwhile.
+			const updated = await store.users.update(existing.id, (current) =>
+				current.retiredAt !== undefined
+					? undefined
+					: { ...current, name, superAdmin, ...(email === undefined ? {} : { email }) },
+			);
+			if (updated === undefined) throw new KantelError("forbidden", "This account has been deleted");
 			if (existing.name !== name) {
 				// Unless they renamed it themselves, as the account is when the write lands: a name saved meanwhile stays.
 				await store.accounts.update(existing.personalAccountId, (personal) =>
@@ -215,15 +222,26 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 		createdAt: now,
 		...(identity.email === undefined ? {} : { email: identity.email }),
 	};
-	await store.members.put({
+	// The person first, unique by their ID: two first sign-ins make one, and the other carries on as an existing person.
+	if (!(await store.users.insert(user))) {
+		if (!again) throw new KantelError("conflict", "This person was being made by another call; try again");
+		return ensurePerson(store, identity, now, false);
+	}
+	// Then their membership and account, each only while they are active (`PersonWrites`): a retirement landing in
+	// between stops the rest, and the deletion that retired them finds whatever had landed before (by its ID, which is
+	// theirs: `personalAccountIdOf`).
+	await store.personWrites.insertMember({
 		id: memberId(account.id, user.id),
 		accountId: account.id,
 		userId: user.id,
 		role: "owner",
 		joinedAt: now,
 	});
-	await store.accounts.put(account);
-	await store.users.put(user);
+	await store.personWrites.insertAccount(account, user.id);
+	const current = await store.users.get(user.id);
+	if (current === undefined || current.retiredAt !== undefined) {
+		throw new KantelError("forbidden", "This account has been deleted");
+	}
 	return user;
 }
 
