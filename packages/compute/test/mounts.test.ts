@@ -404,6 +404,24 @@ describe("mounts off", () => {
 });
 
 describe("bundles", () => {
+	it("keeps the record of an upload refused as its account is deleted, should its bytes not go", async () => {
+		const memory = createMemoryBundleStore();
+		const failing: BundleBlobStore = {
+			...memory,
+			delete: async () => {
+				throw new Error("the bucket went away");
+			},
+		};
+		const { tom, store } = setup({ bundleStore: failing });
+		const personal = (await tom.getCaller()).accountId;
+		await store.accounts.update(personal, (account) => ({
+			...account,
+			retiring: { token: "deleting", at: Date.now() },
+		}));
+		await failure(tom.uploadBundle(SKILLS.slice().buffer));
+		expect(await store.bundles.list({ accountId: personal })).toHaveLength(1);
+	});
+
 	it("forgets an upload, bytes and all, that lands while its account is being deleted", async () => {
 		const { tom, store, bundles } = setup();
 		const personal = (await tom.getCaller()).accountId;

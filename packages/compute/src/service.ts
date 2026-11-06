@@ -3976,6 +3976,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return account !== undefined && !retiring(account);
 	}
 
+	/**
+	 * Appends to an account's E2E chain, then checks the account as a create does (`holdAccount`): entries that land as
+	 * it is deleted go with the rest of its chain, and the append is refused.
+	 */
+	const chainAppend: typeof e2eChains.append = async (space, ...rest) => {
+		const appended = await e2eChains.append(space, ...rest);
+		if (await accountOpen(space)) return appended;
+		for (const entry of await store.e2eChain.list({ space })) await store.e2eChain.delete(entry.id);
+		throw new KantelError("conflict", "This account is being deleted");
+	};
+
 	async function holdAccount(accountId: string, sandboxIds: readonly string[]): Promise<void> {
 		if (await accountOpen(accountId)) return;
 		for (const id of sandboxIds) await store.sandboxes.delete(id);
@@ -6392,7 +6403,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("forbidden", "A key limited to some sandboxes can't change the account's E2E chain");
 			}
 			const person = { userId: principal.userId };
-			const entries = await e2eChains.append(account.id, body.from, body.entries, async (payload) => {
+			const entries = await chainAppend(account.id, body.from, body.entries, async (payload) => {
 				if (payload.type === "genesis") {
 					// What it starts with is its admin: an admin of the organisation, starting it on their own device.
 					if (role === "member") throw new KantelError("forbidden", "Only an admin or owner starts the chain");
@@ -7665,7 +7676,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async appendHostE2EChain(hostId, space, from, entries) {
 			await hostMayUseChain(hostId, space);
-			return e2eChains.append(space, from, entries, (payload) => {
+			return chainAppend(space, from, entries, (payload) => {
 				if (payload.type !== "host.add" || payload.body.host.id !== hostId) {
 					throw new KantelError("forbidden", "A host adds only its own host.add");
 				}
@@ -7753,6 +7764,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (sandbox === undefined || sandbox.hostId !== hostId) continue;
 				for (const record of batch.slice(-MAX_EGRESS_ENTRIES)) {
 					await store.egress.put(egressEntryFrom(record, sandbox, now()));
+				}
+				// Written, then checked, as a create is (`holdAccount`): a report landing as its account is deleted goes too.
+				if (!(await accountOpen(sandbox.accountId))) {
+					for (const entry of await store.egress.list({ sandboxId })) await store.egress.delete(entry.id);
+					continue;
 				}
 				const log = await egressLog(sandboxId);
 				for (const stale of log.slice(MAX_EGRESS_ENTRIES)) await store.egress.delete(stale.id);

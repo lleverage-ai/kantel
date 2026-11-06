@@ -689,9 +689,12 @@ export function createMounts(deps: MountsDeps) {
 			}
 			if (inserted && !(await deps.accountOpen(account.id))) {
 				// Its account is being deleted: the upload is forgotten, bytes and all, as `deleteBundle` would.
+				// Its bytes first, and its record only once they're gone: should their delete fail, the record stays as what's
+				// left to remove, found by the deletion's last look (which refuses) or kept for a later delete.
 				const stored = await store.bundles.get(record.id);
-				if (stored !== undefined && (await store.bundles.delete(stored.id))) {
-					await options.bundles.delete(stored.digest, generationOf(stored)).catch(() => undefined);
+				if (stored !== undefined) {
+					await options.bundles.delete(stored.digest, generationOf(stored));
+					await store.bundles.delete(stored.id);
 				}
 				throw new KantelError("conflict", "This account is being deleted");
 			}

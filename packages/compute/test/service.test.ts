@@ -2310,6 +2310,34 @@ describe.each(STORES)("deleting your account while a sandbox is being made, stor
 		expect(await ann.getSandbox("sbx_late")).toMatchObject({ id: "sbx_late", state: "stopped" });
 	});
 
+	it("drops a host's egress report that lands while its account is being deleted", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ wait: true });
+		const report = {
+			at: 1,
+			sandboxId: sandbox.id,
+			method: "CONNECT",
+			host: "example.com",
+			port: 443,
+			allowed: true,
+			swapped: [],
+			inspected: false,
+			bytesUp: 0,
+			bytesDown: 0,
+		};
+		await store.accounts.update(personal, (account) => ({
+			...account,
+			retiring: { token: "deleting", at: Date.now() },
+		}));
+		await api.service.recordEgress(STUB_HOST_ID, [report]);
+		expect(await store.egress.list({ sandboxId: sandbox.id })).toEqual([]);
+		await store.accounts.update(personal, ({ retiring: _claim, ...account }) => account);
+		await api.service.recordEgress(STUB_HOST_ID, [report]);
+		expect(await store.egress.list({ sandboxId: sandbox.id })).toHaveLength(1);
+	});
+
 	it("lets only the deletion that claimed the account let go of it, when two overlap", async () => {
 		const store = await make();
 		const { ann } = setup(undefined, { store });
