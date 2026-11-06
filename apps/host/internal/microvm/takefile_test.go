@@ -30,7 +30,7 @@ func TestTakeFileMoves(t *testing.T) {
 	}
 }
 
-// A live snapshot copies the disk beside the memory, then copies it again if anything wrote to it meanwhile.
+// The disk's stamp sees a write in a later clock tick (writeWatch sees one in the same tick: below).
 func TestUnchangedSeesAWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "disk.ext4")
 	if err := os.WriteFile(path, make([]byte, 4096), 0o600); err != nil {
@@ -47,7 +47,7 @@ func TestUnchangedSeesAWrite(t *testing.T) {
 	if !unchanged(path, before) {
 		t.Fatal("a read counted as a write")
 	}
-	// A write in place, of the same size and within the same timestamp tick or not.
+	// A write in place, of the same size, a tick or more later.
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)

@@ -1070,8 +1070,9 @@ func copySparse(src, dst string) error {
 	return nil
 }
 
-// unchanged says whether the file at path is as before was taken: no write, truncate or hole punched since, by its
-// modification and change times and size.
+// unchanged says whether the file at path looks as it did when before was taken, by its size, inode, and modification
+// and change times. Those times come from a coarse clock, so a write in the same tick as before can leave them equal:
+// a check beside writeWatch, never instead of it.
 func unchanged(path string, before os.FileInfo) bool {
 	now, err := os.Stat(path)
 	if err != nil {
@@ -2687,10 +2688,23 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	// both. (Memory going to the disk, the two would share it, and side by side took as long as one after the other.)
 	// Paused, the guest asks for no more I/O, so the disk holds still; but a request it queued just before the pause may
 	// still be served while the copy runs, and the memory would then say done what the copy may have missed. So the
-	// disk's stamp is taken before the copy and checked after the memory: any write in between and it is copied again,
-	// after the memory, as it is when the memory goes to the disk.
+	// disk is watched for writes (writeWatch: inotify, not its timestamps, which a write in the same clock tick leaves as
+	// they were) from before the copy until after the memory, and its stamp is checked too: any write in between and it
+	// is copied again, after the memory, as it is when the memory goes to the disk. A disk that can't be watched is
+	// copied after the memory.
 	beside := memWrite != mem
 	disk := filepath.Join(s.vmDir(), fc.DiskFile)
+	var watch *writeWatch
+	if beside {
+		w, err := watchWrites(disk)
+		if err != nil {
+			m.log.Warn("can't watch the disk for writes; copying it after the memory", "sandbox", s.meta.ID, "err", err)
+			beside = false
+		} else {
+			watch = w
+			defer watch.close()
+		}
+	}
 	before, statErr := os.Stat(disk)
 	if statErr != nil {
 		_ = memDone(false)
@@ -2739,7 +2753,7 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	}
 	<-diskDone
 	t["disk"] = diskMs
-	if beside && memErr == nil && diskErr == nil && !unchanged(disk, before) {
+	if beside && memErr == nil && diskErr == nil && (watch.written() || !unchanged(disk, before)) {
 		m.log.Info("disk written during a live snapshot; copying it again", "sandbox", s.meta.ID)
 		again := time.Now()
 		diskErr = copySparse(disk, filepath.Join(sdir, fc.DiskFile))
