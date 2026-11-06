@@ -1414,6 +1414,34 @@ describe("login in the browser", () => {
 		expect(result.calls[0]?.body).toEqual({ clientName: expect.any(String) });
 	});
 
+	it("carries on a kept sign-in only for the same kind: --account-key never collects a personal token", async () => {
+		const started: Call[] = [];
+		const routes = {
+			"POST /v1/auth/device": (call: Call) => {
+				started.push(call);
+				return STARTED;
+			},
+			"POST /v1/auth/device/token": () => ({ state: "approved", issued: ISSUED }),
+			"GET /v1/whoami": () => CALLER,
+		};
+		// A plain login with no terminal keeps a personal sign-in waiting.
+		await kantel(["login", "--url", "https://kantel.test"], {
+			env: {},
+			routes: { "POST /v1/auth/device": () => STARTED },
+		});
+		const keyed = await kantel(["login", "--url", "https://kantel.test", "--account-key"], { env: {}, routes });
+		// It starts its own, and says to wait with --account-key.
+		expect(started.map((call) => call.body)).toEqual([{ clientName: expect.any(String) }]);
+		expect(keyed.stderr).toContain("Then run: kantel login --wait --account-key --url https://kantel.test");
+		// And --wait --account-key carries that one on.
+		const waited = await kantel(["login", "--url", "https://kantel.test", "--account-key", "--wait"], {
+			env: {},
+			routes,
+		});
+		expect(waited.code).toBe(0);
+		expect(started).toHaveLength(1);
+	});
+
 	it("revokes the personal token it saved when you log out, or sign in again", async () => {
 		await writeFile(
 			join(configDir, "config.json"),

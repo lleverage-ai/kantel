@@ -545,6 +545,8 @@ export interface StoredFileUrl {
 	readonly method: "GET" | "PUT";
 	readonly expiresAt: number;
 	readonly createdAt: number;
+	/** Who made it (`encodeGrantee`): checked again each time it is used. Absent from one made before it was kept. */
+	readonly grantee?: string;
 }
 
 /**

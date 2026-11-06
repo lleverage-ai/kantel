@@ -25,7 +25,16 @@ export interface PendingLogin {
 	readonly expiresAt: number;
 	/** It asked for a personal access token, not an API key in one account. */
 	readonly personal?: boolean;
+	/**
+	 * What `kantel login` was asked for: a personal token, or an API key (`--account-key`). A personal sign-in a Kantel
+	 * from before tokens turned into a key's is still `personal`, so the same `kantel login` carries it on.
+	 */
+	readonly requested?: "personal" | "key";
 }
+
+/** What a kept sign-in was asked for; one kept before `requested` was is a key's unless it asked for a token. */
+export const requestedOf = (pending: PendingLogin): "personal" | "key" =>
+	pending.requested ?? (pending.personal === true ? "personal" : "key");
 
 /** What a sign-in's approval hands over: a personal access token or an API key, and its secret. */
 export interface SignedIn {
@@ -98,6 +107,7 @@ export async function startLogin(
 		intervalSeconds: started.intervalSeconds,
 		expiresAt: started.expiresAt,
 		...(asked ? { personal: true } : {}),
+		requested: personal ? "personal" : "key",
 	};
 	await keepPendingLogin(directory, pending);
 	return pending;

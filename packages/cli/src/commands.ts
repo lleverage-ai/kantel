@@ -91,6 +91,7 @@ import {
 	openInBrowser,
 	type PendingLogin,
 	readPendingLogin,
+	requestedOf,
 	type SignedIn,
 	startLogin,
 	waitForLogin,
@@ -1093,9 +1094,10 @@ async function browserLogin(ctx: Context, url: string): Promise<SignedIn | undef
 	const now = Date.now;
 	const personal = !ctx.boolean("account-key");
 	const kept = await readPendingLogin(ctx.io.configDir, url, now());
-	// A code kept for the other kind of sign-in isn't carried on: this one asks for what it was told to.
+	// A code kept for the other kind of sign-in isn't carried on: this one asks for what it was told to, so --account-key
+	// never collects a personal token, nor a plain login an account's key.
 	const pending: PendingLogin =
-		kept !== undefined && (kept.personal === true || !personal)
+		kept !== undefined && requestedOf(kept) === (personal ? "personal" : "key")
 			? kept
 			: await startLogin(client, url, ctx.string("name") ?? `kantel on ${hostname()}`, ctx.io.configDir, personal);
 	const interactive = ctx.io.stdout.isTTY === true && !ctx.json;
@@ -1116,7 +1118,11 @@ async function browserLogin(ctx: Context, url: string): Promise<SignedIn | undef
 	if (!waiting) {
 		// The same --url, or --wait would sign in to the saved or default URL, where this code isn't known.
 		const flagUrl = ctx.string("url");
-		if (!ctx.json) ctx.note(`Then run: kantel login --wait${flagUrl === undefined ? "" : ` --url ${originOf(url)}`}`);
+		if (!ctx.json) {
+			ctx.note(
+				`Then run: kantel login --wait${personal ? "" : " --account-key"}${flagUrl === undefined ? "" : ` --url ${originOf(url)}`}`,
+			);
+		}
 		return undefined;
 	}
 	if (interactive && !ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) {

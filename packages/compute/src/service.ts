@@ -3182,6 +3182,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * the key is revoked or expired, the sign-in has ended, or the person has deleted their account (their deletion is
 	 * recorded, or their user record retired), whatever memberships of theirs remain.
 	 */
+	/**
+	 * Who was given access (`encodeGrantee`'s text), as they are now: undefined once the key or personal token is revoked
+	 * or expired, the sign-in has ended, or the person is gone or being deleted. Their rights are checked by the caller.
+	 */
+	async function granteePrincipal(text: string): Promise<Principal | undefined> {
+		const grantee = decodeGrantee(text);
+		if (grantee === undefined) return undefined;
+		if (grantee.kind === "key") return liveKeyPrincipal(store, grantee.keyId, now());
+		const user = await store.users.get(grantee.userId);
+		// Gone, or being (or having been) deleted: nothing they were given goes on.
+		if (user === undefined || (await store.deletions.get(grantee.userId)) !== undefined) return undefined;
+		if (grantee.session !== undefined && options.sessionLive !== undefined) {
+			if (!(await options.sessionLive(grantee.session))) return undefined;
+		}
+		if (grantee.token !== undefined) {
+			// Given with a personal token: it lasts as long as the token, within the token's limits.
+			const token = await liveTokenPrincipal(store, grantee.token, now());
+			return token === undefined || token.userId !== user.id ? undefined : token;
+		}
+		return {
+			kind: "person",
+			userId: user.id,
+			name: personName({ userId: user.id, name: user.name, email: user.email }),
+			superAdmin: user.superAdmin,
+			personalAccountId: user.personalAccountId,
+		};
+	}
+
 	async function watcherNow(principal: Principal): Promise<Principal | undefined> {
 		if (principal.kind === "key") return liveKeyPrincipal(store, principal.keyId, now());
 		if (principal.token !== undefined) return liveTokenPrincipal(store, principal.token.id, now());
@@ -3330,6 +3358,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxFor,
 					requireRunning,
 					requireRunningByToken,
+					granteePrincipal,
 					accountOpen,
 					once: (principal, operation, input, work) => once(principal, operation, input, work),
 				});
@@ -4242,11 +4271,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
 		}
 		// And every personal access token of theirs.
-		for (const token of await store.personalTokens.list({ userId })) {
+		const tokens = await store.personalTokens.list({ userId });
+		for (const token of tokens) {
 			if (token.revokedAt === undefined) await store.personalTokens.put({ ...token, revokedAt: now() });
 		}
-		// And the answers kept for their retries (`once`), theirs and their keys': some hold what they made.
-		const callers = [`user:${userId}:`, ...keys.map((key) => `key:${key.id}:`)];
+		// And the answers kept for their retries (`once`), theirs, their keys' and their tokens': some hold what they made.
+		const callers = [
+			`user:${userId}:`,
+			...keys.map((key) => `key:${key.id}:`),
+			...tokens.map((token) => `pat:${token.id}:`),
+		];
 		for (const kept of await store.idempotency.list()) {
 			if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
 		}
@@ -4561,7 +4595,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<T> {
 		const key = input.idempotencyKey;
 		if (key === undefined) return work();
-		const caller = principal.kind === "key" ? `key:${principal.keyId}` : `user:${principal.userId}`;
+		// Each credential its own: a personal token never gets an answer its person, or another of their tokens, was given,
+		// which may hold a credential it couldn't make itself (and its default account may differ).
+		const caller =
+			principal.kind === "key"
+				? `key:${principal.keyId}`
+				: principal.token !== undefined
+					? `pat:${principal.token.id}`
+					: `user:${principal.userId}`;
 		const id = `${caller}:${operation}:${key}`;
 		const fingerprint = await sha256Hex(canonicalJson({ params: input.params, query: input.query, body: input.body }));
 		const running = inflight.get(id);
@@ -5183,21 +5224,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const id = await sha256Hex(body.deviceCode);
 			const login = await store.deviceLogins.get(id);
 			if (login === undefined) throw new KantelError("not_found", "No such sign-in");
+			// Only the first poll that sees it gets the secret, which is then dropped. The credential is read first: one an
+			// approval hasn't stored yet (or that failed to store) leaves the secret for the next poll, never spent on nothing.
 			if (login.state === "approved" && login.secret !== undefined && login.personalTokenId !== undefined) {
+				const token = await store.personalTokens.get(login.personalTokenId);
+				if (token === undefined) return { state: "pending" };
 				const collected = await store.deviceLogins.update(id, (current) =>
 					current.secret === undefined ? undefined : { ...current, secret: undefined, collectedAt: now() },
 				);
-				const token = await store.personalTokens.get(login.personalTokenId);
-				if (collected === undefined || token === undefined) return { state: "expired" };
+				if (collected === undefined) return { state: "expired" };
 				return { state: "approved", token: { token: personalTokenView(token), secret: login.secret } };
 			}
 			if (login.state === "approved" && login.secret !== undefined && login.apiKeyId !== undefined) {
-				// Only the first poll that sees it gets the secret, which is then dropped.
+				const key = await store.apiKeys.get(login.apiKeyId);
+				if (key === undefined) return { state: "pending" };
 				const collected = await store.deviceLogins.update(id, (current) =>
 					current.secret === undefined ? undefined : { ...current, secret: undefined, collectedAt: now() },
 				);
-				const key = await store.apiKeys.get(login.apiKeyId);
-				if (collected === undefined || key === undefined) return { state: "expired" };
+				if (collected === undefined) return { state: "expired" };
 				return { state: "approved", issued: { key: apiKeyView(key), secret: login.secret } };
 			}
 			if (login.state === "approved") return { state: "expired" };
@@ -5227,13 +5271,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(body.accounts === undefined ? {} : { accounts: body.accounts }),
 					expiresInDays: Math.min(body.expiresInDays ?? DEVICE_LOGIN_KEY_DAYS, computeSchema.PERSONAL_TOKEN_MAX_DAYS),
 				});
+				// The token is stored before the approval names it, so a poll never finds an approval without it; should the
+				// approval lose to another decision, the token is revoked, never handed to anyone.
+				await store.personalTokens.put(token);
 				const approved = await store.deviceLogins.update(login.id, (current) =>
 					current.state === "pending"
 						? { ...current, state: "approved", personalTokenId: token.id, secret, decidedBy: person.userId }
 						: undefined,
 				);
-				if (approved === undefined) throw new KantelError("conflict", "The sign-in was decided meanwhile");
-				await store.personalTokens.put(token);
+				if (approved === undefined) {
+					await store.personalTokens.put({ ...token, revokedAt: now() });
+					throw new KantelError("conflict", "The sign-in was decided meanwhile");
+				}
 				return deviceLoginView(approved);
 			}
 			const { account, role } = await actingAccount(store, person, body.account);
@@ -5256,13 +5305,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				secretHash: hash,
 				ownerUserId: person.userId,
 			};
+			// The key is stored first, as a personal token is above.
+			await store.apiKeys.put(key);
 			const approved = await store.deviceLogins.update(login.id, (current) =>
 				current.state === "pending"
 					? { ...current, state: "approved", apiKeyId: key.id, secret, decidedBy: person.userId }
 					: undefined,
 			);
-			if (approved === undefined) throw new KantelError("conflict", "The sign-in was decided meanwhile");
-			await store.apiKeys.put(key);
+			if (approved === undefined) {
+				await store.apiKeys.put({ ...key, revokedAt: now() });
+				throw new KantelError("conflict", "The sign-in was decided meanwhile");
+			}
 			return deviceLoginView(approved);
 		},
 
@@ -5404,6 +5457,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const account = await store.accounts.get(invite.accountId);
 			if (account === undefined) throw notFound("organisation");
+			// An organisation that blocks personal tokens isn't joined with one: membership is changed at the console.
+			const refusal = await tokenRefusal(store, principal, account.id);
+			if (refusal !== undefined) throw new KantelError("forbidden", refusal);
 			if ((await store.members.get(memberId(account.id, person.userId))) !== undefined) {
 				throw new KantelError("conflict", "You are already a member");
 			}
@@ -5516,6 +5572,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			requireOrganisation(acting);
 			const leaving = principal.kind === "person" && params.userId === principal.userId;
 			if (!leaving) requireScope(principal, "account:admin", acting.role);
+			// Any member may leave, but a token held to scopes leaves only with account:admin among them: a leaked read-only
+			// token mustn't take its person out of an organisation, nor revoke their keys there.
+			const capped = principal.kind === "person" ? principal.token?.scopes : undefined;
+			if (leaving && capped !== undefined && !capped.includes("account:admin")) {
+				throw new KantelError("forbidden", "This personal access token lacks the account:admin scope");
+			}
 			const target = await store.members.get(memberId(params.accountId, params.userId));
 			if (target === undefined) throw notFound("member");
 			if (!leaving && target.role === "owner" && acting.role !== "owner") {
@@ -8020,35 +8082,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async stillAllowed(text, sandboxId) {
 			if (text === undefined) return true;
-			const grantee = decodeGrantee(text);
-			if (grantee === undefined) return false;
-			let principal: Principal;
-			if (grantee.kind === "key") {
-				const key = await liveKeyPrincipal(store, grantee.keyId, now());
-				if (key === undefined) return false;
-				principal = key;
-			} else {
-				const user = await store.users.get(grantee.userId);
-				// Gone, or being (or having been) deleted: nothing they were given goes on.
-				if (user === undefined || (await store.deletions.get(grantee.userId)) !== undefined) return false;
-				if (grantee.session !== undefined && options.sessionLive !== undefined) {
-					if (!(await options.sessionLive(grantee.session))) return false;
-				}
-				if (grantee.token !== undefined) {
-					// Given with a personal token: it lasts as long as the token, within the token's limits.
-					const token = await liveTokenPrincipal(store, grantee.token, now());
-					if (token === undefined || token.userId !== user.id) return false;
-					principal = token;
-				} else {
-					principal = {
-						kind: "person",
-						userId: user.id,
-						name: personName({ userId: user.id, name: user.name, email: user.email }),
-						superAdmin: user.superAdmin,
-						personalAccountId: user.personalAccountId,
-					};
-				}
-			}
+			const principal = await granteePrincipal(text);
+			if (principal === undefined) return false;
 			try {
 				await sandboxFor(principal, sandboxId, "access");
 				return true;

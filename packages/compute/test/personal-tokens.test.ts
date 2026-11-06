@@ -224,7 +224,64 @@ describe("personal access tokens", () => {
 	});
 });
 
+describe("personal access tokens, what they can't reach around", () => {
+	it("never get an answer kept for their person's other credentials under the same idempotency key", async () => {
+		const { client, tom } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const key = "same-key";
+		const broad = await tom.createPersonalToken({ name: "automation" }, { idempotencyKey: key });
+		const narrow = client((await tom.createPersonalToken({ name: "narrow", accounts: [org.id] })).secret);
+		const again = await narrow.createPersonalToken({ name: "automation" }, { idempotencyKey: key });
+		expect(again.secret).not.toBe(broad.secret);
+		expect(again.token.accounts).toEqual([org.id]);
+		// Its own retry gets its own answer.
+		expect((await narrow.createPersonalToken({ name: "automation" }, { idempotencyKey: key })).secret).toBe(
+			again.secret,
+		);
+	});
+
+	it("leave an organisation only with account:admin when they hold scopes", async () => {
+		const { client, tom, ann } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "member" })).code ?? "" });
+		const reader = client((await ann.createPersonalToken({ name: "r", preset: "read-only" })).secret);
+		expect((await failure(reader.removeMember(org.id, "usr_ann"))).code).toBe("forbidden");
+		// A token with no scopes leaves as its person may.
+		const full = client((await ann.createPersonalToken({ name: "f" })).secret);
+		await full.removeMember(org.id, "usr_ann");
+		expect((await ann.listAccounts()).items.map((account) => account.id)).not.toContain(org.id);
+	});
+
+	it("don't join an organisation that blocks them", async () => {
+		const { client, tom, ann } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await tom.updateAccount(org.id, { personalTokens: "blocked" });
+		const invite = await tom.createInvite(org.id, { role: "member" });
+		const pat = client((await ann.createPersonalToken({ name: "a" })).secret);
+		expect((await failure(pat.joinOrganisation({ code: invite.code ?? "" }))).message).toContain(
+			"doesn't allow personal access tokens",
+		);
+		// The invite is still there for the console.
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+	});
+});
+
 describe("device sign-in for a personal token", () => {
+	it("keeps the secret for the next poll while the approved token isn't there to read", async () => {
+		const { client, store, tom } = setup();
+		const device = client(undefined);
+		const started = await device.startDeviceLogin({ personal: true });
+		await tom.approveDeviceLogin(started.userCode, {});
+		const [token] = await store.personalTokens.list({ userId: "usr_tom" });
+		if (token === undefined) throw new Error("no token was stored");
+		// As if the poll ran between the approval and the token's write.
+		await store.personalTokens.delete(token.id);
+		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "pending" });
+		await store.personalTokens.put(token);
+		const approved = await device.pollDeviceLogin({ deviceCode: started.deviceCode });
+		expect(approved.token?.token.id).toBe(token.id);
+	});
+
 	it("gives the device a personal token any member may approve, limited as the approver says", async () => {
 		const { client, tom, ann } = setup();
 		const org = await tom.createOrganisation({ name: "Acme" });

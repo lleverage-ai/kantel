@@ -196,6 +196,7 @@ function setup(options: SetupOptions = {}) {
 		blobs: bundles,
 		specs,
 		fetchApi,
+		client,
 		tom: client("tom-token"),
 		ann: client("ann-token"),
 	};
@@ -820,6 +821,30 @@ describe("signed file URLs", () => {
 		});
 		// The stub's files are slow at a megabyte, which the read in parts needs.
 	}, 30_000);
+
+	it("stop working once whoever made them may no longer: a revoked token or key, an expiring token", async () => {
+		const { tom, client, fetchApi } = setup();
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.writeFile(sandbox.id, { path: "note.txt", content: "kept" });
+
+		const issued = await tom.createPersonalToken({ name: "t", expiresInDays: 1 });
+		const pat = client(issued.secret);
+		const download = await pat.createDownloadUrl(sandbox.id, { path: "note.txt", ttlSeconds: 3600 });
+		// No later than the token that made it.
+		expect(download.expiresAt).toBeLessThanOrEqual(issued.token.expiresAt);
+		expect((await fetchApi(download.url)).status).toBe(200);
+		await tom.revokePersonalToken(issued.token.id);
+		expect((await fetchApi(download.url)).status).toBe(404);
+
+		const key = await tom.createApiKey({ name: "k", preset: "agent" });
+		const upload = await client(key.secret).createUploadUrl(sandbox.id, { path: "up.txt" });
+		await tom.revokeApiKey(key.key.id);
+		expect((await fetchApi(upload.url, { method: "PUT", body: "x" })).status).toBe(404);
+
+		// One made by someone who still may goes on working.
+		const still = await tom.createDownloadUrl(sandbox.id, { path: "note.txt" });
+		expect(await (await fetchApi(still.url)).text()).toBe("kept");
+	});
 
 	it("wait for a sandbox that is starting, as any call that needs it running does", async () => {
 		let release: () => void = () => {};
