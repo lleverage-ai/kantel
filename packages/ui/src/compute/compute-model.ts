@@ -920,8 +920,12 @@ export interface SandboxesSource {
 	 * Absent: the dialog draws what the live read has.
 	 */
 	usageHistory?(id: string, range: UsageRange): Promise<UsageSeries>;
-	/** A running sandbox's busiest processes, by CPU, most first. Absent: the dialog says it can't list them. */
-	processes?(id: string): Promise<readonly SandboxProcess[]>;
+	/**
+	 * A running microVM's busiest processes, by CPU, most first; undefined where its host or guest agent is from before
+	 * they could be listed. Absent, or undefined: the dialog says its host can't list them yet. An isolate's aren't asked
+	 * for.
+	 */
+	processes?(id: string): Promise<readonly SandboxProcess[] | undefined>;
 	/** Gives it a new name; its address (subdomain) stays as it was. Absent: the list offers no rename. */
 	rename?(id: string, name: string): Promise<Sandbox>;
 	/** Its ports with a URL. Absent where the host can't list them: the page has no Ports. */

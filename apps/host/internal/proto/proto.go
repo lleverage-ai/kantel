@@ -222,6 +222,11 @@ type TemplateImage struct {
 // control plane sends mounts only behind its switch.
 const FeatureBundleMounts = "mounts-bundle"
 
+// FeatureProcesses (HOST_FEATURES.processes): the host serves sandbox.processes (ProcessesParams) for the sandboxes of
+// a tier that lists its processes (the microVM tier, from its guest agent's GET /processes). A sandbox whose guest
+// agent is from before it could, and an isolate, answer ErrUnsupported.
+const FeatureProcesses = "processes"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -821,6 +826,38 @@ type FileParams struct {
 	Length    int64  `json:"length,omitempty"`
 }
 
+// ProcessesParams is sandbox.processes' (FeatureProcesses): a running sandbox's busiest processes, at most Limit
+// (DefaultProcesses when 0, at most MaxProcesses).
+type ProcessesParams struct {
+	SandboxID string `json:"sandboxId"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// DefaultProcesses and MaxProcesses are how many processes sandbox.processes answers without a limit, and at most.
+const (
+	DefaultProcesses = 10
+	MaxProcesses     = 50
+)
+
+// Process is one of a sandbox's processes, as its guest measured it over a short sample.
+type Process struct {
+	PID int `json:"pid"`
+	// Command is its command line (at most 1 KiB of it), or "[name]" where it has none (a kernel thread).
+	Command string `json:"command"`
+	// CPUPercent is its CPU as a share of one vCPU in percent: 150 is one and a half.
+	CPUPercent float64 `json:"cpuPercent"`
+	// MemoryBytes is its resident memory.
+	MemoryBytes int64 `json:"memoryBytes"`
+}
+
+// ProcessList is sandbox.processes' answer: the busiest processes by CPU, then memory, most first; Total how many the
+// sandbox has, and SampleMs how long the CPU was measured over.
+type ProcessList struct {
+	Processes []Process `json:"processes"`
+	Total     int       `json:"total"`
+	SampleMs  int64     `json:"sampleMs"`
+}
+
 // FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
 // into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted.
 type FileExtractParams struct {
@@ -985,11 +1022,13 @@ const (
 	MethodExecGet = "sandbox.exec.get"
 	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its
 	// process group; answered ExecKilled.
-	MethodExecKill     = "sandbox.exec.kill"
-	MethodFileRead     = "sandbox.files.read"
-	MethodFileWrite    = "sandbox.files.write"
-	MethodFileDelete   = "sandbox.files.delete"
-	MethodFileList     = "sandbox.files.list"
+	MethodExecKill   = "sandbox.exec.kill"
+	MethodFileRead   = "sandbox.files.read"
+	MethodFileWrite  = "sandbox.files.write"
+	MethodFileDelete = "sandbox.files.delete"
+	MethodFileList   = "sandbox.files.list"
+	// MethodProcesses (Kantel → host, ProcessesParams; FeatureProcesses) answers a running sandbox's ProcessList.
+	MethodProcesses    = "sandbox.processes"
 	MethodSnapshotList = "snapshot.list"
 	MethodSnapshotSave = "snapshot.save"
 	MethodSnapshotDel  = "snapshot.delete"

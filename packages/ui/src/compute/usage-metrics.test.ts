@@ -2,11 +2,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { HOUR, MINUTE } from "../primitives/format.ts";
-import type { UsageSeries } from "./compute-model.ts";
+import type { Sandbox, UsageSeries } from "./compute-model.ts";
+import { API_SERVER, SCRATCH } from "./fixtures.ts";
 import {
 	chartSegments,
 	latestOf,
 	measuredIn,
+	type ProcessesRead,
+	ProcessesSection,
 	ProcessTable,
 	peakOf,
 	percentText,
@@ -108,5 +111,45 @@ describe("a sandbox's metrics", () => {
 		expect(html).toContain("node server.js");
 		expect(html).toContain(">12.3<");
 		expect(html).toContain(">300<");
+	});
+
+	it("says why it has no processes to list: stopped, an isolate, or a host or guest agent that can't list them", () => {
+		const reload = () => undefined;
+		const running = API_SERVER;
+		const isolate = SCRATCH;
+		expect([running.kind, running.state, isolate.kind, isolate.state]).toEqual([
+			"microvm",
+			"running",
+			"isolate",
+			"running",
+		]);
+		const stopped = { ...running, state: "stopped" as const };
+		const html = (sandbox: Sandbox, listed: boolean, read: ProcessesRead) =>
+			renderToStaticMarkup(createElement(ProcessesSection, { sandbox, listed, read }));
+		const rows = [{ pid: 812, command: "yes", cpuPercent: 99.5, memoryBytes: 1024 ** 2 }];
+		const ready = { status: "ready", value: rows, reload } as const;
+
+		expect(html(stopped, true, ready)).toContain("It isn&#x27;t running, so it has no processes.");
+		const isolated = html(isolate, false, { status: "loading", reload });
+		expect(isolated).toContain("Not listed for an isolate");
+		expect(isolated).not.toContain("can&#x27;t list");
+		// No read in the source, or one that answered that this sandbox's host or guest agent can't list them.
+		const unlisted = "This sandbox&#x27;s host can&#x27;t list its processes yet.";
+		expect(html(running, false, { status: "loading", reload })).toContain(unlisted);
+		const older = html(running, true, { status: "ready", value: null, reload });
+		expect(older).toContain(unlisted);
+		expect(older).not.toContain("Read the processes again");
+		// While it reads, if it fails before any answer, with none, and with some.
+		expect(html(running, true, { status: "loading", reload })).toContain('aria-busy="true"');
+		expect(html(running, true, { status: "error", error: new Error("The host went away"), reload })).toContain(
+			"The host went away",
+		);
+		expect(html(running, true, { status: "ready", value: [], reload })).toContain("No processes");
+		const listed = html(running, true, ready);
+		expect(listed).toContain(">yes<");
+		expect(listed).toContain(">99.5<");
+		expect(listed).toContain("Read the processes again");
+		// A failed read again keeps the last answer.
+		expect(html(running, true, { status: "error", error: new Error("gone"), value: rows, reload })).toContain(">yes<");
 	});
 });

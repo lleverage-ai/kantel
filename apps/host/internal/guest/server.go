@@ -65,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /capabilities", s.capabilities)
 	mux.HandleFunc("GET /stats", s.stats)
+	mux.HandleFunc("GET /processes", s.processes)
 	mux.HandleFunc("POST /identity", s.setIdentity)
 	mux.HandleFunc("POST /exec", s.exec)
 	mux.HandleFunc("POST /exec/start", s.startCommand)

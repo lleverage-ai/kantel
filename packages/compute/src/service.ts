@@ -6112,6 +6112,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { path, items: page.items.map(fileEntry), nextCursor: page.nextCursor };
 		},
 
+		// Read from the sandbox's machine when asked (its guest agent samples its CPU for half a second) and kept nowhere.
+		listSandboxProcesses: async (principal, { params, query }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
+			if (sandbox.type === "isolate") {
+				throw new KantelError(
+					"not_supported",
+					"An isolate's processes aren't listed: it shares its runtime with the account's other isolates",
+				);
+			}
+			if (backend.processes === undefined) {
+				throw new KantelError("not_supported", "This deployment's sandboxes can't list their processes");
+			}
+			await requireRunning(principal, sandbox.id);
+			const { processes, total } = await backend.processes(sandbox.id, query.limit ?? 10);
+			return {
+				items: processes.map(({ pid, command, cpuPercent, memoryBytes }) => ({
+					pid,
+					command,
+					cpuPercent,
+					memoryBytes,
+				})),
+				total,
+			};
+		},
+
 		// Ports, desktop, browser and SSH.
 
 		listPorts: async (principal, { params }) => {

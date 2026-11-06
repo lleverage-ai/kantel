@@ -26,7 +26,10 @@ function Scenario({
 	filters,
 	metricsOf,
 	shapes,
+	olderGuest = false,
 }: {
+	/** Its sandboxes' guest agents are from before processes could be listed: the source answers none. */
+	olderGuest?: boolean;
 	filters?: SandboxFilters;
 	metricsOf?: string;
 	hosting?: HostingMode;
@@ -42,8 +45,9 @@ function Scenario({
 }) {
 	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
 	const [sandboxes] = useState(() => {
-		const offered =
+		const shaped =
 			shapes === undefined ? source.sandboxes : { ...source.sandboxes, shapes: () => Promise.resolve(shapes) };
+		const offered = olderGuest ? { ...shaped, processes: () => Promise.resolve(undefined) } : shaped;
 		if (usage === "live") return offered;
 		const { usageSeries: _, ...rest } = offered;
 		const hang = () => new Promise<never>(() => {});
@@ -109,6 +113,12 @@ export const MetricsDesktop: Story = () => <Scenario metricsOf="sbx_4d8n1x7pe2" 
 export const MetricsOlderHost: Story = () => (
 	<Scenario options={{ metrics: "cpu-memory" }} metricsOf="sbx_7f3k2m9qa1" />
 );
+
+/** On a current host, but the sandbox's guest agent is from before processes could be listed: it says so. */
+export const MetricsOlderGuest: Story = () => <Scenario olderGuest metricsOf="sbx_7f3k2m9qa1" />;
+
+/** An isolate's metrics: CPU and memory; disk, IO and its processes aren't measured for an isolate. */
+export const MetricsIsolate: Story = () => <Scenario metricsOf="sbx_9a2b6c4dq3" />;
 
 /** A stopped sandbox's metrics: its history up to when it stopped, and no processes. */
 export const MetricsStopped: Story = () => <Scenario metricsOf="sbx_2q8w5e1rz4" />;

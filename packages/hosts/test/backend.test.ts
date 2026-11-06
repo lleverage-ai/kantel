@@ -46,6 +46,13 @@ class FakeHost {
 	guest: HostGuest | undefined;
 	/** Whether its machines run Chromium on its own display now (kantel-browser's record says :2, the display up). */
 	ownBrowserDisplay = false;
+	/** What its hello says it is: the features it reports, say. */
+	facts: HostFacts = facts;
+	/**
+	 * What `sandbox.processes` answers; absent, a host from before it listed them. Answering undefined: a sandbox whose
+	 * guest agent is from before it could.
+	 */
+	processes?: (params: { [key: string]: unknown }) => unknown;
 	receive!: (text: string) => void;
 
 	constructor(
@@ -65,7 +72,7 @@ class FakeHost {
 				type: "hello",
 				hello: {
 					hostId: this.hostId,
-					facts,
+					facts: this.facts,
 					sandboxes: [],
 					capacity: { freeMemoryMiB: 30_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} },
 				},
@@ -175,6 +182,12 @@ class FakeHost {
 						size: sandbox?.files.get(path)?.length ?? 0,
 					})),
 				});
+			case "sandbox.processes":
+				if (this.processes === undefined) return fail("unsupported", `unknown method ${message.method}`);
+				if (sandbox?.tier === "isolate") return fail("unsupported", "isolate sandboxes don't list their processes");
+				return this.processes(p) === undefined
+					? fail("unsupported", "this sandbox's guest agent is from before it could list its processes")
+					: answer(this.processes(p));
 			case "snapshot.read": {
 				const data = this.snapshots.get(String(p.snapshotId))?.get(String(p.path));
 				return data === undefined ? fail("not_found", "no such file") : answer({ data: b64(data) });
@@ -637,6 +650,48 @@ describe("the compute API on kantel-host hosts", () => {
 });
 
 describe("a restart on the latest base, checked with the host first", () => {
+	it("lists a microVM's processes from a host that says it can, and refuses where its host or guest agent can't", async () => {
+		const { service, root } = setup();
+		const listing = { features: ["processes"], ...facts };
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts: listing });
+		const host = new FakeHost(service, hostId);
+		host.facts = listing;
+		host.processes = () => ({
+			processes: [{ pid: 812, command: "yes", cpuPercent: 99.5, memoryBytes: 1_048_576 }],
+			total: 41,
+			sampleMs: 503,
+		});
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const asked = () => host.params.filter((call) => call.method === "sandbox.processes").map((call) => call.params);
+
+		expect(await root.listSandboxProcesses(sandbox.id, { limit: 8 })).toEqual({
+			items: [{ pid: 812, command: "yes", cpuPercent: 99.5, memoryBytes: 1_048_576 }],
+			total: 41,
+		});
+		expect(asked()).toEqual([{ sandboxId: sandbox.id, limit: 8 }]);
+		// A guest agent from before it could: the host's unsupported.
+		host.processes = () => undefined;
+		expect((await failure(root.listSandboxProcesses(sandbox.id))).code).toBe("not_supported");
+		expect(asked()).toHaveLength(2);
+	});
+
+	it("asks a host from before processes could be listed for none", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const refused = await failure(root.listSandboxProcesses(sandbox.id));
+		expect(refused.code).toBe("not_supported");
+		expect(refused.message).toBe("This sandbox's host can't list its processes");
+		expect(host.calls).not.toContain("sandbox.processes");
+	});
+
 	it("asks the sandbox's own host for its images, and refuses where it can't land", async () => {
 		const { service, root, backend } = setup();
 		const token = await root.createHostJoinToken({ name: "box-1" });

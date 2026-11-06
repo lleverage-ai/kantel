@@ -109,6 +109,8 @@ import {
 	SandboxEgressQuery,
 	SandboxPage,
 	SandboxPath,
+	SandboxProcessesQuery,
+	SandboxProcessList,
 	SandboxShapes,
 	SandboxShapesQuery,
 	SandboxUsage,
@@ -612,6 +614,26 @@ export const getSandboxUsage = defineRoute({
 	errors: readErrors,
 });
 
+export const listSandboxProcesses = defineRoute({
+	operationId: "listSandboxProcesses",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/processes",
+	tag: "sandboxes",
+	summary: "List a sandbox's busiest processes",
+	description: describe(
+		"A running microVM's busiest processes, as `top` would list them: each one's CPU over a short sample (about half a",
+		"second, read when asked) and resident memory, by CPU, then memory. Read from the sandbox's guest agent and kept",
+		"nowhere. A sandbox that isn't running is `conflict`. An isolate, which shares its runtime with the account's",
+		"other isolates, is `not_supported`, as is a sandbox whose host or guest agent is from before they could be listed.",
+		"Command lines are what the sandbox runs, arguments and all, so this needs the scope that running `ps` would.",
+		scope("exec"),
+	),
+	params: SandboxPath,
+	query: SandboxProcessesQuery,
+	answer: { status: 200, description: "Its busiest processes.", schema: SandboxProcessList },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
 export const sandboxRoutes = {
 	listSandboxes,
 	getSandboxShapes,
@@ -626,6 +648,7 @@ export const sandboxRoutes = {
 	restartSandboxOnLatest,
 	deleteSandbox,
 	getSandboxUsage,
+	listSandboxProcesses,
 } as const;
 
 // Commands and files.

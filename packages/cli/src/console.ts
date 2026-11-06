@@ -28,7 +28,10 @@ export interface LocalInfo {
 	readonly spaces: readonly { readonly id: string; readonly mode: "off" | "on" | "strict"; readonly error?: string }[];
 }
 
-/** The methods the console may call on a host over a session: a sandbox's commands, files and history. */
+/**
+ * The methods the console may call on a host over a session: a sandbox's commands, files, history and processes (whose
+ * command lines are its content too).
+ */
 export const LOCAL_E2E_METHODS: ReadonlySet<string> = new Set([
 	"sandbox.get",
 	"sandbox.exec",
@@ -37,6 +40,7 @@ export const LOCAL_E2E_METHODS: ReadonlySet<string> = new Set([
 	"sandbox.files.write",
 	"sandbox.files.delete",
 	"sandbox.files.list",
+	"sandbox.processes",
 ]);
 
 export interface LocalConsoleOptions {

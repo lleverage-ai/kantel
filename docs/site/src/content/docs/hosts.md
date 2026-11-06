@@ -288,6 +288,12 @@ The host keeps each reading until Kantel confirms it has it, up to the last 120 
 
 A host that predates this sends each reading once, and a reading sent into a connection that then fails is lost. The same applies to a newer host connected to a Kantel that predates it.
 
+### Top processes
+
+A running microVM's busiest processes aren't part of the readings: Kantel asks for them only when something wants them, such as the console's metrics dialog, which asks every 10 seconds while it's open (`GET /v1/sandboxes/{sandboxId}/processes`, which needs the `exec` scope, as running `ps` would). The host passes the request to the guest's agent, which reads `/proc` twice half a second apart and answers the busiest processes by CPU, then memory: each one's PID, command line (up to 1 KiB of it), CPU as a share of one vCPU (150% is one and a half) and resident memory. Nothing is kept.
+
+An isolate's processes aren't listed: an account's isolates share one runtime, so its processes are the other isolates' too. A host that predates this doesn't say it can list processes, and Kantel doesn't ask it. A microVM whose guest agent predates this (one booted on an older image, or resumed from a snapshot taken before) can't answer either, until it boots on a current image. For each of these the API answers `not_supported` and the console says the sandbox's host can't list its processes yet. In a space with end-to-end encryption on, the processes' command lines are the sandbox's content, so the gateway can't read them: only the space's devices can, in an E2E session.
+
 ## Where sandboxes go
 
 Kantel picks a host when a sandbox is created. A host can take the sandbox if it is connected, not draining or revoked, runs the sandbox's type, offers its size, has every label the sandbox asks for, and has the memory and disk free. Among those, Kantel prefers, for an isolate, a host already running the account's isolates, then the most free memory, then the lowest load.

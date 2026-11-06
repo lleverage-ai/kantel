@@ -450,6 +450,23 @@ export interface BackendFileEntry {
 	readonly modifiedAt?: number;
 }
 
+/** One of a running sandbox's processes, as its machine measured it over a short sample. */
+export interface BackendProcess {
+	readonly pid: number;
+	/** Its command line, its arguments joined by spaces, or `[name]` where it has none (a kernel thread). */
+	readonly command: string;
+	/** Its CPU, as a share of one vCPU in percent: 150 is one and a half. */
+	readonly cpuPercent: number;
+	/** Its resident memory, in bytes. */
+	readonly memoryBytes: number;
+}
+
+/** A running sandbox's busiest processes, by CPU, most first, and how many it has. */
+export interface BackendProcessList {
+	readonly processes: readonly BackendProcess[];
+	readonly total: number;
+}
+
 export interface SshGrant {
 	readonly host: string;
 	readonly port: number;
@@ -561,6 +578,11 @@ export interface SandboxBackend {
 	/** Deletes a file, or a directory and everything in it. */
 	deleteFile(sandboxId: string, path: string): Promise<void>;
 	listFiles(sandboxId: string, path: string): Promise<BackendFileEntry[]>;
+	/**
+	 * A running sandbox's `limit` busiest processes. It throws `not_supported` where the sandbox can't list them (an
+	 * isolate, a host or guest agent too old). Absent: no sandbox of the backend's lists them.
+	 */
+	processes?(sandboxId: string, limit: number): Promise<BackendProcessList>;
 	/** Takes a snapshot of a running sandbox's disk without stopping it. */
 	takeSnapshot(sandboxId: string): Promise<TakenSnapshot>;
 	listSnapshotFiles(ref: string, path: string): Promise<BackendFileEntry[]>;

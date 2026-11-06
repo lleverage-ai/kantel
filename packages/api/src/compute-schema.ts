@@ -1207,6 +1207,40 @@ export const SandboxUsage = Type.Object(
 	{ title: "SandboxUsage" },
 );
 
+export const SandboxProcess = Type.Object(
+	{
+		pid: Type.Integer({ minimum: 1 }),
+		command: Type.String({
+			description:
+				"Its command line, its arguments joined by spaces (at most 1 KiB of it), or its name in brackets where it has " +
+				"none, as `ps` writes a kernel thread's.",
+		}),
+		cpuPercent: Type.Number({
+			minimum: 0,
+			description: "Its CPU over a short sample, as a share of one vCPU in percent: 150 is one and a half.",
+		}),
+		memoryBytes: Type.Integer({ minimum: 0, description: "Its resident memory (RSS)." }),
+	},
+	{ title: "SandboxProcess" },
+);
+
+export const SandboxProcessList = Type.Object(
+	{
+		items: Type.Array(SandboxProcess, { description: "By CPU, then memory, most first." }),
+		total: Type.Integer({ minimum: 0, description: "How many processes the sandbox has." }),
+	},
+	{ title: "SandboxProcessList" },
+);
+
+export const SandboxProcessesQuery = Type.Object(
+	{
+		limit: Type.Optional(
+			Type.Integer({ minimum: 1, maximum: 50, description: "How many to list: default 10, at most 50." }),
+		),
+	},
+	{ title: "SandboxProcessesQuery" },
+);
+
 export const UsageQuery = Type.Object(
 	{
 		since: Type.Optional(
@@ -3376,6 +3410,9 @@ export type Host = Static<typeof Host>;
 export type HostUsage = Static<typeof HostUsage>;
 export type HostUsagePoint = Static<typeof HostUsagePoint>;
 export type SandboxUsage = Static<typeof SandboxUsage>;
+export type SandboxProcess = Static<typeof SandboxProcess>;
+export type SandboxProcessList = Static<typeof SandboxProcessList>;
+export type SandboxProcessesQuery = Static<typeof SandboxProcessesQuery>;
 export type SandboxUsagePoint = Static<typeof SandboxUsagePoint>;
 export type SandboxSeriesPoint = Static<typeof SandboxSeriesPoint>;
 export type UsageSparklines = Static<typeof UsageSparklines>;

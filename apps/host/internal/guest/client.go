@@ -177,6 +177,14 @@ func (c *Client) Stats(ctx context.Context) (Stats, error) {
 	return out, err
 }
 
+// Processes asks the agent for its limit busiest processes (GET /processes). An agent from before it could answers 404
+// (IsNotFound).
+func (c *Client) Processes(ctx context.Context, limit int) (ProcessList, error) {
+	var out ProcessList
+	_, err := c.do(ctx, http.MethodGet, "/processes?limit="+strconv.Itoa(limit), nil, &out)
+	return out, err
+}
+
 func (c *Client) SetIdentity(ctx context.Context, id Identity) error {
 	_, err := c.SetIdentitySteps(ctx, id)
 	return err

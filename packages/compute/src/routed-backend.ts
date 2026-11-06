@@ -222,6 +222,13 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		writeFile: async (id, path, content, mode) => (await on(id)).writeFile(id, path, content, mode),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),
 		listFiles: async (id, path) => (await on(id)).listFiles(id, path),
+		async processes(id, limit) {
+			const backend = await on(id);
+			if (backend.processes === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't list its processes");
+			}
+			return backend.processes(id, limit);
+		},
 		takeSnapshot: async (id) => (await on(id)).takeSnapshot(id),
 		listSnapshotFiles: (ref, path) => forRef(ref).listSnapshotFiles(ref, path),
 		readSnapshotFile: (ref, path) => forRef(ref).readSnapshotFile(ref, path),

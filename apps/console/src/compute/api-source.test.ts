@@ -469,6 +469,112 @@ describe("sandboxes", () => {
 		expect(dropped).not.toBeInstanceOf(FilesRefusedError);
 	});
 
+	it("lists a microVM's busiest processes through the API, and none where its host or guest agent can't", async () => {
+		const stub = createStubBackend();
+		const asked: { id: string; limit: number }[] = [];
+		const listing: SandboxBackend = {
+			...stub,
+			processes: async (id, limit) => {
+				asked.push({ id, limit });
+				return {
+					processes: [
+						{ pid: 812, command: "yes", cpuPercent: 99.5, memoryBytes: 1_048_576 },
+						{ pid: 1, command: "/sbin/kantel-init", cpuPercent: 0, memoryBytes: 4_194_304 },
+					],
+					total: 14,
+				};
+			},
+		};
+		const { api, fetchApi } = setup({ backend: listing });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, kind: "microvm" });
+		await api.service.idle();
+		const processes = source.sandboxes.processes;
+		if (processes === undefined) throw new Error("No processes");
+		expect(await processes(made.id)).toEqual([
+			{ pid: 812, command: "yes", cpuPercent: 99.5, memoryBytes: 1_048_576 },
+			{ pid: 1, command: "/sbin/kantel-init", cpuPercent: 0, memoryBytes: 4_194_304 },
+		]);
+		expect(asked).toEqual([{ id: made.id, limit: 10 }]);
+
+		// A backend that can't list them (an older host or guest agent answers the same `not_supported`): none, not an
+		// error, so the dialog says its host can't list them yet.
+		const older = setup();
+		const olderSource = await open(older.fetchApi);
+		const olderBox = await olderSource.sandboxes.create({
+			accountId: await personalAccount(olderSource),
+			kind: "microvm",
+		});
+		await older.api.service.idle();
+		await expect(olderSource.sandboxes.processes?.(olderBox.id)).resolves.toBeUndefined();
+
+		// A gateway from before the route answers 404: none too.
+		const before = await open(async (input, init) => {
+			const url = new URL(String(input instanceof Request ? input.url : input), ORIGIN);
+			return url.pathname.endsWith("/processes") ? notFound() : fetchApi(input, init);
+		});
+		await expect(before.sandboxes.processes?.(made.id)).resolves.toBeUndefined();
+
+		// Anything else fails, for the dialog to offer to try again.
+		const failing = await open(async (input, init) => {
+			const url = new URL(String(input instanceof Request ? input.url : input), ORIGIN);
+			return url.pathname.endsWith("/processes")
+				? Response.json({ error: { code: "unavailable", message: "The host isn't connected" } }, { status: 503 })
+				: fetchApi(input, init);
+		});
+		await expect(failing.sandboxes.processes?.(made.id)).rejects.toThrow("The host isn't connected");
+	});
+
+	it("lists an E2E microVM's processes over the console's own session, never the gateway's route", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "microvm" });
+		await api.service.idle();
+		const calls: { sandboxId: string; method: string; params: object }[] = [];
+		const gateway: string[] = [];
+		let answer: "list" | "unsupported" | "dropped" = "list";
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") return Response.json({ local: true, spaces: [{ id: accountId, mode: "on" }] });
+			if (path === "/local/e2e") {
+				calls.push(JSON.parse(String(init?.body)) as (typeof calls)[number]);
+				if (answer === "unsupported") {
+					// A host from before processes answers the method it doesn't know as unsupported.
+					const error = { code: "e2e", message: "unknown method sandbox.processes", hostCode: "unsupported" };
+					return Response.json({ error }, { status: 502 });
+				}
+				if (answer === "dropped") {
+					return Response.json({ error: { code: "e2e", message: "The relay closed the stream" } }, { status: 502 });
+				}
+				const processes = [{ pid: 7, command: "python3 train.py", cpuPercent: 180.2, memoryBytes: 268_435_456 }];
+				return Response.json({ result: { processes, total: 9, sampleMs: 500 } });
+			}
+			if (new URL(path, ORIGIN).pathname.endsWith("/processes")) gateway.push(path);
+			return fetchApi(input, init);
+		};
+		const local = await localBridge(localFetch, "127.0.0.1");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: localFetch,
+			...(local === undefined ? {} : { local }),
+		});
+		const processes = source.sandboxes.processes;
+		if (processes === undefined) throw new Error("No processes");
+		expect(await processes(made.id)).toEqual([
+			{ pid: 7, command: "python3 train.py", cpuPercent: 180.2, memoryBytes: 268_435_456 },
+		]);
+		expect(calls).toEqual([{ sandboxId: made.id, method: "sandbox.processes", params: {} }]);
+		answer = "unsupported";
+		await expect(processes(made.id)).resolves.toBeUndefined();
+		// A session that didn't get there is a failure, not a host that can't list them.
+		answer = "dropped";
+		await expect(processes(made.id)).rejects.toThrow("The relay closed the stream");
+		// The gateway relays the session and serves none of them.
+		expect(gateway).toEqual([]);
+	});
+
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
