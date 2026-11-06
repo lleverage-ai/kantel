@@ -56,6 +56,7 @@ import {
 	type SandboxShapes,
 	type SandboxState,
 	type SavedSnapshot,
+	type SaveSnapshotOptions,
 	sandboxActions,
 	sandboxMachineText,
 	sandboxMoving,
@@ -112,7 +113,7 @@ export interface SandboxesPageProps {
 	/** Saved snapshots a new sandbox can start from, and saving one from a sandbox. */
 	readonly snapshots?: {
 		saved(accountId: string): Promise<readonly SavedSnapshot[]>;
-		save(sandboxId: string, name: string): Promise<SavedSnapshot>;
+		save(sandboxId: string, name: string, options?: SaveSnapshotOptions): Promise<SavedSnapshot>;
 	};
 	/** The address of a sandbox's page, or of its desktop or browser there. Without it rows open nothing. */
 	readonly sandboxHref?: (sandboxId: string, view?: SandboxRowView) => string;
@@ -593,7 +594,7 @@ function SandboxesSkeleton() {
 
 type RowCalls = {
 	source: SandboxesSource;
-	save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
+	save?: (sandboxId: string, name: string, options?: SaveSnapshotOptions) => Promise<SavedSnapshot>;
 	sandboxHref?: (sandboxId: string, view?: SandboxRowView) => string;
 	navigate?: (path: string) => void;
 	onChange: (box: Sandbox | null, id: string, asked?: number) => void;

@@ -15939,6 +15939,10 @@
 					"replace": {
 						"type": "boolean",
 						"description": "Replace a saved snapshot of the same name."
+					},
+					"memory": {
+						"type": "boolean",
+						"description": "Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is."
 					}
 				},
 				"title": "SaveSnapshotBody"
@@ -16315,6 +16319,10 @@
 					"description": {
 						"type": "string",
 						"maxLength": 500
+					},
+					"memory": {
+						"type": "boolean",
+						"description": "Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size."
 					}
 				},
 				"title": "TakeSnapshotBody"

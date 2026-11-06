@@ -1557,6 +1557,7 @@ One of: `"private"` or `"organisation"`.
 | `snapshotId` | string | no | Save this snapshot of the sandbox's history. Default: its state now. |
 | `description` | string | no |  (at most 500 characters) |
 | `replace` | boolean | no | Replace a saved snapshot of the same name. |
+| `memory` | boolean | no | Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is. |
 
 ### ScanSeverity
 
@@ -1693,6 +1694,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `description` | string | no |  (at most 500 characters) |
+| `memory` | boolean | no | Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. |
 
 ### TelemetryExport
 

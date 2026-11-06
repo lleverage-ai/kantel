@@ -755,6 +755,23 @@ describe("sandboxes", () => {
 		);
 	});
 
+	it("saves a running sandbox's disk only, unless memory is asked for", async () => {
+		const backend = createStubBackend();
+		const take = vi.spyOn(backend, "takeSnapshot");
+		const { tom } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.saveSnapshot({ name: "disk-only", sandboxId: vm.id });
+		await tom.saveSnapshot({ name: "with-memory", sandboxId: vm.id, memory: true });
+		await tom.takeSnapshot(vm.id, {});
+		await tom.takeSnapshot(vm.id, { memory: true });
+		expect(take.mock.calls.map(([, options]) => options)).toEqual([
+			{ memory: false },
+			{ memory: true },
+			{ memory: false },
+			{ memory: true },
+		]);
+	});
+
 	it("keeps a pause's memory when it is saved, so a sandbox made from the save is its machine too", async () => {
 		const { tom } = setup();
 		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });

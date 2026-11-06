@@ -333,6 +333,10 @@ describe("the compute API on kantel-host hosts", () => {
 		const saved = await root.saveSnapshot({ name: "base", sandboxId: sandbox.id });
 		const fromSaved = await root.createSandbox({ type: "microvm", from: saved.id, wait: true });
 		expect((await root.readFile(fromSaved.id, { path: "/home/user/app.txt" })).content).toBe("v1");
+		// The host keeps the disk alone unless memory is asked for.
+		await root.saveSnapshot({ name: "warm", sandboxId: sandbox.id, memory: true });
+		const saves = host.params.filter((call) => call.method === "snapshot.save").map((call) => call.params);
+		expect(saves.map((params) => params.memory)).toEqual([undefined, true]);
 		expect(host.calls).toContain("sandbox.fork");
 
 		await root.deleteSandbox(fork?.id ?? "");

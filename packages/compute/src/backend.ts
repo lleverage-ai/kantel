@@ -349,6 +349,11 @@ export interface BootOptions {
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */
+export interface TakeSnapshotOptions {
+	/** Keep the sandbox's memory as well as its disk. Absent: the disk only. */
+	readonly memory?: boolean;
+}
+
 export interface TakenSnapshot {
 	readonly ref: string;
 	readonly sizeBytes: number;
@@ -583,8 +588,11 @@ export interface SandboxBackend {
 	 * isolate, a host or guest agent too old). Absent: no sandbox of the backend's lists them.
 	 */
 	processes?(sandboxId: string, limit: number): Promise<BackendProcessList>;
-	/** Takes a snapshot of a running sandbox's disk without stopping it. */
-	takeSnapshot(sandboxId: string): Promise<TakenSnapshot>;
+	/**
+	 * Takes a snapshot of a running sandbox's disk without stopping it, and its memory too with `memory` where the
+	 * backend can keep it (`TakenSnapshot.memory` says whether it did).
+	 */
+	takeSnapshot(sandboxId: string, options?: TakeSnapshotOptions): Promise<TakenSnapshot>;
 	/**
 	 * Keeps what a snapshot holds (`ref`, an automatic one: a stop's or a history entry) as a snapshot of its own, under
 	 * a new ref, without taking it again: a saved snapshot of a stopped sandbox. The new ref's bytes outlast whatever the

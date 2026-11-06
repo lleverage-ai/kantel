@@ -725,6 +725,11 @@ function openIfPerson(ctx: Context, url: string): void {
 
 const ID_ARG: readonly Arg[] = [{ name: "id" }];
 
+/** `snapshot take` and `snapshot save`'s --memory. */
+const MEMORY_FLAG =
+	"Keep a running microVM's memory too, so a sandbox made from it carries on where it was, on the same size only; " +
+	"default the disk alone";
+
 /** The start, stop, resume and recover commands, alike but for the call. */
 function lifecycle(
 	verb: string,
@@ -2736,10 +2741,14 @@ const SECTIONS: readonly Section[] = [
 				name: "snapshot take",
 				summary: "Add a snapshot of a sandbox's disk to its history now",
 				args: ID_ARG,
-				flags: { description: { type: "string", value: "<text>", description: "What it holds" } },
+				flags: {
+					description: { type: "string", value: "<text>", description: "What it holds" },
+					memory: { type: "boolean", description: MEMORY_FLAG },
+				},
 				async run(ctx) {
 					const snapshot = await (await ctx.client()).takeSnapshot(ctx.arg(0), {
 						description: ctx.string("description"),
+						memory: ctx.boolean("memory") ? true : undefined,
 					});
 					ctx.emit(snapshot, () => `${snapshot.id} ${snapshot.state}`);
 				},
@@ -2752,6 +2761,7 @@ const SECTIONS: readonly Section[] = [
 					replace: { type: "boolean", description: "Replace a saved snapshot of the same name" },
 					description: { type: "string", value: "<text>", description: "What it holds" },
 					snapshot: { type: "string", value: "<id>", description: "Save this snapshot of its history; default now" },
+					memory: { type: "boolean", description: MEMORY_FLAG },
 				},
 				async run(ctx) {
 					const snapshot = await (await ctx.client()).saveSnapshot({
@@ -2760,6 +2770,7 @@ const SECTIONS: readonly Section[] = [
 						snapshotId: ctx.string("snapshot"),
 						description: ctx.string("description"),
 						replace: ctx.boolean("replace") ? true : undefined,
+						memory: ctx.boolean("memory") ? true : undefined,
 					});
 					const name = snapshot.name ?? snapshot.id;
 					ctx.emit(snapshot, () =>

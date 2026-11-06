@@ -38,6 +38,18 @@ This saves the sandbox's state now. To save a moment from its history instead, a
 
 A stopped sandbox's state is its newest snapshot. Saving it, or a snapshot from its history, keeps a copy of its own: the history entry stays in the history and still expires, and deleting either one leaves the other. A history entry older than the sandbox's newest stop may have kept only its disk, and a save of it then has `memory: false`. The separate copy needs an up-to-date host. On a host from before it could keep one (update it from the console), the save shares the history entry's files: it goes when the host prunes that entry, after a few more stops, or deletes it with the sandbox. To keep a save from such a host, start the sandbox and save it running.
 
+### Disk only, or memory too
+
+Saving a running microVM keeps its disk alone by default. A sandbox made from it starts up on that disk, at any size. Add `"memory": true` to keep the microVM's memory as well: a sandbox made from it then carries on where the saved one was, with its processes still running and nothing to start up, but it has to be the same machine size. Memory takes as much space as the machine has, several GB on the larger sizes, so save it only when a fast resume matters.
+
+```ts
+const warm = await kantel.saveSnapshot({ name: "web-app-warm", sandboxId: "sbx_4kq9x2mt", memory: true });
+```
+
+From the CLI, that's `kantel snapshot save sbx_4kq9x2mt web-app-warm --memory`; in the console, tick **Keep its memory too** in the Save snapshot dialog. Saving a stopped sandbox, or a snapshot from its history, keeps what that snapshot holds, as above: `memory` in the answer says which.
+
+Kantel keeps a saved disk small: before it copies a running microVM's disk it asks the guest to trim the blocks deleted files left behind (with a sandbox image recent enough to do it), and on a host whose storage is XFS or btrfs the copy shares its blocks with the sandbox's disk until either changes.
+
 A name is up to 63 characters of lower-case letters, digits, `-`, `_` and `.`, starting with a letter or digit, and is unique in its account. The answer is the [Snapshot](/api/reference/types/#snapshot), with `kind: "saved"`.
 
 ## Start sandboxes from one

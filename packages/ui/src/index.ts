@@ -70,6 +70,7 @@ export type {
 	SandboxShape,
 	SandboxShapes,
 	SandboxSshKey,
+	SaveSnapshotOptions,
 	ShapePreset,
 	SnapshotsSource,
 	SshTarget,

@@ -1305,7 +1305,7 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 		writeFile: (id, path, content, mode) => onMachine(id, () => stub.writeFile(id, path, content, mode)),
 		deleteFile: (id, path) => onMachine(id, () => stub.deleteFile(id, path)),
 		listFiles: (id, path) => onMachine(id, () => stub.listFiles(id, path)),
-		takeSnapshot: (id) => onMachine(id, () => stub.takeSnapshot(id)),
+		takeSnapshot: (id, options) => onMachine(id, () => stub.takeSnapshot(id, options)),
 		exposePort: (id, port, options) => onMachine(id, () => stub.exposePort(id, port, options)),
 		openSsh: (id, options) => onMachine(id, () => stub.openSsh(id, options)),
 		openDesktop: (id, options) => onMachine(id, () => stub.openDesktop(id, options)),

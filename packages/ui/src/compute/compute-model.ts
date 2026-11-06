@@ -1052,11 +1052,20 @@ export class FilesRefusedError extends Error {
 	override readonly name = "FilesRefusedError";
 }
 
+/** How a running sandbox is saved. */
+export interface SaveSnapshotOptions {
+	/**
+	 * Keep its memory as well as its disk: a sandbox made from it carries on where it was, but only on the same machine.
+	 * Absent: the disk alone.
+	 */
+	readonly memory?: boolean;
+}
+
 export interface SnapshotsSource {
 	saved(accountId: string): Promise<readonly SavedSnapshot[]>;
 	/** Each sandbox's history, newest first. */
 	history(sandboxId: string): Promise<readonly SandboxSnapshot[]>;
-	save(sandboxId: string, name: string): Promise<SavedSnapshot>;
+	save(sandboxId: string, name: string, options?: SaveSnapshotOptions): Promise<SavedSnapshot>;
 	removeSaved(id: string): Promise<void>;
 	removeSnapshot(id: string): Promise<void>;
 	/** A folder in a snapshot, saved or historical: folders first, then files, by name. */
