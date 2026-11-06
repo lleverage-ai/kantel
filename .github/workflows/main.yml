@@ -98,13 +98,14 @@ jobs:
             now="$(date +%s)"
             echo "Pushed at $(date -u -d "@$start" +%H:%M:%S); building at $(date -u -d "@$until" +%H:%M:%S) UTC unless a newer push cancels this run first."
             if [ "$until" -gt "$now" ]; then sleep $((until - now)); fi
-            # A push in the last moment may not have made its run yet. If main has moved on with more than Markdown,
-            # that push's run builds main instead of this one.
+            # A push in the last moment may not have made its run yet. If main has moved on with more than the paths
+            # on.push.paths-ignore leaves out (Markdown, kantel.dev), that push's run builds main instead of this one;
+            # a push of only those starts no run, so it must not stop this one building. Keep the two lists the same.
             tip="$(api "git/ref/heads/main" | jq -r '.object.sha' || true)"
             if [ -n "$tip" ] && [ "$tip" != "null" ] && [ "$tip" != "$SHA" ]; then
-              if code="$(api "compare/$SHA...$tip" | jq -r '.files[].filename' | grep -v '\.md$')"; then
+              if code="$(api "compare/$SHA...$tip" | jq -r '.files[].filename' | grep -v -E '\.md$|^apps/site/|^docs/site/|^\.github/workflows/site-deploy\.yml$')"; then
                 echo "build=false" >> "$GITHUB_OUTPUT"
-                echo "Main has moved on to $tip, which changes $(echo "$code" | wc -l) more files; its run builds instead."
+                echo "Main has moved on to $tip, which changes $(echo "$code" | wc -l) more files a run builds; its run builds instead."
                 echo "**Settle:** superseded by $tip before building; its run builds instead." >> "$GITHUB_STEP_SUMMARY"
                 exit 0
               fi
