@@ -1400,7 +1400,7 @@ describe("copying files", () => {
 			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null && mv --help 2>&1 | grep -q -- --target-directory",
 			`mkdir ${stage} && cat ${prefix}-* | tar -xzf - -C ${stage} --no-same-owner --no-same-permissions && ` +
 				`(cd ${stage} && find . -type d -exec sh -c '${place}' /home/user/app ${id} {} +); s=$?; rm -rf ${stage}; exit $s`,
-			`rm -f ${prefix}-*`,
+			`rm -f ${prefix}-*; true`,
 		]);
 		// The parts, joined in order, are a tar that tar itself extracts to the same tree.
 		const archive = Buffer.concat(
@@ -1470,7 +1470,9 @@ describe("copying files", () => {
 		expect(result.stderr).toContain("couldn't be extracted");
 		expect(result.stderr).toContain("sending file by file");
 		expect(result.written.filter((path) => path === "app/a.ts")).toHaveLength(1);
-		expect(commands.at(-1)).toMatch(/^rm -f \/tmp\/\.kantel-push-[0-9a-f]{12}-\*$/);
+		expect(commands.at(-1)).toMatch(
+			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find \/home\/user\/app -name \.kantel-in-\1 /,
+		);
 	});
 
 	it("push extracts where the files API would write, a `..` in the destination cleaned as text first", async () => {
@@ -1511,7 +1513,9 @@ describe("copying files", () => {
 		});
 		expect(result.code).not.toBe(0);
 		expect(writes).toBeGreaterThan(0);
-		expect(result.commands.at(-1)).toMatch(/^rm -f \/tmp\/\.kantel-push-[0-9a-f]{12}-\*$/);
+		expect(result.commands.at(-1)).toMatch(
+			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find \/home\/user\/app -name \.kantel-in-\1 /,
+		);
 	});
 
 	/** Pushes with `args`, answering the paths it wrote. */

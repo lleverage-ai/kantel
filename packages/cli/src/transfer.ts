@@ -588,25 +588,34 @@ export async function uploadTreeArchive(
 		};
 		let pending: Buffer[] = [];
 		let pendingBytes = 0;
-		for await (const chunk of gzip as AsyncIterable<Buffer>) {
-			if (failure !== undefined) break;
-			pending.push(chunk);
-			pendingBytes += chunk.byteLength;
-			while (pendingBytes >= PART) {
-				const joined = Buffer.concat(pending);
-				put(joined.subarray(0, PART));
-				pending = [joined.subarray(PART)];
-				pendingBytes = joined.byteLength - PART;
-				while (inFlight.size >= CONCURRENCY) await Promise.race(inFlight);
+		try {
+			for await (const chunk of gzip as AsyncIterable<Buffer>) {
+				if (failure !== undefined) break;
+				pending.push(chunk);
+				pendingBytes += chunk.byteLength;
+				while (pendingBytes >= PART) {
+					const joined = Buffer.concat(pending);
+					put(joined.subarray(0, PART));
+					pending = [joined.subarray(PART)];
+					pendingBytes = joined.byteLength - PART;
+					while (inFlight.size >= CONCURRENCY) await Promise.race(inFlight);
+				}
 			}
+			if (pendingBytes > 0 && failure === undefined) put(Buffer.concat(pending));
+		} finally {
+			// Packing failed (gzip destroyed) or not: every part started has landed or failed before this answers, so
+			// none lands after the clean-up. The jobs never reject: their errors are in failure.
+			await Promise.all(inFlight);
 		}
-		if (pendingBytes > 0 && failure === undefined) put(Buffer.concat(pending));
-		await Promise.all(inFlight);
 		if (failure !== undefined) throw failure;
 		return parts;
 	};
 
 	const glob = `${quote(staging)}-*`;
+	const id = staging.slice(-12);
+	const into = archiveTarget(target);
+	const stage = quote(posix.join(archiveTargetPath(target), `.kantel-push-${id}`));
+	let placed = false;
 	try {
 		// upload() settles every part it started before it answers, failed or not, so nothing lands after the clean-up.
 		const [, parts] = await Promise.all([pack(), upload()]);
@@ -617,9 +626,6 @@ export async function uploadTreeArchive(
 		// (which may copy, where the directory is another file system, but under names no one uses), and from there
 		// into place: source and target are in one directory, so that last move is always a rename, and a file already
 		// there is replaced by the whole new one in one step, never missing and never half written.
-		const into = archiveTarget(target);
-		const id = staging.slice(-12);
-		const stage = quote(posix.join(archiveTargetPath(target), `.kantel-push-${id}`));
 		const place =
 			'top=$0; id=$1; shift; for d; do mkdir -p "$top/$d" && t="$top/$d/.kantel-in-$id" && mkdir "$t" && { ' +
 			'find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$t" && ' +
@@ -631,8 +637,14 @@ export async function uploadTreeArchive(
 				`(cd ${stage} && find . -type d -exec sh -c ${quote(place)} ${into} ${id} {} +); s=$?; rm -rf ${stage}; exit $s`,
 			600_000,
 		);
+		placed = true;
 	} finally {
-		await run(client, sandboxId, `rm -f ${glob}`).catch(() => undefined);
+		// A command cut short (its timeout, say) never reached its own clean-up: the staging tree and any hidden
+		// directory it was moving files through go too. Not after a push that worked, which removed both itself.
+		const leftovers = placed
+			? ""
+			: `; rm -rf ${stage}; find ${into} -name .kantel-in-${id} -type d -prune -exec rm -rf {} + 2>/dev/null`;
+		await run(client, sandboxId, `rm -f ${glob}${leftovers}; true`).catch(() => undefined);
 	}
 	for (const path of sent) onFile?.(remoteJoin(target, path));
 	return { files: count, bytes: total };
