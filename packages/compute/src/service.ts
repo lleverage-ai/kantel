@@ -33,7 +33,6 @@ import {
 	placementError,
 	placementReasonOf,
 } from "@kantel/contracts";
-import type { ChainEntry } from "@kantel/e2e/chain";
 import {
 	type Acting,
 	accountById,
@@ -80,7 +79,6 @@ import {
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
-import { createE2EChains } from "./e2e.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import {
 	type AskedMachine,
@@ -483,18 +481,6 @@ export interface ComputeService {
 	 * doesn't open.
 	 */
 	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
-	/**
-	 * An organisation's E2E chain, for a host that asked over its credential (`kantel-host e2e join`): an account's own
-	 * host reads only its account's, a shared host any. `not_found` otherwise.
-	 */
-	hostE2EChain(hostId: string, space: string): Promise<ChainEntry[]>;
-	/** Adds a host's own entries (a `host.add` naming it, signed with an admin's join ticket) to the chain. */
-	appendHostE2EChain(
-		hostId: string,
-		space: string,
-		from: number,
-		entries: readonly ChainEntry[],
-	): Promise<ChainEntry[]>;
 	/**
 	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
@@ -1651,26 +1637,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const store: ComputeStore = {
 		...options.store,
 		sandboxes: watchSandboxes(options.store.sandboxes, (change) => live.publish(change), now),
-	};
-	const e2eChains = createE2EChains(store.e2eChain, now);
-	/**
-	 * A host's own account's chain; for a shared host, the chain of a space it runs a sandbox of or is enrolled in
-	 * already (not every account's). The same `not_found` for a space it may not read.
-	 */
-	const hostMayUseChain = async (hostId: string, space: string) => {
-		const host = (await ensureHosts()).find((known) => known.id === hostId);
-		const account = await store.accounts.get(space);
-		const refuse = () => new KantelError("not_found", "No such space");
-		if (host === undefined || account === undefined) throw refuse();
-		if (host.accountId !== undefined) {
-			if (host.accountId !== space) throw refuse();
-			return;
-		}
-		// A sandbox it runs now (stopped counts: its disk is there); a deleted one's record keeps its hostId, but not this.
-		const placed = await store.sandboxes.list({ hostId });
-		if (placed.some((sandbox) => sandbox.accountId === space && sandbox.state !== "deleted")) return;
-		const state = await e2eChains.state(space).catch(() => undefined);
-		if (state?.hosts.has(hostId) !== true) throw refuse();
 	};
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
@@ -4186,27 +4152,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const accountClosed = (): KantelError => new KantelError("conflict", "This account is being deleted");
 
 	/**
-	 * Appends to an account's E2E chain while it is open. One that finds it closed once it has written, or that failed
-	 * partway in a closed account, takes the chain with it: a closed account's chain is the deletion's to clear anyway.
-	 */
-	const chainAppend: typeof e2eChains.append = async (space, ...rest) => {
-		if (!(await accountOpen(space))) throw accountClosed();
-		const forget = async () => {
-			for (const entry of await store.e2eChain.list({ space })) await store.e2eChain.delete(entry.id);
-		};
-		let appended: Awaited<ReturnType<typeof e2eChains.append>>;
-		try {
-			appended = await e2eChains.append(space, ...rest);
-		} catch (error) {
-			if (!(await accountOpen(space))) await forget().catch(() => undefined);
-			throw error;
-		}
-		if (await accountOpen(space)) return appended;
-		await forget();
-		throw accountClosed();
-	};
-
-	/**
 	 * A sandbox of an account being deleted: its machine destroyed (a boot under way destroys what it makes once it finds
 	 * the record gone), then its snapshots, commands and record.
 	 */
@@ -4361,7 +4306,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		for (const event of await store.events.list({ accountId })) await store.events.delete(event.id);
 		for (const entry of await store.egress.list({ accountId })) await store.egress.delete(entry.id);
-		for (const entry of await store.e2eChain.list({ space: accountId })) await store.e2eChain.delete(entry.id);
 		await store.telemetry.delete(accountId);
 		await store.proxies.delete(accountId);
 		// The account before its memberships: should what follows fail, a membership left names it, for the next pass.
@@ -6874,64 +6818,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return undefined;
 		},
 
-		openE2E: async (principal, { params, body }) => {
-			// The URL's grant is the caller's: it goes only to the person whose device asked for it.
-			if (body.user !== undefined && body.user !== principal.userId) {
-				throw new KantelError("forbidden", "This session was asked for as another person: the sign-in has changed");
-			}
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
-			if (backend.openE2E === undefined) {
-				throw new KantelError("not_supported", "This gateway's sandboxes aren't on hosts it can open E2E sessions to");
-			}
-			// A session is with the host, not the guest: a stopped or paused sandbox's still is (its disk and its command
-			// history are there), and the host refuses what needs a running guest. One starting, stopping or failed waits.
-			const current = await settledFor(principal, sandbox.id);
-			if (current.state !== "running" && current.state !== "stopped" && current.state !== "paused") {
-				throw new KantelError("conflict", `The sandbox is ${current.state}; its host can't open a session for it`);
-			}
-			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
-			const access = await backend.openE2E(current.id, { ttlMinutes, grantee: encodeGrantee(principal) });
-			return {
-				url: access.url,
-				hostId: access.hostId,
-				accountId: current.accountId,
-				expiresAt: now() + ttlMinutes * 60_000,
-			};
-		},
-
-		getE2EChain: async (principal, { params }) => {
-			const { account, role } = await accountById(store, principal, params.accountId);
-			requireScope(principal, "account:read", role);
-			return { entries: await e2eChains.read(account.id) };
-		},
-
-		appendE2EChain: async (principal, { params, body }) => {
-			const { account, role } = await accountById(store, principal, params.accountId);
-			requireScope(principal, "account:read", role);
-			// A person, or a key acting for one (`kantel login`'s is a key): the entries are their devices' to sign either way.
-			// A key limited to some sandboxes isn't the account's, and the chain is.
-			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined) {
-				throw new KantelError("forbidden", "A key limited to some sandboxes can't change the account's E2E chain");
-			}
-			const person = { userId: principal.userId };
-			const entries = await chainAppend(account.id, body.from, body.entries, async (payload) => {
-				if (payload.type === "genesis") {
-					// What it starts with is its admin: an admin of the organisation, starting it on their own device.
-					if (role === "member") throw new KantelError("forbidden", "Only an admin or owner starts the chain");
-					if (payload.body.device.user !== person.userId) {
-						throw new KantelError("forbidden", "The genesis lists the device of the person who starts it");
-					}
-				}
-				if (
-					payload.type === "member.add" &&
-					(await store.members.get(memberId(account.id, payload.body.user))) === undefined
-				) {
-					throw new KantelError("invalid", `${payload.body.user} isn't a member of the organisation`);
-				}
-			});
-			return { entries };
-		},
-
 		openSsh: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ssh) throw new KantelError("not_supported", "SSH needs a microVM; this is an isolate");
@@ -8237,20 +8123,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		recordUsage(hostId, report, how) {
 			return ingestInTurn(hostId, report, how?.shared === true);
-		},
-
-		async hostE2EChain(hostId, space) {
-			await hostMayUseChain(hostId, space);
-			return e2eChains.read(space);
-		},
-
-		async appendHostE2EChain(hostId, space, from, entries) {
-			await hostMayUseChain(hostId, space);
-			return chainAppend(space, from, entries, (payload) => {
-				if (payload.type !== "host.add" || payload.body.host.id !== hostId) {
-					throw new KantelError("forbidden", "A host adds only its own host.add");
-				}
-			});
 		},
 
 		async protectedTable(hostId, sandboxId) {

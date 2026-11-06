@@ -27,10 +27,6 @@ on:
       - .github/workflows/release.yml
       - tools/release/**
       - apps/host/**
-      # kantel console serves the console's build, which the release ships in kantel and kantel-console.tar.gz.
-      - apps/console/**
-      - packages/ui/**
-      - packages/e2e/**
       - packages/admin/**
       - packages/api/**
       - packages/cli/**
@@ -89,13 +85,13 @@ jobs:
           go-version-file: apps/host/go.mod
           cache-dependency-path: apps/host/go.sum
 
-      # pnpm comes from corepack at the version pinned in package.json's packageManager field. Only the CLIs, the
-      # console the CLI ships, and what they bundle are installed.
+      # pnpm comes from corepack at the version pinned in package.json's packageManager field. Only the CLIs and what
+      # they bundle are installed.
       - name: Install
         run: |
           npm install --global corepack@0.36.0
           corepack enable
-          pnpm install --frozen-lockfile --filter "@kantel/admin..." --filter "@kantel/console..."
+          pnpm install --frozen-lockfile --filter "@kantel/admin..." --filter "@kantel/cli..."
 
       - name: Build and pack
         run: tools/release/pack.sh "$VERSION" "$RUNNER_TEMP/release"

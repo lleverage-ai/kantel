@@ -3432,7 +3432,7 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		return proto.SnapshotInfo{}, err
 	}
 	kept := src
-	// Its own save time, and its source's state's time (TakenAt), which E2E provenance is judged on.
+	// Its own save time, and its source's state's time (TakenAt).
 	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), Memory: src.Memory, Base: src.Base, Tier: Tier}
 	if kept.Memory {
 		ok := os.Link(filepath.Join(from, "state"), filepath.Join(sdir, "state")) == nil &&

@@ -396,51 +396,28 @@ func TestCommandIDsAreChecked(t *testing.T) {
 	}
 }
 
-// A detached command the host runs itself holds its gateway call's guard until it ends, not until the call is answered:
-// a delete's claim waits for it, and ends it by ending the guard's context.
-func TestADetachedRunHoldsItsCallsGuardUntilItEnds(t *testing.T) {
+// A detached command the host runs itself runs past its call: the call's context ending (the session going) doesn't end
+// it; a kill does.
+func TestADetachedRunOutlivesItsCall(t *testing.T) {
 	tier := newHeldTier()
 	h := hostWith(t, tier)
-	guard, claim := context.WithCancel(context.Background())
-	released := make(chan struct{})
-	ctx, rel := withRelease(guard, func() { close(released) })
+	ctx, end := context.WithCancel(context.Background())
 	if _, err := callCmd[proto.ExecStatus](t, h, ctx, proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "sleep 600", Detached: true, CommandID: "cmd_r"}); err != nil {
 		t.Fatal(err)
 	}
 	<-tier.started
-	// The call is over: its own release is a no-op, the run holds the guard.
-	rel.release()
-	select {
-	case <-released:
-		t.Fatal("the guard was released with the call, while its command still runs")
-	case <-time.After(50 * time.Millisecond):
+	end()
+	time.Sleep(50 * time.Millisecond)
+	running, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_r"})
+	if err != nil || running.State != proto.ExecRunning {
+		t.Fatalf("after its call's context ended: %+v, %v", running, err)
 	}
-	// A claim on the sandbox ends the guard's context: the run ends, and only then is the guard released.
-	claim()
-	select {
-	case <-released:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the run didn't end and release its guard")
-	}
-	ended, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_r"})
-	if err != nil || ended.State != proto.ExecEnded {
-		t.Fatalf("after the claim: %+v, %v", ended, err)
+	if err := <-killAsync(t, h, "iso_1", "cmd_r"); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestAForegroundCallKeepsItsOwnGuard(t *testing.T) {
-	tier := newHeldTier()
-	h := hostWith(t, tier)
-	released := false
-	ctx, rel := withRelease(context.Background(), func() { released = true })
-	tier.release <- proto.ExecResult{ExitCode: 0}
-	if _, err := callCmd[proto.ExecResult](t, h, ctx, proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "true", CommandID: "cmd_fg"}); err != nil {
-		t.Fatal(err)
-	}
-	rel.release()
-	if !released {
-		t.Fatal("a foreground call's guard wasn't released with it")
-	}
+func TestKeptExecIsAnExecWithACommandID(t *testing.T) {
 	if !keptExec(proto.MethodExec, []byte(`{"detached":true,"commandId":"cmd_x"}`)) ||
 		!keptExec(proto.MethodExec, []byte(`{"commandId":"cmd_x"}`)) ||
 		keptExec(proto.MethodExec, []byte(`{"detached":true}`)) ||
@@ -634,45 +611,5 @@ func TestAKillThatOvertakesItsStartKeepsItFromRunning(t *testing.T) {
 	}
 	if len(held.execs) != 0 || len(guest.begun) != 0 || len(guest.execs) != 0 {
 		t.Fatalf("ran %d, started %d in the guest, ran %d there", len(held.execs), len(guest.begun), len(guest.execs))
-	}
-}
-
-// A host-run detached command that ends before its start is answered doesn't release its call's guard (which would end
-// the call's context and turn the answer into a conflict): the guard goes only once the call and the run have both let
-// go.
-func TestAShortDetachedRunDoesntEndItsCallFirst(t *testing.T) {
-	tier := newHeldTier()
-	h := hostWith(t, tier)
-	guard, end := context.WithCancel(context.Background())
-	defer end()
-	var mu sync.Mutex
-	releases := 0
-	ctx, rel := withRelease(guard, func() {
-		mu.Lock()
-		releases++
-		mu.Unlock()
-		end()
-	})
-	count := func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return releases
-	}
-	tier.release <- proto.ExecResult{ExitCode: 0, Stdout: "quick"}
-	if _, err := callCmd[proto.ExecStatus](t, h, ctx, proto.MethodExec, proto.ExecParams{SandboxID: "iso_1", Command: "true", Detached: true, CommandID: "cmd_q"}); err != nil {
-		t.Fatal(err)
-	}
-	ended, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "iso_1", CommandID: "cmd_q", WaitMs: 5000})
-	if err != nil || ended.State != proto.ExecEnded || ended.Result.Stdout != "quick" {
-		t.Fatalf("the run: %+v, %v", ended, err)
-	}
-	time.Sleep(20 * time.Millisecond)
-	// The run has ended and let go; the call hasn't yet, so its context is still live and the guard held.
-	if guard.Err() != nil || count() != 0 {
-		t.Fatalf("the run's end released the call's guard (released %d)", count())
-	}
-	rel.release()
-	if count() != 1 || guard.Err() == nil {
-		t.Fatalf("the guard wasn't released once both let go (released %d)", count())
 	}
 }

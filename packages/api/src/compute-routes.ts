@@ -47,10 +47,6 @@ import {
 	DeviceLoginPath,
 	DeviceLoginRequest,
 	DeviceLoginResult,
-	E2EAccess,
-	E2EAccessBody,
-	E2EChain,
-	E2EChainAppend,
 	Environment,
 	EnvironmentFileQuery,
 	EnvironmentList,
@@ -972,63 +968,7 @@ export const openBrowser = defineRoute({
 	errors: [...changeErrors, "not_supported"],
 });
 
-export const openE2E = defineRoute({
-	operationId: "openE2E",
-	method: "POST",
-	path: "/sandboxes/{sandboxId}/e2e",
-	tag: "access",
-	summary: "Open an end-to-end encrypted session",
-	description: describe(
-		"A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and",
-		"can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one.",
-		"It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running",
-		"guest is refused in the session.",
-		scope("access"),
-	),
-	params: SandboxPath,
-	body: E2EAccessBody,
-	answer: { status: 201, description: "Where to open it.", schema: E2EAccess },
-	errors: [...changeErrors, "not_supported"],
-});
-
-export const accessRoutes = { listPorts, exposePort, hidePort, openSsh, openDesktop, openBrowser, openE2E } as const;
-
-// The space chain: an organisation's signed members, devices, hosts and end-to-end mode. The gateway keeps it and
-// hands it out; hosts and devices verify it, so the gateway can't add a key to it.
-
-export const getE2EChain = defineRoute({
-	operationId: "getE2EChain",
-	method: "GET",
-	path: "/accounts/{accountId}/e2e/chain",
-	tag: "accounts",
-	summary: "Get an organisation's E2E chain",
-	description: describe(
-		"Its signed entries, oldest first: empty until an admin starts it with `kantel e2e init`.",
-		scope("account:read"),
-	),
-	params: AccountPath,
-	answer: { status: 200, description: "The chain.", schema: E2EChain },
-	errors: readErrors,
-});
-
-export const appendE2EChain = defineRoute({
-	operationId: "appendE2EChain",
-	method: "POST",
-	path: "/accounts/{accountId}/e2e/chain",
-	tag: "accounts",
-	summary: "Add entries to an organisation's E2E chain",
-	description: describe(
-		"Entries a member's device signed, from the chain's length. The whole chain must still verify; `conflict` when",
-		"another entry got there first. Only an admin starts a chain.",
-		scope("account:read"),
-	),
-	params: AccountPath,
-	body: E2EChainAppend,
-	answer: { status: 200, description: "The chain now.", schema: E2EChain },
-	errors: changeErrors,
-});
-
-export const e2eChainRoutes = { getE2EChain, appendE2EChain } as const;
+export const accessRoutes = { listPorts, exposePort, hidePort, openSsh, openDesktop, openBrowser } as const;
 
 // Snapshots.
 
@@ -2039,8 +1979,7 @@ export const updateHostAgent = defineRoute({
 		"sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds",
 		"it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on",
 		"it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest",
-		"release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine,",
-		"with `sudo kantel-host update`.",
+		"release can't be read, and `not_supported` when the host refuses.",
 		SUPER_ADMIN,
 	),
 	params: HostPath,
@@ -2264,8 +2203,7 @@ export const updateAccountHostAgent = defineRoute({
 		"sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds",
 		"it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on",
 		"it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest",
-		"release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine,",
-		"with `sudo kantel-host update`.",
+		"release can't be read, and `not_supported` when the host refuses.",
 		scope("account:admin"),
 		ACCOUNT_HOSTS,
 	),
@@ -2445,7 +2383,6 @@ export const computeRoutes = {
 	...commandRoutes,
 	...fileRoutes,
 	...accessRoutes,
-	...e2eChainRoutes,
 	...snapshotRoutes,
 	...apiKeyRoutes,
 	...personalTokenRoutes,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filesAtOf, filesHash, filesSearch, searchWithoutFiles } from "./compute-console.tsx";
+import { filesAtOf, filesSearch, searchWithoutFiles } from "./compute-console.tsx";
 import { type FilePart, type FileRange, FilesRefusedError, type SnapshotEntry } from "./compute-model.ts";
 import { createComputeFixtures, SAVED, SCRATCH, samplePart } from "./fixtures.ts";
 import {
@@ -55,18 +55,6 @@ describe("the file browser", () => {
 		expect(filesAtOf("")).toEqual({});
 		expect(filesAtOf("?path=/")).toEqual({ path: "" });
 		expect(filesAtOf("?file=notes.md")).toEqual({ file: "notes.md" });
-	});
-
-	it("keeps an end-to-end sandbox's place in the fragment, which never reaches the gateway", () => {
-		const at = { path: "home/user/secret plans", file: "q3.md" };
-		const hash = filesHash(at);
-		expect(hash).toBe("#path=/home/user/secret+plans&file=q3.md");
-		expect(filesAtOf("?hosting=1", hash)).toEqual(at);
-		expect(filesHash({})).toBe("");
-		expect(filesHash({ path: "" })).toBe("#path=/");
-		// The fragment wins over a query; a fragment that isn't the browser's leaves the query be.
-		expect(filesAtOf("?path=/etc", "#path=/home")).toEqual({ path: "home" });
-		expect(filesAtOf("?path=/etc", "#top")).toEqual({ path: "etc" });
 	});
 });
 

@@ -1,12 +1,8 @@
 /**
  * Builds the npm package `kantel` in `dist/`: one bundled file, `kantel.js` (the CLI with the SDK in it, for Node 22
  * and later), its package.json, and the README. Publishing is a separate step: `npm publish dist`.
- *
- * With the console built (`pnpm --filter @kantel/console build`), its files go in `dist/console/`, which `kantel console`
- * serves: the console's code then comes with the CLI's release, not from the gateway. `KANTEL_CLI_CONSOLE=require`
- * fails the build without them.
  */
-import { access, chmod, copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -42,15 +38,6 @@ const bundle = join(dist, "kantel.js");
 await writeFile(bundle, `${SHEBANG}\n${body}`);
 await chmod(bundle, 0o755);
 
-const consoleDist = join(root, "..", "..", "apps", "console", "dist");
-const withConsole = await access(join(consoleDist, "index.html")).then(
-	() => true,
-	() => false,
-);
-if (withConsole) await cp(consoleDist, join(dist, "console"), { recursive: true });
-else if (process.env.KANTEL_CLI_CONSOLE === "require") throw new Error(`No console built in ${consoleDist}`);
-else process.stdout.write("No console built: kantel console will need --dir\n");
-
 const manifest = {
 	name: "kantel",
 	version: source.version,
@@ -60,7 +47,7 @@ const manifest = {
 	repository: { type: "git", url: "git+https://github.com/lleverage-ai/kantel.git", directory: "packages/cli" },
 	type: "module",
 	bin: { kantel: "kantel.js" },
-	files: ["kantel.js", "README.md", ...(withConsole ? ["console"] : [])],
+	files: ["kantel.js", "README.md"],
 	engines: { node: ">=22" },
 };
 await writeFile(join(dist, "package.json"), `${JSON.stringify(manifest, null, "\t")}\n`);

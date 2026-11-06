@@ -30,7 +30,7 @@ func (f processTier) ListProcesses(_ context.Context, p proto.ProcessesParams) (
 
 // sandbox.processes reaches a tier that lists processes, its limit defaulted and capped; it's unsupported on a tier that
 // doesn't (an isolate's) and passes on the tier's own unsupported (an older guest agent's); the host reports processes
-// only with such a tier; and the gateway's is refused in an E2E space, as a sandbox's files are.
+// only with such a tier.
 func TestProcessesAreListedFromTheTier(t *testing.T) {
 	ctx := context.Background()
 	tier := processTier{newStreamTier(nil), make(chan proto.ProcessesParams, 4), nil}
@@ -82,11 +82,5 @@ func TestProcessesAreListedFromTheTier(t *testing.T) {
 	old := processTier{newStreamTier(nil), make(chan proto.ProcessesParams, 1), &proto.Error{Code: proto.ErrUnsupported, Message: "older guest agent"}}
 	if _, err := call(streamHost(t, old), proto.ProcessesParams{SandboxID: "sbx_one"}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
 		t.Fatalf("an older guest agent: %v", err)
-	}
-
-	e2e, _, _ := e2eHost(t)
-	raw, _ = json.Marshal(proto.ProcessesParams{SandboxID: "sbx_one"})
-	if err := e2e.gatewayMayCall(proto.MethodProcesses, raw); err == nil {
-		t.Error("the gateway may list an E2E space's sandbox's processes")
 	}
 }

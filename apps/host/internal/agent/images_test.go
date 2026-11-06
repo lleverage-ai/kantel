@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -24,95 +23,6 @@ func writeFile(t *testing.T, p, content string) {
 	}
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// signedUpdater is an updater for a host without KVM (so a version is its manifest alone) whose releases, in the
-// directory it answers, are signed: cosign is asked, and says the signature checks out. onActivate runs inside the
-// check, once the version is current.
-func signedUpdater(t *testing.T, h *Host, onActivate func(string)) (*images.Updater, string) {
-	t.Helper()
-	src := t.TempDir()
-	writeFile(t, filepath.Join(src, "manifest.json"), `{"version":"0.0.0-dev","files":{}}`)
-	writeFile(t, filepath.Join(src, "manifest.json.sigstore.json"), "{}")
-	cosign := filepath.Join(t.TempDir(), "cosign")
-	writeFile(t, cosign, "")
-	u := &images.Updater{
-		Store: images.Store{Dir: filepath.Join(h.cfg.Root, "images")}, Arch: "amd64", Log: h.log, OnActivate: onActivate,
-		Verifier: images.Verifier{Cosign: cosign, Log: h.log, Run: func(context.Context, string, ...string) ([]byte, error) {
-			return nil, nil
-		}},
-	}
-	return u, src
-}
-
-// A gateway's image update runs under the enrolment lock: a join waits for one that started before it, and once the
-// host has joined, the next is refused before anything is fetched. A host that never joined takes a signed one.
-func TestAGatewayImageUpdateNeverCrossesAJoin(t *testing.T) {
-	h := newLifecycleHost(t, newLifecycleTier())
-	var err error
-	if h.e2e, err = e2e.OpenStore(filepath.Join(h.cfg.Root, "e2e")); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "e2e", "vectors", "join.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v struct {
-		Entries []e2e.Entry `json:"entries"`
-		Word    string      `json:"word"`
-	}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		t.Fatal(err)
-	}
-	ticket, err := e2e.DecodeJoinTicket(v.Word)
-	if err != nil {
-		t.Fatal(err)
-	}
-	activated, release := make(chan string, 2), make(chan struct{})
-	u, src := signedUpdater(t, h, func(version string) {
-		activated <- version
-		<-release
-	})
-	first := proto.ImageChannel{Channel: "stable", Version: "host-images-20261103", URL: src}
-	updated := make(chan error, 1)
-	go func() { updated <- h.checkImages(context.Background(), u, first) }()
-	select {
-	case <-activated:
-	case err := <-updated:
-		t.Fatalf("the update on a host that never joined: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("the update didn't run")
-	}
-	joined := make(chan error, 1)
-	go func() {
-		_, _, err := h.e2e.Join(ticket, v.Entries, "host_two", time.Now())
-		joined <- err
-	}()
-	select {
-	case err := <-joined:
-		t.Fatalf("the join went ahead while an image update ran: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(release)
-	if err := <-updated; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-joined; err != nil {
-		t.Fatal(err)
-	}
-	if !h.e2e.Enrolled() {
-		t.Fatal("the join didn't enrol the host")
-	}
-	next := proto.ImageChannel{Channel: "stable", Version: "host-images-20261104", URL: src}
-	if err := h.checkImages(context.Background(), u, next); !errors.Is(err, e2e.ErrEnrolled) {
-		t.Fatalf("an image update on a joined host: %v", err)
-	}
-	if got, _ := u.Store.Current(); got != first.Version {
-		t.Fatalf("current = %q, want %q", got, first.Version)
-	}
-	if _, err := os.Stat(filepath.Join(u.Store.Dir, "v", next.Version)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the joined host fetched images: %v", err)
 	}
 }
 

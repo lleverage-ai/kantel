@@ -648,42 +648,6 @@ export interface DeviceLoginResult {
 /** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
 export type DeviceLoginState = "pending" | "approved" | "denied" | "expired";
 
-export interface E2EAccess {
-	/** A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's. */
-	readonly url: string;
-	/** The host the sandbox is on: the chain's entry for it has its key. */
-	readonly hostId: string;
-	/** The sandbox's organisation: the space whose chain the session is in. */
-	readonly accountId: string;
-	/** Epoch milliseconds, UTC. */
-	readonly expiresAt: number;
-}
-
-export interface E2EAccessBody {
-	/** How long a session can be started with this URL; one started in time stays open. Default 10. */
-	readonly ttlMinutes?: number;
-	/** The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys. */
-	readonly user?: string;
-}
-
-export interface E2EChain {
-	/** Oldest first; an entry's `seq` is its index. */
-	readonly entries: readonly E2EEntry[];
-}
-
-export interface E2EChainAppend {
-	/** The seq of the first entry given: the chain's length as the caller last saw it. */
-	readonly from: number;
-	readonly entries: readonly E2EEntry[];
-}
-
-export interface E2EEntry {
-	/** Base64url of the entry's JSON, exactly the bytes that were signed. */
-	readonly payload: string;
-	/** Base64url of its Ed25519 signature. */
-	readonly sig: string;
-}
-
 /** One request or connection a sandbox made through its host's egress proxy. Never a value. */
 export interface EgressEntry {
 	/** The entry's ID. */
@@ -2899,12 +2863,6 @@ export interface KantelClient {
 	openDesktop(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<DesktopAccess>;
 	/** Open the browser. Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/browser` */
 	openBrowser(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<BrowserAccess>;
-	/** Open an end-to-end encrypted session. A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one. It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running guest is refused in the session. A key needs `access`. `POST /sandboxes/{sandboxId}/e2e` */
-	openE2E(sandboxId: string, body?: E2EAccessBody, options?: CallOptions): Promise<E2EAccess>;
-	/** Get an organisation's E2E chain. Its signed entries, oldest first: empty until an admin starts it with `kantel e2e init`. A key needs `account:read`. `GET /accounts/{accountId}/e2e/chain` */
-	getE2EChain(accountId: string, options?: CallOptions): Promise<E2EChain>;
-	/** Add entries to an organisation's E2E chain. Entries a member's device signed, from the chain's length. The whole chain must still verify; `conflict` when another entry got there first. Only an admin starts a chain. A key needs `account:read`. `POST /accounts/{accountId}/e2e/chain` */
-	appendE2EChain(accountId: string, body: E2EChainAppend, options?: CallOptions): Promise<E2EChain>;
 	/** List snapshots. The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. `GET /snapshots` */
 	listSnapshots(query?: ListSnapshotsQuery, options?: CallOptions): Promise<SnapshotPage>;
 	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/snapshots` */
@@ -3054,7 +3012,7 @@ export interface KantelClient {
 	getHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
 	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
-	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
+	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Check for host updates. Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/check-for-updates` */
 	checkHostUpdates(options?: CallOptions): Promise<HostReleaseCheck>;
@@ -3074,7 +3032,7 @@ export interface KantelClient {
 	getAccountHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
 	/** Change one of an account's hosts. Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
-	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses: one in an E2E space is updated on the machine, with `sudo kantel-host update`. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
+	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
 	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
@@ -3300,16 +3258,6 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/desktop`, body }, callOptions),
 		openBrowser: (sandboxId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/browser`, body }, callOptions),
-		openE2E: (sandboxId, body = {}, callOptions) =>
-			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/e2e`, body }, callOptions),
-		getE2EChain: (accountId, callOptions) =>
-			send(options, { method: "GET", path: `/accounts/${encodeURIComponent(accountId)}/e2e/chain` }, callOptions),
-		appendE2EChain: (accountId, body, callOptions) =>
-			send(
-				options,
-				{ method: "POST", path: `/accounts/${encodeURIComponent(accountId)}/e2e/chain`, body },
-				callOptions,
-			),
 		listSnapshots: (query, callOptions) => send(options, { method: "GET", path: "/snapshots", query }, callOptions),
 		takeSnapshot: (sandboxId, body = {}, callOptions) =>
 			send(

@@ -241,13 +241,8 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 }
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
-	// Before the binary's update, which returns early for an E2E host; followImages has the same rule.
 	h.followImages(ctx, w.Images)
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
-		if h.e2e != nil && h.e2e.Enrolled() {
-			h.log.Info("not updating from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", w.DesiredVersion)
-			return
-		}
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {
 			if err := h.gatewayUpdate(ctx, proto.UpdateParams{Version: w.DesiredVersion, URL: w.UpdateURL}, update); err != nil {
@@ -255,6 +250,14 @@ func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Update
 			}
 		}()
 	}
+}
+
+// gatewayUpdate runs an update the gateway asked for (a welcome's version, or host.update), one at a time: each one
+// downloads to, probes and renames the same staging file, so two at once could install bytes neither checked.
+func (h *Host) gatewayUpdate(ctx context.Context, p proto.UpdateParams, update Updater) error {
+	h.updating.Lock()
+	defer h.updating.Unlock()
+	return update(ctx, p)
 }
 
 func toError(err error) *proto.Error {
@@ -272,37 +275,22 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error
-	// A command with Kantel's ID runs past this session: a detached one the host runs itself holds its guard until it ends
+	// A command with Kantel's ID runs past this session: a detached one the host runs itself runs on its own context
 	// (startDetached), and a foreground one runs on to its own end, its result kept for the next session (runCommand).
-	// So neither's guard is ended by the connection going.
-	guarded := ctx
+	// So neither is ended by the connection going.
+	callCtx := ctx
 	if keptExec(m.Method, m.Params) {
-		guarded = context.WithoutCancel(ctx)
-	}
-	callCtx, done, err := s.host.gatewayGuard(guarded, m.Method, m.Params)
-	if err != nil {
-		reply.Error = toError(err)
-		if err := s.send(ctx, reply); err != nil {
-			s.host.log.Warn("couldn't answer a call", "method", m.Method, "error", err)
-		}
-		return
+		callCtx = context.WithoutCancel(ctx)
 	}
 	// start, when set, begins what follows the answer (a file stream's transfer), so nothing of it comes before it.
 	var start func()
 	switch m.Method {
 	case proto.MethodPortOpen:
-		// The stream outlives the call, so it runs on the session's context; the gate holds until it is connected.
-		result, err = s.openPort(ctx, callCtx, m.Params)
-		done()
+		// The stream outlives the call, so it runs on the session's context.
+		result, err = s.openPort(ctx, m.Params)
 	case proto.MethodFileOpen:
-		// As a port's, the stream outlives the call: it runs on the session's context. The gate holds until its transfer
-		// has ended, not only until it is set up: a write finds its sandbox only once it starts, so a claim on the
-		// sandbox (its delete, or another made with its ID) ends the transfer and waits for it, and the bytes can never
-		// reach a sandbox the gateway may not write to. openFile releases it (done) once the transfer is over.
-		result, start, err = s.openFile(ctx, callCtx, m.Params, done)
-		if err != nil {
-			done()
-		}
+		// As a port's, the stream outlives the call: it runs on the session's context.
+		result, start, err = s.openFile(ctx, m.Params)
 	case proto.MethodHostUpdate:
 		var p proto.UpdateParams
 		if err = json.Unmarshal(m.Params, &p); err == nil {
@@ -313,11 +301,7 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 			}
 		}
 		result = map[string]bool{"ok": err == nil}
-		done()
 	default:
-		// What outlives the call (a detached command the host runs) may take over the guard's release.
-		var rel *callRelease
-		callCtx, rel = withRelease(callCtx, done)
 		result, err = s.host.Call(callCtx, m.Method, m.Params, func(e proto.Event) {
 			if callCtx.Err() != nil {
 				return
@@ -325,11 +309,6 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 			e.At = time.Now().UnixMilli()
 			_ = s.send(ctx, proto.Message{Type: "event", Call: m.ID, Event: &e})
 		})
-		// Ended (its space turned E2E on, or its sandbox is going): what it got after isn't sent.
-		if callCtx.Err() != nil && ctx.Err() == nil {
-			result, err = nil, &proto.Error{Code: proto.ErrConflict, Message: "this call was ended: its sandbox's space turned E2E on, or the sandbox is being replaced"}
-		}
-		rel.release()
 	}
 	if err != nil {
 		reply.Error = toError(err)
@@ -344,29 +323,17 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	}
 }
 
-// openPort connects a stream the control plane named to a port of a sandbox, or for port 0 to an E2E session with the
-// host (e2e.go); binary frames carry it both ways.
-func (s *session) openPort(ctx, dial context.Context, raw json.RawMessage) (any, error) {
+// openPort connects a stream the control plane named to a port of a sandbox; binary frames carry it both ways.
+func (s *session) openPort(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p proto.PortParams
-	if err := json.Unmarshal(raw, &p); err != nil || p.Stream == 0 || p.Port < 0 || p.Port > 65535 {
+	if err := json.Unmarshal(raw, &p); err != nil || p.Stream == 0 || p.Port <= 0 || p.Port > 65535 {
 		return nil, invalid("bad port.open")
 	}
-	var conn net.Conn
-	if p.Port == proto.PortE2E {
-		var session net.Conn
-		conn, session = net.Pipe()
-		if err := s.host.serveE2E(ctx, session, p.SandboxID); err != nil {
-			conn.Close()
-			session.Close()
-			return nil, err
-		}
-	} else {
-		dialCtx, cancel := context.WithTimeout(dial, 15*time.Second)
-		defer cancel()
-		var err error
-		if conn, err = s.host.DialPort(dialCtx, p.SandboxID, p.Port); err != nil {
-			return nil, err
-		}
+	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	conn, err := s.host.DialPort(dialCtx, p.SandboxID, p.Port)
+	if err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	if old, ok := s.streams[p.Stream]; ok {
@@ -374,13 +341,7 @@ func (s *session) openPort(ctx, dial context.Context, raw json.RawMessage) (any,
 	}
 	s.streams[p.Stream] = conn
 	s.mu.Unlock()
-	// A plaintext port closes if its sandbox's space turns E2E on while it is open.
-	forget := func() {}
-	if p.Port != proto.PortE2E {
-		forget = s.host.watchPlain(s.host.ownerOf(p.SandboxID), func() { conn.Close() })
-	}
 	go func() {
-		defer forget()
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := conn.Read(buf)

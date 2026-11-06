@@ -46,7 +46,6 @@ import {
 	FILE_STREAM_ACK_BYTES,
 	FILE_STREAM_FRAME_MAX_BYTES,
 	FILE_STREAM_WINDOW_BYTES,
-	HOST_E2E_PORT,
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
 	type HostEgress,
@@ -501,8 +500,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					};
 				}
 				// Asked again only while the host is out of reach (`unavailable`), or busy with the sandbox (`conflict`),
-				// or for a peer replica's plain error: any other refusal (`not_supported` once its space turns E2E on,
-				// `forbidden`, `invalid`) is final, and ends the command with it rather than leave it running.
+				// or for a peer replica's plain error: any other refusal (`not_supported`, `forbidden`,
+				// `invalid`) is final, and ends the command with it rather than leave it running.
 				if (isKantelError(error) && error.code !== "unavailable" && error.code !== "conflict") throw error;
 				await pause(backoff, signal);
 				backoff = Math.min(backoff * 2, EXEC_RETRY_MAX_MS);
@@ -1283,13 +1282,6 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(key === undefined && privateKey.trim() !== "" ? { privateKey: `${privateKey.trim()}\n` } : {}),
 				...(fingerprint.trim() === "" ? {} : { hostKeyFingerprint: fingerprint.trim() }),
 			};
-		},
-		async openE2E(sandboxId, { ttlMinutes, grantee }) {
-			const placement = await hosts.sandboxes.placement(sandboxId);
-			if (placement === undefined) throw new KantelError("not_found", "The sandbox isn't on a host");
-			// The ticket is for the host's E2E responder, not a port of the sandbox: the device authenticates the host by the
-			// key the space's chain lists for `hostId`, so what the relay passes is only ever ciphertext.
-			return { url: await tunnel(sandboxId, HOST_E2E_PORT, ttlMinutes, grantee), hostId: placement.hostId };
 		},
 		async openDesktop(sandboxId, { ttlMinutes, viewOnly, grantee }) {
 			const { tier } = await tierOf(sandboxId);

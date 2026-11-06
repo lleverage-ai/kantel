@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -189,14 +188,10 @@ func (h *Host) stopImagePatching() {
 }
 
 // followImages starts a check of the images the control plane wants, in the background: the session never waits on
-// a download. An E2E host is updated on the machine, as its binary is.
+// a download.
 func (h *Host) followImages(ctx context.Context, ch *proto.ImageChannel) {
 	u := h.patching.updater
 	if ch == nil || u == nil || !h.cfg.ImagePatching || !h.cfg.autoUpdateImages() {
-		return
-	}
-	if h.e2e != nil && h.e2e.Enrolled() {
-		h.log.Info("not updating host images from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", ch.Version)
 		return
 	}
 	if current, ok := u.Store.Current(); ok && current == ch.Version {
@@ -211,26 +206,18 @@ func (h *Host) followImages(ctx context.Context, ch *proto.ImageChannel) {
 		checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Hour)
 		defer cancel()
 		h.log.Info("updating host images", "to", ch.Version, "channel", ch.Channel)
-		if err := h.checkImages(checkCtx, u, *ch); errors.Is(err, e2e.ErrEnrolled) {
-			h.log.Info("not updating host images from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", ch.Version)
-		} else if err != nil {
+		if err := h.checkImages(checkCtx, u, *ch); err != nil {
 			h.log.Error("host images update failed; new sandboxes stay on the current images", "to", ch.Version, "error", err)
 		}
 	}()
 }
 
-// checkImages runs an update the gateway asked for under the E2E store's enrolment lock, the one a join takes first,
-// as gatewayUpdate runs a binary update: one that started before a join finishes (download, checks and activation)
-// before the join completes, and none runs on a host that has joined (e2e.ErrEnrolled). The images are what every
-// sandbox boots, so one the gateway picks could read an E2E space's sandboxes.
+// checkImages runs an update the gateway asked for, with the images sandboxes boot from pinned first.
 func (h *Host) checkImages(ctx context.Context, u *images.Updater, ch proto.ImageChannel) error {
 	if err := h.pinBases(); err != nil {
 		return err
 	}
-	if h.e2e == nil {
-		return u.Check(ctx, ch)
-	}
-	return h.e2e.Unenrolled(func() error { return u.Check(ctx, ch) })
+	return u.Check(ctx, ch)
 }
 
 // rebaseTier is a tier that can move a sandbox onto other images (the microVM tier), and says which version it would.

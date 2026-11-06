@@ -63,7 +63,7 @@ const DELETE_ONE = "DELETE FROM compute_api_records WHERE kind = ? AND id = ? RE
 const DELETE_VERSIONED =
 	"DELETE FROM compute_api_records WHERE kind = ? AND id = ? AND version = ? AND data = ? RETURNING id";
 
-/** The store's table, sequence and index. Every statement is `IF NOT EXISTS`, so migrating again is harmless. */
+/** The store's table, sequence and index. Every statement is `IF NOT EXISTS` (or `IF EXISTS`), so migrating again is harmless. */
 export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 	const seq = dialect === "postgres" ? "BIGINT" : "INTEGER";
 	return [
@@ -83,10 +83,12 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_egress ON compute_api_records (((data::jsonb ->> 'sandboxId')), seq) WHERE kind = 'egress'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_sandbox ON compute_api_records (kind, json_extract(data, '$.sandboxId'), seq)",
-		// One space's E2E chain, as `list({ space })` reads it on every chain read and append, without other spaces'.
+		// What the removed E2E chain kept (#784), where an earlier gateway made it: its index, and its entries (which
+		// named people and their devices' keys), which account deletion no longer reaches.
 		dialect === "postgres"
-			? "CREATE INDEX IF NOT EXISTS compute_api_records_e2e_chain ON compute_api_records (((data::jsonb ->> 'space')), seq) WHERE kind = 'e2eChain'"
-			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_space ON compute_api_records (kind, json_extract(data, '$.space'), seq)",
+			? "DROP INDEX IF EXISTS compute_api_records_e2e_chain"
+			: "DROP INDEX IF EXISTS compute_api_records_by_space",
+		"DELETE FROM compute_api_records WHERE kind = 'e2eChain'",
 		// A personal access token by its secret's hash, as every call signed in with one looks it up.
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_personal_token ON compute_api_records (((data::jsonb ->> 'secretHash'))) WHERE kind = 'personalTokens'"
@@ -337,7 +339,6 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
 		environments: sqlCollection(driver, "environments"),
 		egress: sqlCollection(driver, "egress"),
-		e2eChain: sqlCollection(driver, "e2eChain"),
 		bundles: sqlCollection(driver, "bundles"),
 		bucketSources: sqlCollection(driver, "bucketSources"),
 		fileUrls: sqlCollection(driver, "fileUrls"),

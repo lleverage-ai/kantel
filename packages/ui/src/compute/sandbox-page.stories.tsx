@@ -15,8 +15,6 @@ function Scenario({
 	options,
 	narrow = false,
 	menuOpen = false,
-	local,
-	e2e,
 	filesAt,
 	unavailable,
 	usage = "live",
@@ -30,10 +28,6 @@ function Scenario({
 	options?: ComputeFixtureOptions;
 	narrow?: boolean;
 	menuOpen?: boolean;
-	/** Served by `kantel console`: screens in tabs of their own. */
-	local?: boolean;
-	/** An end-to-end account; "pending" while the console is still checking its chain, which never answers here. */
-	e2e?: boolean | "pending";
 	/** Why Desktop and Browser can't open, as the console says it. */
 	unavailable?: string;
 	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
@@ -51,7 +45,7 @@ function Scenario({
 		};
 	});
 	const [sandboxes] = useState(() => {
-		if (local !== true && e2e === undefined && unavailable === undefined && !unshaped) return source.sandboxes;
+		if (unavailable === undefined && !unshaped) return source.sandboxes;
 		return {
 			...source.sandboxes,
 			...(unshaped
@@ -70,13 +64,6 @@ function Scenario({
 							unavailable: { desktop: unavailable, browser: unavailable },
 						}),
 					}),
-			...(local === true ? { screens: "tab" as const } : {}),
-			endToEnd: () => (e2e === "pending" ? new Promise<boolean>(() => {}) : Promise.resolve(e2e === true)),
-			// The host keeps no output end to end yet.
-			history: async (id: string) => {
-				const commands = await source.sandboxes.history(id);
-				return e2e === true ? commands.map(({ output: _, ...command }) => command) : commands;
-			},
 		};
 	});
 	return (
@@ -118,24 +105,6 @@ export const MountsPending: Story = () => <Scenario sandboxId="sbx_4d8n1x7pe2" /
 
 /** Where the deployment hasn't turned mounts on: no Mounts at all. */
 export const MountsOff: Story = () => <Scenario options={{ noMounts: true }} />;
-
-/** Served by `kantel console`, which can't frame them: Browser, Desktop and the previews open each in a tab. */
-export const LocalConsole: Story = () => <Scenario local />;
-
-/** An end-to-end sandbox in `kantel console`: a failed command's output isn't shown yet, and says so. */
-export const LocalEndToEndLogs: Story = () => <Scenario local e2e view="logs" />;
-
-/** An end-to-end sandbox's Files in `kantel console`: one line, until the console reads them through the host. */
-export const LocalEndToEndFiles: Story = () => <Scenario local e2e view="files" />;
-
-/** The gateway's console, its browser a device in an end-to-end chain: screens in the console, files not yet. */
-export const HostedEndToEndFiles: Story = () => <Scenario e2e view="files" />;
-
-/** The gateway's console while it checks the chain: no files are read through the gateway until it knows. */
-export const CheckingEndToEndFiles: Story = () => <Scenario e2e="pending" view="files" />;
-
-/** The gateway's console with E2E off: the files that are in it now, as ever. */
-export const NotEndToEndFiles: Story = () => <Scenario e2e={false} view="files" />;
 
 /** The same on hosted Kantel, with its cost. */
 export const Hosted: Story = () => <Scenario hosting="hosted" />;
@@ -187,9 +156,6 @@ export const ScreensUnavailable: Story = () => <Scenario unavailable="Not availa
 
 /** The same full size, reached from its address. */
 export const DesktopUnavailable: Story = () => <Scenario unavailable="Not available here yet" view="desktop" />;
-
-/** An end-to-end space: its E2E sessions don't carry the screens yet. */
-export const ScreensNotEndToEnd: Story = () => <Scenario unavailable="Not end to end yet" />;
 
 /** A stopped microVM: no previews, Resume, and its files from its last snapshot. */
 export const Stopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;

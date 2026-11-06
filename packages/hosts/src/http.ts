@@ -3,8 +3,6 @@
  *
  *   POST   /v1/hosts/register                   a host trades its join token for its credential (no sign-in: the
  *                                               token is the authority)
- *   GET    /v1/hosts/e2e/chain?space=…          with the host's credential: a space's E2E chain, and the host's own
- *   POST   /v1/hosts/e2e/chain                  host.add to it (`kantel-host e2e join`)
  *   GET    /v1/hosts/bundles/{digest}?sandboxId=…  with the host's credential: a bundle's tar, for a sandbox on that
  *                                               host that mounts it
  *   POST   /v1/hosts/releases/check             with the release token as a bearer: read the latest kantel-host release
@@ -27,7 +25,6 @@ import type { HostsService } from "./service.ts";
 import { sameSecret, sha256Hex } from "./tunnel.ts";
 
 export const HOSTS_REGISTER_PATH = "/v1/hosts/register";
-export const HOSTS_E2E_CHAIN_PATH = "/v1/hosts/e2e/chain";
 export const HOSTS_CONNECT_PATH = "/v1/hosts/connect";
 /** `GET /v1/hosts/bundles/{digest}?sandboxId=…`: a bundle's tar, for a host that mounts it in one of its sandboxes. */
 export const HOSTS_BUNDLES_PATH = "/v1/hosts/bundles";
@@ -56,7 +53,6 @@ const ADMIN_SANDBOXES = "/v1/admin/compute/sandboxes";
 export function isHostsPath(path: string): boolean {
 	return (
 		path === HOSTS_REGISTER_PATH ||
-		path === HOSTS_E2E_CHAIN_PATH ||
 		path === HOSTS_RELEASE_CHECK_PATH ||
 		path === ADMIN_HOSTS ||
 		path.startsWith(`${ADMIN_HOSTS}/`) ||
@@ -242,41 +238,12 @@ export function createHostsApi(options: HostsApiOptions) {
 		return undefined;
 	};
 
-	const isEntries = (value: unknown): value is { payload: string; sig: string }[] =>
-		Array.isArray(value) &&
-		value.length > 0 &&
-		value.length <= 100 &&
-		value.every(
-			(entry) =>
-				isObject(entry) &&
-				isString((entry as { payload?: unknown }).payload) &&
-				isString((entry as { sig?: unknown }).sig),
-		);
 	/** The host whose credential the request carries, unless it is unknown or revoked. */
 	const hostOf = async (request: Request) => {
 		const credential = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
 		return credential === undefined ? undefined : await hosts.authenticate(credential);
 	};
 	const noHost = () => json({ error: { code: "unauthenticated", message: "This needs a host's credential" } }, 401);
-
-	/** The chain routes, for the host whose credential the request carries. */
-	const chain = async (request: Request): Promise<Response> => {
-		const host = await hostOf(request);
-		if (host === undefined) return noHost();
-		if (request.method === "GET") {
-			const space = new URL(request.url).searchParams.get("space");
-			if (space === null || space === "") throw new KantelError("invalid", "space is required");
-			return json({ entries: await hosts.e2eChain(host.id, space) });
-		}
-		if (request.method === "POST") {
-			const input = await body(request);
-			if (!isString(input.space) || !isNumber(input.from) || !isEntries(input.entries)) {
-				throw new KantelError("invalid", "The body is { space, from, entries }");
-			}
-			return json({ entries: await hosts.appendE2EChain(host.id, input.space, input.from, input.entries) });
-		}
-		return json({ error: { code: "invalid", message: "GET or POST" } }, 405);
-	};
 
 	/**
 	 * A bundle's tar, streamed, for the host whose credential the request carries: only for a sandbox on that host that
@@ -338,7 +305,6 @@ export function createHostsApi(options: HostsApiOptions) {
 					// Any body is ignored: the version is read from the release URL, never taken from the caller.
 					return json(await hosts.checkForUpdates());
 				}
-				if (path === HOSTS_E2E_CHAIN_PATH) return await chain(request);
 				if (path.startsWith(`${HOSTS_BUNDLES_PATH}/`)) return await bundle(request, path);
 				if (!isHostsPath(path)) return undefined;
 				return await admin(request, path);

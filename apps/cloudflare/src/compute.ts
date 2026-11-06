@@ -77,7 +77,6 @@ import {
 	createHostsApi,
 	DEFAULT_HOST_IMAGES,
 	HOSTS_CONNECT_PATH,
-	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
 	HOSTS_RELEASE_CHECK_PATH,
@@ -605,10 +604,6 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);
 		},
-		e2eChain: {
-			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
-			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
-		},
 		// Snapshot sizes always; the images and bases only with image patching on.
 		...hostSnapshotLinks(api.service, baseImages),
 	});
@@ -769,7 +764,7 @@ async function accountHostsSide(
 			if (access.size === 0) access.stop();
 		};
 	};
-	// Registration and a host's E2E chain only: the compute API serves hosts' management, so the registry's own admin
+	// Registration only: the compute API serves hosts' management, so the registry's own admin
 	// routes refuse everyone.
 	const register = createHostsApi({
 		hosts: service,
@@ -799,12 +794,6 @@ async function accountHostsSide(
 					if (request.method !== "POST") return register.fetch(request);
 					// Anyone can reach it (past Access), so its body is counted as it comes, before any of it is parsed.
 					const bounded = await buffered(request, HOST_REGISTER_BODY_LIMIT);
-					return bounded instanceof Response ? bounded : register.fetch(bounded);
-				}
-				// A host's space chain (`kantel-host e2e join`), on its credential; an append's body is bounded the same way.
-				if (path === HOSTS_E2E_CHAIN_PATH) {
-					if (request.method !== "POST") return register.fetch(request);
-					const bounded = await buffered(request, HOST_E2E_CHAIN_BODY_LIMIT);
 					return bounded instanceof Response ? bounded : register.fetch(bounded);
 				}
 				// The release workflow's "a release is out", on the release token. It names no version, so its body (bounded, as
@@ -1113,8 +1102,6 @@ export async function grantPorts(store: ComputeStore, sandboxIds: readonly strin
 /** A registration is a token, a name, labels and facts: a few kilobytes. */
 export const HOST_REGISTER_BODY_LIMIT = 64 * 1024;
 
-/** A host's chain append is its one signed host.add, with room for a few more entries. */
-export const HOST_E2E_CHAIN_BODY_LIMIT = 256 * 1024;
 /** The most of a release check's body read: it carries nothing the control plane uses. */
 export const HOST_RELEASE_CHECK_BODY_LIMIT = 4 * 1024;
 

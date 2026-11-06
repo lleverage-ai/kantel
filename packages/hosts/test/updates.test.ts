@@ -239,15 +239,13 @@ describe("updating a host", () => {
 		expect(await asked).toEqual({ version: "0.4.2" });
 	});
 
-	it("passes on the host's refusal: one in an E2E space is updated on the machine", async () => {
+	it("passes on the host's refusal", async () => {
 		const { service, join } = await setup({ releases: released("0.4.2") });
 		const { hostId, host } = await join("box", "0.4.1");
 		host.refuse = (method) =>
-			method === "host.update"
-				? { code: "unsupported", message: "this host has joined an E2E space, so it is updated on the machine" }
-				: undefined;
+			method === "host.update" ? { code: "unsupported", message: "this host is updated on the machine" } : undefined;
 		await expect(service.updateAgent(hostId)).rejects.toSatisfy(
-			(error) => isKantelError(error, "not_supported") && /E2E space/.test((error as Error).message),
+			(error) => isKantelError(error, "not_supported") && /updated on the machine/.test((error as Error).message),
 		);
 	});
 });

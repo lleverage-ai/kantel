@@ -23,7 +23,6 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import {
 	bytesText,
-	DeviceSetupError,
 	type FilePart,
 	type FileRange,
 	FilesRefusedError,
@@ -300,13 +299,6 @@ export function SnapshotFiles({
 									{root.top === "" ? "Go to the root" : `Go to ${root.label}`}
 								</Button>
 							)}
-						</div>
-					) : state.status === "error" && state.error instanceof DeviceSetupError ? (
-						<div className="flex min-w-0 items-center justify-between gap-3 px-3 py-1">
-							<p className="m-0 min-w-0 text-sm text-muted">{state.error.message}</p>
-							<Button size="xs" variant="ghost" onClick={reload}>
-								Try again
-							</Button>
 						</div>
 					) : state.status === "error" ? (
 						<Notice
@@ -630,23 +622,21 @@ function FileView({
 				? { status: "loading" }
 				: reading.status === "error" && reading.error instanceof FilesRefusedError
 					? { status: "error", message: reading.error.message }
-					: reading.status === "error" && reading.error instanceof DeviceSetupError
-						? { status: "error", message: reading.error.message, onRetry: retry }
-						: reading.status === "error"
-							? {
-									status: "error",
-									message: messageOf(reading.error, "Kantel couldn't read this file."),
-									onRetry: retry,
-								}
-							: reading.status === "none"
-								? { status: "none" }
-								: {
-										status: "text",
-										text: reading.text,
-										shown: reading.bytes.byteLength,
-										size: reading.size,
-										...(reading.more === "done" ? {} : { onMore: more, loadingMore: reading.more === "loading" }),
-									};
+					: reading.status === "error"
+						? {
+								status: "error",
+								message: messageOf(reading.error, "Kantel couldn't read this file."),
+								onRetry: retry,
+							}
+						: reading.status === "none"
+							? { status: "none" }
+							: {
+									status: "text",
+									text: reading.text,
+									shown: reading.bytes.byteLength,
+									size: reading.size,
+									...(reading.more === "done" ? {} : { onMore: more, loadingMore: reading.more === "loading" }),
+								};
 	const tooBig =
 		(size !== undefined && size > DOWNLOAD_MAX_BYTES) || (reading.status === "none" && reading.tooLarge === true);
 	return (
