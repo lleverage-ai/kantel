@@ -2308,6 +2308,28 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		await vi.waitFor(() => expect(destroyed).toContain(made.id), { timeout: 10_000 });
 	});
 
+	it("destroys what a boot made when its record was being deleted as it booted", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const destroyed: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			// Another replica's delete has destroyed and not yet marked it deleted when this boot makes its machine.
+			create: async (spec) => {
+				const placed = await stub.create(spec);
+				await store.sandboxes.update(spec.sandboxId, (current) => ({ ...current, state: "deleting" }));
+				return placed;
+			},
+			destroy: async (sandboxId) => {
+				destroyed.push(sandboxId);
+				return stub.destroy(sandboxId);
+			},
+		};
+		const { ann } = setup(backend, { store });
+		const made = await ann.createSandbox({});
+		await vi.waitFor(() => expect(destroyed).toContain(made.id), { timeout: 10_000 });
+	});
+
 	it("drops a host's egress report for a closed account, and keeps one for an open account", async () => {
 		const store = await make();
 		const { api, ann } = setup(undefined, { store });

@@ -3618,8 +3618,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
 				: toRunning(sandbox);
 		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
-		// Its record deleted while it booted (a delete, or its account's deletion, whose destroy may have come before this
-		// machine existed): what booted is destroyed, so no machine outlives its record.
+		// Its record deleted, or being deleted, while it booted (a delete, or its account's deletion, whose destroy may have
+		// come before this machine existed): what booted is destroyed, so no machine outlives its record.
 		const orphaned = async () => {
 			await backend.destroy(sandboxId).catch(() => undefined);
 			return undefined;
@@ -3656,7 +3656,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (error instanceof KantelError && error.code === "not_found") return orphaned();
 			throw error;
 		}
-		if ("lost" in result && result.lost.state === "deleted") return orphaned();
+		// Deleted, or being deleted (whose destroy, on another replica, may have come before this machine existed): either
+		// way the machine goes. Destroying is idempotent, so one the delete destroys too is no harm.
+		if ("lost" in result && (result.lost.state === "deleted" || result.lost.state === "deleting")) return orphaned();
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
 		if (next.state === "error") {
