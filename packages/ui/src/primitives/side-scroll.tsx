@@ -15,8 +15,12 @@ import { type ComponentProps, useLayoutEffect, useRef, useState } from "react";
 export type SideScrollSurface = "raised" | "canvas";
 
 interface Edges {
-	/** The content's width, when it's wider than the scroller; undefined when it fits. */
-	readonly width: number | undefined;
+	/**
+	 * How far it scrolls sideways (its scrollWidth less its clientWidth), when its content is wider than it; undefined
+	 * when it fits. The pinned bar scrolls exactly as far: its spacer is its own width plus this, so the two stay in step
+	 * whatever stands between them (the scroller's border, its own vertical scrollbar).
+	 */
+	readonly range: number | undefined;
 	readonly start: boolean;
 	readonly end: boolean;
 	/** Something in the content takes focus, so Tab into it scrolls it into view; otherwise the scroller takes focus. */
@@ -30,7 +34,7 @@ interface Edges {
 	readonly scrolls: boolean;
 }
 
-const fits: Edges = { width: undefined, start: false, end: false, reachable: true, tall: false, scrolls: true };
+const fits: Edges = { range: undefined, start: false, end: false, reachable: true, tall: false, scrolls: true };
 
 const focusable =
 	'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -43,7 +47,7 @@ function measure(scroller: HTMLElement): Edges {
 	const tall = scrolls && scrollHeight > clientHeight + 1;
 	if (!wide && !tall) return scrolls ? fits : { ...fits, scrolls };
 	return {
-		width: wide ? scrollWidth : undefined,
+		range: wide ? scrollWidth - clientWidth : undefined,
 		start: wide && scrollLeft > 1,
 		end: wide && scrollLeft + clientWidth < scrollWidth - 1,
 		reachable: [...scroller.querySelectorAll(focusable)].some((element) => element !== scroller),
@@ -57,7 +61,7 @@ const edgesData = (edges: Edges): string | undefined =>
 	edges.start && edges.end ? "both" : edges.start ? "start" : edges.end ? "end" : undefined;
 
 const same = (a: Edges, b: Edges) =>
-	a.width === b.width &&
+	a.range === b.range &&
 	a.start === b.start &&
 	a.end === b.end &&
 	a.reachable === b.reachable &&
@@ -149,11 +153,11 @@ export function SideScroll({
 				ref={bar}
 				aria-hidden="true"
 				tabIndex={-1}
-				hidden={edges.width === undefined}
+				hidden={edges.range === undefined}
 				onScroll={follow}
 				className="kt-side-scroll-bar sticky bottom-0 z-1 min-w-0 overflow-x-auto overflow-y-hidden bg-canvas"
 			>
-				<div className="h-px" style={{ width: edges.width }} />
+				<div className="h-px" style={{ width: `calc(100% + ${edges.range ?? 0}px)` }} />
 			</div>
 		</>
 	);
