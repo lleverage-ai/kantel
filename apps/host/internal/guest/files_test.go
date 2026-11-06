@@ -171,3 +171,26 @@ func TestReadFileRefusesABadRange(t *testing.T) {
 		t.Fatalf("a negative offset: %d", res.StatusCode)
 	}
 }
+
+func TestWriteFileMakesItsDirectories(t *testing.T) {
+	root := t.TempDir()
+	client := clientFor(t, (&Server{}).Handler())
+	path := filepath.Join(root, "repo", "apps", "app", "x.txt")
+	if err := client.WriteFile(context.Background(), path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "x" {
+		t.Fatalf("read back %q, %v", got, err)
+	}
+	// Writable by whoever the file is, so a command beside it (pnpm install, a part join) can add files there.
+	for _, dir := range []string{"repo", "repo/apps", "repo/apps/app"} {
+		info, err := os.Stat(filepath.Join(root, dir))
+		if err != nil || !info.IsDir() {
+			t.Fatalf("%s: %v, %v", dir, info, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "repo", "apps", "app", "y"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

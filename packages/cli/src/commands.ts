@@ -102,7 +102,7 @@ import {
 	remotePath,
 	rootContexts,
 	uploadFile,
-	uploadTree,
+	uploadTreeTo,
 	walk,
 } from "./transfer.ts";
 import { VERSION } from "./version.ts";
@@ -2396,7 +2396,15 @@ const SECTIONS: readonly Section[] = [
 						const remote = intoDirectory ? remoteJoin(into, name) : into;
 						if (await isDirectory(local)) {
 							if (!recursive) throw new UsageError(`${from} is a directory: add -r to copy it`);
-							const copied = await uploadTree(client, target.sandboxId, local, await walk(local), remote, log);
+							const copied = await uploadTreeTo(
+								client,
+								target.sandboxId,
+								local,
+								await walk(local),
+								remote,
+								log,
+								(line) => ctx.note(line),
+							);
 							ctx.emit(
 								{ ...copied, to: remote },
 								() => `Copied ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${remote}.`,
@@ -2448,7 +2456,8 @@ const SECTIONS: readonly Section[] = [
 				},
 				details:
 					"In a git repository it sends the files git tracks and the new ones .gitignore doesn't leave out, so\n" +
-					"node_modules, build output and .git stay here. Elsewhere it sends everything but .git. Files already\n" +
+					"node_modules, build output and .git stay here. Elsewhere it sends everything but .git. Into a microVM it\n" +
+					"goes as one gzipped tar that the microVM's tar extracts; into an isolate, file by file. Files already\n" +
 					"there are replaced; files you deleted here stay there. Executable bits are kept.\n" +
 					"It leaves out, at any depth, .ssh, .gnupg, .aws, .azure, .kube, .netrc, .pypirc and .docker/config.json,\n" +
 					"and, unless git tracks them, .claude, .codex, .cursor, .npmrc and .env files (not .env.example),\n" +
@@ -2479,9 +2488,17 @@ const SECTIONS: readonly Section[] = [
 						ctx.note("kantel: --no-default-excludes sends credentials, sign-ins and .env files too");
 					}
 					const target = remotePath(ctx.string("to") ?? basename(root));
-					const copied = await uploadTree(await ctx.client(), sandboxId, root, plan.files, target, (path) => {
-						if (!ctx.json) ctx.note(path);
-					});
+					const copied = await uploadTreeTo(
+						await ctx.client(),
+						sandboxId,
+						root,
+						plan.files,
+						target,
+						(path) => {
+							if (!ctx.json) ctx.note(path);
+						},
+						(line) => ctx.note(line),
+					);
 					const where = target.startsWith("/") ? target : `/home/user/${target}`;
 					ctx.emit(
 						{ ...copied, to: where, skipped: plan.skipped },

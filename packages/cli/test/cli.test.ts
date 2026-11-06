@@ -1364,6 +1364,7 @@ describe("copying files", () => {
 		const result = await kantel(["push", "sbx_test1", "app"], {
 			configDir: join(configDir, "kantel"),
 			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => SANDBOX,
 				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
 					written.push(call.body as Written);
 					return { path: (call.body as Written).path, size: 1 };
@@ -1380,6 +1381,170 @@ describe("copying files", () => {
 		expect(byPath["app/run.sh"]?.mode).toBe("0755");
 	});
 
+	it("push sends a microVM one gzipped tar in parts, which one command extracts and removes", async () => {
+		const dir = join(configDir, "app");
+		const long = `${"deep/".repeat(30)}file.txt`;
+		await mkdir(join(dir, "src"), { recursive: true });
+		await mkdir(join(dir, long, ".."), { recursive: true });
+		await writeFile(join(dir, "src", "a.ts"), "export {};\n");
+		await writeFile(join(dir, long), "long name\n");
+		await writeFile(join(dir, "run.sh"), "#!/bin/sh\n");
+		await chmod(join(dir, "run.sh"), 0o755);
+		// Incompressible, so the archive is cut into more than one part.
+		const big = Buffer.from(Array.from({ length: 2 * 1024 * 1024 }, () => Math.floor(Math.random() * 256)));
+		await writeFile(join(dir, "big.bin"), big);
+		const parts: Written[] = [];
+		const commands: string[] = [];
+		const result = await kantel(["push", "sbx_test1", "app"], {
+			configDir: join(configDir, "kantel"),
+			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm" }),
+				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
+					parts.push(call.body as Written);
+					return { path: (call.body as Written).path, size: 1 };
+				},
+				"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+					commands.push((call.body as { command: string }).command);
+					return command({ exitCode: 0 });
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("Pushed 4 files");
+		expect(parts.length).toBeGreaterThan(1);
+		const names = parts.map((part) => part.path);
+		expect(names.every((name) => /^\/tmp\/\.kantel-push-[0-9a-f]{12}-\d{6}$/.test(name))).toBe(true);
+		expect([...names].sort()).toEqual(names.map((_, i) => names[0]?.replace(/\d{6}$/, String(i).padStart(6, "0"))));
+		const prefix = names[0]?.replace(/-\d{6}$/, "");
+		// It checks the destination, extracts into it where the files API would put it, and removes the parts.
+		const stage = `/home/user/app/.kantel-push-${prefix?.slice(-12)}`;
+		const id = prefix?.slice(-12);
+		const place =
+			'top=$0; id=$1; shift; for d; do mkdir -p "$top/$d" && t="$top/$d/.kantel-in-$id" && mkdir "$t" && { ' +
+			'find "$d" -maxdepth 1 ! -type d -print0 | xargs -0 -r mv -f -t "$t" && ' +
+			'find "$t" -mindepth 1 -maxdepth 1 -print0 | xargs -0 -r mv -f -t "$top/$d"; s=$?; rm -rf "$t"; [ $s -eq 0 ]; } || exit 1; done';
+		expect(commands).toEqual([
+			"mkdir -p /home/user/app && test -w /home/user/app && test -w /tmp && command -v tar >/dev/null && mv --help 2>&1 | grep -q -- --target-directory",
+			`umask 022 && mkdir ${stage} && cat ${prefix}-* | tar -xzf - -C ${stage} --no-same-owner --same-permissions && ` +
+				`(cd ${stage} && find . -type d -exec sh -c '${place}' /home/user/app ${id} {} +); s=$?; rm -rf ${stage}; exit $s`,
+			`rm -f ${prefix}-*; true`,
+		]);
+		// The parts, joined in order, are a tar that tar itself extracts to the same tree.
+		const archive = Buffer.concat(
+			[...parts].sort((a, b) => a.path.localeCompare(b.path)).map((part) => Buffer.from(part.content, "base64")),
+		);
+		const out = join(configDir, "out");
+		await mkdir(out);
+		execFileSync("tar", ["-xzf", "-", "-C", out], { input: archive });
+		expect(await readFile(join(out, "src", "a.ts"), "utf8")).toBe("export {};\n");
+		expect(await readFile(join(out, long), "utf8")).toBe("long name\n");
+		expect((await readFile(join(out, "big.bin"))).equals(big)).toBe(true);
+		expect((await stat(join(out, "run.sh"))).mode & 0o777).toBe(0o755);
+		expect((await stat(join(out, "src", "a.ts"))).mode & 0o111).toBe(0);
+	});
+
+	/** Pushes app/ (one small file) into a microVM whose routes `overrides` change, answering what it did. */
+	async function pushedToMicrovm(overrides: Record<string, (call: { body: unknown }) => unknown>) {
+		const dir = join(configDir, "app");
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "a.ts"), "export {};\n");
+		const written: string[] = [];
+		const commands: string[] = [];
+		const result = await kantel(["push", "sbx_test1", "app"], {
+			configDir: join(configDir, "kantel"),
+			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm" }),
+				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
+					written.push((call.body as Written).path);
+					return { path: (call.body as Written).path, size: 1 };
+				},
+				"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+					commands.push((call.body as { command: string }).command);
+					return command({ exitCode: 0 });
+				},
+				...overrides,
+			},
+		});
+		return { ...result, written, commands };
+	}
+
+	it("push goes file by file when the key can't read the sandbox, or the destination isn't the user's", async () => {
+		const unreadable = await pushedToMicrovm({
+			"GET /v1/sandboxes/sbx_test1": () => kantelError(403, "forbidden", "This key can't read sandboxes"),
+		});
+		expect(unreadable.code).toBe(0);
+		expect(unreadable.written).toEqual(["app/a.ts"]);
+		expect(unreadable.commands).toEqual([]);
+		const rootOwned = await pushedToMicrovm({
+			"POST /v1/sandboxes/sbx_test1/commands": () => command({ exitCode: 1, stderr: "mkdir: Permission denied" }),
+		});
+		expect(rootOwned.code).toBe(0);
+		expect(rootOwned.written).toEqual(["app/a.ts"]);
+	});
+
+	it("push falls back to file by file when the archive won't extract, and removes the parts either way", async () => {
+		const commands: string[] = [];
+		const result = await pushedToMicrovm({
+			"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+				const line = (call.body as { command: string }).command;
+				commands.push(line);
+				return line.includes("tar -xzf")
+					? command({ exitCode: 2, stderr: "tar: apps: Cannot mkdir: Permission denied" })
+					: command({ exitCode: 0 });
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stderr).toContain("couldn't be extracted");
+		expect(result.stderr).toContain("sending file by file");
+		expect(result.written.filter((path) => path === "app/a.ts")).toHaveLength(1);
+		expect(commands.at(-1)).toMatch(
+			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find -L \/home\/user\/app -name \.kantel-in-\1 /,
+		);
+	});
+
+	it("push extracts where the files API would write, a `..` in the destination cleaned as text first", async () => {
+		for (const [to, where] of [
+			["/srv/link/../app", "/srv/app"],
+			["work/../app/", "/home/user/app"],
+		] as const) {
+			const dir = join(configDir, "app");
+			await mkdir(dir, { recursive: true });
+			await writeFile(join(dir, "a.ts"), "export {};\n");
+			const commands: string[] = [];
+			const result = await kantel(["push", "sbx_test1", "app", "--to", to], {
+				configDir: join(configDir, "kantel"),
+				routes: {
+					"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm" }),
+					"PUT /v1/sandboxes/sbx_test1/files": (call) => ({ path: (call.body as Written).path, size: 1 }),
+					"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+						commands.push((call.body as { command: string }).command);
+						return command({ exitCode: 0 });
+					},
+				},
+			});
+			expect(result.code).toBe(0);
+			expect(commands[0]).toContain(`mkdir -p ${where} && test -w ${where}`);
+			expect(commands[1]).toContain(`-C ${where}/.kantel-push-`);
+			expect(commands[1]).toMatch(new RegExp(`' ${where} [0-9a-f]{12} \\{\\} \\+`));
+			expect(commands.join("\n")).not.toContain("..");
+		}
+	});
+
+	it("push removes the parts it sent when sending one fails", async () => {
+		let writes = 0;
+		const result = await pushedToMicrovm({
+			"PUT /v1/sandboxes/sbx_test1/files": () => {
+				writes++;
+				return kantelError(507, "exhausted", "No space left on the sandbox's disk");
+			},
+		});
+		expect(result.code).not.toBe(0);
+		expect(writes).toBeGreaterThan(0);
+		expect(result.commands.at(-1)).toMatch(
+			/^rm -f \/tmp\/\.kantel-push-([0-9a-f]{12})-\*; rm -rf \/home\/user\/app\/\.kantel-push-\1; find -L \/home\/user\/app -name \.kantel-in-\1 /,
+		);
+	});
+
 	/** Pushes with `args`, answering the paths it wrote. */
 	async function pushed(args: readonly string[], options: KantelOptions = {}) {
 		const written: string[] = [];
@@ -1387,6 +1552,7 @@ describe("copying files", () => {
 			configDir: join(configDir, "kantel"),
 			...options,
 			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => SANDBOX,
 				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
 					written.push((call.body as Written).path);
 					return { path: (call.body as Written).path, size: 1 };
