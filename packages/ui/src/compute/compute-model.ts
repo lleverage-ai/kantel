@@ -724,9 +724,12 @@ export interface SandboxAccess {
 /** The one line that installs the Kantel CLI (`kantel`), from kantel.dev: it pastes the same into bash, zsh and fish. */
 export const CLI_INSTALL_COMMAND = "curl -fsSL https://kantel.dev/cli.sh | sh";
 
-/** Signs the CLI in to the Kantel at `url` (its gateway's public origin, such as https://app.kantel.dev). */
+/** The hosted gateway, where `kantel login` signs in when it isn't given `--url`. */
+const HOSTED_ORIGIN = "https://app.kantel.dev";
+
+/** Signs the CLI in to the Kantel at `url` (its gateway's public origin), with no `--url` for the hosted one. */
 export function cliLoginCommand(url: string): string {
-	return `kantel login --url ${url}`;
+	return url.replace(/\/+$/, "") === HOSTED_ORIGIN ? "kantel login" : `kantel login --url ${url}`;
 }
 
 /** The CLI's command that SSHes into a sandbox. */

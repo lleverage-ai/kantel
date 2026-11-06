@@ -8,8 +8,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CliError, UsageError } from "./errors.ts";
 
-/** Where Kantel is when nothing says otherwise: a local install. */
-export const DEFAULT_URL = "http://127.0.0.1:58090";
+/** Where Kantel is when nothing says otherwise: the hosted gateway. A self-hosted install is given with `--url`. */
+export const DEFAULT_URL = "https://app.kantel.dev";
 
 export interface Env {
 	readonly [name: string]: string | undefined;
@@ -77,10 +77,15 @@ export function originOf(url: string): string {
 const first = (...values: (string | undefined)[]): string | undefined =>
 	values.find((value) => value !== undefined && value !== "");
 
-/** Each setting from the flags, else the environment, else the file. */
-export function resolveConfig(flags: ConfigFlags, env: Env, stored: StoredConfig): ResolvedConfig {
+/** Each setting from the flags, else the environment, else the file; the URL else `defaultUrl`. */
+export function resolveConfig(
+	flags: ConfigFlags,
+	env: Env,
+	stored: StoredConfig,
+	defaultUrl: string = DEFAULT_URL,
+): ResolvedConfig {
 	return {
-		url: normaliseUrl(first(flags.url, env.KANTEL_URL, stored.url) ?? DEFAULT_URL),
+		url: normaliseUrl(first(flags.url, env.KANTEL_URL, stored.url) ?? defaultUrl),
 		apiKey: first(flags.apiKey, env.KANTEL_API_KEY, stored.apiKey),
 		account: first(flags.account, env.KANTEL_ACCOUNT, stored.account),
 	};
@@ -125,7 +130,12 @@ export async function writeStoredConfig(directory: string, config: StoredConfig)
 	return path;
 }
 
-/** The settings from the flags, the environment and the file in `directory`. */
-export async function loadConfig(flags: ConfigFlags, env: Env, directory: string): Promise<ResolvedConfig> {
-	return resolveConfig(flags, env, await readStoredConfig(directory));
+/** The settings from the flags, the environment and the file in `directory`; the URL else `defaultUrl`. */
+export async function loadConfig(
+	flags: ConfigFlags,
+	env: Env,
+	directory: string,
+	defaultUrl: string = DEFAULT_URL,
+): Promise<ResolvedConfig> {
+	return resolveConfig(flags, env, await readStoredConfig(directory), defaultUrl);
 }

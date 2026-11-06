@@ -792,10 +792,13 @@ export async function runAdmin(argv: readonly string[], options: AdminOptions = 
 			boolean: (flag) => booleanFlag(parsed, flag) === true,
 			list: (flag) => listFlag(parsed, flag),
 			async client() {
+				// Not the CLI's hosted default: kantel-admin runs beside a self-hosted gateway, and a key for it
+				// shouldn't be sent anywhere else.
 				const config = await loadConfig(
 					{ url: stringFlag(parsed, "url"), apiKey: stringFlag(parsed, "key") },
 					io.env,
 					io.configDir,
+					`http://127.0.0.1:${io.env.KANTEL_GATEWAY_PORT || DEFAULT_PORT}`,
 				);
 				if (config.apiKey === undefined) {
 					throw new CliError(

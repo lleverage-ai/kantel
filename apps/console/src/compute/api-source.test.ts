@@ -336,7 +336,7 @@ describe("sandboxes", () => {
 		// Served by a gateway, the page says to sign the CLI in to it: the gateway is this page's origin.
 		vi.stubGlobal("location", { origin: "https://app.kantel.dev" });
 		try {
-			expect((await source.sandboxes.access(made.id)).cliLogin).toBe("kantel login --url https://app.kantel.dev");
+			expect((await source.sandboxes.access(made.id)).cliLogin).toBe("kantel login");
 		} finally {
 			vi.unstubAllGlobals();
 		}

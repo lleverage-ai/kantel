@@ -42,7 +42,7 @@ The host connects out to Kantel and keeps that connection open, so it can sit be
 
 ```sh
 curl -fsSL https://kantel.dev/cli.sh | sh
-kantel login --url https://app.kantel.dev
+kantel login
 ```
 
 The first line installs `kantel` in `~/.local/bin`, with no sudo, and works in bash, zsh and fish. `kantel login` opens the console to approve the sign-in: check that the code matches the one in your terminal, and select **Approve**. The CLI gets an API key of its own, which lasts 90 days. See [Command line](/tools/cli/#install-it) for the installer's options.

@@ -1028,6 +1028,10 @@ describe("config", () => {
 		const file = { url: "https://file.test", apiKey: "ksk_file", account: "acc_file" };
 		const env = { KANTEL_URL: "https://env.test", KANTEL_API_KEY: "ksk_env" };
 		expect(resolveConfig({}, {}, {})).toEqual({ url: `${DEFAULT_URL}/v1`, apiKey: undefined, account: undefined });
+		// With nothing given, the hosted gateway; a caller such as kantel-admin can name another.
+		expect(DEFAULT_URL).toBe("https://app.kantel.dev");
+		expect(resolveConfig({}, {}, {}, "http://127.0.0.1:58090").url).toBe("http://127.0.0.1:58090/v1");
+		expect(resolveConfig({}, {}, file, "http://127.0.0.1:58090").url).toBe("https://file.test/v1");
 		expect(resolveConfig({}, {}, file)).toEqual({
 			url: "https://file.test/v1",
 			apiKey: "ksk_file",

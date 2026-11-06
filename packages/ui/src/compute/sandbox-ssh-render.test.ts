@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { SandboxAccess } from "./compute-model.ts";
+import { cliLoginCommand, type SandboxAccess } from "./compute-model.ts";
 import { SandboxSsh } from "./sandbox-ssh.tsx";
 
 const ACCESS: SandboxAccess = {
@@ -28,6 +28,14 @@ const render = (access: SandboxAccess) =>
 	)
 		.replaceAll("<wbr/>", "")
 		.replace(/<span class="whitespace-nowrap">([^<]*)<\/span>/g, "$1");
+
+describe("cliLoginCommand", () => {
+	it("needs no --url for the hosted gateway, which kantel login uses by default", () => {
+		expect(cliLoginCommand("https://app.kantel.dev")).toBe("kantel login");
+		expect(cliLoginCommand("https://app.kantel.dev/")).toBe("kantel login");
+		expect(cliLoginCommand("https://kantel.example.com")).toBe("kantel login --url https://kantel.example.com");
+	});
+});
 
 describe("SandboxSsh", () => {
 	it("says to sign the CLI in to this Kantel once, under the install line, when the page has a gateway", () => {

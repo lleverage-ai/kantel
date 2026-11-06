@@ -10,7 +10,7 @@ const ID = "sbx_7f3k2m9qa1";
 
 const ACCESS: SandboxAccess = {
 	ssh: `kantel ssh ${ID}`,
-	cliLogin: "kantel login --url https://app.kantel.dev",
+	cliLogin: "kantel login",
 	sshWithoutCli: true,
 	desktopUrl: "",
 	desktopViewUrl: "",

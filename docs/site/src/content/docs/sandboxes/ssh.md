@@ -26,7 +26,7 @@ A microVM's Overview shows SSH as `kantel ssh <sandbox ID>`, with the line that 
 
 ```sh
 curl -fsSL https://kantel.dev/cli.sh | sh
-kantel login --url https://app.kantel.dev
+kantel login
 ```
 
 Without the CLI, open **Without the Kantel CLI**. Paste your OpenSSH public key to let it in, or leave it empty and Kantel makes a key pair: download its private key, which isn't shown again. **Get the command** then shows a plain `ssh` command with [websocat](https://github.com/vi/websocat) as its `ProxyCommand`, such as:
