@@ -84,3 +84,90 @@
 		transition-duration: var(--kt-duration-instant) !important;
 	}
 }
+
+/* A list page whose table fills the room under its header (SideScroll's `fill`, and TableFrame's): every flex column
+   from the console's page down to the table is marked `kt-fill`, and one holding a filling table may shrink to the
+   room it has, so the table, a scroller, takes what's left and scrolls down in it. Short of it, each keeps its content's
+   height and the page scrolls, as on every other page. `:has()` and a height query, which utilities can't say without
+   a raw size: under 36rem of window the header and filters would leave the table a few rows, so the page scrolls. */
+@media (min-height: 36rem) {
+	.kt-fill:has(.kt-table-fill) {
+		min-height: 0;
+	}
+
+	/* Only the table gives up room: what sits over it (the header, the filters, a tab row that scrolls sideways and so
+	   could shrink) keeps its height. */
+	.kt-fill:has(.kt-table-fill) > :not(.kt-fill, .kt-table-fill) {
+		flex-shrink: 0;
+	}
+}
+
+/* SideScroll's cut-off edges: a shadow cast inward from an edge with more past it, on the scroller's own box, so it
+   stays at the edge as the content scrolls and paints under the text rather than washing it out. Both edges at once is
+   a list of two shadows, which one utility can't say, so CSS on its data-edges. */
+.kt-side-scroll {
+	transition: box-shadow var(--kt-duration-fast) var(--kt-ease);
+}
+
+.kt-side-scroll[data-edges="start"] {
+	box-shadow: var(--kt-shadow-edge-start);
+}
+
+.kt-side-scroll[data-edges="end"] {
+	box-shadow: var(--kt-shadow-edge-end);
+}
+
+.kt-side-scroll[data-edges="both"] {
+	box-shadow: var(--kt-shadow-edge-start), var(--kt-shadow-edge-end);
+}
+
+/* Scrollbars in the theme: thin, a rounded thumb in the border's grey on a clear track, no arrow buttons, so a scrolling
+   panel doesn't get the platform's grey slab. Pseudo-elements, which utilities can't reach, so CSS. Chromium and
+   Safari draw ::-webkit-scrollbar, Firefox the standard properties: Chromium ignores ::-webkit-scrollbar on an element
+   with scrollbar-width or scrollbar-color set, so those go only to engines without it. In the base layer, so an
+   element's own utility (`[scrollbar-width:none]` on the page tabs, SideScroll's scroller) still hides its bar. */
+@layer base {
+	.kt-app ::-webkit-scrollbar {
+		width: var(--kt-scrollbar-size);
+		height: var(--kt-scrollbar-size);
+	}
+
+	.kt-app ::-webkit-scrollbar-track,
+	.kt-app ::-webkit-scrollbar-corner {
+		background: transparent;
+	}
+
+	.kt-app ::-webkit-scrollbar-thumb {
+		border: var(--kt-step-0_5) solid transparent;
+		border-radius: var(--kt-radius-full);
+		background: var(--kt-border-strong) padding-box;
+	}
+
+	.kt-app ::-webkit-scrollbar-thumb:hover {
+		background-color: var(--kt-text-disabled);
+	}
+
+	/* A rounded panel that scrolls (the console's page, a list page's table): its tracks stop short of the corners, so
+	   a thumb never runs over the curve. */
+	.kt-scroll-rounded::-webkit-scrollbar-track:vertical {
+		margin-block: var(--kt-radius);
+	}
+
+	.kt-scroll-rounded::-webkit-scrollbar-track:horizontal {
+		margin-inline: var(--kt-radius);
+	}
+
+	/* A list page's table that scrolls down (SideScroll's `fill`): its track starts under the stuck header row, which is
+	   a control's height, so the thumb runs beside the rows it scrolls. */
+	.kt-table-fill::-webkit-scrollbar-track:vertical {
+		margin-block-start: var(--kt-control-md);
+	}
+
+	@supports not selector(::-webkit-scrollbar) {
+		.kt-app,
+		.kt-app * {
+			scrollbar-width: thin;
+			scrollbar-color: var(--kt-border-strong) transparent;
+		}
+	}
+}

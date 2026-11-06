@@ -234,6 +234,31 @@ row scrolls sideways when the tabs don't fit, as on a phone.
 **Not for** the app's pages (use `Sidebar` or `TabBar`), or filters and views within one view that need no address
 (use `SegmentedControl`).
 
+### SideScroll
+
+**For** content that is wider than its column and scrolls sideways: a table with more columns than the window has
+room for. A plain `overflow-x-auto` puts its scrollbar at the content's bottom, which in a long list is below the
+window, so nobody knows there is more to the right. `SideScroll` hides that bar and draws its own as its next sibling,
+sticky to the bottom of whatever scrolls the page, back under the content once its end is in view. An edge with more
+past it casts a shadow inward from that edge (`--kt-shadow-edge-*`), which shades the cut-off column under its text
+rather than over it. `surface` (`raised` for a card, `canvas` for a table on the page) is the ground a stuck header
+row is painted in. With nothing to scroll there is no bar and no shadow. `className` styles the scroller itself; wheel, trackpad, touch and keys scroll it as usual.
+
+`fill`, for a page that is a list (Sandboxes, Snapshots, Environments, the egress log; `TableFrame` passes it on): the
+content takes the room its page leaves under the header, filters and notices, and scrolls down in it too, so New and
+the filters stay in view down a long list. While it scrolls down, its table's header row sticks and its own vertical
+scrollbar shows; the pinned bar stays its horizontal one, so its height doesn't change with the bars it shows and it
+can't flicker between them (Firefox, which can't hide one axis, shows both of its own beside it). Every flex column from the console's page down to it carries `kt-fill`
+(`tokens/base.css`), which lets one holding a filling table shrink; the rest keep their height. A short list stays
+as tall as its rows. A phone (the console puts no `kt-fill` on its page), a window under 36rem tall, and a table shown
+as cards all scroll the page as before.
+
+**Not for** a compute page's table (`TableFrame` has one), or a tab row (`PageTabs` scrolls its own, with no bar).
+Not `fill` on a page with more than the list on it (a sandbox's own tabs, Settings): those scroll as a page.
+
+**Cost:** a ResizeObserver on the scroller and its children, and a state update when the overflow or an edge changes,
+not on every scroll.
+
 ### SegmentedControl
 
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches

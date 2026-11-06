@@ -312,8 +312,8 @@ export interface ComputeConsoleProps {
 const SHELL = "kt-app grid h-dvh";
 const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)] bg-sunken";
 const SHELL_NARROW = "grid-rows-[auto_minmax(0,1fr)_auto]";
-const MAIN = "min-h-0 min-w-0 overflow-y-auto bg-canvas";
-const MAIN_WIDE = "my-2 mr-2 rounded-panel border border-border";
+const MAIN = "flex min-h-0 min-w-0 flex-col overflow-y-auto bg-canvas";
+const MAIN_WIDE = "kt-scroll-rounded my-2 mr-2 rounded-panel border border-border";
 
 /**
  * What the strip over the page says about end-to-end encryption in this account, and in which tone; undefined for
@@ -825,7 +825,8 @@ export function ComputeConsole({
 						title={inSettings ? "Settings" : sidebarPages.find((each) => each.on)?.label}
 					/>
 				) : (
-					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
+					// A list page's table may fill the room under its header (TableFrame's `fill`); a phone scrolls the page.
+					<div className={`flex flex-col ${narrow ? "p-gutter-narrow" : "kt-fill p-gutter"}`}>
 						<SettingsFrameFor
 							shown={inSettings || (inAdmin && narrow && adminItems.length > 1)}
 							items={inAdmin ? adminItems : settingsItems}

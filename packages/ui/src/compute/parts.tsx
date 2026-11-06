@@ -4,6 +4,7 @@
 
 import { type ComponentProps, type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
+import { SideScroll } from "../primitives/side-scroll.tsx";
 import "./table.css";
 
 /**
@@ -11,7 +12,7 @@ import "./table.css";
  * centred in the room beside the sidebar. The header's title and actions sit on its edges, and its tables fill it.
  */
 export const computePage =
-	"kt-compute-page mx-auto flex w-full max-w-page min-w-0 flex-col gap-5 text-md leading-normal text-fg";
+	"kt-compute-page kt-fill mx-auto flex w-full max-w-page min-w-0 flex-col gap-5 text-md leading-normal text-fg";
 
 /**
  * A table's frame, as the Lleverage app's tables: a white card with a hairline round it, the first and last columns
@@ -129,11 +130,23 @@ function labelCells(frame: HTMLElement): void {
  * a column narrower than a phone's table needs (table.css, 40rem), the header goes and each row is a card: its name
  * on top with its menu on the right, a checkbox before it where the table has them, and every other cell under them as
  * its heading and value, with the empty ones left out. `bar` sits over the table inside the same container, for what
- * acts on the rows (a selection's actions, Select all for the cards).
+ * acts on the rows (a selection's actions, Select all for the cards). Too narrow for its columns, the table scrolls
+ * sideways in a SideScroll: its cut-off edges are shaded and its scrollbar stays at the bottom of the window.
+ *
+ * `fill`, for a page that is a list (Sandboxes, Snapshots, Environments, the egress log): the table takes the room the
+ * page leaves under its header, filters and notices, and scrolls down in it with its header row stuck, so New and the
+ * filters stay in view. Each element between it and the console's page carries `kt-fill` (base.css). A short list
+ * stays as tall as its rows; a phone or a short window scrolls the page as before.
  *
  * The cards read their labels from the table's own header (`labelCells`), so a page writes a plain table.
  */
-export function TableFrame({ children, bar, className, ...rest }: ComponentProps<"div"> & { bar?: ReactNode }) {
+export function TableFrame({
+	children,
+	bar,
+	className,
+	fill = false,
+	...rest
+}: ComponentProps<"div"> & { bar?: ReactNode; fill?: boolean }) {
 	const ref = useRef<HTMLDivElement>(null);
 	useLayoutEffect(() => {
 		const frame = ref.current;
@@ -146,11 +159,11 @@ export function TableFrame({ children, bar, className, ...rest }: ComponentProps
 		return () => observer.disconnect();
 	}, []);
 	return (
-		<div ref={ref} className="kt-table-cards flex min-w-0 flex-col gap-2">
+		<div ref={ref} className="kt-table-cards kt-fill flex min-w-0 flex-col gap-2">
 			{bar}
-			<div {...rest} className={className === undefined ? tableFrame : `${tableFrame} ${className}`}>
+			<SideScroll {...rest} fill={fill} className={className === undefined ? tableFrame : `${tableFrame} ${className}`}>
 				{children}
-			</div>
+			</SideScroll>
 		</div>
 	);
 }

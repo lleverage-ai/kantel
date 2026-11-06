@@ -155,6 +155,7 @@ export * from "./primitives/lucide.tsx";
 export { Menu, type MenuChoice, type MenuEntry, type MenuProps } from "./primitives/menu.tsx";
 export { CommandBlock, OneTimeSecret, type OneTimeSecretProps } from "./primitives/one-time-secret.tsx";
 export { type PageTab, PageTabs, type PageTabsProps } from "./primitives/page-tabs.tsx";
+export { SideScroll, type SideScrollSurface } from "./primitives/side-scroll.tsx";
 export {
 	Sidebar,
 	SidebarBrand,

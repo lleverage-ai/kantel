@@ -132,7 +132,7 @@ export function EnvironmentsPage({
 					sandbox can use but never read.
 				</EmptyState>
 			) : (
-				<TableFrame>
+				<TableFrame fill>
 					<table className={table}>
 						<thead>
 							<tr>

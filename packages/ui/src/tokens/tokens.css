@@ -177,6 +177,7 @@
 	--kt-trim-room: var(--kt-space-2);
 	--kt-hairline: 1px;
 	--kt-ring: 2px;
+	--kt-scrollbar-size: 10px; /* a scrollbar's thickness, its thumb inset in it by --kt-step-0_5 (base.css) */
 	--kt-content-width: 46rem; /* the transcript and composer column, as T3 Code's chat-content-max-width */
 	--kt-card-width: 560px;
 	--kt-dialog-wide-width: 52rem; /* a dialog that shows a chart and a table: a sandbox's metrics */

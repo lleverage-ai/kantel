@@ -290,10 +290,11 @@ export function AccountEgressPage({
 					{notice.text}
 				</Notice>
 			)}
-			<div className="flex min-w-0 flex-col gap-4">
+			{/* The log fills the room under the tabs (`kt-fill`, base.css), so the tabs and filters stay in view. */}
+			<div className="kt-fill flex min-w-0 flex-col gap-4">
 				<PageTabs label="Egress" tabs={tabs} onSelect={(id) => show(id as EgressTab)} />
 				{tab === "log" ? (
-					<div className="flex min-w-0 flex-col gap-3">
+					<div className="kt-fill flex min-w-0 flex-col gap-3">
 						{overview.unread.length === 0 ? null : (
 							<Notice
 								level="warning"

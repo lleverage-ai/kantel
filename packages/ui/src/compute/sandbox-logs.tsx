@@ -8,6 +8,7 @@ import { CopyButton, SegmentedControl } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
 import { useLoad, useReloadOn } from "../primitives/load.ts";
 import { EventIcon } from "../primitives/lucide.tsx";
+import { SideScroll } from "../primitives/side-scroll.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
@@ -210,7 +211,7 @@ export function SandboxLogs({
 					))}
 				</ul>
 			) : (
-				<div className={tableFrame}>
+				<SideScroll className={tableFrame}>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -296,7 +297,7 @@ export function SandboxLogs({
 							})}
 						</tbody>
 					</table>
-				</div>
+				</SideScroll>
 			)}
 		</div>
 	);
