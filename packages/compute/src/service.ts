@@ -39,18 +39,24 @@ import {
 	accountById,
 	actingAccount,
 	decodeGrantee,
+	defaultAccountOf,
 	encodeGrantee,
 	keyPrincipal,
 	liveKeyPrincipal,
+	liveTokenPrincipal,
 	memberId,
 	newApiKeySecret,
+	newPersonalTokenSecret,
 	type PersonPrincipal,
 	type Principal,
 	personalAccountIdOf,
 	requireGrantable,
 	requirePerson,
 	requireScope,
+	requireSignIn,
+	requireUnlimitedToken,
 	roleIn,
+	tokenRefusal,
 } from "./auth.ts";
 import {
 	type BackendCapabilities,
@@ -116,6 +122,7 @@ import type {
 	StoredHost,
 	StoredIdempotency,
 	StoredInvite,
+	StoredPersonalToken,
 	StoredProxy,
 	StoredSample,
 	StoredSandbox,
@@ -2845,8 +2852,86 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		name: account.name,
 		role,
 		defaultVisibility: account.defaultVisibility,
+		personalTokens: account.personalTokens ?? "allowed",
 		createdAt: account.createdAt,
 	});
+
+	const personalTokenView = (token: StoredPersonalToken): computeSchema.PersonalToken => ({
+		id: token.id,
+		name: token.name,
+		prefix: token.prefix,
+		...(token.scopes === undefined ? {} : { scopes: [...token.scopes] }),
+		...(token.accounts === undefined ? {} : { accounts: [...token.accounts] }),
+		createdAt: token.createdAt,
+		expiresAt: token.expiresAt,
+		lastUsedAt: token.lastUsedAt,
+		revokedAt: token.revokedAt,
+	});
+
+	/**
+	 * A personal access token for `person`, as `createPersonalToken` and a personal device sign-in make one: its scopes
+	 * and accounts held to the token `person` signed in with, if any, and every account named checked as one they may act
+	 * in now. Not stored: the caller stores it, once the rest of what it does is done.
+	 */
+	async function newPersonalToken(
+		person: PersonPrincipal,
+		input: {
+			readonly name: string;
+			readonly scopes?: readonly computeSchema.ApiKeyScope[];
+			readonly accounts?: readonly string[];
+			readonly expiresInDays?: number;
+		},
+	): Promise<{ token: StoredPersonalToken; secret: string }> {
+		const days = input.expiresInDays ?? computeSchema.PERSONAL_TOKEN_DEFAULT_DAYS;
+		if (days > computeSchema.PERSONAL_TOKEN_MAX_DAYS) {
+			throw new KantelError(
+				"invalid",
+				`A personal access token lasts at most ${computeSchema.PERSONAL_TOKEN_MAX_DAYS} days`,
+			);
+		}
+		const scopes = input.scopes === undefined ? undefined : unique([...input.scopes]);
+		if (scopes?.includes("hosts:admin")) {
+			throw new KantelError("invalid", "A personal access token can't hold hosts:admin: use a super-admin's API key");
+		}
+		const limits = person.token;
+		const accounts =
+			input.accounts === undefined
+				? limits?.accounts === undefined
+					? undefined
+					: [...limits.accounts]
+				: unique([...input.accounts]);
+		if (limits !== undefined) {
+			if (limits.scopes !== undefined) {
+				if (scopes === undefined)
+					throw new KantelError("forbidden", "A token with scopes can only make tokens with scopes");
+				requireGrantable(person, scopes);
+			}
+			if (limits.accounts !== undefined && accounts?.some((id) => !limits.accounts?.includes(id))) {
+				throw new KantelError("forbidden", "A token can only make tokens for the accounts it has");
+			}
+		}
+		for (const accountId of accounts ?? []) {
+			if ((await roleIn(store, person, accountId)) === undefined) {
+				throw new KantelError("forbidden", `You can't act in ${accountId}`);
+			}
+		}
+		const expiresAt = Math.min(now() + days * DAY_MS, limits?.expiresAt ?? Number.POSITIVE_INFINITY);
+		const { secret, prefix, hash } = await newPersonalTokenSecret();
+		return {
+			token: {
+				id: randomId("pat"),
+				name: input.name,
+				prefix,
+				...(scopes === undefined ? {} : { scopes }),
+				...(accounts === undefined ? {} : { accounts }),
+				createdAt: now(),
+				expiresAt,
+				secretHash: hash,
+				userId: person.userId,
+			},
+			secret,
+		};
+	}
 
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
@@ -3099,6 +3184,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function watcherNow(principal: Principal): Promise<Principal | undefined> {
 		if (principal.kind === "key") return liveKeyPrincipal(store, principal.keyId, now());
+		if (principal.token !== undefined) return liveTokenPrincipal(store, principal.token.id, now());
 		if (principal.session !== undefined && options.sessionLive !== undefined) {
 			if (!(await options.sessionLive(principal.session))) return undefined;
 		}
@@ -4155,6 +4241,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const key of keys) {
 			if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
 		}
+		// And every personal access token of theirs.
+		for (const token of await store.personalTokens.list({ userId })) {
+			if (token.revokedAt === undefined) await store.personalTokens.put({ ...token, revokedAt: now() });
+		}
 		// And the answers kept for their retries (`once`), theirs and their keys': some hold what they made.
 		const callers = [`user:${userId}:`, ...keys.map((key) => `key:${key.id}:`)];
 		for (const kept of await store.idempotency.list()) {
@@ -5014,7 +5104,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const accounts: computeSchema.Account[] = [];
 		for (const member of await store.members.list({ userId: principal.userId })) {
 			const account = await store.accounts.get(member.accountId);
-			if (account !== undefined) accounts.push(accountView(personalNamed(account, personName(principal)), member.role));
+			// A personal token lists only the accounts it may act in.
+			if (account === undefined || (await tokenRefusal(store, principal, account.id)) !== undefined) continue;
+			accounts.push(accountView(personalNamed(account, personName(principal)), member.role));
 		}
 		return accounts.sort((a, b) =>
 			a.id === principal.personalAccountId ? -1 : b.id === principal.personalAccountId ? 1 : a.createdAt - b.createdAt,
@@ -5034,6 +5126,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const deviceLoginView = (login: StoredDeviceLogin): computeSchema.DeviceLoginRequest => ({
 		userCode: login.userCode,
 		clientName: login.clientName,
+		...(login.personal === true ? { personal: true } : {}),
 		state: login.state === "pending" && login.expiresAt <= now() ? "expired" : login.state,
 		createdAt: login.createdAt,
 		expiresAt: login.expiresAt,
@@ -5066,6 +5159,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				id: await sha256Hex(deviceCode),
 				userCode,
 				clientName: body.clientName ?? "kantel",
+				...(body.personal === true ? { personal: true } : {}),
 				state: "pending",
 				createdAt: at,
 				expiresAt: at + DEVICE_LOGIN_TTL_MS,
@@ -5089,6 +5183,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const id = await sha256Hex(body.deviceCode);
 			const login = await store.deviceLogins.get(id);
 			if (login === undefined) throw new KantelError("not_found", "No such sign-in");
+			if (login.state === "approved" && login.secret !== undefined && login.personalTokenId !== undefined) {
+				const collected = await store.deviceLogins.update(id, (current) =>
+					current.secret === undefined ? undefined : { ...current, secret: undefined, collectedAt: now() },
+				);
+				const token = await store.personalTokens.get(login.personalTokenId);
+				if (collected === undefined || token === undefined) return { state: "expired" };
+				return { state: "approved", token: { token: personalTokenView(token), secret: login.secret } };
+			}
 			if (login.state === "approved" && login.secret !== undefined && login.apiKeyId !== undefined) {
 				// Only the first poll that sees it gets the secret, which is then dropped.
 				const collected = await store.deviceLogins.update(id, (current) =>
@@ -5107,14 +5209,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Device sign-ins, which a person approves on the console's page.
 
 		getDeviceLogin: async (principal, { params }) => {
-			requirePerson(principal);
+			requireSignIn(principal, "Approving a sign-in");
 			return deviceLoginView(await pendingDeviceLogin(params.userCode));
 		},
 
 		approveDeviceLogin: async (principal, { params, body }) => {
-			const person = requirePerson(principal);
+			const person = requireSignIn(principal, "Approving a sign-in");
 			const login = await pendingDeviceLogin(params.userCode);
 			if (login.state !== "pending") throw new KantelError("conflict", `The sign-in is already ${login.state}`);
+			if (login.personal === true) {
+				// A personal token acts as its approver with their role, so any member may approve one: no account:admin.
+				const { token, secret } = await newPersonalToken(person, {
+					name: login.clientName,
+					...(body.preset === undefined
+						? {}
+						: { scopes: computeSchema.API_KEY_PRESETS[body.preset].filter((scope) => scope !== "hosts:admin") }),
+					...(body.accounts === undefined ? {} : { accounts: body.accounts }),
+					expiresInDays: Math.min(body.expiresInDays ?? DEVICE_LOGIN_KEY_DAYS, computeSchema.PERSONAL_TOKEN_MAX_DAYS),
+				});
+				const approved = await store.deviceLogins.update(login.id, (current) =>
+					current.state === "pending"
+						? { ...current, state: "approved", personalTokenId: token.id, secret, decidedBy: person.userId }
+						: undefined,
+				);
+				if (approved === undefined) throw new KantelError("conflict", "The sign-in was decided meanwhile");
+				await store.personalTokens.put(token);
+				return deviceLoginView(approved);
+			}
 			const { account, role } = await actingAccount(store, person, body.account);
 			requireScope(person, "account:admin", role);
 			const scopes =
@@ -5146,7 +5267,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		denyDeviceLogin: async (principal, { params }) => {
-			const person = requirePerson(principal);
+			const person = requireSignIn(principal, "Denying a sign-in");
 			const login = await pendingDeviceLogin(params.userCode);
 			if (login.state !== "pending") throw new KantelError("conflict", `The sign-in is already ${login.state}`);
 			const denied = await store.deviceLogins.update(login.id, (current) =>
@@ -5175,7 +5296,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			return {
 				user: { id: principal.userId, name: personName(principal), email: principal.email },
-				accountId: principal.personalAccountId,
+				...(principal.token === undefined
+					? {}
+					: {
+							personalToken: {
+								id: principal.token.id,
+								name: principal.token.name,
+								...(principal.token.scopes === undefined ? {} : { scopes: [...principal.token.scopes] }),
+								...(principal.token.accounts === undefined ? {} : { accounts: [...principal.token.accounts] }),
+								expiresAt: principal.token.expiresAt,
+							},
+						}),
+				accountId: defaultAccountOf(principal),
 				accounts,
 				superAdmin: principal.superAdmin,
 				mode,
@@ -5185,7 +5317,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		deleteCaller: async (principal) => {
-			const person = requirePerson(principal);
+			const person = requireSignIn(principal, "Deleting your account");
 			// The deployment's own administrators are its operator's to remove, not their own: the deployment needs one.
 			if (person.superAdmin || (await options.deploymentAdmin?.(person.userId)) === true) {
 				throw new KantelError("forbidden", "A deployment super-admin can't delete their account");
@@ -5238,6 +5370,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		createOrganisation: async (principal, { body, idempotencyKey }) => {
 			const person = requirePerson(principal);
+			requireUnlimitedToken(principal, "Making an organisation");
 			return once(principal, "createOrganisation", { body, idempotencyKey }, async () => {
 				const account: StoredAccount = {
 					id: randomId("acc"),
@@ -5260,6 +5393,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		joinOrganisation: async (principal, { body }) => {
 			const person = requirePerson(principal);
+			requireUnlimitedToken(principal, "Joining an organisation");
 			const [invite] = await store.invites.list({ codeHash: await sha256Hex(body.code) });
 			if (invite === undefined) throw notFound("invite");
 			if (invite.revokedAt !== undefined || invite.usedAt !== undefined || invite.expiresAt <= now()) {
@@ -5298,12 +5432,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (account.kind === "personal" && body.defaultVisibility === "organisation") {
 				throw new KantelError("invalid", "A personal account's sandboxes are always private");
 			}
+			if (account.kind === "personal" && body.personalTokens === "blocked") {
+				throw new KantelError("invalid", "Your personal tokens always work in your personal account");
+			}
 			// Only the fields asked for, on the account as it is when written: never a stale copy over a closure (`closedAt`)
 			// written meanwhile, nor an account its deletion has removed.
 			const updated = await store.accounts.update(account.id, (current) => ({
 				...current,
 				name: body.name ?? current.name,
 				defaultVisibility: body.defaultVisibility ?? current.defaultVisibility,
+				...(body.personalTokens === undefined && current.personalTokens === undefined
+					? {}
+					: { personalTokens: body.personalTokens ?? current.personalTokens }),
 			}));
 			if (updated === undefined) throw notFound("account");
 			return accountView(updated, role);
@@ -5315,6 +5455,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = acting;
 			if (account.kind === "personal") throw new KantelError("invalid", "A personal account can't be deleted here");
 			if (role !== "owner") throw new KantelError("forbidden", "Only an owner deletes an organisation");
+			requireScope(principal, "account:admin", role);
 			const sandboxes = (await store.sandboxes.list({ accountId: account.id })).filter(
 				(sandbox) => sandbox.state !== "deleted",
 			);
@@ -7080,6 +7221,59 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return apiKeyView(revoked);
 		},
 
+		// Personal access tokens: a person's own, whichever account they act in.
+
+		listPersonalTokens: async (principal) => {
+			const person = requirePerson(principal);
+			return { items: newestFirst(await store.personalTokens.list({ userId: person.userId })).map(personalTokenView) };
+		},
+
+		createPersonalToken: async (principal, { body, idempotencyKey }) => {
+			const person = requirePerson(principal);
+			const scopes =
+				body.scopes === undefined && body.preset === undefined
+					? undefined
+					: unique([
+							...(body.scopes ?? []),
+							...(body.preset === undefined
+								? []
+								: computeSchema.API_KEY_PRESETS[body.preset].filter((scope) => scope !== "hosts:admin")),
+						]);
+			// Checked before `once`, so a retry answered the first call's secret is held to what the caller may make now.
+			await newPersonalToken(person, {
+				name: body.name,
+				...(scopes === undefined ? {} : { scopes }),
+				...(body.accounts === undefined ? {} : { accounts: body.accounts }),
+				...(body.expiresInDays === undefined ? {} : { expiresInDays: body.expiresInDays }),
+			});
+			return once(
+				principal,
+				"createPersonalToken",
+				{ body, idempotencyKey },
+				async () => {
+					const { token, secret } = await newPersonalToken(person, {
+						name: body.name,
+						...(scopes === undefined ? {} : { scopes }),
+						...(body.accounts === undefined ? {} : { accounts: body.accounts }),
+						...(body.expiresInDays === undefined ? {} : { expiresInDays: body.expiresInDays }),
+					});
+					await store.personalTokens.put(token);
+					return { token: personalTokenView(token), secret };
+				},
+				{ secret: true },
+			);
+		},
+
+		revokePersonalToken: async (principal, { params }) => {
+			const person = requirePerson(principal);
+			const token = await store.personalTokens.get(params.tokenId);
+			if (token === undefined || token.userId !== person.userId) throw notFound("personal access token");
+			const revoked = await store.personalTokens.update(token.id, (current) =>
+				current.revokedAt === undefined ? { ...current, revokedAt: now() } : undefined,
+			);
+			return personalTokenView(revoked ?? token);
+		},
+
 		// The proxy.
 
 		getProxySettings: async (principal, { query }) => {
@@ -7840,13 +8034,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (grantee.session !== undefined && options.sessionLive !== undefined) {
 					if (!(await options.sessionLive(grantee.session))) return false;
 				}
-				principal = {
-					kind: "person",
-					userId: user.id,
-					name: personName({ userId: user.id, name: user.name, email: user.email }),
-					superAdmin: user.superAdmin,
-					personalAccountId: user.personalAccountId,
-				};
+				if (grantee.token !== undefined) {
+					// Given with a personal token: it lasts as long as the token, within the token's limits.
+					const token = await liveTokenPrincipal(store, grantee.token, now());
+					if (token === undefined || token.userId !== user.id) return false;
+					principal = token;
+				} else {
+					principal = {
+						kind: "person",
+						userId: user.id,
+						name: personName({ userId: user.id, name: user.name, email: user.email }),
+						superAdmin: user.superAdmin,
+						personalAccountId: user.personalAccountId,
+					};
+				}
 			}
 			try {
 				await sandboxFor(principal, sandboxId, "access");

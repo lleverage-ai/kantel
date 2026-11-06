@@ -5,6 +5,11 @@
  * time they are seen, and acts in it unless a call's `account` names an organisation they belong to. A person's rights
  * follow their role there: a `member` lacks `account:admin`, an admin or owner has it, and only a deployment
  * super-admin has `hosts:admin`.
+ *
+ * A bearer `kpt_…` is a personal access token: it signs in as its person, as a sign-in does, with limits of its own
+ * (`PersonPrincipal.token`): only the accounts it names, if it names any, and none whose organisation blocks personal
+ * tokens; no scope it doesn't hold, when it holds a set; never as a deployment super-admin; and never for what only a
+ * person at the console does (`requireSignIn`): approving a device's sign-in, or deleting their account.
  */
 import type { computeSchema } from "@kantel/api";
 import { API_KEY_LAST_USED_PRECISION_MS, KantelError } from "@kantel/contracts";
@@ -14,6 +19,7 @@ import {
 	PERSONAL_ACCOUNT_PREFIX,
 	type StoredAccount,
 	type StoredApiKey,
+	type StoredPersonalToken,
 	type StoredUser,
 } from "./store.ts";
 import { randomSecret, sha256Hex } from "./util.ts";
@@ -49,6 +55,17 @@ export interface KeyPrincipal {
 	readonly superAdmin: boolean;
 }
 
+/** What a personal access token limits its person to (`PersonPrincipal.token`). */
+export interface PersonalTokenLimits {
+	readonly id: string;
+	readonly name: string;
+	/** At most these scopes, on top of the person's role. Absent: whatever their role allows. */
+	readonly scopes?: readonly computeSchema.ApiKeyScope[];
+	/** Only these accounts. Absent: every account the person belongs to. */
+	readonly accounts?: readonly string[];
+	readonly expiresAt: number;
+}
+
 /** A call signed in as a person. */
 export interface PersonPrincipal {
 	readonly kind: "person";
@@ -59,6 +76,8 @@ export interface PersonPrincipal {
 	readonly personalAccountId: string;
 	/** The sign-in, when it can be ended (`PersonIdentity.session`). */
 	readonly session?: string;
+	/** Signed in with a personal access token: its limits. */
+	readonly token?: PersonalTokenLimits;
 }
 
 export type Principal = KeyPrincipal | PersonPrincipal;
@@ -70,7 +89,7 @@ export type Principal = KeyPrincipal | PersonPrincipal;
  */
 export type Grantee =
 	| { readonly kind: "key"; readonly keyId: string }
-	| { readonly kind: "person"; readonly userId: string; readonly session?: string };
+	| { readonly kind: "person"; readonly userId: string; readonly session?: string; readonly token?: string };
 
 /** The grantee a principal is, as the relay keeps it. */
 export function encodeGrantee(principal: Principal): string {
@@ -81,6 +100,7 @@ export function encodeGrantee(principal: Principal): string {
 					kind: "person",
 					userId: principal.userId,
 					...(principal.session === undefined ? {} : { session: principal.session }),
+					...(principal.token === undefined ? {} : { token: principal.token.id }),
 				};
 	return JSON.stringify(grantee);
 }
@@ -94,14 +114,16 @@ export function decodeGrantee(text: string): Grantee | undefined {
 		return undefined;
 	}
 	if (typeof value !== "object" || value === null) return undefined;
-	const record = value as { kind?: unknown; keyId?: unknown; userId?: unknown; session?: unknown };
+	const record = value as { kind?: unknown; keyId?: unknown; userId?: unknown; session?: unknown; token?: unknown };
 	if (record.kind === "key" && typeof record.keyId === "string") return { kind: "key", keyId: record.keyId };
 	if (record.kind === "person" && typeof record.userId === "string") {
 		if (record.session !== undefined && typeof record.session !== "string") return undefined;
+		if (record.token !== undefined && typeof record.token !== "string") return undefined;
 		return {
 			kind: "person",
 			userId: record.userId,
 			...(record.session === undefined ? {} : { session: record.session }),
+			...(record.token === undefined ? {} : { token: record.token }),
 		};
 	}
 	return undefined;
@@ -131,6 +153,14 @@ export class UnauthenticatedError extends Error {
 
 /** The prefix of every API key's secret. */
 export const API_KEY_PREFIX = "ksk_";
+/** A personal access token's secret starts with this. */
+export const PERSONAL_TOKEN_PREFIX = "kpt_";
+
+/** A new personal access token's secret, `kpt_` and 32 base62 characters, with its prefix and hash. */
+export async function newPersonalTokenSecret(): Promise<{ secret: string; prefix: string; hash: string }> {
+	const secret = randomSecret(PERSONAL_TOKEN_PREFIX, 32);
+	return { secret, prefix: secret.slice(0, 8), hash: await sha256Hex(secret) };
+}
 
 /** A new API key secret, `ksk_` and 32 base62 characters, with its prefix and hash. */
 export async function newApiKeySecret(): Promise<{ secret: string; prefix: string; hash: string }> {
@@ -320,6 +350,50 @@ export async function liveKeyPrincipal(
 	return keyPrincipal(key);
 }
 
+/**
+ * A personal access token while it is neither revoked nor expired and its person is still here: not retired, and with
+ * no account deletion recorded (a token made while the deletion ran works nowhere either).
+ */
+async function liveToken(
+	store: ComputeStore,
+	token: StoredPersonalToken | undefined,
+	now: number,
+): Promise<{ token: StoredPersonalToken; user: StoredUser } | undefined> {
+	if (token === undefined || token.revokedAt !== undefined || token.expiresAt <= now) return undefined;
+	const [user, deletion] = await Promise.all([store.users.get(token.userId), store.deletions.get(token.userId)]);
+	if (user === undefined || user.retiredAt !== undefined || deletion !== undefined) return undefined;
+	return { token, user };
+}
+
+/** The principal a personal access token signs in as. Never a super-admin: a token doesn't manage the deployment. */
+export function tokenPrincipal(token: StoredPersonalToken, user: StoredUser): PersonPrincipal {
+	return {
+		kind: "person",
+		userId: user.id,
+		name: personName({ userId: user.id, name: user.name, email: user.email }),
+		superAdmin: false,
+		personalAccountId: user.personalAccountId,
+		...(user.email === undefined ? {} : { email: user.email }),
+		token: {
+			id: token.id,
+			name: token.name,
+			...(token.scopes === undefined ? {} : { scopes: token.scopes }),
+			...(token.accounts === undefined ? {} : { accounts: token.accounts }),
+			expiresAt: token.expiresAt,
+		},
+	};
+}
+
+/** The principal the personal access token with `tokenId` is now, while it works. */
+export async function liveTokenPrincipal(
+	store: ComputeStore,
+	tokenId: string,
+	now: number,
+): Promise<PersonPrincipal | undefined> {
+	const live = await liveToken(store, await store.personalTokens.get(tokenId), now);
+	return live === undefined ? undefined : tokenPrincipal(live.token, live.user);
+}
+
 /** Who is calling; rejects with `UnauthenticatedError` for no bearer or one that is not valid. */
 export async function authenticate(request: Request, options: AuthenticateOptions): Promise<Principal> {
 	const { store, now } = options;
@@ -345,6 +419,22 @@ export async function authenticate(request: Request, options: AuthenticateOption
 				.catch(() => undefined);
 		}
 		return keyPrincipal(key);
+	}
+	if (token.startsWith(PERSONAL_TOKEN_PREFIX)) {
+		const [found] = await store.personalTokens.list({ secretHash: await sha256Hex(token) });
+		const live = await liveToken(store, found, now);
+		if (live === undefined) throw new UnauthenticatedError("The personal access token is not valid");
+		// Its use is recorded as a key's is: at most once a minute, off the call's path, never over a revoke.
+		const stale = (lastUsedAt: number | undefined) =>
+			lastUsedAt === undefined || now - lastUsedAt >= API_KEY_LAST_USED_PRECISION_MS;
+		if (stale(live.token.lastUsedAt)) {
+			void store.personalTokens
+				.update(live.token.id, (current) =>
+					current.revokedAt === undefined && stale(current.lastUsedAt) ? { ...current, lastUsedAt: now } : undefined,
+				)
+				.catch(() => undefined);
+		}
+		return tokenPrincipal(live.token, live.user);
 	}
 	const identity = await options.authenticatePerson?.(request);
 	if (identity === undefined) throw new UnauthenticatedError("The credentials are not valid");
@@ -391,9 +481,43 @@ export async function roleIn(
 	accountId: string,
 ): Promise<computeSchema.MemberRole | undefined> {
 	if (principal.kind === "key" && principal.accountId !== accountId) return undefined;
+	if ((await tokenRefusal(store, principal, accountId)) !== undefined) return undefined;
 	const member = await store.members.get(memberId(accountId, principal.userId));
 	if (member !== undefined) return member.role;
 	return principal.kind === "key" ? "member" : undefined;
+}
+
+/**
+ * Why a personal access token may not act in an account, or undefined when it may (or the caller isn't one): it names
+ * other accounts, or the account is an organisation that blocks personal tokens.
+ */
+export async function tokenRefusal(
+	store: ComputeStore,
+	principal: Principal,
+	accountId: string,
+): Promise<string | undefined> {
+	if (principal.kind !== "person" || principal.token === undefined) return undefined;
+	const { accounts } = principal.token;
+	if (accounts !== undefined && !accounts.includes(accountId)) {
+		return accountId === principal.personalAccountId
+			? `The personal access token ${principal.token.name} can't act in your personal account; name one of its accounts (${accounts.join(", ")})`
+			: `The personal access token ${principal.token.name} can't act in that account`;
+	}
+	const account = await store.accounts.get(accountId);
+	if (account?.kind === "organisation" && account.personalTokens === "blocked") {
+		return `${account.name} doesn't allow personal access tokens: use the console, or one of its API keys`;
+	}
+	return undefined;
+}
+
+/** The account a call acts in when it names none: a key's own; a person's personal account, or a token's one account. */
+export function defaultAccountOf(principal: Principal): string {
+	if (principal.kind === "key") return principal.accountId;
+	const accounts = principal.token?.accounts;
+	if (accounts?.length === 1 && accounts[0] !== undefined && accounts[0] !== principal.personalAccountId) {
+		return accounts[0];
+	}
+	return principal.personalAccountId;
 }
 
 /** An account the caller acts in, and their role there. */
@@ -411,11 +535,12 @@ export async function actingAccount(
 	principal: Principal,
 	requested: string | undefined,
 ): Promise<Acting> {
-	const own = principal.kind === "key" ? principal.accountId : principal.personalAccountId;
 	if (principal.kind === "key" && requested !== undefined && requested !== principal.accountId) {
 		throw new KantelError("forbidden", "An API key acts in its own account only");
 	}
-	const accountId = requested ?? own;
+	const accountId = requested ?? defaultAccountOf(principal);
+	const refusal = await tokenRefusal(store, principal, accountId);
+	if (refusal !== undefined) throw new KantelError("forbidden", refusal);
 	// Two reads that don't depend on each other: one round trip.
 	const [role, account] = await Promise.all([roleIn(store, principal, accountId), store.accounts.get(accountId)]);
 	if (role === undefined || account === undefined) {
@@ -447,6 +572,10 @@ export function requireScope(
 		if (!principal.scopes.includes(scope)) throw new KantelError("forbidden", `This key lacks the ${scope} scope`);
 		return;
 	}
+	const capped = principal.token?.scopes;
+	if (capped !== undefined && !capped.includes(scope)) {
+		throw new KantelError("forbidden", `This personal access token lacks the ${scope} scope`);
+	}
 	if (scope === "hosts:admin" && !principal.superAdmin) {
 		throw new KantelError("forbidden", "Only a deployment super-admin manages hosts");
 	}
@@ -455,10 +584,37 @@ export function requireScope(
 	}
 }
 
-/** Refuses a key: for the routes only people may call. */
+/** Refuses a key: for the routes only people may call (a person's personal access token may). */
 export function requirePerson(principal: Principal): PersonPrincipal {
 	if (principal.kind !== "person") throw new KantelError("forbidden", "Only a person may do this, not an API key");
 	return principal;
+}
+
+/**
+ * Refuses a key and a personal access token: for what only a person signed in at the console does, such as approving
+ * another device's sign-in or deleting their account, so a leaked token can do neither.
+ */
+export function requireSignIn(principal: Principal, what: string): PersonPrincipal {
+	const person = requirePerson(principal);
+	if (person.token !== undefined) {
+		throw new KantelError("forbidden", `${what} needs you signed in at the console, not a personal access token`);
+	}
+	return person;
+}
+
+/**
+ * Refuses a personal access token limited to some accounts, or lacking `account:admin` when it has scopes: for what
+ * reaches past the accounts a token names, such as making or joining an organisation.
+ */
+export function requireUnlimitedToken(principal: Principal, what: string): void {
+	const token = principal.kind === "person" ? principal.token : undefined;
+	if (token === undefined) return;
+	if (token.accounts !== undefined) {
+		throw new KantelError("forbidden", `${what} needs a personal access token for all your accounts`);
+	}
+	if (token.scopes !== undefined && !token.scopes.includes("account:admin")) {
+		throw new KantelError("forbidden", `This personal access token lacks the account:admin scope`);
+	}
 }
 
 /**
@@ -469,6 +625,10 @@ export function requireGrantable(principal: Principal, scopes: readonly computeS
 	for (const scope of scopes) {
 		if (principal.kind === "key" && !principal.scopes.includes(scope)) {
 			throw new KantelError("forbidden", `A key can't grant ${scope}, which it doesn't hold`);
+		}
+		const capped = principal.kind === "person" ? principal.token?.scopes : undefined;
+		if (capped !== undefined && !capped.includes(scope)) {
+			throw new KantelError("forbidden", `A personal access token can't grant ${scope}, which it doesn't hold`);
 		}
 		if (scope === "hosts:admin" && !principal.superAdmin) {
 			throw new KantelError("forbidden", "Only a deployment super-admin may grant hosts:admin");

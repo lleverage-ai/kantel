@@ -321,6 +321,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		commands: sqlCollection(driver, "commands"),
 		snapshots: sqlCollection(driver, "snapshots"),
 		apiKeys: sqlCollection(driver, "apiKeys"),
+		personalTokens: sqlCollection(driver, "personalTokens"),
 		webhooks: sqlCollection(driver, "webhooks"),
 		deliveries: sqlCollection(driver, "deliveries"),
 		telemetry: sqlCollection(driver, "telemetry"),
