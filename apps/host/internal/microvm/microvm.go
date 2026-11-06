@@ -2687,7 +2687,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		}
 		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: true, Tier: Tier}
 		var err error
-		if spooled, err = m.liveSnapshot(ctx, src, &snap, t, !m.cfg.KeepForkSnapshots); err != nil {
+		if spooled, err = m.liveSnapshot(ctx, src, &snap, t, !m.cfg.KeepForkSnapshots, nil); err != nil {
 			src.mu.Unlock()
 			return proto.SandboxInfo{}, err
 		}
@@ -2753,7 +2753,10 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 //
 // transient is a snapshot deleted once used (a live fork's): memory spooled to RAM isn't queued for the disk, and its
 // spool file is returned for the caller to cancel once the snapshot has gone.
-func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings, transient bool) (spooled string, err error) {
+//
+// reserve, where it isn't nil, reserves the snapshot's room on the disk once the machine is paused and its disk can no
+// longer change, before anything is copied (pausedForCopy); refused, the machine is resumed and the refusal answered.
+func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings, transient bool, reserve func() (func(), error)) (spooled string, err error) {
 	// Before anything is written: the ID is joined under snapshots/, so one such as ../sandboxes/<id>/vm would put this
 	// sandbox's disk into another's.
 	if !validID(snap.ID) {
@@ -2769,11 +2772,12 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	// Firecracker resets the VM's vsock connections when it snapshots: a kept-alive one would answer the next call
 	// with EOF (seen after a live fork). Drop them so the next call dials afresh.
 	s.guest.Close()
-	resume, err := m.pauseMachine(ctx, s)
+	resume, release, err := pausedForCopy(func() (func() error, error) { return m.pauseMachine(ctx, s) }, m.diskBarrier(s), reserve)
 	if err != nil {
 		os.RemoveAll(sdir)
 		return "", err
 	}
+	defer release()
 	defer func() {
 		// The snapshot is whole either way; a VM that won't resume has been stopped (pauseMachine), not left frozen.
 		if rerr := resume(); rerr != nil {
@@ -2924,7 +2928,7 @@ const diskCopies = 4
 //
 // With no memory kept, what the guest hadn't written back would be lost without a word: a sync that fails fails the
 // save, the VM running on as it was.
-func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo) error {
+func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, reserve func() (func(), error)) error {
 	if !validID(snap.ID) {
 		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
 	}
@@ -2936,11 +2940,12 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 		os.RemoveAll(sdir)
 		return fmt.Errorf("the sandbox couldn't write its files back to its disk for the snapshot: %w", err)
 	}
-	resume, err := m.pauseMachine(ctx, s)
+	resume, release, err := pausedForCopy(func() (func() error, error) { return m.pauseMachine(ctx, s) }, m.diskBarrier(s), reserve)
 	if err != nil {
 		os.RemoveAll(sdir)
 		return err
 	}
+	defer release()
 	barrier := func() error {
 		bctx, cancel := context.WithTimeout(context.Background(), resumeWait)
 		defer cancel()
@@ -2961,6 +2966,16 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 		return err
 	}
 	return nil
+}
+
+// diskBarrier waits, bounded by resumeWait, until no write of s's guest is in flight (fc.Machine.Barrier: with the Sync
+// io_engine, a round trip to the VM's API answers only once the writes before it are done).
+func (m *Manager) diskBarrier(s *sandbox) func() error {
+	return func() error {
+		bctx, cancel := context.WithTimeout(context.Background(), resumeWait)
+		defer cancel()
+		return s.machine.Barrier(bctx)
+	}
 }
 
 // resumeWait bounds each try to resume a VM paused for a snapshot, apart from the call's context: a caller that has
@@ -3157,22 +3172,84 @@ const snapshotHeadroom = 10 << 30
 // through, its copy's size is reserved until release is called, once the copy is done or has failed. A file system
 // that can't be measured is let through.
 func (m *Manager) roomForSnapshot(s *sandbox, disk string) (release func(), err error) {
+	return m.reserveSnapshotRoom(disk, 0, func(free, size int64) error {
+		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", size+snapshotHeadroom)
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
+	})
+}
+
+// roomToSave is roomForSnapshot for a snapshot taken or saved by hand (SaveSnapshot): its disk's copy, and for a
+// running sandbox its memory as well, which reaches the disk even when it goes to RAM first. Refused, it says how
+// much is free, and the control plane passes that on (exhausted). A keep (KeepSnapshot) links its source's files and
+// takes no room, so it isn't asked.
+func (m *Manager) roomToSave(s *sandbox, withMemory bool) (release func(), err error) {
+	var memory int64
+	if withMemory {
+		if size, err := m.size(s.meta.Size); err == nil {
+			memory = int64(size.MemoryMiB) << 20
+		}
+	}
+	return m.reserveSnapshotRoom(filepath.Join(s.vmDir(), fc.DiskFile), memory, func(free, size int64) error {
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
+			"This host has %s of disk free, and a snapshot of this sandbox needs about %s and must leave %s free. Delete snapshots you no longer need, or free space on the host, and try again.",
+			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
+	})
+}
+
+// pausedForCopy pauses a machine (pause), waits until no write of its guest is in flight (barrier, fc.Machine.Barrier),
+// and then, its disk still, reserves the copy's room (reserve; nil reserves nothing, and waits for nothing): measured now, it is exact, where a measure taken while it ran could be outgrown by the writes its guest
+// flushed before the pause. Refused, the machine is resumed (pause's resume, which stops one that won't) and the
+// refusal answered. Otherwise the caller resumes it, and releases the room once the copy is written.
+func pausedForCopy(
+	pause func() (func() error, error),
+	barrier func() error,
+	reserve func() (func(), error),
+) (resume func() error, release func(), err error) {
+	resume, err = pause()
+	if err != nil {
+		return nil, nil, err
+	}
+	if reserve == nil {
+		return resume, func() {}, nil
+	}
+	// No guest write still in flight once the barrier answers: the disk measured after it is the disk copied.
+	if err := barrier(); err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("the sandbox's disk couldn't be settled for the snapshot: %w", err), resume())
+	}
+	release, err = reserve()
+	if err != nil {
+		return nil, nil, errors.Join(err, resume())
+	}
+	return resume, release, nil
+}
+
+// gibText is a byte count in GiB, to one decimal place.
+func gibText(n int64) string {
+	return fmt.Sprintf("%.1f GiB", float64(n)/float64(1<<30))
+}
+
+// reserveSnapshotRoom reserves the room a snapshot's copy of disk (its allocated blocks) and extra bytes take, until
+// release, when the file system has that and snapshotHeadroom free beside what other copies have reserved; else it
+// answers refuse's error, given the free bytes and the size. A file system that can't be measured is let through.
+func (m *Manager) reserveSnapshotRoom(disk string, extra int64, refuse func(free, size int64) error) (release func(), err error) {
 	statfs := m.statfs
 	if statfs == nil {
 		statfs = syscall.Statfs
 	}
-	size := diskUsage(disk)
+	size := diskUsage(disk) + extra
 	m.snapshotRoom.Lock()
 	defer m.snapshotRoom.Unlock()
+	// Memory still in the RAM spool reaches this disk once it is flushed: counted as taken already. Read before the
+	// file system, so a flush that finishes between the two reads is counted twice (in both), never in neither.
+	pending := m.spool.pending()
 	var st syscall.Statfs_t
 	if err := statfs(filepath.Join(m.cfg.Root, "snapshots"), &st); err != nil {
 		return func() {}, nil
 	}
-	free := int64(st.Bavail)*st.Bsize - m.snapshotReserved
+	free := int64(st.Bavail)*st.Bsize - m.snapshotReserved - pending
 	need := size + snapshotHeadroom
 	if free < need {
-		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", need)
-		return nil, &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
+		return nil, refuse(free, size)
 	}
 	m.snapshotReserved += size
 	var once sync.Once
@@ -3379,14 +3456,29 @@ func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (pro
 	switch s.meta.State {
 	case proto.StateRunning:
 		snap.Memory = p.Memory
-		m.trimDisk(ctx, s)
-		if !snap.Memory {
-			return snap, m.liveDiskSnapshot(ctx, s, &snap)
+		// Memory too only when it is asked for: the disk alone otherwise.
+		// A cheap refusal first, before the trim; the room is reserved for good once the machine is paused, its disk
+		// still (pausedForCopy), since the guest's writes flushed before the pause may grow it.
+		early, err := m.roomToSave(s, snap.Memory)
+		if err != nil {
+			return snap, err
 		}
-		_, err := m.liveSnapshot(ctx, s, &snap, timings{}, false)
+		early()
+		m.trimDisk(ctx, s)
+		reserve := func() (func(), error) { return m.roomToSave(s, snap.Memory) }
+		if !snap.Memory {
+			return snap, m.liveDiskSnapshot(ctx, s, &snap, reserve)
+		}
+		_, err = m.liveSnapshot(ctx, s, &snap, timings{}, false, reserve)
 		return snap, err
 	case proto.StateStopped:
-		// As its stop left it, as a save of a stopped sandbox or a history entry is: memory only matters live.
+		// As its stop left it, as a save of a stopped sandbox or a history entry is: memory only matters live. Its memory,
+		// if any, is linked, not copied: only its disk takes room.
+		release, err := m.roomToSave(s, false)
+		if err != nil {
+			return snap, err
+		}
+		defer release()
 		snap.Memory = s.meta.Memory
 		return snap, m.saveSnapshot(s, &snap, false)
 	default:

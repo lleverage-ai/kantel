@@ -25,6 +25,11 @@ export interface BackendShape {
 
 /** A host feature: it makes microVMs of any shape, not only its named sizes (`@kantel/hosts`'s `custom-shapes`). */
 export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
+/**
+ * A host that keeps a saved snapshot as a copy with a ref of its own (`keepSnapshot`, `HOST_FEATURES.snapshotKeep`), so
+ * no two of its snapshot records ever share a ref.
+ */
+export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
 
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
