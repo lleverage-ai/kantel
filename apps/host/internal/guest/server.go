@@ -40,6 +40,9 @@ type Server struct {
 	Injected bool
 	// Init is PID 1: "systemd" (the image's) or "kantel" (kantel-guest init's own, for an image without systemd).
 	Init string
+	// Trampoline, when set, is this agent's own executable: every command starts through its exec-command, which
+	// gives it an ordinary OOM score before it becomes the command (see ExecCommandMain).
+	Trampoline string
 	// Mounts are the sandbox's read-only bucket mounts (POST /mounts); nil refuses them.
 	Mounts *Mounts
 
@@ -585,6 +588,10 @@ func (s *Server) buildCommand(ctx context.Context, req *ExecRequest) (*exec.Cmd,
 		attr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}
 	}
 	cmd.SysProcAttr = attr
+	if s.Trampoline != "" && cmd.Err == nil {
+		cmd.Args = append([]string{cmd.Args[0], ExecCommandVerb, cmd.Path}, cmd.Args...)
+		cmd.Path = s.Trampoline
+	}
 	// Kill the whole process group on timeout or a kill, not just bash.
 	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }
 	cmd.WaitDelay = 2 * time.Second
@@ -662,7 +669,16 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, err)
 			return
 		}
-		go func() { _ = cmd.Wait() }()
+		oomBefore := OOMKills()
+		go func() {
+			_ = cmd.Wait()
+			if note := OOMNote(oomBefore); note != "" {
+				if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0); err == nil {
+					_, _ = f.WriteString(note)
+					_ = f.Close()
+				}
+			}
+		}()
 		writeJSON(w, 200, ExecResult{Pid: cmd.Process.Pid, Stdout: logPath})
 		return
 	}
@@ -715,12 +731,16 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		defer s.commands.mu.Unlock()
 		return run.killed
 	}
+	oomBefore := OOMKills()
 	if req.Stream {
-		s.execStream(ctx, w, cmd, killed)
+		s.execStream(ctx, w, cmd, killed, oomBefore)
 		return
 	}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err = cmd.Run()
+	if note := OOMNote(oomBefore); note != "" {
+		_, _ = stderr.Write([]byte(note))
+	}
 	result := ExecResult{Stdout: string(stdout.buf), Stderr: string(stderr.buf), Truncated: stdout.truncated || stderr.truncated, DurationMs: time.Since(started).Milliseconds()}
 	result.ExitCode = exitCode(err)
 	if killed() {
@@ -781,7 +801,7 @@ func (p *streamPipe) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd, killed func() bool) {
+func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd, killed func() bool, oomBefore int64) {
 	w.Header().Set("content-type", "application/x-ndjson")
 	w.WriteHeader(200)
 	flusher, _ := w.(http.Flusher)
@@ -789,6 +809,9 @@ func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exe
 	cmd.Stdout = &streamPipe{events: events}
 	cmd.Stderr = &streamPipe{events: events, stderr: true}
 	err := cmd.Run()
+	if note := OOMNote(oomBefore); note != "" {
+		events.emit(ExecEvent{Stderr: base64.StdEncoding.EncodeToString([]byte(note))})
+	}
 	code := exitCode(err)
 	if killed() {
 		code = 137

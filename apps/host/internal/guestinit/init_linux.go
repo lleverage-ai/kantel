@@ -186,6 +186,7 @@ ExecStart=` + agentPath + ` serve --injected --init systemd
 Restart=always
 RestartSec=200ms
 OOMScoreAdjust=-1000
+OOMPolicy=continue
 
 [Install]
 WantedBy=sysinit.target
@@ -197,6 +198,8 @@ const dropIn = `# Written at each boot by Kantel's initramfs (kantel-guest init)
 [Service]
 ExecStart=
 ExecStart=` + agentPath + ` serve --injected --init systemd
+# Commands run in the agent's cgroup: one the kernel kills for memory mustn't stop the agent and all the others.
+OOMPolicy=continue
 `
 
 // WriteUnit makes root's systemd start the injected agent, for this boot only: in its runtime units

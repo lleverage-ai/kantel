@@ -20,6 +20,10 @@ func TestWriteUnitIsRuntimeOnly(t *testing.T) {
 		if err != nil || !strings.Contains(string(raw), agentPath) {
 			t.Fatalf("unit %q: %v", raw, err)
 		}
+		// A command killed for memory mustn't stop the agent's unit, and with it every other command.
+		if !strings.Contains(string(raw), "\nOOMPolicy=continue\n") {
+			t.Errorf("unit without OOMPolicy=continue: %q", raw)
+		}
 		link, err := os.Readlink(filepath.Join(root, "run/systemd/system/sysinit.target.wants", unitName))
 		if err != nil || link != "/run/systemd/system/"+unitName {
 			t.Errorf("wants link %q: %v", link, err)
@@ -43,6 +47,9 @@ func TestWriteUnitIsRuntimeOnly(t *testing.T) {
 		raw, err := os.ReadFile(filepath.Join(root, "run/systemd/system", unitName+".d", "50-kantel-injected.conf"))
 		if err != nil || !strings.Contains(string(raw), "ExecStart=\nExecStart="+agentPath) {
 			t.Fatalf("drop-in %q: %v", raw, err)
+		}
+		if !strings.Contains(string(raw), "\nOOMPolicy=continue\n") {
+			t.Errorf("drop-in without OOMPolicy=continue: %q", raw)
 		}
 		if _, err := os.Stat(filepath.Join(root, "run/systemd/system", unitName)); !os.IsNotExist(err) {
 			t.Errorf("a second unit beside the image's: %v", err)

@@ -1844,6 +1844,16 @@ const SECTIONS: readonly Section[] = [
 						value: "<GB>",
 						description: "A microVM's disk in GB, whatever its size (default: its size's); within the hosts' limits",
 					},
+					vcpus: {
+						type: "string",
+						value: "<n>",
+						description: "A microVM's vCPUs, in place of --size; with --memory",
+					},
+					memory: {
+						type: "string",
+						value: "<GB>",
+						description: "A microVM's memory in GB, in place of --size; with --vcpus",
+					},
 					name: { type: "string", value: "<name>", description: "Default: a generated name" },
 					from: {
 						type: "string",
@@ -1891,6 +1901,8 @@ const SECTIONS: readonly Section[] = [
 					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
 					"--disk sizes a microVM's disk apart from its vCPUs and memory (kantel new --type microvm --size large\n" +
 					"--disk 60). A sandbox made from a snapshot keeps the snapshot's disk.\n\n" +
+					"--vcpus and --memory size a microVM beyond the named sizes (kantel new --type microvm --vcpus 8\n" +
+					"--memory 16), within what a host offers. A large monorepo's type-check needs about 16 GB.\n\n" +
 					"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
 					"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
 					"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
@@ -1907,6 +1919,24 @@ const SECTIONS: readonly Section[] = [
 					if (diskGb !== undefined && ctx.string("from") !== undefined) {
 						throw new UsageError("a sandbox made from a snapshot keeps the snapshot's disk: leave out --disk");
 					}
+					const vcpus = whole(ctx.string("vcpus"), "--vcpus");
+					const memory = ctx.string("memory");
+					if (memory !== undefined && !(/^\d+(\.\d+)?$/.test(memory) && Number(memory) > 0)) {
+						throw new UsageError(`--memory is in GB, such as 16 or 0.5, not "${memory}"`);
+					}
+					const memoryMb = memory === undefined ? undefined : Math.round(Number(memory) * 1024);
+					if ((vcpus === undefined) !== (memoryMb === undefined)) {
+						throw new UsageError("give --vcpus and --memory together");
+					}
+					if (vcpus !== undefined) {
+						if (type !== "microvm") throw new UsageError("--vcpus and --memory are a microVM's: add --type microvm");
+						if (ctx.string("size") !== undefined) throw new UsageError("give --size or --vcpus and --memory, not both");
+						if (ctx.string("from") !== undefined) {
+							throw new UsageError(
+								"a sandbox made from a snapshot is that snapshot's machine: leave out --vcpus and --memory",
+							);
+						}
+					}
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
 					// A variable has an =; an environment's name or ID never does.
 					const envs = ctx.list("env");
@@ -1920,7 +1950,14 @@ const SECTIONS: readonly Section[] = [
 						name: ctx.string("name"),
 						type,
 						size: choice(ctx.string("size"), SIZES, "--size"),
-						...(diskGb === undefined ? {} : { resources: { diskGb } }),
+						...(diskGb === undefined && vcpus === undefined
+							? {}
+							: {
+									resources: {
+										...(vcpus === undefined ? {} : { vcpus, memoryMb }),
+										...(diskGb === undefined ? {} : { diskGb }),
+									},
+								}),
 						image: ctx.string("image"),
 						from: ctx.string("from"),
 						autoStopMinutes: autoStopOf(ctx.string("auto-stop")),

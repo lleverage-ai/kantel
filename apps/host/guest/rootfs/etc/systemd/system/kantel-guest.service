@@ -9,6 +9,9 @@ ExecStart=/usr/local/bin/kantel-guest serve
 Restart=always
 RestartSec=200ms
 OOMScoreAdjust=-1000
+# Commands run in this unit's cgroup, so with systemd's default (stop) the kernel killing one for memory would stop the
+# agent and every other command with it. The agent itself is never the one killed (above).
+OOMPolicy=continue
 
 [Install]
 WantedBy=sysinit.target
