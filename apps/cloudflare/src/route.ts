@@ -11,8 +11,9 @@
  *   API path is a 404 there.
  * - `/auth/…`: email-code sign-in and sign-in with GitHub and Google (`/auth/oauth/…`), also the stack object's, which
  *   answers them only on the public origin (KANTEL_PUBLIC_URL) and 404s them elsewhere.
- * - Everything else: the console's static assets (`consoleAsset`), through the `ASSETS` binding. A file the build holds
- *   is served as it is; a miss comes back as a 404 (`not_found_handling: "none"` in wrangler.jsonc). A miss under `/assets/` is a real 404: a chunk
+ * - Everything else: the console's static assets (`consoleAsset`), through the `ASSETS` binding: a service binding to
+ *   the `kantel-console` Worker (wrangler.console.jsonc), or `wrangler dev`'s own assets. A file the build holds
+ *   is served as it is; a miss comes back as a 404 (`not_found_handling: "none"`). A miss under `/assets/` is a real 404: a chunk
  *   an older build named, which a tab opened before a deploy still asks for, must fail as a missing script, not load
  *   the console's page as one (`'text/html' is not a valid JavaScript MIME type`). Any other miss is the
  *   console's page, the single-page app's fallback.

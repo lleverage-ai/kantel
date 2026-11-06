@@ -4,6 +4,9 @@ import { experimental_readRawConfig } from "wrangler";
 import { accessVerdict } from "../scripts/check-access.ts";
 import {
 	BROWSER_CONTAINERS,
+	CONSOLE_BINDING,
+	CONSOLE_WORKER,
+	consoleDeployConfig,
 	DEPLOY_VARIABLES,
 	deployConfig,
 	deployValues,
@@ -27,6 +30,8 @@ const configured = {
 
 const wranglerJsonc = fileURLToPath(new URL("../wrangler.jsonc", import.meta.url));
 const { rawConfig } = experimental_readRawConfig({ config: wranglerJsonc });
+const consoleJsonc = fileURLToPath(new URL("../wrangler.console.jsonc", import.meta.url));
+const consoleRaw = experimental_readRawConfig({ config: consoleJsonc }).rawConfig;
 
 describe("deploy config", () => {
 	it("needs every variable to deploy", () => {
@@ -390,6 +395,43 @@ describe("deploy config", () => {
 		expect(() => deployConfig({ ...rawConfig, vars: { KANTEL_RELEASE_CHECK_TOKEN: "x" } }, values)).toThrow(
 			/must not set KANTEL_RELEASE_CHECK_TOKEN as a var/,
 		);
+	});
+});
+
+// A new version of harbour resets every Durable Object and the host links, SSH tunnels, desktops, browsers and
+// streamed commands they hold, so the console's files are another Worker's, and a console change never touches harbour.
+describe("the console's own Worker", () => {
+	it("serves harbour's console through a service binding, never assets of harbour's own", () => {
+		const deployed = deployConfig(rawConfig, deployValues(configured, "deploy"));
+		expect(deployed.assets).toBeUndefined();
+		expect(deployed.services).toEqual([{ binding: CONSOLE_BINDING, service: CONSOLE_WORKER }]);
+		expect(() =>
+			deployConfig({ ...rawConfig, assets: { directory: "../console/dist" } }, deployValues(configured, "deploy")),
+		).toThrow(/must not set assets/);
+		const { services: _, ...unbound } = rawConfig;
+		expect(() => deployConfig(unbound, deployValues(configured, "deploy"))).toThrow(/must bind ASSETS/);
+	});
+
+	it("adds only the account to wrangler.console.jsonc: no route, workers.dev or preview URL around Access", () => {
+		const deployed = consoleDeployConfig(consoleRaw, deployValues(configured, "deploy"));
+		const { $schema: _, ...base } = consoleRaw;
+		expect(deployed).toEqual({ ...base, account_id: configured.CLOUDFLARE_ACCOUNT_ID });
+		expect(deployed.name).toBe(CONSOLE_WORKER);
+		expect(deployed.assets).toMatchObject({ directory: "../console/dist", binding: "ASSETS", run_worker_first: true });
+		expect(consoleDeployConfig(consoleRaw, deployValues({}, "dry-run"))).not.toHaveProperty("account_id");
+	});
+
+	it("refuses a console config that could be reached any way but through harbour, or could hold objects", () => {
+		const values = deployValues(configured, "deploy");
+		expect(() => consoleDeployConfig({ ...consoleRaw, routes: [] }, values)).toThrow(/must not set routes/);
+		expect(() => consoleDeployConfig({ ...consoleRaw, durable_objects: {} }, values)).toThrow(
+			/must not set durable_objects/,
+		);
+		expect(() => consoleDeployConfig({ ...consoleRaw, workers_dev: true }, values)).toThrow(/bypass Access/);
+		expect(() => consoleDeployConfig({ ...consoleRaw, name: "harbour" }, values)).toThrow(/must name the Worker/);
+		expect(() =>
+			consoleDeployConfig({ ...consoleRaw, assets: { directory: "../console/dist", binding: "ASSETS" } }, values),
+		).toThrow(/run_worker_first true/);
 	});
 });
 

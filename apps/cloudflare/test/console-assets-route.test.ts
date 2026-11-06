@@ -1,10 +1,15 @@
-// The console's files (src/route.ts `consoleAsset`): wrangler.jsonc sends every miss to the Worker. A file the build
+// The console's files (src/route.ts `consoleAsset`), from the kantel-console Worker (wrangler.console.jsonc) through
+// harbour's ASSETS service binding: every miss comes back to harbour. A file the build
 // holds is served as it is; a page path gets the console's page, which routes in the browser; and a missing build file
 // under /assets/ is a 404, so a tab opened before a deploy fails its dynamic import as a missing script instead of
 // loading the page as one ("'text/html' is not a valid JavaScript MIME type").
-import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { experimental_readRawConfig } from "wrangler";
+import consoleWorker from "../src/console-worker.ts";
 import { consoleAsset, routeRequest } from "../src/route.ts";
+
+const config = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
 const BASE = "https://kantel.test";
 const PAGE = "<!doctype html><title>Kantel</title>";
@@ -67,13 +72,26 @@ describe("the console's files", () => {
 	});
 
 	it("serves the build's files through the Worker, which runs first for every path", async () => {
-		const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-		const lines = wrangler.split("\n").filter((line) => line.includes('"run_worker_first"'));
-		expect(lines.map((line) => line.trim())).toEqual(['"run_worker_first": true', '"run_worker_first": true']);
+		// harbour has no assets of its own, so every request runs it; it asks the console's Worker through the ASSETS
+		// service binding, which answers from its files, also running first. `wrangler dev` keeps them on harbour-dev.
+		const harbour = experimental_readRawConfig({ config: config("../wrangler.jsonc") }).rawConfig;
+		expect(harbour.assets).toBeUndefined();
+		expect(harbour.services).toEqual([{ binding: "ASSETS", service: "kantel-console" }]);
+		const dev = (harbour.env as { dev: { assets: { run_worker_first: unknown } } }).dev;
+		expect(dev.assets.run_worker_first).toBe(true);
+		const own = experimental_readRawConfig({ config: config("../wrangler.console.jsonc") }).rawConfig;
+		expect(own.assets).toMatchObject({ binding: "ASSETS", not_found_handling: "none", run_worker_first: true });
 		const { ASSETS } = assets();
 		const response = await routeRequest(new Request(`${BASE}/assets/image-body-NEW.js`), { STACK: unused, ASSETS });
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe("export default 1");
+	});
+
+	it("has the console's Worker answer every request from its files, as they are", async () => {
+		const { ASSETS, asked } = assets();
+		const response = await consoleWorker.fetch(new Request(`${BASE}/assets/missing.js`), { ASSETS });
+		expect(response.status).toBe(404);
+		expect(asked).toEqual(["GET /assets/missing.js"]);
 	});
 
 	it("sends every request on a name under the ports domain to the stack, never the console's files", async () => {

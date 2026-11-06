@@ -1,6 +1,6 @@
 {
-	// Kantel on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
-	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
+	// Kantel on Cloudflare (issue #17). One hostname serves the console (static assets, from the kantel-console Worker
+	// through the ASSETS service binding) and the gateway (/v1/*), behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
 	//
 	// The agent plane was removed (branch agent-plane-archive, tag agent-plane-archive-2026-11-03, commit e496aeb2). The
@@ -23,17 +23,13 @@
 		{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true },
 		{ "type": "CompiledWasm", "globs": ["**/quickjs-node.wasm"], "fallthrough": true }
 	],
-	"assets": {
-		"directory": "../console/dist",
-		"binding": "ASSETS",
-		// A miss goes to the Worker (src/route.ts `consoleAsset`): a missing /assets/ file is a 404, not the console's page
-		// with a 200, so a tab opened before a deploy can't load the page as a script; any other path gets the page.
-		"not_found_handling": "none",
-		// Every request reaches the Worker first (src/route.ts), which serves the console's files through this binding. Assets
-		// match by path on every name the Worker is routed, and on an exposed port's name (*.kantel.run) a sandbox's `/` or
-		// `/assets/…` must be the sandbox's, never the console's.
-		"run_worker_first": true
-	},
+	// The console's files are another Worker's, `kantel-console` (wrangler.console.jsonc), reached through this service
+	// binding (src/route.ts `consoleAsset` asks it as it would a static assets binding). Deploying the console replaces
+	// only that Worker: this one's version, and with it every Durable Object, stays up, so the host links, SSH tunnels,
+	// desktops, browsers and streamed commands they hold aren't cut. A version of this Worker resets every object.
+	// Every request still reaches this Worker first, so an exposed port's name (*.kantel.run) never gets the console's
+	// files: a sandbox's `/` or `/assets/…` is always the sandbox's.
+	"services": [{ "binding": "ASSETS", "service": "kantel-console" }],
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
 	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so.
 	"worker_loaders": [{ "binding": "LOADER" }],
@@ -169,6 +165,8 @@
 			"main": "src/dev.ts",
 			"workers_dev": false,
 			"preview_urls": false,
+			// Local only, so the console's files stay on this Worker's own assets binding: there is no deploy to keep
+			// objects up across, and `wrangler dev` runs one Worker.
 			"assets": {
 				"directory": "../console/dist",
 				"binding": "ASSETS",

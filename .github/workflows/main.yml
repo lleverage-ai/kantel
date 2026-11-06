@@ -5,7 +5,8 @@ name: Main
 # self-hosted runners. The heavy checks run here once, on main's newest head: CI with the tests, the self-hosted stack
 # and the sandbox image, side by side. The Cloudflare deploy needs all three to pass on this same commit; if any fails
 # or is cancelled, nothing deploys and the commit shows the failing check. A run by hand on main (`gh workflow run
-# main.yml --ref main`) is the way to redeploy.
+# main.yml --ref main`) is the way to redeploy; `-f restart=true` also makes a new version of the control plane's
+# Worker when nothing in it changed (cloudflare-deploy.yml).
 on:
   push:
     branches: [main]
@@ -15,13 +16,20 @@ on:
     # Nor does one that only changes kantel.dev (apps/site and the docs it builds from docs/site): site-deploy.yml
     # deploys that to its own Worker. A control-plane deploy restarts every Durable Object, which closes every host
     # link, kantel ssh tunnel and push in flight, so it shouldn't happen for a change the control plane doesn't hold.
+    # A console change does run, but deploys only the console's own Worker: cloudflare-deploy.yml makes a new version
+    # of `harbour` only when its fingerprint (bundle, config, secrets) changes.
     # A pull request's CI still builds the site.
     paths-ignore:
       - "**/*.md"
       - "apps/site/**"
       - "docs/site/**"
       - ".github/workflows/site-deploy.yml"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      restart:
+        description: Make a new version of harbour even if nothing in it changed (resets every Durable Object)
+        type: boolean
+        default: false
 
 # Debounced, then never starved: a build may be cancelled, but something must always get out. Concurrency is per job,
 # not per workflow:
@@ -178,4 +186,5 @@ jobs:
     uses: ./.github/workflows/cloudflare-deploy.yml
     with:
       deploy: true
+      restart: ${{ inputs.restart == true }}
     secrets: inherit

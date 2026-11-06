@@ -1,7 +1,9 @@
 # @kantel/cloudflare
 
-Kantel on Cloudflare. One Worker, `kantel`, on one hostname behind Cloudflare Access. It serves the console and the
-compute, identity and audit APIs. The maintainers' deployment is `harbour.myslop.app`, signed in with One-time PIN.
+Kantel on Cloudflare, on one hostname behind Cloudflare Access. The `harbour` Worker serves the compute, identity and
+audit APIs and holds the Durable Objects; the console's files are the `kantel-console` Worker's, which `harbour`
+reaches through its `ASSETS` service binding (below, "Two Workers"). The maintainers' deployment is
+`harbour.myslop.app`, signed in with One-time PIN.
 
 ```
 browser ── Access (OTP) ── Worker kantel ─┬─ /v1/*      ─► KantelStack DO ─► gateway (src/gateway.ts)
@@ -10,8 +12,27 @@ host app ── API key ────────┘              │            
                                            │                                     ├─ /v1/audit/…   audit query API
                                            │                                     └─ any other /v1/…  404
                                            ├─ /healthz
-                                           └─ anything else ─► console (apps/console/dist, single-page app)
+                                           └─ anything else ─► ASSETS ─► Worker kantel-console (apps/console/dist, single-page app)
 ```
+
+### Two Workers
+
+A new version of a Worker resets every one of its Durable Objects ("Durable Object reset because its code was
+updated"). `KantelStack` holds every host's link (`/v1/hosts/connect`), and through it every `kantel ssh` tunnel,
+desktop, browser and streamed command, so a version of `harbour` cuts all of them. The console's files used to be
+`harbour`'s own static assets, which made every console change a new version of `harbour`.
+
+They are now `kantel-console`'s (`wrangler.console.jsonc`, `src/console-worker.ts`): a Worker with no route, no
+workers.dev or preview URL and no objects, which answers every request from its files. `harbour` still runs first for
+every request and asks it through the service binding, exactly as it asked its own assets (`src/route.ts`
+`consoleAsset`), so Access, the ports domain and the single-page fallback are as they were. Deploying it changes nothing
+of `harbour`'s, and a service binding always reaches the target's newest version. `wrangler dev --env dev` keeps the
+files on `harbour-dev`'s own assets: it is local, with no deploy to keep objects up across.
+
+The deploy makes a new version of `harbour` only when its fingerprint changes (`scripts/control-plane.ts`): a SHA-256
+over its bundle, `wrangler.deploy.json` and the secrets it uploads, kept as the version's message (`fingerprint
+<hex>`). A change to the console alone, or one that only touches files `harbour`'s bundle doesn't include, leaves it,
+its objects and every connection up.
 
 Kantel is a compute plane now. This Worker used to host the agent plane too: sessions, workspaces, models, the vault,
 connections, rules and approvals, skills, memory, schedules, sharing, tool server tunnels, Kantel's own browsers and
@@ -228,8 +249,8 @@ are local; the gateway still verifies with the real provider) and the two `/__de
 entry point, and `test/gateway.test.ts` checks that no other module imports it. Add `--enable-containers=false` to
 skip building the retired classes' container images.
 
-`pnpm --filter @kantel/cloudflare deploy:dry-run` builds the console and bundles the deployed Worker into `dist/`
-without contacting Cloudflare.
+`pnpm --filter @kantel/cloudflare deploy:dry-run` builds the console and bundles both deployed Workers into
+`dist/harbour` and `dist/console` without contacting Cloudflare.
 
 ## Deploy
 
@@ -260,10 +281,16 @@ a run on main:
 
 1. writes `wrangler.deploy.json`: `wrangler.jsonc` with the account, the zone route, the Access vars, the admin
    email and the `MODELS` VPC service filled in (`scripts/deploy-config.ts`; it refuses a missing or malformed value,
-   and a base config that could serve on workers.dev or a preview URL);
-2. runs the dry run, then `wrangler deploy`. Deploys find the D1 database `harbour-weur` and the R2 bucket
-   `harbour-workspaces-weur` by name;
-3. checks that an anonymous request to the console, a deep link, an API path and `/healthz` is redirected to
+   a base config that could serve on workers.dev or a preview URL, and one with assets of its own), and
+   `wrangler.console.deploy.json`: `wrangler.console.jsonc` with the account (it refuses a route, workers.dev, a
+   preview URL or an object);
+2. runs both dry runs and takes `harbour`'s fingerprint (above);
+3. deploys `harbour` only if the version it serves has another fingerprint, or none (a version made by hand, such as
+   `wrangler secret put`), or a run by hand asked for it (`gh workflow run main.yml --ref main -f restart=true`).
+   Deploys find the D1 database `harbour-weur` and the R2 bucket `harbour-workspaces-weur` by name;
+4. deploys `kantel-console`, after `harbour`, so a tab that loads the new console finds the API it calls (the very
+   first time, before, since `harbour` binds it);
+5. checks that an anonymous request to the console, a deep link, an API path and `/healthz` is redirected to
    `https://<team domain>/cdn-cgi/access/login/…` (`scripts/check-access.ts`), and fails otherwise.
 
 The stack object takes `KANTEL_LOCATION_HINT` only when it's first created: the existing `m1` object stays where it
@@ -279,7 +306,7 @@ own: the zone's proxied wildcard record (`*.myslop.app`) already resolves the ho
 
 | Scope | Permission | Why |
 | --- | --- | --- |
-| Account | Workers Scripts: Edit | Deploy the Worker, its Durable Objects and its static assets |
+| Account | Workers Scripts: Edit | Deploy both Workers, the Durable Objects and the console's static assets, and read which version `harbour` serves |
 | Account | D1: Edit | Look up the `harbour-weur` database by name |
 | Account | Workers R2 Storage: Edit | Look up the `harbour-workspaces-weur` bucket by name |
 | Account | Connectivity Directory: Bind | Bind the existing Workers VPC service (`MODELS`) |
@@ -292,6 +319,6 @@ team domain and AUD sign the invited person in; another AUD, another team domain
 an uninvited email are 401; API keys work on the identity and audit APIs; and the agent plane's routes are 404.
 `test/compute.test.ts` runs the compute API on the gateway: the Access person signs in (the organisation's admin as
 the super-admin), creates a sandbox and runs a command, uses a `ksk_` key, and finds the records after a restart.
-`test/audit-outbox.test.ts` runs the audit outbox over SQLite. `test/deploy.test.ts` checks the deploy config and the
-Access sign-in check, and `test/durable-object-rename.test.ts` that every class the migrations leave live is bound and
+`test/audit-outbox.test.ts` runs the audit outbox over SQLite. `test/deploy.test.ts` checks both deploy configs and the
+Access sign-in check, `test/control-plane.test.ts` the fingerprint and when it deploys `harbour`, and `test/durable-object-rename.test.ts` that every class the migrations leave live is bound and
 exported.
