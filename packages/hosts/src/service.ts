@@ -237,6 +237,12 @@ export interface HostTemplateRuntime {
 export const TEMPLATE_BUILD_TIMEOUT_MS = 50 * 60_000;
 /** How long a custom image's template build may take: its build microVM (which the host bounds at 45 minutes) too. */
 export const TEMPLATE_IMAGE_BUILD_TIMEOUT_MS = 100 * 60_000;
+/**
+ * How long a fork, or a create from a sandbox's snapshot, may take: the host writes the machine's memory and copies its
+ * disk, gigabytes each, which on a busy disk took 150-300 s for a 4 vCPU / 16 GB microVM with 16 GB on its disk. Past
+ * the default call timeout the sandbox was put in `error` while its host went on and started it.
+ */
+export const DISK_COPY_TIMEOUT_MS = 30 * 60_000;
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
@@ -1490,8 +1496,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							...(input.egress === undefined ? {} : { egress: input.egress }),
 							...mountsParam(mounts),
 						},
-						// From a template, as long as a build: a fresh boot pulls its base image and runs its setup.
-						template === undefined ? undefined : { timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS },
+						// From a template, as long as a build: a fresh boot pulls its base image and runs its setup. From a sandbox's
+						// snapshot, as long as its disk takes to copy.
+						template !== undefined
+							? { timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS }
+							: input.from !== undefined
+								? { timeoutMs: DISK_COPY_TIMEOUT_MS }
+								: undefined,
 						chosen.host,
 					);
 					const settled = await settle(placement, sandbox, chosen.host);
@@ -1528,14 +1539,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							? undefined
 							: storedFacts((await store.getHost(source.hostId))?.facts)?.features;
 					const mounts = mountHandoff(features, input.mounts);
-					const sandbox = await onHost<HostSandbox>(source.hostId, HostMethods.fork, {
-						sandboxId,
-						newId,
-						snapshotId: shortId("snap"),
-						...(input.egress === undefined ? {} : { egress: input.egress }),
-						...(input.env === undefined ? {} : { env: input.env }),
-						...mountsParam(mounts),
-					});
+					const sandbox = await onHost<HostSandbox>(
+						source.hostId,
+						HostMethods.fork,
+						{
+							sandboxId,
+							newId,
+							snapshotId: shortId("snap"),
+							...(input.egress === undefined ? {} : { egress: input.egress }),
+							...(input.env === undefined ? {} : { env: input.env }),
+							...mountsParam(mounts),
+						},
+						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+					);
 					const statuses = mounts.status(sandbox);
 					return {
 						sandbox,
