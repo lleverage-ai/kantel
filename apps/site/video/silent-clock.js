@@ -6,10 +6,23 @@
 // The renderer's ?record mode never creates it.
 //
 // It starts at the preview's ?t= position, so Space and the arrow keys work from the frame on screen before any click.
-// The engine's first click sets currentTime to that position once; after playback started from the keyboard, the
-// clock ignores that one reset, so the click only pauses.
+// The engine's first click sets currentTime to that position once. After playback started from the keyboard, the clock
+// ignores that reset, so the click only pauses: the engine sets the time inside a click only for that reset, and seeks
+// come from keys, so a set made while a click is being handled, once playback has started, is the reset. A capturing
+// listener marks the click before the engine's own handler runs.
 (() => {
 	const start = Number(new URLSearchParams(location.search).get("t")) || 0;
+	let inClick = false;
+	document.addEventListener(
+		"click",
+		() => {
+			inClick = true;
+			setTimeout(() => {
+				inClick = false;
+			});
+		},
+		true,
+	);
 
 	class SilentClock {
 		constructor() {
@@ -18,7 +31,6 @@
 			this.playing = false;
 			this.frame = 0;
 			this.played = false; // started at least once
-			this.seeked = false; // moved by a seek since loading
 		}
 
 		get paused() {
@@ -33,12 +45,8 @@
 		}
 
 		set currentTime(t) {
-			// The engine's first-click reset to the start, after the keyboard already started playback: keep the time.
-			if (t === start && this.played && !this.seeked) {
-				this.seeked = true;
-				return;
-			}
-			this.seeked = true;
+			// The engine's first-click reset, after the keyboard already started playback: keep the time.
+			if (inClick && this.played) return;
 			this.at = t;
 			this.since = performance.now();
 			window.drawField?.(t);
