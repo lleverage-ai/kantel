@@ -11,6 +11,7 @@ const PEOPLE_OR_ANY = new Set([
 	"createOrganisation",
 	"joinOrganisation",
 	"deleteOrganisation",
+	"deleteCaller",
 	"startDeviceLogin",
 	"pollDeviceLogin",
 	"getDeviceLogin",

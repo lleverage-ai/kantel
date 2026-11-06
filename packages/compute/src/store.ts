@@ -11,6 +11,7 @@
  * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
 import type { computeSchema } from "@kantel/api";
+import { KantelError } from "@kantel/contracts";
 import type { SandboxTemplateBoot } from "./backend.ts";
 import type { StoredE2EEntry } from "./e2e.ts";
 import type { SealedValue } from "./secrets.ts";
@@ -55,6 +56,23 @@ export interface StoredUser {
 	readonly superAdmin: boolean;
 	readonly personalAccountId: string;
 	readonly createdAt: number;
+	/**
+	 * When their account deletion retired them: kept for good, with nothing else of theirs, so nothing is made for them
+	 * again (`PersonWrites`) and they are never let back in.
+	 */
+	readonly retiredAt?: number;
+}
+
+/**
+ * A person's first records, written only while they are active: their user record exists and isn't retired. Checked in
+ * the same write, so a retirement and one of these never pass each other: the write lands first (and the deletion that
+ * retired them finds it), or it doesn't land. (SQL: one conditional insert, which on Postgres holds the user's row.)
+ */
+export interface PersonWrites {
+	/** Inserts a personal account of `userId`'s; whether it did (not when it is there already, or they aren't active). */
+	insertAccount(account: StoredAccount, userId: string): Promise<boolean>;
+	/** Inserts a membership; whether it did (not when it is there already, or its person isn't active). */
+	insertMember(member: StoredMember): Promise<boolean>;
 }
 
 export interface StoredAccount {
@@ -63,6 +81,11 @@ export interface StoredAccount {
 	readonly name: string;
 	readonly defaultVisibility: computeSchema.SandboxVisibility;
 	readonly createdAt: number;
+	/**
+	 * When its person's account deletion closed it (`deleteCaller`), for good: from then on nothing new is stored in it,
+	 * and the deletion, made again if it fails, clears it and removes it.
+	 */
+	readonly closedAt?: number;
 }
 
 /** A person's role in an account; its ID is `<accountId>:<userId>`. */
@@ -528,6 +551,32 @@ export interface StoredSetting {
 }
 
 /**
+ * A person's account deletion, from when it is accepted until everything of theirs has gone: its ID is their user ID.
+ * The deletion is carried on from here, by the call that started it and then by the sweep, never by the person (who
+ * can't sign in once it exists), so one that fails partway is finished all the same.
+ */
+export interface StoredDeletion {
+	readonly id: string;
+	/**
+	 * `running` until its last pass is done; then `done`, kept for good, with nothing of the person's but their user ID,
+	 * so that ID is never let in, made afresh or honoured on a key again (`authenticate`, `ownerRemains`).
+	 */
+	readonly stage: "running" | "done";
+	readonly personalAccountId: string;
+	readonly name: string;
+	readonly email?: string;
+	readonly startedAt: number;
+	/** When its first pass finished; its last pass, which clears what writes already under way left, comes after. */
+	readonly clearedAt?: number;
+	/** When it is due to be carried on (`sweep`). */
+	readonly dueAt: number;
+	readonly attempts: number;
+	readonly lastError?: string;
+	/** Who is carrying it on, until when: one gateway at a time. */
+	readonly lease?: { readonly token: string; readonly until: number };
+}
+
+/**
  * A gateway replica's claim to export one numbered usage tick: its ID is `usageClaimId` of the host, the tick's `run`
  * and its `seq`. A replica taking a tick straight from its host claims it (`insert`) once nothing can stop the tick
  * going into its series, and exports it only if the claim is its own (`owner`, that process's): a tick the host sends
@@ -633,6 +682,10 @@ export interface ComputeStore {
 	readonly templateBases: Collection<StoredTemplateBase>;
 	/** Which replica exports each numbered usage tick (`StoredUsageClaim`). */
 	readonly usageClaims: Collection<StoredUsageClaim>;
+	/** Account deletions under way (`StoredDeletion`). */
+	readonly deletions: Collection<StoredDeletion>;
+	/** A person's first records, only while they are active. */
+	readonly personWrites: PersonWrites;
 }
 
 /**
@@ -744,10 +797,30 @@ function memoryTemplateWrites(
 export function createMemoryStore(): ComputeStore {
 	const templates = memoryTable<StoredTemplate>(templateNameKey);
 	const templateVersions = memoryTable<StoredTemplateVersion>();
+	const users = memoryTable<StoredUser>();
+	const accounts = memoryTable<StoredAccount>();
+	const members = memoryTable<StoredMember>();
+	// Read and written with no await between, so nothing else runs in the middle.
+	const active = (userId: string) => {
+		const user = users.records.get(userId);
+		return user !== undefined && user.retiredAt === undefined;
+	};
 	return {
-		users: memoryCollection(),
-		accounts: memoryCollection(),
-		members: memoryCollection(),
+		users: users.collection,
+		accounts: accounts.collection,
+		members: members.collection,
+		personWrites: {
+			async insertAccount(account, userId) {
+				if (!active(userId) || accounts.records.has(account.id)) return false;
+				accounts.records.set(account.id, structuredClone(account));
+				return true;
+			},
+			async insertMember(member) {
+				if (!active(member.userId) || members.records.has(member.id)) return false;
+				members.records.set(member.id, structuredClone(member));
+				return true;
+			},
+		},
 		invites: memoryCollection(),
 		sandboxes: memoryCollection(),
 		commands: memoryCollection(),
@@ -770,6 +843,7 @@ export function createMemoryStore(): ComputeStore {
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
 		usageClaims: memoryCollection(),
+		deletions: memoryCollection(),
 		templates: templates.collection,
 		templateVersions: templateVersions.collection,
 		templateWrites: memoryTemplateWrites(templates, templateVersions),
@@ -784,9 +858,18 @@ export function createMemoryStore(): ComputeStore {
  */
 export function joinTokenSpender(store: ComputeStore) {
 	return {
+		async accountOpen(accountId: string) {
+			const account = await store.accounts.get(accountId);
+			return account !== undefined && account.closedAt === undefined;
+		},
 		async spendJoinToken(hash: string, hostId: string, now: number) {
 			const [token] = await store.joinTokens.list({ tokenHash: hash });
 			if (token === undefined) return undefined;
+			// An account's token joins nothing once its account is closed or gone (its person deleted their account).
+			if (token.accountId !== undefined) {
+				const account = await store.accounts.get(token.accountId);
+				if (account === undefined || account.closedAt !== undefined) return undefined;
+			}
 			const spent = await store.joinTokens.update(token.id, (current) =>
 				current.usedAt !== undefined || current.expiresAt <= now ? undefined : { ...current, usedAt: now, hostId },
 			);
@@ -798,5 +881,85 @@ export function joinTokenSpender(store: ComputeStore) {
 				...(spent.accountId === undefined ? {} : { accountId: spent.accountId }),
 			};
 		},
+	};
+}
+
+/** Personal accounts made for a person get this, then their user ID (`personalAccountIdOf` in auth.ts). */
+export const PERSONAL_ACCOUNT_PREFIX = "acc_p_";
+
+/** Refused: the account a write is for has closed (its person deleted their account) or gone. */
+export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
+
+/**
+ * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
+ * deliveries, telemetry, proxy settings, join tokens, events) fenced against its deletion: a write is checked once it
+ * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
+ * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
+ * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
+ * fences of their own, which know their lifecycles. Events, written on every sandbox's change, are checked behind the
+ * write, so the caller waits no longer; one that landed in a closed account is still taken out again.
+ */
+export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
+	const open = async (accountId: string) => {
+		const account = await store.accounts.get(accountId);
+		return account !== undefined && account.closedAt === undefined;
+	};
+	function fenced<T extends { readonly id: string }>(
+		collection: Collection<T>,
+		accountOf: (record: T) => string | undefined,
+		/**
+		 * Check the account after the write without making the caller wait for it: no round trip added, for writes on a hot
+		 * path. A record that landed in a closed account is still taken out again, a moment later.
+		 */
+		behind = false,
+	): Collection<T> {
+		const refuse = async (record: T): Promise<never> => {
+			await collection.delete(record.id).catch(() => false);
+			throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
+		};
+		const check = async (record: T | undefined): Promise<void> => {
+			const accountId = record === undefined ? undefined : accountOf(record);
+			if (record === undefined || accountId === undefined || (await open(accountId))) return;
+			await refuse(record);
+		};
+		return {
+			get: (id) => collection.get(id),
+			list: (where) => collection.list(where),
+			delete: (id) => collection.delete(id),
+			deleteIf: (id, should) => collection.deleteIf(id, should),
+			async put(record) {
+				await collection.put(record);
+				if (behind) {
+					check(record).catch(() => undefined);
+					return;
+				}
+				await check(record);
+			},
+			async insert(record) {
+				const inserted = await collection.insert(record);
+				if (inserted) await check(record);
+				return inserted;
+			},
+			async update(id, change, expected) {
+				const updated = await collection.update(id, change, expected);
+				await check(updated);
+				return updated;
+			},
+		};
+	}
+	const byAccount = <T extends { readonly accountId?: string }>(record: T) => record.accountId;
+	const isAccount = <T extends { readonly id: string }>(record: T) => record.id;
+	return {
+		...store,
+		environments: fenced(store.environments, byAccount),
+		bucketSources: fenced(store.bucketSources, byAccount),
+		webhooks: fenced(store.webhooks, byAccount),
+		deliveries: fenced(store.deliveries, byAccount),
+		joinTokens: fenced(store.joinTokens, byAccount),
+		// Written on every sandbox's change, so checked behind the write: one read more, no round trip more for the caller.
+		events: fenced(store.events, byAccount, true),
+		// Keyed by their account.
+		telemetry: fenced(store.telemetry, isAccount),
+		proxies: fenced(store.proxies, isAccount),
 	};
 }

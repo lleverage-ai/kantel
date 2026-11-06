@@ -1,7 +1,8 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
+import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PersonIdentity } from "../src/auth.ts";
+import { type PersonIdentity, personalAccountIdOf } from "../src/auth.ts";
 import {
 	type BackendCapabilities,
 	DetachedWaitEnded,
@@ -30,7 +31,14 @@ import {
 	SHARED_KEY_REFUSED,
 	shapeFor,
 } from "../src/service.ts";
-import { createMemoryStore, type StoredCommand } from "../src/store.ts";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
+import {
+	type ComputeStore,
+	createMemoryStore,
+	fenceClosedAccounts,
+	joinTokenSpender,
+	type StoredCommand,
+} from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -52,7 +60,17 @@ function setup(
 	backend: SandboxBackend = createStubBackend(),
 	extra: Pick<
 		Parameters<typeof createComputeApi>[0],
-		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs" | "store"
+		| "sharedHosts"
+		| "invites"
+		| "limits"
+		| "startHoldMs"
+		| "startPollMs"
+		| "store"
+		| "deletePerson"
+		| "deploymentAdmin"
+		| "accountHosts"
+		| "wakeAt"
+		| "now"
 	> = {},
 ) {
 	const api = createComputeApi({
@@ -2394,6 +2412,739 @@ describe("device sign-in", () => {
 		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "denied" });
 		expect((await failure(device.pollDeviceLogin({ deviceCode: "kdc_nope" }))).code).toBe("not_found");
 		expect((await failure(tom.getDeviceLogin("BBBB-BBBB"))).code).toBe("not_found");
+	});
+});
+
+/** Carries every account deletion on to its end, as the sweep does once each pass is due. */
+async function finishDeletions(api: ComputeApi, store: ComputeStore): Promise<void> {
+	const running = () => store.deletions.list({ stage: "running" });
+	for (let round = 0; round < 5 && (await running()).length > 0; round++) {
+		for (const deletion of await running()) {
+			await store.deletions.update(deletion.id, (current) => ({ ...current, dueAt: 0 }));
+		}
+		await api.service.sweep();
+		await vi.waitFor(async () => {
+			for (const deletion of await running()) expect(deletion.lease).toBeUndefined();
+		});
+	}
+	expect(await running()).toEqual([]);
+}
+
+describe("deleting your account", () => {
+	it("refuses while you'd leave an organisation with no owner, or have sandboxes of your own", async () => {
+		const { tom, ann } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const failed = await failure(tom.deleteCaller());
+		expect(failed.code).toBe("conflict");
+		expect(failed.message).toContain("Acme");
+
+		const sandbox = await ann.createSandbox({ wait: true });
+		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
+		await ann.deleteSandbox(sandbox.id);
+		await ann.deleteCaller();
+		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
+	});
+
+	it("revokes their keys, takes them out of organisations, removes them from sign-in, and starts afresh after", async () => {
+		const deleted: string[] = [];
+		const store = createMemoryStore();
+		const { api, tom, ann, client } = setup(undefined, {
+			store,
+			deletePerson: async (userId) => void deleted.push(userId),
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "admin" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		const before = (await ann.getCaller()).accountId;
+		const personalKey = client((await ann.createApiKey({ name: "mine", preset: "read-only" })).secret);
+		const orgKey = client((await ann.createApiKey({ name: "theirs", preset: "read-only", account: org.id })).secret);
+		await ann.createWebhook({ name: "hook", url: "https://example.com/hook", events: ["sandbox.created"] });
+		await ann.createApiKey({ name: "again", preset: "read-only" }, { idempotencyKey: "first" });
+		await tom.createOrganisation({ name: "Tom's" }, { idempotencyKey: "first" });
+		const kept = async (prefix: string) =>
+			(await store.idempotency.list()).filter((each) => each.id.startsWith(prefix));
+		expect(await kept("user:usr_ann:")).toHaveLength(1);
+
+		expect((await failure(personalKey.deleteCaller())).code).toBe("forbidden");
+		await ann.deleteCaller();
+
+		expect(deleted).toEqual(["usr_ann"]);
+		expect(await kept("user:usr_ann:")).toEqual([]);
+		expect(await kept("user:usr_tom:")).toHaveLength(1);
+		expect((await failure(personalKey.getCaller())).status).toBe(401);
+		expect((await failure(orgKey.getCaller())).status).toBe(401);
+		expect((await tom.listMembers(org.id)).items.map((member) => member.userId)).toEqual(["usr_tom"]);
+
+		// Once it has finished, the user ID they had is never let in or honoured again: not even should a request that
+		// began before the deletion make their record afresh, nor with a key that a write landing late left live. (Signing
+		// up again gets a new user ID: apps/cloudflare/test/sign-in.test.ts.)
+		await finishDeletions(api, store);
+		expect(await store.deletions.get("usr_ann")).toEqual(expect.objectContaining({ stage: "done", name: "" }));
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		await store.users.put({ id: "usr_ann", name: "Ann", superAdmin: false, personalAccountId: before, createdAt: 0 });
+		for (const key of await store.apiKeys.list({ ownerUserId: "usr_ann" })) {
+			await store.apiKeys.update(key.id, ({ revokedAt: _revoked, ...live }) => live);
+		}
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		expect((await failure(orgKey.listMembers(org.id))).status).toBe(401);
+	});
+});
+
+describe("deleting your account, beyond the basics", () => {
+	it("spends no join token they made for an organisation, and is refused to a deployment admin", async () => {
+		const store = createMemoryStore();
+		const { tom, ann } = setup(undefined, {
+			store,
+			accountHosts: true,
+			deploymentAdmin: async (userId) => userId === "usr_tom",
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "admin" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		await ann.createAccountJoinToken({ name: "laptop", account: org.id });
+		expect(await store.joinTokens.list({ createdBy: "usr_ann" })).toHaveLength(1);
+		// A bundle's bytes are deleteBundle's to remove, so one left in their personal account refuses it.
+		const personal = (await ann.getCaller()).accountId;
+		const bundle = {
+			id: `${personal}/sha256:00`,
+			accountId: personal,
+			digest: "sha256:00",
+			sizeBytes: 1,
+			createdAt: 0,
+		};
+		await store.bundles.put(bundle);
+		expect((await failure(ann.deleteCaller())).code).toBe("conflict");
+		await store.bundles.delete(bundle.id);
+
+		await ann.deleteCaller();
+		expect(await store.joinTokens.list({ createdBy: "usr_ann" })).toEqual([]);
+		expect((await failure(tom.deleteCaller())).code).toBe("forbidden");
+	});
+});
+
+/** The stores the deletion races are run on: they coordinate only through the store, so each must hold them off. */
+const databases: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+	for (const database of databases.splice(0)) await database.close();
+});
+const STORES: readonly { readonly name: string; readonly make: () => Promise<ComputeStore> }[] = [
+	{ name: "in memory", make: async () => createMemoryStore() },
+	{
+		name: "in SQL",
+		make: async () => {
+			const database = await pgliteDatabase.open();
+			databases.push(database);
+			await migrateComputeStore(database.driver);
+			return createSqlComputeStore(database.driver);
+		},
+	},
+];
+const sqlTimeout = pgliteDatabase.testTimeoutMs === undefined ? {} : { timeout: pgliteDatabase.testTimeoutMs };
+
+describe.each(STORES)("deleting your account as things are being made, stored $name", sqlTimeout, ({ make }) => {
+	const close = (store: ComputeStore, accountId: string) =>
+		store.accounts.update(accountId, (account) => ({ ...account, closedAt: Date.now() }));
+	const report = (sandboxId: string, at = 1) => ({
+		at,
+		sandboxId,
+		method: "CONNECT",
+		host: "example.com",
+		port: 443,
+		allowed: true,
+		swapped: [],
+		inspected: false,
+		bytesUp: 0,
+		bytesDown: 0,
+	});
+
+	it("refuses a create in a closed account, leaving no record", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		await close(store, personal);
+		expect((await failure(ann.createSandbox({ wait: true }))).code).toBe("conflict");
+		expect(await store.sandboxes.list({ accountId: personal })).toEqual([]);
+	});
+
+	it("deletes a sandbox stored just as the account closed, and finishes", async () => {
+		const store = await make();
+		const deleted: string[] = [];
+		const { ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
+		const personal = (await ann.getCaller()).accountId;
+		const raced = await ann.createSandbox({ wait: true });
+		// The deletion's first look doesn't see it, as if it were stored just after.
+		const list = store.sandboxes.list.bind(store.sandboxes);
+		let first = true;
+		store.sandboxes.list = async (where) => {
+			const all = await list(where);
+			if (!first) return all;
+			first = false;
+			return all.filter((sandbox) => sandbox.id !== raced.id);
+		};
+		await ann.deleteCaller();
+		expect(deleted).toEqual(["usr_ann"]);
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.sandboxes.get(raced.id)).toBeUndefined();
+	});
+
+	it("is carried on by the sweep after a pass fails partway, and the person can't get back in meanwhile", async () => {
+		const store = await make();
+		const deleted: string[] = [];
+		const { api, ann } = setup(undefined, { store, deletePerson: async (userId) => void deleted.push(userId) });
+		const personal = (await ann.getCaller()).accountId;
+		const listWebhooks = store.webhooks.list.bind(store.webhooks);
+		let failOnce = true;
+		store.webhooks.list = async (where) => {
+			if (failOnce) {
+				failOnce = false;
+				throw new Error("the database went away");
+			}
+			return listWebhooks(where);
+		};
+		await ann.deleteCaller();
+		const pending = await store.deletions.get("usr_ann");
+		expect(pending).toMatchObject({ attempts: 1, lastError: expect.stringContaining("went away") });
+		expect((await store.accounts.get(personal))?.closedAt).toBeDefined();
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		await finishDeletions(api, store);
+		expect(deleted.length).toBeGreaterThan(0);
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toEqual(
+			expect.objectContaining({ name: "", retiredAt: expect.any(Number) }),
+		);
+	});
+
+	it("finishes the person's removal from sign-in when that fails after their records are gone", async () => {
+		const store = await make();
+		let failOnce = true;
+		const deleted: string[] = [];
+		const { api, ann } = setup(undefined, {
+			store,
+			deletePerson: async (userId) => {
+				if (failOnce) {
+					failOnce = false;
+					throw new Error("identity is away");
+				}
+				deleted.push(userId);
+			},
+		});
+		const personal = (await ann.getCaller()).accountId;
+		await ann.deleteCaller();
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(deleted).toEqual([]);
+		await finishDeletions(api, store);
+		expect(deleted).toContain("usr_ann");
+	});
+
+	it("clears in its last pass what a write already under way stored after its first", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		await ann.deleteCaller();
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		// A request authorised before the close lands its write after the first pass.
+		const webhook = { id: "whk_late", accountId: personal } as Parameters<typeof store.webhooks.put>[0];
+		await store.webhooks.put(webhook);
+		await finishDeletions(api, store);
+		expect(await store.webhooks.list({ accountId: personal })).toEqual([]);
+	});
+
+	it("forgets a command stored as its account closed, and never runs it", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ wait: true });
+		await close(store, personal);
+		expect((await failure(ann.runCommand(sandbox.id, { command: "echo hi" }))).code).toBe("conflict");
+		expect(await store.commands.list({ sandboxId: sandbox.id })).toEqual([]);
+	});
+
+	it("takes out again, and refuses, a settings record written into an account that has closed or gone", async () => {
+		const store = await make();
+		const fenced = fenceClosedAccounts(store);
+		const account = {
+			id: "acc_x",
+			kind: "personal" as const,
+			name: "X",
+			defaultVisibility: "private" as const,
+			createdAt: 0,
+		};
+		await store.accounts.put(account);
+		const webhook = (id: string) => ({ id, accountId: account.id }) as Parameters<typeof store.webhooks.put>[0];
+		await fenced.webhooks.put(webhook("whk_open"));
+		await close(store, account.id);
+		await expect(fenced.webhooks.put(webhook("whk_late"))).rejects.toThrow("being deleted");
+		await store.accounts.delete(account.id);
+		await expect(fenced.webhooks.insert(webhook("whk_gone"))).rejects.toThrow("being deleted");
+		expect((await store.webhooks.list({ accountId: account.id })).map((each) => each.id)).toEqual(["whk_open"]);
+	});
+
+	it("forgets a snapshot taken as its account closed", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ type: "microvm", wait: true });
+		await close(store, personal);
+		expect((await failure(ann.takeSnapshot(sandbox.id, {}))).code).toBe("conflict");
+		expect(await store.snapshots.list({ accountId: personal })).toEqual([]);
+	});
+
+	it("takes out an event whose write was under way as its account closed and went", async () => {
+		const store = await make();
+		const fenced = fenceClosedAccounts(store);
+		const account = {
+			id: "acc_e",
+			kind: "personal" as const,
+			name: "E",
+			defaultVisibility: "private" as const,
+			createdAt: 0,
+		};
+		await store.accounts.put(account);
+		// The event's write is held until the account has closed and its deletion has gone.
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const put = store.events.put.bind(store.events);
+		store.events.put = async (event) => {
+			await held;
+			return put(event);
+		};
+		const event = { id: "evt_late", accountId: account.id } as Parameters<typeof store.events.put>[0];
+		const writing = fenced.events.put(event);
+		await close(store, account.id);
+		await store.accounts.delete(account.id);
+		release();
+		await writing;
+		await vi.waitFor(async () => expect(await store.events.list({ accountId: account.id })).toEqual([]));
+	});
+
+	it("keeps its last pass for when it is due, and asks the deployment to wake for it", async () => {
+		const store = await make();
+		const wakes: number[] = [];
+		const { api, ann } = setup(undefined, { store, wakeAt: (at) => void wakes.push(at) });
+		await ann.deleteCaller();
+		const after = await store.deletions.get("usr_ann");
+		expect(after).toMatchObject({ stage: "running", clearedAt: expect.any(Number) });
+		// A sweep, or a deletion call holding an older copy, straight after: the last pass waits its turn.
+		const next = await api.service.carryOnDeletions();
+		expect(next).toBe(after?.dueAt);
+		expect(await store.deletions.get("usr_ann")).toMatchObject({ stage: "running" });
+		await vi.waitFor(() => expect(wakes).toContain(after?.dueAt));
+	});
+
+	it("leaves nothing of a sign-in that set the person up as their deletion began", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		// Their deletion is recorded while the sign-in is setting them up for the first time.
+		const get = store.users.get.bind(store.users);
+		let once = true;
+		store.users.get = async (id) => {
+			if (once && id === "usr_ann") {
+				once = false;
+				await store.deletions.put({
+					id: "usr_ann",
+					stage: "running",
+					personalAccountId: "acc_before",
+					name: "Ann",
+					startedAt: 0,
+					dueAt: Number.MAX_SAFE_INTEGER,
+					attempts: 0,
+				});
+			}
+			return get(id);
+		};
+		expect((await failure(ann.getCaller())).status).toBe(401);
+		// What it made landed before the deletion retired them; the deletion's passes clear it, by its account's ID.
+		await store.deletions.update("usr_ann", (current) => ({ ...current, dueAt: 0 }));
+		await finishDeletions(api, store);
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toEqual(
+			expect.objectContaining({ name: "", retiredAt: expect.any(Number) }),
+		);
+	});
+
+	it("makes nothing more for a person once they are retired, however late a first sign-in's writes come", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		await ann.deleteCaller();
+		await finishDeletions(api, store);
+		// A first sign-in's account and membership, arriving after the retirement: refused in the same write.
+		const account = personalAccountIdOf("usr_ann");
+		expect(
+			await store.personWrites.insertAccount(
+				{ id: account, kind: "personal", name: "Ann", defaultVisibility: "private", createdAt: 0 },
+				"usr_ann",
+			),
+		).toBe(false);
+		expect(
+			await store.personWrites.insertMember({
+				id: `${account}:usr_ann`,
+				accountId: account,
+				userId: "usr_ann",
+				role: "owner",
+				joinedAt: 0,
+			}),
+		).toBe(false);
+		expect(await store.accounts.get(account)).toBeUndefined();
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+		expect((await failure(ann.getCaller())).status).toBe(401);
+	});
+
+	it("finishes setting a person up on their next sign-in, when their first stopped partway", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const insertAccount = store.personWrites.insertAccount.bind(store.personWrites);
+		let failOnce = true;
+		store.personWrites.insertAccount = async (account, userId) => {
+			if (failOnce) {
+				failOnce = false;
+				throw new Error("the gateway went away");
+			}
+			return insertAccount(account, userId);
+		};
+		await expect(ann.getCaller()).rejects.toBeDefined();
+		expect(await store.users.get("usr_ann")).toBeDefined();
+		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toBeUndefined();
+		const caller = await ann.getCaller();
+		expect(caller.accountId).toBe(personalAccountIdOf("usr_ann"));
+		expect(await store.accounts.get(personalAccountIdOf("usr_ann"))).toMatchObject({ kind: "personal" });
+		expect((await ann.listMembers(caller.accountId)).items.map((member) => member.userId)).toEqual(["usr_ann"]);
+	});
+
+	it("keeps a stray account findable until it is gone, should its removal fail", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		await ann.deleteCaller();
+		await store.members.put({
+			id: "acc_stray:usr_ann",
+			accountId: "acc_stray",
+			userId: "usr_ann",
+			role: "owner",
+			joinedAt: 0,
+		});
+		await store.accounts.put({
+			id: "acc_stray",
+			kind: "personal",
+			name: "Ann",
+			defaultVisibility: "private",
+			createdAt: 0,
+		});
+		const remove = store.accounts.delete.bind(store.accounts);
+		let failOnce = true;
+		store.accounts.delete = async (id) => {
+			if (failOnce && id === "acc_stray") {
+				failOnce = false;
+				throw new Error("the database went away");
+			}
+			return remove(id);
+		};
+		await finishDeletions(api, store);
+		expect(await store.accounts.get("acc_stray")).toBeUndefined();
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+	});
+
+	it("clears the personal account a racing sign-in would make, though no membership names it", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		await ann.deleteCaller();
+		// Written before the deletion was recorded, by a sign-in that stopped before its membership or user.
+		const stray = personalAccountIdOf("usr_ann");
+		await store.accounts.put({ id: stray, kind: "personal", name: "Ann", defaultVisibility: "private", createdAt: 0 });
+		await finishDeletions(api, store);
+		expect(await store.accounts.get(stray)).toBeUndefined();
+	});
+
+	it("clears a personal account a sign-in made and couldn't finish, found by its membership", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		await ann.deleteCaller();
+		// A sign-in that began before the deletion got as far as an owner membership and an account, then stopped.
+		await store.members.put({
+			id: "acc_stray:usr_ann",
+			accountId: "acc_stray",
+			userId: "usr_ann",
+			role: "owner",
+			joinedAt: 0,
+		});
+		await store.accounts.put({
+			id: "acc_stray",
+			kind: "personal",
+			name: "Ann",
+			defaultVisibility: "private",
+			createdAt: 0,
+		});
+		await finishDeletions(api, store);
+		expect(await store.accounts.get("acc_stray")).toBeUndefined();
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.members.list({ userId: "usr_ann" })).toEqual([]);
+	});
+
+	it("is woken for after a first pass cut short, and finished by its wakes with no request", async () => {
+		const store = await make();
+		const wakes: number[] = [];
+		const deleted: string[] = [];
+		const { api, ann } = setup(undefined, {
+			store,
+			wakeAt: (at) => void wakes.push(at),
+			deletePerson: async (userId) => void deleted.push(userId),
+		});
+		const personal = (await ann.getCaller()).accountId;
+		const listWebhooks = store.webhooks.list.bind(store.webhooks);
+		let failOnce = true;
+		store.webhooks.list = async (where) => {
+			if (failOnce) {
+				failOnce = false;
+				throw new Error("the gateway went away");
+			}
+			return listWebhooks(where);
+		};
+		const before = Date.now();
+		await ann.deleteCaller();
+		// A wake was asked for before anything changed, within a lease of the start.
+		expect(wakes.length).toBeGreaterThan(0);
+		expect(Math.min(...wakes)).toBeLessThanOrEqual(before + 5 * 60_000 + 1000);
+		// Each wake carries the deletion on (as the hosted alarm does), until it is done.
+		for (let round = 0; round < 5 && (await store.deletions.get("usr_ann"))?.stage === "running"; round++) {
+			await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({ ...current, dueAt: 0 }));
+			await api.service.carryOnDeletions();
+		}
+		expect((await store.deletions.get("usr_ann"))?.stage).toBe("done");
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(deleted).toContain("usr_ann");
+	});
+
+	it("refuses the deletion, changing nothing, when no wake can be arranged", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, {
+			store,
+			wakeAt: () => {
+				throw new Error("no alarm");
+			},
+		});
+		const personal = (await ann.getCaller()).accountId;
+		await expect(ann.deleteCaller()).rejects.toBeDefined();
+		expect(await store.deletions.get("usr_ann")).toBeUndefined();
+		expect((await store.accounts.get(personal))?.closedAt).toBeUndefined();
+		expect((await ann.getCaller()).accountId).toBe(personal);
+	});
+
+	it("keeps an away host's credential until its template cache's bytes are deleted, templates on or off", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const order: string[] = [];
+		let personal = "";
+		let away = true;
+		const backend: SandboxBackend = {
+			...stub,
+			// One host of Ann's own, away at first.
+			capabilities: async () => {
+				const base = await stub.capabilities();
+				const [template] = base.hosts;
+				if (template === undefined || personal === "") return base;
+				return {
+					...base,
+					hosts: [...base.hosts, { ...template, id: "host_own", connected: !away, accountId: personal }],
+				};
+			},
+			deleteTemplateSnapshot: async ({ snapshotId }) => {
+				if (away) throw new KantelError("unavailable", "The host isn't connected");
+				order.push(`deleted ${snapshotId}`);
+			},
+			revokeHost: async (hostId) => void order.push(`revoked ${hostId}`),
+		};
+		// Templates off on this deployment: nothing but the deletion tries the bytes again.
+		const { api, ann } = setup(backend, { store, accountHosts: true });
+		personal = (await ann.getCaller()).accountId;
+		const entry = { id: "tsn_own", accountId: personal, templateId: "tpl_gone", hostId: "host_own", state: "deleting" };
+		await store.templateSnapshots.put(entry as Parameters<typeof store.templateSnapshots.put>[0]);
+		await ann.deleteCaller();
+		expect(order).toEqual([]);
+		expect(await store.deletions.get("usr_ann")).toMatchObject({
+			stage: "running",
+			lastError: expect.stringContaining("template"),
+		});
+		// It comes back: the deletion's next pass deletes the bytes, then revokes it.
+		away = false;
+		await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({ ...current, dueAt: 0 }));
+		await api.service.carryOnDeletions();
+		expect(order).toEqual(["deleted tsn_own", "revoked host_own"]);
+		expect(await store.templateSnapshots.get(entry.id)).toBeUndefined();
+	});
+
+	it("revokes an account's host after a day though its template cache is still there", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const revoked: string[] = [];
+		let personal = "";
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const base = await stub.capabilities();
+				const [template] = base.hosts;
+				if (template === undefined || personal === "") return base;
+				return {
+					...base,
+					hosts: [...base.hosts, { ...template, id: "host_gone", connected: false, accountId: personal }],
+				};
+			},
+			// Gone for good: its bytes can't be deleted.
+			deleteTemplateSnapshot: async () => {
+				throw new KantelError("unavailable", "The host isn't connected");
+			},
+			revokeHost: async (hostId) => void revoked.push(hostId),
+		};
+		const { api, ann } = setup(backend, { store, accountHosts: true });
+		personal = (await ann.getCaller()).accountId;
+		const entry = { id: "tsn_gone", accountId: personal, hostId: "host_gone", state: "deleting" };
+		await store.templateSnapshots.put(entry as Parameters<typeof store.templateSnapshots.put>[0]);
+		await ann.deleteCaller();
+		expect(revoked).toEqual([]);
+		await store.deletions.update("usr_ann", ({ lease: _lease, ...current }) => ({
+			...current,
+			startedAt: Date.now() - 25 * 60 * 60_000,
+			dueAt: 0,
+		}));
+		await api.service.carryOnDeletions();
+		expect(revoked).toContain("host_gone");
+	});
+
+	it("joins no host with a token whose account has closed", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const hash = "f".repeat(64);
+		await store.joinTokens.put({
+			id: "jtk_1",
+			tokenHash: hash,
+			labels: {},
+			expiresAt: Date.now() + 60_000,
+			createdAt: Date.now(),
+			accountId: personal,
+		});
+		await close(store, personal);
+		expect(await joinTokenSpender(store).spendJoinToken(hash, "host_1", Date.now())).toBeUndefined();
+	});
+
+	it("lets two deletions that overlap both carry it on, ending with the account gone", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const results = await Promise.allSettled([ann.deleteCaller(), ann.deleteCaller()]);
+		expect(results.some((result) => result.status === "fulfilled")).toBe(true);
+		expect(await store.accounts.get(personal)).toBeUndefined();
+		expect(await store.users.get("usr_ann")).toEqual(
+			expect.objectContaining({ name: "", retiredAt: expect.any(Number) }),
+		);
+	});
+
+	it("lets no key of theirs work once they're gone, even one stored after the deletion revoked theirs", async () => {
+		const store = await make();
+		const { ann, tom, client } = setup(undefined, { store });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "admin" })).code ?? "" });
+		const issued = await ann.createApiKey({ name: "late", preset: "read-only", account: org.id });
+		await ann.deleteCaller();
+		// As if its write had landed after the deletion's sweep: live, in an organisation that goes on.
+		await store.apiKeys.update(issued.key.id, ({ revokedAt: _revoked, ...key }) => key);
+		expect((await failure(client(issued.secret).listMembers(org.id))).status).toBe(401);
+	});
+
+	it("keeps a closed account closed through an update, and never brings back a removed one", async () => {
+		const store = await make();
+		const { ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		await close(store, personal);
+		await ann.updateAccount(personal, { name: "Renamed" });
+		expect(await store.accounts.get(personal)).toMatchObject({ name: "Renamed", closedAt: expect.any(Number) });
+		// Removed by its deletion between the update's read and its write.
+		const update = store.accounts.update.bind(store.accounts);
+		store.accounts.update = async (id, change, expected) => {
+			await store.accounts.delete(id);
+			return update(id, change, expected);
+		};
+		expect((await failure(ann.updateAccount(personal, { name: "Again" }))).code).toBe("not_found");
+		expect(await store.accounts.get(personal)).toBeUndefined();
+	});
+
+	it("destroys what a boot made when its record was deleted while it booted", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const destroyed: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			// Another replica's deletion purges the record while this one boots.
+			create: async (spec) => {
+				const placed = await stub.create(spec);
+				await store.sandboxes.delete(spec.sandboxId);
+				return placed;
+			},
+			destroy: async (sandboxId) => {
+				destroyed.push(sandboxId);
+				return stub.destroy(sandboxId);
+			},
+		};
+		const { ann } = setup(backend, { store });
+		const made = await ann.createSandbox({});
+		await vi.waitFor(() => expect(destroyed).toContain(made.id), { timeout: 10_000 });
+	});
+
+	it("destroys what a boot made when its record was being deleted as it booted", async () => {
+		const store = await make();
+		const stub = createStubBackend();
+		const destroyed: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			// Another replica's delete has destroyed and not yet marked it deleted when this boot makes its machine.
+			create: async (spec) => {
+				const placed = await stub.create(spec);
+				await store.sandboxes.update(spec.sandboxId, (current) => ({ ...current, state: "deleting" }));
+				return placed;
+			},
+			destroy: async (sandboxId) => {
+				destroyed.push(sandboxId);
+				return stub.destroy(sandboxId);
+			},
+		};
+		const { ann } = setup(backend, { store });
+		const made = await ann.createSandbox({});
+		await vi.waitFor(() => expect(destroyed).toContain(made.id), { timeout: 10_000 });
+	});
+
+	it("drops a host's egress report for a closed account, and keeps one for an open account", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ wait: true });
+		await api.service.recordEgress(STUB_HOST_ID, [report(sandbox.id)]);
+		expect(await store.egress.list({ sandboxId: sandbox.id })).toHaveLength(1);
+		await close(store, personal);
+		await api.service.recordEgress(STUB_HOST_ID, [report(sandbox.id, 2)]);
+		// A closed account's log is the deletion's to clear; nothing new is added to it.
+		expect((await store.egress.list({ sandboxId: sandbox.id })).length).toBeLessThanOrEqual(1);
+	});
+
+	it("drops what an egress report wrote when its account closed as it wrote, failed or not", async () => {
+		const store = await make();
+		const { api, ann } = setup(undefined, { store });
+		const personal = (await ann.getCaller()).accountId;
+		const sandbox = await ann.createSandbox({ wait: true });
+		// The first entry lands and the account closes; the second write fails.
+		const put = store.egress.put.bind(store.egress);
+		let writes = 0;
+		store.egress.put = async (entry) => {
+			writes++;
+			if (writes === 2) throw new Error("the database went away");
+			const written = await put(entry);
+			await close(store, personal);
+			return written;
+		};
+		await expect(
+			api.service.recordEgress(STUB_HOST_ID, [report(sandbox.id, 1), report(sandbox.id, 2)]),
+		).rejects.toThrow("the database went away");
+		expect(await store.egress.list({ sandboxId: sandbox.id })).toEqual([]);
 	});
 });
 

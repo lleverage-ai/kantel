@@ -81,6 +81,11 @@ export interface MountsDeps {
 	/** `requireRunning` (a starting sandbox waited for) for a call a signed file URL authorises, with no principal. */
 	readonly requireRunningByToken: (sandboxId: string) => Promise<StoredSandbox>;
 	/** Does `work` once for the call's `Idempotency-Key` and request, answering a retry the first answer (the service's). */
+	/**
+	 * Whether an account still takes new records: it exists, and no account deletion holds it (`holdAccount` in the
+	 * service). An upload asks once its bundle is published, so one that overlaps a deletion is found or refused.
+	 */
+	readonly accountOpen: (accountId: string) => Promise<boolean>;
 	readonly once: <T>(
 		principal: Principal,
 		operation: string,
@@ -455,15 +460,16 @@ export function createMounts(deps: MountsDeps) {
 	 * other upload or delete, however it interleaves or stalls, can take bytes from a record. Answers whether the record
 	 * was new; when the account had the digest already, the copy goes and that record stays as it was.
 	 */
-	async function publishBundle(staged: StagedBlob, record: StoredBundle): Promise<boolean> {
-		if ((await store.bundles.get(record.id)) !== undefined) return false;
+	/** Publishes an upload's bytes as `record`, unless the account has the digest already: the generation it kept, if so. */
+	async function publishBundle(staged: StagedBlob, record: StoredBundle): Promise<number | undefined> {
+		if ((await store.bundles.get(record.id)) !== undefined) return undefined;
 		const generation = freshGeneration();
 		await staged.keep(generation);
 		const mine = { ...record, generation };
 		let inserted: boolean | undefined;
 		try {
 			inserted = await store.bundles.insert(mine);
-			return inserted;
+			return inserted ? generation : undefined;
 		} finally {
 			if (inserted !== true) await dropUnpublished(record.id, record.digest, generation);
 		}
@@ -663,6 +669,7 @@ export function createMounts(deps: MountsDeps) {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:write", role);
 			if (request.body === null) throw new KantelError("invalid", "Send the bundle's tar as the request's body");
+			if (!(await deps.accountOpen(account.id))) throw new KantelError("conflict", "This account is being deleted");
 			await bundleStore();
 			const staged = await options.bundles.put(request.body, {
 				maxBytes: maxBundleBytes,
@@ -676,13 +683,20 @@ export function createMounts(deps: MountsDeps) {
 				createdAt: now(),
 				...(principal.userId === undefined ? {} : { createdBy: principal.userId }),
 			};
-			let inserted: boolean;
+			let published: number | undefined;
 			try {
-				inserted = await publishBundle(staged, record);
+				published = await publishBundle(staged, record);
 			} finally {
 				await staged.discard().catch(() => undefined);
 			}
-			if (inserted) return bundleView(record);
+			if (published !== undefined && !(await deps.accountOpen(account.id))) {
+				// Its account closed as it uploaded: the upload undoes itself, its own generation only, bytes before record, so
+				// should the bytes not go the record stays to say what is left. A record of another upload is never touched.
+				await options.bundles.delete(record.digest, published);
+				await store.bundles.deleteIf(record.id, (current) => generationOf(current) === published);
+				throw new KantelError("conflict", "This account is being deleted");
+			}
+			if (published !== undefined) return bundleView({ ...record, generation: published });
 			// Uploaded again: the bundle it has already, as it was, with 200 rather than 201.
 			const kept = await bundleView((await store.bundles.get(record.id)) ?? record);
 			return new Response(JSON.stringify(kept), {
@@ -792,6 +806,17 @@ export function createMounts(deps: MountsDeps) {
 
 	return {
 		handlers,
+
+		/**
+		 * Removes a bundle of an account that is being deleted: its bytes, then its record, only while that record is still
+		 * the same upload's. A failed byte delete throws and leaves the record, so the deletion tries again.
+		 */
+		async forgetBundle(bundle: StoredBundle): Promise<void> {
+			// The deployment's own bundle store, as `deleteBundle` checks: a gateway with another refuses, before anything goes.
+			await bundleStore();
+			await options.bundles.delete(bundle.digest, generationOf(bundle));
+			await store.bundles.deleteIf(bundle.id, (current) => generationOf(current) === generationOf(bundle));
+		},
 
 		/**
 		 * A create's (or a fork's) mounts, checked: their paths, and that each source is the account's. microVMs only.

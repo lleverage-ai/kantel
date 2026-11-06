@@ -52,6 +52,8 @@ export interface SignUpRecord {
 export interface SignUpStore {
 	load(userId: string): Promise<SignUpRecord | undefined>;
 	save(userId: string, record: SignUpRecord): Promise<void>;
+	/** Forgets a person's record once they delete their account, so signing up again starts afresh. */
+	delete(userId: string): Promise<void>;
 }
 
 export function createMemorySignUpStore(): SignUpStore {
@@ -60,6 +62,9 @@ export function createMemorySignUpStore(): SignUpStore {
 		load: async (userId) => records.get(userId),
 		save: async (userId, record) => {
 			records.set(userId, record);
+		},
+		delete: async (userId) => {
+			records.delete(userId);
 		},
 	};
 }
@@ -176,7 +181,8 @@ export function openSignUp(
 			return identity.canSignIn(ctx, external);
 		},
 		async signIn(ctx, external): Promise<SignIn> {
-			if (!isProvenEmail(external)) return identity.signIn(ctx, external);
+			// A stored sign-in (`userId`) is its user's or no one's: it never signs anyone up.
+			if (!isProvenEmail(external) || external.userId !== undefined) return identity.signIn(ctx, external);
 			let signedIn: SignIn;
 			try {
 				signedIn = await identity.signIn(ctx, external);

@@ -44,7 +44,9 @@ import {
 	liveKeyPrincipal,
 	memberId,
 	newApiKeySecret,
+	type PersonPrincipal,
 	type Principal,
+	personalAccountIdOf,
 	requireGrantable,
 	requirePerson,
 	requireScope,
@@ -105,6 +107,7 @@ import type {
 	StoredAccount,
 	StoredApiKey,
 	StoredCommand,
+	StoredDeletion,
 	StoredDeviceLogin,
 	StoredEgressEntry,
 	StoredEnvironment,
@@ -119,6 +122,7 @@ import type {
 	StoredSnapshot,
 	StoredTelemetry,
 	StoredUsageClaim,
+	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
 import { UniqueViolation, usageClaimId } from "./store.ts";
@@ -258,6 +262,21 @@ export interface ComputeServiceOptions {
 	 * everyone may. The hosted gateway keeps its stub, in the stack object's memory, to the deployment's organisation.
 	 */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
+	/**
+	 * Removes a person from the deployment's sign-in once `deleteCaller` has removed them here: their user, the ways
+	 * they sign in and their sessions, so they are signed out everywhere. Absent, only the compute plane's records go.
+	 */
+	readonly deletePerson?: (userId: string) => Promise<void>;
+	/**
+	 * Wakes the deployment at `at` to carry on account deletions (`carryOnDeletions`), where nothing else would: the hosted
+	 * stack object sleeps between requests. Absent, the sweep carries them on (self-hosted sweeps on a timer).
+	 */
+	readonly wakeAt?: (at: number) => Promise<void> | void;
+	/**
+	 * Whether a person administers the deployment, whichever organisation a call names: `deleteCaller` refuses them, as
+	 * the deployment needs its administrators. Absent, `superAdmin` on the call alone decides.
+	 */
+	readonly deploymentAdmin?: (userId: string) => Promise<boolean>;
 	/**
 	 * The deployment's `KANTEL_SECRETS_KEY` (32 bytes, base64), which seals protected variable values and secret files.
 	 * Absent: a memory store seals with a key made at random for the process; a persistent store refuses them
@@ -407,6 +426,11 @@ export interface ComputeService {
 	 * cache (which notices hosts' runtimes changing).
 	 */
 	sweep(): Promise<void>;
+	/**
+	 * Carries on every account deletion whose pass is due, waiting for each, and answers when the next is due (undefined
+	 * with none): for a deployment that wakes for them (`wakeAt`).
+	 */
+	carryOnDeletions(): Promise<number | undefined>;
 	/**
 	 * Counts a use of a sandbox toward its idle stop (`idleStopMinutes`): a relayed port stream opened or carrying bytes
 	 * (SSH, the desktop or browser, a hosted port's request or WebSocket). Cheap enough for every frame: it is kept in
@@ -570,6 +594,23 @@ function withoutPortToken(url: string): string {
  */
 export const DEFAULT_HOST_JOIN_COMMAND =
 	"curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}";
+/**
+ * An account deletion's last pass comes this long after its first: long enough for any write already under way when
+ * the account closed (a request in flight, a host registering) to have landed, so that pass clears it.
+ */
+const DELETION_LAST_PASS_MS = 10 * 60_000;
+/**
+ * How long a deletion waits for its account's hosts to finish removing its template caches before revoking them all
+ * the same: long enough for a host that is away for a while to come back, not so long a host gone for good holds the
+ * deletion up for ever.
+ */
+const DELETION_HOST_WAIT_MS = 24 * 60 * 60_000;
+/** How long one gateway carries on a deletion before another may (should it have died). */
+const DELETION_LEASE_MS = 5 * 60_000;
+/** A failed pass is tried again after this, doubling to at most `DELETION_RETRY_MAX_MS`. */
+const DELETION_RETRY_MS = 30_000;
+const DELETION_RETRY_MAX_MS = 15 * 60_000;
+
 /** The console's page where a person approves a device sign-in. */
 export const DEFAULT_DEVICE_LOGIN_URL = "{url}/device";
 /** How long a device sign-in waits for a person, and how often its device may poll. */
@@ -3053,14 +3094,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * A watcher as they are now: a key's current scopes and limits, or a person whose sign-in is still live; undefined once
-	 * the key is revoked or expired, or the sign-in has ended.
+	 * the key is revoked or expired, the sign-in has ended, or the person has deleted their account (their deletion is
+	 * recorded, or their user record retired), whatever memberships of theirs remain.
 	 */
 	async function watcherNow(principal: Principal): Promise<Principal | undefined> {
 		if (principal.kind === "key") return liveKeyPrincipal(store, principal.keyId, now());
 		if (principal.session !== undefined && options.sessionLive !== undefined) {
 			if (!(await options.sessionLive(principal.session))) return undefined;
 		}
-		return (await store.users.get(principal.userId)) === undefined ? undefined : principal;
+		const [user, deletion] = await Promise.all([
+			store.users.get(principal.userId),
+			store.deletions.get(principal.userId),
+		]);
+		return user === undefined || user.retiredAt !== undefined || deletion !== undefined ? undefined : principal;
 	}
 
 	/** Whether the caller may see a sandbox in an account where they have `role`. */
@@ -3198,6 +3244,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxFor,
 					requireRunning,
 					requireRunningByToken,
+					accountOpen,
 					once: (principal, operation, input, work) => once(principal, operation, input, work),
 				});
 
@@ -3656,32 +3703,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
 				: toRunning(sandbox);
 		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
-		let result = await transition(sandboxId, "starting", publish, ready, written);
-		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
-		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
-		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
-		// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
-		for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
-			const lost = result.lost;
-			if (round >= BOOT_RECONCILE_ROUNDS) {
-				const reason = "Its egress couldn't be applied to it while it started";
-				if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
-				result = await transition(sandboxId, "starting", publish, ready);
-				continue;
-			}
-			try {
-				await deliverEgress(lost);
-				applied = lost.egressRevision;
-			} catch (error) {
-				// Refused for the egress it has still: stopped. One changed since is sent next round.
-				if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
-					return undefined;
+		// Its record deleted, or being deleted, while it booted (a delete, or its account's deletion, whose destroy may have
+		// come before this machine existed): what booted is destroyed, so no machine outlives its record.
+		const orphaned = async () => {
+			await backend.destroy(sandboxId).catch(() => undefined);
+			return undefined;
+		};
+		let result: Awaited<ReturnType<typeof transition>>;
+		try {
+			result = await transition(sandboxId, "starting", publish, ready, written);
+			// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
+			// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
+			// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
+			// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
+			for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
+				const lost = result.lost;
+				if (round >= BOOT_RECONCILE_ROUNDS) {
+					const reason = "Its egress couldn't be applied to it while it started";
+					if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
+					result = await transition(sandboxId, "starting", publish, ready);
+					continue;
 				}
-				// A call that didn't get through: tried again, a moment on.
-				await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+				try {
+					await deliverEgress(lost);
+					applied = lost.egressRevision;
+				} catch (error) {
+					// Refused for the egress it has still: stopped. One changed since is sent next round.
+					if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
+						return undefined;
+					}
+					// A call that didn't get through: tried again, a moment on.
+					await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+				}
+				result = await transition(sandboxId, "starting", publish, ready);
 			}
-			result = await transition(sandboxId, "starting", publish, ready);
+		} catch (error) {
+			if (error instanceof KantelError && error.code === "not_found") return orphaned();
+			throw error;
 		}
+		// Deleted, or being deleted (whose destroy, on another replica, may have come before this machine existed): either
+		// way the machine goes. Destroying is idempotent, so one the delete destroys too is no harm.
+		if ("lost" in result && (result.lost.state === "deleted" || result.lost.state === "deleting")) return orphaned();
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
 		if (next.state === "error") {
@@ -3759,6 +3821,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(taken.base === undefined ? {} : { base: taken.base }),
 				};
 				await store.snapshots.put(snapshot);
+				await holdSnapshot(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
 					withState(current, keepMemory ? "paused" : "stopped", {
 						latestSnapshotId: snapshot.id,
@@ -3991,6 +4054,294 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const updating = { version, requestedAt: now() };
 		const updated = await store.hosts.update(host.id, (current) => ({ ...current, updating }));
 		return hostView(updated ?? { ...host, updating });
+	}
+
+	/**
+	 * Whether an account takes new records: it exists, and its person's account deletion hasn't closed it
+	 * (`StoredAccount.closedAt`). Closing is for good, so what lands in a closed account is always the deletion's to
+	 * clear: a write checks before it starts and again once it has written, and undoes itself if the account closed
+	 * meanwhile. Of a write and a deletion that overlap, one always sees the other: the deletion's sweep finds what was
+	 * written before its close, and anything written after finds the account closed.
+	 */
+	async function accountOpen(accountId: string): Promise<boolean> {
+		const account = await store.accounts.get(accountId);
+		return account !== undefined && account.closedAt === undefined;
+	}
+
+	const accountClosed = (): KantelError => new KantelError("conflict", "This account is being deleted");
+
+	/**
+	 * Appends to an account's E2E chain while it is open. One that finds it closed once it has written, or that failed
+	 * partway in a closed account, takes the chain with it: a closed account's chain is the deletion's to clear anyway.
+	 */
+	const chainAppend: typeof e2eChains.append = async (space, ...rest) => {
+		if (!(await accountOpen(space))) throw accountClosed();
+		const forget = async () => {
+			for (const entry of await store.e2eChain.list({ space })) await store.e2eChain.delete(entry.id);
+		};
+		let appended: Awaited<ReturnType<typeof e2eChains.append>>;
+		try {
+			appended = await e2eChains.append(space, ...rest);
+		} catch (error) {
+			if (!(await accountOpen(space))) await forget().catch(() => undefined);
+			throw error;
+		}
+		if (await accountOpen(space)) return appended;
+		await forget();
+		throw accountClosed();
+	};
+
+	/**
+	 * A sandbox of an account being deleted: its machine destroyed (a boot under way destroys what it makes once it finds
+	 * the record gone), then its snapshots, commands and record.
+	 */
+	async function forgetSandbox(sandbox: StoredSandbox): Promise<void> {
+		if (sandbox.state !== "deleted") {
+			await killCommandsOf(sandbox.id);
+			await backend.destroy(sandbox.id);
+		}
+		for (const snapshot of await store.snapshots.list({ sandboxId: sandbox.id })) {
+			await forgetSnapshot(snapshot);
+			await releaseRef(snapshot.ref);
+		}
+		for (const command of await store.commands.list({ sandboxId: sandbox.id })) await store.commands.delete(command.id);
+		await store.sandboxes.delete(sandbox.id);
+	}
+
+	/**
+	 * One pass of a person's account deletion (`StoredDeletion`). Every step can be made again, and finds only what is
+	 * left, so a pass that fails partway is finished by the next, and the last pass clears whatever writes already under
+	 * way when the account closed stored since the first.
+	 */
+	async function deletionPass(job: StoredDeletion): Promise<void> {
+		const userId = job.id;
+		const principal: PersonPrincipal = {
+			kind: "person",
+			userId,
+			name: job.name,
+			superAdmin: false,
+			personalAccountId: job.personalAccountId,
+			...(job.email === undefined ? {} : { email: job.email }),
+		};
+		// Retired first, for good: from here nothing more is made for them (`PersonWrites`), so what the accounts below hold
+		// is all there will be. Their record stays, with nothing of theirs but their ID, so no sign-in makes them afresh.
+		await retireUser(job);
+		// Every personal account of theirs: the one the deletion began with, the one a sign-in racing it would make
+		// (`personalAccountIdOf`, written before the deletion was recorded, as one written after undid itself), and any other
+		// their memberships name.
+		const personal = new Set([job.personalAccountId, personalAccountIdOf(userId)]);
+		const memberships = await store.members.list({ userId });
+		for (const member of memberships) {
+			const account = await store.accounts.get(member.accountId);
+			if (account === undefined || account.kind === "personal") personal.add(member.accountId);
+		}
+		// No host joins with a token of theirs before the accounts' hosts are revoked below.
+		for (const token of await store.joinTokens.list({ createdBy: userId })) {
+			if (token.usedAt === undefined) await store.joinTokens.delete(token.id);
+		}
+		for (const accountId of personal) await clearPersonalAccount(accountId, job.startedAt);
+		// They leave each organisation as `removeMember` has a member leave: their private sandboxes stay, stopped.
+		for (const member of memberships) {
+			if (personal.has(member.accountId)) continue;
+			for (const sandbox of await store.sandboxes.list({ accountId: member.accountId, ownerUserId: userId })) {
+				if (sandbox.visibility === "private" && sandbox.state === "running") {
+					keepGoing((await beginStop(sandbox, false, "Its person deleted their account", principal)).work);
+				}
+			}
+			await store.members.delete(member.id);
+		}
+		// Every key that acts for them, in any account (one stored after this works nowhere either: `ownerRemains`).
+		const keys = await store.apiKeys.list({ ownerUserId: userId });
+		for (const key of keys) {
+			if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+		}
+		// And the answers kept for their retries (`once`), theirs and their keys': some hold what they made.
+		const callers = [`user:${userId}:`, ...keys.map((key) => `key:${key.id}:`)];
+		for (const kept of await store.idempotency.list()) {
+			if (callers.some((caller) => kept.id.startsWith(caller))) await store.idempotency.delete(kept.id);
+		}
+		// Signed out and forgotten by sign-in: on every pass, so a session made as the first ran goes in the last.
+		await options.deletePerson?.(userId);
+	}
+
+	/** Retires a person's user record (`StoredUser.retiredAt`), making a retired one should theirs be missing. */
+	async function retireUser(job: StoredDeletion): Promise<void> {
+		const retired = (current?: StoredUser): StoredUser => ({
+			id: job.id,
+			name: "",
+			superAdmin: false,
+			personalAccountId: current?.personalAccountId ?? job.personalAccountId,
+			createdAt: current?.createdAt ?? job.startedAt,
+			retiredAt: now(),
+		});
+		for (let attempt = 0; attempt < 5; attempt++) {
+			const current = await store.users.get(job.id);
+			if (current?.retiredAt !== undefined) return;
+			if (current === undefined) {
+				if (await store.users.insert(retired())) return;
+				continue;
+			}
+			if (
+				(await store.users.update(job.id, (latest) =>
+					latest.retiredAt === undefined ? retired(latest) : undefined,
+				)) !== undefined
+			) {
+				return;
+			}
+		}
+		throw new KantelError("unavailable", "The person kept changing while they were retired; the deletion tries again");
+	}
+
+	/**
+	 * A personal account of a person being deleted, cleared and removed: closed for good first (`accountOpen`), then
+	 * everything it holds. Every step finds only what is left, so it can be made again.
+	 */
+	async function clearPersonalAccount(accountId: string, startedAt: number): Promise<void> {
+		await store.accounts.update(accountId, (account) =>
+			account.closedAt === undefined ? { ...account, closedAt: now() } : undefined,
+		);
+		for (const token of await store.joinTokens.list({ accountId })) await store.joinTokens.delete(token.id);
+		// Sandboxes (their machines destroyed), saved snapshots, bundles (bytes and all).
+		for (const sandbox of await store.sandboxes.list({ accountId })) await forgetSandbox(sandbox);
+		for (const snapshot of await store.snapshots.list({ accountId })) {
+			await forgetSnapshot(snapshot);
+			await releaseRef(snapshot.ref);
+		}
+		for (const bundle of await store.bundles.list({ accountId })) {
+			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
+			await mounts.forgetBundle(bundle);
+		}
+		// Its templates before its hosts: a template cache's bytes go only over its host's connection, which revoking the
+		// host ends for good. So the pass waits (fails, to be made again) while an entry on a host of the account's is still
+		// being removed, connected now or not, as one away may come back and finish; for `DELETION_HOST_WAIT_MS` from the
+		// deletion's start, after which a host that hasn't is revoked all the same.
+		await templates.retireAccount(accountId);
+		const own = (await ensureHosts()).filter((host) => host.accountId === accountId && host.state !== "revoked");
+		if (own.length > 0 && now() - startedAt < DELETION_HOST_WAIT_MS) {
+			const ownIds = new Set(own.map((host) => host.id));
+			const waiting = (await store.templateSnapshots.list({ accountId })).filter(
+				(entry) => entry.hostId !== undefined && ownIds.has(entry.hostId),
+			);
+			if (waiting.length > 0) {
+				throw new KantelError("unavailable", "The account's template caches are still being removed from its hosts");
+			}
+		}
+		// Its hosts: a revoke that can't be made fails the pass, to be made again.
+		for (const host of own) await revokeStoredHost(host);
+		for (const source of await store.bucketSources.list({ accountId })) await store.bucketSources.delete(source.id);
+		for (const invite of await store.invites.list({ accountId })) await store.invites.delete(invite.id);
+		for (const webhook of await store.webhooks.list({ accountId })) await store.webhooks.delete(webhook.id);
+		for (const delivery of await store.deliveries.list({ accountId })) await store.deliveries.delete(delivery.id);
+		for (const environment of await store.environments.list({ accountId })) {
+			await store.environments.delete(environment.id);
+		}
+		for (const event of await store.events.list({ accountId })) await store.events.delete(event.id);
+		for (const entry of await store.egress.list({ accountId })) await store.egress.delete(entry.id);
+		for (const entry of await store.e2eChain.list({ space: accountId })) await store.e2eChain.delete(entry.id);
+		await store.telemetry.delete(accountId);
+		await store.proxies.delete(accountId);
+		// The account before its memberships: should what follows fail, a membership left names it, for the next pass.
+		await store.accounts.delete(accountId);
+		for (const member of await store.members.list({ accountId })) await store.members.delete(member.id);
+	}
+
+	/**
+	 * The soonest a running deletion's next pass can be taken, or undefined with none: its due time, or, while a pass
+	 * holds it, when that pass's lease runs out (should it die, the next takes over then).
+	 */
+	async function nextDeletionDue(): Promise<number | undefined> {
+		const due = (await store.deletions.list({ stage: "running" })).map((deletion) =>
+			Math.max(deletion.dueAt, deletion.lease?.until ?? 0),
+		);
+		return due.length === 0 ? undefined : Math.min(...due);
+	}
+
+	/** Asks the deployment to wake at `at` (`ComputeServiceOptions.wakeAt`), and waits: a failure is the caller's. */
+	async function wake(at: number): Promise<void> {
+		await options.wakeAt?.(at);
+	}
+
+	/** Asks the deployment to wake for the soonest next deletion pass. */
+	async function wakeForDeletions(): Promise<void> {
+		const at = await nextDeletionDue();
+		if (at !== undefined) await wake(at);
+	}
+
+	async function carryOnDeletion(userId: string): Promise<void> {
+		const token = randomSlug(12);
+		// Only a running deletion whose pass is due now, as stored now: a caller holding an older copy can't bring its last
+		// pass forward, nor take one another gateway is carrying on.
+		const job = await store.deletions.update(userId, (current) =>
+			current.stage !== "running" ||
+			current.dueAt > now() ||
+			(current.lease !== undefined && current.lease.until > now())
+				? undefined
+				: { ...current, lease: { token, until: now() + DELETION_LEASE_MS } },
+		);
+		if (job === undefined) return;
+		const mine = (current: StoredDeletion) => current.lease?.token === token;
+		// A wake for when this lease runs out, before any work: should this pass die, the next takes over then.
+		await wake(job.lease?.until ?? now() + DELETION_LEASE_MS);
+		const released = ({ lease: _lease, ...current }: StoredDeletion) => current;
+		try {
+			await deletionPass(job);
+		} catch (error) {
+			const attempts = job.attempts + 1;
+			await store.deletions.update(userId, (current) =>
+				mine(current)
+					? {
+							...released(current),
+							attempts,
+							lastError: messageOf(error),
+							dueAt: now() + Math.min(DELETION_RETRY_MS * 2 ** (attempts - 1), DELETION_RETRY_MAX_MS),
+						}
+					: undefined,
+			);
+			await wakeForDeletions();
+			throw error;
+		}
+		if (job.clearedAt === undefined) {
+			await store.deletions.update(userId, (current) => {
+				if (!mine(current)) return undefined;
+				const { lastError: _error, ...rest } = released(current);
+				return { ...rest, clearedAt: now(), dueAt: now() + DELETION_LAST_PASS_MS, attempts: 0 };
+			});
+			await wakeForDeletions();
+		} else {
+			// Done: kept as the user ID alone, for good, so it is never let in or made afresh again.
+			await store.deletions.update(userId, (current) =>
+				mine(current)
+					? {
+							id: current.id,
+							stage: "done",
+							personalAccountId: current.personalAccountId,
+							name: "",
+							startedAt: current.startedAt,
+							clearedAt: now(),
+							dueAt: Number.MAX_SAFE_INTEGER,
+							attempts: 0,
+						}
+					: undefined,
+			);
+		}
+	}
+
+	/**
+	 * A snapshot, once stored: forgotten, its bytes released as a delete does (`forgetSnapshot`, `releaseRef`), if its
+	 * account has closed or gone meanwhile, so a snapshot taken as the account was deleted never outlives it.
+	 */
+	async function holdSnapshot(snapshot: StoredSnapshot): Promise<void> {
+		if (await accountOpen(snapshot.accountId)) return;
+		await forgetSnapshot(snapshot);
+		await releaseRef(snapshot.ref);
+		throw accountClosed();
+	}
+
+	/** New sandboxes, once stored: forgotten, before anything boots or anyone sees them, if their account has closed. */
+	async function holdAccount(accountId: string, sandboxIds: readonly string[]): Promise<void> {
+		if (await accountOpen(accountId)) return;
+		for (const id of sandboxIds) await store.sandboxes.delete(id);
+		throw accountClosed();
 	}
 
 	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
@@ -4833,6 +5184,53 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 		},
 
+		deleteCaller: async (principal) => {
+			const person = requirePerson(principal);
+			// The deployment's own administrators are its operator's to remove, not their own: the deployment needs one.
+			if (person.superAdmin || (await options.deploymentAdmin?.(person.userId)) === true) {
+				throw new KantelError("forbidden", "A deployment super-admin can't delete their account");
+			}
+			const personal = person.personalAccountId;
+			// The checks, before anything changes: a refusal leaves everything as it was. Once the deletion is recorded, it is
+			// carried on to the end (`carryOnDeletion`), and the person can't sign in to change anything meanwhile.
+			if ((await store.deletions.get(person.userId)) === undefined) {
+				for (const member of await store.members.list({ userId: person.userId })) {
+					if (member.role !== "owner" || member.accountId === personal) continue;
+					if ((await ownerCount(member.accountId)) > 1) continue;
+					const organisation = await store.accounts.get(member.accountId);
+					if (organisation === undefined) continue;
+					throw new KantelError(
+						"conflict",
+						`You're the last owner of ${organisation.name}: make someone else an owner, or delete it, first`,
+					);
+				}
+				// Bundles too: deleting one (`deleteBundle`) removes its bytes from the deployment's store, which only it checks.
+				if (
+					(await store.sandboxes.list({ accountId: personal })).some((sandbox) => sandbox.state !== "deleted") ||
+					(await store.snapshots.list({ accountId: personal, kind: "saved" })).length > 0 ||
+					(await store.bundles.list({ accountId: personal })).length > 0
+				) {
+					throw new KantelError("conflict", "Delete your sandboxes, saved snapshots and bundles first");
+				}
+				// A wake first, covering the first pass's lease: should it be cut off, the deletion is carried on with no
+				// request needed. One that can't be arranged refuses the deletion before anything changes.
+				await wake(now() + DELETION_LEASE_MS);
+				await store.deletions.insert({
+					id: person.userId,
+					stage: "running",
+					personalAccountId: personal,
+					name: person.name,
+					...(person.email === undefined ? {} : { email: person.email }),
+					startedAt: now(),
+					dueAt: now(),
+					attempts: 0,
+				});
+			}
+			// Its first pass now; should it fail, the sweep carries it on.
+			await carryOnDeletion(person.userId).catch(() => undefined);
+			return undefined;
+		},
+
 		listAccounts: async (principal) => {
 			requireScope(principal, "account:read");
 			return { items: await accountsOf(principal) };
@@ -4900,12 +5298,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (account.kind === "personal" && body.defaultVisibility === "organisation") {
 				throw new KantelError("invalid", "A personal account's sandboxes are always private");
 			}
-			const updated: StoredAccount = {
-				...account,
-				name: body.name ?? account.name,
-				defaultVisibility: body.defaultVisibility ?? account.defaultVisibility,
-			};
-			await store.accounts.put(updated);
+			// Only the fields asked for, on the account as it is when written: never a stale copy over a closure (`closedAt`)
+			// written meanwhile, nor an account its deletion has removed.
+			const updated = await store.accounts.update(account.id, (current) => ({
+				...current,
+				name: body.name ?? current.name,
+				defaultVisibility: body.defaultVisibility ?? current.defaultVisibility,
+			}));
+			if (updated === undefined) throw notFound("account");
 			return accountView(updated, role);
 		},
 
@@ -4962,7 +5362,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (target.role === "owner" && body.role !== "owner" && (await ownerCount(params.accountId)) <= 1) {
 				throw new KantelError("conflict", "The last owner stays an owner");
 			}
-			await store.members.put({ ...target, role: body.role });
+			// The membership as it is now, never one an account deletion (or a removal) took away meanwhile put back.
+			const changed = await store.members.update(target.id, (current) => ({ ...current, role: body.role }));
+			if (changed === undefined) throw notFound("member");
 			const [member] = (await membersView(params.accountId)).filter((entry) => entry.userId === params.userId);
 			if (member === undefined) throw notFound("member");
 			return member;
@@ -5382,6 +5784,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
 				await store.sandboxes.put(sandbox);
+				await holdAccount(account.id, [sandbox.id]);
 				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
 				// refuses the create, which forgets the sandbox before anything else saw it.
 				if (sandboxMounts !== undefined && mounts !== undefined) {
@@ -5631,6 +6034,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					});
 				}
 				for (const fork of forks) await store.sandboxes.put(fork);
+				if (forks[0] !== undefined)
+					await holdAccount(
+						forks[0].accountId,
+						forks.map((fork) => fork.id),
+					);
 				// Each fork holds its own reference to the source's mounts' sources: checked once they are all stored, as a
 				// create's are, so the source's delete (and the sources' deletes) can't leave one mounting what is gone.
 				const first = forks[0];
@@ -5999,6 +6407,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(detached ? { detached: true } : {}),
 				};
 				await store.commands.put(command);
+				// Checked once stored, as a create is: a command landing as its sandbox's account is deleted (its sandbox gone
+				// or the account closed) is forgotten and never run.
+				if ((await store.sandboxes.get(current.id)) === undefined || !(await accountOpen(current.accountId))) {
+					await store.commands.delete(command.id);
+					throw accountClosed();
+				}
 				const controller = new AbortController();
 				runningCommands.set(command.id, controller);
 				// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a
@@ -6288,7 +6702,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("forbidden", "A key limited to some sandboxes can't change the account's E2E chain");
 			}
 			const person = { userId: principal.userId };
-			const entries = await e2eChains.append(account.id, body.from, body.entries, async (payload) => {
+			const entries = await chainAppend(account.id, body.from, body.entries, async (payload) => {
 				if (payload.type === "genesis") {
 					// What it starts with is its admin: an admin of the organisation, starting it on their own device.
 					if (role === "member") throw new KantelError("forbidden", "Only an admin or owner starts the chain");
@@ -6414,6 +6828,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(taken.base === undefined ? {} : { base: taken.base }),
 				};
 				await store.snapshots.put(snapshot);
+				await holdSnapshot(snapshot);
 				await patchSandbox(current.id, (latest) => ({
 					...latest,
 					latestSnapshotId: snapshot.id,
@@ -6494,6 +6909,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(base === undefined ? {} : { base }),
 				};
 				await store.snapshots.put(snapshot);
+				await holdSnapshot(snapshot);
 				if (existing !== undefined) {
 					await forgetSnapshot(existing);
 					await releaseRef(existing.ref);
@@ -7418,7 +7834,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				principal = key;
 			} else {
 				const user = await store.users.get(grantee.userId);
-				if (user === undefined) return false;
+				// Gone, or being (or having been) deleted: nothing they were given goes on.
+				if (user === undefined || (await store.deletions.get(grantee.userId)) !== undefined) return false;
 				if (grantee.session !== undefined && options.sessionLive !== undefined) {
 					if (!(await options.sessionLive(grantee.session))) return false;
 				}
@@ -7447,8 +7864,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return portNotRunningText(sandbox, apiBasePath);
 		},
 
+		async carryOnDeletions() {
+			for (const deletion of await store.deletions.list({ stage: "running" })) {
+				if (deletion.dueAt <= now()) await carryOnDeletion(deletion.id).catch(() => undefined);
+			}
+			return nextDeletionDue();
+		},
+
 		async sweep() {
 			const at = now();
+			// Account deletions whose next pass is due: carried on in the background, one gateway each.
+			for (const deletion of await store.deletions.list({ stage: "running" })) {
+				if (deletion.dueAt <= at) keepGoing(carryOnDeletion(deletion.id));
+			}
 			// The sweep alone stops a sandbox past its time, and only where its host is connected: one on a host that is
 			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
 			// reconnection, stops it.
@@ -7573,7 +8001,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async appendHostE2EChain(hostId, space, from, entries) {
 			await hostMayUseChain(hostId, space);
-			return e2eChains.append(space, from, entries, (payload) => {
+			return chainAppend(space, from, entries, (payload) => {
 				if (payload.type !== "host.add" || payload.body.host.id !== hostId) {
 					throw new KantelError("forbidden", "A host adds only its own host.add");
 				}
@@ -7690,10 +8118,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			for (const [sandboxId, batch] of bySandbox) {
 				const sandbox = await store.sandboxes.get(sandboxId);
-				// A host reports only its own sandboxes; anything else is dropped.
+				// A host reports only its own sandboxes, in an open account; anything else is dropped.
 				if (sandbox === undefined || sandbox.hostId !== hostId) continue;
-				for (const record of batch.slice(-MAX_EGRESS_ENTRIES)) {
-					await store.egress.put(egressEntryFrom(record, sandbox, now()));
+				if (!(await accountOpen(sandbox.accountId))) continue;
+				// Checked again once written (`accountOpen`): a report that lands as its account closes goes, and so does what
+				// one that failed partway wrote, its error kept.
+				const forget = async () => {
+					for (const entry of await store.egress.list({ sandboxId })) await store.egress.delete(entry.id);
+				};
+				try {
+					for (const record of batch.slice(-MAX_EGRESS_ENTRIES)) {
+						await store.egress.put(egressEntryFrom(record, sandbox, now()));
+					}
+				} catch (error) {
+					if (!(await accountOpen(sandbox.accountId))) await forget().catch(() => undefined);
+					throw error;
+				}
+				if (!(await accountOpen(sandbox.accountId))) {
+					await forget();
+					continue;
 				}
 				const log = await egressLog(sandboxId);
 				for (const stale of log.slice(MAX_EGRESS_ENTRIES)) await store.egress.delete(stale.id);

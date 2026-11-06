@@ -553,6 +553,8 @@ export async function gatewayCompute(options: {
 	readonly store?: ComputeStore;
 	/** Whether a Kantel session (its token's hash) is live: access given under one ends when it does. */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/** Removes a person from sign-in once they delete their account (`ComputeServiceOptions.deletePerson`). */
+	readonly deletePerson?: (userId: string) => Promise<void>;
 	/**
 	 * KANTEL_SECRETS_KEY: 32 bytes, base64, sealing environments' protected values and secret files. Without it, a
 	 * Postgres store refuses them (a memory store seals with a key of its own, lost with the process).
@@ -612,6 +614,7 @@ export async function gatewayCompute(options: {
 		backend,
 		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
+		...(options.deletePerson === undefined ? {} : { deletePerson: options.deletePerson }),
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
 		// With a ports domain, sandboxes' addresses are under it, and the console names them so.

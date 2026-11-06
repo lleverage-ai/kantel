@@ -92,6 +92,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 	async function human(candidates: readonly SignInProvider[], token: string): Promise<SignedIn> {
 		const provider = providerFor(candidates, token);
 		const external = await provider.verify(token);
+		const boundTo = external.userId;
 		if (signIn === undefined) throw authenticationError("invalid", INVALID_MESSAGE);
 		let signedIn: SignIn;
 		try {
@@ -100,6 +101,8 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 			if (isKantelError(error, "forbidden")) throw authenticationError("invalid", INVALID_MESSAGE);
 			throw error;
 		}
+		// A session signs in only as the user it was started for, never someone the same email or subject names now.
+		if (boundTo !== undefined && signedIn.user.id !== boundTo) throw authenticationError("invalid", INVALID_MESSAGE);
 		return {
 			method: provider.method,
 			actor: { kind: "human", userId: signedIn.user.id },

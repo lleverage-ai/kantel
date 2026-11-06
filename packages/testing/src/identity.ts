@@ -1447,6 +1447,54 @@ export function createIdentityConformance(options: {
 			}),
 		},
 		{
+			name: "deleteUser removes a person's roles, linked sign-ins, settings and invites, and a later sign-in is someone new",
+			run: withSubject(async ({ identity }, deps) => {
+				const acme = await createTenant(identity, "Acme");
+				const beta = await createTenant(identity, "Beta");
+				const email = "ada@example.test";
+				const otp = { issuer: EMAIL_OTP_ISSUER, subject: email, email, emailVerified: true };
+				const github = { issuer: GITHUB_ISSUER, subject: "583231", email, emailVerified: true };
+				const ada = await identity.createUser(acme.admin, {
+					name: "Ada",
+					email,
+					externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, email),
+				});
+				await identity.grantRole(acme.admin, { principal: { kind: "user", userId: ada.id }, role: "admin" });
+				a.strictEqual((await identity.signIn(WORKER, github)).user.id, ada.id, "GitHub is linked to her");
+				const asAda = contextFor(actors.human(ada.id), acme.organisation.id);
+				await identity.setUserPreferences(asAda, { theme: "dark" });
+				await identity.createInvite(beta.admin, { email, role: "viewer" });
+
+				await assertWorkerCallRefused(
+					a,
+					deps,
+					"identity.deleteUser",
+					(ctx) => identity.deleteUser(ctx, ada.id),
+					acme.organisation.id,
+				);
+				await identity.deleteUser(WORKER, ada.id);
+
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(ada.id), acme.organisation.id), undefined);
+				a.strictEqual(await identity.canSignIn(WORKER, otp), false, "her email code finds nobody, invite and all");
+				await a.rejectsWithCode(identity.signIn(WORKER, github), "forbidden", "nor does her GitHub account");
+				a.strictEqual((await identity.listInvites(beta.admin)).length, 0, "the invite to her email went with her");
+				a.partialDeepEqual(deps.audit.ofType("identity.user.deleted").at(-1), {
+					organisationId: acme.organisation.id,
+					subject: { kind: "identity.user", id: ada.id },
+				});
+				await identity.deleteUser(WORKER, ada.id);
+
+				await identity.createInvite(beta.admin, { email, role: "viewer" });
+				// A stored sign-in of hers (a session from before) resolves no one, and links nothing to whoever comes next.
+				await a.rejectsWithCode(identity.signIn(WORKER, { ...github, userId: ada.id }), "forbidden", "her old session");
+				a.strictEqual((await identity.listInvites(beta.admin)).length, 1, "and accepts no invite");
+				const again = await identity.signIn(WORKER, github);
+				a.ok(again.user.id !== ada.id, "invited again, she is a new user");
+				a.deepEqual(await identity.userPreferences(contextFor(actors.human(again.user.id), beta.organisation.id)), {});
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(again.user.id), acme.organisation.id), undefined);
+			}),
+		},
+		{
 			name: "worker calls: signIn refuses every caller but system",
 			run: withSubject(async ({ identity }, deps) => {
 				const tenant = await createTenant(identity, "Acme");

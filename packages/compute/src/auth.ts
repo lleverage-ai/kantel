@@ -9,8 +9,14 @@
 import type { computeSchema } from "@kantel/api";
 import { API_KEY_LAST_USED_PRECISION_MS, KantelError } from "@kantel/contracts";
 import { isPlaceholderName, personName } from "./names.ts";
-import type { ComputeStore, StoredAccount, StoredApiKey, StoredUser } from "./store.ts";
-import { randomId, randomSecret, sha256Hex } from "./util.ts";
+import {
+	type ComputeStore,
+	PERSONAL_ACCOUNT_PREFIX,
+	type StoredAccount,
+	type StoredApiKey,
+	type StoredUser,
+} from "./store.ts";
+import { randomSecret, sha256Hex } from "./util.ts";
 
 /** A signed-in person, as the host's authenticator reports them. */
 export interface PersonIdentity {
@@ -140,6 +146,12 @@ export function bearerOf(request: Request): string | undefined {
 	return match?.[1];
 }
 
+/**
+ * The ID of the personal account a person is given when first seen: theirs alone, so a deletion of theirs knows it
+ * without looking for it, however far a sign-in racing the deletion got.
+ */
+export const personalAccountIdOf = (userId: string): string => `${PERSONAL_ACCOUNT_PREFIX}${userId}`;
+
 /** A membership's ID. */
 export const memberId = (accountId: string, userId: string): string => `${accountId}:${userId}`;
 
@@ -162,20 +174,71 @@ function nameFor(identity: PersonIdentity, existing: StoredUser | undefined): st
  * personal account is named as they are, and renamed with them unless they renamed it (one made while gateways named
  * people by their user ID is).
  */
-export async function ensurePerson(store: ComputeStore, identity: PersonIdentity, now: number): Promise<StoredUser> {
+/**
+ * A person's owner membership and personal account, each only while they are active (`PersonWrites`) and only if
+ * absent: a retirement landing in between stops the rest, and the deletion that retired them finds whatever had landed
+ * before (by its ID, which is theirs: `personalAccountIdOf`).
+ */
+async function provisionPersonal(
+	store: ComputeStore,
+	user: StoredUser,
+	account: StoredAccount,
+	now: number,
+): Promise<void> {
+	await store.personWrites.insertMember({
+		id: memberId(account.id, user.id),
+		accountId: account.id,
+		userId: user.id,
+		role: "owner",
+		joinedAt: now,
+	});
+	await store.personWrites.insertAccount(account, user.id);
+}
+
+export async function ensurePerson(
+	store: ComputeStore,
+	identity: PersonIdentity,
+	now: number,
+	again = true,
+): Promise<StoredUser> {
 	const existing = await store.users.get(identity.userId);
 	const superAdmin = identity.superAdmin === true;
 	const name = nameFor(identity, existing);
 	if (existing !== undefined) {
+		// Retired by their account deletion: never let in, nor made again.
+		if (existing.retiredAt !== undefined) throw new KantelError("forbidden", "This account has been deleted");
+		// A first sign-in that stopped after making them, before their membership or account: finished now, as it would
+		// have been (both inserts are only-if-absent and only while they are active, so this can be made any number of
+		// times).
+		if (existing.personalAccountId === personalAccountIdOf(existing.id)) {
+			const [account, member] = await Promise.all([
+				store.accounts.get(existing.personalAccountId),
+				store.members.get(memberId(existing.personalAccountId, existing.id)),
+			]);
+			if (account === undefined || member === undefined) {
+				await provisionPersonal(
+					store,
+					existing,
+					{
+						id: existing.personalAccountId,
+						kind: "personal",
+						name: existing.name,
+						defaultVisibility: "private",
+						createdAt: now,
+					},
+					now,
+				);
+			}
+		}
 		const email = identity.email ?? existing.email;
 		if (existing.name !== name || existing.email !== email || existing.superAdmin !== superAdmin) {
-			const updated: StoredUser = {
-				...existing,
-				name,
-				superAdmin,
-				...(email === undefined ? {} : { email }),
-			};
-			await store.users.put(updated);
+			// An update of the record as it is, never a write over a retirement that landed meanwhile.
+			const updated = await store.users.update(existing.id, (current) =>
+				current.retiredAt !== undefined
+					? undefined
+					: { ...current, name, superAdmin, ...(email === undefined ? {} : { email }) },
+			);
+			if (updated === undefined) throw new KantelError("forbidden", "This account has been deleted");
 			if (existing.name !== name) {
 				// Unless they renamed it themselves, as the account is when the write lands: a name saved meanwhile stays.
 				await store.accounts.update(existing.personalAccountId, (personal) =>
@@ -189,7 +252,7 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 		return existing;
 	}
 	const account: StoredAccount = {
-		id: randomId("acc"),
+		id: personalAccountIdOf(identity.userId),
 		kind: "personal",
 		name,
 		defaultVisibility: "private",
@@ -203,15 +266,16 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 		createdAt: now,
 		...(identity.email === undefined ? {} : { email: identity.email }),
 	};
-	await store.accounts.put(account);
-	await store.members.put({
-		id: memberId(account.id, user.id),
-		accountId: account.id,
-		userId: user.id,
-		role: "owner",
-		joinedAt: now,
-	});
-	await store.users.put(user);
+	// The person first, unique by their ID: two first sign-ins make one, and the other carries on as an existing person.
+	if (!(await store.users.insert(user))) {
+		if (!again) throw new KantelError("conflict", "This person was being made by another call; try again");
+		return ensurePerson(store, identity, now, false);
+	}
+	await provisionPersonal(store, user, account, now);
+	const current = await store.users.get(user.id);
+	if (current === undefined || current.retiredAt !== undefined) {
+		throw new KantelError("forbidden", "This account has been deleted");
+	}
 	return user;
 }
 
@@ -221,7 +285,16 @@ export interface AuthenticateOptions {
 	readonly now: number;
 }
 
-/** The API key a secret is, while it is neither revoked nor expired. */
+/**
+ * Whether the person a key acts for hasn't deleted their account. Deleting an account revokes the keys it finds, but a
+ * key made while the deletion ran may be stored after that: from the moment the deletion is accepted (its record, kept
+ * for good, `StoredDeletion`), it works nowhere.
+ */
+async function ownerRemains(store: ComputeStore, key: StoredApiKey): Promise<boolean> {
+	return (await store.deletions.get(key.ownerUserId)) === undefined;
+}
+
+/** The API key a secret is, while it is neither revoked nor expired and its person exists. */
 export async function keyForSecret(
 	store: ComputeStore,
 	secret: string,
@@ -230,6 +303,7 @@ export async function keyForSecret(
 	const [key] = await store.apiKeys.list({ secretHash: await sha256Hex(secret) });
 	if (key === undefined || key.revokedAt !== undefined) return undefined;
 	if (key.expiresAt !== undefined && key.expiresAt <= now) return undefined;
+	if (!(await ownerRemains(store, key))) return undefined;
 	return key;
 }
 
@@ -242,6 +316,7 @@ export async function liveKeyPrincipal(
 	const key = await store.apiKeys.get(keyId);
 	if (key === undefined || key.revokedAt !== undefined) return undefined;
 	if (key.expiresAt !== undefined && key.expiresAt <= now) return undefined;
+	if (!(await ownerRemains(store, key))) return undefined;
 	return keyPrincipal(key);
 }
 
@@ -273,7 +348,28 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	}
 	const identity = await options.authenticatePerson?.(request);
 	if (identity === undefined) throw new UnauthenticatedError("The credentials are not valid");
-	const user = await ensurePerson(store, identity, now);
+	// Someone whose account deletion is under way is never let in again, nor made afresh by `ensurePerson`.
+	if ((await store.deletions.get(identity.userId)) !== undefined) {
+		throw new UnauthenticatedError("This account is being deleted");
+	}
+	let user: StoredUser;
+	try {
+		user = await ensurePerson(store, identity, now);
+	} catch (error) {
+		// Refused by the store's fence (`fenceClosedAccounts`): their deletion was recorded as this ran.
+		if ((await store.deletions.get(identity.userId)) !== undefined) {
+			throw new UnauthenticatedError("This account is being deleted");
+		}
+		throw error;
+	}
+	// Checked again once made: a deletion that began as this sign-in ran leaves it nothing, not even what it just made
+	// (a personal account apart from the one the deletion clears, or the user record put back).
+	// Checked again once made: a deletion that began as this sign-in ran never gets a principal back. What the sign-in
+	// wrote is no one's to clear here: a write after the deletion was recorded undid itself (`fenceClosedAccounts`), and
+	// one before it is found by the deletion's passes (`personalAccountIdOf`).
+	if ((await store.deletions.get(identity.userId)) !== undefined) {
+		throw new UnauthenticatedError("This account is being deleted");
+	}
 	return {
 		kind: "person",
 		userId: user.id,

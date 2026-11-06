@@ -856,6 +856,15 @@ export function ComputeConsole({
 								onRenamed={() => accounts.reload()}
 								you={{ name: name ?? me.name, email: email ?? me.email }}
 								{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+								{...(source.accounts.deleteAccount === undefined
+									? {}
+									: {
+											onDeleteAccount: async () => {
+												await source.accounts.deleteAccount?.();
+												// Their sign-in has gone with them: signing out takes them back to the start.
+												onSignOut?.();
+											},
+										})}
 								onHostJoined={hosts.reload}
 								onCreate={() => setDialog("create")}
 								onJoin={() => setDialog("join")}
@@ -928,6 +937,7 @@ function PageFor({
 	onRenamed,
 	you,
 	onThemeChoose,
+	onDeleteAccount,
 	onHostJoined,
 	onCreate,
 	onJoin,
@@ -961,6 +971,8 @@ function PageFor({
 	/** Who is signed in, for Profile. */
 	you: { readonly name: string; readonly email?: string };
 	onThemeChoose?: (preference: ThemePreference) => void;
+	/** Deletes the person's account, for Profile. Absent where the source can't. */
+	onDeleteAccount?: () => Promise<void>;
 	/** The first run's host joined: the console reads the hosts again. */
 	onHostJoined: () => void;
 	onCreate: () => void;
@@ -1147,6 +1159,7 @@ function PageFor({
 					narrow={narrow}
 					{...(you.email === undefined ? {} : { email: you.email })}
 					{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+					{...(onDeleteAccount === undefined ? {} : { onDeleteAccount })}
 				/>
 			);
 		case "billing":

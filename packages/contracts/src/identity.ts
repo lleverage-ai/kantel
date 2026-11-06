@@ -193,6 +193,12 @@ export interface ExternalIdentity {
 	/** Whether the provider verified the email. Only a verified email links an invited user. */
 	readonly emailVerified?: boolean;
 	readonly name?: string;
+	/**
+	 * The user a stored sign-in (a Kantel session) was made for: `signIn` resolves it by its subject as that user or not
+	 * at all. It never links, makes or matches anyone by email, so one outliving its user (who deleted their account)
+	 * changes nothing for whoever has that email now; it still accepts invites to its own user's email.
+	 */
+	readonly userId?: UserId;
 }
 
 /** The `User.externalSubject` for a provider's subject: the issuer and subject, separated by a space. */
@@ -476,6 +482,16 @@ export interface IdentityDirectory {
 	 * independent of the answer. Malformed identities are `false`. A worker call: any actor but `system` is `forbidden`.
 	 */
 	canSignIn(ctx: SystemContext, identity: ExternalIdentity): Promise<boolean>;
+
+	/**
+	 * Deletes a person who deleted their account: their user, every sign-in subject linked to them, their roles in every
+	 * organisation, their settings, and the invites addressed to their email, so `signIn` no longer finds them and a
+	 * later sign-in with the same email or provider account is someone new. Audited as `identity.user.deleted` in each
+	 * organisation they held a role in. Their sessions are the session store's to end. Organisations, keys and invites
+	 * they made for others stay. A user that doesn't exist is a no-op, so a retry finishes. A worker call: the gateway
+	 * makes it as `system` once the compute plane has deleted their account; any other actor is `forbidden`.
+	 */
+	deleteUser(ctx: SystemContext, userId: UserId): Promise<void>;
 
 	/**
 	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or on the organisation as a

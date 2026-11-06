@@ -1,7 +1,7 @@
 // The compute plane on the self-hosted gateway, through its fetch handler: the super-admin's key drives a sandbox
 // through the SDK, makes a scoped key that works, and the gateway's own routes and keys are as they were.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
-import { type CallContext, EMAIL_OTP_ISSUER, type Role } from "@kantel/contracts";
+import { type CallContext, EMAIL_OTP_ISSUER, externalSubjectOf, type Role } from "@kantel/contracts";
 import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { createTunnelTickets } from "@kantel/hosts/tunnel";
@@ -68,7 +68,12 @@ async function serve(on: boolean, superAdminKey?: string, mailer?: MemoryInviteM
 	const person = async (name: string, role: Role) => {
 		const system: CallContext = { actor: { kind: "system", component: "test" }, organisationId: seeded.organisationId };
 		const email = `${name}@kantel.example.com`;
-		const user = await components.identity.createUser(system, { name, email });
+		// As an email-code sign-in leaves them: linked to that subject, which their session names.
+		const user = await components.identity.createUser(system, {
+			name,
+			email,
+			externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, email),
+		});
 		await components.identity.grantRole(system, { principal: { kind: "user", userId: user.id }, role });
 		const token = `kts_${crypto.randomUUID().replaceAll("-", "")}`;
 		await components.otp.sessions.create({
@@ -501,7 +506,11 @@ describe("the compute plane on the gateway", () => {
 			return { gateway, service };
 		};
 		const system: CallContext = { actor: { kind: "system", component: "test" }, organisationId: seeded.organisationId };
-		const user = await components.identity.createUser(system, { name: "otto", email: "otto@kantel.example.com" });
+		const user = await components.identity.createUser(system, {
+			name: "otto",
+			email: "otto@kantel.example.com",
+			externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, "otto@kantel.example.com"),
+		});
 		await components.identity.grantRole(system, { principal: { kind: "user", userId: user.id }, role: "operator" });
 		const session = `kts_${crypto.randomUUID().replaceAll("-", "")}`;
 		await components.otp.sessions.create({

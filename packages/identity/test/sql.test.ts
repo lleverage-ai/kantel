@@ -86,6 +86,39 @@ const request = (headers: Record<string, string>) => new Request("https://kantel
 
 for (const kind of testDatabaseKinds()) {
 	describe(`SQL identity on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
+		it("links no provider to a user whose deletion lands while the link is under way", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const direct = createSqlIdentity({ driver, clock });
+				const { admin } = await tenant(direct);
+				const email = "ada@example.test";
+				const ada = await direct.createUser(admin, {
+					name: "Ada",
+					email,
+					externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, email),
+				});
+				const github = { issuer: GITHUB_ISSUER, subject: "583231", email, emailVerified: true };
+				const paused = pausing(driver, (sql) => sql.includes("INSERT INTO identity_user_subjects"));
+				const linking = createSqlIdentity({ driver: paused.driver, clock }).signIn(WORKER, github);
+				await paused.reached;
+				await direct.deleteUser(WORKER, ada.id);
+				paused.release();
+				await expect(linking).rejects.toMatchObject({ code: "forbidden" });
+				expect(
+					await driver.query("SELECT 1 FROM identity_user_subjects WHERE external_subject = ?", [
+						externalSubjectOf(GITHUB_ISSUER, "583231"),
+					]),
+				).toEqual([]);
+				// Someone with that email now, linking that GitHub account, is linked, unhindered by anything left behind.
+				const again = await direct.createUser(admin, {
+					name: "Ada again",
+					email,
+					externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, email),
+				});
+				expect((await direct.signIn(WORKER, github)).user.id).toBe(again.id);
+			});
+		});
+
 		it("keeps organisations, users, bindings and keys across directory instances, and a revocation holds on both", async () => {
 			await withDatabase(kind, async (driver) => {
 				await migrateIdentity(driver);

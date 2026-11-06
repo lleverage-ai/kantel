@@ -26,6 +26,8 @@ async function withKey(lastUsedAt?: number) {
 		...(lastUsedAt === undefined ? {} : { lastUsedAt }),
 	};
 	await store.apiKeys.put(key);
+	// Its person: a key works only while they exist.
+	await store.users.put({ id: "usr_1", name: "Ada", superAdmin: false, personalAccountId: "acc_1", createdAt: T });
 	return { store, key };
 }
 

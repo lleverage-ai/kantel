@@ -31,7 +31,7 @@ import {
 	type InviteMailing,
 	type RateTable,
 } from "./service.ts";
-import { type ComputeStore, createMemoryStore } from "./store.ts";
+import { type ComputeStore, createMemoryStore, fenceClosedAccounts } from "./store.ts";
 import { createTelemetryExporter, type TelemetryExporter } from "./telemetry.ts";
 import { createWebhookDispatcher, type WebhookDispatcher } from "./webhooks.ts";
 
@@ -80,6 +80,12 @@ export interface ComputeApiOptions {
 	readonly sessionLive?: (session: string) => Promise<boolean>;
 	/** Whether a user may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`); absent, everyone. */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
+	/** Removes a person from sign-in once they delete their account (`ComputeServiceOptions.deletePerson`). */
+	readonly deletePerson?: (userId: string) => Promise<void>;
+	/** Wakes the deployment for the next account deletion pass (`ComputeServiceOptions.wakeAt`). */
+	readonly wakeAt?: (at: number) => Promise<void> | void;
+	/** Whether a person administers the deployment (`ComputeServiceOptions.deploymentAdmin`). */
+	readonly deploymentAdmin?: (userId: string) => Promise<boolean>;
 	/**
 	 * `KANTEL_SECRETS_KEY`: 32 bytes, base64, sealing environments' protected values and secret files. Absent, a memory
 	 * store makes one for the process and a persistent store refuses them. Not a key: `createComputeApi` throws.
@@ -142,7 +148,7 @@ export function computeErrorResponse(error: unknown): Response {
 
 /** The compute plane's API over a backend, with its webhook dispatcher and telemetry exporter. */
 export function createComputeApi(options: ComputeApiOptions): ComputeApi {
-	const store = options.store ?? createMemoryStore();
+	const store = fenceClosedAccounts(options.store ?? createMemoryStore());
 	const now = options.now ?? (() => Date.now());
 	const basePath = (options.basePath ?? "/v1").replace(/\/+$/, "");
 	const dispatcher = createWebhookDispatcher({
@@ -175,6 +181,9 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
+		...(options.deletePerson === undefined ? {} : { deletePerson: options.deletePerson }),
+		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
+		...(options.deploymentAdmin === undefined ? {} : { deploymentAdmin: options.deploymentAdmin }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),

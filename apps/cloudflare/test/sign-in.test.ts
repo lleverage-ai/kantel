@@ -294,6 +294,46 @@ describe("email-code sign-in on the public origin", () => {
 	});
 });
 
+describe("deleting an account", () => {
+	it("signs the person out everywhere, and signing up again is someone new whom no old session reaches", async () => {
+		const { call, signIn, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
+		const first = await signIn("ada@example.test");
+		const second = await signIn("ada@example.test");
+		const before = await call(PUBLIC, "GET", "/v1/whoami", { token: first });
+		expect(before.status).toBe(200);
+		const key = await call(PUBLIC, "POST", "/v1/api-keys", {
+			token: first,
+			body: { name: "cli", preset: "read-only" },
+		});
+		expect(key.status).toBe(201);
+
+		expect((await call(PUBLIC, "DELETE", "/v1/whoami", { token: String(key.body.secret) })).status).toBe(403);
+		expect((await call(PUBLIC, "DELETE", "/v1/whoami", { token: first })).status).toBe(204);
+
+		for (const token of [first, second, String(key.body.secret)]) {
+			expect((await call(PUBLIC, "GET", "/v1/whoami", { token })).status).toBe(401);
+		}
+		const fresh = await signIn("ada@example.test");
+		const after = await call(PUBLIC, "GET", "/v1/whoami", { token: fresh });
+		expect(after.status).toBe(200);
+		const user = (body: Record<string, unknown>) => (body.user as { id: string }).id;
+		expect(user(after.body)).not.toBe(user(before.body));
+		expect(after.body.accountId).not.toBe(before.body.accountId);
+		// The sessions from before stay gone, though the same email signs in again.
+		for (const token of [first, second]) {
+			expect((await call(PUBLIC, "GET", "/v1/whoami", { token })).status).toBe(401);
+		}
+		await close();
+	});
+
+	it("is refused to the deployment's super-admin", async () => {
+		const { call, close } = await start();
+		const refused = await call(ACCESS_HOST, "DELETE", "/v1/whoami", { access: true });
+		expect(refused.status).toBe(403);
+		await close();
+	});
+});
+
 describe("a sign-up that stopped part-way", () => {
 	it("is finished on the next sign-in, with one space and one Default project", async () => {
 		const identity = await sqlDirectory();
@@ -333,6 +373,7 @@ describe("a sign-up that stopped part-way", () => {
 		let dropSpace = true;
 		const records: SignUpStore = {
 			load: (userId) => inner.load(userId),
+			delete: (userId) => inner.delete(userId),
 			async save(userId, record) {
 				saved.push(record);
 				// The object stopped after the organisation committed, before its record did.
@@ -377,6 +418,7 @@ describe("a sign-up that stopped part-way", () => {
 		let dropSpace = true;
 		const records: SignUpStore = {
 			load: (userId) => inner.load(userId),
+			delete: (userId) => inner.delete(userId),
 			async save(userId, record) {
 				if (record.organisationId !== undefined && dropSpace) throw new Error("reset");
 				await inner.save(userId, record);
@@ -407,6 +449,7 @@ describe("a sign-up that stopped part-way", () => {
 		let drops = 1;
 		const records: SignUpStore = {
 			load: (userId) => inner.load(userId),
+			delete: (userId) => inner.delete(userId),
 			async save(userId, record) {
 				if (record.organisationId !== undefined && drops > 0) {
 					drops -= 1;

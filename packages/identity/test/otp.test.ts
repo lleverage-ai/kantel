@@ -31,7 +31,7 @@ import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
 import type { SqlDriver } from "@kantel/sql";
 import { testDatabaseKinds } from "@kantel/sql/testing";
-import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
+import { ManualClock, RecordingAuditSink, WORKER } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
@@ -415,6 +415,31 @@ for (const backend of backends) {
 			}
 		});
 
+		it("signs a session in only as the user it was started for, and deletes a user's sessions", async () => {
+			const h = await harness(backend);
+			const signIn = async () => {
+				await h.start("ada@example.test");
+				const verified = await h.verify("ada@example.test", h.mailer.lastCodeFor("ada@example.test") ?? "");
+				return ((await verified.json()) as OtpVerifyResponse).token;
+			};
+			try {
+				const old = await signIn();
+				// Ada deletes her account, and a session of hers is left behind (it was made as the delete ran).
+				await h.identity.deleteUser(WORKER, h.ada.id);
+				const again = await h.identity.createUser(h.admin, { name: "Ada again", email: "ada@example.test" });
+				await expect(h.whoAmI(old)).rejects.toSatisfy((error) => authenticationFailureOf(error) === "invalid");
+
+				const fresh = await signIn();
+				expect((await h.whoAmI(fresh)).actor).toEqual({ kind: "human", userId: again.id });
+				await h.sessions.deleteForUser(h.ada.id);
+				expect((await h.whoAmI(fresh)).actor).toEqual({ kind: "human", userId: again.id });
+				await h.sessions.deleteForUser(again.id);
+				await expect(h.whoAmI(fresh)).rejects.toSatisfy((error) => authenticationFailureOf(error) === "invalid");
+			} finally {
+				await h.close();
+			}
+		});
+
 		it("returns before the mail is sent, and a failed send changes nothing the caller sees", async () => {
 			const errors: string[] = [];
 			const never: OtpMailer = { send: () => new Promise(() => {}) };
@@ -529,6 +554,13 @@ describe("a session started before the rename", () => {
 		const h = await harness(backends[0] as Backend);
 		const legacy = "hbs_started-before-the-rename";
 		const now = h.clock.now();
+		// Signed in once, as anyone with a session has been: their email code's subject is theirs.
+		await h.identity.signIn(WORKER, {
+			issuer: EMAIL_OTP_ISSUER,
+			subject: "ada@example.test",
+			email: "ada@example.test",
+			emailVerified: true,
+		});
 		await h.sessions.create({
 			id: "ses_legacy",
 			tokenHash: await hashSessionToken(legacy),

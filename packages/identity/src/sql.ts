@@ -591,16 +591,23 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		// Their own subject already: a first sign-in racing this one made them with it after this one's subject lookup.
 		// Never recorded twice, or the subject would match two rows and `canSignIn` would count it ambiguous.
 		if (user.user.externalSubject === externalSubject) return user;
+		// Only while the user is there, in the same statement: a link and the user's deletion never pass each other (on
+		// Postgres the user's row is held for it; the deletion removes the row before its subjects, so it waits for this
+		// link and then removes it, or this one finds the user gone).
+		let linked: readonly unknown[];
 		try {
-			await driver.query(
-				"INSERT INTO identity_user_subjects (external_subject, user_id, issuer, created_at) VALUES (?, ?, ?, ?)",
-				[externalSubject, user.user.id, issuer, clock.now()],
+			linked = await driver.query(
+				`INSERT INTO identity_user_subjects (external_subject, user_id, issuer, created_at)
+				SELECT ?, id, ?, ? FROM identity_users WHERE id = ?${driver.dialect === "postgres" ? " FOR SHARE" : ""}
+				RETURNING external_subject`,
+				[externalSubject, issuer, clock.now(), user.user.id],
 			);
 		} catch (error) {
 			const holder = await userBySubject(externalSubject).catch(() => undefined);
 			if (holder !== undefined) return holder;
 			throw error;
 		}
+		if (linked.length === 0) throw forbidden("no user matches this sign-in");
 		// Not when the sign-in has just made or linked the user, which it audited.
 		if (options.audit === false) return user;
 		await emit(
@@ -1641,6 +1648,11 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			// the user's read go out together: every API call signs in, and on D1 each read is a round trip (TASK-4486).
 			// `external_subject` is UNIQUE, so at most one user matches.
 			const [pending, found] = await Promise.all([pendingInvitesTo(email), userBySubject(externalSubject)]);
+			// A stored sign-in (`userId`) is its user's by its subject, or no one's: never linked, made or matched by email,
+			// so one from before its user was deleted changes nothing for whoever has that email now.
+			if (identity.userId !== undefined && found?.user.id !== identity.userId) {
+				throw forbidden("no user matches this sign-in");
+			}
 			let stored = found;
 			// Someone who signs in with this email another of Kantel's ways (an email code, GitHub, Google) is this person.
 			const signsInWithKantel =
@@ -1695,6 +1707,62 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			if (created) organisationIds.add(stored.createdInOrganisationId);
 			for (const row of bound) organisationIds.add(String(row.organisation_id));
 			return { user: stored.user, organisationIds: [...organisationIds] };
+		},
+
+		async deleteUser(ctx, userId) {
+			await requireSystem(ctx, "identity.deleteUser", workerOptions);
+			const [user] = await driver.query<{ email_normalised: unknown }>(
+				"SELECT email_normalised FROM identity_users WHERE id = ?",
+				[userId],
+			);
+			const email = typeof user?.email_normalised === "string" ? user.email_normalised : undefined;
+			const held = await driver.query<{ organisation_id: unknown }>(
+				"SELECT DISTINCT organisation_id FROM identity_role_bindings WHERE principal_kind = 'user' AND principal_id = ?",
+				[userId],
+			);
+			const organisationIds = held.map((row) => String(row.organisation_id));
+			// The person first, in one batch, so nobody signs in as them from here on: a role a failure below leaves behind
+			// names a user nobody can sign in as.
+			// The user's row first: a link waiting on it (`linkAnother`) then finds them gone, and one that held it has
+			// committed by now and goes with the subjects below.
+			await driver.batch([
+				sql("DELETE FROM identity_users WHERE id = ?", userId),
+				sql("DELETE FROM identity_user_subjects WHERE user_id = ?", userId),
+				sql("DELETE FROM identity_user_preferences WHERE user_id = ?", userId),
+				sql("DELETE FROM identity_invites WHERE accepted_by = ?", userId),
+				...(email === undefined ? [] : [sql("DELETE FROM identity_invites WHERE email_normalised = ?", email)]),
+			]);
+			// Each organisation's roles move on with the delete, as a revocation's do, so a grant checked before it can't
+			// land after it. A grant that lands meanwhile fails the batch, and the delete reads the version again.
+			for (const organisationId of organisationIds) {
+				const statement = sql(
+					"DELETE FROM identity_role_bindings WHERE principal_kind = 'user' AND principal_id = ? AND organisation_id = ?",
+					userId,
+					organisationId,
+				);
+				for (let attempt = 1; ; attempt++) {
+					const seen = await rolesVersion(organisationId);
+					if (!(await scopeExists(organisationId, undefined))) {
+						await driver.batch([statement]);
+						break;
+					}
+					try {
+						await guardedRoleChange(organisationId, seen, [statement]);
+						break;
+					} catch (error) {
+						if (!(error instanceof KantelError && error.code === "conflict") || attempt >= 3) throw error;
+					}
+				}
+			}
+			for (const organisationId of organisationIds) {
+				await emit(
+					{ actor: ctx.actor, organisationId },
+					"identity.user.deleted",
+					organisationId,
+					{ kind: "identity.user", id: userId },
+					{},
+				);
+			}
 		},
 
 		async canSignIn(ctx, identity) {

@@ -21,6 +21,7 @@ import {
 	type Collection,
 	type ComputeStore,
 	matches,
+	type PersonWrites,
 	type StoredTemplate,
 	type StoredTemplateVersion,
 	type TemplateWrites,
@@ -337,10 +338,47 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		fileUrls: sqlCollection(driver, "fileUrls"),
 		settings: sqlCollection(driver, "settings"),
 		usageClaims: sqlCollection(driver, "usageClaims"),
+		deletions: sqlCollection(driver, "deletions"),
+		personWrites: sqlPersonWrites(driver),
 		templates: sqlCollection(driver, TEMPLATES),
 		templateVersions: sqlCollection(driver, TEMPLATE_VERSIONS),
 		templateWrites: sqlTemplateWrites(driver),
 		templateSnapshots: sqlCollection(driver, "templateSnapshots"),
 		templateBases: sqlCollection(driver, "templateBases"),
+	};
+}
+
+/**
+ * A person's first records, each one conditional insert: written only while the user's record exists with no
+ * `retiredAt`. On Postgres the user's row is held (`FOR SHARE`) for the insert, so a retirement waits for it, and an
+ * insert that waited reads the retirement; SQLite (D1 too) has one writer at a time.
+ */
+function sqlPersonWrites(driver: SqlDriver): PersonWrites {
+	const postgres = driver.dialect === "postgres";
+	const statement = postgres
+		? `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			SELECT ?, ?, nextval('compute_api_records_seq'), 1, ?
+			FROM compute_api_records u
+			WHERE u.kind = 'users' AND u.id = ? AND (u.data::jsonb ->> 'retiredAt') IS NULL
+			FOR SHARE OF u
+			ON CONFLICT (kind, id) DO NOTHING RETURNING id`
+		: `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			SELECT ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?), 1, ?
+			WHERE EXISTS (
+				SELECT 1 FROM compute_api_records u
+				WHERE u.kind = 'users' AND u.id = ? AND json_extract(u.data, '$.retiredAt') IS NULL
+			)
+			ON CONFLICT (kind, id) DO NOTHING RETURNING id`;
+	const insert = async (kind: string, record: { readonly id: string }, userId: string) => {
+		const data = JSON.stringify(record);
+		const rows = await driver.query(
+			statement,
+			postgres ? [kind, record.id, data, userId] : [kind, record.id, kind, data, userId],
+		);
+		return rows.length > 0;
+	};
+	return {
+		insertAccount: (account, userId) => insert("accounts", account, userId),
+		insertMember: (member) => insert("members", member, member.userId),
 	};
 }

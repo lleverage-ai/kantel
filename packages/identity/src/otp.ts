@@ -149,6 +149,11 @@ export interface SessionStore {
 	find(tokenHash: string, now: Timestamp): Promise<SessionRecord | undefined>;
 	/** Ends the session with `tokenHash`; resolves it if this call ended a live one. */
 	end(tokenHash: string, now: Timestamp): Promise<SessionRecord | undefined>;
+	/**
+	 * Deletes every session of `userId`, live or not, when they delete their account: their tokens stop working, and a
+	 * later sign-in with the same email, which is someone new, can't be reached through one.
+	 */
+	deleteForUser(userId: UserId): Promise<void>;
 }
 
 function hex(bytes: Uint8Array): string {
@@ -458,6 +463,7 @@ export function kantelSessionProvider(options: KantelSessionProviderOptions): Si
 				issuer: session.issuer,
 				subject: session.subject,
 				...(session.email === undefined ? {} : { email: session.email, emailVerified: true }),
+				userId: session.userId,
 			};
 		},
 	};
@@ -513,6 +519,9 @@ export function createMemoryOtpStores(): { readonly codes: OtpCodeStore; readonl
 				session.ended = true;
 				const { ended: _ended, ...record } = session;
 				return record;
+			},
+			async deleteForUser(userId) {
+				for (const [hash, session] of sessionsByHash) if (session.userId === userId) sessionsByHash.delete(hash);
 			},
 		},
 	};

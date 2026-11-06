@@ -176,6 +176,10 @@ export function createSqlOtpStores(driver: SqlDriver): {
 				);
 				return row === undefined ? undefined : sessionOf(row);
 			},
+
+			async deleteForUser(userId) {
+				await driver.query("DELETE FROM identity_sessions WHERE user_id = ?", [userId]);
+			},
 		},
 	};
 }

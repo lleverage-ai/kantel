@@ -1496,6 +1496,9 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		reconcileAll,
 		async retireAccount(accountId) {
 			for (const template of await store.templates.list({ accountId })) await retire(template);
+			// And every cache entry of the account's still being removed, its template gone or not and templates on or not:
+			// an account deletion calls this on each of its passes, so each is a fresh try at their bytes (`cleanUp`).
+			for (const entry of await store.templateSnapshots.list({ accountId })) await cleanUp(entry);
 		},
 		publishTemplateBase,
 	};
