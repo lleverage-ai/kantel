@@ -1994,7 +1994,7 @@ const SECTIONS: readonly Section[] = [
 					"the snapshot the sandbox was made from, else the checkout's HEAD; your repository must have it too.\n" +
 					"Here, in a copy of your index (yours isn't touched), it stages your tracked changes and the new files\n" +
 					".gitignore doesn't leave out, and diffs that tree against the base, binary files and all. There, it\n" +
-					"runs git reset --hard <base> and git clean -fd, which keeps ignored files such as node_modules, applies\n" +
+					"runs git clean -fd, which keeps ignored files such as node_modules, and git reset --hard <base>, applies\n" +
 					"the patch with git apply --index and checks that git write-tree names the same tree on both sides.\n" +
 					"Anything else in the checkout (commits, changes, new files) is lost. A changed or new file push would\n" +
 					"leave out (credentials; untracked .claude, .codex, .cursor, .npmrc and .env files) stays at the base's\n" +

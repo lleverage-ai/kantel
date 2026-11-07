@@ -10,9 +10,9 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFile, mkdtemp, realpath, rm, stat, utimes } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, realpath, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, posix, relative, resolve, sep } from "node:path";
+import { delimiter, join, posix, relative, resolve, sep } from "node:path";
 import { gzipSync } from "node:zlib";
 import { KantelApiError, type KantelClient, type Sandbox } from "@kantel/api/sdk";
 import { CliError } from "./errors.ts";
@@ -172,6 +172,11 @@ export interface LocalPatch {
  * `keep` (absolute directories, such as Kantel's config) stay at the base's version whatever the excludes. A
  * repository of its own inside the tree isn't sent.
  */
+/** `path` as one entry of GIT_ALTERNATE_OBJECT_DIRECTORIES, which git C-quotes when it holds the separator. */
+function alternate(path: string): string {
+	return path.includes(delimiter) || path.startsWith('"') ? JSON.stringify(path) : path;
+}
+
 export async function buildPatch(
 	top: string,
 	base: string,
@@ -184,9 +189,21 @@ export async function buildPatch(
 ): Promise<LocalPatch> {
 	const scratch = await mkdtemp(join(tmpdir(), "kantel-sync-"));
 	const index = join(scratch, "index");
-	const env = { GIT_INDEX_FILE: index, GIT_LITERAL_PATHSPECS: "1", GIT_OPTIONAL_LOCKS: "0" };
 	try {
-		const own = resolve(top, (await gitOut(top, ["rev-parse", "--git-path", "index"])).toString("utf8").trim());
+		const gitPath = async (name: string): Promise<string> =>
+			resolve(top, (await gitOut(top, ["rev-parse", "--git-path", name])).toString("utf8").trim());
+		const own = await gitPath("index");
+		// The blobs and trees it writes go to its own object directory, which only this user can read and which goes
+		// with it, so a credential it leaves out isn't kept in the repository's; the repository's are read through it.
+		const objects = join(scratch, "objects");
+		await mkdir(objects);
+		const env = {
+			GIT_INDEX_FILE: index,
+			GIT_OBJECT_DIRECTORY: objects,
+			GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(await gitPath("objects")),
+			GIT_LITERAL_PATHSPECS: "1",
+			GIT_OPTIONAL_LOCKS: "0",
+		};
 		const times = await stat(own).catch(() => undefined);
 		if (times === undefined) {
 			await gitOut(top, ["read-tree", base], { env }); // A repository with no index yet.
@@ -259,6 +276,7 @@ export async function buildPatch(
 							"-p",
 							"--binary",
 							"--full-index",
+							"--unified=3",
 							"-M",
 							"--no-color",
 							"--no-ext-diff",
@@ -350,9 +368,16 @@ export async function labelledBase(
 }
 
 /** Exit codes of the sandbox side, each a failure sync explains. */
-const EXIT = { noBase: 41, reset: 42, apply: 43, tree: 44, worktree: 45 } as const;
+const EXIT = { noBase: 41, reset: 42, apply: 43, tree: 44, worktree: 45, busy: 46 } as const;
 
-/** The sandbox side: one command that resets, cleans, applies and checks the tree. */
+/** How long the sandbox side waits for another sync into the same checkout to finish, in seconds. */
+const LOCK_WAIT_S = 300;
+
+/**
+ * The sandbox side: one command that cleans, resets, applies and checks the tree. It holds a lock in the checkout's
+ * git directory throughout, where the sandbox has flock, so two syncs into one checkout take turns; the lock goes
+ * when the command ends, however it ends.
+ */
 export function applyScript(options: {
 	readonly top: string;
 	readonly base: string;
@@ -370,9 +395,12 @@ export function applyScript(options: {
 				`{ ${cleanUp}exit ${EXIT.apply}; }; ${cleanUp}`;
 	return (
 		`cd ${quote(top)} || exit 1; ` +
+		`lock=$(git rev-parse --git-path kantel-sync.lock) && exec 9>"$lock" || exit 1; ` +
+		`if command -v flock >/dev/null; then flock -w ${LOCK_WAIT_S} 9 || { ${cleanUp}exit ${EXIT.busy}; }; fi; ` +
 		`git cat-file -e ${base}^{commit} 2>/dev/null || { ${cleanUp}exit ${EXIT.noBase}; }; ` +
-		// A fork's files have new inodes, so the index is stale: reset reads them again.
-		`git reset -q --hard ${base} && git clean -fdq -e /${BASE_FILE} || { ${cleanUp}exit ${EXIT.reset}; }; ` +
+		// Clean first, by the ignore rules the checkout has now: after the reset the base's would count, and a file
+		// ignored by a rule added since would go. A fork's files have new inodes, so reset reads them all again.
+		`git clean -fdq -e /${BASE_FILE} && git reset -q --hard ${base} || { ${cleanUp}exit ${EXIT.reset}; }; ` +
 		apply +
 		`t=$(git write-tree) || exit ${EXIT.tree}; echo "tree=$t"; ` +
 		`[ "$t" = ${tree} ] || { git status --short | head -20 >&2; exit ${EXIT.tree}; }; ` +
@@ -528,6 +556,10 @@ export async function syncGit(
 			);
 		case EXIT.reset:
 			throw new CliError(`couldn't reset ${where} to ${short(base)}${why}`);
+		case EXIT.busy:
+			throw new CliError(
+				`another sync into ${where} has been running for ${LOCK_WAIT_S / 60} minutes: try again once it ends`,
+			);
 		case EXIT.apply:
 			throw new CliError(`the patch didn't apply to ${where}${why}. It's left at ${short(base)}, with nothing applied`);
 		case EXIT.tree: {

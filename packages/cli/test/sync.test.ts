@@ -76,6 +76,21 @@ async function edit(local: string): Promise<void> {
 	await symlink("src/a.ts", join(local, "link.ts"));
 }
 
+/** The ID git gives a blob of `content`, without writing it. */
+async function hashOf(cwd: string, content: string): Promise<string> {
+	const child = execFile("git", ["hash-object", "--stdin"], { cwd, encoding: "utf8" });
+	const out = new Promise<string>((done, fail) => {
+		let text = "";
+		child.stdout?.on("data", (chunk) => {
+			text += chunk;
+		});
+		child.on("error", fail);
+		child.on("close", () => done(text.trim()));
+	});
+	child.stdin?.end(content);
+	return out;
+}
+
 /** A tree's ID as git would commit the working tree at `dir` (every untracked, unignored file added). */
 async function workingTree(dir: string): Promise<string> {
 	const index = join(root, `index-${Math.random()}`);
@@ -212,6 +227,55 @@ describe("the patch", () => {
 		const all = await buildPatch(local, base, { defaultExcludes: false });
 		expect(all.files).toBe(3);
 		expect(all.tree).toBe(await workingTree(local));
+	});
+
+	it("keeps what it leaves out, and every blob it writes, out of the repository's objects", async () => {
+		const { local, sandbox, base } = await repositories();
+		const config = join(local, ".config", "kantel");
+		await mkdir(config, { recursive: true });
+		const secrets = { ".env": "SECRET=one\n", ".config/kantel/config.json": '{"apiKey":"ksk_two"}\n' };
+		for (const [path, content] of Object.entries(secrets)) await writeFile(join(local, path), content);
+		await writeFile(join(local, "src", "a.ts"), "export const a = 'sent';\n");
+		const objects = async () => (await git(local, "count-objects", "-v")).match(/^count: (\d+)/m)?.[1];
+		const before = await objects();
+		const patch = await buildPatch(local, base, { defaultExcludes: true, keep: [config] });
+		expect(patch.skipped.map((skipped) => skipped.path).sort()).toEqual([".config/kantel", ".env"]);
+		for (const content of Object.values(secrets)) {
+			const id = await hashOf(local, content);
+			await expect(git(local, "cat-file", "-e", id)).rejects.toThrow();
+		}
+		await expect(git(local, "cat-file", "-e", patch.tree)).rejects.toThrow();
+		expect(await objects()).toBe(before);
+		// It still applies, the base's blobs read from the repository's own objects.
+		await writeFile(join(root, "p.patch"), patch.patch);
+		await git(sandbox, "apply", "--index", join(root, "p.patch"));
+		expect(await git(sandbox, "write-tree")).toBe(patch.tree);
+	});
+
+	it("gives a patch git apply takes, whatever the user's diff settings", async () => {
+		const { local, sandbox, base } = await repositories();
+		await writeFile(join(local, "src", "a.ts"), "1\n2\n3\n4\n5\n6\n7\n");
+		await git(local, "commit", "-qam", "longer");
+		await git(sandbox, "fetch", "-q", local, "main");
+		await git(sandbox, "reset", "-q", "--hard", "FETCH_HEAD");
+		const longer = await git(local, "rev-parse", "HEAD");
+		await writeFile(join(local, "src", "a.ts"), "1\n2\n3\nfour\n5\n6\n7\n");
+		for (const [key, value] of [
+			["diff.context", "0"],
+			["diff.noprefix", "true"],
+			["diff.mnemonicPrefix", "true"],
+			["diff.relative", "true"],
+			["diff.external", "false"],
+			["color.diff", "always"],
+		] as const) {
+			await git(local, "config", key, value);
+		}
+		const patch = await buildPatch(local, longer, { defaultExcludes: true });
+		expect(patch.patch.toString("utf8")).toContain("@@ -1,7 +1,7 @@");
+		await writeFile(join(root, "p.patch"), patch.patch);
+		await git(sandbox, "apply", "--index", join(root, "p.patch"));
+		expect(await git(sandbox, "write-tree")).toBe(patch.tree);
+		expect(base).not.toBe(longer);
 	});
 
 	it("leaves Kantel's config at the base's version, whatever the excludes", async () => {
@@ -354,6 +418,50 @@ describe("a sync", () => {
 		await expect(stat(join(sandbox, "scratch.txt"))).rejects.toThrow();
 	});
 
+	it("keeps files ignored by a rule added since the base, sync after sync", async () => {
+		const { local, sandbox, base } = await repositories();
+		await writeFile(join(sandbox, ".kantel-base-sha"), `${base}\n`);
+		await writeFile(join(local, ".gitignore"), "node_modules/\n*.log\n.cache/\n.env.local\n");
+		const fake = client({});
+		await syncGit(fake.client, "sbx_1", { top: local, to: sandbox, defaultExcludes: true });
+		// Made in the sandbox once the rules were there: a cache, an .env.local, and scratch that isn't ignored.
+		await mkdir(join(sandbox, ".cache"));
+		await writeFile(join(sandbox, ".cache", "build.bin"), "cached\n");
+		await writeFile(join(sandbox, ".env.local"), "SECRET=1\n");
+		await writeFile(join(sandbox, "scratch.txt"), "untracked\n");
+		await writeFile(join(local, "src", "a.ts"), "export const a = 'again';\n");
+		const again = await syncGit(fake.client, "sbx_1", { top: local, to: sandbox, defaultExcludes: true });
+		expect(await git(sandbox, "write-tree")).toBe(again.tree);
+		expect(await readFile(join(sandbox, ".cache", "build.bin"), "utf8")).toBe("cached\n");
+		expect(await readFile(join(sandbox, ".env.local"), "utf8")).toBe("SECRET=1\n");
+		await expect(stat(join(sandbox, "scratch.txt"))).rejects.toThrow();
+	});
+
+	it("takes turns with another sync into the same checkout, leaving one tree or the other, never both", async () => {
+		const { local, sandbox, base } = await repositories();
+		const other = join(root, "other");
+		await git(root, "clone", "-q", local, other);
+		await writeFile(join(local, "mine.ts"), "1\n");
+		await writeFile(join(other, "theirs.ts"), "2\n");
+		// Each sync's apply waits a moment after its reset, so without the lock both resets come before either apply.
+		const slow = client({ rewrite: (command) => command.replace("cat /tmp/", "sleep 0.5; cat /tmp/") });
+		const options = { to: sandbox, base, defaultExcludes: true };
+		const [mine, theirs] = await Promise.all([
+			syncGit(slow.client, "sbx_1", { ...options, top: local }),
+			syncGit(slow.client, "sbx_1", { ...options, top: other }),
+		]);
+		expect([mine.tree, theirs.tree]).toContain(await git(sandbox, "write-tree"));
+		// A lock held elsewhere makes the next one wait, and it goes once that ends.
+		const lock = join(sandbox, ".git", "kantel-sync.lock");
+		const holder = exec("flock", [lock, "sleep", "1"]);
+		await new Promise((done) => setTimeout(done, 100));
+		const started = Date.now();
+		await syncGit(client({}).client, "sbx_1", { ...options, top: local });
+		expect(Date.now() - started).toBeGreaterThanOrEqual(800);
+		await holder;
+		expect(await git(sandbox, "write-tree")).toBe(mine.tree);
+	});
+
 	it("takes the base from the git.base label on the sandbox's snapshot", async () => {
 		const { local, sandbox, base } = await repositories();
 		await writeFile(join(sandbox, "theirs.ts"), "x\n");
@@ -473,7 +581,7 @@ describe("sending the patch", () => {
 });
 
 describe("the sandbox side", () => {
-	it("resets, cleans (keeping ignored files and .kantel-base-sha), applies and checks, removing the parts", () => {
+	it("locks, cleans (keeping ignored files and .kantel-base-sha), resets, applies and checks, removing the parts", () => {
 		const script = applyScript({
 			top: "/home/user/my app",
 			base: "b".repeat(40),
@@ -482,11 +590,14 @@ describe("the sandbox side", () => {
 			patch: "/tmp/.kantel-sync-abc.patch",
 		});
 		expect(script).toContain("cd '/home/user/my app' || exit 1; ");
-		expect(script).toContain(`git reset -q --hard ${"b".repeat(40)} && git clean -fdq -e /.kantel-base-sha`);
+		expect(script).toContain(
+			"flock -w 300 9 || { rm -f /tmp/.kantel-sync-abc-* /tmp/.kantel-sync-abc.patch; exit 46; }",
+		);
+		expect(script).toContain(`git clean -fdq -e /.kantel-base-sha && git reset -q --hard ${"b".repeat(40)}`);
 		expect(script).toContain(
 			"cat /tmp/.kantel-sync-abc-* | gzip -dc > /tmp/.kantel-sync-abc.patch && git apply --index --whitespace=nowarn /tmp/.kantel-sync-abc.patch",
 		);
 		expect(script).toContain(`[ "$t" = ${"t".repeat(40)} ]`);
-		expect(script.match(/rm -f \/tmp\/\.kantel-sync-abc-\* \/tmp\/\.kantel-sync-abc\.patch/g)?.length).toBe(4);
+		expect(script.match(/rm -f \/tmp\/\.kantel-sync-abc-\* \/tmp\/\.kantel-sync-abc\.patch/g)?.length).toBe(5);
 	});
 });

@@ -102,8 +102,8 @@ sandbox; one going in goes in 768 KiB parts joined by a command in the sandbox, 
 dependencies installed: only a patch goes over, where `push` sends every file (#726). Its base is `--base`, else the
 checkout's `.kantel-base-sha`, else the `git.base` label on the sandbox's snapshot, else the checkout's HEAD. It
 stages the working tree in a copy of the index (tracked changes and new unignored files), sends
-`git diff-tree --binary <base> <tree>` gzipped, and in the sandbox runs `git reset --hard <base>`, `git clean -fd`
-(ignored files stay) and `git apply --index`, then checks `git write-tree` gives the same tree on both sides.
+`git diff-tree --binary <base> <tree>` gzipped, and in the sandbox runs `git clean -fd` (ignored files stay),
+`git reset --hard <base>` and `git apply --index`, then checks `git write-tree` gives the same tree on both sides.
 
 `push` leaves credentials behind at any depth, naming each on stderr: always `.ssh`, `.gnupg`, `.aws`, `.azure`,
 `.kube`, `.netrc`, `.pypirc` and `.docker/config.json`; `.claude`, `.codex`, `.cursor`, `.npmrc` and `.env` files
