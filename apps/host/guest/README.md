@@ -11,7 +11,8 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
 
 - Docker CE and containerd (pinned versions), with Buildx and Compose
 - git, curl, wget, jq, build-essential, pkg-config, Python 3 with pip and venv, Node and Go (pinned releases,
-  checked against their SHA-256)
+  checked against their SHA-256). Node (`NODE_VERSION`, 26) is the only one, in `/usr/local`, with npm and no corepack;
+  a project that needs another installs it beside it (docs: Isolates and microVMs, "Node")
 - a desktop on a TigerVNC X server (display `:1`, 1920x1080 until a viewer resizes it): Openbox with a top bar and a
   dock ("The desktop" below), and Chromium (Debian 13's build, from `snapshot.debian.org` at the same date; Ubuntu's
   own Chromium is a snap, and Google Chrome can't be redistributed)

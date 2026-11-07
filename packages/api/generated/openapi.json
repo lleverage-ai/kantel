@@ -14871,7 +14871,7 @@
 					},
 					"image": {
 						"type": "string",
-						"description": "The base image a microVM was made from, such as `ubuntu-24.04`."
+						"description": "The base image a microVM was made from, such as `ubuntu-26.04`."
 					},
 					"state": {
 						"$ref": "#/components/schemas/SandboxState"
