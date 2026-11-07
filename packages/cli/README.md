@@ -60,7 +60,8 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 
 | Command | What it does |
 | --- | --- |
-| `new [--type isolate\|microvm] [--size] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--env <env>] [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs; `--env` with no `=` names an environment to start from |
+| `new [--type isolate\|microvm] [--size <size> \| --vcpus <n> --memory <GB>] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--env <env>] [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs; `--env` with no `=` names an environment to start from |
+| `sizes [--on <host>]` | The named sizes the hosts offer, and the other shapes `--vcpus` and `--memory` may ask for |
 | `list [--all] [--mine]`, `info <id>` | List and show sandboxes; `--mine` leaves out the ones others share in an organisation |
 | `start\|stop\|resume\|recover <id>` | Its lifecycle; `stop --pause` keeps a microVM's memory |
 | `fork <id> [--count N]` | Copy it into new sandboxes |

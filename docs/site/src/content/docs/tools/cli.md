@@ -94,6 +94,8 @@ Created sbx_g2yy5jhyqr (fix-login-bug): microvm default, running.
 
 It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, `--env <env>` starts it from an [environment](#environments-and-protected-variables), and `--host 3000` gives a port a URL as soon as it runs.
 
+A microVM's machine is a named size (`--size large`) or a shape of its own (`--vcpus 8 --memory 16`, in GB). Which sizes there are, and what each holds, is up to the hosts: `kantel sizes` lists them, with the most `--vcpus` and `--memory` may ask for. On app.kantel.dev the sizes are `small`, `default` and `large` (4 vCPU, 8 GB); a large monorepo's type-check needs about 16 GB, so ask for that shape. From a snapshot, a sandbox is the machine the snapshot was taken of, unless you give `--size` or `--vcpus` and `--memory`: a snapshot of the disk alone (what `kantel snapshot save` keeps unless you add `--memory`) starts at any of them, as in `kantel new --from monorepo-ci --vcpus 8 --memory 16`. A snapshot that holds its sandbox's memory has that sandbox's machine, and Kantel refuses another before it makes anything.
+
 Copy your project in, run its tests, and copy a result out:
 
 ```sh
@@ -236,6 +238,8 @@ kantel stop "$id"
 
 In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 
+When Kantel can't be reached, or a proxy in front of it fails (a 502, 503 or 504 that isn't Kantel's own answer), `kantel` sends a call again that is safe to send twice: any read, such as `info`, `list` or a poll, and a create, fork or command, which carry an `Idempotency-Key` so Kantel does them once. It waits 0.5, 1, 2 and 4 seconds between the five tries, then exits `1` saying why. Other changes, such as `stop`, `delete` or a file's write, are sent once, since the first may have happened.
+
 ## Commands
 
 `kantel help` lists every command, and `kantel help <command>` (or `--help` after one) shows its flags. `ls` is short for `list` and `rm` for `delete`. The first CLI's spellings, such as `kantel sandbox create` and `kantel sandbox get`, still work.
@@ -243,7 +247,7 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 | Group | Commands |
 | --- | --- |
 | Signing in | `login [--key-stdin] [--no-browser] [--wait]`, `logout`, `whoami` |
-| [Sandboxes](/sandboxes/lifecycle/) | `new`, `list [--all] [--mine]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
+| [Sandboxes](/sandboxes/lifecycle/) | `new [--size S \| --vcpus N --memory GB]`, `sizes`, `list [--all] [--mine]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
 | [Commands](/sandboxes/commands-and-files/) | `exec [-d] [--timeout <s>]`, `attach`, `ps`, `kill` |
 | [Files](/sandboxes/commands-and-files/) | `scp [-r]`, `push`, `files ls`, `files cat`, `files put`, `files get`, `files rm` |
 | [Ports](/sandboxes/public-ports/), [SSH](/sandboxes/ssh/), [desktop and browser](/sandboxes/desktop-and-browser/) | `host <id> <port>`, `port list`, `port hide`, `ssh`, `desktop`, `browser` |
