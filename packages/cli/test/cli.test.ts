@@ -401,7 +401,7 @@ describe("retries", () => {
 		expect(result.slept).toEqual([]);
 	});
 
-	it("never sends a change again that a retry could do twice: a delete, a file's write", async () => {
+	it("never sends a change again that a retry could do twice: a delete", async () => {
 		const unkeyed = await kantel(["delete", "sbx_test1", "--yes"], {
 			routes: {
 				"DELETE /v1/sandboxes/sbx_test1": () => new Response("Bad gateway", { status: 502 }),
@@ -410,18 +410,39 @@ describe("retries", () => {
 		expect(unkeyed.code).not.toBe(0);
 		expect(unkeyed.calls).toHaveLength(1);
 		expect(unkeyed.slept).toEqual([]);
+	});
 
+	it("writes a file again, the same bytes to the same path, when Kantel can't be reached (#800)", async () => {
 		await writeFile(join(configDir, "notes.txt"), "hello\n");
+		let writes = 0;
 		const written = await kantel(["files", "put", "sbx_test1", "notes.txt", "/home/user/notes.txt"], {
 			routes: {
 				"PUT /v1/sandboxes/sbx_test1/files": () => {
-					throw new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+					writes++;
+					if (writes === 1) throw new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+					if (writes === 2) return new Response("Bad gateway", { status: 502 });
+					return { name: "notes.txt", path: "/home/user/notes.txt", type: "file", size: 6, mode: 420 };
 				},
 			},
 		});
-		expect(written.code).not.toBe(0);
-		expect(written.calls).toHaveLength(1);
-		expect(written.slept).toEqual([]);
+		expect(written.code).toBe(0);
+		expect(written.calls).toHaveLength(3);
+		// Each try sends the same body.
+		expect(new Set(written.calls.map((call) => JSON.stringify(call.body)))).toEqual(
+			new Set([JSON.stringify(written.calls[0]?.body)]),
+		);
+		expect(written.calls[0]?.body).toMatchObject({ path: "/home/user/notes.txt", content: "hello\n" });
+		expect(written.slept).toEqual([500, 1_000]);
+
+		// Kantel's own refusal is final.
+		const refused = await kantel(["files", "put", "sbx_test1", "notes.txt", "/home/user/notes.txt"], {
+			routes: {
+				"PUT /v1/sandboxes/sbx_test1/files": () => kantelError(503, "unavailable", "The compute API failed"),
+			},
+		});
+		expect(refused.code).not.toBe(0);
+		expect(refused.calls).toHaveLength(1);
+		expect(refused.slept).toEqual([]);
 	});
 
 	it("sends a keyed call once when Kantel itself answers, even a 503, and never loops on a held key's 409", async () => {

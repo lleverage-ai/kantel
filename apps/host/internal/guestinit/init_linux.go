@@ -135,7 +135,12 @@ func inject(root string) error {
 	if err := dst.Close(); err != nil {
 		return err
 	}
-	return os.Symlink("kantel-guest", filepath.Join(bin, "kantel-doctor"))
+	for _, name := range []string{"kantel-doctor", "kantel-connect"} {
+		if err := os.Symlink("kantel-guest", filepath.Join(bin, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SystemdPath is the image's systemd, which /sbin/init resolves to, or "" when its init is something else (or
