@@ -135,6 +135,8 @@ describe("a sandbox whose guest agent stops answering", () => {
 		await api.service.idle();
 		const handedBack = await tom.getSandbox(sandbox.id);
 		expect(handedBack).toMatchObject({ state: "running", health: "unresponsive" });
+		expect(handedBack.reason).toContain("out of memory");
+		expect((await failure(tom.runCommand(sandbox.id, { command: "echo hi" }))).message).toContain("out of memory");
 		// Its host back, saying the same: it stays unresponsive; a newer healthy word makes it ok.
 		await api.service.reportHealth(STUB_HOST_ID, sandbox.id, "unresponsive", OOM, 1_000);
 		expect((await tom.getSandbox(sandbox.id)).health).toBe("unresponsive");

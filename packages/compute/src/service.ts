@@ -3136,6 +3136,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (wasRunning && !running) runs = runs.map((run) => (run.to === undefined ? { ...run, to: at } : run));
 		if (!wasRunning && running) runs = [...runs, { from: at }];
 		const autoStop = extra.autoStopMinutes === undefined ? sandbox.autoStopMinutes : extra.autoStopMinutes;
+		// Its agent's health is its running machine's: a boot, or a stop once done, leaves none unresponsive
+		// (`reportHealth`). A stop under way keeps it and its reason, for one handed back running with the same machine.
+		const stillUnresponsive =
+			sandbox.health === "unresponsive" && extra.health === undefined && (state === "stopping" || state === "running");
 		return {
 			...sandbox,
 			...extra,
@@ -3153,13 +3157,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			startedAt: running && !wasRunning ? at : sandbox.startedAt,
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
 			lifecycle: (sandbox.lifecycle ?? 0) + 1,
-			reason: extra.reason,
+			reason: extra.reason ?? (stillUnresponsive ? sandbox.reason : undefined),
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
-			// Its agent's health is its running machine's: a boot, or a stop once done, leaves none unresponsive
-			// (`reportHealth`). A stop under way keeps it, for one handed back running with the same machine.
-			...(sandbox.health === "unresponsive" && extra.health === undefined && state !== "stopping" && state !== "running"
+			...(sandbox.health === "unresponsive" && extra.health === undefined && !stillUnresponsive
 				? { health: "ok" as const }
 				: {}),
 			// A stop it was due for is done with once it boots again.
@@ -4230,7 +4232,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						state: "running",
 						runs: sandbox.runs,
 						stopsAt: sandbox.stopsAt,
-						reason: undefined,
+						// The same machine: its guest agent's health (and why) as the stop found it.
+						reason: current.health === "unresponsive" ? current.reason : undefined,
 					}));
 					return;
 				}
@@ -8469,7 +8472,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							state: "running",
 							stopsAt: at,
 							stopClaimedAt: undefined,
-							reason: undefined,
+							// The same machine: its guest agent's health (and why) as the stop found it.
+							reason: current.health === "unresponsive" ? current.reason : undefined,
 						}),
 						marker,
 					).catch(() => undefined);

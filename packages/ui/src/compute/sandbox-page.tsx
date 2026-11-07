@@ -268,7 +268,8 @@ export function SandboxPage({
 	// And at once when it changes elsewhere: the CLI, the API, its auto-stop.
 	useFollowSandboxes(source, sandbox?.accountId, reload, { id: sandboxId, onDeleted: () => setDeleted(true) });
 
-	const windows = running && sandbox?.kind === "microvm";
+	// No way in to one whose guest agent doesn't answer: its SSH, screens and ports would be refused.
+	const windows = running && sandbox?.unresponsive === undefined && sandbox?.kind === "microvm";
 	const { access, read: readAccess, stale: accessStale } = useAccess(source, sandboxId, windows);
 
 	const tabsShown: readonly SandboxTab[] = [
@@ -809,11 +810,15 @@ function Overview({
 	const hint =
 		sandbox.kind === "isolate"
 			? "An isolate has no desktop, browser or SSH."
-			: sandboxActions(sandbox.state).resume
+			: sandbox.state === "running" && sandbox.unresponsive !== undefined
 				? screen === undefined
-					? "Resume it to use SSH."
-					: `Resume it to use its ${screen} and SSH.`
-				: undefined;
+					? "Recover it to use SSH."
+					: `Recover it to use its ${screen} and SSH.`
+				: sandboxActions(sandbox.state).resume
+					? screen === undefined
+						? "Resume it to use SSH."
+						: `Resume it to use its ${screen} and SSH.`
+					: undefined;
 
 	if (narrow) {
 		return (
@@ -1056,10 +1061,11 @@ function SnapshotsTab({
  * stopped, or nothing before it has one.
  */
 export function filesShown(
-	sandbox: Pick<Sandbox, "state" | "snapshot">,
+	sandbox: Pick<Sandbox, "state" | "snapshot" | "unresponsive">,
 	source: Pick<SandboxesSource, "files">,
 ): "live" | "snapshot" | "none" {
-	if (sandbox.state === "running" && source.files !== undefined) return "live";
+	// One whose guest agent doesn't answer can't be read now: its latest snapshot's, as when it's stopped.
+	if (sandbox.state === "running" && sandbox.unresponsive === undefined && source.files !== undefined) return "live";
 	return sandbox.snapshot === undefined ? "none" : "snapshot";
 }
 
