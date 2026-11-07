@@ -286,6 +286,27 @@ describe("parsing", () => {
 		expect(moved.calls).toEqual([]);
 	});
 
+	it("keeps put working as files put, saying on stderr what to use now", async () => {
+		await writeFile(join(configDir, "notes.txt"), "hello\n");
+		const routes = {
+			"PUT /v1/sandboxes/sbx_test1/files": () => ({ path: "/home/user/notes.txt", kind: "file", size: 6 }),
+		};
+		const put = await kantel(["put", "sbx_test1", "notes.txt", "/home/user/notes.txt"], { routes });
+		expect(put.code).toBe(0);
+		expect(put.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["PUT /v1/sandboxes/sbx_test1/files"]);
+		expect(put.calls[0]?.body).toMatchObject({ path: "/home/user/notes.txt", content: "hello\n" });
+		expect(put.stdout).toContain("Wrote /home/user/notes.txt");
+		expect(put.stderr).toBe(
+			'kantel: "kantel put" is going: use kantel files put <id> <local> <remote> (a file of up to 1 MiB), or kantel scp <local> <id>:<remote> for bigger files and directories\n',
+		);
+		// Not in the help, and the help for it is files put's.
+		expect((await kantel(["help"])).stdout).not.toMatch(/^ {2}put /m);
+		expect((await kantel(["help", "put"])).stdout).toContain("Usage: kantel files put <id> <local> <remote>");
+		const missing = await kantel(["put", "sbx_test1"]);
+		expect(missing.code).toBe(2);
+		expect(missing.stderr).toContain("Usage: kantel files put");
+	});
+
 	it("prints the version", async () => {
 		const version = await kantel(["--version"]);
 		expect(version.code).toBe(0);
@@ -311,7 +332,7 @@ describe("retries", () => {
 		expect(result.calls).toHaveLength(3);
 		expect(result.keys[0]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(new Set(result.keys)).toEqual(new Set([result.keys[0]]));
-		expect(result.slept).toEqual([500, 2_000]);
+		expect(result.slept).toEqual([500, 1_000]);
 	});
 
 	it("gives each invocation its own key, and gives up after the last retry", async () => {
@@ -324,7 +345,83 @@ describe("retries", () => {
 			routes: { "POST /v1/sandboxes/sbx_test1/commands": () => new Response("Unavailable", { status: 503 }) },
 		});
 		expect(down.code).not.toBe(0);
-		expect(down.calls).toHaveLength(3);
+		// Five tries, each wait twice the last, then the error.
+		expect(down.calls).toHaveLength(5);
+		expect(down.slept).toEqual([500, 1_000, 2_000, 4_000]);
+	});
+
+	it("reads again with a doubling backoff while Kantel can't be reached, then gives up with why", async () => {
+		// A blip on a poll: the same read, sent again as it is, gets the answer.
+		let looks = 0;
+		const blip = await kantel(["info", "sbx_test1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => {
+					looks++;
+					if (looks === 1) throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED") });
+					if (looks === 2) return new Response("Bad gateway", { status: 502 });
+					if (looks === 3) return new Response("Gateway timeout", { status: 504 });
+					return SANDBOX;
+				},
+			},
+		});
+		expect(blip.code).toBe(0);
+		expect(blip.stdout).toContain("brave-otter");
+		expect(blip.stderr).toBe("");
+		expect(blip.calls.map((call) => `${call.method} ${call.path}`)).toEqual(
+			Array.from({ length: 4 }, () => "GET /v1/sandboxes/sbx_test1"),
+		);
+		// A read takes no key: it is safe to send again without one.
+		expect(blip.keys).toEqual([null, null, null, null]);
+		expect(blip.slept).toEqual([500, 1_000, 2_000]);
+
+		const down = await kantel(["list"], {
+			routes: {
+				"GET /v1/sandboxes": () => {
+					throw new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND kantel.test") });
+				},
+			},
+		});
+		expect(down.code).toBe(1);
+		expect(down.calls).toHaveLength(5);
+		expect(down.slept).toEqual([500, 1_000, 2_000, 4_000]);
+		expect(down.stderr).toBe(
+			"kantel: couldn't reach Kantel at https://kantel.test: getaddrinfo ENOTFOUND kantel.test\n",
+		);
+	});
+
+	it("reads once when Kantel itself answers, even a 503, as that is its answer", async () => {
+		const result = await kantel(["snapshot", "files", "snap_1"], {
+			routes: {
+				"GET /v1/snapshots/snap_1/files": () => kantelError(503, "unavailable", "The compute API failed"),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("kantel: unavailable: The compute API failed");
+		expect(result.calls).toHaveLength(1);
+		expect(result.slept).toEqual([]);
+	});
+
+	it("never sends a change again that a retry could do twice: a delete, a file's write", async () => {
+		const unkeyed = await kantel(["delete", "sbx_test1", "--yes"], {
+			routes: {
+				"DELETE /v1/sandboxes/sbx_test1": () => new Response("Bad gateway", { status: 502 }),
+			},
+		});
+		expect(unkeyed.code).not.toBe(0);
+		expect(unkeyed.calls).toHaveLength(1);
+		expect(unkeyed.slept).toEqual([]);
+
+		await writeFile(join(configDir, "notes.txt"), "hello\n");
+		const written = await kantel(["files", "put", "sbx_test1", "notes.txt", "/home/user/notes.txt"], {
+			routes: {
+				"PUT /v1/sandboxes/sbx_test1/files": () => {
+					throw new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+				},
+			},
+		});
+		expect(written.code).not.toBe(0);
+		expect(written.calls).toHaveLength(1);
+		expect(written.slept).toEqual([]);
 	});
 
 	it("sends a keyed call once when Kantel itself answers, even a 503, and never loops on a held key's 409", async () => {
@@ -506,9 +603,9 @@ describe("exec", () => {
 		});
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("Reading package lists...\nSetting up gcc\nDone\n");
-		expect(result.stderr).toContain(
-			"kantel: couldn't reach Kantel at https://kantel.test: read ECONNRESET; trying again",
-		);
+		// The dropped connection was read again at once (the client's retry); Kantel's own 503 is follow's to wait out.
+		expect(result.stderr).not.toContain("read ECONNRESET");
+		expect(result.stderr).toContain("kantel: Kantel can't answer for now (The gateway is restarting); trying again");
 	});
 
 	it("gives up following once Kantel has been out of reach for a while, saying the command may still run and how to attach", async () => {
@@ -590,8 +687,8 @@ describe("exec", () => {
 			},
 		});
 		expect(result.code).toBe(1);
-		// Sent three times under one key, then given up on.
-		expect(result.calls).toHaveLength(3);
+		// Sent five times under one key, then given up on.
+		expect(result.calls).toHaveLength(5);
 		expect(result.stderr).toContain("read ECONNRESET");
 		expect(result.stderr).toContain("it may have started: kantel ps sbx_test1 lists it");
 	});
@@ -733,13 +830,124 @@ describe("sandboxes", () => {
 			[["--type", "microvm", "--memory", "lots", "--vcpus", "2"], "--memory is in GB"],
 			[["--vcpus", "2", "--memory", "4"], "are a microVM's"],
 			[["--type", "microvm", "--size", "large", "--vcpus", "2", "--memory", "4"], "not both"],
-			[["--type", "microvm", "--from", "snap_1", "--vcpus", "2", "--memory", "4"], "that snapshot's machine"],
+			[["--type", "isolate", "--from", "snap_1", "--vcpus", "2", "--memory", "4"], "are a microVM's"],
+			[["--type", "microvm", "--from", "snap_1", "--vcpus", "8", "--memory", "16", "--disk", "60"], "leave out --disk"],
 		] as const) {
 			const refused = await kantel(["new", ...args], { routes });
 			expect(refused.code).toBe(2);
 			expect(refused.stderr).toContain(message);
 			expect(refused.calls).toEqual([]);
 		}
+	});
+
+	it("starts a snapshot of the disk alone at the shape --vcpus and --memory ask for", async () => {
+		const routes = { "POST /v1/sandboxes": () => ({ ...SANDBOX, type: "microvm" }) };
+		// --type can be left out: from a snapshot, the sandbox is the snapshot's type.
+		const created = await kantel(["new", "--from", "monorepo-ci", "--vcpus", "8", "--memory", "16"], { routes });
+		expect(created.code).toBe(0);
+		expect(created.calls[0]?.body).toEqual({
+			from: "monorepo-ci",
+			resources: { vcpus: 8, memoryMb: 16384 },
+			wait: true,
+		});
+		const sized = await kantel(["new", "--from", "monorepo-ci", "--size", "large"], { routes });
+		expect(sized.calls[0]?.body).toEqual({ from: "monorepo-ci", size: "large", wait: true });
+
+		// One that holds its sandbox's memory has that sandbox's machine: Kantel refuses another before it makes anything.
+		const held = await kantel(["new", "--type", "microvm", "--from", "paused-dev", "--vcpus", "8", "--memory", "16"], {
+			routes: {
+				"POST /v1/sandboxes": () =>
+					kantelError(
+						400,
+						"invalid",
+						"Snapshot snap_1 holds its sandbox's memory, so a sandbox made from it has that sandbox's machine (size large, 4 vCPU and 8192 MB of memory). Leave resources and size out, or ask for that machine",
+					),
+			},
+		});
+		expect(held.code).toBe(1);
+		expect(held.stderr).toContain("holds its sandbox's memory");
+		expect(held.calls).toHaveLength(1);
+	});
+
+	it("names no size the hosts may not offer, lists theirs with kantel sizes, and points there when one is refused", async () => {
+		const help = await kantel(["new", "--help"]);
+		expect(help.stdout).toContain("--size <size>");
+		expect(help.stdout).not.toContain("xlarge");
+		expect(help.stdout).toContain("kantel sizes lists");
+
+		const wrong = await kantel(["new", "--type", "microvm", "--size", "checks"]);
+		expect(wrong.code).toBe(2);
+		expect(wrong.stderr).toContain('--size takes a named size, such as small, default or large, not "checks"');
+		expect(wrong.stderr).toContain("kantel sizes lists");
+		expect(wrong.calls).toEqual([]);
+
+		const shapes = {
+			isolate: { memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false },
+			microvm: {
+				vcpus: { min: 1, max: 32, step: 1, default: 4 },
+				memoryMb: { min: 1024, max: 65536, step: 256, default: 2048 },
+				memoryMbPerVcpu: { min: 256, max: 8192 },
+				diskGb: { min: 10, max: 1024, step: 1, default: 20 },
+				presets: [
+					{ name: "small", vcpus: 1, memoryMb: 1024, diskGb: 10 },
+					{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 },
+					{ name: "large", vcpus: 4, memoryMb: 8192, diskGb: 50 },
+				],
+				custom: true,
+			},
+			rates: { currency: "USD", microvmPerVcpuHour: 0.0075, microvmPerGbHour: 0.00125, isolatePerGbHour: 0.001 },
+		};
+		const sizes = await kantel(["sizes", "--on", "hetzner-1"], { routes: { "GET /v1/sandbox-shapes": () => shapes } });
+		expect(sizes.code).toBe(0);
+		expect(sizes.calls[0]?.query.get("host")).toBe("hetzner-1");
+		expect(sizes.stdout).toMatch(/^large +4 +8 GB +50 GB +0\.040 USD$/m);
+		expect(sizes.stdout).toMatch(/^small +1 +1 GB +10 GB +0\.009 USD$/m);
+		expect(sizes.stdout).not.toContain("xlarge");
+		expect(sizes.stdout).toContain("1 to 32 vCPUs and 1 to 64 GB of memory, 0.25 to 8 GB a vCPU");
+		expect(sizes.stdout).toContain("A disk of 10 to 1024 GB with --disk");
+		const presetsOnly = await kantel(["sizes"], {
+			routes: { "GET /v1/sandbox-shapes": () => ({ ...shapes, microvm: { ...shapes.microvm, custom: false } }) },
+		});
+		expect(presetsOnly.stdout).toContain("No other shapes");
+		const none = await kantel(["sizes"], { routes: { "GET /v1/sandbox-shapes": () => ({ isolate: shapes.isolate }) } });
+		expect(none.stdout).toContain("No host this account may use runs microVMs");
+
+		const refused = await kantel(["new", "--type", "microvm", "--size", "xlarge"], {
+			routes: {
+				"POST /v1/sandboxes": () =>
+					json(
+						{
+							error: {
+								code: "not_supported",
+								message: "This deployment doesn't offer the size xlarge",
+								details: { reason: "no_host_offers_size" },
+							},
+						},
+						400,
+					),
+			},
+		});
+		expect(refused.code).toBe(1);
+		expect(refused.stderr).toContain("This deployment doesn't offer the size xlarge");
+		expect(refused.stderr).toContain("kantel sizes lists the sizes and shapes the hosts offer.");
+	});
+
+	it("lists one sandbox's snapshots by its ID, and shows a small rate to a tenth of a cent", async () => {
+		const routes = {
+			"GET /v1/snapshots": () => ({ items: [] }),
+			"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, cost: { currency: "USD", total: 0, ratePerHour: 0.035 } }),
+		};
+		const listed = await kantel(["snapshot", "list", "sbx_test1"], { routes });
+		expect(listed.code).toBe(0);
+		expect(listed.calls[0]?.query.get("sandboxId")).toBe("sbx_test1");
+		const flagged = await kantel(["snapshot", "list", "--sandbox", "sbx_test1"], { routes });
+		expect(flagged.calls[0]?.query.get("sandboxId")).toBe("sbx_test1");
+		const both = await kantel(["snapshot", "list", "sbx_test1", "--sandbox", "sbx_other"], { routes });
+		expect(both.code).toBe(2);
+		expect(both.calls).toEqual([]);
+
+		const info = await kantel(["info", "sbx_test1"], { routes });
+		expect(info.stdout).toContain("0.00 USD (0.035 USD an hour)");
 	});
 
 	it("sets an idle stop with --idle-stop on new and extend, apart from the auto-stop", async () => {
@@ -999,6 +1207,8 @@ describe("errors", () => {
 			stdout,
 			stderr,
 			configDir,
+			// Its retries' waits.
+			sleep: async () => undefined,
 		});
 		expect(code).toBe(1);
 		expect(stderr.text()).toBe("kantel: couldn't reach Kantel at https://kantel.test: connect ECONNREFUSED\n");
