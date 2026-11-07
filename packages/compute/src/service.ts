@@ -2266,6 +2266,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		kind: snapshot.kind,
 		name: snapshot.name,
 		description: snapshot.description,
+		...(snapshot.labels === undefined ? {} : { labels: snapshot.labels }),
 		sandboxId: snapshot.sandboxId,
 		sandboxType: snapshot.sandboxType,
 		state: snapshot.state,
@@ -2275,6 +2276,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sizeBytes: snapshot.sizeBytes,
 		uses,
 		createdAt: snapshot.createdAt,
+		// An automatic snapshot's state is from when it was taken; a saved one's only where it was kept, since one saved
+		// before then may be a copy of an older snapshot.
+		...(snapshot.takenAt !== undefined
+			? { takenAt: snapshot.takenAt }
+			: snapshot.kind === "automatic"
+				? { takenAt: snapshot.createdAt }
+				: {}),
 		createdBy: snapshot.createdBy,
 		expiresAt: snapshot.expiresAt,
 		base: baseView(snapshot.base),
@@ -7217,6 +7225,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					accountId: current.accountId,
 					kind: "automatic",
 					description: body.description,
+					...(body.labels === undefined ? {} : { labels: body.labels }),
 					sandboxId: current.id,
 					sandboxType: current.type,
 					state: "ready",
@@ -7225,6 +7234,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...recordedMachine(current),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
+					takenAt: at,
 					createdBy: actorOf(principal),
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
@@ -7269,6 +7279,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let base: string | undefined;
 				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
 				let memory = false;
+				// When the bytes were taken: a copied snapshot's own time (its source's, for one saved before this was kept), else now.
+				let takenAt: number | undefined;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
 				let machine = recordedMachine(current);
 				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
@@ -7294,6 +7306,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					fullSizeBytes = kept === undefined ? source.fullSizeBytes : kept.sizeBytes;
 					base = kept?.base ?? source.base;
 					memory = kept?.memory ?? (await holdsMemory(source));
+					takenAt = source.takenAt ?? (source.kind === "automatic" ? source.createdAt : undefined);
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
 					// At the host's limit already: nothing is taken.
@@ -7308,6 +7321,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				} else {
 					throw new KantelError("conflict", "The sandbox has no state to save yet");
 				}
+				const savedAt = now();
 				// Stored and counted before it's let through, so saves at once can't pass the limit together; refused, its
 				// new bytes go again (a shared source's stay).
 				const snapshot: StoredSnapshot = {
@@ -7316,6 +7330,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					kind: "saved",
 					name: body.name,
 					description: body.description,
+					...(body.labels === undefined ? {} : { labels: body.labels }),
 					sandboxId: current.id,
 					sandboxType: current.type,
 					state: "ready",
@@ -7324,7 +7339,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...machine,
 					sizeBytes,
 					...(fullSizeBytes === undefined ? {} : { fullSizeBytes }),
-					createdAt: now(),
+					createdAt: savedAt,
+					...(source === undefined ? { takenAt: savedAt } : takenAt === undefined ? {} : { takenAt }),
 					createdBy: actorOf(principal),
 					ref,
 					...(base === undefined ? {} : { base }),
