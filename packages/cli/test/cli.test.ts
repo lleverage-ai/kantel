@@ -2252,6 +2252,193 @@ describe("copying files", () => {
 		expect(both.code).toBe(2);
 		expect(both.calls).toEqual([]);
 	});
+
+	/**
+	 * Syncs `local` into a microVM whose checkout is `checkout` on this machine: its files are written here and its
+	 * commands run here with sh. The sandbox was made from snap_1, labelled `labels`.
+	 */
+	async function synced(
+		args: readonly string[],
+		cwd: string,
+		labels: Record<string, string> = {},
+		kantelConfig = join(configDir, "kantel"),
+	) {
+		return kantel(["sync", "sbx_test1", ...args], {
+			configDir: kantelConfig,
+			cwd,
+			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm", source: { snapshotId: "snap_1" } }),
+				"GET /v1/snapshots/snap_1": () => ({ id: "snap_1", kind: "saved", name: "app-warm", labels }),
+				"PUT /v1/sandboxes/sbx_test1/files": async (call) => {
+					const body = call.body as Written;
+					await writeFile(body.path, Buffer.from(body.content, body.encoding === "base64" ? "base64" : "utf8"));
+					return { path: body.path, size: 1 };
+				},
+				"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+					const line = (call.body as { command: string }).command;
+					try {
+						return command({ stdout: execFileSync("sh", ["-c", line], { encoding: "utf8", stdio: "pipe" }) });
+					} catch (error) {
+						const failed = error as { status: number; stdout: string; stderr: string };
+						return command({ exitCode: failed.status, stdout: failed.stdout, stderr: failed.stderr });
+					}
+				},
+			},
+		});
+	}
+
+	it("sync --git sends a patch against the snapshot's git.base, which the sandbox applies to the same tree", async () => {
+		const git =
+			(dir: string) =>
+			(...args: string[]): string =>
+				execFileSync(
+					"git",
+					["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
+					{
+						cwd: dir,
+						encoding: "utf8",
+					},
+				).trim();
+		const local = join(configDir, "repo");
+		await mkdir(local);
+		await writeFile(join(local, "a.ts"), "1\n");
+		await writeFile(join(local, ".gitignore"), "node_modules/\n");
+		git(local)("init", "-q");
+		git(local)("add", "-A");
+		git(local)("commit", "-q", "-m", "base");
+		const base = git(local)("rev-parse", "HEAD");
+		const checkout = join(configDir, "checkout");
+		git(configDir)("clone", "-q", local, checkout);
+		// The sandbox's HEAD has moved on; the label still names the base.
+		await writeFile(join(checkout, "theirs.ts"), "x\n");
+		git(checkout)("add", "theirs.ts");
+		git(checkout)("commit", "-q", "-m", "theirs");
+		await mkdir(join(checkout, "node_modules"));
+		await writeFile(join(checkout, "node_modules", "dep.js"), "kept\n");
+		await writeFile(join(local, "a.ts"), "2\n");
+		await mkdir(join(local, "src"));
+		await writeFile(join(local, "src", "b.ts"), "new\n");
+		await writeFile(join(local, ".env"), "SECRET=1\n");
+
+		const result = await synced(["--git", "src", "--to", checkout], local, { "git.base": base });
+		expect(result.code).toBe(0);
+		expect(result.stdout).toMatch(
+			new RegExp(
+				`^Synced ${checkout} in sbx_test1 \\(2 files changed: a \\d+ B patch, \\d+ B sent\\) on ${base.slice(0, 10)} ` +
+					"\\(its snapshot's git\\.base\\) in \\d+\\.\\d s\\. Both trees are [0-9a-f]{10}\\.\\n$",
+			),
+		);
+		expect(result.stderr).toContain("kantel: left out .env (an environment file)");
+		expect(result.stderr).toContain("kantel: --no-default-excludes sends credentials, sign-ins and .env files too");
+		expect(git(checkout)("rev-parse", "HEAD")).toBe(base);
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("2\n");
+		expect(await readFile(join(checkout, "src", "b.ts"), "utf8")).toBe("new\n");
+		expect(await readFile(join(checkout, "node_modules", "dep.js"), "utf8")).toBe("kept\n");
+		await expect(stat(join(checkout, "theirs.ts"))).rejects.toThrow();
+		await expect(stat(join(checkout, ".env"))).rejects.toThrow();
+
+		const json = await synced(["--git", "--to", checkout, "--json"], local, { "git.base": base });
+		expect(json.code).toBe(0);
+		const answer = JSON.parse(json.stdout);
+		expect(answer).toMatchObject({ sandboxId: "sbx_test1", path: checkout, base, baseSource: "label", files: 2 });
+		expect(answer.tree).toBe(git(checkout)("write-tree"));
+		expect(Object.keys(answer.timings)).toEqual(["probeMs", "patchMs", "uploadMs", "applyMs", "totalMs"]);
+	});
+
+	/** Runs git in `dir` as a test user. */
+	const gitIn =
+		(dir: string) =>
+		(...args: string[]): string =>
+			execFileSync(
+				"git",
+				["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
+				{
+					cwd: dir,
+					encoding: "utf8",
+				},
+			).trim();
+
+	/** A repository at `local` with one commit, and a clone of it at `checkout`, the sandbox's. */
+	async function cloned(local: string, checkout: string): Promise<string> {
+		await mkdir(local, { recursive: true });
+		await writeFile(join(local, "a.ts"), "1\n");
+		gitIn(local)("init", "-q");
+		gitIn(local)("add", "-A");
+		gitIn(local)("commit", "-q", "-m", "base");
+		gitIn(configDir)("clone", "-q", local, checkout);
+		return gitIn(local)("rev-parse", "HEAD");
+	}
+
+	it("sync refuses a repository as push refuses a directory, and never sends Kantel's config", async () => {
+		// The home is a repository, with Kantel's config in it.
+		const home = join(configDir, "home");
+		const checkout = join(configDir, "checkout");
+		const base = await cloned(home, checkout);
+		const config = join(home, ".config", "kantel");
+		await mkdir(config, { recursive: true });
+		await writeFile(join(config, "config.json"), '{"apiKey":"ksk_secret"}\n');
+		await writeFile(join(home, "a.ts"), "2\n");
+		const refused = await synced(["--git", "--to", checkout, "--base", base], home, {}, config);
+		expect(refused.code).toBe(1);
+		expect(refused.stderr).toContain("is your home directory: sync a project repository, or add --allow-home");
+		expect(refused.calls).toEqual([]);
+		const args = ["--git", "--to", checkout, "--base", base, "--allow-home", "--no-default-excludes"];
+		const result = await synced(args, join(home, ".config"), {}, config);
+		expect(result.code).toBe(0);
+		expect(result.stderr).toContain("kantel: left out .config/kantel (Kantel's config, with your API key)");
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("2\n");
+		await expect(stat(join(checkout, ".config", "kantel", "config.json"))).rejects.toThrow();
+		const sent = result.calls.filter((call) => call.method === "PUT").map((call) => (call.body as Written).content);
+		for (const part of sent) expect(Buffer.from(part, "base64").toString("latin1")).not.toContain("ksk_secret");
+
+		// A repository in .ssh, named from a directory in it.
+		const keys = join(configDir, ".ssh", "keys");
+		await cloned(keys, join(configDir, "keys-checkout"));
+		await mkdir(join(keys, "sub"));
+		const ssh = await synced(["--git", "sub"], keys);
+		expect(ssh.code).toBe(1);
+		expect(ssh.stderr).toContain("is in ");
+		expect(ssh.stderr).toContain("one sync leaves out (credentials): add --no-default-excludes if you mean it");
+		expect(ssh.calls).toEqual([]);
+
+		// A repository named .docker: its changed config.json stays behind.
+		const docker = join(configDir, ".docker");
+		const dockerCheckout = join(configDir, "docker-checkout");
+		await cloned(docker, dockerCheckout);
+		await writeFile(join(docker, "config.json"), '{"auths":{"r":{"auth":"c2VjcmV0"}}}\n');
+		const auth = await synced(["--git", "--to", dockerCheckout], docker);
+		expect(auth.code).toBe(0);
+		expect(auth.stderr).toContain("kantel: left out config.json (credentials)");
+		await expect(stat(join(dockerCheckout, "config.json"))).rejects.toThrow();
+	});
+
+	it("sync works from a worktree in .claude/worktrees, as push does", async () => {
+		const project = join(configDir, "project");
+		const checkout = join(configDir, "checkout");
+		await cloned(project, checkout);
+		const worktree = join(project, ".claude", "worktrees", "fix");
+		gitIn(project)("worktree", "add", "-q", worktree);
+		await writeFile(join(worktree, "a.ts"), "from the worktree\n");
+		await writeFile(join(worktree, "b.ts"), "new\n");
+		const result = await synced(["--git", "--to", checkout], worktree);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("(2 files changed:");
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("from the worktree\n");
+		expect(await readFile(join(checkout, "b.ts"), "utf8")).toBe("new\n");
+	});
+
+	it("sync needs --git, a git working tree here, and no other arguments", async () => {
+		const bare = await kantel(["sync", "sbx_test1"]);
+		expect(bare.code).toBe(2);
+		expect(bare.stderr).toContain("sync works as a git patch for now: add --git");
+		const plain = join(configDir, "plain");
+		await mkdir(plain);
+		const outside = await kantel(["sync", "sbx_test1", plain, "--git"]);
+		expect(outside.code).toBe(1);
+		expect(outside.stderr).toContain(`${plain} isn't in a git working tree`);
+		expect([...bare.calls, ...outside.calls]).toEqual([]);
+		expect((await kantel(["help"])).stdout).toMatch(/^ {2}sync <id> \[dir\] {2,}Bring a git checkout in a microVM/m);
+	});
 });
 
 describe("ports and live views", () => {

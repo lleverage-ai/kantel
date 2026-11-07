@@ -307,6 +307,27 @@ export function defaultExclude(file: string, tracked: boolean | undefined): Skip
 	return undefined;
 }
 
+/**
+ * Why push leaves out `rel`, a path under a root that `contexts` lead to ({@link rootContexts}), named as it is under
+ * the root; undefined to send it. Each context is tried in front of it, so `.cursor/User/auth.json` counts when the
+ * root is `.cursor/User`, and `config.json` when it is `.docker`. `tracked` is whether git tracks it.
+ */
+export function excludedUnder(
+	contexts: readonly string[],
+	rel: string,
+	tracked: boolean | undefined,
+): Skipped | undefined {
+	const posixRel = rel.split(sep).join("/");
+	for (const context of contexts) {
+		const prefix = context === "" ? "" : `${context.replace(/\/+$/, "")}/`;
+		const found = defaultExclude(`${prefix}${posixRel}`, tracked);
+		if (found === undefined) continue;
+		const under = found.path.startsWith(prefix) ? found.path.slice(prefix.length) : "";
+		return { ...found, path: under === "" ? posixRel : under };
+	}
+	return undefined;
+}
+
 /** Whether `path` is `directory` or inside it; both absolute. */
 export function within(path: string, directory: string): boolean {
 	const rel = relative(directory, path);
@@ -349,20 +370,9 @@ export async function pushPlan(
 	const realRoot = await real(root);
 	const keep = await Promise.all((options.keep ?? []).map(real));
 	const contexts = options.contexts ?? (await rootContexts(root));
-	// Each file is classified under what leads to the root, so `.cursor/User/auth.json` counts when the root is
-	// `.cursor/User`, and `config.json` when it is `.docker`. A notice names the file as it is under the root.
-	const exclude = (rel: string): Skipped | undefined => {
-		if (!options.defaultExcludes) return undefined;
-		const posixRel = rel.split(sep).join("/");
-		for (const context of contexts) {
-			const prefix = context === "" ? "" : `${context.replace(/\/+$/, "")}/`;
-			const found = defaultExclude(`${prefix}${posixRel}`, options.tracked?.has(posixRel));
-			if (found === undefined) continue;
-			const under = found.path.startsWith(prefix) ? found.path.slice(prefix.length) : "";
-			return { ...found, path: under === "" ? posixRel : under };
-		}
-		return undefined;
-	};
+	// Each file is classified under what leads to the root. A notice names the file as it is under the root.
+	const exclude = (rel: string): Skipped | undefined =>
+		options.defaultExcludes ? excludedUnder(contexts, rel, options.tracked?.has(rel.split(sep).join("/"))) : undefined;
 	const sent = new Set<string>();
 	const skipped = new Map<string, Skipped>();
 	await eachLimited(files, 32, async (file) => {
@@ -408,8 +418,12 @@ export async function checkPushRoot(
 		readonly allowHome: boolean;
 		readonly defaultExcludes: boolean;
 		readonly inRepository: boolean;
+		/** The command, for its messages: `push` (the default) or `sync`. */
+		readonly verb?: string;
 	},
 ): Promise<string | undefined> {
+	const verb = options.verb ?? "push";
+	const what = verb === "push" ? "directory" : "repository";
 	const [realRoot, home, configDir] = await Promise.all([real(root), real(options.home), real(options.configDir)]);
 	if (within(realRoot, configDir)) {
 		throw new CliError(`${root} is in Kantel's config directory, ${configDir}, which holds your API key`);
@@ -420,19 +434,19 @@ export async function checkPushRoot(
 		if (found !== undefined) {
 			const where = found.path === path ? "is" : `is in ${found.path}, which is`;
 			throw new CliError(
-				`${root} ${where} one push leaves out (${found.why}): add --no-default-excludes if you mean it`,
+				`${root} ${where} one ${verb} leaves out (${found.why}): add --no-default-excludes if you mean it`,
 			);
 		}
 	}
 	if (!options.allowHome && within(home, realRoot)) {
-		const what = realRoot === home ? "is your home directory" : `holds your home directory, ${home}`;
-		throw new CliError(`${root} ${what}: push a project directory, or add --allow-home if you mean it`);
+		const which = realRoot === home ? "is your home directory" : `holds your home directory, ${home}`;
+		throw new CliError(`${root} ${which}: ${verb} a project ${what}, or add --allow-home if you mean it`);
 	}
 	if (!within(configDir, realRoot)) return undefined;
 	if (!options.allowHome) {
 		throw new CliError(
-			`${root} holds Kantel's config directory, ${configDir}, with your API key: push a directory that doesn't, ` +
-				"or add --allow-home to push the rest",
+			`${root} holds Kantel's config directory, ${configDir}, with your API key: ${verb} a ${what} that doesn't, ` +
+				`or add --allow-home to ${verb} the rest`,
 		);
 	}
 	return configDir;

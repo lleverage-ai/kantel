@@ -86,6 +86,7 @@ import { ago, bytes, duration, fields, money, table, timestamp, until } from "./
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
 import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } from "./ssh-proxy.ts";
+import { checkoutPath, defaultCheckout, repositoryTop, syncGit } from "./sync.ts";
 import {
 	checkPushRoot,
 	downloadTree,
@@ -1956,6 +1957,97 @@ const SECTIONS: readonly Section[] = [
 						{ ...copied, to: where, skipped: plan.skipped },
 						() => `Pushed ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${where}.`,
 					);
+				},
+			},
+			{
+				name: "sync",
+				summary: "Bring a git checkout in a microVM to this working tree, sending only a patch (--git)",
+				args: [{ name: "id" }, { name: "dir", optional: true }],
+				flags: {
+					git: {
+						type: "boolean",
+						description: "As a git patch against the checkout's base commit (the one way sync works)",
+					},
+					to: {
+						type: "string",
+						value: "<path>",
+						description: "The checkout in the sandbox (default /home/user/<repository's directory name>)",
+					},
+					base: {
+						type: "string",
+						value: "<commit>",
+						description: "Diff against this commit, not the one the sandbox records",
+					},
+					"allow-home": {
+						type: "boolean",
+						description: "Sync a repository that is your home directory, or holds it, leaving Kantel's config out",
+					},
+					"no-default-excludes": {
+						type: "boolean",
+						description: "Send changed credentials, agents' sign-ins and .env files too",
+					},
+				},
+				details:
+					"For a sandbox that already has a clone of this repository, such as one made from a snapshot with its\n" +
+					"dependencies installed: only the difference from the clone's base commit goes over, where kantel push\n" +
+					"sends every file. The base is --base, else the checkout's .kantel-base-sha, else the git.base label on\n" +
+					"the snapshot the sandbox was made from, else the checkout's HEAD; your repository must have it too.\n" +
+					"Here, in a copy of your index (yours isn't touched), it stages your tracked changes and the new files\n" +
+					".gitignore doesn't leave out, and diffs that tree against the base, binary files and all. There, it\n" +
+					"runs git clean -fd, which keeps ignored files such as node_modules, and git reset --hard <base>, applies\n" +
+					"the patch with git apply --index and checks that git write-tree names the same tree on both sides.\n" +
+					"Anything else in the checkout (commits, changes, new files) is lost. A changed or new file push would\n" +
+					"leave out (credentials; untracked .claude, .codex, .cursor, .npmrc and .env files) stays at the base's\n" +
+					"version, named on stderr; --no-default-excludes sends it. It refuses a repository as push refuses a\n" +
+					"directory (in Kantel's config, in .ssh and the like, or your home without --allow-home), and never sends\n" +
+					"Kantel's config. The whole repository goes, whichever of its directories you name. Submodules' and Git\n" +
+					"LFS files' contents don't.",
+				async run(ctx) {
+					if (!ctx.boolean("git")) {
+						throw new UsageError(
+							"sync works as a git patch for now: add --git (kantel push copies a directory without git)",
+						);
+					}
+					const sandboxId = ctx.arg(0);
+					const dir = resolve(ctx.io.cwd, ctx.optional(1) ?? ".");
+					if (!(await isDirectory(dir))) throw new UsageError(`${dir} isn't a directory`);
+					const top = await repositoryTop(dir);
+					const defaultExcludes = !ctx.boolean("no-default-excludes");
+					// The whole repository goes, so push's checks apply to its top: not in Kantel's config or .ssh, not the
+					// home without --allow-home, and Kantel's config, where the repository holds it, always left out.
+					const config = await checkPushRoot(top, {
+						home: ctx.io.home,
+						configDir: ctx.io.configDir,
+						allowHome: ctx.boolean("allow-home"),
+						defaultExcludes,
+						inRepository: true,
+						verb: "sync",
+					});
+					const to = ctx.string("to");
+					const synced = await syncGit(await ctx.client(), sandboxId, {
+						top,
+						to: to === undefined ? defaultCheckout(top) : checkoutPath(to),
+						base: ctx.string("base"),
+						defaultExcludes,
+						keep: config === undefined ? [] : [config],
+						contexts: await rootContexts(top, top),
+					});
+					for (const skipped of synced.skipped) ctx.note(`kantel: left out ${skipped.path} (${skipped.why})`);
+					if (synced.skipped.some((skipped) => skipped.byDefault === true) && !ctx.json) {
+						ctx.note("kantel: --no-default-excludes sends credentials, sign-ins and .env files too");
+					}
+					ctx.emit(synced, () => {
+						const from = { flag: "--base", file: ".kantel-base-sha", label: "its snapshot's git.base", head: "HEAD" };
+						const patch =
+							synced.files === 0
+								? "no changes"
+								: `${fileCount(synced.files)} changed: a ${bytes(synced.patchBytes)} patch, ${bytes(synced.sentBytes)} sent`;
+						return (
+							`Synced ${synced.path} in ${sandboxId} (${patch}) on ${synced.base.slice(0, 10)} ` +
+							`(${from[synced.baseSource]}) in ${(synced.timings.totalMs / 1000).toFixed(1)} s. Both trees are ` +
+							`${synced.tree.slice(0, 10)}.`
+						);
+					});
 				},
 			},
 		],

@@ -107,6 +107,18 @@ const sandboxes = await Promise.all(
 
 Each new sandbox records where it came from in `source.snapshotId`. A snapshot keeps its sandbox's type in `sandboxType`, so start a microVM template as a microVM. A name that doesn't exist in the account answers `404` with `not_found`.
 
+### Bring your branch into one
+
+A sandbox made from a snapshot with a clone of your repository in it, its dependencies installed, only needs the difference from the clone's base commit. `kantel sync --git` sends just that, as one patch, rather than every file as `kantel push` does, which on a large monorepo takes minutes ([#726](https://github.com/lleverage-ai/kantel/issues/726)):
+
+```sh
+id=$(kantel new --type microvm --from app-warm --json | jq -r .id)
+kantel sync "$id" --git --to /home/user/app
+kantel exec "$id" --timeout 0 -- 'cd app && pnpm test'
+```
+
+It finds the base in the `git.base` label above, or in a `.kantel-base-sha` file at the top of the clone, which beats the label, since it belongs to the checkout rather than the snapshot. Your working tree goes as it is, uncommitted changes and new files included, and the sandbox's `node_modules` and build caches stay. Sync fails, and says why, when the trees don't match afterwards. A 2.5 MiB patch of 467 files into a 21,000-file monorepo took about 2.5 seconds. See [Syncing a git checkout](/tools/cli/#syncing-a-git-checkout).
+
 Creating from a saved snapshot and [forking](/sandboxes/lifecycle/#fork) both copy a state. Fork when the source is a sandbox you're working in now; save and create when the state is a template you'll come back to, or the source sandbox will be deleted.
 
 ## Update a template
