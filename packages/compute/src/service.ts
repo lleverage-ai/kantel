@@ -1921,12 +1921,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// hosts (or the caller's read of them), and one is written only when it changed: a host's `lastSeenAt` alone moves
 	// on every heartbeat, so it is written once it is `HOST_SEEN_PRECISION_MS` stale, and the answer has it fresh.
 	let hostsReady: Promise<StoredHost[]> | undefined;
+	// Each host's memory as the backend last said, answered with it (`hostView`) but never stored: it moves on every
+	// heartbeat.
+	const hostMemory = new Map<string, computeSchema.HostMemory>();
 	const ensureHosts = (read?: Promise<BackendCapabilities>): Promise<StoredHost[]> => {
 		hostsReady ??= (async () => {
 			const [capabilities, records] = await Promise.all([read ?? backend.capabilities(), store.hosts.list()]);
 			const byId = new Map(records.map((record) => [record.id, record]));
 			const writes: Promise<void>[] = [];
+			hostMemory.clear();
 			for (const host of capabilities.hosts) {
+				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
@@ -2917,6 +2922,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createdAt: account.createdAt,
 	});
 
+	/** A host's memory, as it last reported it, when it is connected. */
+	function hostMemoryOf(hostId: string): { memory?: computeSchema.HostMemory } {
+		const memory = hostMemory.get(hostId);
+		return memory === undefined ? {} : { memory: { ...memory } };
+	}
+
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
@@ -2934,6 +2945,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(diskUsage === undefined ? {} : { diskUsage: await diskView(host.id, diskUsage) }),
 			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
+			...hostMemoryOf(host.id),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),

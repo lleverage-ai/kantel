@@ -13821,6 +13821,9 @@
 					"diskUsage": {
 						"$ref": "#/components/schemas/HostDiskUsage"
 					},
+					"memory": {
+						"$ref": "#/components/schemas/HostMemory"
+					},
 					"savedSnapshotBytesLimit": {
 						"type": "integer",
 						"minimum": 0,
@@ -13968,6 +13971,129 @@
 					}
 				},
 				"title": "HostList"
+			},
+			"HostMemory": {
+				"type": "object",
+				"required": [
+					"mode",
+					"state",
+					"totalMiB",
+					"reserveMiB",
+					"capacityMiB",
+					"reservedMiB",
+					"committedMiB",
+					"guestUsedMiB",
+					"residentMiB",
+					"availableMiB",
+					"swapUsedMiB",
+					"pressureSome",
+					"pressureFull",
+					"maxRatio"
+				],
+				"properties": {
+					"mode": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "reserved"
+							},
+							{
+								"type": "string",
+								"const": "used"
+							}
+						],
+						"description": "How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times `capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, within what the machine has available and up to `maxRatio` times `capacityMiB` given."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "ok"
+							},
+							{
+								"type": "string",
+								"const": "tight"
+							},
+							{
+								"type": "string",
+								"const": "refusing"
+							},
+							{
+								"type": "string",
+								"const": "critical"
+							}
+						],
+						"description": "How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new sandboxes. `critical`: it ends the largest process in the guest holding the most memory."
+					},
+					"totalMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The machine's memory, or the limit of the control group kantel-host runs in."
+					},
+					"reserveMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What is kept for the host's own processes and never given to sandboxes."
+					},
+					"capacityMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`totalMiB` less `reserveMiB`."
+					},
+					"reservedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What the host's sandboxes were given."
+					},
+					"committedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What its microVMs count for: each its peak of the last minutes plus headroom, at most its size."
+					},
+					"guestUsedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What its microVMs' guests say they use, page cache aside."
+					},
+					"residentMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What its microVMs hold of the machine's memory, their guests' page cache included."
+					},
+					"availableMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What the machine has available now (MemAvailable)."
+					},
+					"swapUsedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Swap in use on the machine."
+					},
+					"pressureSome": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 100,
+						"description": "Memory pressure: the share of the last 10 seconds some task waited on memory."
+					},
+					"pressureFull": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 100,
+						"description": "The share of the last 10 seconds every task waited on memory."
+					},
+					"maxRatio": {
+						"type": "number",
+						"minimum": 0,
+						"description": "The most sandboxes may be given, as a multiple of `capacityMiB`."
+					},
+					"measuredAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "HostMemory",
+				"description": "A host's memory, in MiB, as it last reported it (every heartbeat)."
 			},
 			"HostReleaseCheck": {
 				"type": "object",

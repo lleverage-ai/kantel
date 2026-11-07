@@ -78,6 +78,39 @@ func TestBootAddsAReportingBalloon(t *testing.T) {
 	}
 }
 
+// Free page reporting is only asked for when wanted (memory over-commit): a balloon without it is as before, so its
+// templates' snapshots stay the same.
+func TestBootFreePageReporting(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		dir, api := serveFake(t, "")
+		m := &Machine{Dir: dir, http: apiClient(dir)}
+		if err := m.Boot(context.Background(), BootConfig{VCPUs: 1, MemoryMiB: 512, Kernel: "vmlinux", GuestCID: 3, BalloonStatsSeconds: 1, FreePageReporting: on}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := api.puts["/balloon"]["free_page_reporting"]
+		if on && got != true || !on && ok {
+			t.Fatalf("free page reporting %v: balloon %v", on, api.puts["/balloon"])
+		}
+	}
+}
+
+func TestSetBalloon(t *testing.T) {
+	dir, api := serveFake(t, "")
+	if err := SetBalloon(context.Background(), dir, 1500); err != nil {
+		t.Fatal(err)
+	}
+	if api.order[0] != "PATCH /balloon" || api.puts["/balloon"]["amount_mib"] != float64(1500) {
+		t.Fatalf("%v %v", api.order, api.puts)
+	}
+	// Never below nothing.
+	if err := SetBalloon(context.Background(), dir, -3); err != nil || api.puts["/balloon"]["amount_mib"] != float64(0) {
+		t.Fatalf("%v %v", err, api.puts)
+	}
+	if err := SetBalloon(context.Background(), t.TempDir(), 0); err == nil {
+		t.Fatal("no API socket")
+	}
+}
+
 func TestBootWithoutBalloonStats(t *testing.T) {
 	// The isolate tier's VM asks for none.
 	dir, api := serveFake(t, "")
@@ -145,6 +178,9 @@ func TestReadBalloonStats(t *testing.T) {
 	stats, err := ReadBalloonStats(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if stats.TargetMiB != 0 || stats.ActualMiB != 0 {
+		t.Fatalf("balloon sizes %+v", stats)
 	}
 	if stats.TotalMemory == nil || *stats.TotalMemory != 2_068_000_000 || stats.AvailableMemory == nil ||
 		*stats.AvailableMemory != 1_500_000_000 || stats.FreeMemory == nil || *stats.FreeMemory != 1_200_000_000 {

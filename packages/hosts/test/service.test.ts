@@ -235,6 +235,55 @@ describe("hosts service", () => {
 		expect(view.freeDiskGb).toBe(300);
 	});
 
+	it("shows a host's memory as its latest heartbeat reports it, and drops a report that isn't one", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		expect((await service.get(a.hostId)).memory).toBeUndefined();
+		const memory = {
+			mode: "used",
+			state: "tight",
+			totalMiB: 128_000,
+			reserveMiB: 12_800,
+			capacityMiB: 115_200,
+			reservedMiB: 262_144,
+			committedMiB: 90_112,
+			guestUsedMiB: 24_576,
+			residentMiB: 49_152,
+			availableMiB: 70_000,
+			swapUsedMiB: 0,
+			pressureSome: 6.5,
+			pressureFull: 0.25,
+			maxRatio: 2.5,
+			measuredAt: 1_700_000_000_000,
+		};
+		const capacity = { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0 };
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, memory } } });
+		await tick();
+		expect((await service.get(a.hostId)).memory).toEqual(memory);
+		// A mode it doesn't know, or a figure that isn't one, is left out; the rest of the heartbeat still stands.
+		for (const wrong of [
+			{ ...memory, mode: "guessed" },
+			{ ...memory, committedMiB: -1 },
+			{ ...memory, state: 3 },
+		]) {
+			host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, freeMemoryMiB: 9_000, memory: wrong } } });
+			await tick();
+			const view = await service.get(a.hostId);
+			expect(view.memory).toBeUndefined();
+		}
+		// Pressure over 100% is taken as 100%; no time, none said.
+		const { measuredAt: _, ...unmeasured } = memory;
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { ...capacity, memory: { ...unmeasured, pressureSome: 140 } } },
+		});
+		await tick();
+		expect((await service.get(a.hostId)).memory).toEqual({ ...unmeasured, pressureSome: 100 });
+	});
+
 	it("shows a host's free disk as its latest heartbeat reports it, not as it was when it connected", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");

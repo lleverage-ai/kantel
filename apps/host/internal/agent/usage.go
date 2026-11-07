@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"github.com/lleverage-ai/kantel/apps/host/internal/usage"
@@ -81,6 +82,8 @@ type usageSampler struct {
 	dropped     int
 	unconfirmed int
 	latest      *proto.UsageSample
+	// memory is the last take's microVMs' memory, for the host's memory plan (memory.go).
+	memory []memplan.Reading
 }
 
 func (h *Host) newUsageSampler() *usageSampler {
@@ -116,6 +119,7 @@ func (h *Host) newUsageSampler() *usageSampler {
 // waited on the tiers, still divides each CPU time by the time it took.
 func (s *usageSampler) take() (proto.UsageSample, bool) {
 	defer s.counters.Sweep()
+	s.memory = nil
 	procs := s.processes()
 	cpu, err := s.readHostCPU()
 	now := s.now()
@@ -180,6 +184,14 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 			continue
 		}
 		used, source := s.microVMMemory(p)
+		rss := used
+		if source != proto.MemSourceRSS {
+			rss, _ = s.readRSS(p.Pid)
+		}
+		s.memory = append(s.memory, memplan.Reading{
+			ID: p.SandboxID, UsedMiB: used >> 20, RSSMiB: rss >> 20, Guest: source == proto.MemSourceGuest, Pid: p.Pid,
+			SizeMiB: p.MemLimitBytes >> 20,
+		})
 		reading := proto.SandboxUsage{
 			ID: p.SandboxID, Kind: microvm.Tier, CPU: usage.Utilisation(grew, over, p.CPUs),
 			MemUsedBytes: used, MemLimitBytes: p.MemLimitBytes, MemSource: source,
@@ -431,6 +443,9 @@ func (h *Host) RunUsage(ctx context.Context) {
 	h.usage = s
 	h.mu.Unlock()
 	s.take()
+	if h.cfg.overcommitOn() {
+		go h.watchMemory(ctx)
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var warnedUnconfirmed time.Time
@@ -443,6 +458,7 @@ func (h *Host) RunUsage(ctx context.Context) {
 			if sample, ok := s.take(); ok {
 				s.keep(sample)
 			}
+			h.observeMemory(s.now(), s.memory)
 			h.mu.Lock()
 			link, acks := h.link, h.usageAcks
 			h.mu.Unlock()

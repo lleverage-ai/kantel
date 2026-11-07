@@ -2911,6 +2911,47 @@ export const HostDiskUsage = Type.Object(
 	},
 );
 
+const mib = (description: string) => Type.Integer({ minimum: 0, description });
+const percent = (description: string) => Type.Number({ minimum: 0, maximum: 100, description });
+
+export const HostMemory = Type.Object(
+	{
+		mode: Type.Union([Type.Literal("reserved"), Type.Literal("used")], {
+			description:
+				"How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times " +
+				"`capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, " +
+				"within what the machine has available and up to `maxRatio` times `capacityMiB` given.",
+		}),
+		state: Type.Union([Type.Literal("ok"), Type.Literal("tight"), Type.Literal("refusing"), Type.Literal("critical")], {
+			description:
+				"How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new " +
+				"sandboxes. `critical`: it ends the largest process in the guest holding the most memory.",
+		}),
+		totalMiB: mib("The machine's memory, or the limit of the control group kantel-host runs in."),
+		reserveMiB: mib("What is kept for the host's own processes and never given to sandboxes."),
+		capacityMiB: mib("`totalMiB` less `reserveMiB`."),
+		reservedMiB: mib("What the host's sandboxes were given."),
+		committedMiB: mib(
+			"What its microVMs count for: each its peak of the last minutes plus headroom, at most its size.",
+		),
+		guestUsedMiB: mib("What its microVMs' guests say they use, page cache aside."),
+		residentMiB: mib("What its microVMs hold of the machine's memory, their guests' page cache included."),
+		availableMiB: mib("What the machine has available now (MemAvailable)."),
+		swapUsedMiB: mib("Swap in use on the machine."),
+		pressureSome: percent("Memory pressure: the share of the last 10 seconds some task waited on memory."),
+		pressureFull: percent("The share of the last 10 seconds every task waited on memory."),
+		maxRatio: Type.Number({
+			minimum: 0,
+			description: "The most sandboxes may be given, as a multiple of `capacityMiB`.",
+		}),
+		measuredAt: Type.Optional(Timestamp),
+	},
+	{
+		title: "HostMemory",
+		description: "A host's memory, in MiB, as it last reported it (every heartbeat).",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -2979,6 +3020,7 @@ export const Host = Type.Object(
 		lastSeenAt: Type.Optional(Timestamp),
 		usage: Type.Optional(UsageSparklines),
 		diskUsage: Type.Optional(HostDiskUsage),
+		memory: Type.Optional(HostMemory),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Integer({
 				minimum: 0,
@@ -3478,6 +3520,7 @@ export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostDiskUsage = Static<typeof HostDiskUsage>;
+export type HostMemory = Static<typeof HostMemory>;
 export type HostUsage = Static<typeof HostUsage>;
 export type HostUsagePoint = Static<typeof HostUsagePoint>;
 export type SandboxUsage = Static<typeof SandboxUsage>;

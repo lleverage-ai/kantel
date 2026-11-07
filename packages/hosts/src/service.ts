@@ -36,6 +36,7 @@ import {
 	type HostFacts,
 	type HostHello,
 	type HostImageChannel,
+	type HostMemoryReport,
 	HostMethods,
 	type HostMount,
 	type HostMountStatus,
@@ -172,6 +173,8 @@ export interface HostView {
 	readonly freeDiskGb?: number;
 	/** What takes the space on its disk, from its latest heartbeat that measured it (`HostDiskUsage`). */
 	readonly diskUsage?: HostDiskUsage;
+	/** Its memory, from its latest report. */
+	readonly memory?: HostMemoryReport;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -1090,6 +1093,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			},
 			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
 			...(reported?.disk === undefined ? {} : { diskUsage: { ...reported.disk } }),
+			...(reported?.memory === undefined ? {} : { memory: { ...reported.memory } }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),

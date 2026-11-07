@@ -1696,6 +1696,26 @@ function hostOf(host: Host): UiHost {
 						measuredAt: host.diskUsage.measuredAt,
 					},
 				}),
+		...(host.memory === undefined
+			? {}
+			: {
+					memory: {
+						mode: host.memory.mode,
+						state: host.memory.state,
+						totalMiB: host.memory.totalMiB,
+						reserveMiB: host.memory.reserveMiB,
+						capacityMiB: host.memory.capacityMiB,
+						reservedMiB: host.memory.reservedMiB,
+						committedMiB: host.memory.committedMiB,
+						guestUsedMiB: host.memory.guestUsedMiB,
+						residentMiB: host.memory.residentMiB,
+						availableMiB: host.memory.availableMiB,
+						swapUsedMiB: host.memory.swapUsedMiB,
+						pressureSome: host.memory.pressureSome,
+						pressureFull: host.memory.pressureFull,
+						maxRatio: host.memory.maxRatio,
+					},
+				}),
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 	};
 }

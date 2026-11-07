@@ -305,6 +305,47 @@ type Capacity struct {
 	// Disk is what takes the space on the host's disk, measured every few minutes; absent until it first is, and from a
 	// host from before it said.
 	Disk *DiskUsage `json:"disk,omitempty"`
+	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
+	// has left. Absent from a host from before it said.
+	Memory *MemoryReport `json:"memory,omitempty"`
+}
+
+// MemoryModeReserved and MemoryModeUsed are MemoryReport.Mode: the host admits sandboxes by the memory they were
+// given (against MaxRatio times its capacity), or, with memory over-commit on (experimental), by what they use.
+const (
+	MemoryModeReserved = "reserved"
+	MemoryModeUsed     = "used"
+)
+
+// MemoryReport is a host's memory, in MiB (package memplan says how each is counted).
+type MemoryReport struct {
+	// Mode is how the host admits sandboxes: MemoryModeReserved or MemoryModeUsed.
+	Mode string `json:"mode"`
+	// TotalMiB is the machine's memory (or kantel-host's control group's limit); ReserveMiB what is kept for the host
+	// itself; CapacityMiB what sandboxes may use, the total less the reserve.
+	TotalMiB    int64 `json:"totalMiB"`
+	ReserveMiB  int64 `json:"reserveMiB"`
+	CapacityMiB int64 `json:"capacityMiB"`
+	// ReservedMiB is what the running sandboxes and template builds were given; CommittedMiB what they count as: each
+	// microVM its recent peak plus headroom, at most its size.
+	ReservedMiB  int64 `json:"reservedMiB"`
+	CommittedMiB int64 `json:"committedMiB"`
+	// GuestUsedMiB is what the microVMs' guests use now; ResidentMiB what their Firecracker processes hold of the
+	// host's memory (their guests' page cache too).
+	GuestUsedMiB int64 `json:"guestUsedMiB"`
+	ResidentMiB  int64 `json:"residentMiB"`
+	// AvailableMiB is what the machine has available now (MemAvailable); SwapUsedMiB the swap in use.
+	AvailableMiB int64 `json:"availableMiB"`
+	SwapUsedMiB  int64 `json:"swapUsedMiB"`
+	// PressureSome and PressureFull are the machine's memory pressure (PSI avg10), in percent.
+	PressureSome float64 `json:"pressureSome"`
+	PressureFull float64 `json:"pressureFull"`
+	// MaxRatio caps ReservedMiB at that many times CapacityMiB.
+	MaxRatio float64 `json:"maxRatio"`
+	// State is ok, tight (reclaiming), refusing (creates refused) or critical (out-of-memory step).
+	State string `json:"state"`
+	// MeasuredAt is when the machine's figures were read (Unix ms); 0 before they first were.
+	MeasuredAt int64 `json:"measuredAt,omitempty"`
 }
 
 // DiskUsage is what takes the space on the filesystem holding a host's Root, in bytes, counting only files on that

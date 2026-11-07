@@ -429,6 +429,43 @@ export interface HostCapacity {
 	readonly builds?: readonly string[];
 	/** What takes the space on its disk, measured every few minutes. Absent until it first is, and from an older host. */
 	readonly disk?: HostDiskUsage;
+	/** Its memory: what sandboxes were given, use and may soon use, and what the machine has left. Absent from an older host. */
+	readonly memory?: HostMemoryReport;
+}
+
+/**
+ * How a host admits sandboxes' memory: by what they were given (`reserved`, against `maxRatio` times its capacity), or,
+ * with memory over-commit on (experimental), by what they use (`used`).
+ */
+export type HostMemoryMode = "reserved" | "used";
+
+/** How short of memory a host is: `tight` reclaims page cache, `refusing` refuses creates, `critical` ends processes. */
+export type HostMemoryState = "ok" | "tight" | "refusing" | "critical";
+
+/**
+ * A host's memory, in MiB (apps/host/internal/memplan). `committedMiB` counts each microVM as its recent peak plus
+ * headroom, at most its size; `reservedMiB` as its size.
+ */
+export interface HostMemoryReport {
+	readonly mode: HostMemoryMode;
+	/** The machine's memory (or kantel-host's control group's limit), what is kept for the host, and the rest. */
+	readonly totalMiB: number;
+	readonly reserveMiB: number;
+	readonly capacityMiB: number;
+	readonly reservedMiB: number;
+	readonly committedMiB: number;
+	/** What the microVMs' guests use, and what their processes hold of the host's memory (page cache too). */
+	readonly guestUsedMiB: number;
+	readonly residentMiB: number;
+	readonly availableMiB: number;
+	readonly swapUsedMiB: number;
+	/** Memory pressure (PSI avg10), in percent. */
+	readonly pressureSome: number;
+	readonly pressureFull: number;
+	readonly maxRatio: number;
+	readonly state: HostMemoryState;
+	/** When the machine's figures were read (epoch milliseconds); absent before they first were. */
+	readonly measuredAt?: number;
 }
 
 /**
