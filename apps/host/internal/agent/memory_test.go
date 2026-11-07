@@ -12,6 +12,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
+	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 )
 
 type fakeGuardActions struct {
@@ -20,6 +21,8 @@ type fakeGuardActions struct {
 	asked     []string
 	killed    []string
 	oomErr    error
+	// replaced are the sandboxes whose VM a recovery replaced: a step naming its old process is dropped.
+	replaced map[string]bool
 }
 
 func (f *fakeGuardActions) Reclaim(_ context.Context, id string) (int64, error) {
@@ -29,16 +32,19 @@ func (f *fakeGuardActions) Reclaim(_ context.Context, id string) (int64, error) 
 	return 100, nil
 }
 
-func (f *fakeGuardActions) OutOfMemory(_ context.Context, id string) error {
+func (f *fakeGuardActions) OutOfMemory(_ context.Context, id string, _ int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked = append(f.asked, id)
 	return f.oomErr
 }
 
-func (f *fakeGuardActions) KillForMemory(id string) error {
+func (f *fakeGuardActions) KillForMemory(id string, _ int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.replaced[id] {
+		return microvm.ErrMachineChanged
+	}
 	f.killed = append(f.killed, id)
 	return nil
 }
@@ -186,6 +192,88 @@ func TestGuardStopsAVMWhoseGuestDoesNotAnswer(t *testing.T) {
 	if len(act.asked)+len(act.killed) != 0 {
 		t.Fatalf("out-of-memory step off: %+v", act)
 	}
+	// A guest whose VM a recovery replaced meanwhile fails its request; the fallback leaves the replacement.
+	act = &fakeGuardActions{oomErr: errors.New("the VM exited"), replaced: map[string]bool{"b": true}}
+	(&memoryGuard{}).runAll(quietHost(), plan, act, t0.Add(time.Minute))
+	if !slices.Equal(act.asked, []string{"b"}) || len(act.killed) != 0 {
+		t.Fatalf("replaced VM: %+v", act)
+	}
+}
+
+// Every VM taken within outOfMemorySettle, the step waits for what they free, at the group's limit too: no other
+// request, and no stop, until one is due again.
+func TestGuardLetsTakenVMsSettle(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		readings []memplan.Reading
+	}{
+		{"one VM", []memplan.Reading{{ID: "a", UsedMiB: 3000, RSSMiB: 3000, Guest: true, Pid: 11}}},
+		{"every VM", []memplan.Reading{
+			{ID: "a", UsedMiB: 3000, RSSMiB: 3000, Guest: true, Pid: 11},
+			{ID: "b", UsedMiB: 2000, RSSMiB: 2000, Guest: true, Pid: 12},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := memplan.New(memplan.Settings{Enabled: true}, 10000, 2000, 1.5)
+			t0 := time.Now()
+			g := &memoryGuard{readRSS: func(int) (int64, error) { return 0, errors.New("unread") }}
+			act := &fakeGuardActions{}
+			h := quietHost()
+			limited := hostinfo.Memory{AvailableMiB: 5000, GroupMaxMiB: 9500, GroupHeadroomMiB: 100}
+			plan.Observe(t0, tc.readings, limited)
+			at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+			// Each second at the limit.
+			for s := 1; s <= 30; s++ {
+				limited.GroupLimitHits = int64(s)
+				plan.ObserveHost(at(s), limited)
+				g.runAll(h, plan, act, at(s))
+				if s == outOfMemorySettleSeconds {
+					// Every VM taken once, each within its settling: no more yet.
+					if len(act.asked) != len(tc.readings) || len(act.killed) != 0 {
+						t.Fatalf("at %ds: %+v", s, act)
+					}
+				}
+			}
+			// Each VM asked at most every outOfMemorySettle: twice in 30 s, then stopped on the third.
+			for _, r := range tc.readings {
+				if n := countOf(act.asked, r.ID); n != 2 {
+					t.Fatalf("%s asked %d times: %+v", r.ID, n, act)
+				}
+				if n := countOf(act.killed, r.ID); n != 1 {
+					t.Fatalf("%s stopped %d times: %+v", r.ID, n, act)
+				}
+			}
+		})
+	}
+}
+
+const outOfMemorySettleSeconds = 10
+
+// Over-commit off (as it is with usage sampling off, which nothing else then reads the machine for), the capacity
+// report reads the machine's memory itself: its figures are the machine's, not zeros, and it admits by reservation.
+func TestMemoryReportReadsTheMachineWithoutSampling(t *testing.T) {
+	if hostinfo.ReadMemory().TotalMiB == 0 {
+		t.Skip("no /proc/meminfo here")
+	}
+	h := quietHost()
+	h.plan = memplan.New(memplan.Settings{}, 10000, 2000, 1.5)
+	r, free, ok := h.memoryReport()
+	if r == nil || ok || free != 0 {
+		t.Fatalf("report %+v, free %d, by use %v", r, free, ok)
+	}
+	if r.Mode != "reserved" || r.TotalMiB <= 0 || r.AvailableMiB <= 0 || r.MeasuredAt <= 0 || r.Admission != nil {
+		t.Fatalf("report %+v", r)
+	}
+}
+
+func countOf(list []string, id string) int {
+	n := 0
+	for _, v := range list {
+		if v == id {
+			n++
+		}
+	}
+	return n
 }
 
 // Each kill the kernel counted at the group's limit explains one VM exit, and no more.

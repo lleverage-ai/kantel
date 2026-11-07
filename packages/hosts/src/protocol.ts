@@ -466,6 +466,26 @@ export interface HostMemoryReport {
 	readonly state: HostMemoryState;
 	/** When the machine's figures were read (epoch milliseconds); absent before they first were. */
 	readonly measuredAt?: number;
+	/**
+	 * With `mode` `used`: what it admits against. `freeMemoryMiB` is then the largest single microVM it would admit, which
+	 * isn't additive, so what is placed on it before its next report is counted against this (`freeMemoryOn`). Absent
+	 * from a host that predates it.
+	 */
+	readonly admission?: HostMemoryAdmission;
+}
+
+/**
+ * What a host admitting by use has left, in its admission units (apps/host/internal/memplan): `reservableMiB` of sizes
+ * before its cap, and `committableMiB` of committed memory. A new microVM of size S costs S of the first and
+ * min(S, startMiB + headroom(S)) of the second, headroom(S) = min(S, max(headroomMiB, S × headroomPercent / 100)); a
+ * template build costs S of both.
+ */
+export interface HostMemoryAdmission {
+	readonly reservableMiB: number;
+	readonly committableMiB: number;
+	readonly startMiB: number;
+	readonly headroomMiB: number;
+	readonly headroomPercent: number;
 }
 
 /**

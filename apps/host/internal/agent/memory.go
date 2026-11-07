@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strconv"
@@ -197,10 +198,13 @@ func (h *Host) memoryReport() (report *proto.MemoryReport, free int64, ok bool) 
 		vms = mv.MemoryVMs()
 	}
 	other := h.otherTiersMemoryMiB()
-	r := plan.Report(vms, other)
 	if !plan.Settings().Enabled {
+		// Off, nothing else need read the machine (the usage sampler may be off too): the report reads it itself.
+		plan.ObserveHost(time.Now(), hostinfo.ReadMemory())
+		r := plan.Report(vms, other)
 		return &r, 0, false
 	}
+	r := plan.Report(vms, other)
 	return &r, plan.Free(vms, other), true
 }
 
@@ -255,11 +259,12 @@ type memoryGuard struct {
 	readRSS func(pid int) (int64, error)
 }
 
-// guardActions is what the guard asks of the microVM tier.
+// guardActions is what the guard asks of the microVM tier. The out-of-memory steps name the Firecracker process (pid)
+// they were chosen by, and leave a sandbox whose VM has been replaced since alone (microvm.ErrMachineChanged).
 type guardActions interface {
 	Reclaim(ctx context.Context, id string) (int64, error)
-	OutOfMemory(ctx context.Context, id string) error
-	KillForMemory(id string) error
+	OutOfMemory(ctx context.Context, id string, pid int) error
+	KillForMemory(id string, pid int) error
 }
 
 func (g *memoryGuard) pass(h *Host, plan *memplan.Plan) {
@@ -405,40 +410,60 @@ func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.
 		g.mu.Unlock()
 		return
 	}
-	g.lastStep = now
 	if g.asked == nil {
 		g.asked = map[string][]time.Time{}
 	}
-	offender := readings[0]
+	// The VM holding the most that hasn't been taken in outOfMemorySettle; none, and the step waits for what they free.
+	var offender memplan.Reading
+	found := false
 	for _, r := range readings {
 		if asked := g.asked[r.ID]; len(asked) == 0 || now.Sub(asked[len(asked)-1]) >= outOfMemorySettle {
-			offender = r
+			offender, found = r, true
 			break
 		}
 	}
+	if !found {
+		g.mu.Unlock()
+		return
+	}
+	g.lastStep = now
 	recent := slices.DeleteFunc(g.asked[offender.ID], func(t time.Time) bool { return now.Sub(t) > outOfMemoryRepeat })
 	g.asked[offender.ID] = append(recent, now)
 	g.mu.Unlock()
+	kill := func() {
+		err := act.KillForMemory(offender.ID, offender.Pid)
+		switch {
+		case errors.Is(err, microvm.ErrMachineChanged):
+			h.log.Info("memory guard: the sandbox's VM was replaced meanwhile; leaving it", "sandbox", offender.ID)
+		case err != nil:
+			h.log.Warn("memory guard: could not stop a sandbox", "sandbox", offender.ID, "err", err)
+		}
+	}
+	g.working.Add(1)
 	if len(recent) >= 2 {
 		h.log.Warn("memory guard: the host is still critically short of memory; stopping the sandbox holding the most",
 			"sandbox", offender.ID, "residentMiB", offender.RSSMiB)
-		if err := act.KillForMemory(offender.ID); err != nil {
-			h.log.Warn("memory guard: could not stop a sandbox", "sandbox", offender.ID, "err", err)
-		}
+		// Off the pass, as the guest's request is: a sandbox a stop or snapshot holds would hold the guard up.
+		go func() {
+			defer g.working.Done()
+			kill()
+		}()
 		return
 	}
 	h.log.Warn("memory guard: the host is critically short of memory; the sandbox holding the most is killing its largest process",
 		"sandbox", offender.ID, "residentMiB", offender.RSSMiB, "guestUsedMiB", offender.UsedMiB)
-	g.working.Add(1)
 	go func() {
 		defer g.working.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), reclaimTimeout)
 		defer cancel()
-		if err := act.OutOfMemory(ctx, offender.ID); err != nil {
+		err := act.OutOfMemory(ctx, offender.ID, offender.Pid)
+		switch {
+		case err == nil:
+		case errors.Is(err, microvm.ErrMachineChanged):
+			h.log.Info("memory guard: the sandbox's VM was replaced meanwhile; leaving it", "sandbox", offender.ID)
+		default:
 			h.log.Warn("memory guard: the sandbox's guest didn't answer; stopping it", "sandbox", offender.ID, "err", err)
-			if err := act.KillForMemory(offender.ID); err != nil {
-				h.log.Warn("memory guard: could not stop a sandbox", "sandbox", offender.ID, "err", err)
-			}
+			kill()
 		}
 	}()
 }

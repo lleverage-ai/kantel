@@ -3,6 +3,7 @@ package hostinfo
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -86,6 +87,53 @@ func TestReadMemoryLimitAbove(t *testing.T) {
 	// A limit above the machine's memory is no limit.
 	writeFiles(t, root, map[string]string{"cgroup/kantel.slice/memory.max": "999999999999999\n"})
 	if m := (memoryPaths{proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup")}).read(); m.Limited || m.TotalMiB != 128000 {
+		t.Fatalf("%+v", m)
+	}
+}
+
+// A larger limit above, shared with siblings, can have the least left: the smallest limit is still the total, but
+// what is available is what every limit leaves, the most constrained one's (its inactive page cache counted free).
+func TestReadMemorySharedLimitAbove(t *testing.T) {
+	root := t.TempDir()
+	const gib = int64(1) << 30
+	n := func(v int64) string { return strconv.FormatInt(v, 10) + "\n" }
+	writeFiles(t, root, map[string]string{
+		"proc/meminfo":     meminfo,
+		"proc/self/cgroup": "0::/kantel.slice/kantel-host.service\n",
+		// The slice: 16 GiB, 15 GiB of it used by the service and its siblings, 256 MiB of that inactive cache.
+		"cgroup/kantel.slice/memory.max":     n(16 * gib),
+		"cgroup/kantel.slice/memory.current": n(15 * gib),
+		"cgroup/kantel.slice/memory.stat":    "inactive_file " + n(256<<20),
+		// The service: 8 GiB, 2 GiB of it used.
+		"cgroup/kantel.slice/kantel-host.service/memory.max":     n(8 * gib),
+		"cgroup/kantel.slice/kantel-host.service/memory.current": n(2 * gib),
+	})
+	paths := memoryPaths{proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup")}
+	if m := paths.read(); !m.Limited || m.TotalMiB != 8192 || m.AvailableMiB != 1024+256 {
+		t.Fatalf("%+v", m)
+	}
+	// The slice with room again, the service's own limit binds.
+	writeFiles(t, root, map[string]string{"cgroup/kantel.slice/memory.current": n(4 * gib)})
+	if m := paths.read(); m.TotalMiB != 8192 || m.AvailableMiB != 6144 {
+		t.Fatalf("%+v", m)
+	}
+	// The service's limit kantel-host set itself (over-commit's confinement) isn't its total, but the slice's still
+	// bounds what is available.
+	confined := filepath.Join(root, "run", "memory-max")
+	writeFiles(t, root, map[string]string{
+		"run/memory-max":                     n(8 * gib),
+		"cgroup/kantel.slice/memory.current": n(15 * gib),
+	})
+	paths.confined = confined
+	if m := paths.read(); m.TotalMiB != 16384 || m.AvailableMiB != 1024+256 {
+		t.Fatalf("%+v", m)
+	}
+	// No limits anywhere: the machine's.
+	writeFiles(t, root, map[string]string{
+		"cgroup/kantel.slice/memory.max":                     "max\n",
+		"cgroup/kantel.slice/kantel-host.service/memory.max": "max\n",
+	})
+	if m := paths.read(); m.Limited || m.TotalMiB != 128000 || m.AvailableMiB != 113664 {
 		t.Fatalf("%+v", m)
 	}
 }

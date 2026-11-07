@@ -171,18 +171,17 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 	var asks []statsAsk
 	for _, p := range procs {
 		if p.Held {
-			// Mid-operation, so unread: keep following it.
+			// Mid-operation, so unread: keep following it, and the memory plan its last reading.
 			s.counters.Keep("microvm/" + p.SandboxID)
+			s.memory = append(s.memory, memplan.Reading{ID: p.SandboxID, Held: true})
 			continue
 		}
 		cpu, err := s.readCPU(p.Pid)
 		if err != nil {
 			continue
 		}
-		grew, over, ok := s.counters.Delta("microvm/"+p.SandboxID, cpu.Epoch(p.Pid), cpu.Seconds(), s.now())
-		if !ok {
-			continue
-		}
+		// Memory is a reading of now, so the memory plan (and its guard) has every VM from its first sample, a new or
+		// resumed one too, whose CPU has no figure yet (its counter starts here).
 		used, source := s.microVMMemory(p)
 		rss := used
 		if source != proto.MemSourceRSS {
@@ -192,6 +191,10 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 			ID: p.SandboxID, UsedMiB: used >> 20, RSSMiB: rss >> 20, Guest: source == proto.MemSourceGuest, Pid: p.Pid,
 			SizeMiB: p.MemLimitBytes >> 20,
 		})
+		grew, over, ok := s.counters.Delta("microvm/"+p.SandboxID, cpu.Epoch(p.Pid), cpu.Seconds(), s.now())
+		if !ok {
+			continue
+		}
 		reading := proto.SandboxUsage{
 			ID: p.SandboxID, Kind: microvm.Tier, CPU: usage.Utilisation(grew, over, p.CPUs),
 			MemUsedBytes: used, MemLimitBytes: p.MemLimitBytes, MemSource: source,

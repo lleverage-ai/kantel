@@ -1,7 +1,10 @@
 package microvm
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -77,5 +80,44 @@ func TestFreePageReportingBootAndFingerprint(t *testing.T) {
 	}
 	if strings.Contains(off.templateFingerprint(shape{}), "free-page-reporting") || !strings.Contains(on.templateFingerprint(shape{}), ",free-page-reporting") {
 		t.Fatalf("fingerprints %q, %q", off.templateFingerprint(shape{}), on.templateFingerprint(shape{}))
+	}
+	// The user templates' runtime too: a snapshot made with reporting off isn't restored once it is on (it is booted
+	// afresh, with a reporting balloon), nor one made with it on once it is off; with it off, as before.
+	for _, rootfs := range []string{"", "/images/templates/key.ext4"} {
+		madeOff, madeOn := off.runtimeFingerprint(rootfs), on.runtimeFingerprint(rootfs)
+		if madeOff == madeOn || strings.Contains(madeOff, "free-page-reporting") || !strings.HasSuffix(madeOn, "+free-page-reporting") {
+			t.Fatalf("runtimes for %q: %q, %q", rootfs, madeOff, madeOn)
+		}
+	}
+}
+
+// A user template's snapshot made before free page reporting was turned on fails the restore check, and the create
+// boots afresh; one made with it restores.
+func TestTemplateSnapshotNeedsTheReportingBalloon(t *testing.T) {
+	m, _ := testManager(t)
+	size := proto.Size{VCPUs: 2, MemoryMiB: 2048, DiskGiB: 10}
+	write := func(id, runtime string) {
+		t.Helper()
+		dir := m.templateSnapshotDir(id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		meta := templateSnapshotMeta{SnapshotID: id, Rootfs: m.cfg.Rootfs, Runtime: runtime, VCPUs: 2, MemoryMiB: 2048, DiskGiB: 10}
+		raw, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("tsn_before", m.runtimeFingerprint(m.cfg.Rootfs))
+	m.cfg.FreePageReporting = true
+	write("tsn_after", m.runtimeFingerprint(m.cfg.Rootfs))
+	if _, err := m.restorableTemplateSnapshot("tsn_before", size); err == nil || !strings.Contains(err.Error(), "balloon") {
+		t.Fatalf("a snapshot without the reporting balloon: %v", err)
+	}
+	if _, err := m.restorableTemplateSnapshot("tsn_after", size); err != nil && strings.Contains(err.Error(), "balloon") {
+		t.Fatalf("a snapshot with it: %v", err)
 	}
 }

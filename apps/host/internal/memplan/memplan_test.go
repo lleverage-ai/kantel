@@ -105,6 +105,48 @@ func TestChecksFitByUse(t *testing.T) {
 		r.GuestUsedMiB != 8*3*gib || r.ResidentMiB != 8*6*gib || r.State != "ok" || r.MaxRatio != 2.5 || r.CapacityMiB != capacity {
 		t.Fatalf("report %+v", r)
 	}
+	// What it admits against, for the control plane to count what it places before the next report: the cap's room,
+	// and committed memory's (the smaller of its capacity's and the machine's room).
+	a := r.Admission
+	if a == nil || a.ReservableMiB != int64(2.5*float64(capacity))-8*check || a.StartMiB != 1024 || a.HeadroomMiB != 1024 ||
+		a.HeadroomPercent != 25 {
+		t.Fatalf("admission %+v", a)
+	}
+	p.mu.Lock()
+	wantRoom := min(capacity-r.CommittedMiB, p.roomLocked(vms))
+	p.mu.Unlock()
+	if a.CommittableMiB != max(0, wantRoom) {
+		t.Fatalf("committable %d, want %d", a.CommittableMiB, wantRoom)
+	}
+	// Off, none.
+	if New(Settings{}, capacity, reserve, 1.5).Report(vms, 0).Admission != nil {
+		t.Fatal("admission reported with over-commit off")
+	}
+}
+
+// A VM a sample couldn't read (an operation holds it) keeps its last reading, still the guard's candidate, and adds
+// nothing to its peak; one never read stays unknown.
+func TestHeldReadings(t *testing.T) {
+	p := New(on(), capacity, reserve, 1.5)
+	p.Observe(t0, []Reading{{ID: "a", UsedMiB: 2 * gib, RSSMiB: 3 * gib, Guest: true, Pid: 7}}, idle(125*gib))
+	p.Observe(t0.Add(5*time.Second), []Reading{{ID: "a", Held: true}, {ID: "b", Held: true}}, idle(125*gib))
+	got := p.Readings()
+	if len(got) != 1 || got[0].ID != "a" || got[0].RSSMiB != 3*gib || got[0].Pid != 7 {
+		t.Fatalf("readings %+v", got)
+	}
+	if n := len(p.vms["a"].points); n != 1 {
+		t.Fatalf("a held VM added to its peak: %d points", n)
+	}
+	// Gone from a sample (stopped), it is no candidate.
+	p.Observe(t0.Add(10*time.Second), nil, idle(125*gib))
+	if got := p.Readings(); len(got) != 0 {
+		t.Fatalf("readings %+v", got)
+	}
+	// Held again after that, it stays gone: its last reading isn't of now.
+	p.Observe(t0.Add(15*time.Second), []Reading{{ID: "a", Held: true}}, idle(125*gib))
+	if got := p.Readings(); len(got) != 0 {
+		t.Fatalf("readings %+v", got)
+	}
 }
 
 // A higher cap lets committed memory decide: ten idle checks VMs count 110 GiB of the 110.8.

@@ -236,7 +236,7 @@ describe("hosts service", () => {
 	});
 
 	it("shows a host's memory as its latest heartbeat reports it, and drops a report that isn't one", async () => {
-		const { service, join } = await setup();
+		const { service, join, store } = await setup();
 		const a = await join("a");
 		const host = new FakeHost(service, a.hostId);
 		host.connect();
@@ -263,6 +263,27 @@ describe("hosts service", () => {
 		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, memory } } });
 		await tick();
 		expect((await service.get(a.hostId)).memory).toEqual(memory);
+		// What it admits against is the scheduler's: kept with its capacity, not shown; one that isn't is left out.
+		const admission = {
+			reservableMiB: 26_000,
+			committableMiB: 9_000,
+			startMiB: 1024,
+			headroomMiB: 1024,
+			headroomPercent: 25,
+		};
+		for (const [sent, kept] of [
+			[admission, admission],
+			[{ ...admission, committableMiB: -5 }, undefined],
+		] as const) {
+			host.send({
+				type: "heartbeat",
+				heartbeat: { capacity: { ...capacity, memory: { ...memory, admission: sent } } },
+			});
+			await tick();
+			expect((await service.get(a.hostId)).memory).toEqual(memory);
+			const stored = (await store.getHost(a.hostId))?.capacity as { memory?: { admission?: unknown } } | undefined;
+			expect(stored?.memory?.admission).toEqual(kept);
+		}
 		// A mode it doesn't know, or a figure that isn't one, is left out; the rest of the heartbeat still stands.
 		for (const wrong of [
 			{ ...memory, mode: "guessed" },

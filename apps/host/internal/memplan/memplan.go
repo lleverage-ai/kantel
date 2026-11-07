@@ -142,6 +142,9 @@ type Reading struct {
 	Guest   bool
 	Pid     int
 	SizeMiB int64
+	// Held is a VM the sample couldn't read (an operation holds it): it keeps its last reading, still a candidate for
+	// the guard, and adds no point to its peak.
+	Held bool
 }
 
 type point struct {
@@ -209,6 +212,12 @@ func (p *Plan) Observe(at time.Time, readings []Reading, host hostinfo.Memory) {
 	cutoff := at.Add(-p.window())
 	for _, r := range readings {
 		h := p.vms[r.ID]
+		if r.Held {
+			if h != nil && h.seen.Equal(p.vmsAt) {
+				h.seen = at
+			}
+			continue
+		}
 		if h == nil {
 			h = &history{}
 			p.vms[r.ID] = h
@@ -412,12 +421,7 @@ func (p *Plan) roomLocked(vms []VM) int64 {
 func (p *Plan) Free(vms []VM, otherMiB int64) int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.level >= LevelRefusing {
-		return 0
-	}
-	reserved, committed := p.totalsLocked(vms, otherMiB)
-	byRatio := int64(p.settings.MaxRatio*float64(p.capacityMiB)) - reserved
-	room := min(p.capacityMiB-committed, p.roomLocked(vms))
+	byRatio, room := p.spareLocked(vms, otherMiB)
 	if byRatio <= 0 || room <= 0 {
 		return 0
 	}
@@ -432,6 +436,18 @@ func (p *Plan) Free(vms []VM, otherMiB int64) int64 {
 		}
 	}
 	return lo
+}
+
+// spareLocked is what reservations may still grow by (byRatio) and what committed memory may (room), with over-commit
+// on; none while refusing.
+func (p *Plan) spareLocked(vms []VM, otherMiB int64) (byRatio, room int64) {
+	if p.level >= LevelRefusing {
+		return 0, 0
+	}
+	reserved, committed := p.totalsLocked(vms, otherMiB)
+	byRatio = int64(p.settings.MaxRatio*float64(p.capacityMiB)) - reserved
+	room = min(p.capacityMiB-committed, p.roomLocked(vms))
+	return byRatio, room
 }
 
 // Report is the host's memory for its capacity report: vms (what the microVM tier holds) and otherMiB (the other
@@ -451,6 +467,14 @@ func (p *Plan) Report(vms []VM, otherMiB int64) proto.MemoryReport {
 	}
 	if p.settings.Enabled {
 		r.Mode, r.MaxRatio = proto.MemoryModeUsed, p.settings.MaxRatio
+		byRatio, room := p.spareLocked(vms, otherMiB)
+		r.Admission = &proto.MemoryAdmission{
+			ReservableMiB:   max(0, byRatio),
+			CommittableMiB:  max(0, room),
+			StartMiB:        p.settings.StartMiB,
+			HeadroomMiB:     p.settings.HeadroomMiB,
+			HeadroomPercent: p.settings.HeadroomPercent,
+		}
 	}
 	for _, vm := range vms {
 		if h := p.vms[vm.ID]; vm.ID != "" && h != nil && h.seen.Equal(p.vmsAt) {

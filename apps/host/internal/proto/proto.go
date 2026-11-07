@@ -346,6 +346,21 @@ type MemoryReport struct {
 	State string `json:"state"`
 	// MeasuredAt is when the machine's figures were read (Unix ms); 0 before they first were.
 	MeasuredAt int64 `json:"measuredAt,omitempty"`
+	// Admission, with Mode MemoryModeUsed, is what the host admits against, which the control plane counts what it
+	// places before the next report against (Capacity.FreeMemoryMiB is then the largest single microVM, not additive).
+	Admission *MemoryAdmission `json:"admission,omitempty"`
+}
+
+// MemoryAdmission is what a host admitting by use (memory over-commit) has left, in admission units: ReservableMiB of
+// sizes before its cap (maxRatio), and CommittableMiB of committed memory. A new microVM of size S costs S of the
+// first and min(S, StartMiB + headroom(S)) of the second, headroom(S) = min(S, max(HeadroomMiB, S * HeadroomPercent /
+// 100)); a template build costs S of both (memplan).
+type MemoryAdmission struct {
+	ReservableMiB   int64   `json:"reservableMiB"`
+	CommittableMiB  int64   `json:"committableMiB"`
+	StartMiB        int64   `json:"startMiB"`
+	HeadroomMiB     int64   `json:"headroomMiB"`
+	HeadroomPercent float64 `json:"headroomPercent"`
 }
 
 // DiskUsage is what takes the space on the filesystem holding a host's Root, in bytes, counting only files on that

@@ -14,6 +14,7 @@ import {
 	parseMountStatuses,
 	storedCapacity,
 	storedFacts,
+	withoutAdmission,
 } from "./facts.ts";
 import {
 	type CallOptions,
@@ -60,7 +61,9 @@ import {
 	type ReleaseCheck,
 } from "./releases.ts";
 import {
+	buildFitsOn,
 	type Candidate,
+	type HeldMemory,
 	hostSizeNamed,
 	isRefusal,
 	makesCustomShapes,
@@ -174,7 +177,7 @@ export interface HostView {
 	/** What takes the space on its disk, from its latest heartbeat that measured it (`HostDiskUsage`). */
 	readonly diskUsage?: HostDiskUsage;
 	/** Its memory, from its latest report. */
-	readonly memory?: HostMemoryReport;
+	readonly memory?: Omit<HostMemoryReport, "admission">;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -658,6 +661,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return {
 			memoryMiB: held.reduce((sum, entry) => sum + entry.memoryMiB, 0),
 			diskGiB: held.reduce((sum, entry) => sum + entry.diskGiB, 0),
+			// As the host counts them (`freeMemoryOn`): a build in full.
+			memory: [
+				...live.map((entry) => ({ memoryMiB: entry.memoryMiB })),
+				...[...(builds?.values() ?? [])].map((entry) => ({ memoryMiB: entry.memoryMiB, build: true })),
+			] satisfies HeldMemory[],
 		};
 	};
 	/** When each host's last invalid usage tick was logged. */
@@ -1093,7 +1101,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			},
 			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
 			...(reported?.disk === undefined ? {} : { diskUsage: { ...reported.disk } }),
-			...(reported?.memory === undefined ? {} : { memory: { ...reported.memory } }),
+			...(reported?.memory === undefined ? {} : { memory: withoutAdmission(reported.memory) }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),
@@ -1307,7 +1315,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const held = reservedOn(host);
 		if (
 			capacity === undefined ||
-			capacity.freeMemoryMiB - held.memoryMiB < shape.memoryMiB ||
+			!buildFitsOn(capacity, held.memory, shape.memoryMiB) ||
 			capacity.freeDiskGiB - held.diskGiB < shape.diskGiB
 		) {
 			throw placementError(
@@ -1554,6 +1562,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							connected: hub.connected(host.id),
 							reservedMemoryMiB: held.memoryMiB,
 							reservedDiskGiB: held.diskGiB,
+							heldMemory: held.memory,
 							owners: new Set(
 								placements
 									.filter((placement) => placement.tier === "isolate" && placement.owner !== undefined)

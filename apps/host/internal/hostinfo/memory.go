@@ -76,16 +76,33 @@ func (p memoryPaths) read() Memory {
 		}
 		m.GroupLimitHits = readKeyed(filepath.Join(dir, "memory.events"))["max"]
 	}
-	if dir, limit := p.limitedGroup(); dir != "" && (m.TotalMiB == 0 || limit < m.TotalMiB) {
+	groups := p.limitedGroups()
+	if len(groups) == 0 {
+		return m
+	}
+	// Every limit above it bounds what it can still have: a larger one shared with siblings may have the least left.
+	available := m.AvailableMiB
+	for _, g := range groups {
+		current := readNumber(filepath.Join(g.dir, "memory.current")) >> 20
+		stat := readKeyed(filepath.Join(g.dir, "memory.stat"))
+		available = min(available, max(0, g.limitMiB-current+stat["inactive_file"]>>20), g.limitMiB)
+	}
+	// The smallest is its total, and has its swap and pressure.
+	dir, limit := groups[0].dir, groups[0].limitMiB
+	for _, g := range groups[1:] {
+		if g.limitMiB < limit {
+			dir, limit = g.dir, g.limitMiB
+		}
+	}
+	if m.TotalMiB == 0 || limit < m.TotalMiB {
 		m.Limited = true
 		m.TotalMiB = limit
-		current := readNumber(filepath.Join(dir, "memory.current")) >> 20
-		stat := readKeyed(filepath.Join(dir, "memory.stat"))
-		available := max(0, limit-current+stat["inactive_file"]>>20)
-		m.AvailableMiB = min(available, limit, m.AvailableMiB)
+		m.AvailableMiB = available
 		m.SwapUsedMiB = readNumber(filepath.Join(dir, "memory.swap.current")) >> 20
 		m.SwapOutPages = 0
 		m.PressureSome, m.PressureFull = readPressure(filepath.Join(dir, "memory.pressure"))
+	} else {
+		m.AvailableMiB = available
 	}
 	return m
 }
@@ -185,14 +202,21 @@ func (p memoryPaths) ownGroup() string {
 	return ""
 }
 
-// limitedGroup is the control group, of this process's and the ones above it (cgroup v2), with the smallest memory
-// limit, and that limit in MiB; "" when none has one. Inside a container the group's namespace shows the container's
-// own group as the root, whose memory.max is the container's limit.
-func (p memoryPaths) limitedGroup() (dir string, limitMiB int64) {
+// limitedGroup is a control group with a memory limit, in MiB.
+type limitedGroup struct {
+	dir      string
+	limitMiB int64
+}
+
+// limitedGroups are the control groups, of this process's and the ones above it (cgroup v2), with a memory limit, its
+// own first; none when none has one. Inside a container the group's namespace shows the container's own group as the
+// root, whose memory.max is the container's limit.
+func (p memoryPaths) limitedGroups() []limitedGroup {
 	path := p.ownGroup()
 	if path == "" {
-		return "", 0
+		return nil
 	}
+	var out []limitedGroup
 	var confined int64
 	if p.confined != "" {
 		confined = readNumber(p.confined)
@@ -202,13 +226,11 @@ func (p memoryPaths) limitedGroup() (dir string, limitMiB int64) {
 		if raw, err := os.ReadFile(filepath.Join(candidate, "memory.max")); err == nil {
 			// The limit ConfineMemory set on the host's own group is its own doing, not the machine's memory.
 			if n, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); err == nil && n > 0 && !(at == path && n == confined) {
-				if mib := n >> 20; dir == "" || mib < limitMiB {
-					dir, limitMiB = candidate, mib
-				}
+				out = append(out, limitedGroup{dir: candidate, limitMiB: n >> 20})
 			}
 		}
 		if at == "/" {
-			return dir, limitMiB
+			return out
 		}
 	}
 }

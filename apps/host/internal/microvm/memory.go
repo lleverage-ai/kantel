@@ -75,17 +75,62 @@ func (m *Manager) runningMachine(id string) (*sandbox, *fc.Machine, error) {
 	return s, s.machine, nil
 }
 
+// reclaim is a Reclaim under way on a sandbox (sandbox.reclaiming): cancel ends it early, and done is closed once its
+// balloon has been given back.
+type reclaim struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// endReclaimLocked ends a Reclaim under way on s, and waits until its balloon has been given back, so what is about to
+// pause or snapshot the VM doesn't keep it inflated. Called with s.mu held.
+func (s *sandbox) endReclaimLocked() {
+	if r := s.reclaiming; r != nil {
+		r.cancel()
+		<-r.done
+		s.reclaiming = nil
+	}
+}
+
 // Reclaim takes page cache back from a running sandbox's guest through its balloon: it sets the balloon's target to
 // what the guest has available less a margin, so the guest drops page cache to fill it and Firecracker frees those
 // pages on the host, waits until it is filled (or reclaimHold), then gives it all back. The guest gets back empty
-// pages, which take no host memory until it uses them again. It answers how much the balloon took, in MiB. It holds
-// the sandbox's lock throughout, so no snapshot or stop sees the balloon inflated.
+// pages, which take no host memory until it uses them again. It answers how much the balloon took, in MiB.
+//
+// It doesn't hold the sandbox's lock while it waits, so the usage sampler goes on reading the VM and the guard's
+// out-of-memory step can act on it at once; a stop or snapshot ends it first (endReclaimLocked), so none sees the
+// balloon inflated.
 func (m *Manager) Reclaim(ctx context.Context, id string) (int64, error) {
 	s, machine, err := m.runningMachine(id)
 	if err != nil {
 		return 0, err
 	}
-	defer s.mu.Unlock()
+	if s.reclaiming != nil {
+		s.mu.Unlock()
+		return 0, conflict("sandbox %s is being reclaimed from already", id)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	r := &reclaim{cancel: cancel, done: make(chan struct{})}
+	s.reclaiming = r
+	s.mu.Unlock()
+	var inflated bool
+	defer func() {
+		cancel()
+		if inflated {
+			// Always given back, even when ctx has ended.
+			release, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := fc.SetBalloon(release, machine.Dir, 0); err != nil {
+				m.log.Warn("could not deflate a sandbox's balloon after reclaiming", "sandbox", id, "err", err)
+			}
+			cancel()
+		}
+		close(r.done)
+		s.mu.Lock()
+		if s.reclaiming == r {
+			s.reclaiming = nil
+		}
+		s.mu.Unlock()
+	}()
 	dir := machine.Dir
 	stats, err := fc.ReadBalloonStats(ctx, dir)
 	if err != nil {
@@ -100,18 +145,12 @@ func (m *Manager) Reclaim(ctx context.Context, id string) (int64, error) {
 	if target <= 0 {
 		return 0, nil
 	}
+	// Inflated from here: an error setting it may still have reached Firecracker.
+	inflated = true
 	if err := fc.SetBalloon(ctx, dir, target); err != nil {
 		return 0, err
 	}
 	var took int64
-	defer func() {
-		// Always given back, even when ctx has ended.
-		release, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := fc.SetBalloon(release, dir, 0); err != nil {
-			m.log.Warn("could not deflate a sandbox's balloon after reclaiming", "sandbox", id, "err", err)
-		}
-	}()
 	deadline := time.Now().Add(reclaimHold)
 	for time.Now().Before(deadline) {
 		select {
@@ -136,10 +175,22 @@ func (m *Manager) Reclaim(ctx context.Context, id string) (int64, error) {
 // OutOfMemory has a running sandbox's guest run its kernel's OOM killer (sysrq f), which kills its largest process:
 // the guest's memory watch (#772) tells a command running then that the sandbox ran out of memory, and, with free page
 // reporting, the memory it frees goes back to the host.
-func (m *Manager) OutOfMemory(ctx context.Context, id string) error {
-	client, err := m.running(id)
+//
+// pid is the Firecracker process the guard chose: a sandbox whose VM has been replaced since (a recovery) is left
+// alone, answering ErrMachineChanged.
+func (m *Manager) OutOfMemory(ctx context.Context, id string, pid int) error {
+	s, machine, err := m.runningMachine(id)
 	if err != nil {
 		return err
+	}
+	client := s.guest
+	same := pid > 0 && machine.Pid() == pid
+	s.mu.Unlock()
+	if !same {
+		return ErrMachineChanged
+	}
+	if client == nil {
+		return conflict("sandbox %s has no guest agent", id)
 	}
 	ctx, cancel := context.WithTimeout(ctx, outOfMemoryTimeout)
 	defer cancel()
@@ -155,19 +206,25 @@ func (m *Manager) OutOfMemory(ctx context.Context, id string) error {
 	return nil
 }
 
-// KillForMemory ends a running sandbox's VM, which then stops with KilledForMemory as its error: the guard's last step,
-// when its guest couldn't free enough.
-func (m *Manager) KillForMemory(id string) error {
+// ErrMachineChanged answers a guard's step against a VM a sandbox no longer runs: it was replaced (a recovery), and the
+// step is dropped.
+var ErrMachineChanged = errors.New("the sandbox's VM has been replaced since")
+
+// KillForMemory ends a running sandbox's VM, the Firecracker process pid the guard chose, which then stops with
+// KilledForMemory as its error: the guard's last step, when its guest couldn't free enough. A sandbox whose VM has been
+// replaced since is left alone (ErrMachineChanged).
+func (m *Manager) KillForMemory(id string, pid int) error {
 	s, machine, err := m.runningMachine(id)
 	if err != nil {
 		return err
 	}
-	pid := machine.Pid()
-	s.killedFor = KilledForMemory
-	s.mu.Unlock()
-	if pid <= 0 {
-		return errors.New("no VM process")
+	if pid <= 0 || machine.Pid() != pid {
+		s.mu.Unlock()
+		return ErrMachineChanged
 	}
+	// Killed with the lock held, so the exit watcher, which takes it, attributes this exit to this machine.
+	defer s.mu.Unlock()
+	s.killedFor, s.killed = KilledForMemory, machine
 	m.log.Warn("stopping a sandbox's VM: the host is short of memory", "sandbox", id, "pid", pid)
 	return syscall.Kill(pid, syscall.SIGKILL)
 }

@@ -308,9 +308,12 @@ type sandbox struct {
 	healthAt int64
 	// probe stands in for its guest agent's health in a test (nil: its guest).
 	probe healthClient
-	// killedFor is why the host itself ended its VM (memory.go: KillForMemory), the error its exit is reported with;
-	// "" when it didn't.
+	// killedFor is why the host itself ended the VM killed (memory.go: KillForMemory), the error that machine's exit is
+	// reported with; "" when it didn't.
 	killedFor string
+	killed    *fc.Machine
+	// reclaiming is a Reclaim under way (memory.go), which a stop or snapshot ends first.
+	reclaiming *reclaim
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -1014,6 +1017,10 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 		<-machine.Done()
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		killedFor := ""
+		if s.killed == machine {
+			killedFor, s.killedFor, s.killed = s.killedFor, "", nil
+		}
 		if s.machine != machine {
 			return
 		}
@@ -1032,8 +1039,8 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 		s.meta.State = proto.StateStopped
 		s.meta.Memory = false
 		s.meta.Error = "the VM exited"
-		if s.killedFor != "" {
-			s.meta.Error, s.killedFor = s.killedFor, ""
+		if killedFor != "" {
+			s.meta.Error = killedFor
 		} else if m.cfg.ExitCause != nil {
 			if why := m.cfg.ExitCause(); why != "" {
 				s.meta.Error = why
@@ -2541,6 +2548,8 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	}
 	t.step("sync", &start)
 	s.guest.Close()
+	// Its balloon given back first, so its memory isn't saved inflated.
+	s.endReclaimLocked()
 	machine := s.machine
 	if err := machine.Pause(ctx); err != nil {
 		// Its Firecracker doesn't answer (its API socket refused after a reconnect, say): stopped cold, its disk as a
@@ -3093,6 +3102,8 @@ const resumeTries = 3
 // each within resumeWait whatever ctx says; a VM that still won't resume is killed, so it is stopped (with its disk) as
 // an exited VM is, rather than left frozen while it is reported running, and resume says so. Called with s.mu held.
 func (m *Manager) pauseMachine(ctx context.Context, s *sandbox) (resume func() error, err error) {
+	// Its balloon given back first, so a snapshot doesn't save it inflated.
+	s.endReclaimLocked()
 	machine := s.machine
 	resume = func() error {
 		var err error

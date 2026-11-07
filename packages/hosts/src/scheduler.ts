@@ -16,7 +16,7 @@
  * preferred for having one ready: a create restores a snapshot wherever it lands.
  */
 import type { PlacementReason } from "@kantel/contracts";
-import { HOST_FEATURES, type HostDiskLimits, type HostSize, type SandboxTier } from "./protocol.ts";
+import { HOST_FEATURES, type HostCapacity, type HostDiskLimits, type HostSize, type SandboxTier } from "./protocol.ts";
 import type { HostRecord } from "./store.ts";
 
 /**
@@ -51,6 +51,8 @@ export interface Candidate {
 	/** Placed since its last report, not yet in its capacity. */
 	readonly reservedMemoryMiB: number;
 	readonly reservedDiskGiB: number;
+	/** What `reservedMemoryMiB` is made of (`freeMemoryOn`); absent, one sandbox of all of it. */
+	readonly heldMemory?: readonly HeldMemory[];
 	/** Owners with an isolate on the host. */
 	readonly owners: ReadonlySet<string>;
 }
@@ -176,6 +178,63 @@ const asked = (request: PlacementRequest): string =>
 					request.shape.diskGiB === undefined ? "" : ` with a ${request.shape.diskGiB} GiB disk`
 				}`;
 
+/** Memory placed on a host (or building there) that its last report doesn't count yet: a build's counts in full. */
+export interface HeldMemory {
+	readonly memoryMiB: number;
+	readonly build?: boolean;
+}
+
+/**
+ * The memory a host has free for one more sandbox, given what was placed on it (or is building there) since its last
+ * report. A host admitting by what sandboxes were given says what it has free, less what is held. One admitting by use
+ * (memory over-commit) says the largest single microVM it would admit, which isn't additive: what is held is charged
+ * against what it admits against (`HostMemoryAdmission`) in its own units, a new microVM at its size of what may be
+ * reserved and its starting commitment of what may be committed, a build in full of both, and what is free is the
+ * largest size that still fits both, at most what it said.
+ */
+export function freeMemoryOn(capacity: HostCapacity, held: readonly HeldMemory[]): number {
+	const left = admissionLeft(capacity, held);
+	if (left === undefined) return capacity.freeMemoryMiB - held.reduce((sum, entry) => sum + entry.memoryMiB, 0);
+	if (held.length === 0) return capacity.freeMemoryMiB;
+	const { reservable, committable, commit } = left;
+	if (reservable <= 0 || committable <= 0) return 0;
+	// A commitment grows with size: the largest size whose commitment fits, at most what may be reserved.
+	let lo = 0;
+	let hi = Math.min(reservable, capacity.freeMemoryMiB);
+	while (lo < hi) {
+		const mid = lo + Math.ceil((hi - lo) / 2);
+		if (commit(mid) <= committable) lo = mid;
+		else hi = mid - 1;
+	}
+	return lo;
+}
+
+/**
+ * Whether a template build of `memoryMiB` fits on a host beside what is `held` there: by use, it counts in full of what
+ * may be reserved and committed both.
+ */
+export function buildFitsOn(capacity: HostCapacity, held: readonly HeldMemory[], memoryMiB: number): boolean {
+	const left = admissionLeft(capacity, held);
+	if (left === undefined) return freeMemoryOn(capacity, held) >= memoryMiB;
+	return left.reservable >= memoryMiB && left.committable >= memoryMiB;
+}
+
+/** What a host admitting by use has left with `held` charged in its units (`HostMemoryAdmission`); else undefined. */
+function admissionLeft(capacity: HostCapacity, held: readonly HeldMemory[]) {
+	const admission = capacity.memory?.mode === "used" ? capacity.memory.admission : undefined;
+	if (admission === undefined) return undefined;
+	const headroom = (size: number) =>
+		Math.min(size, Math.max(admission.headroomMiB, Math.floor((size * admission.headroomPercent) / 100)));
+	const commit = (size: number) => Math.min(size, admission.startMiB + headroom(size));
+	return {
+		reservable: admission.reservableMiB - held.reduce((sum, entry) => sum + entry.memoryMiB, 0),
+		committable:
+			admission.committableMiB -
+			held.reduce((sum, entry) => sum + (entry.build === true ? entry.memoryMiB : commit(entry.memoryMiB)), 0),
+		commit,
+	};
+}
+
 export function place(request: PlacementRequest, candidates: readonly Candidate[]): Placement | Refusal {
 	const reasons = new Set<string>();
 	let stage = 0;
@@ -231,7 +290,10 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			turnedAway("labels don't match", "no_host_with_labels");
 			continue;
 		}
-		const freeMemory = capacity.freeMemoryMiB - candidate.reservedMemoryMiB;
+		const freeMemory = freeMemoryOn(
+			capacity,
+			candidate.heldMemory ?? (candidate.reservedMemoryMiB > 0 ? [{ memoryMiB: candidate.reservedMemoryMiB }] : []),
+		);
 		const freeDisk = capacity.freeDiskGiB - candidate.reservedDiskGiB;
 		if (freeMemory < size.memoryMiB) {
 			turnedAway("full", "insufficient_capacity");
