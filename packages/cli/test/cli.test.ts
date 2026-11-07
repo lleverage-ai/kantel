@@ -465,6 +465,24 @@ describe("retries", () => {
 		expect(result.slept).toEqual([]);
 	});
 
+	it("saves a snapshot with the least memory a sandbox made from it may have, in GB", async () => {
+		const routes = {
+			"POST /v1/snapshots": () => ({ id: "snap_1", name: "checks", kind: "saved", minMemoryMb: 16_384 }),
+		};
+		const saved = await kantel(["snapshot", "save", "sbx_test1", "checks", "--min-memory", "16"], { routes });
+		expect(saved.code).toBe(0);
+		expect(saved.calls[0]?.body).toMatchObject({ sandboxId: "sbx_test1", name: "checks", minMemoryMb: 16_384 });
+		const cleared = await kantel(["snapshot", "save", "sbx_test1", "checks", "--replace", "--min-memory", "0"], {
+			routes,
+		});
+		expect(cleared.calls[0]?.body).toMatchObject({ replace: true, minMemoryMb: 0 });
+		const plain = await kantel(["snapshot", "save", "sbx_test1", "checks"], { routes });
+		expect(plain.calls[0]?.body).not.toHaveProperty("minMemoryMb");
+		const wrong = await kantel(["snapshot", "save", "sbx_test1", "checks", "--min-memory", "16GB"], { routes });
+		expect(wrong.code).toBe(2);
+		expect(wrong.calls).toEqual([]);
+	});
+
 	it("sends a call that takes no key once, however it fails", async () => {
 		const result = await kantel(["stop", "sbx_test1"], {
 			routes: {

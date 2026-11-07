@@ -2259,8 +2259,22 @@ const SECTIONS: readonly Section[] = [
 					label: SNAPSHOT_LABEL_FLAG,
 					snapshot: { type: "string", value: "<id>", description: "Save this snapshot of its history; default now" },
 					memory: { type: "boolean", description: MEMORY_FLAG },
+					"min-memory": {
+						type: "string",
+						value: "<GB>",
+						description:
+							"The least memory a sandbox made from it may have, such as 16 (0: none; a replace keeps its own)",
+					},
 				},
+				details:
+					"--min-memory makes Kantel refuse a sandbox made from it with less memory, before it starts one that\n" +
+					"would run out part of the way through: kantel snapshot save <id> monorepo-checks --min-memory 16, then\n" +
+					"kantel new --from monorepo-checks --vcpus 8 --memory 16.",
 				async run(ctx) {
+					const minMemory = ctx.string("min-memory");
+					if (minMemory !== undefined && !(/^\d+(\.\d+)?$/.test(minMemory) && Number(minMemory) >= 0)) {
+						throw new UsageError(`--min-memory is in GB, such as 16 or 0.5, not "${minMemory}"`);
+					}
 					const snapshot = await (await ctx.client()).saveSnapshot({
 						sandboxId: ctx.arg(0),
 						name: ctx.arg(1),
@@ -2269,6 +2283,7 @@ const SECTIONS: readonly Section[] = [
 						labels: pairs(ctx.list("label"), "--label"),
 						replace: ctx.boolean("replace") ? true : undefined,
 						memory: ctx.boolean("memory") ? true : undefined,
+						...(minMemory === undefined ? {} : { minMemoryMb: Math.round(Number(minMemory) * 1024) }),
 					});
 					const name = snapshot.name ?? snapshot.id;
 					ctx.emit(snapshot, () =>

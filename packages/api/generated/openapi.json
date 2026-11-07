@@ -15738,6 +15738,12 @@
 						"type": "boolean",
 						"description": "Replace a saved snapshot of the same name."
 					},
+					"minMemoryMb": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 4194304,
+						"description": "The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none."
+					},
 					"memory": {
 						"type": "boolean",
 						"description": "Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is."
@@ -15970,6 +15976,11 @@
 					},
 					"resources": {
 						"$ref": "#/components/schemas/SandboxResources"
+					},
+					"minMemoryMb": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any."
 					},
 					"sizeBytes": {
 						"type": "integer",

@@ -1659,6 +1659,13 @@ export const Snapshot = Type.Object(
 		// from it gets it, unless it asks for another size.
 		size: Type.Optional(SandboxSizeName),
 		resources: Type.Optional(SandboxResources),
+		minMemoryMb: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description:
+					"A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any.",
+			}),
+		),
 		sizeBytes: Type.Optional(
 			Type.Integer({
 				description:
@@ -1731,6 +1738,14 @@ export const SaveSnapshotBody = Type.Object(
 		description: Type.Optional(Type.String({ maxLength: 500 })),
 		labels: Type.Optional(snapshotLabels),
 		replace: Type.Optional(Type.Boolean({ description: "Replace a saved snapshot of the same name." })),
+		minMemoryMb: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				maximum: 4_194_304,
+				description:
+					"The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none.",
+			}),
+		),
 		memory: Type.Optional(
 			Type.Boolean({
 				description:
