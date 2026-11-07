@@ -1540,6 +1540,7 @@ One of: `"private"` or `"organisation"`.
 | `snapshotId` | string | no | Save this snapshot of the sandbox's history. Default: its state now. |
 | `description` | string | no |  (at most 500 characters) |
 | `replace` | boolean | no | Replace a saved snapshot of the same name. |
+| `minMemoryMb` | integer | no | The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none. (minimum 0, maximum 4194304) |
 | `memory` | boolean | no | Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is. |
 
 ### ScanSeverity
@@ -1616,6 +1617,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `memory` | boolean | yes | Whether it holds the sandbox's memory as well as its disk (a pause). |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
+| `minMemoryMb` | integer | no | A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any. (minimum 1) |
 | `sizeBytes` | integer | no | The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. |
 | `uses` | integer | no | How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. (minimum 0) |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
