@@ -10,13 +10,13 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFile, mkdtemp, rm, stat, utimes } from "node:fs/promises";
+import { copyFile, mkdtemp, realpath, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, posix, resolve } from "node:path";
+import { join, posix, relative, resolve, sep } from "node:path";
 import { gzipSync } from "node:zlib";
 import { KantelApiError, type KantelClient, type Sandbox } from "@kantel/api/sdk";
 import { CliError } from "./errors.ts";
-import { defaultExclude, PART, type Skipped } from "./transfer.ts";
+import { excludedUnder, PART, rootContexts, type Skipped, within } from "./transfer.ts";
 
 /** The snapshot label that names a checkout's base commit, as the saved-snapshots guide suggests. */
 export const BASE_LABEL = "git.base";
@@ -168,12 +168,19 @@ export interface LocalPatch {
  * The patch from `base` to the working tree at `top`: tracked changes (deletions and mode changes included) and the
  * new files `.gitignore` doesn't leave out, staged in a copy of the index so yours stays as it is. With
  * `defaultExcludes`, the files push leaves out stay at the base's version: credentials, and untracked agents'
- * sign-ins, `.npmrc` and `.env` files. A repository of its own inside the tree isn't sent.
+ * sign-ins, `.npmrc` and `.env` files, classified under `contexts` as push does ({@link rootContexts}). Files in
+ * `keep` (absolute directories, such as Kantel's config) stay at the base's version whatever the excludes. A
+ * repository of its own inside the tree isn't sent.
  */
 export async function buildPatch(
 	top: string,
 	base: string,
-	options: { readonly defaultExcludes: boolean },
+	options: {
+		readonly defaultExcludes: boolean;
+		readonly keep?: readonly string[];
+		/** What leads to `top`; default its own name, as a repository's top is named. */
+		readonly contexts?: readonly string[];
+	},
 ): Promise<LocalPatch> {
 	const scratch = await mkdtemp(join(tmpdir(), "kantel-sync-"));
 	const index = join(scratch, "index");
@@ -205,28 +212,41 @@ export async function buildPatch(
 			});
 		}
 		let tree = (await gitOut(top, ["write-tree"], { env })).toString("utf8").trim();
-		const diffArgs = ["diff-tree", "-r", "--no-renames", "-z", "--name-only", base, tree];
-		let changed = lines0(await gitOut(top, diffArgs, { env }));
-		if (options.defaultExcludes) {
-			const fresh = new Set(untracked);
-			const back: string[] = [];
-			for (const path of changed) {
-				const found = defaultExclude(path, !fresh.has(path));
-				if (found === undefined) continue;
-				back.push(path);
-				skipped.set(found.path, found);
-			}
-			if (back.length > 0) {
-				// Back to the base's version, or out of the index where the base has none.
-				await gitOut(top, ["reset", "-q", base, "--pathspec-from-file=-", "--pathspec-file-nul"], {
-					env,
-					input: `${back.join("\0")}\0`,
-				});
-				tree = (await gitOut(top, ["write-tree"], { env })).toString("utf8").trim();
-				changed = lines0(
-					await gitOut(top, ["diff-tree", "-r", "--no-renames", "-z", "--name-only", base, tree], { env }),
-				);
-			}
+		const changedIn = async (to: string): Promise<string[]> =>
+			lines0(await gitOut(top, ["diff-tree", "-r", "--no-renames", "-z", "--name-only", base, to], { env }));
+		let changed = await changedIn(tree);
+		const contexts = options.contexts ?? (await rootContexts(top, top));
+		// The kept directories as paths in the repository, from where they resolve: `.config/kantel`.
+		const realTop = await realpath(top);
+		const kept: string[] = [];
+		for (const directory of options.keep ?? []) {
+			const real = await realpath(directory).catch(() => resolve(directory));
+			if (within(real, realTop)) kept.push(relative(realTop, real).split(sep).join("/"));
+		}
+		const keptBy = (path: string): string | undefined =>
+			kept.find((directory) => directory === "" || path === directory || path.startsWith(`${directory}/`));
+		const fresh = new Set(untracked);
+		const back: string[] = [];
+		for (const path of changed) {
+			const directory = keptBy(path);
+			const found =
+				directory !== undefined
+					? { path: directory || path, why: "Kantel's config, with your API key" }
+					: options.defaultExcludes
+						? excludedUnder(contexts, path, !fresh.has(path))
+						: undefined;
+			if (found === undefined) continue;
+			back.push(path);
+			skipped.set(found.path, found);
+		}
+		if (back.length > 0) {
+			// Back to the base's version, or out of the index where the base has none.
+			await gitOut(top, ["reset", "-q", base, "--pathspec-from-file=-", "--pathspec-file-nul"], {
+				env,
+				input: `${back.join("\0")}\0`,
+			});
+			tree = (await gitOut(top, ["write-tree"], { env })).toString("utf8").trim();
+			changed = await changedIn(tree);
 		}
 		const patch =
 			changed.length === 0
@@ -360,22 +380,36 @@ export function applyScript(options: {
 	);
 }
 
-/** Sends `content` to the sandbox in parts under `prefix`, a few at a time; answers how many. */
-async function sendParts(client: KantelClient, sandboxId: string, prefix: string, content: Buffer): Promise<number> {
+/**
+ * Sends `content` to the sandbox in parts under `prefix`, a few at a time; answers how many. After a part fails no
+ * more start, and every one under way lands or fails before it throws, so a clean-up after it removes the lot.
+ */
+export async function sendParts(
+	client: KantelClient,
+	sandboxId: string,
+	prefix: string,
+	content: Buffer,
+): Promise<number> {
 	const parts: Buffer[] = [];
 	for (let offset = 0; offset < content.length; offset += PART) parts.push(content.subarray(offset, offset + PART));
 	let next = 0;
+	let failure: { readonly error: unknown } | undefined;
 	const runners = Array.from({ length: Math.min(CONCURRENCY, parts.length) }, async () => {
-		while (next < parts.length) {
+		while (failure === undefined && next < parts.length) {
 			const at = next++;
-			await client.writeFile(sandboxId, {
-				path: `${prefix}-${String(at).padStart(6, "0")}`,
-				content: (parts[at] as Buffer).toString("base64"),
-				encoding: "base64",
-			});
+			try {
+				await client.writeFile(sandboxId, {
+					path: `${prefix}-${String(at).padStart(6, "0")}`,
+					content: (parts[at] as Buffer).toString("base64"),
+					encoding: "base64",
+				});
+			} catch (error) {
+				failure ??= { error };
+			}
 		}
 	});
 	await Promise.all(runners);
+	if (failure !== undefined) throw failure.error;
 	return parts.length;
 }
 
@@ -416,6 +450,9 @@ export async function syncGit(
 		readonly to: string;
 		readonly base?: string;
 		readonly defaultExcludes: boolean;
+		/** Directories whose files stay at the base's version whatever the excludes, such as Kantel's config. */
+		readonly keep?: readonly string[];
+		readonly contexts?: readonly string[];
 		readonly now?: () => number;
 	},
 ): Promise<Synced> {
@@ -443,7 +480,11 @@ export async function syncGit(
 	const chosen = chooseBase({ flag: options.base, checkout, label, sandboxId });
 	const probed = now();
 	const base = await resolveLocalBase(options.top, chosen);
-	const local = await buildPatch(options.top, base, { defaultExcludes: options.defaultExcludes });
+	const local = await buildPatch(options.top, base, {
+		defaultExcludes: options.defaultExcludes,
+		keep: options.keep,
+		contexts: options.contexts,
+	});
 	const patched = now();
 	const id = randomBytes(6).toString("hex");
 	const prefix = `/tmp/.kantel-sync-${id}`;

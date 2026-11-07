@@ -15,8 +15,10 @@ import {
 	chooseBase,
 	defaultCheckout,
 	resolveLocalBase,
+	sendParts,
 	syncGit,
 } from "../src/sync.ts";
+import { PART } from "../src/transfer.ts";
 
 const exec = promisify(execFile);
 
@@ -210,6 +212,36 @@ describe("the patch", () => {
 		const all = await buildPatch(local, base, { defaultExcludes: false });
 		expect(all.files).toBe(3);
 		expect(all.tree).toBe(await workingTree(local));
+	});
+
+	it("leaves Kantel's config at the base's version, whatever the excludes", async () => {
+		const { local, base } = await repositories();
+		const config = join(local, ".config", "kantel");
+		await mkdir(config, { recursive: true });
+		await writeFile(join(config, "config.json"), '{"apiKey":"ksk_secret"}\n');
+		await writeFile(join(local, ".config", "other.json"), "{}\n");
+		for (const defaultExcludes of [true, false]) {
+			const patch = await buildPatch(local, base, { defaultExcludes, keep: [config] });
+			expect(patch.patch.toString("utf8")).not.toContain("ksk_secret");
+			expect(patch.patch.toString("utf8")).toContain(".config/other.json");
+			expect(patch.skipped).toEqual([{ path: ".config/kantel", why: "Kantel's config, with your API key" }]);
+		}
+	});
+
+	it("classifies changes under the repository's own name, as push does: config.json in a .docker repository", async () => {
+		const docker = join(root, ".docker");
+		await mkdir(docker);
+		await git(docker, "init", "-q");
+		await writeFile(join(docker, "a.json"), "{}\n");
+		await git(docker, "add", "-A");
+		await git(docker, "commit", "-q", "-m", "base");
+		const base = await git(docker, "rev-parse", "HEAD");
+		await writeFile(join(docker, "config.json"), '{"auths":{"r":{"auth":"c2VjcmV0"}}}\n');
+		const patch = await buildPatch(docker, base, { defaultExcludes: true });
+		expect(patch.files).toBe(0);
+		expect(patch.skipped).toEqual([{ path: "config.json", why: "credentials", byDefault: true }]);
+		const all = await buildPatch(docker, base, { defaultExcludes: false });
+		expect(all.patch.toString("utf8")).toContain("c2VjcmV0");
 	});
 
 	it("leaves out a repository inside the tree", async () => {
@@ -413,6 +445,30 @@ describe("a sync", () => {
 				`^after the patch ${sandbox} in sbx_1 has tree [0-9a-f]{10}, not this working tree's [0-9a-f]{10}: A {2}extra\\.ts`,
 			),
 		);
+	});
+});
+
+describe("sending the patch", () => {
+	it("starts no part after one fails, and settles the rest before it throws", async () => {
+		let started = 0;
+		let settled = 0;
+		const fake = {
+			async writeFile(_id: string, body: { path: string }) {
+				started++;
+				const first = body.path.endsWith("-000000");
+				await new Promise((done) => setTimeout(done, first ? 5 : 30));
+				settled++;
+				if (first) throw new Error("part 0 failed");
+				return { path: body.path, size: 0 };
+			},
+		} as unknown as KantelClient;
+		const content = Buffer.alloc(PART * 20, 1);
+		await expect(sendParts(fake, "sbx_1", "/tmp/.kantel-sync-x", content)).rejects.toThrow("part 0 failed");
+		// The six that started at once all landed or failed before it threw, and none started after the failure.
+		expect(settled).toBe(started);
+		expect(started).toBe(6);
+		await new Promise((done) => setTimeout(done, 50));
+		expect(started).toBe(6);
 	});
 });
 

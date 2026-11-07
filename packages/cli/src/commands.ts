@@ -1978,6 +1978,10 @@ const SECTIONS: readonly Section[] = [
 						value: "<commit>",
 						description: "Diff against this commit, not the one the sandbox records",
 					},
+					"allow-home": {
+						type: "boolean",
+						description: "Sync a repository that is your home directory, or holds it, leaving Kantel's config out",
+					},
 					"no-default-excludes": {
 						type: "boolean",
 						description: "Send changed credentials, agents' sign-ins and .env files too",
@@ -1994,8 +1998,10 @@ const SECTIONS: readonly Section[] = [
 					"the patch with git apply --index and checks that git write-tree names the same tree on both sides.\n" +
 					"Anything else in the checkout (commits, changes, new files) is lost. A changed or new file push would\n" +
 					"leave out (credentials; untracked .claude, .codex, .cursor, .npmrc and .env files) stays at the base's\n" +
-					"version, named on stderr; --no-default-excludes sends it. The whole repository goes, whichever of its\n" +
-					"directories you name. Submodules' and Git LFS files' contents don't.",
+					"version, named on stderr; --no-default-excludes sends it. It refuses a repository as push refuses a\n" +
+					"directory (in Kantel's config, in .ssh and the like, or your home without --allow-home), and never sends\n" +
+					"Kantel's config. The whole repository goes, whichever of its directories you name. Submodules' and Git\n" +
+					"LFS files' contents don't.",
 				async run(ctx) {
 					if (!ctx.boolean("git")) {
 						throw new UsageError(
@@ -2006,12 +2012,25 @@ const SECTIONS: readonly Section[] = [
 					const dir = resolve(ctx.io.cwd, ctx.optional(1) ?? ".");
 					if (!(await isDirectory(dir))) throw new UsageError(`${dir} isn't a directory`);
 					const top = await repositoryTop(dir);
+					const defaultExcludes = !ctx.boolean("no-default-excludes");
+					// The whole repository goes, so push's checks apply to its top: not in Kantel's config or .ssh, not the
+					// home without --allow-home, and Kantel's config, where the repository holds it, always left out.
+					const config = await checkPushRoot(top, {
+						home: ctx.io.home,
+						configDir: ctx.io.configDir,
+						allowHome: ctx.boolean("allow-home"),
+						defaultExcludes,
+						inRepository: true,
+						verb: "sync",
+					});
 					const to = ctx.string("to");
 					const synced = await syncGit(await ctx.client(), sandboxId, {
 						top,
 						to: to === undefined ? defaultCheckout(top) : checkoutPath(to),
 						base: ctx.string("base"),
-						defaultExcludes: !ctx.boolean("no-default-excludes"),
+						defaultExcludes,
+						keep: config === undefined ? [] : [config],
+						contexts: await rootContexts(top, top),
 					});
 					for (const skipped of synced.skipped) ctx.note(`kantel: left out ${skipped.path} (${skipped.why})`);
 					if (synced.skipped.some((skipped) => skipped.byDefault === true) && !ctx.json) {

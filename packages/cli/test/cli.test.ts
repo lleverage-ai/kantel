@@ -2257,9 +2257,14 @@ describe("copying files", () => {
 	 * Syncs `local` into a microVM whose checkout is `checkout` on this machine: its files are written here and its
 	 * commands run here with sh. The sandbox was made from snap_1, labelled `labels`.
 	 */
-	async function synced(args: readonly string[], cwd: string, labels: Record<string, string> = {}) {
+	async function synced(
+		args: readonly string[],
+		cwd: string,
+		labels: Record<string, string> = {},
+		kantelConfig = join(configDir, "kantel"),
+	) {
 		return kantel(["sync", "sbx_test1", ...args], {
-			configDir: join(configDir, "kantel"),
+			configDir: kantelConfig,
 			cwd,
 			routes: {
 				"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm", source: { snapshotId: "snap_1" } }),
@@ -2338,6 +2343,88 @@ describe("copying files", () => {
 		expect(answer).toMatchObject({ sandboxId: "sbx_test1", path: checkout, base, baseSource: "label", files: 2 });
 		expect(answer.tree).toBe(git(checkout)("write-tree"));
 		expect(Object.keys(answer.timings)).toEqual(["probeMs", "patchMs", "uploadMs", "applyMs", "totalMs"]);
+	});
+
+	/** Runs git in `dir` as a test user. */
+	const gitIn =
+		(dir: string) =>
+		(...args: string[]): string =>
+			execFileSync(
+				"git",
+				["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
+				{
+					cwd: dir,
+					encoding: "utf8",
+				},
+			).trim();
+
+	/** A repository at `local` with one commit, and a clone of it at `checkout`, the sandbox's. */
+	async function cloned(local: string, checkout: string): Promise<string> {
+		await mkdir(local, { recursive: true });
+		await writeFile(join(local, "a.ts"), "1\n");
+		gitIn(local)("init", "-q");
+		gitIn(local)("add", "-A");
+		gitIn(local)("commit", "-q", "-m", "base");
+		gitIn(configDir)("clone", "-q", local, checkout);
+		return gitIn(local)("rev-parse", "HEAD");
+	}
+
+	it("sync refuses a repository as push refuses a directory, and never sends Kantel's config", async () => {
+		// The home is a repository, with Kantel's config in it.
+		const home = join(configDir, "home");
+		const checkout = join(configDir, "checkout");
+		const base = await cloned(home, checkout);
+		const config = join(home, ".config", "kantel");
+		await mkdir(config, { recursive: true });
+		await writeFile(join(config, "config.json"), '{"apiKey":"ksk_secret"}\n');
+		await writeFile(join(home, "a.ts"), "2\n");
+		const refused = await synced(["--git", "--to", checkout, "--base", base], home, {}, config);
+		expect(refused.code).toBe(1);
+		expect(refused.stderr).toContain("is your home directory: sync a project repository, or add --allow-home");
+		expect(refused.calls).toEqual([]);
+		const args = ["--git", "--to", checkout, "--base", base, "--allow-home", "--no-default-excludes"];
+		const result = await synced(args, join(home, ".config"), {}, config);
+		expect(result.code).toBe(0);
+		expect(result.stderr).toContain("kantel: left out .config/kantel (Kantel's config, with your API key)");
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("2\n");
+		await expect(stat(join(checkout, ".config", "kantel", "config.json"))).rejects.toThrow();
+		const sent = result.calls.filter((call) => call.method === "PUT").map((call) => (call.body as Written).content);
+		for (const part of sent) expect(Buffer.from(part, "base64").toString("latin1")).not.toContain("ksk_secret");
+
+		// A repository in .ssh, named from a directory in it.
+		const keys = join(configDir, ".ssh", "keys");
+		await cloned(keys, join(configDir, "keys-checkout"));
+		await mkdir(join(keys, "sub"));
+		const ssh = await synced(["--git", "sub"], keys);
+		expect(ssh.code).toBe(1);
+		expect(ssh.stderr).toContain("is in ");
+		expect(ssh.stderr).toContain("one sync leaves out (credentials): add --no-default-excludes if you mean it");
+		expect(ssh.calls).toEqual([]);
+
+		// A repository named .docker: its changed config.json stays behind.
+		const docker = join(configDir, ".docker");
+		const dockerCheckout = join(configDir, "docker-checkout");
+		await cloned(docker, dockerCheckout);
+		await writeFile(join(docker, "config.json"), '{"auths":{"r":{"auth":"c2VjcmV0"}}}\n');
+		const auth = await synced(["--git", "--to", dockerCheckout], docker);
+		expect(auth.code).toBe(0);
+		expect(auth.stderr).toContain("kantel: left out config.json (credentials)");
+		await expect(stat(join(dockerCheckout, "config.json"))).rejects.toThrow();
+	});
+
+	it("sync works from a worktree in .claude/worktrees, as push does", async () => {
+		const project = join(configDir, "project");
+		const checkout = join(configDir, "checkout");
+		await cloned(project, checkout);
+		const worktree = join(project, ".claude", "worktrees", "fix");
+		gitIn(project)("worktree", "add", "-q", worktree);
+		await writeFile(join(worktree, "a.ts"), "from the worktree\n");
+		await writeFile(join(worktree, "b.ts"), "new\n");
+		const result = await synced(["--git", "--to", checkout], worktree);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("(2 files changed:");
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("from the worktree\n");
+		expect(await readFile(join(checkout, "b.ts"), "utf8")).toBe("new\n");
 	});
 
 	it("sync needs --git, a git working tree here, and no other arguments", async () => {
