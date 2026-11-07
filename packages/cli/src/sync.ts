@@ -321,7 +321,7 @@ export async function probeCheckout(client: KantelClient, sandboxId: string, pat
 		"top=$(git rev-parse --show-toplevel 2>/dev/null) || { echo not-git; exit 0; }; " +
 		'echo "top=$top"; echo "head=$(git rev-parse -q --verify HEAD 2>/dev/null)"; ' +
 		`echo "recorded=$(head -c 200 "$top"/${BASE_FILE} 2>/dev/null | tr -d '[:space:]')"; ` +
-		"command -v gzip >/dev/null && echo gzip=yes";
+		"command -v gzip >/dev/null && echo gzip=yes; command -v flock >/dev/null && echo flock=yes; true";
 	const { exitCode, stdout, stderr } = await remote(client, sandboxId, command, 60_000);
 	if (exitCode !== 0) throw new CliError(`couldn't look at ${path} in ${sandboxId}: ${stderr || `exit ${exitCode}`}`);
 	const first = stdout.trim().split("\n")[0];
@@ -343,6 +343,12 @@ export async function probeCheckout(client: KantelClient, sandboxId: string, pat
 		if (at > 0) values.set(line.slice(0, at), line.slice(at + 1).trim());
 	}
 	if (values.get("gzip") !== "yes") throw new CliError(`${sandboxId} has no gzip, which sync --git needs`);
+	if (values.get("flock") !== "yes") {
+		throw new CliError(
+			`${sandboxId} has no flock, which sync --git needs so two syncs into one checkout take turns: install ` +
+				"util-linux there (apt-get install util-linux)",
+		);
+	}
 	const top = values.get("top") || path;
 	return { top, head: values.get("head") || undefined, recorded: values.get("recorded") || undefined };
 }
@@ -368,15 +374,15 @@ export async function labelledBase(
 }
 
 /** Exit codes of the sandbox side, each a failure sync explains. */
-const EXIT = { noBase: 41, reset: 42, apply: 43, tree: 44, worktree: 45, busy: 46 } as const;
+const EXIT = { noBase: 41, reset: 42, apply: 43, tree: 44, worktree: 45, busy: 46, noLock: 47 } as const;
 
 /** How long the sandbox side waits for another sync into the same checkout to finish, in seconds. */
 const LOCK_WAIT_S = 300;
 
 /**
  * The sandbox side: one command that cleans, resets, applies and checks the tree. It holds a lock in the checkout's
- * git directory throughout, where the sandbox has flock, so two syncs into one checkout take turns; the lock goes
- * when the command ends, however it ends.
+ * git directory throughout, with flock, so two syncs into one checkout take turns; the lock goes when the command
+ * ends, however it ends. Without flock it changes nothing.
  */
 export function applyScript(options: {
 	readonly top: string;
@@ -396,7 +402,8 @@ export function applyScript(options: {
 	return (
 		`cd ${quote(top)} || exit 1; ` +
 		`lock=$(git rev-parse --git-path kantel-sync.lock) && exec 9>"$lock" || exit 1; ` +
-		`if command -v flock >/dev/null; then flock -w ${LOCK_WAIT_S} 9 || { ${cleanUp}exit ${EXIT.busy}; }; fi; ` +
+		`command -v flock >/dev/null || { ${cleanUp}exit ${EXIT.noLock}; }; ` +
+		`flock -w ${LOCK_WAIT_S} 9 || { ${cleanUp}exit ${EXIT.busy}; }; ` +
 		`git cat-file -e ${base}^{commit} 2>/dev/null || { ${cleanUp}exit ${EXIT.noBase}; }; ` +
 		// Clean first, by the ignore rules the checkout has now: after the reset the base's would count, and a file
 		// ignored by a rule added since would go. A fork's files have new inodes, so reset reads them all again.
@@ -556,6 +563,8 @@ export async function syncGit(
 			);
 		case EXIT.reset:
 			throw new CliError(`couldn't reset ${where} to ${short(base)}${why}`);
+		case EXIT.noLock:
+			throw new CliError(`${sandboxId} has no flock, which sync --git needs: install util-linux there`);
 		case EXIT.busy:
 			throw new CliError(
 				`another sync into ${where} has been running for ${LOCK_WAIT_S / 60} minutes: try again once it ends`,

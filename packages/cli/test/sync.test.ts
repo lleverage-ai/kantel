@@ -462,6 +462,25 @@ describe("a sync", () => {
 		expect(await git(sandbox, "write-tree")).toBe(mine.tree);
 	});
 
+	it("changes nothing in a sandbox with no flock, so it never syncs without the lock", async () => {
+		const { local, sandbox } = await repositories();
+		await writeFile(join(sandbox, "scratch.txt"), "untracked\n");
+		await writeFile(join(local, "mine.ts"), "1\n");
+		const noFlock = (command: string) => command.replaceAll("command -v flock", "command -v no-such-flock");
+		const probed = client({ rewrite: noFlock });
+		await expect(syncGit(probed.client, "sbx_1", { top: local, to: sandbox, defaultExcludes: true })).rejects.toThrow(
+			"sbx_1 has no flock, which sync --git needs so two syncs into one checkout take turns",
+		);
+		expect(probed.written).toEqual([]);
+		// Gone between the look and the sync: the script itself stops before it changes anything.
+		const late = client({ rewrite: (command) => (command.includes("flock -w") ? noFlock(command) : command) });
+		await expect(syncGit(late.client, "sbx_1", { top: local, to: sandbox, defaultExcludes: true })).rejects.toThrow(
+			"sbx_1 has no flock, which sync --git needs: install util-linux there",
+		);
+		expect(await readFile(join(sandbox, "scratch.txt"), "utf8")).toBe("untracked\n");
+		for (const path of late.written) await expect(stat(path)).rejects.toThrow();
+	});
+
 	it("takes the base from the git.base label on the sandbox's snapshot", async () => {
 		const { local, sandbox, base } = await repositories();
 		await writeFile(join(sandbox, "theirs.ts"), "x\n");
@@ -591,6 +610,9 @@ describe("the sandbox side", () => {
 		});
 		expect(script).toContain("cd '/home/user/my app' || exit 1; ");
 		expect(script).toContain(
+			"command -v flock >/dev/null || { rm -f /tmp/.kantel-sync-abc-* /tmp/.kantel-sync-abc.patch; exit 47; }",
+		);
+		expect(script).toContain(
 			"flock -w 300 9 || { rm -f /tmp/.kantel-sync-abc-* /tmp/.kantel-sync-abc.patch; exit 46; }",
 		);
 		expect(script).toContain(`git clean -fdq -e /.kantel-base-sha && git reset -q --hard ${"b".repeat(40)}`);
@@ -598,6 +620,6 @@ describe("the sandbox side", () => {
 			"cat /tmp/.kantel-sync-abc-* | gzip -dc > /tmp/.kantel-sync-abc.patch && git apply --index --whitespace=nowarn /tmp/.kantel-sync-abc.patch",
 		);
 		expect(script).toContain(`[ "$t" = ${"t".repeat(40)} ]`);
-		expect(script.match(/rm -f \/tmp\/\.kantel-sync-abc-\* \/tmp\/\.kantel-sync-abc\.patch/g)?.length).toBe(5);
+		expect(script.match(/rm -f \/tmp\/\.kantel-sync-abc-\* \/tmp\/\.kantel-sync-abc\.patch/g)?.length).toBe(6);
 	});
 });
