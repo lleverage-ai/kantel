@@ -79,8 +79,7 @@ kantel exec sbx_4kq9x2mt -- bash -c '
 Then pick one:
 
 - for one command, `kantel exec sbx_4kq9x2mt -- env PATH=/opt/node24/bin:/usr/local/bin:/usr/bin:/bin node -v`;
-- for every `kantel exec` command and SSH login, add it to `~/.profile`: `kantel exec sbx_4kq9x2mt -- "echo 'export PATH=/opt/node24/bin:\$PATH' >> ~/.profile"`. A command line runs in a login shell (`bash -lc`), which reads `~/.profile` after the sandbox's own variables are set, so this is the setting that holds;
-- for a command the API runs as `argv`, with no shell, name the program by its full path (`["/opt/node24/bin/node", "-v"]`), since the guest agent finds `argv[0]` on its own `PATH`. To have what it starts, such as an npm script, find the same Node, also give `PATH` in the command's `env` as a full list (`/opt/node24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`), which replaces the default;
+- for every command and SSH login, add it to `~/.profile`: `kantel exec sbx_4kq9x2mt -- "echo 'export PATH=/opt/node24/bin:\$PATH' >> ~/.profile"`. Kantel runs each command line, from the CLI or the API, in a login shell (`bash -lc`), which reads `~/.profile` after the sandbox's own variables are set, so this is the setting that holds;
 - for the desktop, whose session doesn't read `~/.profile`, put a full `PATH=/opt/node24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` line (no `$PATH`) in `/etc/kantel/desktop.env`, then `sudo systemctl restart kantel-desktop`.
 
 Without one of these, `node` is the image's Node 26. Save the sandbox as a [saved snapshot](/snapshots/saved/) to keep the extra Node for every sandbox made from it. A tool that caches by Node version, such as Turbo, misses a cache built with the other Node, so build and use a snapshot's caches with the same one.
