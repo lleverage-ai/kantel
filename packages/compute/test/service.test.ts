@@ -15,7 +15,7 @@ import {
 	type TakenSnapshot,
 } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
-import { restoreAsked } from "../src/machine.ts";
+import { memoryOf, restoreAsked } from "../src/machine.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	AUTOMATIC_SNAPSHOT_TTL_MS,
@@ -1367,6 +1367,25 @@ describe("sandboxes", () => {
 		const isolate = await tom.createSandbox({ type: "isolate", wait: true });
 		const wrongType = await failure(tom.saveSnapshot({ name: "iso", sandboxId: isolate.id, minMemoryMb: 1024 }));
 		expect(wrongType.code).toBe("invalid");
+
+		// Its source sandbox deleted: still checked, on the host that holds it.
+		const kept = await tom.saveSnapshot({ name: "kept", sandboxId: vm.id, minMemoryMb: 16_384 });
+		await tom.deleteSandbox(vm.id);
+		for (const body of [{}, { size: "large" as const }]) {
+			expect((await failure(tom.createSandbox({ from: kept.id, ...body }))).message).toContain("needs at least 16 GB");
+		}
+	});
+
+	it("knows a size's memory only where the hosts it may go to agree on it", () => {
+		const large = (memoryMb: number) => ({ name: "large" as const, vcpus: 4, memoryMb, diskGb: 40 });
+		expect(memoryOf({ size: "large" }, [large(8192)])).toBe(8192);
+		expect(memoryOf({ size: "large" }, [large(8192), large(8192)])).toBe(8192);
+		expect(memoryOf({ size: "large" }, [large(16_384), large(8192)])).toBeUndefined();
+		expect(memoryOf({ size: "large", shape: { vcpus: 8, memoryMb: 16_384 } }, [large(8192)])).toBe(16_384);
+		// Its copied machine's, where it is that one.
+		const copies = { size: "large" as const, resources: { vcpus: 4, memoryMb: 12_288, diskGb: 40 } };
+		expect(memoryOf({ size: "large" }, [large(8192)], copies)).toBe(12_288);
+		expect(memoryOf(undefined, [large(8192)])).toBeUndefined();
 	});
 
 	it("refuses a shape it can't make", async () => {

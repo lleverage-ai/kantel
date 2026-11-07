@@ -6146,8 +6146,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
 				// A snapshot's disk is on the host its sandbox is on: another size or shape is that host's.
-				const fromHostId =
-					from?.sandboxId === undefined ? undefined : (await store.sandboxes.get(from.sandboxId))?.hostId;
+				// Named by its ref, else its sandbox's (`hostOfSnapshot`), so still known once that sandbox is deleted.
+				const fromHostId = from === undefined ? undefined : await hostOfSnapshot(from);
 				const fromOn =
 					from === undefined
 						? undefined

@@ -308,7 +308,8 @@ export function copiedResources(
 
 /**
  * The memory, in MB, a new microVM sized `machine` (from `sandboxMachine`) will have: its shape's, the copied machine's
- * where it is that one (`copiedResources`), else its size's among `presets`. Undefined where nothing says.
+ * where it is that one (`copiedResources`), else its size's among `presets` (the hosts it may go to). Undefined where
+ * nothing says, or where those hosts' presets of that name differ in memory, so which it gets is placement's.
  */
 export function memoryOf(
 	machine: SandboxMachine | undefined,
@@ -319,7 +320,8 @@ export function memoryOf(
 	if (machine.shape !== undefined) return machine.shape.memoryMb;
 	const copied = copies === undefined ? undefined : copiedResources(copies, machine);
 	if (copied !== undefined) return copied.memoryMb;
-	return presets.find((each) => each.name === machine.size)?.memoryMb;
+	const named = new Set(presets.filter((each) => each.name === machine.size).map((each) => each.memoryMb));
+	return named.size === 1 ? [...named][0] : undefined;
 }
 
 /** A saved snapshot as far as the least memory a sandbox made from it may have goes. */
