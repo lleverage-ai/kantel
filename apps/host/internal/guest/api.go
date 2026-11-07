@@ -109,7 +109,7 @@ type Health struct {
 const ReadyFile = "/etc/kantel/ready"
 
 // InjectedBin is where kantel-guest init puts the agent in an image it boots (a tmpfs, so the image's own files and
-// the sandbox's disk are untouched): kantel-guest, and kantel-doctor beside it.
+// the sandbox's disk are untouched): kantel-guest, and kantel-doctor and kantel-connect beside it.
 const InjectedBin = "/.kantel/bin"
 
 // HostKeyPath is the sandbox's SSH host key, which a fresh identity makes (sshd's, or the injected agent's server).
