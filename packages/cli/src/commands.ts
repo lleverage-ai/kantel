@@ -650,6 +650,14 @@ const RETRIED_CALLS: readonly RegExp[] = [
 	/^POST \/v1\/sandboxes\/[^/]+\/fork$/,
 	/^POST \/v1\/sandboxes\/[^/]+\/commands$/,
 ];
+/**
+ * The changes retried with no key: those whose second sending leaves things as the first did, as the API reference's
+ * "Safe retries" says (#681). A file's write replaces the whole file with the same bytes (the agent writes a file of
+ * its own beside it and renames it into place), so `files put`, `scp` and `push` survive a blip that a single try
+ * would end on (#800: a `files put` that never reached Kantel left a check waiting for a run that never started).
+ * Not a delete, whose second sending is `404`, nor an extract.
+ */
+const IDEMPOTENT_CALLS: readonly RegExp[] = [/^PUT \/v1\/sandboxes\/[^/]+\/files$/];
 
 /** Whether a response is Kantel's own error, `{ "error": { "code": … } }`, rather than a proxy's page. Reads a copy. */
 async function answeredByKantel(response: Response): Promise<boolean> {
@@ -663,15 +671,17 @@ async function answeredByKantel(response: Response): Promise<boolean> {
 }
 
 /**
- * Whether a call may be sent again when Kantel never answered it: a read, or a keyed call on `RETRIED_CALLS`. Never a
- * call that changes something without a key (stop, delete, a file's write), which may have happened the first time.
+ * Whether a call may be sent again when Kantel never answered it: a read, a write whose repeat changes nothing more
+ * (`IDEMPOTENT_CALLS`), or a keyed call on `RETRIED_CALLS`. Never another call that changes something without a key
+ * (stop, delete), which may have happened the first time.
  */
 function retried(input: string | URL | Request, init: RequestInit | undefined): boolean {
 	const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
 	if (READS.has(method)) return true;
-	if (!new Headers(init?.headers).has("idempotency-key")) return false;
 	const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-	const call = `${(init?.method ?? "GET").toUpperCase()} ${url.pathname.replace(/^.*(?=\/v1\/)/, "")}`;
+	const call = `${method} ${url.pathname.replace(/^.*(?=\/v1\/)/, "")}`;
+	if (IDEMPOTENT_CALLS.some((pattern) => pattern.test(call))) return true;
+	if (!new Headers(init?.headers).has("idempotency-key")) return false;
 	return RETRIED_CALLS.some((pattern) => pattern.test(call));
 }
 
