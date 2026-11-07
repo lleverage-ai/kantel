@@ -75,6 +75,33 @@ func (m *Manager) runningMachine(id string) (*sandbox, *fc.Machine, error) {
 	return s, s.machine, nil
 }
 
+// ErrBusy answers a guard's step against a sandbox an operation holds (a stop, snapshot, resume or recovery): the step
+// isn't taken, and the guard decides again on a later pass, with that pass's pressure and readings.
+var ErrBusy = errors.New("the sandbox is mid-operation")
+
+// guardMachine is a running sandbox's machine for one of the guard's steps, with its lock held (the caller unlocks),
+// if that is its Firecracker process pid. It never waits on the lock: a sandbox an operation holds answers ErrBusy,
+// so no step waits behind the operation and is taken after it, against what may be another VM, once pressure may
+// have passed. One whose VM was replaced since answers ErrMachineChanged.
+func (m *Manager) guardMachine(id string, pid int) (*sandbox, *fc.Machine, error) {
+	s, err := m.get(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !s.mu.TryLock() {
+		return nil, nil, ErrBusy
+	}
+	if s.meta.State != proto.StateRunning || s.machine == nil {
+		s.mu.Unlock()
+		return nil, nil, conflict("sandbox %s is %s, not running", id, s.meta.State)
+	}
+	if pid <= 0 || s.machine.Pid() != pid {
+		s.mu.Unlock()
+		return nil, nil, ErrMachineChanged
+	}
+	return s, s.machine, nil
+}
+
 // reclaim is a Reclaim under way on a sandbox (sandbox.reclaiming): cancel ends it early, and done is closed once its
 // balloon has been given back.
 type reclaim struct {
@@ -177,18 +204,16 @@ func (m *Manager) Reclaim(ctx context.Context, id string) (int64, error) {
 // reporting, the memory it frees goes back to the host.
 //
 // pid is the Firecracker process the guard chose: a sandbox whose VM has been replaced since (a recovery) is left
-// alone, answering ErrMachineChanged.
+// alone, answering ErrMachineChanged, and one an operation holds now answers ErrBusy. The sandbox's lock is held
+// while its guest is asked (at most outOfMemoryTimeout), as a replacement VM would answer on the same socket: so the
+// request reaches the VM chosen or none. The usage sampler and health check pass a sandbox held so.
 func (m *Manager) OutOfMemory(ctx context.Context, id string, pid int) error {
-	s, machine, err := m.runningMachine(id)
+	s, _, err := m.guardMachine(id, pid)
 	if err != nil {
 		return err
 	}
+	defer s.mu.Unlock()
 	client := s.guest
-	same := pid > 0 && machine.Pid() == pid
-	s.mu.Unlock()
-	if !same {
-		return ErrMachineChanged
-	}
 	if client == nil {
 		return conflict("sandbox %s has no guest agent", id)
 	}
@@ -212,15 +237,11 @@ var ErrMachineChanged = errors.New("the sandbox's VM has been replaced since")
 
 // KillForMemory ends a running sandbox's VM, the Firecracker process pid the guard chose, which then stops with
 // KilledForMemory as its error: the guard's last step, when its guest couldn't free enough. A sandbox whose VM has been
-// replaced since is left alone (ErrMachineChanged).
+// replaced since is left alone (ErrMachineChanged), and one an operation holds now isn't waited for (ErrBusy).
 func (m *Manager) KillForMemory(id string, pid int) error {
-	s, machine, err := m.runningMachine(id)
+	s, machine, err := m.guardMachine(id, pid)
 	if err != nil {
 		return err
-	}
-	if pid <= 0 || machine.Pid() != pid {
-		s.mu.Unlock()
-		return ErrMachineChanged
 	}
 	// Killed with the lock held, so the exit watcher, which takes it, attributes this exit to this machine.
 	defer s.mu.Unlock()

@@ -433,6 +433,14 @@ func (s *usageSampler) dropThrough(seq uint64) {
 	}
 }
 
+// takeUsage takes one reading with s and gives its microVMs' memory to the memory plan, whether or not the reading
+// has CPU figures (the host's first has none, nor a new or resumed VM's), so every VM is the plan's from its first.
+func (h *Host) takeUsage(s *usageSampler) (proto.UsageSample, bool) {
+	sample, ok := s.take()
+	h.observeMemory(s.now(), s.memory)
+	return sample, ok
+}
+
 // RunUsage samples the host and its sandboxes every usageIntervalSeconds (5 by default) until ctx ends, and pushes each
 // sample to the control plane as a "usage" message while connected, independent of any call: samples taken while it
 // can't be reached wait (at most usageBacklog of them) and go when it can.
@@ -445,7 +453,8 @@ func (h *Host) RunUsage(ctx context.Context) {
 	h.mu.Lock()
 	h.usage = s
 	h.mu.Unlock()
-	s.take()
+	// The first sample only starts the CPU counters, but its memory readings go to the plan like every other's.
+	h.takeUsage(s)
 	if h.cfg.overcommitOn() {
 		go h.watchMemory(ctx)
 	}
@@ -458,10 +467,9 @@ func (h *Host) RunUsage(ctx context.Context) {
 			return
 		case <-ticker.C:
 			// The tick only wakes the sampler: each reading is stamped as it is taken.
-			if sample, ok := s.take(); ok {
+			if sample, ok := h.takeUsage(s); ok {
 				s.keep(sample)
 			}
-			h.observeMemory(s.now(), s.memory)
 			h.mu.Lock()
 			link, acks := h.link, h.usageAcks
 			h.mu.Unlock()

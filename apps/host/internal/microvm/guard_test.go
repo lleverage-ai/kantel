@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -143,6 +144,83 @@ func TestPauseEndsAReclaimFirst(t *testing.T) {
 		t.Fatalf("after ending the reclaim: target %d after %d sets, reclaiming %v", target, n, reclaiming)
 	}
 	<-done
+}
+
+// A guard step never waits on a sandbox an operation (a stop, snapshot or recovery) holds, so none is taken after the
+// operation, once pressure may have passed: both answer ErrBusy at once, and the VM runs on.
+func TestGuardStepsDontWaitOnAHeldSandbox(t *testing.T) {
+	m, s, _, machine := runningSandbox(t, &events{})
+	m.watch(s, machine)
+	s.mu.Lock()
+	start := time.Now()
+	errOOM := m.OutOfMemory(context.Background(), s.meta.ID, machine.Pid())
+	errKill := m.KillForMemory(s.meta.ID, machine.Pid())
+	waited := time.Since(start)
+	s.mu.Unlock()
+	if !errors.Is(errOOM, ErrBusy) || !errors.Is(errKill, ErrBusy) {
+		t.Fatalf("steps against a held sandbox: %v, %v", errOOM, errKill)
+	}
+	if waited > time.Second {
+		t.Fatalf("the steps waited %v on the sandbox", waited)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if !processAlive(machine.Pid()) {
+		t.Fatal("the VM was killed once the sandbox was let go")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.State != proto.StateRunning || s.killedFor != "" {
+		t.Fatalf("after the steps: %s, killed for %q", s.meta.State, s.killedFor)
+	}
+}
+
+// The guest is asked to kill its largest process with the sandbox's lock held: a replacement VM would answer on the
+// same socket, and no recovery can put one there meanwhile. The lock is let go once the request ends.
+func TestOutOfMemoryAsksTheGuestWithTheSandboxHeld(t *testing.T) {
+	m, s, _, machine := runningSandbox(t, &events{})
+	socket := filepath.Join(s.vmDir(), "g.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		// Accepts and never answers, as a guest too short of memory to.
+		if c, err := ln.Accept(); err == nil {
+			accepted <- c
+		}
+	}()
+	s.mu.Lock()
+	s.guest = guest.NewClient(socket)
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- m.OutOfMemory(ctx, s.meta.ID, machine.Pid()) }()
+	select {
+	case c := <-accepted:
+		defer c.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guest wasn't asked")
+	}
+	if s.mu.TryLock() {
+		s.mu.Unlock()
+		t.Fatal("the sandbox's lock was free while its guest was asked")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || errors.Is(err, ErrBusy) || errors.Is(err, ErrMachineChanged) {
+			t.Fatalf("a guest that didn't answer: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request outlived its context")
+	}
+	if !s.mu.TryLock() {
+		t.Fatal("the sandbox's lock was kept after the request")
+	}
+	s.mu.Unlock()
 }
 
 // The guard's steps name the Firecracker process they chose: once a recovery has replaced the VM, a late fallback

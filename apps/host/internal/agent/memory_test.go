@@ -23,6 +23,8 @@ type fakeGuardActions struct {
 	oomErr    error
 	// replaced are the sandboxes whose VM a recovery replaced: a step naming its old process is dropped.
 	replaced map[string]bool
+	// busy are the sandboxes an operation holds: a step against one isn't taken.
+	busy map[string]bool
 }
 
 func (f *fakeGuardActions) Reclaim(_ context.Context, id string) (int64, error) {
@@ -35,6 +37,9 @@ func (f *fakeGuardActions) Reclaim(_ context.Context, id string) (int64, error) 
 func (f *fakeGuardActions) OutOfMemory(_ context.Context, id string, _ int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.busy[id] {
+		return microvm.ErrBusy
+	}
 	f.asked = append(f.asked, id)
 	return f.oomErr
 }
@@ -42,6 +47,9 @@ func (f *fakeGuardActions) OutOfMemory(_ context.Context, id string, _ int) erro
 func (f *fakeGuardActions) KillForMemory(id string, _ int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.busy[id] {
+		return microvm.ErrBusy
+	}
 	if f.replaced[id] {
 		return microvm.ErrMachineChanged
 	}
@@ -248,6 +256,43 @@ func TestGuardLetsTakenVMsSettle(t *testing.T) {
 }
 
 const outOfMemorySettleSeconds = 10
+
+// A sandbox an operation holds (a snapshot, a stop) isn't asked or stopped, and that isn't counted as asking it: the
+// step goes at once to the next VM, and the held one is taken afresh once let go, by asking its guest, not stopping it.
+func TestGuardLeavesAHeldSandboxForALaterPass(t *testing.T) {
+	plan := memplan.New(memplan.Settings{Enabled: true}, 10000, 2000, 1.5)
+	t0 := time.Now()
+	critical := hostinfo.Memory{AvailableMiB: 500}
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	act := &fakeGuardActions{busy: map[string]bool{"b": true}}
+	g := &memoryGuard{}
+	h := quietHost()
+	plan.Observe(at(0), guardReadings, critical)
+	plan.Observe(at(5), guardReadings, critical)
+	g.runAll(h, plan, act, at(5))
+	if len(act.asked)+len(act.killed) != 0 {
+		t.Fatalf("a held sandbox was taken: %+v", act)
+	}
+	// The next pass doesn't wait outOfMemoryEvery, and passes b over.
+	plan.Observe(at(6), guardReadings, critical)
+	g.runAll(h, plan, act, at(6))
+	if !slices.Equal(act.asked, []string{"c"}) || len(act.killed) != 0 {
+		t.Fatalf("after the held sandbox: %+v", act)
+	}
+	// b let go, it is asked; held once more, its next step isn't taken, nor counted towards stopping it.
+	act.busy = nil
+	plan.Observe(at(11), guardReadings, critical)
+	g.runAll(h, plan, act, at(11))
+	act.busy = map[string]bool{"b": true}
+	plan.Observe(at(21), guardReadings, critical)
+	g.runAll(h, plan, act, at(21))
+	act.busy = nil
+	plan.Observe(at(31), guardReadings, critical)
+	g.runAll(h, plan, act, at(31))
+	if countOf(act.asked, "b") != 2 || len(act.killed) != 0 {
+		t.Fatalf("b asked %d times, stopped %v: %+v", countOf(act.asked, "b"), act.killed, act)
+	}
+}
 
 // Over-commit off (as it is with usage sampling off, which nothing else then reads the machine for), the capacity
 // report reads the machine's memory itself: its figures are the machine's, not zeros, and it admits by reservation.

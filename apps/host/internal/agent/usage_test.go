@@ -727,6 +727,27 @@ func TestUsageMemoryPlanHasEveryVMAtOnce(t *testing.T) {
 	}
 }
 
+// RunUsage's samples, the very first (no CPU figures yet) too, go through takeUsage, which gives the plan their memory.
+func TestUsageTakeGivesThePlanTheFirstSample(t *testing.T) {
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 10_000, Idle: 9_000},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 0, Start: 7}},
+		rss:   map[int]int64{100: 700 << 20},
+		vms:   []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1, MemLimitBytes: 2 << 30}},
+	}
+	s := f.sampler()
+	s.now = func() time.Time { return time.Unix(10_000, 0) }
+	plan := memplan.New(memplan.Settings{}, 10_000, 2_000, 1.5)
+	h := quietHost()
+	h.plan = plan
+	if _, ok := h.takeUsage(s); ok {
+		t.Fatal("the host's first sample has CPU figures")
+	}
+	if got := plan.Readings(); len(got) != 1 || got[0].ID != "sbx_a" || got[0].RSSMiB != 700 || got[0].Pid != 100 {
+		t.Fatalf("plan after the first sample: %+v", got)
+	}
+}
+
 // The control plane takes an interval of 1 s to 5 minutes: a tick a little early, or the first after the host was
 // paused, still goes.
 func TestUsageIntervalInRange(t *testing.T) {

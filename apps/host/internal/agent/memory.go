@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -249,7 +250,10 @@ type memoryGuard struct {
 	scored      map[int]bool
 	reclaimedAt map[string]time.Time
 	asked       map[string][]time.Time
-	lastStep    time.Time
+	// heldAt is when a step found a sandbox an operation held (microvm.ErrBusy): the step wasn't taken, and the VM is
+	// passed over for outOfMemoryEvery, so the next step may take another.
+	heldAt   map[string]time.Time
+	lastStep time.Time
 	// working are the reclaims and out-of-memory steps under way: a pass doesn't wait for them (a balloon takes seconds
 	// to fill, a guest short of memory seconds to answer), so the next pass can take its step meanwhile.
 	working sync.WaitGroup
@@ -260,7 +264,8 @@ type memoryGuard struct {
 }
 
 // guardActions is what the guard asks of the microVM tier. The out-of-memory steps name the Firecracker process (pid)
-// they were chosen by, and leave a sandbox whose VM has been replaced since alone (microvm.ErrMachineChanged).
+// they were chosen by, and leave a sandbox whose VM has been replaced since alone (microvm.ErrMachineChanged); one an
+// operation holds they never wait for (microvm.ErrBusy).
 type guardActions interface {
 	Reclaim(ctx context.Context, id string) (int64, error)
 	OutOfMemory(ctx context.Context, id string, pid int) error
@@ -417,6 +422,9 @@ func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.
 	var offender memplan.Reading
 	found := false
 	for _, r := range readings {
+		if at, ok := g.heldAt[r.ID]; ok && now.Sub(at) < outOfMemoryEvery {
+			continue
+		}
 		if asked := g.asked[r.ID]; len(asked) == 0 || now.Sub(asked[len(asked)-1]) >= outOfMemorySettle {
 			offender, found = r, true
 			break
@@ -430,9 +438,28 @@ func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.
 	recent := slices.DeleteFunc(g.asked[offender.ID], func(t time.Time) bool { return now.Sub(t) > outOfMemoryRepeat })
 	g.asked[offender.ID] = append(recent, now)
 	g.mu.Unlock()
+	// held undoes the step when an operation holds the sandbox: it wasn't asked, and the next pass decides afresh.
+	held := func() {
+		h.log.Info("memory guard: the sandbox is mid-operation; leaving it for now", "sandbox", offender.ID)
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if asked := g.asked[offender.ID]; len(asked) > 0 && asked[len(asked)-1].Equal(now) {
+			g.asked[offender.ID] = asked[:len(asked)-1]
+		}
+		if g.lastStep.Equal(now) {
+			g.lastStep = time.Time{}
+		}
+		if g.heldAt == nil {
+			g.heldAt = map[string]time.Time{}
+		}
+		maps.DeleteFunc(g.heldAt, func(_ string, at time.Time) bool { return now.Sub(at) >= outOfMemoryEvery })
+		g.heldAt[offender.ID] = now
+	}
 	kill := func() {
 		err := act.KillForMemory(offender.ID, offender.Pid)
 		switch {
+		case errors.Is(err, microvm.ErrBusy):
+			held()
 		case errors.Is(err, microvm.ErrMachineChanged):
 			h.log.Info("memory guard: the sandbox's VM was replaced meanwhile; leaving it", "sandbox", offender.ID)
 		case err != nil:
@@ -459,6 +486,8 @@ func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.
 		err := act.OutOfMemory(ctx, offender.ID, offender.Pid)
 		switch {
 		case err == nil:
+		case errors.Is(err, microvm.ErrBusy):
+			held()
 		case errors.Is(err, microvm.ErrMachineChanged):
 			h.log.Info("memory guard: the sandbox's VM was replaced meanwhile; leaving it", "sandbox", offender.ID)
 		default:
