@@ -703,7 +703,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.error` also when its guest agent stops answering, and `sandbox.recovered` when it answers again before anyone recovers it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
 One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
@@ -1337,7 +1337,7 @@ A sandbox's egress: what it was made with, its own grants and its log.
 
 ### SandboxHealth
 
-`degraded`: the machine is up but its host can't fully reach it; it keeps running.
+`degraded`: the machine is up but its host can't fully reach it; it keeps running. In `error`, its guest agent stopped answering (out of memory, say; its `reason` says), so its commands and files are refused rather than left to hang: recover it (a reset that keeps its disk), or stop and start it. It is `running` again by itself should its agent answer first.
 
 One of: `"ok"` or `"degraded"`.
 

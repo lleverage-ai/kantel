@@ -184,6 +184,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly strandedOn?: readonly string[];
 	/**
+	 * Set when its host reported its guest agent unresponsive while it ran (`ComputeService.reportHealth`), which put it
+	 * in `error`: `stopsAt` is the stop time it had then, kept for its return to `running` should the agent answer again
+	 * before anyone recovers, stops or starts it. Cleared by every other change of its state.
+	 */
+	readonly unresponsive?: { readonly stopsAt?: number };
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */

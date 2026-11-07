@@ -401,6 +401,16 @@ export const NEVER_MADE =
 
 /** A sandbox's reason once its host is revoked (`strandOn`). */
 export const HOST_REVOKED_REASON = "Its host was revoked, so it can't be reached; delete it to write it off";
+
+/**
+ * Why a sandbox whose guest agent stopped answering is in `error`: the host's words (how long, whether it is out of
+ * memory), and what to do, which a host's reason may already say.
+ */
+export function unresponsiveReason(reported: string | undefined): string {
+	const said = reported?.trim().replace(/\.$/, "") ?? "";
+	const why = said === "" ? "Its guest agent stopped answering" : said;
+	return /\brecover\b/i.test(why) ? why : `${why}. Recover it: a restart that keeps its disk`;
+}
 /** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
 	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
@@ -529,6 +539,19 @@ export interface ComputeService {
 		sandboxId: string,
 		bucketSourceId: string,
 	): Promise<ResolvedBucketSource | undefined>;
+	/**
+	 * A host's word on whether a running microVM's guest agent answers (`HOST_FEATURES.guestHealth`), from its events and
+	 * its hello: `health` `unresponsive`, with the host's `reason`, moves a `running` sandbox on `hostId` to `error`
+	 * (`health` `degraded`), since its commands and files would hang; anything else, once its agent answers again, moves
+	 * one that report put in `error` back to `running` with the stop time it had. Dropped for a sandbox on another host or
+	 * in any other state (one being recovered, stopped or started is that call's).
+	 */
+	reportHealth(
+		hostId: string,
+		sandboxId: string,
+		health: string | undefined,
+		reason: string | undefined,
+	): Promise<void>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
@@ -3126,6 +3149,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
+			// Unresponsive only in the `error` its host's report wrote (`reportHealth`).
+			unresponsive: extra.unresponsive,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
@@ -4046,6 +4071,53 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
 		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
 		return next;
+	}
+
+	/**
+	 * `ComputeService.reportHealth`: a running sandbox whose guest agent its host says doesn't answer is put in `error`
+	 * with the host's reason, its commands and files then refused at once (`sandbox_error`, with what to do) rather than
+	 * left to hang; recover it (a reset that keeps its disk), stop it or start it. Its ports stay, for the agent answering
+	 * again, which puts it back as it was.
+	 */
+	async function reportHealth(
+		hostId: string,
+		sandboxId: string,
+		health: string | undefined,
+		reason: string | undefined,
+	): Promise<void> {
+		const unresponsive = health === "unresponsive";
+		let previous: StoredSandbox | undefined;
+		const written = await store.sandboxes.update(sandboxId, (current) => {
+			previous = undefined;
+			if (current.hostId !== hostId) return undefined;
+			if (unresponsive && current.state === "running") {
+				previous = current;
+				return withState(current, "error", {
+					health: "degraded",
+					reason: unresponsiveReason(reason),
+					unresponsive: current.stopsAt === undefined ? {} : { stopsAt: current.stopsAt },
+				});
+			}
+			if (!unresponsive && current.state === "error" && current.unresponsive !== undefined) {
+				previous = current;
+				// Its stop time as it was: past now, the sweep stops it.
+				return { ...withState(current, "running", { health: "ok" }), stopsAt: current.unresponsive.stopsAt };
+			}
+			return undefined;
+		});
+		if (previous === undefined || written === undefined) return;
+		if (written.state === "error") {
+			await killCommandsOf(sandboxId).catch(() => undefined);
+			await emit("sandbox.error", written.accountId, {
+				sandbox: written,
+				data: { previousState: previous.state, reason: written.reason },
+			});
+		} else {
+			await emit("sandbox.recovered", written.accountId, {
+				sandbox: written,
+				data: { previousState: previous.state, reason: "Its guest agent answers again" },
+			});
+		}
 	}
 
 	/**
@@ -6365,7 +6437,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if ((current.state === "stopped" && !keepMemory) || (current.state === "paused" && keepMemory)) {
 				return sandboxView(current, principal);
 			}
-			if (current.state !== "running" && !(current.state === "paused" && !keepMemory)) {
+			// One in `error` on a host (its guest agent unresponsive, its host lost while it ran) is stopped too, without its
+			// memory: its host ends its machine, or answers its disk where it has none running, rather than the stop being
+			// refused until a resume. One in `error` that never got a host has nothing to stop.
+			const stopsError = current.state === "error" && current.hostId !== undefined && !keepMemory;
+			if (current.state !== "running" && !(current.state === "paused" && !keepMemory) && !stopsError) {
 				throw new KantelError("conflict", `The sandbox is ${current.state}`);
 			}
 			const { work } = await beginStop(current, keepMemory, undefined, principal);
@@ -8631,6 +8707,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Kept even with mounts off now: a sandbox made while they were on still has them.
 			await reportMountStatuses(store, hostId, sandboxId, statuses, mountsAt);
 		},
+
+		reportHealth,
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

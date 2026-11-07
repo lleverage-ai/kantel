@@ -289,6 +289,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.listsProcesses() {
 		features = append(features, proto.FeatureProcesses)
 	}
+	if _, ok := h.tiers[microvm.Tier]; ok {
+		features = append(features, proto.FeatureGuestHealth)
+	}
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(SnapshotMeasurer); ok {
 			features = append(features, proto.FeatureSnapshotSizes)
@@ -661,7 +664,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		// and without a revision keeps the egress it has, CA certificate included.
 		states := p.Egress != nil || revision > 0
 		if info, err := t.Get(p.SandboxID); err == nil && info.State == proto.StateRunning {
-			// Running already, the tier changes nothing, so neither does the host: not its CA, nor what it holds.
+			// Running already, the tier changes nothing, so neither does the host: not its CA, nor what it holds. A reset
+			// (a recovery, or a guest that doesn't answer) boots it again with the egress it has.
 			states = false
 		}
 		if states {

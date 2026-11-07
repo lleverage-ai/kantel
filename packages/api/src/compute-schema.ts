@@ -311,7 +311,11 @@ export const SandboxNotRunning = Type.Object(
 
 export const SandboxHealth = Type.Union([Type.Literal("ok"), Type.Literal("degraded")], {
 	title: "SandboxHealth",
-	description: "`degraded`: the machine is up but its host can't fully reach it; it keeps running.",
+	description:
+		"`degraded`: the machine is up but its host can't fully reach it; it keeps running. In `error`, its guest agent " +
+		"stopped answering (out of memory, say; its `reason` says), so its commands and files are refused rather than left " +
+		"to hang: recover it (a reset that keeps its disk), or stop and start it. It is `running` again by itself should " +
+		"its agent answer first.",
 });
 
 export const SandboxSizeName = Type.Union(
@@ -2656,7 +2660,8 @@ export const EventType = Type.Union(
 			"or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. " +
 			"`sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; " +
 			"`sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason " +
-			"says which), which leaves it running. " +
+			"says which), which leaves it running. `sandbox.error` also when its guest agent stops answering, and " +
+			"`sandbox.recovered` when it answers again before anyone recovers it. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );

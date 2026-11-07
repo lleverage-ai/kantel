@@ -288,6 +288,11 @@ type sandbox struct {
 	reserved map[string]func()
 	// mountsSeen is what the sandbox last reported of its mounts' states (mountStatus), whose change moves MountsAt on.
 	mountsSeen string
+	// unresponsive is why its guest agent is taken not to answer (health.go: watchHealth), while it runs; "" while it
+	// answers.
+	unresponsive string
+	// probe stands in for its guest agent's health in a test (nil: its guest).
+	probe healthClient
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -702,6 +707,9 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
 	info.Mounts, info.MountsAt = m.mountStatus(s)
+	if s.unresponsive != "" && s.meta.State == proto.StateRunning {
+		info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
+	}
 	return info
 }
 
@@ -974,8 +982,11 @@ func egressMode(e *proto.Egress) string {
 	return e.Mode
 }
 
-// watch marks a sandbox stopped (with an error) when its VM exits without being asked to.
+// watch marks a sandbox stopped (with an error) when its VM exits without being asked to, and watches its guest
+// agent's health while it runs (watchHealth).
 func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
+	s.unresponsive = ""
+	m.watchHealth(s, machine)
 	go func() {
 		<-machine.Done()
 		s.mu.Lock()
@@ -984,6 +995,7 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 			return
 		}
 		s.machine = nil
+		s.unresponsive = ""
 		if s.link != nil {
 			m.cfg.Network.Remove(*s.link)
 			m.detach(s.link.Slot)
@@ -2442,20 +2454,40 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	keepMemory := p.Memory == nil || *p.Memory
+	if s.meta.State == proto.StateStopped && p.SnapshotID != "" {
+		// Stopped already (its VM exited or was reset, or an earlier stop the control plane never heard back from): the
+		// stop is done, and answers a snapshot of its disk as it is, so a sandbox the control plane has in error can be
+		// stopped rather than refused.
+		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: s.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: keepMemory && s.meta.Memory, Tier: Tier}
+		if err := m.saveSnapshot(s, &snap, true); err != nil {
+			return snap, err
+		}
+		m.pruneAuto(s.meta.ID)
+		return snap, nil
+	}
 	if s.meta.State != proto.StateRunning || s.machine == nil {
 		return proto.SnapshotInfo{}, conflict("sandbox %s is %s, not running", s.meta.ID, s.meta.State)
 	}
-	keepMemory := p.Memory == nil || *p.Memory
 	vm := s.vmDir()
 	t := timings{}
 	start := time.Now()
 	defer func() { m.log.Debug("stop", "sandbox", s.meta.ID, "timings", t) }()
-	_ = s.guest.Sync(ctx)
+	if s.unresponsive == "" {
+		// Bounded: a guest that doesn't answer is stopped without its sync, as a crash would leave its disk.
+		sctx, cancel := context.WithTimeout(ctx, stopSyncTimeout)
+		_ = s.guest.Sync(sctx)
+		cancel()
+	}
+	s.unresponsive = ""
 	t.step("sync", &start)
 	s.guest.Close()
 	machine := s.machine
 	if err := machine.Pause(ctx); err != nil {
-		return proto.SnapshotInfo{}, err
+		// Its Firecracker doesn't answer (its API socket refused after a reconnect, say): stopped cold, its disk as a
+		// crash would leave it and its memory lost, rather than left running with the stop failed.
+		m.log.Warn("couldn't pause a sandbox's VM for its stop; stopping it cold", "sandbox", s.meta.ID, "error", err)
+		keepMemory = false
 	}
 	t.step("pause", &start)
 	beside := filepath.Join(vm, "mem.new")
@@ -2526,6 +2558,17 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.meta.State == proto.StateRunning && s.machine != nil && (p.Reset || !m.answers(ctx, s)) {
+		// A recovery (Reset), or a start or resume of a machine whose guest agent doesn't answer: running as far as the
+		// host knows, but of no use. It is reset, its disk kept and its memory lost, and booted cold from that disk below,
+		// rather than answered as running.
+		why := "its guest agent doesn't answer"
+		if p.Reset {
+			why = "a recovery"
+		}
+		m.reset(s, why)
+		coldBoot = true
+	}
 	if s.meta.State == proto.StateRunning {
 		// A rebase is a cold boot on the target images: a machine running on others (one a gateway lost track of) isn't
 		// that, so it is refused rather than answered as done. One already on them is that boot, retried.

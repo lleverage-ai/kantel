@@ -740,7 +740,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.error` also when its guest agent stops answering, and `sandbox.recovered` when it answers again before anyone recovers it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -768,7 +768,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.error` also when its guest agent stops answering, and `sandbox.recovered` when it answers again before anyone recovers it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -1130,7 +1130,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.error` also when its guest agent stops answering, and `sandbox.recovered` when it answers again before anyone recovers it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -1435,7 +1435,7 @@ export interface Sandbox {
 	readonly image?: string;
 	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
-	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
+	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. In `error`, its guest agent stopped answering (out of memory, say; its `reason` says), so its commands and files are refused rather than left to hang: recover it (a reset that keeps its disk), or stop and start it. It is `running` again by itself should its agent answer first. */
 	readonly health?: SandboxHealth;
 	/** Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none. */
 	readonly reason?: string;
@@ -1566,7 +1566,7 @@ export interface SandboxEgressQuery {
 	readonly limit?: number;
 }
 
-/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
+/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. In `error`, its guest agent stopped answering (out of memory, say; its `reason` says), so its commands and files are refused rather than left to hang: recover it (a reset that keeps its disk), or stop and start it. It is `running` again by itself should its agent answer first. */
 export type SandboxHealth = "ok" | "degraded";
 
 /** A mount of a sandbox's, and whether its files are in place. */
@@ -2322,7 +2322,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.error` also when its guest agent stops answering, and `sandbox.recovered` when it answers again before anyone recovers it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
