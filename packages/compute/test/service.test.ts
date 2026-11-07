@@ -1,3 +1,4 @@
+import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { pgliteDatabase } from "@kantel/sql/testing";
@@ -3900,6 +3901,52 @@ describe("hosts", () => {
 
 		expect(await api.fetch(new Request("http://compute.test/v1/sessions"))).toBeUndefined();
 		expect(await api.fetch(new Request("http://compute.test/elsewhere"))).toBeUndefined();
+	});
+
+	it("shows a host's memory as the backend last said, without writing it to the host's record", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const report: computeSchema.HostMemory = {
+			mode: "used",
+			state: "ok",
+			totalMiB: 128_000,
+			reserveMiB: 12_800,
+			capacityMiB: 115_200,
+			reservedMiB: 131_072,
+			committedMiB: 45_056,
+			guestUsedMiB: 12_288,
+			residentMiB: 24_576,
+			availableMiB: 100_000,
+			swapUsedMiB: 0,
+			pressureSome: 0,
+			pressureFull: 0,
+			maxRatio: 2.5,
+			measuredAt: 1_700_000_000_000,
+		};
+		let memory: computeSchema.HostMemory | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				return {
+					...read,
+					hosts: (read.hosts ?? []).map((host) => (memory === undefined ? host : { ...host, memory })),
+				};
+			},
+		};
+		const { root } = setup(backend, { store });
+		expect((await root.getHost(STUB_HOST_ID)).memory).toBeUndefined();
+		memory = report;
+		expect((await root.listHosts()).items[0]?.memory).toEqual(report);
+		// It moves on every heartbeat: the record is never written for it.
+		const written = await store.hosts.get(STUB_HOST_ID);
+		memory = { ...report, committedMiB: 50_000 };
+		expect((await root.listHosts()).items[0]?.memory?.committedMiB).toBe(50_000);
+		expect(await store.hosts.get(STUB_HOST_ID)).toEqual(written);
+		expect(written).not.toHaveProperty("memory");
+		// A host that stops saying has none.
+		memory = undefined;
+		expect((await root.listHosts()).items[0]?.memory).toBeUndefined();
 	});
 
 	it("shows what takes a host's disk as the host last measured it, its snapshots split by their records", async () => {

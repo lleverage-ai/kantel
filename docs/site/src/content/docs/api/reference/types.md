@@ -887,6 +887,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
+| `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
 | `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
@@ -937,6 +938,28 @@ What takes the space on a host's disk, as the host measured it last (every few m
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `items` | [Host](/api/reference/types/#host)[] | yes |  |
+
+### HostMemory
+
+A host's memory, in MiB, as it last reported it (every heartbeat).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `mode` | `"reserved"` or `"used"` | yes | How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times `capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, within what the machine has available and up to `maxRatio` times `capacityMiB` given. |
+| `state` | `"ok"` or `"tight"` or `"refusing"` or `"critical"` | yes | How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new sandboxes. `critical`: it ends the largest process in the guest holding the most memory. |
+| `totalMiB` | integer | yes | The machine's memory, or the limit of the control group kantel-host runs in. (minimum 0) |
+| `reserveMiB` | integer | yes | What is kept for the host's own processes and never given to sandboxes. (minimum 0) |
+| `capacityMiB` | integer | yes | `totalMiB` less `reserveMiB`. (minimum 0) |
+| `reservedMiB` | integer | yes | What the host's sandboxes were given. (minimum 0) |
+| `committedMiB` | integer | yes | What its microVMs count for: each its peak of the last minutes plus headroom, at most its size. (minimum 0) |
+| `guestUsedMiB` | integer | yes | What its microVMs' guests say they use, page cache aside. (minimum 0) |
+| `residentMiB` | integer | yes | What its microVMs hold of the machine's memory, their guests' page cache included. (minimum 0) |
+| `availableMiB` | integer | yes | What the machine has available now (MemAvailable). (minimum 0) |
+| `swapUsedMiB` | integer | yes | Swap in use on the machine. (minimum 0) |
+| `pressureSome` | number | yes | Memory pressure: the share of the last 10 seconds some task waited on memory. (minimum 0, maximum 100) |
+| `pressureFull` | number | yes | The share of the last 10 seconds every task waited on memory. (minimum 0, maximum 100) |
+| `maxRatio` | number | yes | The most sandboxes may be given, as a multiple of `capacityMiB`. (minimum 0) |
+| `measuredAt` | integer | no | Epoch milliseconds, UTC. |
 
 ### HostReleaseCheck
 

@@ -1753,8 +1753,32 @@ export interface Host {
 	readonly joinedAt: number;
 	/** What takes the space on its disk, as it last measured it. Absent until it has. */
 	readonly disk?: HostDisk;
+	/** Its memory, as it last reported it. Absent from an older host agent, or one not connected. */
+	readonly memory?: HostMemory;
 	/** The most bytes of saved snapshots each account may keep on it. Absent: no limit. */
 	readonly savedSnapshotLimitBytes?: number;
+}
+
+/**
+ * A host's memory, in MiB. `reserved`: what its sandboxes were given; `committed`: what its microVMs count for when it
+ * admits by use (each its recent peak plus headroom); `guestUsed`: what their guests use; `resident`: what they hold of
+ * the machine, page cache included. `mode` says which it admits by, `state` how short of memory it is.
+ */
+export interface HostMemory {
+	readonly mode: "reserved" | "used";
+	readonly state: "ok" | "tight" | "refusing" | "critical";
+	readonly totalMiB: number;
+	readonly reserveMiB: number;
+	readonly capacityMiB: number;
+	readonly reservedMiB: number;
+	readonly committedMiB: number;
+	readonly guestUsedMiB: number;
+	readonly residentMiB: number;
+	readonly availableMiB: number;
+	readonly swapUsedMiB: number;
+	readonly pressureSome: number;
+	readonly pressureFull: number;
+	readonly maxRatio: number;
 }
 
 /**

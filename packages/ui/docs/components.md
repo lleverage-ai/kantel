@@ -361,3 +361,19 @@ instead.
 **States:** measured, nearly full, with or without a limit, not measured, and a phone; all in its stories.
 
 **Cost:** none: the host measures, every few minutes, and the page shows what it last sent.
+
+### HostMemoryUsage
+
+A host's memory (`src/compute/host-memory.tsx`), between its graphs and its disk when its row on the Hosts page is
+opened: what decides admission (what sandboxes were given, or, with memory over-commit on, what they count for) of the
+memory the host has for sandboxes, with a bar coloured as the disk's, then given (with its share, which may pass 100%),
+committed, what the guests use, what they hold of the machine, available, what is kept for the host, swap and memory
+pressure. A line says how it admits, and another, when it is short of memory, what it is doing about it (reclaiming,
+refusing new sandboxes, ending processes). `narrow` puts the figures in one column. A host agent that doesn't report its
+memory shows nothing.
+
+**Don't use it for** memory over time (use the host's graphs) or a sandbox's own memory.
+
+**States:** by reservation, by use, refusing, not reported; all in its stories.
+
+**Cost:** none: the host sends it with every heartbeat.

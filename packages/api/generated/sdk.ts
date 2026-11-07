@@ -985,6 +985,8 @@ export interface Host {
 	readonly usage?: UsageSparklines;
 	/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
 	readonly diskUsage?: HostDiskUsage;
+	/** A host's memory, in MiB, as it last reported it (every heartbeat). */
+	readonly memory?: HostMemory;
 	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
 	readonly savedSnapshotBytesLimit?: number;
 }
@@ -1039,6 +1041,40 @@ export interface HostJoinToken {
 
 export interface HostList {
 	readonly items: readonly Host[];
+}
+
+/** A host's memory, in MiB, as it last reported it (every heartbeat). */
+export interface HostMemory {
+	/** How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times `capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, within what the machine has available and up to `maxRatio` times `capacityMiB` given. */
+	readonly mode: "reserved" | "used";
+	/** How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new sandboxes. `critical`: it ends the largest process in the guest holding the most memory. */
+	readonly state: "ok" | "tight" | "refusing" | "critical";
+	/** The machine's memory, or the limit of the control group kantel-host runs in. */
+	readonly totalMiB: number;
+	/** What is kept for the host's own processes and never given to sandboxes. */
+	readonly reserveMiB: number;
+	/** `totalMiB` less `reserveMiB`. */
+	readonly capacityMiB: number;
+	/** What the host's sandboxes were given. */
+	readonly reservedMiB: number;
+	/** What its microVMs count for: each its peak of the last minutes plus headroom, at most its size. */
+	readonly committedMiB: number;
+	/** What its microVMs' guests say they use, page cache aside. */
+	readonly guestUsedMiB: number;
+	/** What its microVMs hold of the machine's memory, their guests' page cache included. */
+	readonly residentMiB: number;
+	/** What the machine has available now (MemAvailable). */
+	readonly availableMiB: number;
+	/** Swap in use on the machine. */
+	readonly swapUsedMiB: number;
+	/** Memory pressure: the share of the last 10 seconds some task waited on memory. */
+	readonly pressureSome: number;
+	/** The share of the last 10 seconds every task waited on memory. */
+	readonly pressureFull: number;
+	/** The most sandboxes may be given, as a multiple of `capacityMiB`. */
+	readonly maxRatio: number;
+	/** Epoch milliseconds, UTC. */
+	readonly measuredAt?: number;
 }
 
 export interface HostReleaseCheck {

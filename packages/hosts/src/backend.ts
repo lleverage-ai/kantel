@@ -40,7 +40,7 @@ import {
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
-import { parseMountsAt } from "./facts.ts";
+import { parseMountsAt, withoutAdmission } from "./facts.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -766,6 +766,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					capacity: { ...host.capacity },
 					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
 					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
+					// What it admits against is the scheduler's (`freeMemoryOn`), not the API's.
+					...(host.memory === undefined ? {} : { memory: withoutAdmission(host.memory) }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },

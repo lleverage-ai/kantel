@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"github.com/lleverage-ai/kantel/apps/host/internal/usage"
@@ -81,6 +82,8 @@ type usageSampler struct {
 	dropped     int
 	unconfirmed int
 	latest      *proto.UsageSample
+	// memory is the last take's microVMs' memory, for the host's memory plan (memory.go).
+	memory []memplan.Reading
 }
 
 func (h *Host) newUsageSampler() *usageSampler {
@@ -116,6 +119,7 @@ func (h *Host) newUsageSampler() *usageSampler {
 // waited on the tiers, still divides each CPU time by the time it took.
 func (s *usageSampler) take() (proto.UsageSample, bool) {
 	defer s.counters.Sweep()
+	s.memory = nil
 	procs := s.processes()
 	cpu, err := s.readHostCPU()
 	now := s.now()
@@ -167,19 +171,30 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 	var asks []statsAsk
 	for _, p := range procs {
 		if p.Held {
-			// Mid-operation, so unread: keep following it.
+			// Mid-operation, so unread: keep following it, and the memory plan its last reading.
 			s.counters.Keep("microvm/" + p.SandboxID)
+			s.memory = append(s.memory, memplan.Reading{ID: p.SandboxID, Held: true})
 			continue
 		}
 		cpu, err := s.readCPU(p.Pid)
 		if err != nil {
 			continue
 		}
+		// Memory is a reading of now, so the memory plan (and its guard) has every VM from its first sample, a new or
+		// resumed one too, whose CPU has no figure yet (its counter starts here).
+		used, source := s.microVMMemory(p)
+		rss := used
+		if source != proto.MemSourceRSS {
+			rss, _ = s.readRSS(p.Pid)
+		}
+		s.memory = append(s.memory, memplan.Reading{
+			ID: p.SandboxID, UsedMiB: used >> 20, RSSMiB: rss >> 20, Guest: source == proto.MemSourceGuest, Pid: p.Pid,
+			SizeMiB: p.MemLimitBytes >> 20,
+		})
 		grew, over, ok := s.counters.Delta("microvm/"+p.SandboxID, cpu.Epoch(p.Pid), cpu.Seconds(), s.now())
 		if !ok {
 			continue
 		}
-		used, source := s.microVMMemory(p)
 		reading := proto.SandboxUsage{
 			ID: p.SandboxID, Kind: microvm.Tier, CPU: usage.Utilisation(grew, over, p.CPUs),
 			MemUsedBytes: used, MemLimitBytes: p.MemLimitBytes, MemSource: source,
@@ -418,6 +433,14 @@ func (s *usageSampler) dropThrough(seq uint64) {
 	}
 }
 
+// takeUsage takes one reading with s and gives its microVMs' memory to the memory plan, whether or not the reading
+// has CPU figures (the host's first has none, nor a new or resumed VM's), so every VM is the plan's from its first.
+func (h *Host) takeUsage(s *usageSampler) (proto.UsageSample, bool) {
+	sample, ok := s.take()
+	h.observeMemory(s.now(), s.memory)
+	return sample, ok
+}
+
 // RunUsage samples the host and its sandboxes every usageIntervalSeconds (5 by default) until ctx ends, and pushes each
 // sample to the control plane as a "usage" message while connected, independent of any call: samples taken while it
 // can't be reached wait (at most usageBacklog of them) and go when it can.
@@ -430,7 +453,11 @@ func (h *Host) RunUsage(ctx context.Context) {
 	h.mu.Lock()
 	h.usage = s
 	h.mu.Unlock()
-	s.take()
+	// The first sample only starts the CPU counters, but its memory readings go to the plan like every other's.
+	h.takeUsage(s)
+	if h.cfg.overcommitOn() {
+		go h.watchMemory(ctx)
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var warnedUnconfirmed time.Time
@@ -440,7 +467,7 @@ func (h *Host) RunUsage(ctx context.Context) {
 			return
 		case <-ticker.C:
 			// The tick only wakes the sampler: each reading is stamped as it is taken.
-			if sample, ok := s.take(); ok {
+			if sample, ok := h.takeUsage(s); ok {
 				s.keep(sample)
 			}
 			h.mu.Lock()

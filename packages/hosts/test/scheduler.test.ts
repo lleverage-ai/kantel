@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { HOST_FEATURES, type HostFacts } from "../src/protocol.ts";
-import { type Candidate, customSizeName, diskFor, isRefusal, place, shapeOn } from "../src/scheduler.ts";
+import {
+	buildFitsOn,
+	type Candidate,
+	customSizeName,
+	diskFor,
+	freeMemoryOn,
+	isRefusal,
+	place,
+	shapeOn,
+} from "../src/scheduler.ts";
 import type { HostRecord } from "../src/store.ts";
 
 const facts: HostFacts = {
@@ -75,6 +84,67 @@ describe("place", () => {
 		const b = candidate("b", capacity(5_000));
 		const chosen = place({ tier: "microvm", size: "default" }, [a, b]);
 		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("b");
+	});
+
+	it("charges what was placed on a host admitting by use in its own admission units", () => {
+		const admission = {
+			reservableMiB: 40_000,
+			committableMiB: 5_120,
+			startMiB: 1_024,
+			headroomMiB: 1_024,
+			headroomPercent: 25,
+		};
+		const memory = {
+			mode: "used" as const,
+			state: "ok" as const,
+			...Object.fromEntries(
+				[
+					"totalMiB",
+					"reserveMiB",
+					"capacityMiB",
+					"reservedMiB",
+					"committedMiB",
+					"guestUsedMiB",
+					"residentMiB",
+					"availableMiB",
+					"swapUsedMiB",
+				].map((k) => [k, 0]),
+			),
+			pressureSome: 0,
+			pressureFull: 0,
+			maxRatio: 2.5,
+			// 5 GiB committable: a new 4 GiB microVM commits 1 GiB to start + 1 GiB of headroom, a 16 GiB one 1 + 4.
+			admission,
+		} as NonNullable<NonNullable<HostRecord["capacity"]>["memory"]>;
+		// The largest single microVM it takes is 16 GiB (commitment 5 GiB).
+		const byUse = { ...capacity(16_384).capacity, memory };
+		expect(freeMemoryOn(byUse, [])).toBe(16_384);
+		const fourGiB = { memoryMiB: 4_096 };
+		// One 4 GiB create held leaves 3 GiB committable: the largest that commits that much is 8 GiB and change (a
+		// quarter of 8195 MiB is 2048 MiB, whole MiB as the host counts).
+		expect(freeMemoryOn(byUse, [fourGiB])).toBe(8_195);
+		// Two leave 1 GiB, which no microVM over 1 GiB fits; a third 4 GiB create goes elsewhere.
+		expect(freeMemoryOn(byUse, [fourGiB, fourGiB])).toBe(1_024);
+		// A build counts in full.
+		expect(freeMemoryOn(byUse, [{ memoryMiB: 4_096, build: true }])).toBe(1_024);
+		expect(buildFitsOn(byUse, [], 4_096)).toBe(true);
+		expect(buildFitsOn(byUse, [fourGiB], 4_096)).toBe(false);
+		// The cap on what may be reserved binds too.
+		const capped = { ...byUse, memory: { ...memory, admission: { ...admission, reservableMiB: 6_000 } } };
+		expect(freeMemoryOn(capped, [fourGiB])).toBe(6_000 - 4_096);
+		// One that admits by reservation, or predates admission, as before.
+		expect(freeMemoryOn({ ...byUse, memory: { ...memory, mode: "reserved" } }, [fourGiB])).toBe(16_384 - 4_096);
+		const { admission: _admission, ...older } = memory;
+		expect(freeMemoryOn({ ...byUse, memory: older }, [fourGiB])).toBe(16_384 - 4_096);
+		const request = { tier: "microvm" as const, size: "large" };
+		const held = (n: number) =>
+			candidate("used", { capacity: byUse }, { reservedMemoryMiB: 4_096 * n, heldMemory: Array(n).fill(fourGiB) });
+		const first = place(request, [held(1)]);
+		expect(isRefusal(first) ? first.reason : first.host.id).toBe("used");
+		// With two held it is full, though 16 GiB less 8 GiB looks free: the next goes to another host.
+		const other = candidate("other", capacity(9_000));
+		const third = place(request, [held(2), other]);
+		expect(isRefusal(third) ? third.reason : third.host.id).toBe("other");
 	});
 
 	it("skips hosts that are revoked, draining, gone, unlabelled or without the tier", () => {

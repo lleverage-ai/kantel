@@ -95,22 +95,9 @@ func InVM() bool {
 	return false
 }
 
-// MemoryMiB is the machine's total memory.
+// MemoryMiB is the machine's total memory, or kantel-host's control group's memory limit when that is less (ReadMemory).
 func MemoryMiB() int64 {
-	f, err := os.Open("/proc/meminfo")
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		fields := strings.Fields(s.Text())
-		if len(fields) >= 2 && fields[0] == "MemTotal:" {
-			kb, _ := strconv.ParseInt(fields[1], 10, 64)
-			return kb / 1024
-		}
-	}
-	return 0
+	return ReadMemory().TotalMiB
 }
 
 // AvailableMemoryMiB is what the kernel says is available now.

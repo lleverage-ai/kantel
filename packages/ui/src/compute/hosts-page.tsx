@@ -31,6 +31,7 @@ import {
 } from "./compute-model.ts";
 import { HostDiskUsage } from "./host-disk.tsx";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
+import { HostMemoryUsage } from "./host-memory.tsx";
 import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
 import { lineOf, ROW_SPAN_MS, seriesOf } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline, table, tableFrame } from "./parts.tsx";
@@ -614,6 +615,7 @@ function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, open
 					<td className={`${cell} pt-1 pb-4 pl-8`} colSpan={COLUMNS}>
 						<div className="flex min-w-0 flex-col gap-6">
 							<HostGraphs host={host} live={live} />
+							<HostMemoryUsage host={host} />
 							<HostDiskUsage host={host} now={now} />
 						</div>
 					</td>
@@ -672,6 +674,7 @@ function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit,
 			{open ? (
 				<div id={graphsId} className="flex min-w-0 flex-col gap-6">
 					<HostGraphs host={host} live={live} narrow />
+					<HostMemoryUsage host={host} narrow />
 					<HostDiskUsage host={host} now={now} narrow />
 				</div>
 			) : null}

@@ -429,6 +429,63 @@ export interface HostCapacity {
 	readonly builds?: readonly string[];
 	/** What takes the space on its disk, measured every few minutes. Absent until it first is, and from an older host. */
 	readonly disk?: HostDiskUsage;
+	/** Its memory: what sandboxes were given, use and may soon use, and what the machine has left. Absent from an older host. */
+	readonly memory?: HostMemoryReport;
+}
+
+/**
+ * How a host admits sandboxes' memory: by what they were given (`reserved`, against `maxRatio` times its capacity), or,
+ * with memory over-commit on (experimental), by what they use (`used`).
+ */
+export type HostMemoryMode = "reserved" | "used";
+
+/** How short of memory a host is: `tight` reclaims page cache, `refusing` refuses creates, `critical` ends processes. */
+export type HostMemoryState = "ok" | "tight" | "refusing" | "critical";
+
+/**
+ * A host's memory, in MiB (apps/host/internal/memplan). `committedMiB` counts each microVM as its recent peak plus
+ * headroom, at most its size; `reservedMiB` as its size.
+ */
+export interface HostMemoryReport {
+	readonly mode: HostMemoryMode;
+	/** The machine's memory (or kantel-host's control group's limit), what is kept for the host, and the rest. */
+	readonly totalMiB: number;
+	readonly reserveMiB: number;
+	readonly capacityMiB: number;
+	readonly reservedMiB: number;
+	readonly committedMiB: number;
+	/** What the microVMs' guests use, and what their processes hold of the host's memory (page cache too). */
+	readonly guestUsedMiB: number;
+	readonly residentMiB: number;
+	readonly availableMiB: number;
+	readonly swapUsedMiB: number;
+	/** Memory pressure (PSI avg10), in percent. */
+	readonly pressureSome: number;
+	readonly pressureFull: number;
+	readonly maxRatio: number;
+	readonly state: HostMemoryState;
+	/** When the machine's figures were read (epoch milliseconds); absent before they first were. */
+	readonly measuredAt?: number;
+	/**
+	 * With `mode` `used`: what it admits against. `freeMemoryMiB` is then the largest single microVM it would admit, which
+	 * isn't additive, so what is placed on it before its next report is counted against this (`freeMemoryOn`). Absent
+	 * from a host that predates it.
+	 */
+	readonly admission?: HostMemoryAdmission;
+}
+
+/**
+ * What a host admitting by use has left, in its admission units (apps/host/internal/memplan): `reservableMiB` of sizes
+ * before its cap, and `committableMiB` of committed memory. A new microVM of size S costs S of the first and
+ * min(S, startMiB + headroom(S)) of the second, headroom(S) = min(S, max(headroomMiB, S × headroomPercent / 100)); a
+ * template build costs S of both.
+ */
+export interface HostMemoryAdmission {
+	readonly reservableMiB: number;
+	readonly committableMiB: number;
+	readonly startMiB: number;
+	readonly headroomMiB: number;
+	readonly headroomPercent: number;
 }
 
 /**

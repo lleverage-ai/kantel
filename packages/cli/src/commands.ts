@@ -601,6 +601,37 @@ function describeSnapshot(snapshot: Snapshot): string {
 	]);
 }
 
+/**
+ * A host's memory for `kantel hosts info`: what sandboxes were given and count for against what it has for them, what
+ * they use, and the machine's own figures.
+ */
+function hostMemoryFields(memory: Host["memory"]): [string, string | undefined][] {
+	if (memory === undefined) return [];
+	const gb = (mib: number) => `${(mib / 1024).toFixed(1)} GB`;
+	const share = (mib: number) =>
+		memory.capacityMiB === 0 ? "" : ` (${Math.round((mib / memory.capacityMiB) * 100)}%)`;
+	const mode =
+		memory.mode === "used"
+			? `by use (over-commit, experimental), at most ${memory.maxRatio}x given`
+			: `by reservation, at most ${memory.maxRatio}x`;
+	return [
+		[
+			"memory",
+			`${gb(memory.capacityMiB)} for sandboxes of ${gb(memory.totalMiB)}, ${gb(memory.reserveMiB)} kept for the host`,
+		],
+		["admits", mode],
+		["reserved", gb(memory.reservedMiB) + share(memory.reservedMiB)],
+		["committed", gb(memory.committedMiB) + share(memory.committedMiB)],
+		["guest used", gb(memory.guestUsedMiB)],
+		["resident", gb(memory.residentMiB)],
+		[
+			"available",
+			`${gb(memory.availableMiB)}, swap ${gb(memory.swapUsedMiB)}, pressure ${memory.pressureSome.toFixed(1)}% some, ${memory.pressureFull.toFixed(1)}% full`,
+		],
+		["memory state", memory.state],
+	];
+}
+
 /** One of an account's own hosts, for `kantel host info`. */
 function describeHost(host: Host): string {
 	const labels = Object.entries(host.labels).map(([key, value]) => `${key}=${value}`);
@@ -615,6 +646,7 @@ function describeHost(host: Host): string {
 		["kvm", host.kvm ? "yes" : "no"],
 		["capacity", `${host.capacity.vcpus} vCPUs, ${host.capacity.memoryMb} MB memory, ${host.capacity.diskGb} GB disk`],
 		["sandboxes", String(host.allocated.sandboxes)],
+		...hostMemoryFields(host.memory),
 		["labels", labels.length === 0 ? undefined : labels.join(", ")],
 		["joined", timestamp(host.joinedAt)],
 		["last seen", host.lastSeenAt === undefined ? undefined : ago(host.lastSeenAt)],

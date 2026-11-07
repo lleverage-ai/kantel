@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -46,6 +47,11 @@ type Config struct {
 	// OvercommitMemory lets running sandboxes be given more memory than the host has, as a ratio (default 1.5:
 	// restored sandboxes share their template's unchanged pages).
 	OvercommitMemory float64 `json:"overcommitMemory,omitempty"`
+	// MemoryOvercommit, with enabled true (experimental, default off), admits microVMs by the memory they use rather
+	// than what they were given, up to maxRatio (default 2.5) times the memory less ReserveMemoryMiB, and guards the host
+	// when they all want it at once: free page reporting, reclaim through the balloons, refusing creates, then the
+	// out-of-memory step. Package memplan says how. Needs usage sampling (usageIntervalSeconds not below 0).
+	MemoryOvercommit memplan.Settings `json:"memoryOvercommit,omitzero"`
 	// Subnet sandboxes' addresses come from (default 10.231.0.0/16).
 	Subnet string `json:"subnet,omitempty"`
 	// DNS is no longer used: sandboxes have no route to a DNS server (the egress proxy resolves names). Kept so old

@@ -11,7 +11,11 @@ import type {
 	HostDiskUsage,
 	HostFacts,
 	HostImages,
+	HostMemoryAdmission,
+	HostMemoryMode,
+	HostMemoryReport,
 	HostMemorySource,
+	HostMemoryState,
 	HostMountStatus,
 	HostSandboxUsage,
 	HostSize,
@@ -161,7 +165,69 @@ function capacity(value: unknown): HostCapacity {
 		load1: count(value.load1, "load1"),
 		...(builds.length === 0 ? {} : { builds }),
 		...diskUsage(value.disk),
+		...memoryReport(value.memory),
 	};
+}
+
+const MEMORY_MODES: ReadonlySet<string> = new Set<HostMemoryMode>(["reserved", "used"]);
+const MEMORY_STATES: ReadonlySet<string> = new Set<HostMemoryState>(["ok", "tight", "refusing", "critical"]);
+
+/** A capacity's memory (`HostMemoryReport`): left out, not refused, when it isn't one, so the rest still stands. */
+function memoryReport(value: unknown): { memory?: HostMemoryReport } {
+	if (!isObject(value)) return {};
+	if (typeof value.mode !== "string" || !MEMORY_MODES.has(value.mode)) return {};
+	if (typeof value.state !== "string" || !MEMORY_STATES.has(value.state)) return {};
+	const whole = [
+		"totalMiB",
+		"reserveMiB",
+		"capacityMiB",
+		"reservedMiB",
+		"committedMiB",
+		"guestUsedMiB",
+		"residentMiB",
+		"availableMiB",
+		"swapUsedMiB",
+	] as const;
+	const figures: { [K in (typeof whole)[number]]?: number } = {};
+	for (const field of whole) {
+		const figure = value[field];
+		if (typeof figure !== "number" || !Number.isSafeInteger(figure) || figure < 0) return {};
+		figures[field] = figure;
+	}
+	const share = (figure: unknown): figure is number =>
+		typeof figure === "number" && Number.isFinite(figure) && figure >= 0;
+	if (!share(value.pressureSome) || !share(value.pressureFull) || !share(value.maxRatio)) return {};
+	const measuredAt = value.measuredAt;
+	const admission = memoryAdmission(value.admission);
+	return {
+		memory: {
+			...(figures as { [K in (typeof whole)[number]]: number }),
+			mode: value.mode as HostMemoryMode,
+			state: value.state as HostMemoryState,
+			pressureSome: Math.min(100, value.pressureSome),
+			pressureFull: Math.min(100, value.pressureFull),
+			maxRatio: value.maxRatio,
+			...(typeof measuredAt === "number" && Number.isSafeInteger(measuredAt) && measuredAt > 0 ? { measuredAt } : {}),
+			...(admission === undefined ? {} : { admission }),
+		},
+	};
+}
+
+/** A host's memory report as it is shown: all but what it admits against (`admission`), the scheduler's alone. */
+export function withoutAdmission(memory: HostMemoryReport): Omit<HostMemoryReport, "admission"> {
+	const { admission: _admission, ...rest } = memory;
+	return rest;
+}
+
+/** A memory report's admission (`HostMemoryAdmission`), or undefined when it isn't one. */
+function memoryAdmission(value: unknown): HostMemoryAdmission | undefined {
+	if (!isObject(value)) return undefined;
+	const whole = (figure: unknown): figure is number =>
+		typeof figure === "number" && Number.isSafeInteger(figure) && figure >= 0;
+	const { reservableMiB, committableMiB, startMiB, headroomMiB, headroomPercent } = value;
+	if (!whole(reservableMiB) || !whole(committableMiB) || !whole(startMiB) || !whole(headroomMiB)) return undefined;
+	if (typeof headroomPercent !== "number" || !Number.isFinite(headroomPercent) || headroomPercent < 0) return undefined;
+	return { reservableMiB, committableMiB, startMiB, headroomMiB, headroomPercent };
 }
 
 /** A capacity's disk measure (`HostDiskUsage`): left out, not refused, when it isn't one, so the rest still stands. */

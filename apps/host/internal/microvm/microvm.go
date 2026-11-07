@@ -57,6 +57,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/mounts"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -216,6 +217,17 @@ type Config struct {
 	// Each create, start or resume and template build is admitted against it (admit), beside what the tier holds. It is
 	// called with the tier's lock held, so it mustn't call the tier. Nil admits everything.
 	Budget func() (memoryMiB, diskGiB int64)
+	// AdmitMemory, when set (memory over-commit on, experimental), admits each create, start or resume and template
+	// build's memory instead of Budget's memory: vm beside held, what the tier holds now (heldVMsLocked). Called with
+	// the tier's lock held, so it mustn't call the tier.
+	AdmitMemory func(vm memplan.VM, held []memplan.VM) error
+	// FreePageReporting boots every microVM's balloon with free page reporting: the guest hands the pages it frees
+	// back to the host, so a VM's resident memory falls after a peak. In the templates' fingerprint.
+	FreePageReporting bool
+	// ExitCause, when set, says why a VM exited that the host didn't end itself ("": not known), such as the kernel's
+	// out-of-memory killer at the host's memory limit: the error its exit is reported with. Called with the sandbox's
+	// lock held, so it mustn't call the tier.
+	ExitCause func() string
 	// Mounts serves sandboxes' read-only bucket mounts; nil refuses a create with mounts.
 	Mounts *mounts.Manager
 	// Bundles is the host's cache of bundle images, for bundle mounts (bundles.go); nil, or BundleDrives 0, refuses
@@ -296,6 +308,12 @@ type sandbox struct {
 	healthAt int64
 	// probe stands in for its guest agent's health in a test (nil: its guest).
 	probe healthClient
+	// killedFor is why the host itself ended the VM killed (memory.go: KillForMemory), the error that machine's exit is
+	// reported with; "" when it didn't.
+	killedFor string
+	killed    *fc.Machine
+	// reclaiming is a Reclaim under way (memory.go), which a stop or snapshot ends first.
+	reclaiming *reclaim
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -393,7 +411,7 @@ func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, driv
 	cfg := fc.BootConfig{
 		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
 		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: bundleDrives(drives),
-		Discard: m.cfg.Discard,
+		Discard: m.cfg.Discard, FreePageReporting: m.cfg.FreePageReporting,
 	}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
@@ -999,6 +1017,10 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 		<-machine.Done()
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		killedFor := ""
+		if s.killed == machine {
+			killedFor, s.killedFor, s.killed = s.killedFor, "", nil
+		}
 		if s.machine != machine {
 			return
 		}
@@ -1017,6 +1039,13 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 		s.meta.State = proto.StateStopped
 		s.meta.Memory = false
 		s.meta.Error = "the VM exited"
+		if killedFor != "" {
+			s.meta.Error = killedFor
+		} else if m.cfg.ExitCause != nil {
+			if why := m.cfg.ExitCause(); why != "" {
+				s.meta.Error = why
+			}
+		}
 		s.meta.Pid = 0
 		_ = m.writeMeta(s)
 		m.log.Warn("sandbox VM exited", "sandbox", s.meta.ID)
@@ -1247,6 +1276,10 @@ func (m *Manager) templateFingerprint(sh shape) string {
 	if m.cfg.Discard {
 		// A template from before keeps a disk without discard, and so would every sandbox restored from it.
 		devices += ",discard"
+	}
+	if m.cfg.FreePageReporting {
+		// The balloon is a device the snapshot keeps: one made without reporting never reports.
+		devices += ",free-page-reporting"
 	}
 	return fc.Fingerprint(images...) + devices + " boot=" + guest.BrowserSurfaceBootArg + psiBootArg + m.shapeKey(sh)
 }
@@ -1776,7 +1809,7 @@ func (m *Manager) register(s *sandbox, size proto.Size) error {
 	if _, ok := m.sandboxes[s.meta.ID]; ok {
 		return conflict("sandbox %s already exists on this host", s.meta.ID)
 	}
-	if err := m.admit(size, "sandbox"); err != nil {
+	if err := m.admit(size, "sandbox", memplan.VM{ID: s.meta.ID, SizeMiB: int64(size.MemoryMiB)}); err != nil {
 		return err
 	}
 	m.sandboxes[s.meta.ID] = s
@@ -1786,12 +1819,24 @@ func (m *Manager) register(s *sandbox, size proto.Size) error {
 // admit refuses (ErrCapacity) a machine of size that the budget hasn't room for beside what the tier holds
 // (heldLocked). Called with m.mu held: what it admits is registered or held before the lock goes, so two never share
 // the same room.
-func (m *Manager) admit(size proto.Size, what string) error {
+//
+// With AdmitMemory (memory over-commit on), memory is admitted by what the machine's VMs use (memplan.Plan.Check)
+// instead of by what they were given; the disk as before.
+func (m *Manager) admit(size proto.Size, what string, vm memplan.VM) error {
 	if m.cfg.Budget == nil {
 		return nil
 	}
 	memory, disk := m.cfg.Budget()
 	used, held := m.heldLocked()
+	if m.cfg.AdmitMemory != nil {
+		if disk-held < int64(size.DiskGiB) {
+			return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("this host hasn't %d GiB of disk free for a %s now", size.DiskGiB, what)}
+		}
+		if err := m.cfg.AdmitMemory(vm, m.heldVMsLocked()); err != nil {
+			return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("no room for a %s of %d MiB: %v", what, size.MemoryMiB, err)}
+		}
+		return nil
+	}
 	if memory-used < int64(size.MemoryMiB) || disk-held < int64(size.DiskGiB) {
 		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("this host hasn't %d MiB and %d GiB free for a %s now", size.MemoryMiB, size.DiskGiB, what)}
 	}
@@ -1807,7 +1852,7 @@ func (m *Manager) holdBuild(id string, size proto.Size) (release func(), err err
 	if _, ok := m.builds[id]; ok {
 		return nil, &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("template snapshot %s is building already", id)}
 	}
-	if err := m.admit(size, "template build"); err != nil {
+	if err := m.admit(size, "template build", memplan.VM{SizeMiB: int64(size.MemoryMiB), Full: true}); err != nil {
 		return nil, err
 	}
 	if m.builds == nil {
@@ -1858,7 +1903,7 @@ func (m *Manager) holdResume(s *sandbox, size proto.Size) (release func(), err e
 	need.DiskGiB = max(0, size.DiskGiB-int(diskUsage(filepath.Join(s.vmDir(), fc.DiskFile))>>30))
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.admit(need, "sandbox to start"); err != nil {
+	if err := m.admit(need, "sandbox to start", memplan.VM{ID: id, SizeMiB: int64(need.MemoryMiB)}); err != nil {
 		return nil, err
 	}
 	if m.resuming == nil {
@@ -1897,7 +1942,7 @@ func (m *Manager) TemplateBuilds() (ids []string, memoryMiB, diskGiB int64) {
 func (m *Manager) holdOwnBuild(sh shape) (release func(), err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.admit(sh.Size, "template build"); err != nil {
+	if err := m.admit(sh.Size, "template build", memplan.VM{SizeMiB: int64(sh.Size.MemoryMiB), Full: true}); err != nil {
 		return nil, err
 	}
 	if m.ownBuilds == nil {
@@ -2503,6 +2548,8 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	}
 	t.step("sync", &start)
 	s.guest.Close()
+	// Its balloon given back first, so its memory isn't saved inflated.
+	s.endReclaimLocked()
 	machine := s.machine
 	if err := machine.Pause(ctx); err != nil {
 		// Its Firecracker doesn't answer (its API socket refused after a reconnect, say): stopped cold, its disk as a
@@ -3055,6 +3102,8 @@ const resumeTries = 3
 // each within resumeWait whatever ctx says; a VM that still won't resume is killed, so it is stopped (with its disk) as
 // an exited VM is, rather than left frozen while it is reported running, and resume says so. Called with s.mu held.
 func (m *Manager) pauseMachine(ctx context.Context, s *sandbox) (resume func() error, err error) {
+	// Its balloon given back first, so a snapshot doesn't save it inflated.
+	s.endReclaimLocked()
 	machine := s.machine
 	resume = func() error {
 		var err error

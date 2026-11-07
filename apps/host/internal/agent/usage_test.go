@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"github.com/lleverage-ai/kantel/apps/host/internal/usage"
 )
@@ -678,6 +680,72 @@ func TestUsageHeldSandboxKeepsItsCounters(t *testing.T) {
 	got := byID(sample)
 	approx(t, "sbx_a", got["sbx_a"].CPU, 0.5)
 	approx(t, "iso_a", got["iso_a"].CPU, 0.2)
+}
+
+// Memory is read of now: the memory plan, and with it the guard, has a new or resumed VM from its first reading, before
+// its CPU has a figure; a held one keeps its place in the plan.
+func TestUsageMemoryPlanHasEveryVMAtOnce(t *testing.T) {
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 10_000, Idle: 9_000},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 0, Start: 7}},
+		rss:   map[int]int64{100: 700 << 20, 200: 3 << 30, 300: 900 << 20},
+		vms:   []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1, MemLimitBytes: 2 << 30}},
+	}
+	s := f.sampler()
+	plan := memplan.New(memplan.Settings{Enabled: true}, 10_000, 2_000, 1.5)
+	t0 := time.Unix(10_000, 0)
+	observe := func(at time.Time) []memplan.Reading {
+		t.Helper()
+		plan.Observe(at, s.memory, hostinfo.Memory{TotalMiB: 12_000, AvailableMiB: 8_000})
+		return plan.Readings()
+	}
+	// The very first sample, which only starts the CPU counters, reads memory.
+	s.sample(t0)
+	if got := observe(t0); len(got) != 1 || got[0].ID != "sbx_a" || got[0].RSSMiB != 700 || got[0].Pid != 100 {
+		t.Fatalf("first sample: %+v", got)
+	}
+	// sbx_b starts between ticks, already holding 3 GiB: no CPU figure yet, but the guard can take it.
+	f.vms = append(f.vms, usage.Process{SandboxID: "sbx_b", Pid: 200, CPUs: 4, MemLimitBytes: 8 << 30})
+	f.procs[200] = usage.ProcCPU{Ticks: 10, Start: 9}
+	f.host.Total += 1_000
+	sample, _ := s.sample(t0.Add(5 * time.Second))
+	if _, ok := byID(sample)["sbx_b"]; ok {
+		t.Fatal("a new VM's CPU has a figure on its first reading")
+	}
+	got := observe(t0.Add(5 * time.Second))
+	if len(got) != 2 || got[0].ID != "sbx_b" || got[0].RSSMiB != 3<<10 || got[0].Pid != 200 || got[0].SizeMiB != 8<<10 {
+		t.Fatalf("with a new VM: %+v", got)
+	}
+	// sbx_a resumes in a new Firecracker, sbx_b is held mid-operation: both stay candidates, sbx_a's new process at once.
+	f.vms = []usage.Process{{SandboxID: "sbx_a", Pid: 300, CPUs: 1, MemLimitBytes: 2 << 30}, {SandboxID: "sbx_b", Held: true}}
+	f.procs[300] = usage.ProcCPU{Ticks: 1, Start: 30}
+	f.host.Total += 1_000
+	s.sample(t0.Add(10 * time.Second))
+	got = observe(t0.Add(10 * time.Second))
+	if len(got) != 2 || got[0].ID != "sbx_b" || got[0].Pid != 200 || got[1].ID != "sbx_a" || got[1].Pid != 300 || got[1].RSSMiB != 900 {
+		t.Fatalf("resumed and held: %+v", got)
+	}
+}
+
+// RunUsage's samples, the very first (no CPU figures yet) too, go through takeUsage, which gives the plan their memory.
+func TestUsageTakeGivesThePlanTheFirstSample(t *testing.T) {
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 10_000, Idle: 9_000},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 0, Start: 7}},
+		rss:   map[int]int64{100: 700 << 20},
+		vms:   []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1, MemLimitBytes: 2 << 30}},
+	}
+	s := f.sampler()
+	s.now = func() time.Time { return time.Unix(10_000, 0) }
+	plan := memplan.New(memplan.Settings{}, 10_000, 2_000, 1.5)
+	h := quietHost()
+	h.plan = plan
+	if _, ok := h.takeUsage(s); ok {
+		t.Fatal("the host's first sample has CPU figures")
+	}
+	if got := plan.Readings(); len(got) != 1 || got[0].ID != "sbx_a" || got[0].RSSMiB != 700 || got[0].Pid != 100 {
+		t.Fatalf("plan after the first sample: %+v", got)
+	}
 }
 
 // The control plane takes an interval of 1 s to 5 minutes: a tick a little early, or the first after the host was
