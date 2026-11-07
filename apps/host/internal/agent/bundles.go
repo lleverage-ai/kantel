@@ -97,6 +97,17 @@ func (h *Host) mountsEvent(info proto.SandboxInfo) {
 	}
 }
 
+// replayHealth sends, once a connection can carry events, a sandbox event for each running sandbox with its guest
+// health (HealthAt set): one that changed between its hello's read and the events being wired would otherwise reach
+// Kantel only in the hello's older read. Its HealthAt orders it against the hello and live events.
+func (h *Host) replayHealth() {
+	for _, info := range h.List() {
+		if info.State == proto.StateRunning && info.HealthAt > 0 {
+			h.sandboxEvent(info)
+		}
+	}
+}
+
 // replayMounts sends, once a connection can carry events, every sandbox's mounts that are settled (ready or failed).
 // A sandbox.mounts event is sent once, so one sent while the host had no connection (a bundle finishing while it was
 // away, or one adopt() finished before the first connection) is otherwise lost, and its mount looks pending for good.

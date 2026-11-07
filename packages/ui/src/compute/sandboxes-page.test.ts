@@ -138,6 +138,8 @@ describe("a sandbox's page", () => {
 		expect(filesShown(stopped, source)).toBe("snapshot");
 		expect(filesShown({ ...running, state: "stopped" }, source)).toBe("none");
 		expect(filesShown(running, {})).toBe("none");
+		// One whose guest agent doesn't answer shows its snapshot's, as a stopped one does.
+		expect(filesShown({ ...stopped, state: "running", unresponsive: "It is out of memory" }, source)).toBe("snapshot");
 	});
 });
 

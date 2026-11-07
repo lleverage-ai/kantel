@@ -220,6 +220,15 @@ export const HOST_FEATURES = {
 	 * keep's answer carries the same. Without it, a snapshot keeps the size it was made with.
 	 */
 	snapshotSizes: "snapshot-sizes",
+	/**
+	 * Guest health: the host asks each running microVM's guest agent for its health, and reports one that stops answering
+	 * (`HostSandbox.health` `unresponsive`, with `healthReason`) in a `sandbox` event and its hello, and again once it
+	 * answers. A stop doesn't wait on a guest that doesn't answer; a start or resume of a sandbox it has running whose agent
+	 * doesn't answer, and a `sandbox.start` with `reset` (a recovery), end its VM (its disk kept, its memory lost) and boot
+	 * it cold from its disk rather than answer it as running; a stop of a sandbox it has stopped answers a snapshot of its
+	 * disk. Without it a recovery of a sandbox the host has running changes nothing there.
+	 */
+	guestHealth: "guest-health",
 } as const;
 
 /**
@@ -488,6 +497,14 @@ export interface HostSandbox {
 	readonly mountsAt?: number;
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
+	/**
+	 * `unresponsive` while a running microVM's guest agent doesn't answer (`HOST_FEATURES.guestHealth`), with
+	 * `healthReason` saying why in words; absent while it answers, and from a host without the feature.
+	 */
+	readonly health?: string;
+	readonly healthReason?: string;
+	/** When its `health` last changed (the host's clock, ms), which orders reports of it; absent: it never has. */
+	readonly healthAt?: number;
 }
 
 /** One thing a microVM's image has or lacks. */

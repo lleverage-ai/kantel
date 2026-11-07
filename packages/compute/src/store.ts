@@ -184,6 +184,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly strandedOn?: readonly string[];
 	/**
+	 * The host's clock (ms) when it set the guest-agent health last taken (`ComputeService.reportHealth`): a report that
+	 * says an earlier or the same time is older than what is here, and is dropped.
+	 */
+	readonly healthAt?: number;
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */

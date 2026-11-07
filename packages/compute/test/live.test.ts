@@ -120,6 +120,23 @@ describe("the live feed", () => {
 		);
 	});
 
+	it("tells it when a running sandbox's guest agent stops answering, and answers again", async () => {
+		const { api, tom } = setup();
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const console = watch(tom);
+		await console.until(() => hellos(console) === 1, "the hello");
+		const host = (await api.store.sandboxes.get(sandbox.id))?.hostId ?? "";
+		await api.service.reportHealth(host, sandbox.id, "unresponsive", "It is out of memory", 1_000);
+		await console.until(() => console.states(sandbox.id).length === 1, "the unresponsive frame");
+		// Its reason changing while it stays unresponsive is told too; the same reason again isn't.
+		await api.service.reportHealth(host, sandbox.id, "unresponsive", "It hasn't answered for 2 minutes", 1_500);
+		await console.until(() => console.states(sandbox.id).length === 2, "the new reason's frame");
+		await api.service.reportHealth(host, sandbox.id, "unresponsive", "It hasn't answered for 2 minutes", 1_600);
+		await api.service.reportHealth(host, sandbox.id, undefined, undefined, 2_000);
+		await console.until(() => console.states(sandbox.id).length === 3, "the healthy frame");
+		expect(console.states(sandbox.id)).toEqual(["running", "running", "running"]);
+	});
+
 	it("tells it of an auto-stop, which no call asked for", async () => {
 		let clock = Date.UTC(2026, 10, 5);
 		const { api, tom } = setup({ now: () => clock });

@@ -240,6 +240,13 @@ const FeatureSnapshotKeep = "snapshot-keep"
 // carries its UniqueBytes and Shared alike.
 const FeatureSnapshotSizes = "snapshot-sizes"
 
+// FeatureGuestHealth (HOST_FEATURES.guestHealth): the host watches each running microVM's guest agent and reports one
+// that stops answering (SandboxInfo.Health, in its events and its hello), and again once it answers; a stop doesn't wait
+// on a guest that doesn't answer; a start or resume of a sandbox it has running whose agent doesn't answer, and a
+// sandbox.start with Reset (a recovery), reset its VM and boot it cold from its disk; a stop of a sandbox it has
+// stopped answers a snapshot of its disk.
+const FeatureGuestHealth = "guest-health"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -371,7 +378,18 @@ type SandboxInfo struct {
 	// than the sandbox's last MountsAt): reports of a sandbox's mounts, from a call's answer, an EventMounts or the
 	// replay after a reconnect, are ordered by it, so one read earlier never replaces a later one.
 	MountsAt int64 `json:"mountsAt,omitempty"`
+	// Health, from a host with FeatureGuestHealth, is HealthUnresponsive while a running microVM's guest agent doesn't
+	// answer, with HealthReason saying why in words (how long, and whether it is out of memory); empty while it does.
+	// The host sends the sandbox's info as an event each time it changes, and once more for each running sandbox once a
+	// connection can carry events. HealthAt (Unix ms) is when it was last set (from its machine's start on): reports of
+	// it are ordered by it, so one sent earlier never replaces a later one.
+	Health       string `json:"health,omitempty"`
+	HealthReason string `json:"healthReason,omitempty"`
+	HealthAt     int64  `json:"healthAt,omitempty"`
 }
+
+// HealthUnresponsive is SandboxInfo.Health for a running sandbox whose guest agent doesn't answer.
+const HealthUnresponsive = "unresponsive"
 
 // GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and
 // Docker that Kantel can open. The compute API passes it on as a sandbox's capabilities.guest.
@@ -788,6 +806,10 @@ type ResumeParams struct {
 	// a host whose current images are another refuses the start before it changes anything, as it hasn't taken that
 	// update. Empty: whatever is current.
 	RebaseTo string `json:"rebaseTo,omitempty"`
+	// Reset, on sandbox.start, is a recovery: a sandbox the host has running is reset (its VM ended as a power cut
+	// would, its disk kept, its memory lost) and booted cold from its disk, rather than answered as running. Without it,
+	// a host with FeatureGuestHealth does the same for a running sandbox whose guest agent doesn't answer.
+	Reset bool `json:"reset,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its

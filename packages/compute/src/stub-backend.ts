@@ -440,7 +440,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			const machine = machineOf(sandboxId);
 			if (keepMemory) microvmOnly(machine, "Pausing with memory");
 			if (machine.fs === undefined) throw new KantelError("conflict", `${sandboxId} has no machine to stop`);
-			const taken = keep(await capture(machine.fs));
+			const taken = { ...keep(await capture(machine.fs)), memory: keepMemory };
 			machine.bash = undefined;
 			machine.ports.clear();
 			if (keepMemory) machine.state = "paused";

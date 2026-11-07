@@ -89,6 +89,7 @@ export {
 	FilesRefusedError,
 	FileTooLargeError,
 	sameProxySettings,
+	sandboxActions,
 	sshWithoutCliCommand,
 } from "./compute/compute-model.ts";
 // Identity: who is signed in, and Kantel's own email-code sign-in.

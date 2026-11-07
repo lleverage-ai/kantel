@@ -604,6 +604,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		sandboxId: string,
 		method: "sandbox.start" | "sandbox.resume",
 		how: BootOptions,
+		reset = false,
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
 		mayUse(hostId, how.eligibleHosts);
@@ -625,6 +626,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(method === "sandbox.start" && how.rebase === true
 				? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
 				: {}),
+			// A recovery: a machine the host has running is reset and booted cold from its disk (`HOST_FEATURES.guestHealth`;
+			// a host without it ignores the field).
+			...(reset ? { reset: true } : {}),
 			...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
 		});
 		const statuses = mounts.status(sandbox);
@@ -811,7 +815,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them, as with every
 		// boot (`boot`).
-		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how, true),
 		async updateEgress(sandboxId, egress, revision) {
 			await call(sandboxId, "sandbox.egress", {
 				egress: hostEgress(egress, options.attributionKey) ?? null,
@@ -837,7 +841,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				undefined,
 				DISK_COPY_TIMEOUT_MS,
 			);
-			return takenOn(hostId, snap);
+			// Whether it kept the memory, said either way: a host that couldn't pause the machine stopped it cold.
+			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},
 		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
 			const out: Placement[] = [];

@@ -597,6 +597,10 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
 		...(sandbox.hostName === undefined ? {} : { hostName: sandbox.hostName }),
 		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
+		// Running, but its guest agent doesn't answer: why, for the page's notice and its Recover.
+		...(sandbox.state === "running" && sandbox.health === "unresponsive"
+			? { unresponsive: sandbox.reason ?? "Its guest agent isn't answering. Recover it: a restart that keeps its disk" }
+			: {}),
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
 		...environmentRefOf(sandbox, context),
