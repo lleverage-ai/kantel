@@ -503,6 +503,8 @@ export interface HostSandbox {
 	 */
 	readonly health?: string;
 	readonly healthReason?: string;
+	/** When its `health` last changed (the host's clock, ms), which orders reports of it; absent: it never has. */
+	readonly healthAt?: number;
 }
 
 /** One thing a microVM's image has or lacks. */

@@ -380,9 +380,12 @@ type SandboxInfo struct {
 	MountsAt int64 `json:"mountsAt,omitempty"`
 	// Health, from a host with FeatureGuestHealth, is HealthUnresponsive while a running microVM's guest agent doesn't
 	// answer, with HealthReason saying why in words (how long, and whether it is out of memory); empty while it does.
-	// The host sends the sandbox's info as an event each time it changes.
+	// The host sends the sandbox's info as an event each time it changes, and once more for each running sandbox whose
+	// health has changed once a connection can carry events. HealthAt (Unix ms) is when it last changed: reports of it
+	// are ordered by it, so one sent earlier never replaces a later one. 0: it never has.
 	Health       string `json:"health,omitempty"`
 	HealthReason string `json:"healthReason,omitempty"`
+	HealthAt     int64  `json:"healthAt,omitempty"`
 }
 
 // HealthUnresponsive is SandboxInfo.Health for a running sandbox whose guest agent doesn't answer.

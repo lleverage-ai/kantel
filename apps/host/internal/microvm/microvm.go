@@ -291,6 +291,8 @@ type sandbox struct {
 	// unresponsive is why its guest agent is taken not to answer (health.go: watchHealth), while it runs; "" while it
 	// answers.
 	unresponsive string
+	// healthAt is when unresponsive last changed (Unix ms; 0: never), SandboxInfo.HealthAt, which orders its reports.
+	healthAt int64
 	// probe stands in for its guest agent's health in a test (nil: its guest).
 	probe healthClient
 }
@@ -707,8 +709,11 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
 	info.Mounts, info.MountsAt = m.mountStatus(s)
-	if s.unresponsive != "" && s.meta.State == proto.StateRunning {
-		info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
+	if s.meta.State == proto.StateRunning {
+		if s.unresponsive != "" {
+			info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
+		}
+		info.HealthAt = s.healthAt
 	}
 	return info
 }
@@ -985,7 +990,9 @@ func egressMode(e *proto.Egress) string {
 // watch marks a sandbox stopped (with an error) when its VM exits without being asked to, and watches its guest
 // agent's health while it runs (watchHealth).
 func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
-	s.unresponsive = ""
+	if s.unresponsive != "" {
+		s.setUnresponsive("")
+	}
 	m.watchHealth(s, machine)
 	go func() {
 		<-machine.Done()
@@ -995,7 +1002,9 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 			return
 		}
 		s.machine = nil
-		s.unresponsive = ""
+		if s.unresponsive != "" {
+			s.setUnresponsive("")
+		}
 		if s.link != nil {
 			m.cfg.Network.Remove(*s.link)
 			m.detach(s.link.Slot)
@@ -2458,7 +2467,16 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	if s.meta.State == proto.StateStopped && p.SnapshotID != "" {
 		// Stopped already (its VM exited or was reset, or an earlier stop the control plane never heard back from): the
 		// stop is done, and answers a snapshot of its disk as it is, so a sandbox the control plane has in error can be
-		// stopped rather than refused.
+		// stopped rather than refused. One paused with its memory and now stopped without it lets that memory go, so its
+		// next start boots from its disk, as the stop said.
+		if !keepMemory && s.meta.Memory {
+			_ = os.Remove(filepath.Join(s.vmDir(), "state"))
+			_ = os.Remove(filepath.Join(s.vmDir(), "mem"))
+			s.meta.Memory = false
+			if err := m.writeMeta(s); err != nil {
+				return proto.SnapshotInfo{}, err
+			}
+		}
 		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: s.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: keepMemory && s.meta.Memory, Tier: Tier}
 		if err := m.saveSnapshot(s, &snap, true); err != nil {
 			return snap, err
@@ -2479,7 +2497,9 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 		_ = s.guest.Sync(sctx)
 		cancel()
 	}
-	s.unresponsive = ""
+	if s.unresponsive != "" {
+		s.setUnresponsive("")
+	}
 	t.step("sync", &start)
 	s.guest.Close()
 	machine := s.machine

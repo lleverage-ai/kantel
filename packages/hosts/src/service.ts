@@ -326,14 +326,15 @@ export interface HostComputeLink {
 	): Promise<void>;
 	/**
 	 * A host's word on whether a running microVM's guest agent answers (`HOST_FEATURES.guestHealth`): `health`
-	 * `unresponsive` with its `reason` while it doesn't, absent once it does (`ComputeService.reportHealth`). Only for a
-	 * sandbox whose placement is on that host.
+	 * `unresponsive` with its `reason` while it doesn't, absent once it does (`ComputeService.reportHealth`), `healthAt`
+	 * ordering them. Only for a sandbox whose placement is on that host.
 	 */
 	reportHealth?(
 		hostId: string,
 		sandboxId: string,
 		health: string | undefined,
 		reason: string | undefined,
+		healthAt?: number,
 	): Promise<void>;
 	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
@@ -706,6 +707,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		typeof sandbox.healthReason === "string" && sandbox.healthReason !== ""
 			? sandbox.healthReason.slice(0, 1000)
 			: undefined;
+	/** When it last changed, when the host says. */
+	const healthAtOf = (sandbox: { healthAt?: unknown }): number | undefined =>
+		typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
+			? sandbox.healthAt
+			: undefined;
 	/** Hosts whose snapshot bases haven't been read on their connection yet (image patching hosts only). */
 	const snapshotBasesDue = new Set<string>();
 	/**
@@ -824,7 +830,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
 			if (latest !== placement) await store.putPlacement(latest);
 			if (watchesHealth && sandbox?.state === "running" && compute?.reportHealth !== undefined) {
-				report(compute.reportHealth(hostId, placement.sandboxId, healthOf(sandbox), healthReasonOf(sandbox)));
+				report(
+					compute.reportHealth(
+						hostId,
+						placement.sandboxId,
+						healthOf(sandbox),
+						healthReasonOf(sandbox),
+						healthAtOf(sandbox),
+					),
+				);
 			}
 			// What its disk is on, where the host says (one without image patching doesn't, and nothing is erased).
 			if (typeof sandbox?.base === "string" && sandbox.base !== "") {
@@ -935,7 +949,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					if (latest !== placement) await store.putPlacement(latest);
 					// A running sandbox's guest health, which a host with `guestHealth` sends an event for each time it changes.
 					if (sandbox.state === "running") {
-						await compute?.reportHealth?.(hostId, sandbox.id, healthOf(sandbox), healthReasonOf(sandbox));
+						await compute?.reportHealth?.(
+							hostId,
+							sandbox.id,
+							healthOf(sandbox),
+							healthReasonOf(sandbox),
+							healthAtOf(sandbox),
+						);
 					}
 				})(),
 			);

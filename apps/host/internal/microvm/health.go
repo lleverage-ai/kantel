@@ -80,7 +80,7 @@ func (m *Manager) watchHealth(s *sandbox, machine *fc.Machine) {
 			if err == nil {
 				misses = 0
 				if s.unresponsive != "" {
-					s.unresponsive = ""
+					s.setUnresponsive("")
 					m.log.Info("sandbox's guest agent answers again", "sandbox", s.meta.ID)
 					m.emit(s)
 				}
@@ -89,13 +89,20 @@ func (m *Manager) watchHealth(s *sandbox, machine *fc.Machine) {
 			}
 			misses++
 			if misses >= limit && s.unresponsive == "" {
-				s.unresponsive = unresponsiveReason(readMemory, machine.Dir, time.Duration(misses)*interval)
+				s.setUnresponsive(unresponsiveReason(readMemory, machine.Dir, time.Duration(misses)*interval))
 				m.log.Warn("sandbox's guest agent doesn't answer", "sandbox", s.meta.ID, "reason", s.unresponsive, "error", err)
 				m.emit(s)
 			}
 			s.mu.Unlock()
 		}
 	}()
+}
+
+// setUnresponsive sets why s's guest agent is taken not to answer ("": it answers), and moves healthAt on, always
+// forward, so its reports stay ordered. Called with s.mu held.
+func (s *sandbox) setUnresponsive(why string) {
+	s.unresponsive = why
+	s.healthAt = max(time.Now().UnixMilli(), s.healthAt+1)
 }
 
 // unresponsiveReason says why a sandbox is unresponsive, in words: its agent hasn't answered for about since, and,
@@ -160,7 +167,9 @@ func (m *Manager) reset(s *sandbox, why string) {
 	s.meta.State = proto.StateStopped
 	s.meta.Memory = false
 	s.meta.Pid = 0
-	s.unresponsive = ""
+	if s.unresponsive != "" {
+		s.setUnresponsive("")
+	}
 	if err := m.writeMeta(s); err != nil {
 		s.unsaved = true
 	}

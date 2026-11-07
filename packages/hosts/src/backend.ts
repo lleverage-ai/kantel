@@ -841,7 +841,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				undefined,
 				DISK_COPY_TIMEOUT_MS,
 			);
-			return takenOn(hostId, snap);
+			// Whether it kept the memory, said either way: a host that couldn't pause the machine stopped it cold.
+			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},
 		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
 			const out: Placement[] = [];

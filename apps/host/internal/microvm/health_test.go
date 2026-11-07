@@ -151,6 +151,52 @@ func TestWatchHealthReportsAnUnresponsiveGuestAndItsReturn(t *testing.T) {
 	if got := ev.all()[1]; got.Health != "" || got.HealthReason != "" {
 		t.Fatalf("event after the agent answered again: %+v", got)
 	}
+	// Each change moves HealthAt on, so Kantel orders them whichever reaches it first.
+	if first, second := ev.all()[0].HealthAt, ev.all()[1].HealthAt; first <= 0 || second <= first {
+		t.Fatalf("HealthAt %d then %d, want them increasing", first, second)
+	}
+}
+
+// A sandbox paused with its memory and then stopped without it lets the memory go, for good: its next start boots
+// from its disk, after a restart of the host too.
+func TestDiskOnlyStopOfAPausedSandboxDropsItsMemory(t *testing.T) {
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root, AutoSnapshots: 2}, log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{}}
+	m.spool = newSpool(filepath.Join(root, "spool"), 0, m.log)
+	s := &sandbox{dir: filepath.Join(root, "sandboxes", "sbx_paused")}
+	s.meta.ID, s.meta.Size, s.meta.State, s.meta.Memory = "sbx_paused", "small", proto.StateStopped, true
+	if err := os.MkdirAll(s.vmDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{fc.DiskFile: "disk", "state": "state", "mem": "mem"} {
+		if err := os.WriteFile(filepath.Join(s.vmDir(), name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.sandboxes[s.meta.ID] = s
+	yes, no := true, false
+	// A memory-keeping stop of it again keeps it.
+	snap, err := m.Stop(context.Background(), proto.StopParams{SandboxID: s.meta.ID, SnapshotID: "snap_kept", Memory: &yes})
+	if err != nil || !snap.Memory || !s.meta.Memory {
+		t.Fatalf("a paused stop again: %+v %v, memory %v", snap, err, s.meta.Memory)
+	}
+	snap, err = m.Stop(context.Background(), proto.StopParams{SandboxID: s.meta.ID, SnapshotID: "snap_disk", Memory: &no})
+	if err != nil || snap.Memory || s.meta.Memory {
+		t.Fatalf("a disk-only stop: %+v %v, memory %v", snap, err, s.meta.Memory)
+	}
+	for _, name := range []string{"state", "mem"} {
+		if _, err := os.Lstat(filepath.Join(s.vmDir(), name)); !os.IsNotExist(err) {
+			t.Fatalf("its %s is still there: %v", name, err)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(s.dir, "meta.json"))
+	if err != nil || strings.Contains(string(raw), `"memory":true`) {
+		t.Fatalf("its written state: %s %v", raw, err)
+	}
+	// The earlier snapshot is kept, its memory let go as the automatic snapshots' pruning does for all but the newest.
+	if raw, err := os.ReadFile(filepath.Join(m.snapshotDir("snap_kept"), fc.DiskFile)); err != nil || string(raw) != "disk" {
+		t.Fatalf("the earlier snapshot's disk: %q %v", raw, err)
+	}
 }
 
 // A guest that isn't out of memory is unresponsive without that being said.

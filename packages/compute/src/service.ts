@@ -101,7 +101,14 @@ import {
 	reportMountStatuses,
 } from "./mounts-service.ts";
 import { isPlaceholderName, personName } from "./names.ts";
-import { delay, portNotRunningText, START_HOLD_MS, START_POLL_MS, sandboxNotRunning } from "./not-running.ts";
+import {
+	delay,
+	portNotRunningText,
+	START_HOLD_MS,
+	START_POLL_MS,
+	sandboxNotRunning,
+	sandboxUnresponsive,
+} from "./not-running.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -541,16 +548,17 @@ export interface ComputeService {
 	): Promise<ResolvedBucketSource | undefined>;
 	/**
 	 * A host's word on whether a running microVM's guest agent answers (`HOST_FEATURES.guestHealth`), from its events and
-	 * its hello: `health` `unresponsive`, with the host's `reason`, moves a `running` sandbox on `hostId` to `error`
-	 * (`health` `degraded`), since its commands and files would hang; anything else, once its agent answers again, moves
-	 * one that report put in `error` back to `running` with the stop time it had. Dropped for a sandbox on another host or
-	 * in any other state (one being recovered, stopped or started is that call's).
+	 * its hello: `health` `unresponsive`, with the host's `reason`, marks a `running` sandbox on `hostId` so, which
+	 * refuses its commands and files at once (they would hang); anything else, once its agent answers again, makes it `ok`.
+	 * `healthAt` is the host's clock when it set the health: a report no later than the last taken is dropped. Dropped for
+	 * a sandbox on another host or in any other state (one being recovered, stopped or started is that call's).
 	 */
 	reportHealth(
 		hostId: string,
 		sandboxId: string,
 		health: string | undefined,
 		reason: string | undefined,
+		healthAt?: number,
 	): Promise<void>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
@@ -3149,8 +3157,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
-			// Unresponsive only in the `error` its host's report wrote (`reportHealth`).
-			unresponsive: extra.unresponsive,
+			// Its agent's health is its running machine's: a boot or a stop leaves none unresponsive (`reportHealth`).
+			...(sandbox.health === "unresponsive" && extra.health === undefined ? { health: "ok" as const } : {}),
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
@@ -3269,6 +3277,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
 					const sandbox = await settled(sandboxId);
 					if (sandbox.state === "running") {
+						// Its guest agent doesn't answer its host: the call would only hang.
+						if (sandbox.health === "unresponsive") throw sandboxUnresponsive(sandbox, apiBasePath);
 						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
 						noteActivity(sandbox.id);
 						return sandbox;
@@ -4074,48 +4084,45 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * `ComputeService.reportHealth`: a running sandbox whose guest agent its host says doesn't answer is put in `error`
-	 * with the host's reason, its commands and files then refused at once (`sandbox_error`, with what to do) rather than
-	 * left to hang; recover it (a reset that keeps its disk), stop it or start it. Its ports stay, for the agent answering
-	 * again, which puts it back as it was.
+	 * `ComputeService.reportHealth`: a running sandbox whose guest agent its host says doesn't answer stays `running`
+	 * (its machine is up: its egress, auto-stop, idle stop and allocation go on as for any running sandbox) with `health`
+	 * `unresponsive` and the host's reason, and its commands and files are refused at once (`sandbox_unresponsive`)
+	 * rather than left to hang. Recover it (a reset that keeps its disk), or stop and start it; its agent answering
+	 * again makes it `ok`. Reports are ordered by `healthAt`, the host's clock when it set them: one no later than the
+	 * last taken is dropped, so a delayed report never undoes a newer one.
 	 */
 	async function reportHealth(
 		hostId: string,
 		sandboxId: string,
 		health: string | undefined,
 		reason: string | undefined,
+		healthAt?: number,
 	): Promise<void> {
 		const unresponsive = health === "unresponsive";
-		let previous: StoredSandbox | undefined;
+		const at = typeof healthAt === "number" && Number.isSafeInteger(healthAt) && healthAt > 0 ? healthAt : undefined;
+		let changed: "unresponsive" | "ok" | undefined;
 		const written = await store.sandboxes.update(sandboxId, (current) => {
-			previous = undefined;
-			if (current.hostId !== hostId) return undefined;
-			if (unresponsive && current.state === "running") {
-				previous = current;
-				return withState(current, "error", {
-					health: "degraded",
-					reason: unresponsiveReason(reason),
-					unresponsive: current.stopsAt === undefined ? {} : { stopsAt: current.stopsAt },
-				});
+			changed = undefined;
+			if (current.hostId !== hostId || current.state !== "running") return undefined;
+			if (at !== undefined && current.healthAt !== undefined && at <= current.healthAt) return undefined;
+			const stamped = at === undefined ? {} : { healthAt: at };
+			if (unresponsive) {
+				const why = unresponsiveReason(reason);
+				if (current.health !== "unresponsive") changed = "unresponsive";
+				else if (current.reason === why) return at === undefined ? undefined : { ...current, ...stamped };
+				return { ...current, ...stamped, health: "unresponsive", reason: why };
 			}
-			if (!unresponsive && current.state === "error" && current.unresponsive !== undefined) {
-				previous = current;
-				// Its stop time as it was: past now, the sweep stops it.
-				return { ...withState(current, "running", { health: "ok" }), stopsAt: current.unresponsive.stopsAt };
-			}
-			return undefined;
+			if (current.health !== "unresponsive") return at === undefined ? undefined : { ...current, ...stamped };
+			changed = "ok";
+			return { ...current, ...stamped, health: "ok", reason: undefined };
 		});
-		if (previous === undefined || written === undefined) return;
-		if (written.state === "error") {
-			await killCommandsOf(sandboxId).catch(() => undefined);
-			await emit("sandbox.error", written.accountId, {
-				sandbox: written,
-				data: { previousState: previous.state, reason: written.reason },
-			});
+		if (changed === undefined || written === undefined) return;
+		if (changed === "unresponsive") {
+			await emit("sandbox.degraded", written.accountId, { sandbox: written, data: { reason: written.reason } });
 		} else {
 			await emit("sandbox.recovered", written.accountId, {
 				sandbox: written,
-				data: { previousState: previous.state, reason: "Its guest agent answers again" },
+				data: { reason: "Its guest agent answers again" },
 			});
 		}
 	}
@@ -4164,6 +4171,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			try {
 				await killCommandsOf(sandbox.id);
 				const taken = await backend.stop(sandbox.id, { keepMemory });
+				// What it kept: a host that couldn't pause the machine (its Firecracker not answering) stops it cold, and says
+				// so (`memory: false`); it is then stopped, not paused.
+				const kept = keepMemory && taken.memory !== false;
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -4173,7 +4183,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: sandbox.type,
 					state: "ready",
 					trigger: "stop",
-					memory: keepMemory,
+					memory: kept,
 					...recordedMachine(sandbox),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
@@ -4184,18 +4194,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
-					withState(current, keepMemory ? "paused" : "stopped", {
+					withState(current, kept ? "paused" : "stopped", {
 						latestSnapshotId: snapshot.id,
 						latestSnapshotAt: snapshot.createdAt,
 						ports: [],
-						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
+						pausedSnapshotId: kept ? snapshot.id : undefined,
 						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
 						reason,
 					}),
 				);
 				if (!("moved" in result)) return;
 				const next = result.moved;
-				await emit(keepMemory ? "sandbox.paused" : "sandbox.stopped", next.accountId, {
+				await emit(kept ? "sandbox.paused" : "sandbox.stopped", next.accountId, {
 					sandbox: next,
 					data: {
 						previousState: sandbox.state,
@@ -6437,9 +6447,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if ((current.state === "stopped" && !keepMemory) || (current.state === "paused" && keepMemory)) {
 				return sandboxView(current, principal);
 			}
-			// One in `error` on a host (its guest agent unresponsive, its host lost while it ran) is stopped too, without its
-			// memory: its host ends its machine, or answers its disk where it has none running, rather than the stop being
-			// refused until a resume. One in `error` that never got a host has nothing to stop.
+			// One in `error` on a host (its host lost while it ran, a stop that failed) is stopped too, without its memory:
+			// its host ends its machine, or answers its disk where it has none running, rather than the stop being refused
+			// until a resume. One in `error` that never got a host has nothing to stop.
 			const stopsError = current.state === "error" && current.hostId !== undefined && !keepMemory;
 			if (current.state !== "running" && !(current.state === "paused" && !keepMemory) && !stopsError) {
 				throw new KantelError("conflict", `The sandbox is ${current.state}`);

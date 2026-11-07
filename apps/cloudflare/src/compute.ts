@@ -603,6 +603,9 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
 		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
 		activity: (sandboxId) => api.service.noteActivity(sandboxId),
+		// Whether a running microVM's guest agent answers, so one that doesn't refuses its calls rather than hanging them.
+		reportHealth: (hostId, sandboxId, health, reason, healthAt) =>
+			api.service.reportHealth(hostId, sandboxId, health, reason, healthAt),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);

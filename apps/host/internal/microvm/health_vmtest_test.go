@@ -60,7 +60,8 @@ func TestUnresponsiveGuest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	// The one in use at the end: the test restarts it.
+	defer func() { m.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	const id = "sbx_unresponsive"
@@ -164,5 +165,30 @@ func TestUnresponsiveGuest(t *testing.T) {
 	}
 	if got := run("cat /var/tmp/k/marker"); got != "kept" {
 		t.Fatalf("marker after stop and start %q", got)
+	}
+
+	// Paused with its memory, then stopped without it: the memory goes for good, so its next start (after the host
+	// restarts, too) boots from its disk.
+	pausedBoot := bootID()
+	yes := true
+	if snap, err := m.Stop(ctx, proto.StopParams{SandboxID: id, SnapshotID: "snap_unresp_3", Memory: &yes}); err != nil || !snap.Memory {
+		t.Fatalf("the pause: %+v %v", snap, err)
+	}
+	if snap, err := m.Stop(ctx, proto.StopParams{SandboxID: id, SnapshotID: "snap_unresp_4", Memory: &no}); err != nil || snap.Memory {
+		t.Fatalf("the disk-only stop of a paused sandbox: %+v %v", snap, err)
+	}
+	m.Close()
+	m, err = New(m.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Resume(ctx, proto.ResumeParams{SandboxID: id}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := bootID(); got == pausedBoot {
+		t.Fatal("a sandbox stopped without its memory resumed its memory")
+	}
+	if got := run("cat /var/tmp/k/marker"); got != "kept" {
+		t.Fatalf("marker after the disk-only stop of a paused sandbox %q", got)
 	}
 }
