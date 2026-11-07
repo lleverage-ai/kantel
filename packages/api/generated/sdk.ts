@@ -1431,7 +1431,7 @@ export interface Sandbox {
 	/** The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes. */
 	readonly shape?: SandboxShape;
 	readonly resources?: SandboxResources;
-	/** The base image a microVM was made from, such as `ubuntu-24.04`. */
+	/** The base image a microVM was made from, such as `ubuntu-26.04`. */
 	readonly image?: string;
 	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;

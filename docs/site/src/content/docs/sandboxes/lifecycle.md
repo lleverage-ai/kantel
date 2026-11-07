@@ -74,7 +74,7 @@ The answer is the [Sandbox](/api/reference/types/#sandbox). An abridged one:
   "name": "fix-login-bug",
   "type": "microvm",
   "size": "default",
-  "image": "ubuntu-24.04",
+  "image": "ubuntu-26.04",
   "state": "running",
   "visibility": "private",
   "capabilities": { "exec": true, "files": true, "ssh": true, "desktop": true, "browser": true, "ports": true, "docker": true, "kvm": true, "pause": true },
@@ -91,7 +91,7 @@ The fields you can set when you create one:
 | --- | --- |
 | `type` | `isolate` (the default) or `microvm`. See [Isolates and microVMs](/sandboxes/types/) |
 | `size` | A microVM's size: `small`, `default`, `large` or `xlarge`. A deployment may offer fewer |
-| `image` | A microVM's base image, such as `ubuntu-24.04`. Without it, the deployment's default |
+| `image` | A microVM's base image, such as `ubuntu-26.04`. Without it, the deployment's default |
 | `from` | Start from a snapshot instead: a snapshot's ID, or the name of a [saved snapshot](/snapshots/saved/) |
 | `name` | Up to 63 characters. Without it, a generated name such as `brave-otter` |
 | `autoStopMinutes` | Minutes after each start before it stops by itself. Default 60, at most 43,200 (30 days); `null` never |

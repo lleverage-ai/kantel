@@ -429,7 +429,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 
 	return {
 		async capabilities(): Promise<BackendCapabilities> {
-			return { types, sizes: SIZES, defaultImage: "ubuntu-24.04", hosts: [host] };
+			return { types, sizes: SIZES, defaultImage: "ubuntu-26.04", hosts: [host] };
 		},
 
 		create,

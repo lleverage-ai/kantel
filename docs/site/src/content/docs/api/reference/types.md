@@ -1234,7 +1234,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
 | `shape` | [SandboxShape](/api/reference/types/#sandboxshape) | no |  |
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
-| `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
+| `image` | string | no | The base image a microVM was made from, such as `ubuntu-26.04`. |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
 | `health` | [SandboxHealth](/api/reference/types/#sandboxhealth) | no |  |
 | `reason` | string | no | Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none. |

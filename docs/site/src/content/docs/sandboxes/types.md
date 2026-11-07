@@ -59,7 +59,30 @@ A microVM's disk can be larger than its size gives, without more vCPUs or memory
 
 ## Base images
 
-A microVM starts from a base image, such as `ubuntu-24.04`, which its `image` field names. Leave `image` out to get the deployment's default. To start every sandbox with your own tools already installed, set one up once and save it as a [saved snapshot](/snapshots/saved/), then create from that with `from`.
+A microVM starts from a base image, such as `ubuntu-26.04`, which its `image` field names. Leave `image` out to get the deployment's default. To start every sandbox with your own tools already installed, set one up once and save it as a [saved snapshot](/snapshots/saved/), then create from that with `from`.
+
+Kantel's own image, which hosts run unless their operator set another, is Ubuntu 26.04 LTS with systemd, Docker, git, build tools, Python 3, Go, Node, an Openbox desktop with Chromium, and SSH. `/etc/kantel/image.json` in a sandbox lists the version of each part that went in.
+
+### Node
+
+The image has one Node: Node 26, installed in `/usr/local`, so `node`, `npm` and `npx` are in `/usr/local/bin`, which comes before `/usr/bin` on every command's default `PATH` (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`). It has no `corepack`, which Node stopped shipping in Node 25: install pnpm or Yarn with `npm install -g`.
+
+A project that needs another Node, such as the Node 24 its `.nvmrc` names, installs it beside the image's in a directory of its own, `/opt/node24` here, and puts that directory first on `PATH`. On arm64, use the `linux-arm64` file:
+
+```sh
+kantel exec sbx_4kq9x2mt -- bash -c '
+  curl -fsSL https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz -o /tmp/node.tar.xz
+  sudo mkdir -p /opt/node24
+  sudo tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1'
+```
+
+Then pick one:
+
+- for one command, `kantel exec sbx_4kq9x2mt -- env PATH=/opt/node24/bin:/usr/local/bin:/usr/bin:/bin node -v`;
+- for every command in the sandbox, set `PATH` in its `env` when you create it (`kantel new --type microvm --env PATH=/opt/node24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`), which replaces the default `PATH`;
+- for SSH and desktop logins, add `export PATH=/opt/node24/bin:$PATH` to `~/.profile`.
+
+Without one of these, `node` is the image's Node 26. Save the sandbox as a [saved snapshot](/snapshots/saved/) to keep the extra Node for every sandbox made from it. A tool that caches by Node version, such as Turbo, misses a cache built with the other Node, so build and use a snapshot's caches with the same one.
 
 ## Placing sandboxes on hosts
 
