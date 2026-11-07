@@ -199,7 +199,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 ==> Install kantel-host 0.3.0
   copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
 ==> Fetch Firecracker and the sandbox images
-  check  images host-images-20261107 from https://kantel.example.com/v1/hosts/images/manifest.json
+  check  images host-images-20261107.1 from https://kantel.example.com/v1/hosts/images/manifest.json
   mkdir  /var/lib/kantel-host (mode 0755)
   mkdir  /var/lib/kantel-host/bin (mode 0755)
   get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
