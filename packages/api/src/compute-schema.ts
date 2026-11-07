@@ -833,7 +833,7 @@ export const Sandbox = Type.Object(
 		shape: Type.Optional(SandboxShape),
 		resources: Type.Optional(SandboxResources),
 		image: Type.Optional(
-			Type.String({ description: "The base image a microVM was made from, such as `ubuntu-24.04`." }),
+			Type.String({ description: "The base image a microVM was made from, such as `ubuntu-26.04`." }),
 		),
 		state: SandboxState,
 		health: Type.Optional(SandboxHealth),
