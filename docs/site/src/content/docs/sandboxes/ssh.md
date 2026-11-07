@@ -164,4 +164,8 @@ Host kantel-fix-login-bug
 
 The relay URL in `ProxyCommand` works for an hour at most, so run `kantel ssh sbx_4kq9x2mt --ttl 60` and copy in the new one before you reconnect. A connection that is already open stays open.
 
+## SSH out of a sandbox
+
+This page is about SSH into a sandbox. For SSH from a sandbox to somewhere else, such as `git clone git@github.com:…`, see [Git over SSH](/sandboxes/egress-proxy/#git-over-ssh): a microVM has no DNS and reaches the internet only through the egress proxy, and its image sets `ssh` up to use the proxy for GitHub.
+
 <!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:665-679, packages/api/src/compute-schema.ts:644-669; the relay: packages/hosts/src/backend.ts (openSsh), packages/hosts/src/tunnel.ts, packages/cli/src/ssh-proxy.ts. The CLI and the relay's scp and port forward (5be456c): packages/cli/src/commands.ts:1114-1125,1269-1345, packages/hosts/src/tunnel.ts:1-70; run through a local host for TASK-4706 -->

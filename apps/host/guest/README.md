@@ -18,6 +18,10 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
   own Chromium is a snap, and Google Chrome can't be redistributed)
 - Selkies, streaming the desktop to a browser
 - OpenSSH, the guest agent (`kantel-guest`) and `kantel-init`
+- `kantel-connect` (the guest agent), ssh's `ProxyCommand` through the egress proxy, which
+  `/etc/ssh/ssh_config.d/kantel.conf` uses for `github.com` (to `ssh.github.com:443`), with GitHub's published host
+  keys in `/etc/ssh/ssh_known_hosts`: a sandbox has no DNS and no route out but the proxy, which ssh doesn't read
+  (docs: Egress proxy, "Git over SSH"). Update the keys if GitHub changes them; the build checks they parse
 
 `/etc/kantel/image.json` records every version that went in (`kantel-image-info` writes it at build time), and
 `/usr/share/kantel/packages.tsv` every package with its source package. What the image bundles, under which licences,

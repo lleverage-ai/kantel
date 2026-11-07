@@ -33,6 +33,40 @@ Whatever the account's rules say, the proxy refuses private, loopback and link-l
 
 Without proxy settings, a sandbox reaches any public address. That is the host's `egress` setting of `open`. A host set to `none` gives such sandboxes no network at all, not even the proxy. Once an account turns its settings on, its sandboxes use the proxy with those settings on any host.
 
+### Git over SSH
+
+`ssh` doesn't read the proxy variables, so a microVM's image comes with `kantel-connect`, which opens an SSH connection through the proxy with `CONNECT`, and SSH settings that use it for GitHub. `git clone git@github.com:acme/app.git` works as it does anywhere else, given a key GitHub accepts:
+
+```text
+# /etc/ssh/ssh_config.d/kantel.conf
+Host github.com
+	HostName ssh.github.com
+	Port 443
+	HostKeyAlias github.com
+	ProxyCommand /usr/local/bin/kantel-connect %h %p
+```
+
+GitHub's connection goes to `ssh.github.com` on port 443, where GitHub serves SSH for networks that let only HTTPS's port out, so an upstream proxy that allows only 443 doesn't get in its way. GitHub's [published host keys](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints) are in `/etc/ssh/ssh_known_hosts`, so the first connection isn't asked to trust an unknown key. `kantel-connect` goes through the forwarder on `127.0.0.1:3128`, so it keeps working after a fork or resume and under `sudo`, which drops the proxy variables.
+
+For another host, add the same `ProxyCommand` to `~/.ssh/config`, which `ssh` reads first:
+
+```text
+Host gitlab.com
+	ProxyCommand /usr/local/bin/kantel-connect %h %p
+```
+
+The first connection to a host whose key isn't known asks you to trust it, or fails under `BatchMode`. Add its key to `~/.ssh/known_hosts` first: `ssh-keyscan` can't fetch it, since it doesn't use a `ProxyCommand`.
+
+The proxy's rules apply as to any `CONNECT`. An allow list needs `ssh.github.com` (or `*.github.com`), not only `github.com`. A refusal is printed with the proxy's reason, such as `kantel-connect: ssh.github.com:443: kantel egress: not on the proxy settings' allow list.` A grant with methods or paths on `ssh.github.com`, or a protected variable bound to it (or to `*.github.com`), makes the proxy read TLS on its port 443, which SSH doesn't speak, so bind GitHub tokens to `github.com` and `api.github.com` rather than `*.github.com`.
+
+A private key is a file the sandbox has to read: it can't be a [protected variable](/sandboxes/environments/#which-credentials-suit-protected-mode). Use a deploy key or a short-lived key, and remove it when you're done. Where that's not acceptable, use `git` over HTTPS with a protected token, which the sandbox never holds:
+
+```sh
+git clone https://x-access-token:$GITHUB_TOKEN@github.com/acme/app.git
+```
+
+The image's `kantel-connect` and its SSH settings come with the sandbox images from `host-images-20261107.1` on. In an image that boots with the injected guest agent (a [custom image](/sandboxes/custom-images/)), it is `/.kantel/bin/kantel-connect`, with no SSH settings: add the `Host` block above to the image or to `~/.ssh/config` with that path. On an older image, `kantel-guest connect %h %p` doesn't exist either; copy a newer `kantel-guest` in, or use HTTPS.
+
 ## Set the proxy settings
 
 Each account has one set of settings. Read them with `GET /v1/proxy`, which needs `account:read`, and replace them with `PUT /v1/proxy`, which needs `account:admin`. The console's **Egress proxy** page edits the same settings. The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start).
@@ -185,4 +219,4 @@ Kantel-Signature: t=1793698834,v1=<hex>
 
 `v1` is the HMAC-SHA256, keyed with that secret, of the timestamp, the sandbox and the account, joined with newlines. Without the key the headers go unsigned, so an upstream that trusts them should check the signature and the timestamp's age. A sandbox can't set these itself: the host drops any `Kantel-Sandbox`, `Kantel-Account`, `Kantel-Attribution` or `Kantel-Signature` header a sandbox sends. A user name a program puts in its proxy URL, such as `http://run-42@10.231.0.9:3129`, arrives as `Kantel-Attribution: claimed; run-42`. That is the sandbox's own label, not something the host vouches for.
 
-<!-- Sources (5be456c): apps/host/internal/egress/egress.go:1-60,146-260,261-460, apps/host/internal/network/network.go:1-25, apps/host/internal/agent/host.go:268-300, apps/host/internal/agent/config.go:47-60, apps/host/internal/proto/proto.go:170-195, apps/host/guest/README.md (what listens where), packages/hosts/src/backend.ts:76-93,276-278, packages/compute/src/service.ts:460-490,2091-2140, packages/api/src/compute-routes.ts:990-1018, packages/api/src/compute-schema.ts:941-997, apps/console/src/compute/api-source.ts:491-566, apps/selfhosted/src/gateway/compute.ts:35-42. Run end to end on a local host for TASK-4706. -->
+<!-- Sources (5be456c): apps/host/internal/egress/egress.go:1-60,146-260,261-460, apps/host/internal/network/network.go:1-25, apps/host/internal/agent/host.go:268-300, apps/host/internal/agent/config.go:47-60, apps/host/internal/proto/proto.go:170-195, apps/host/guest/README.md (what listens where), packages/hosts/src/backend.ts:76-93,276-278, packages/compute/src/service.ts:460-490,2091-2140, packages/api/src/compute-routes.ts:990-1018, packages/api/src/compute-schema.ts:941-997, apps/console/src/compute/api-source.ts:491-566, apps/selfhosted/src/gateway/compute.ts:35-42. Run end to end on a local host for TASK-4706. Git over SSH: apps/host/cmd/kantel-guest/connect.go, apps/host/guest/rootfs/etc/ssh/ (lleverage-ai/kantel#797). -->
