@@ -46,7 +46,7 @@ export const RELEASE_TOKEN_MIN_LENGTH = 32;
  * lleverage-ai/kantel, made by apps/host/guest/release.sh. Pinned to one release, so a new image reaches hosts only
  * when this changes (or a self-hosted gateway's KANTEL_COMPUTE_IMAGES points elsewhere).
  */
-export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261105.1";
+export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261107";
 const ADMIN_HOSTS = "/v1/admin/hosts";
 const ADMIN_SANDBOXES = "/v1/admin/compute/sandboxes";
 
