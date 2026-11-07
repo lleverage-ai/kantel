@@ -27,6 +27,7 @@ import {
 	type SandboxNotRunning,
 	type SandboxSizeName,
 	type SandboxType,
+	type Snapshot,
 } from "@kantel/api/sdk";
 import {
 	AGENTS_BLOCK,
@@ -515,7 +516,39 @@ function issuedKey(issued: IssuedApiKey): string {
 	].join("\n");
 }
 
-/** A command's exit code: its own, 124 when it timed out (as timeout(1) does), 137 when it was killed. */
+/** A snapshot, for `kantel snapshot info`: what it holds, and when its state was taken and saved. */
+function describeSnapshot(snapshot: Snapshot): string {
+	const labels = Object.entries(snapshot.labels ?? {}).map(([key, value]) => `${key}=${value}`);
+	const resources = snapshot.resources;
+	const machine = [
+		snapshot.sandboxType,
+		snapshot.size,
+		resources === undefined ? undefined : `${resources.vcpus} vCPU, ${resources.memoryMb} MB, ${resources.diskGb} GB`,
+	].filter((part) => part !== undefined);
+	const at = (time: number) => `${timestamp(time)} (${ago(time)})`;
+	const base = snapshot.base;
+	return fields([
+		["id", snapshot.id],
+		["name", snapshot.name],
+		["kind", snapshot.memory ? `${snapshot.kind}, memory` : snapshot.kind],
+		["state", snapshot.state],
+		["description", snapshot.description],
+		["labels", labels.join(", ")],
+		["sandbox", snapshot.sandboxId],
+		["machine", machine.join(", ")],
+		["base", base === undefined ? undefined : `${base.version ?? base.image}${base.outdated ? " (outdated)" : ""}`],
+		["size", snapshot.sizeBytes === undefined ? undefined : bytes(snapshot.sizeBytes)],
+		["uses", snapshot.uses === undefined ? undefined : String(snapshot.uses)],
+		// The state's own time, where a save copied an older snapshot; else it is the save's.
+		[
+			"taken",
+			snapshot.takenAt === undefined || snapshot.takenAt === snapshot.createdAt ? undefined : at(snapshot.takenAt),
+		],
+		[snapshot.kind === "saved" ? "saved" : "taken", at(snapshot.createdAt)],
+		["expires", snapshot.expiresAt === undefined ? undefined : until(snapshot.expiresAt)],
+	]);
+}
+
 /** One of an account's own hosts, for `kantel host info`. */
 function describeHost(host: Host): string {
 	const labels = Object.entries(host.labels).map(([key, value]) => `${key}=${value}`);
@@ -666,6 +699,14 @@ function openIfPerson(ctx: Context, url: string): void {
 }
 
 const ID_ARG: readonly Arg[] = [{ name: "id" }];
+
+/** `snapshot take` and `snapshot save`'s --label. */
+const SNAPSHOT_LABEL_FLAG: FlagSpec = {
+	type: "string",
+	multiple: true,
+	value: "<k=v>",
+	description: "A label, such as git.base=<commit>; repeat for more",
+};
 
 /** `snapshot take` and `snapshot save`'s --memory. */
 const MEMORY_FLAG =
@@ -2056,16 +2097,47 @@ const SECTIONS: readonly Section[] = [
 				},
 			},
 			{
+				name: "snapshot info",
+				summary: "A snapshot's details: what it holds, its labels, and when it was taken and saved",
+				args: [{ name: "snapshot" }],
+				details: "Give a snapshot's ID, or a saved snapshot's name.",
+				async run(ctx) {
+					const client = await ctx.client();
+					const wanted = ctx.arg(0);
+					let snapshotId = wanted;
+					if (!wanted.startsWith("snap_")) {
+						// A name: the account's saved snapshots, page by page, as `--from` finds one.
+						const config = await ctx.config();
+						let cursor: string | undefined;
+						let found: Snapshot | undefined;
+						do {
+							const page = await client.listSnapshots({ account: config.account, kind: "saved", cursor });
+							found = page.items.find((snapshot) => snapshot.name === wanted);
+							cursor = page.nextCursor ?? undefined;
+						} while (found === undefined && cursor !== undefined);
+						if (found === undefined)
+							throw new CliError(
+								`there is no saved snapshot called "${wanted}": kantel snapshot list --saved shows them`,
+							);
+						snapshotId = found.id;
+					}
+					const snapshot = await client.getSnapshot(snapshotId);
+					ctx.emit(snapshot, () => describeSnapshot(snapshot));
+				},
+			},
+			{
 				name: "snapshot take",
 				summary: "Add a snapshot of a sandbox's disk to its history now",
 				args: ID_ARG,
 				flags: {
 					description: { type: "string", value: "<text>", description: "What it holds" },
+					label: SNAPSHOT_LABEL_FLAG,
 					memory: { type: "boolean", description: MEMORY_FLAG },
 				},
 				async run(ctx) {
 					const snapshot = await (await ctx.client()).takeSnapshot(ctx.arg(0), {
 						description: ctx.string("description"),
+						labels: pairs(ctx.list("label"), "--label"),
 						memory: ctx.boolean("memory") ? true : undefined,
 					});
 					ctx.emit(snapshot, () => `${snapshot.id} ${snapshot.state}`);
@@ -2078,6 +2150,7 @@ const SECTIONS: readonly Section[] = [
 				flags: {
 					replace: { type: "boolean", description: "Replace a saved snapshot of the same name" },
 					description: { type: "string", value: "<text>", description: "What it holds" },
+					label: SNAPSHOT_LABEL_FLAG,
 					snapshot: { type: "string", value: "<id>", description: "Save this snapshot of its history; default now" },
 					memory: { type: "boolean", description: MEMORY_FLAG },
 				},
@@ -2087,6 +2160,7 @@ const SECTIONS: readonly Section[] = [
 						name: ctx.arg(1),
 						snapshotId: ctx.string("snapshot"),
 						description: ctx.string("description"),
+						labels: pairs(ctx.list("label"), "--label"),
 						replace: ctx.boolean("replace") ? true : undefined,
 						memory: ctx.boolean("memory") ? true : undefined,
 					});

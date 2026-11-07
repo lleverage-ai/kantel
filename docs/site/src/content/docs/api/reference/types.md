@@ -1539,6 +1539,7 @@ One of: `"private"` or `"organisation"`.
 | `sandboxId` | string | yes | The sandbox to save, running or stopped. |
 | `snapshotId` | string | no | Save this snapshot of the sandbox's history. Default: its state now. |
 | `description` | string | no |  (at most 500 characters) |
+| `labels` | Record&lt;string, string&gt; | no | Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. |
 | `replace` | boolean | no | Replace a saved snapshot of the same name. |
 | `memory` | boolean | no | Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is. |
 
@@ -1609,6 +1610,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `kind` | [SnapshotKind](/api/reference/types/#snapshotkind) | yes |  |
 | `name` | string | no | A saved snapshot's name, unique in its account. |
 | `description` | string | no |  |
+| `labels` | Record&lt;string, string&gt; | no | Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. |
 | `sandboxId` | string | no | The sandbox it was taken of; absent once that is deleted. |
 | `sandboxType` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
 | `state` | [SnapshotState](/api/reference/types/#snapshotstate) | yes |  |
@@ -1619,6 +1621,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `sizeBytes` | integer | no | The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. |
 | `uses` | integer | no | How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. (minimum 0) |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `takenAt` | integer | no | When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept. |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
@@ -1678,6 +1681,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `description` | string | no |  (at most 500 characters) |
+| `labels` | Record&lt;string, string&gt; | no | Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. |
 | `memory` | boolean | no | Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. |
 
 ### TelemetryExport

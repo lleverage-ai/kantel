@@ -247,7 +247,7 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 | [Commands](/sandboxes/commands-and-files/) | `exec [-d] [--timeout <s>]`, `attach`, `ps`, `kill` |
 | [Files](/sandboxes/commands-and-files/) | `scp [-r]`, `push`, `files ls`, `files cat`, `files put`, `files get`, `files rm` |
 | [Ports](/sandboxes/public-ports/), [SSH](/sandboxes/ssh/), [desktop and browser](/sandboxes/desktop-and-browser/) | `host <id> <port>`, `port list`, `port hide`, `ssh`, `desktop`, `browser` |
-| [Snapshots](/snapshots/history/) | `snapshot list`, `take`, `save <sandboxId> <name>`, `files`, `rm` |
+| [Snapshots](/snapshots/history/) | `snapshot list`, `info <id or name>`, `take`, `save <sandboxId> <name> [--label k=v]…`, `files`, `rm` |
 | [Environments](/sandboxes/environments/) and [egress](/sandboxes/egress-proxy/) | `env list`, `env create`, `env show`, `env delete`, `env set [--protected] [--bind …] [--value-stdin] [--keep-value]`, `env unset`, `env file`, `env file rm`, `env repo add`, `env repo rm`, `env grant`, `env grant rm`, `egress [--denied]`, `grant`, `grant rm` |
 | [API keys](/accounts/api-keys/) and [organisations](/accounts/organisations/) | `key list`, `key create`, `key rotate`, `key revoke`, `org list`, `org create`, `org join` |
 | [Webhooks](/monitoring/webhooks/), events and [OpenTelemetry](/monitoring/opentelemetry/) | `webhook list`, `webhook create`, `webhook rm`, `webhook test`, `events`, `telemetry get`, `telemetry set`, `telemetry rm` |

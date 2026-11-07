@@ -366,6 +366,19 @@ function SavedList({
 								<tr key={entry.id} className={`${rowHover} [&>td]:align-baseline`} data-snapshot={entry.id}>
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
+										{entry.description === undefined || entry.description === "" ? null : (
+											<span className={`${cellSub} max-w-(--kt-card-width) truncate`} title={entry.description}>
+												{entry.description}
+											</span>
+										)}
+										{/* Its saver's labels, such as the commit a checkout in it is at, so a stale cache shows. */}
+										{entry.labels === undefined || Object.keys(entry.labels).length === 0 ? null : (
+											<span className={`${cellSub} max-w-(--kt-card-width) truncate font-mono`} data-snapshot-labels>
+												{Object.entries(entry.labels)
+													.map(([key, value]) => `${key}=${value}`)
+													.join(", ")}
+											</span>
+										)}
 										{entry.base?.outdated === true ? (
 											<span className="mt-1 flex">
 												<BaseOutdatedBadge base={entry.base} now={now} subject="snapshot" />

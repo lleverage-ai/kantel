@@ -943,6 +943,8 @@ function savedSnapshotOf(snapshot: Snapshot, sandboxName: string): UiSavedSnapsh
 		...(snapshot.sandboxId === undefined ? {} : { sandboxId: snapshot.sandboxId }),
 		sandboxName,
 		kind: snapshot.sandboxType,
+		...(snapshot.description === undefined ? {} : { description: snapshot.description }),
+		...(snapshot.labels === undefined ? {} : { labels: snapshot.labels }),
 		createdAt: snapshot.createdAt,
 		// One saved before the API kept who saved it doesn't say.
 		...(snapshot.createdBy === undefined ? {} : { createdBy: actorName(snapshot.createdBy) }),

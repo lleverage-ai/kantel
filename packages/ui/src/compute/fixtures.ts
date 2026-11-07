@@ -585,6 +585,8 @@ export const SAVED: readonly SavedSnapshot[] = [
 		sandboxId: DEV_STACK.id,
 		sandboxName: DEV_STACK.name,
 		kind: "microvm",
+		description: "Dev stack built, Turbo cache warm",
+		labels: { "git.base": "9540593c" },
 		createdAt: FIXTURE_NOW - 2 * DAY,
 		createdBy: "Tom Davies",
 		sizeBytes: 11.8 * 1024 ** 3,

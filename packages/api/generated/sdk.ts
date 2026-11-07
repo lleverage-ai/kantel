@@ -1779,6 +1779,10 @@ export interface SaveSnapshotBody {
 	/** Save this snapshot of the sandbox's history. Default: its state now. */
 	readonly snapshotId?: string;
 	readonly description?: string;
+	/** Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. */
+	readonly labels?: {
+		readonly [key: string]: string;
+	};
 	/** Replace a saved snapshot of the same name. */
 	readonly replace?: boolean;
 	/** Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is. */
@@ -1845,6 +1849,10 @@ export interface Snapshot {
 	/** A saved snapshot's name, unique in its account. */
 	readonly name?: string;
 	readonly description?: string;
+	/** Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. */
+	readonly labels?: {
+		readonly [key: string]: string;
+	};
 	/** The sandbox it was taken of; absent once that is deleted. */
 	readonly sandboxId?: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
@@ -1863,6 +1871,8 @@ export interface Snapshot {
 	readonly uses?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
+	/** When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept. */
+	readonly takenAt?: number;
 	readonly createdBy?: CreatedBy;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
@@ -1928,6 +1938,10 @@ export interface StopSandboxBody {
 
 export interface TakeSnapshotBody {
 	readonly description?: string;
+	/** Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. */
+	readonly labels?: {
+		readonly [key: string]: string;
+	};
 	/** Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. */
 	readonly memory?: boolean;
 }

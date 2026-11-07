@@ -806,6 +806,74 @@ describe("sandboxes", () => {
 	});
 });
 
+describe("snapshots", () => {
+	const SAVED = {
+		id: "snap_1",
+		accountId: "acc_1",
+		kind: "saved",
+		name: "checks-warm",
+		description: "Warm Turbo cache",
+		labels: { "git.base": "9540593c" },
+		sandboxId: "sbx_test1",
+		sandboxType: "microvm",
+		state: "ready",
+		memory: false,
+		uses: 3,
+		createdAt: Date.UTC(2026, 10, 6, 12),
+		takenAt: Date.UTC(2026, 10, 6, 9),
+	};
+
+	it("saves and takes a snapshot with --label", async () => {
+		const routes = { "POST /v1/snapshots": () => SAVED, "POST /v1/sandboxes/sbx_test1/snapshots": () => SAVED };
+		const saved = await kantel(
+			["snapshot", "save", "sbx_test1", "checks-warm", "--label", "git.base=9540593c", "--label", "node=24"],
+			{ routes },
+		);
+		expect(saved.code).toBe(0);
+		expect(saved.calls[0]?.body).toEqual({
+			sandboxId: "sbx_test1",
+			name: "checks-warm",
+			labels: { "git.base": "9540593c", node: "24" },
+		});
+		const taken = await kantel(["snapshot", "take", "sbx_test1", "--label", "git.base=abc"], { routes });
+		expect(taken.calls[0]?.body).toEqual({ labels: { "git.base": "abc" } });
+		const wrong = await kantel(["snapshot", "save", "sbx_test1", "x", "--label", "git.base"], { routes });
+		expect(wrong.code).toBe(2);
+		expect(wrong.calls).toEqual([]);
+	});
+
+	it("shows a snapshot by ID or saved name, with its labels and when it was taken and saved", async () => {
+		const routes = {
+			"GET /v1/snapshots": (call: Call) =>
+				call.query.get("cursor") === null
+					? { items: [{ ...SAVED, id: "snap_0", name: "other" }], nextCursor: "c2" }
+					: { items: [SAVED] },
+			"GET /v1/snapshots/snap_1": () => SAVED,
+		};
+		const byName = await kantel(["snapshot", "info", "checks-warm"], { routes });
+		expect(byName.code).toBe(0);
+		expect(byName.calls.map((call) => call.path)).toEqual(["/v1/snapshots", "/v1/snapshots", "/v1/snapshots/snap_1"]);
+		expect(byName.calls[0]?.query.get("kind")).toBe("saved");
+		expect(byName.stdout).toMatch(/^labels\s+git\.base=9540593c$/m);
+		expect(byName.stdout).toMatch(/^description\s+Warm Turbo cache$/m);
+		expect(byName.stdout).toMatch(/^taken\s+2026-11-06 09:00/m);
+		expect(byName.stdout).toMatch(/^saved\s+2026-11-06 12:00/m);
+		const byId = await kantel(["snapshot", "info", "snap_1", "--json"], { routes });
+		expect(byId.calls.map((call) => call.path)).toEqual(["/v1/snapshots/snap_1"]);
+		expect(JSON.parse(byId.stdout).labels).toEqual({ "git.base": "9540593c" });
+		// Saved straight from a running sandbox, its state is the save's: one time.
+		const now = await kantel(["snapshot", "info", "snap_1"], {
+			routes: { "GET /v1/snapshots/snap_1": () => ({ ...SAVED, takenAt: SAVED.createdAt }) },
+		});
+		expect(now.stdout).not.toMatch(/^taken/m);
+		const missing = await kantel(["snapshot", "info", "nope"], {
+			routes: { "GET /v1/snapshots": () => ({ items: [] }) },
+		});
+		expect(missing.code).toBe(1);
+		expect(missing.stderr).toContain('there is no saved snapshot called "nope"');
+	});
+});
+
 describe("hosts", () => {
 	const HOST: Host = {
 		id: "host_own1",

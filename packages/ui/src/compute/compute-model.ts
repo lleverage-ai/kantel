@@ -976,6 +976,10 @@ export interface SavedSnapshot {
 	readonly sandboxId?: string;
 	readonly sandboxName: string;
 	readonly kind: SandboxKind;
+	/** What it holds, in its saver's words. */
+	readonly description?: string;
+	/** Its saver's own labels, such as `git.base` for the commit a checkout in it is at. */
+	readonly labels?: { readonly [key: string]: string };
 	readonly createdAt: number;
 	/** Who saved it: unknown for one saved before Kantel kept that. */
 	readonly createdBy?: string;
