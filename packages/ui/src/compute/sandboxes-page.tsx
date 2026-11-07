@@ -67,6 +67,7 @@ import {
 	sizeText,
 	stopsInText,
 	type Template,
+	UNRESPONSIVE_LABEL,
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { useFollowSandboxes } from "./live-sandboxes.ts";
@@ -654,7 +655,7 @@ function SandboxList({
 			else next.delete(id);
 			return next;
 		});
-	const stoppable = selected.filter((box) => sandboxActions(box.state).stop);
+	const stoppable = selected.filter((box) => sandboxActions(box.state, box.unresponsive !== undefined).stop);
 	const [stopping, setStopping] = useState(false);
 	const stopSelected = async () => {
 		setStopping(true);
@@ -1062,7 +1063,7 @@ type LinkClick = Pick<
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const { source, save, onChange, asked, onNotice } = calls;
 	const pending = sandbox.id.startsWith("pending_");
-	const can = sandboxActions(sandbox.state);
+	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined);
 	const windows = can.connect && sandbox.kind === "microvm";
 	// Its one screen: the desktop, where it has one (the browser runs on it), or else its browser.
 	const screen = sandboxScreen(sandbox);
@@ -1112,10 +1113,13 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	return { pending, can, windows, screen, resume, recover, actions, href, onLink };
 }
 
-/** The state, in its colour. */
-const StateLabel = ({ state }: { state: SandboxState }) => (
-	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
-);
+/** The state, in its colour; a running one whose guest agent doesn't answer, as that. */
+const StateLabel = ({ state, unresponsive = false }: { state: SandboxState; unresponsive?: boolean }) =>
+	state === "running" && unresponsive ? (
+		<StatusLabel status="error">{UNRESPONSIVE_LABEL}</StatusLabel>
+	) : (
+		<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
+	);
 
 /**
  * Its CPU, RAM, disk and IO over the last 10 minutes as one small chart, read again every few seconds while it runs;
@@ -1194,11 +1198,11 @@ function SandboxRow({
 			<td className={td}>
 				{sandbox.base?.outdated === true ? (
 					<span className="relative z-1 flex flex-col items-start gap-0.5">
-						<StateLabel state={sandbox.state} />
+						<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
 						<BaseOutdatedBadge base={sandbox.base} now={now} />
 					</span>
 				) : (
-					<StateLabel state={sandbox.state} />
+					<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
 				)}
 			</td>
 			<td className={td}>
@@ -1322,11 +1326,11 @@ function SandboxPhoneRow({
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
 				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<StateLabel state={sandbox.state} />
+				<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
 			</div>
-			{sandbox.state === "error" && sandbox.error !== undefined ? (
+			{(sandbox.state === "error" && sandbox.error !== undefined) || sandbox.unresponsive !== undefined ? (
 				<>
-					<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
+					<span className="line-clamp-2 text-sm text-status-error">{sandbox.error ?? sandbox.unresponsive}</span>
 					{made === undefined ? null : <span className="text-sm text-muted">{made}</span>}
 				</>
 			) : (

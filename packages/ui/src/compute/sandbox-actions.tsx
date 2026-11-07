@@ -101,7 +101,7 @@ export function useSandboxMenu(
 	const { source, save, onChange, asked, onNotice } = calls;
 	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "idle-stop" | "restart">();
 	const close = () => setOpen(undefined);
-	const can = sandboxActions(sandbox?.state ?? "stopped");
+	const can = sandboxActions(sandbox?.state ?? "stopped", sandbox?.unresponsive !== undefined);
 	const running = sandbox?.state === "running" || sandbox?.state === "starting";
 	const { restartOnLatest } = source;
 	const restartable = sandbox !== undefined && restartOnLatest !== undefined && canRestartOnLatest(sandbox);

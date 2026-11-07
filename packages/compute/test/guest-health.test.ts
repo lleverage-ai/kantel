@@ -1,4 +1,5 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
@@ -97,6 +98,51 @@ describe("a sandbox whose guest agent stops answering", () => {
 		expect((await tom.getSandbox(sandbox.id)).health).toBe("unresponsive");
 		await api.service.reportHealth(STUB_HOST_ID, sandbox.id, undefined, undefined, 5_000);
 		expect((await tom.getSandbox(sandbox.id)).health).toBe("ok");
+		// An unstamped one never replaces a stamped one, however late it arrives.
+		await api.service.reportHealth(STUB_HOST_ID, sandbox.id, "unresponsive", OOM, 6_000);
+		await api.service.reportHealth(STUB_HOST_ID, sandbox.id, undefined, undefined);
+		expect((await tom.getSandbox(sandbox.id)).health).toBe("unresponsive");
+	});
+
+	it("keeps its health through an auto-stop handed back because its host was away", async () => {
+		let clock = Date.UTC(2026, 10, 7);
+		const stub = createStubBackend();
+		let away = true;
+		const api = createComputeApi({
+			backend: {
+				...stub,
+				stop: async (sandboxId, how) => {
+					if (away) throw new KantelError("unavailable", "The host is away");
+					return stub.stop(sandboxId, how);
+				},
+			},
+			now: () => clock,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true, autoStopMinutes: 5 });
+		await api.service.reportHealth(STUB_HOST_ID, sandbox.id, "unresponsive", OOM, 1_000);
+		clock += 6 * 60_000;
+		await api.service.sweep();
+		await api.service.idle();
+		const handedBack = await tom.getSandbox(sandbox.id);
+		expect(handedBack).toMatchObject({ state: "running", health: "unresponsive" });
+		// Its host back, saying the same: it stays unresponsive; a newer healthy word makes it ok.
+		await api.service.reportHealth(STUB_HOST_ID, sandbox.id, "unresponsive", OOM, 1_000);
+		expect((await tom.getSandbox(sandbox.id)).health).toBe("unresponsive");
+		// The next sweep stops it, which leaves it healthy for its next boot.
+		away = false;
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "stopped", health: "ok" });
 	});
 
 	it("is left alone by a report from another host, or while it isn't running", async () => {

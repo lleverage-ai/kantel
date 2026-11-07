@@ -291,7 +291,8 @@ type sandbox struct {
 	// unresponsive is why its guest agent is taken not to answer (health.go: watchHealth), while it runs; "" while it
 	// answers.
 	unresponsive string
-	// healthAt is when unresponsive last changed (Unix ms; 0: never), SandboxInfo.HealthAt, which orders its reports.
+	// healthAt is when unresponsive was last set (Unix ms), from its machine's start on: SandboxInfo.HealthAt, which
+	// orders its reports.
 	healthAt int64
 	// probe stands in for its guest agent's health in a test (nil: its guest).
 	probe healthClient
@@ -990,9 +991,9 @@ func egressMode(e *proto.Egress) string {
 // watch marks a sandbox stopped (with an error) when its VM exits without being asked to, and watches its guest
 // agent's health while it runs (watchHealth).
 func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
-	if s.unresponsive != "" {
-		s.setUnresponsive("")
-	}
+	// Healthy, as of now: a machine's first health has a time too, so Kantel orders it against what it took of the
+	// machine before (an unresponsive report from before a restart of the host, say).
+	s.setUnresponsive("")
 	m.watchHealth(s, machine)
 	go func() {
 		<-machine.Done()

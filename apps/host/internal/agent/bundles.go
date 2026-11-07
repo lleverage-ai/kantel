@@ -97,9 +97,9 @@ func (h *Host) mountsEvent(info proto.SandboxInfo) {
 	}
 }
 
-// replayHealth sends, once a connection can carry events, a sandbox event for each running sandbox whose guest
-// health has changed (HealthAt set): one that changed between its hello's read and the events being wired would
-// otherwise reach Kantel only in the hello's older read. Its HealthAt orders it against the hello and live events.
+// replayHealth sends, once a connection can carry events, a sandbox event for each running sandbox with its guest
+// health (HealthAt set): one that changed between its hello's read and the events being wired would otherwise reach
+// Kantel only in the hello's older read. Its HealthAt orders it against the hello and live events.
 func (h *Host) replayHealth() {
 	for _, info := range h.List() {
 		if info.State == proto.StateRunning && info.HealthAt > 0 {

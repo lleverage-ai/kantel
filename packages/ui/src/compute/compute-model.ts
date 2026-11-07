@@ -390,6 +390,11 @@ export interface Sandbox {
 	readonly hostName?: string;
 	/** What went wrong, when it's in `error`. */
 	readonly error?: string;
+	/**
+	 * Why its guest agent isn't answering (out of memory, say), while it runs but doesn't: its calls are refused, and
+	 * Recover (a restart that keeps its disk) is offered. Absent while it answers.
+	 */
+	readonly unresponsive?: string;
 	/** Shared with the organisation it belongs to (an organisation's sandboxes are shared unless made private). */
 	readonly shared?: boolean;
 	/** The sandbox it was forked from. */
@@ -1933,6 +1938,9 @@ export const SANDBOX_STATE_LABELS: Readonly<Record<SandboxState, string>> = {
 	error: "Error",
 };
 
+/** What a running sandbox whose guest agent doesn't answer shows for its state, in the error colour. */
+export const UNRESPONSIVE_LABEL = "Unresponsive";
+
 /** The status colour each state shows in. */
 export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
 	starting: "working",
@@ -2073,20 +2081,27 @@ export const shortId = (id: string): string => {
 	return at === -1 ? id.slice(0, 10) : id.slice(0, at + 9);
 };
 
-/** What a state lets a person do, in the order the actions menu lists them. */
-export function sandboxActions(state: SandboxState): {
+/**
+ * What a state lets a person do, in the order the actions menu lists them. A running sandbox whose guest agent doesn't
+ * answer (`unresponsive`) can't be connected to or forked, only stopped or recovered.
+ */
+export function sandboxActions(
+	state: SandboxState,
+	unresponsive = false,
+): {
 	readonly connect: boolean;
 	readonly stop: boolean;
 	readonly resume: boolean;
 	readonly fork: boolean;
 	readonly recover: boolean;
 } {
+	const answering = state === "running" && !unresponsive;
 	return {
-		connect: state === "running",
+		connect: answering,
 		stop: state === "running" || state === "paused",
 		resume: state === "stopped" || state === "paused" || state === "error",
-		fork: state === "running" || state === "stopped" || state === "paused",
-		recover: state === "error",
+		fork: answering || state === "stopped" || state === "paused",
+		recover: state === "error" || (state === "running" && unresponsive),
 	};
 }
 

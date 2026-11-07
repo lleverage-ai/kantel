@@ -3157,8 +3157,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
-			// Its agent's health is its running machine's: a boot or a stop leaves none unresponsive (`reportHealth`).
-			...(sandbox.health === "unresponsive" && extra.health === undefined ? { health: "ok" as const } : {}),
+			// Its agent's health is its running machine's: a boot, or a stop once done, leaves none unresponsive
+			// (`reportHealth`). A stop under way keeps it, for one handed back running with the same machine.
+			...(sandbox.health === "unresponsive" && extra.health === undefined && state !== "stopping" && state !== "running"
+				? { health: "ok" as const }
+				: {}),
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
@@ -4104,7 +4107,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const written = await store.sandboxes.update(sandboxId, (current) => {
 			changed = undefined;
 			if (current.hostId !== hostId || current.state !== "running") return undefined;
-			if (at !== undefined && current.healthAt !== undefined && at <= current.healthAt) return undefined;
+			// Ordered: one no later than the last taken is older. An unstamped one (a host that doesn't stamp them) never
+			// replaces a stamped one.
+			if (current.healthAt !== undefined && (at === undefined || at <= current.healthAt)) return undefined;
 			const stamped = at === undefined ? {} : { healthAt: at };
 			if (unresponsive) {
 				const why = unresponsiveReason(reason);

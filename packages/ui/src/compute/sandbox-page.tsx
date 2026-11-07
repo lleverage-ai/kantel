@@ -51,6 +51,7 @@ import {
 	sizeText,
 	stoppedByText,
 	stopsInText,
+	UNRESPONSIVE_LABEL,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
 import { useFollowSandboxes } from "./live-sandboxes.ts";
@@ -144,10 +145,13 @@ export interface SandboxPageProps {
 	readonly filesHref?: (at: FilesAt) => string;
 }
 
-/** The state, in its colour. */
-const StateLabel = ({ state }: { state: Sandbox["state"] }) => (
-	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
-);
+/** The state, in its colour; a running one whose guest agent doesn't answer, as that. */
+const StateLabel = ({ state, unresponsive = false }: { state: Sandbox["state"]; unresponsive?: boolean }) =>
+	state === "running" && unresponsive ? (
+		<StatusLabel status="error">{UNRESPONSIVE_LABEL}</StatusLabel>
+	) : (
+		<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
+	);
 
 type HeldAccess = { readonly value: SandboxAccess | "loading" | Error; readonly at: number };
 
@@ -421,7 +425,7 @@ export function SandboxPage({
 		);
 	}
 
-	const can = sandboxActions(sandbox.state);
+	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined);
 	const stop = () => act("stop", () => source.stop(sandbox.id));
 	const entries: readonly MenuEntry[] =
 		narrow && can.stop
@@ -531,7 +535,7 @@ export function SandboxPage({
 			<header className="kt-sandbox-header flex min-w-0 flex-col gap-3">
 				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-3">
 					<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
-					<StateLabel state={sandbox.state} />
+					<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
 					<div className={`flex items-center gap-2 ${narrow ? "w-full" : "ml-auto"}`}>{actions}</div>
 				</div>
 				<div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted">
@@ -595,6 +599,9 @@ export function SandboxPage({
 				</div>
 			</header>
 			{sandbox.state === "error" && sandbox.error !== undefined ? <Notice level="error">{sandbox.error}</Notice> : null}
+			{sandbox.state === "running" && sandbox.unresponsive !== undefined ? (
+				<Notice level="error">{sandbox.unresponsive}</Notice>
+			) : null}
 			{sandbox.base?.outdated === true ? (
 				<Notice
 					level="warning"
