@@ -25,6 +25,7 @@ import {
 	type KantelClient,
 	type Sandbox,
 	type SandboxNotRunning,
+	type SandboxShapes,
 	type SandboxSizeName,
 	type SandboxType,
 } from "@kantel/api/sdk";
@@ -295,6 +296,19 @@ function choice<T extends string>(value: string | undefined, allowed: readonly T
 	return found;
 }
 
+/** `--size`: one of the API's size names, which the hosts may offer fewer of (`kantel sizes`). */
+function sizeOf(value: string | undefined): SandboxSizeName | undefined {
+	if (value === undefined) return undefined;
+	const found = SIZES.find((size) => size === value);
+	if (found === undefined) {
+		throw new UsageError(
+			`--size takes a named size, such as small, default or large, not "${value}": kantel sizes lists the hosts' ` +
+				"sizes, and --vcpus with --memory makes another shape",
+		);
+	}
+	return found;
+}
+
 function choices<T extends string>(values: readonly string[], allowed: readonly T[], what: string): T[] | undefined {
 	if (values.length === 0) return undefined;
 	const picked: T[] = [];
@@ -486,6 +500,43 @@ function describeSandbox(sandbox: Sandbox): string {
 	]);
 }
 
+/** GB from MB: `16`, or `0.5`. */
+const gbOf = (memoryMb: number): string => String(Math.round((memoryMb / 1024) * 100) / 100);
+
+/** `kantel sizes`: the named sizes the hosts offer, and the other shapes a microVM may be. */
+function describeShapes(shapes: SandboxShapes): string {
+	const microvm = shapes.microvm;
+	if (microvm === undefined) return "No host this account may use runs microVMs: a new sandbox is an isolate.";
+	const rates = shapes.rates;
+	const hourly = (vcpus: number, memoryMb: number): string =>
+		rates === undefined
+			? ""
+			: money(vcpus * rates.microvmPerVcpuHour + (memoryMb / 1024) * rates.microvmPerGbHour, rates.currency);
+	const rows = microvm.presets.map((preset) => [
+		preset.name,
+		String(preset.vcpus),
+		`${gbOf(preset.memoryMb)} GB`,
+		`${preset.diskGb} GB`,
+		...(rates === undefined ? [] : [hourly(preset.vcpus, preset.memoryMb)]),
+	]);
+	const header = ["SIZE", "VCPUS", "MEMORY", "DISK", ...(rates === undefined ? [] : ["AN HOUR"])];
+	const lines = [rows.length === 0 ? "The hosts name no sizes." : table(header, rows), ""];
+	if (microvm.custom) {
+		const perVcpu = microvm.memoryMbPerVcpu;
+		lines.push(
+			`Other shapes, with --vcpus and --memory: ${microvm.vcpus.min} to ${microvm.vcpus.max} vCPUs and ${gbOf(microvm.memoryMb.min)} to ` +
+				`${gbOf(microvm.memoryMb.max)} GB of memory, ${gbOf(perVcpu.min)} to ${gbOf(perVcpu.max)} GB a vCPU.`,
+			"  kantel new --type microvm --vcpus 8 --memory 16",
+		);
+	} else {
+		lines.push("No other shapes: these hosts make only their named sizes.");
+	}
+	if (microvm.diskGb !== undefined) {
+		lines.push(`A disk of ${microvm.diskGb.min} to ${microvm.diskGb.max} GB with --disk, whatever the shape.`);
+	}
+	return lines.join("\n");
+}
+
 function fileTable(list: FileList): string {
 	if (list.items.length === 0) return `${list.path} is empty.`;
 	return table(
@@ -546,12 +597,16 @@ function exitCodeOf(command: Command): number {
 // The client.
 
 /**
- * How long to wait before each retry of a call that carries an `Idempotency-Key`, when Kantel couldn't be reached or a
- * proxy in front of it failed (`RETRIED_STATUSES`, with no answer of Kantel's own). The key makes a retry safe: one that
- * reached Kantel the first time gets that call's answer, or a 409 saying its outcome is unknown, which isn't retried.
+ * How long to wait before each retry of a call that is safe to send again (`retried`), when Kantel couldn't be reached
+ * or a proxy in front of it failed (`RETRIED_STATUSES`, with no answer of Kantel's own): a backoff that doubles, five
+ * tries over 7.5 s in all, enough for a gateway's restart or a network blip, and then the error. A read is safe to send
+ * again as it is; a call that carries an `Idempotency-Key` because the key makes it so: one that reached Kantel the
+ * first time gets that call's answer, or a 409 saying its outcome is unknown, which isn't retried.
  */
-export const RETRY_DELAYS_MS: readonly number[] = [500, 2_000];
+export const RETRY_DELAYS_MS: readonly number[] = [500, 1_000, 2_000, 4_000];
 const RETRIED_STATUSES = new Set([502, 503, 504]);
+/** Calls that change nothing, so are sent again as they are. */
+const READS = new Set(["GET", "HEAD", "OPTIONS"]);
 /**
  * The calls retried: those every control plane that takes keys has kept the promise on (creating and forking a
  * sandbox, running a command). The others are sent with a key but once, since an older control plane, or an old
@@ -574,7 +629,13 @@ async function answeredByKantel(response: Response): Promise<boolean> {
 	}
 }
 
+/**
+ * Whether a call may be sent again when Kantel never answered it: a read, or a keyed call on `RETRIED_CALLS`. Never a
+ * call that changes something without a key (stop, delete, a file's write), which may have happened the first time.
+ */
 function retried(input: string | URL | Request, init: RequestInit | undefined): boolean {
+	const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+	if (READS.has(method)) return true;
 	if (!new Headers(init?.headers).has("idempotency-key")) return false;
 	const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 	const call = `${(init?.method ?? "GET").toUpperCase()} ${url.pathname.replace(/^.*(?=\/v1\/)/, "")}`;
@@ -594,9 +655,10 @@ function makeClient(io: Io, config: ResolvedConfig): KantelClient {
 		}
 	};
 	const guarded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-		const keyed = retried(input, init);
+		const again = retried(input, init);
 		for (let attempt = 0; ; attempt++) {
-			const delay = keyed ? RETRY_DELAYS_MS[attempt] : undefined;
+			// Not once the caller has given up on it (a look's own deadline, Ctrl-C).
+			const delay = again && init?.signal?.aborted !== true ? RETRY_DELAYS_MS[attempt] : undefined;
 			try {
 				const response = await reach(input, init);
 				// Kantel's own answer (its JSON error) is the call's outcome, even a 503: the call's key is held then, and a
@@ -655,7 +717,15 @@ const ttl: FlagSpec = {
 	value: "<minutes>",
 	description: "How long the URL can be opened for (default 10, at most 60)",
 };
-const sizeFlag: FlagSpec = { type: "string", value: "<small|default|large|xlarge>", description: "A microVM's size" };
+/**
+ * A microVM's named size. Which names there are, and what each holds, is the hosts' (app.kantel.dev's stop at large),
+ * so the help names none: `kantel sizes` lists them, and Kantel refuses one no host offers.
+ */
+const sizeFlag: FlagSpec = {
+	type: "string",
+	value: "<size>",
+	description: "A microVM's named size, such as small, default or large (kantel sizes lists the hosts')",
+};
 const printOnly: FlagSpec = { type: "boolean", description: "Print the URL without opening it" };
 
 /** Opens `url` in the browser when a person is at a terminal, and hasn't asked for the URL only. */
@@ -1203,8 +1273,14 @@ const SECTIONS: readonly Section[] = [
 					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
 					"--disk sizes a microVM's disk apart from its vCPUs and memory (kantel new --type microvm --size large\n" +
 					"--disk 60). A sandbox made from a snapshot keeps the snapshot's disk.\n\n" +
-					"--vcpus and --memory size a microVM beyond the named sizes (kantel new --type microvm --vcpus 8\n" +
-					"--memory 16), within what a host offers. A large monorepo's type-check needs about 16 GB.\n\n" +
+					"--size takes one of the named sizes the hosts offer; kantel sizes lists them, and the most --vcpus and\n" +
+					"--memory may ask for. --vcpus and --memory size a microVM beyond the named sizes (kantel new --type\n" +
+					"microvm --vcpus 8 --memory 16), within what a host offers. A large monorepo's type-check needs about\n" +
+					"16 GB, and its tests about 32.\n\n" +
+					"--from with --size, or --vcpus and --memory, starts a snapshot of the disk alone (the default for\n" +
+					"kantel snapshot save) on that machine: kantel new --from monorepo-ci --vcpus 8 --memory 16. A\n" +
+					"snapshot that holds its sandbox's memory (saved with --memory) has that sandbox's machine, and Kantel\n" +
+					"refuses another. Without them, a sandbox from a snapshot is the machine the snapshot was taken of.\n\n" +
 					"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
 					"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
 					"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
@@ -1231,13 +1307,13 @@ const SECTIONS: readonly Section[] = [
 						throw new UsageError("give --vcpus and --memory together");
 					}
 					if (vcpus !== undefined) {
-						if (type !== "microvm") throw new UsageError("--vcpus and --memory are a microVM's: add --type microvm");
-						if (ctx.string("size") !== undefined) throw new UsageError("give --size or --vcpus and --memory, not both");
-						if (ctx.string("from") !== undefined) {
-							throw new UsageError(
-								"a sandbox made from a snapshot is that snapshot's machine: leave out --vcpus and --memory",
-							);
+						// From a snapshot, its type is the snapshot's: a microVM's, or Kantel refuses an isolate's shape.
+						if (type !== "microvm" && (type !== undefined || ctx.string("from") === undefined)) {
+							throw new UsageError("--vcpus and --memory are a microVM's: add --type microvm");
 						}
+						if (ctx.string("size") !== undefined) throw new UsageError("give --size or --vcpus and --memory, not both");
+						// With --from they go as they are: a snapshot of the disk alone starts at any shape, and Kantel refuses
+						// one that holds its sandbox's memory, which has that sandbox's machine, before it makes anything.
 					}
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
 					// A variable has an =; an environment's name or ID never does.
@@ -1251,7 +1327,7 @@ const SECTIONS: readonly Section[] = [
 						...(environment === undefined ? {} : { environment }),
 						name: ctx.string("name"),
 						type,
-						size: choice(ctx.string("size"), SIZES, "--size"),
+						size: sizeOf(ctx.string("size")),
 						...(diskGb === undefined && vcpus === undefined
 							? {}
 							: {
@@ -1289,6 +1365,25 @@ const SECTIONS: readonly Section[] = [
 						].join("\n"),
 					);
 					return sandbox.state === "error" ? 1 : 0;
+				},
+			},
+			{
+				name: "sizes",
+				summary: "The sizes and shapes a new microVM may be, from the hosts it may use",
+				flags: {
+					on: { type: "string", value: "<host>", description: "Only what this host offers, its name or ID" },
+				},
+				details:
+					"Each deployment's hosts decide which named sizes there are and what each holds, and may offer fewer than\n" +
+					"small, default, large and xlarge. kantel new --size takes one of these; --vcpus and --memory any other\n" +
+					"shape in the ranges shown.",
+				async run(ctx) {
+					const config = await ctx.config();
+					const shapes = await (await ctx.client()).getSandboxShapes({
+						account: config.account,
+						host: ctx.string("on"),
+					});
+					ctx.emit(shapes, () => describeShapes(shapes));
 				},
 			},
 			{
@@ -1343,7 +1438,7 @@ const SECTIONS: readonly Section[] = [
 				(client, sandboxId, ctx) =>
 					client.startSandbox(sandboxId, {
 						wait: !ctx.boolean("no-wait"),
-						size: choice(ctx.string("size"), SIZES, "--size"),
+						size: sizeOf(ctx.string("size")),
 					}),
 			),
 			lifecycle(
@@ -1366,7 +1461,7 @@ const SECTIONS: readonly Section[] = [
 				(client, sandboxId, ctx) =>
 					client.resumeSandbox(sandboxId, {
 						wait: !ctx.boolean("no-wait"),
-						size: choice(ctx.string("size"), SIZES, "--size"),
+						size: sizeOf(ctx.string("size")),
 					}),
 			),
 			lifecycle("recover", "Restart the machine of a sandbox that is stuck or in error", {}, (client, sandboxId) =>
@@ -2027,6 +2122,7 @@ const SECTIONS: readonly Section[] = [
 			{
 				name: "snapshot list",
 				summary: "Saved snapshots, or one sandbox's history",
+				args: [{ name: "sandboxId", optional: true }],
 				flags: {
 					sandbox: { type: "string", value: "<id>", description: "Only this sandbox's snapshots" },
 					saved: { type: "boolean", description: "Only saved snapshots" },
@@ -2034,9 +2130,13 @@ const SECTIONS: readonly Section[] = [
 				},
 				async run(ctx) {
 					const config = await ctx.config();
+					const sandboxId = ctx.optional(0);
+					if (sandboxId !== undefined && ctx.string("sandbox") !== undefined && sandboxId !== ctx.string("sandbox")) {
+						throw new UsageError("give the sandbox once: kantel snapshot list <id>");
+					}
 					const page = await (await ctx.client()).listSnapshots({
 						account: config.account,
-						sandboxId: ctx.string("sandbox"),
+						sandboxId: sandboxId ?? ctx.string("sandbox"),
 						kind: ctx.boolean("saved") ? "saved" : undefined,
 						cursor: ctx.string("cursor"),
 					});
@@ -3126,6 +3226,14 @@ const ALIASES: { readonly [alias: string]: string } = {
 	"sandbox rm": "delete",
 	"sandbox extend": "extend",
 	"sandbox usage": "usage",
+	put: "files put",
+};
+/**
+ * Aliases kept for scripts written against an older spelling, each with what to use now, which `kantel` says on stderr
+ * each time. They aren't in the help and will go.
+ */
+const DEPRECATED: { readonly [alias: string]: string } = {
+	put: "kantel files put <id> <local> <remote> (a file of up to 1 MiB), or kantel scp <local> <id>:<remote> for bigger files and directories",
 };
 /** Commands that moved to the operators' CLI, kantel-admin (a file on each of Kantel's GitHub Releases). */
 const MOVED: { readonly [name: string]: string } = {
@@ -3232,7 +3340,13 @@ function helpFor(words: readonly string[]): string {
 // Finding the command.
 
 type Resolution =
-	| { readonly kind: "command"; readonly command: CommandSpec; readonly argv: readonly string[] }
+	| {
+			readonly kind: "command";
+			readonly command: CommandSpec;
+			readonly argv: readonly string[];
+			/** It was named by a deprecated alias (`DEPRECATED`): the alias. */
+			readonly deprecated?: string;
+	  }
 	| { readonly kind: "group"; readonly group: string; readonly unknown?: string }
 	| { readonly kind: "moved"; readonly name: string; readonly to: string }
 	| { readonly kind: "unknown"; readonly word?: string };
@@ -3280,7 +3394,12 @@ function resolveCommand(argv: readonly string[]): Resolution {
 		if (double !== undefined && secondIndex !== undefined) {
 			return { kind: "command", command: double, argv: without(firstIndex, secondIndex) };
 		}
-		return { kind: "command", command: single, argv: without(firstIndex) };
+		return {
+			kind: "command",
+			command: single,
+			argv: without(firstIndex),
+			...(DEPRECATED[first] === undefined ? {} : { deprecated: first }),
+		};
 	}
 	if (GROUPS[first] === undefined) return { kind: "unknown", word: typed };
 	if (second === undefined || secondIndex === undefined) return { kind: "group", group: first };
@@ -3389,6 +3508,8 @@ function report(error: unknown, io: Io): number {
 			`kantel: ${error.code}: ${error.message}${error.reason === undefined ? "" : ` (reason: ${error.reason})`}\n`,
 		);
 		if (error.code === "unauthenticated") io.stderr.write("Sign in with: kantel login (or set KANTEL_API_KEY)\n");
+		if (error.reason === "no_host_offers_size")
+			io.stderr.write("kantel sizes lists the sizes and shapes the hosts offer.\n");
 		const notRunning = notRunningOf(error);
 		if (notRunning !== undefined) io.stderr.write(`${notRunningHint(notRunning)}\n`);
 		return 1;
@@ -3433,6 +3554,11 @@ async function dispatch(argv: readonly string[], io: Io): Promise<number> {
 		return 2;
 	}
 	const { command } = found;
+	if (found.deprecated !== undefined) {
+		io.stderr.write(
+			`kantel: "kantel ${found.deprecated}" is going: use ${DEPRECATED[found.deprecated] ?? command.name}\n`,
+		);
+	}
 	try {
 		return await execute(command, found.argv, io);
 	} catch (error) {
