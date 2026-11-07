@@ -48,6 +48,17 @@ const warm = await kantel.saveSnapshot({ name: "web-app-warm", sandboxId: "sbx_4
 
 From the CLI, that's `kantel snapshot save sbx_4kq9x2mt web-app-warm --memory`; in the console, tick **Keep its memory too** in the Save snapshot dialog. Saving a stopped sandbox, or a snapshot from its history, keeps what that snapshot holds, as above: `memory` in the answer says which.
 
+### The least memory a sandbox from it needs
+
+A disk-only snapshot starts at any size, including one too small for the work it was saved for. A monorepo's type-check that needs 13 GB fails partway through on 8. Give `minMemoryMb` when you save it, and Kantel refuses a sandbox made from it with less memory (`invalid`, saying how much it needs) before it starts one:
+
+```ts
+await kantel.saveSnapshot({ name: "monorepo-checks", sandboxId: "sbx_4kq9x2mt", minMemoryMb: 16_384 });
+await kantel.createSandbox({ from: "monorepo-checks", resources: { vcpus: 8, memoryMb: 16_384 } });
+```
+
+From the CLI, that's `kantel snapshot save sbx_4kq9x2mt monorepo-checks --min-memory 16`, then `kantel new --from monorepo-checks --vcpus 8 --memory 16`. It applies to every create from the snapshot, whatever size it asks for or none. A replace keeps the least of the snapshot it replaces unless it gives its own; `0` removes it. The snapshot's own machine may be smaller: the least is for what is made from it.
+
 Kantel keeps a saved disk small: before it copies a running microVM's disk it asks the guest to trim the blocks deleted files left behind (with a sandbox image recent enough to do it), and on a host whose storage is XFS or btrfs the copy shares its blocks with the sandbox's disk until either changes.
 
 A name is up to 63 characters of lower-case letters, digits, `-`, `_` and `.`, starting with a letter or digit, and is unique in its account. The answer is the [Snapshot](/api/reference/types/#snapshot), with `kind: "saved"`.

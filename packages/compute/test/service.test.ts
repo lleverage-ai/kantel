@@ -1332,6 +1332,43 @@ describe("sandboxes", () => {
 		expect(bigger.resources).toMatchObject({ vcpus: 4, memoryMb: 16_384 });
 	});
 
+	it("refuses a sandbox with less memory than its saved snapshot's least, and keeps the least through a replace", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		const saved = await tom.saveSnapshot({ name: "monorepo-checks", sandboxId: vm.id, minMemoryMb: 16_384 });
+		expect(saved.minMemoryMb).toBe(16_384);
+		expect((await tom.getSnapshot(saved.id)).minMemoryMb).toBe(16_384);
+
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+		// Its own machine (large, 8 GB), another size and a smaller shape: each refused before anything is made.
+		for (const body of [{}, { size: "small" as const }, { resources: { vcpus: 8, memoryMb: 8192 } }]) {
+			const refused = await failure(tom.createSandbox({ from: saved.id, ...body }));
+			expect(refused.code).toBe("invalid");
+			expect(refused.message).toContain("needs at least 16 GB of memory (16384 MB)");
+		}
+		expect((await tom.listSandboxes({ all: true })).items.length).toBe(before);
+
+		const enough = await tom.createSandbox({ from: saved.id, resources: { vcpus: 8, memoryMb: 16_384 }, wait: true });
+		expect(enough.resources).toMatchObject({ vcpus: 8, memoryMb: 16_384 });
+
+		// A replace keeps it unless it says otherwise; 0 is none.
+		const replaced = await tom.saveSnapshot({ name: "monorepo-checks", sandboxId: vm.id, replace: true });
+		expect(replaced.minMemoryMb).toBe(16_384);
+		const cleared = await tom.saveSnapshot({
+			name: "monorepo-checks",
+			sandboxId: vm.id,
+			replace: true,
+			minMemoryMb: 0,
+		});
+		expect(cleared.minMemoryMb).toBeUndefined();
+		const any = await tom.createSandbox({ from: cleared.id, wait: true });
+		expect(any.state).toBe("running");
+
+		const isolate = await tom.createSandbox({ type: "isolate", wait: true });
+		const wrongType = await failure(tom.saveSnapshot({ name: "iso", sandboxId: isolate.id, minMemoryMb: 1024 }));
+		expect(wrongType.code).toBe("invalid");
+	});
+
 	it("refuses a shape it can't make", async () => {
 		const { tom } = setup();
 		const refusals = [

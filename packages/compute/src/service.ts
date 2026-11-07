@@ -83,8 +83,10 @@ import {
 	diskLimitsOf,
 	makesCustom,
 	makesShape,
+	memoryOf,
 	recordedMachine,
 	recordsMachine,
+	requireMinMemory,
 	restoreAsked,
 	sandboxMachine,
 } from "./machine.ts";
@@ -2272,6 +2274,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		trigger: snapshot.trigger,
 		memory: snapshot.memory,
 		...recordedMachine(snapshot),
+		...(snapshot.minMemoryMb === undefined ? {} : { minMemoryMb: snapshot.minMemoryMb }),
 		sizeBytes: snapshot.sizeBytes,
 		uses,
 		createdAt: snapshot.createdAt,
@@ -6145,6 +6148,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A snapshot's disk is on the host its sandbox is on: another size or shape is that host's.
 				const fromHostId =
 					from?.sandboxId === undefined ? undefined : (await store.sandboxes.get(from.sandboxId))?.hostId;
+				const fromOn =
+					from === undefined
+						? undefined
+						: copiedOn(
+								capabilities.hosts.find((host) => host.id === fromHostId),
+								capabilities.sizes,
+							);
 				const machine =
 					type !== "microvm"
 						? undefined
@@ -6153,13 +6163,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									? { template: template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES }
 									: from === undefined
 										? undefined
-										: {
-												copies: from,
-												on: copiedOn(
-													capabilities.hosts.find((host) => host.id === fromHostId),
-													capabilities.sizes,
-												),
-											},
+										: { copies: from, on: fromOn },
 								machineAsked,
 								presets,
 							);
@@ -6169,6 +6173,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						"no_host_offers_size",
 						`No host this sandbox may use offers the size ${body.size ?? "default"}`,
 					);
+				}
+				// Not less memory than its snapshot's save asked for (`minMemoryMb`), refused before anything is stored.
+				if (type === "microvm" && from !== undefined) {
+					requireMinMemory(from, memoryOf(machine, fromOn?.presets ?? presets, from));
 				}
 				// A disk asked for alone, on the machine it went to: some host must give it, as `shapeFor` checks a whole shape.
 				if (diskAlone !== undefined && machine?.shape !== undefined) {
@@ -7253,6 +7261,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (existing !== undefined && body.replace !== true) {
 					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
+				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && current.type !== "microvm") {
+					throw new KantelError("invalid", "Only a microVM's snapshot takes minMemoryMb");
+				}
+				// The least memory a sandbox made from it may have: as given, 0 for none, else the one it replaces keeps its own.
+				const minMemoryMb =
+					body.minMemoryMb === undefined ? existing?.minMemoryMb : body.minMemoryMb > 0 ? body.minMemoryMb : undefined;
 				if (existing === undefined && limits.savedSnapshots !== undefined) {
 					const saved = (await store.snapshots.list({ accountId: current.accountId, kind: "saved" })).filter(
 						(record) => record.state !== "deleting",
@@ -7322,6 +7336,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					trigger: "save",
 					memory,
 					...machine,
+					...(minMemoryMb === undefined ? {} : { minMemoryMb }),
 					sizeBytes,
 					...(fullSizeBytes === undefined ? {} : { fullSizeBytes }),
 					createdAt: now(),
