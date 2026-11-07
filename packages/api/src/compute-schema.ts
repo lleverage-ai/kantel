@@ -1628,6 +1628,16 @@ export const SnapshotState = Type.Union(
 	{ title: "SnapshotState" },
 );
 
+/**
+ * A snapshot's own labels, given when it is taken or saved: what Kantel can't know about the files it holds, such as
+ * the commit a checkout in it is at, for a client to read back.
+ */
+const snapshotLabels = Type.Record(Type.String(), Type.String({ maxLength: 500 }), {
+	maxProperties: 20,
+	description:
+		"Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given.",
+});
+
 export const Snapshot = Type.Object(
 	{
 		id: id("The snapshot's ID, such as `snap_2h8d6f`."),
@@ -1635,6 +1645,7 @@ export const Snapshot = Type.Object(
 		kind: SnapshotKind,
 		name: Type.Optional(Type.String({ description: "A saved snapshot's name, unique in its account." })),
 		description: Type.Optional(Type.String()),
+		labels: Type.Optional(snapshotLabels),
 		sandboxId: Type.Optional(Type.String({ description: "The sandbox it was taken of; absent once that is deleted." })),
 		sandboxType: SandboxType,
 		state: SnapshotState,
@@ -1662,6 +1673,12 @@ export const Snapshot = Type.Object(
 			}),
 		),
 		createdAt: Timestamp,
+		takenAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept.",
+			}),
+		),
 		// Who saved or took it: absent for an automatic one, and for one saved before this was kept.
 		createdBy: Type.Optional(CreatedBy),
 		expiresAt: Type.Optional(Timestamp),
@@ -1696,7 +1713,11 @@ const keepMemory = Type.Optional(
 );
 
 export const TakeSnapshotBody = Type.Object(
-	{ description: Type.Optional(Type.String({ maxLength: 500 })), memory: keepMemory },
+	{
+		description: Type.Optional(Type.String({ maxLength: 500 })),
+		labels: Type.Optional(snapshotLabels),
+		memory: keepMemory,
+	},
 	{ title: "TakeSnapshotBody" },
 );
 
@@ -1708,6 +1729,7 @@ export const SaveSnapshotBody = Type.Object(
 			Type.String({ description: "Save this snapshot of the sandbox's history. Default: its state now." }),
 		),
 		description: Type.Optional(Type.String({ maxLength: 500 })),
+		labels: Type.Optional(snapshotLabels),
 		replace: Type.Optional(Type.Boolean({ description: "Replace a saved snapshot of the same name." })),
 		memory: Type.Optional(
 			Type.Boolean({

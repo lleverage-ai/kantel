@@ -802,6 +802,43 @@ describe("sandboxes", () => {
 		expect((await tom.readSnapshotFile(replaced.id, { path: "app.txt" })).content).toBe("v2");
 	});
 
+	it("keeps a snapshot's labels, and when the state it holds was taken beside when it was saved", async () => {
+		let clock = Date.UTC(2026, 10, 6, 9);
+		const { tom } = setup(createStubBackend(), { now: () => clock });
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		const taken = await tom.takeSnapshot(vm.id, { labels: { "git.base": "aaa" } });
+		expect(taken).toMatchObject({ labels: { "git.base": "aaa" }, createdAt: clock, takenAt: clock });
+
+		// Saved from the running sandbox: its state is the save's.
+		clock += 60_000;
+		const live = await tom.saveSnapshot({ name: "live", sandboxId: vm.id, labels: { "git.base": "bbb" } });
+		expect(live).toMatchObject({ labels: { "git.base": "bbb" }, createdAt: clock, takenAt: clock });
+
+		// Saved an hour after the sandbox stopped: its state is the stop's, which the save's own time would hide.
+		clock += 60_000;
+		const stopped = await tom.stopSandbox(vm.id, { wait: true });
+		const stoppedAt = (await tom.getSnapshot(stopped.latestSnapshotId ?? "")).createdAt;
+		clock += 3_600_000;
+		const later = await tom.saveSnapshot({ name: "later", sandboxId: vm.id });
+		expect(later.createdAt).toBe(clock);
+		expect(later.takenAt).toBe(stoppedAt);
+		expect(later.labels).toBeUndefined();
+		// One of its history: that entry's time.
+		const history = await tom.saveSnapshot({ name: "history", sandboxId: vm.id, snapshotId: taken.id });
+		expect(history.takenAt).toBe(taken.createdAt);
+
+		// Read back, one at a time and in the list.
+		expect(await tom.getSnapshot(live.id)).toMatchObject({ labels: { "git.base": "bbb" }, takenAt: live.createdAt });
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items;
+		expect(listed.find((snapshot) => snapshot.id === later.id)?.takenAt).toBe(stoppedAt);
+
+		// Labels are bounded, as a description is.
+		const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, "v"]));
+		expect((await failure(tom.saveSnapshot({ name: "many", sandboxId: vm.id, labels: many }))).code).toBe("invalid");
+		const long = { "git.base": "x".repeat(501) };
+		expect((await failure(tom.takeSnapshot(vm.id, { labels: long }))).code).toBe("invalid");
+	});
+
 	it("records a kept save's memory as its backend says, and stores none it couldn't keep", async () => {
 		const stub = createStubBackend();
 		let answer: "pruned" | "refused" = "pruned";

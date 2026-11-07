@@ -52,6 +52,29 @@ Kantel keeps a saved disk small: before it copies a running microVM's disk it as
 
 A name is up to 63 characters of lower-case letters, digits, `-`, `_` and `.`, starting with a letter or digit, and is unique in its account. The answer is the [Snapshot](/api/reference/types/#snapshot), with `kind: "saved"`.
 
+### Record what it holds, and how fresh it is
+
+A snapshot says when it was saved (`createdAt`) and when the state it holds was taken (`takenAt`). The two differ when you save a stopped sandbox, whose state is from its stop, or a snapshot from its history. A snapshot saved before Kantel kept `takenAt` has none.
+
+Kantel doesn't look inside the files, so it can't know what commit a checkout in the snapshot is at, or which lockfile its caches were built from. Record those yourself in `labels` when you save it (or take it), and read them back to tell how far a cache has fallen behind. Up to 20 labels, each value up to 500 characters:
+
+```sh
+base=$(kantel exec sbx_4kq9x2mt -- git -C /home/user/app rev-parse HEAD)
+kantel snapshot save sbx_4kq9x2mt app-warm --replace \
+  --description "Deps installed, build cache warm" --label git.base="$base"
+```
+
+```ts
+const warm = await kantel.saveSnapshot({
+	name: "app-warm",
+	sandboxId: "sbx_4kq9x2mt",
+	replace: true,
+	labels: { "git.base": base },
+});
+```
+
+`kantel snapshot info app-warm` shows its description, labels, when its state was taken and when it was saved; with `--json`, `jq -r '.labels["git.base"]'` gives the commit, for a client to diff its branch against. The console lists the description and labels under each saved snapshot's name. Labels are set when it's saved: to change them, save it again with `replace`.
+
 ## Start sandboxes from one
 
 Give the name, or the snapshot's ID, as `from` when you [create a sandbox](/sandboxes/lifecycle/#create-a-sandbox):

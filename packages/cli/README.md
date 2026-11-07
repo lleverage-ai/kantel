@@ -73,7 +73,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `files ls\|cat\|put\|get\|rm …` | A sandbox's files, up to 1 MiB each |
 | `host <id> <port> [--public]`, `port list\|hide …` | HTTPS URLs for a sandbox's ports |
 | `ssh <id> [--print] [-- <command…>]`, `desktop <id>`, `browser <id>` | SSH (a shell, one command, or the ssh command printed), desktop and browser access to a microVM |
-| `snapshot list\|take\|save\|files\|rm …` | Snapshots, and saved snapshots to start sandboxes from |
+| `snapshot list\|info\|take\|save\|files\|rm …` | Snapshots, and saved snapshots to start sandboxes from; `take` and `save` take `--label k=v`, which `info` shows |
 | `env list\|create\|show\|delete …` | Environments: the variables, secret files, repos and grants new sandboxes start with |
 | `env set <env> NAME=value [--protected --bind <host>[/path][:METHOD,…]]… [--value-stdin] [--keep-value]`, `env unset` | Plain and protected variables; a protected value never enters a sandbox, and is never printed |
 | `env file <env> <path> [--mode] [--from]`, `env file rm`, `env repo add\|rm`, `env grant <env> allow\|deny <host>`, `env grant rm` | Secret files, repositories to clone and grants |

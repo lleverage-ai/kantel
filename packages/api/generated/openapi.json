@@ -15723,6 +15723,17 @@
 						"type": "string",
 						"maxLength": 500
 					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string",
+								"maxLength": 500
+							}
+						},
+						"maxProperties": 20,
+						"description": "Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given."
+					},
 					"replace": {
 						"type": "boolean",
 						"description": "Replace a saved snapshot of the same name."
@@ -15908,6 +15919,17 @@
 					"description": {
 						"type": "string"
 					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string",
+								"maxLength": 500
+							}
+						},
+						"maxProperties": 20,
+						"description": "Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given."
+					},
 					"sandboxId": {
 						"type": "string",
 						"description": "The sandbox it was taken of; absent once that is deleted."
@@ -15961,6 +15983,10 @@
 					"createdAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"takenAt": {
+						"type": "integer",
+						"description": "When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept."
 					},
 					"createdBy": {
 						"$ref": "#/components/schemas/CreatedBy"
@@ -16112,6 +16138,17 @@
 					"description": {
 						"type": "string",
 						"maxLength": 500
+					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string",
+								"maxLength": 500
+							}
+						},
+						"maxProperties": 20,
+						"description": "Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given."
 					},
 					"memory": {
 						"type": "boolean",
