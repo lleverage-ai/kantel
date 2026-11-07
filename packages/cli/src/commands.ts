@@ -2104,24 +2104,30 @@ const SECTIONS: readonly Section[] = [
 				async run(ctx) {
 					const client = await ctx.client();
 					const wanted = ctx.arg(0);
-					let snapshotId = wanted;
-					if (!wanted.startsWith("snap_")) {
-						// A name: the account's saved snapshots, page by page, as `--from` finds one.
-						const config = await ctx.config();
-						let cursor: string | undefined;
-						let found: Snapshot | undefined;
-						do {
-							const page = await client.listSnapshots({ account: config.account, kind: "saved", cursor });
-							found = page.items.find((snapshot) => snapshot.name === wanted);
-							cursor = page.nextCursor ?? undefined;
-						} while (found === undefined && cursor !== undefined);
-						if (found === undefined)
-							throw new CliError(
-								`there is no saved snapshot called "${wanted}": kantel snapshot list --saved shows them`,
-							);
-						snapshotId = found.id;
+					// An ID first, as `--from` takes one; a saved name may start with `snap_` too, so not found falls through.
+					if (wanted.startsWith("snap_")) {
+						try {
+							const snapshot = await client.getSnapshot(wanted);
+							return ctx.emit(snapshot, () => describeSnapshot(snapshot));
+						} catch (error) {
+							if (!(error instanceof KantelApiError) || error.code !== "not_found") throw error;
+						}
 					}
-					const snapshot = await client.getSnapshot(snapshotId);
+					// A name: the account's saved snapshots, page by page.
+					const config = await ctx.config();
+					let cursor: string | undefined;
+					let found: Snapshot | undefined;
+					do {
+						const page = await client.listSnapshots({ account: config.account, kind: "saved", cursor });
+						found = page.items.find((snapshot) => snapshot.name === wanted);
+						cursor = page.nextCursor ?? undefined;
+					} while (found === undefined && cursor !== undefined);
+					if (found === undefined) {
+						throw new CliError(
+							`there is no snapshot ${wanted}, or saved one called "${wanted}": kantel snapshot list shows them`,
+						);
+					}
+					const snapshot = await client.getSnapshot(found.id);
 					ctx.emit(snapshot, () => describeSnapshot(snapshot));
 				},
 			},

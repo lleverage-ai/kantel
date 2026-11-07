@@ -870,7 +870,27 @@ describe("snapshots", () => {
 			routes: { "GET /v1/snapshots": () => ({ items: [] }) },
 		});
 		expect(missing.code).toBe(1);
-		expect(missing.stderr).toContain('there is no saved snapshot called "nope"');
+		expect(missing.stderr).toContain('there is no snapshot nope, or saved one called "nope"');
+		// A saved name may start as an ID does: not found as an ID, it is looked for by name.
+		const prefixed = await kantel(["snapshot", "info", "snap_checks"], {
+			routes: {
+				"GET /v1/snapshots": () => ({ items: [{ ...SAVED, name: "snap_checks" }] }),
+				"GET /v1/snapshots/snap_1": () => ({ ...SAVED, name: "snap_checks" }),
+			},
+		});
+		expect(prefixed.code).toBe(0);
+		expect(prefixed.calls.map((call) => call.path)).toEqual([
+			"/v1/snapshots/snap_checks",
+			"/v1/snapshots",
+			"/v1/snapshots/snap_1",
+		]);
+		expect(prefixed.stdout).toMatch(/^name\s+snap_checks$/m);
+		// Any other failure of the ID lookup is that failure, not a missing name.
+		const failing = await kantel(["snapshot", "info", "snap_1"], {
+			routes: { "GET /v1/snapshots/snap_1": () => kantelError(403, "forbidden", "No") },
+		});
+		expect(failing.code).not.toBe(0);
+		expect(failing.calls).toHaveLength(1);
 	});
 });
 
