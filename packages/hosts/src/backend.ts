@@ -99,15 +99,15 @@ const FINGERPRINT_MARK = "--kantel-host-key--";
 export const EXEC_WAIT_MS = 30_000;
 /** How long a stop whose host is away waits for it to connect again before it fails (`whileHostAway`). */
 export const STOP_RECONNECT_WAIT_MS = 120_000;
-/** How many times a stop is sent while its host comes and goes. */
+/** How many times a stop may reach its host (sent, and never answered) while the host comes and goes. */
 const STOP_ATTEMPTS = 3;
 /**
  * How long a stop that failed `unavailable`, with nothing saying its host was away, waits before asking whether the host
  * is connected: past a gateway cluster's heartbeat, so a replica's view of a host another one held is current.
  */
 const HOST_SETTLE_MS = 3_000;
-/** How often a stop waiting for its host looks for it. */
-const HOST_RECONNECT_POLL_MS = 250;
+/** How long a stop waiting for its host waits between looks, and between sends. */
+const HOST_RECONNECT_POLL_MS = 1_000;
 /** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
 const EXEC_RETRY_MIN_MS = 1_000;
 const EXEC_RETRY_MAX_MS = 30_000;
@@ -437,30 +437,39 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
-	 * `attempt`, sent again once its host is back when it failed because the host wasn't there (#737): not connected, or
-	 * its connection gone while the call waited (a reconnect, a restart for an update). It waits up to
-	 * `STOP_RECONNECT_WAIT_MS` for the host to connect, up to `STOP_ATTEMPTS` sends in all; a host that isn't back by then
-	 * fails it as before. Only while the host is away: its own refusal or failure, or a timeout with it still connected,
-	 * is final. Away is what this replica's hub said (`hostWasAway`), or, for a call a peer replica relayed, which doesn't
-	 * say, the host not connected once `HOST_SETTLE_MS` has passed. A host that carried out the stop it never answered
-	 * (kantel-host runs a stop on past its connection) has the sandbox stopped, and answers the next with a snapshot of
-	 * its disk (`HOST_FEATURES.guestHealth`).
+	 * `attempt`, sent again while it fails because its host isn't there (#737): not connected, or its connection gone
+	 * while the call waited (a reconnect, a restart for an update). Each send's own failure decides, never the hub's view
+	 * of the host alone: away is what the hub holding the host said (`hostWasAway`, carried across replicas), or, for a
+	 * failure that doesn't say (an unreachable peer replica), the host not connected once `HOST_SETTLE_MS` has passed. Any
+	 * other failure is final: the host's own refusal, or a timeout with it connected. While away it is sent again every
+	 * `HOST_RECONNECT_POLL_MS` the host looks connected, so a view that lags (a replica's of a host another holds) only
+	 * costs a send that fails again, until `STOP_RECONNECT_WAIT_MS` has passed since the host was last reached; then it
+	 * fails as before. A send the host may have taken (`unanswered`) counts against `STOP_ATTEMPTS`; one that never left
+	 * doesn't. A host that carried out the stop it never answered (kantel-host runs a stop on past its connection) has the
+	 * sandbox stopped, and answers the next with a snapshot of its disk (`HOST_FEATURES.guestHealth`).
 	 */
 	async function whileHostAway<T>(hostId: string, attempt: () => Promise<T>): Promise<T> {
-		for (let sent = 1; ; sent++) {
+		let reached = 0;
+		let until: number | undefined;
+		for (;;) {
 			try {
 				return await attempt();
 			} catch (error) {
-				if (sent >= STOP_ATTEMPTS || !isKantelError(error) || error.code !== "unavailable") throw error;
+				if (!isKantelError(error) || error.code !== "unavailable") throw error;
+				if (unanswered(error)) {
+					reached += 1;
+					until = undefined;
+				}
+				if (reached >= STOP_ATTEMPTS) throw error;
 				if (!hostWasAway(error)) {
 					await pause(HOST_SETTLE_MS, undefined);
 					if (hosts.hub.connected(hostId)) throw error;
 				}
-				const until = now() + STOP_RECONNECT_WAIT_MS;
-				while (!hosts.hub.connected(hostId)) {
+				until ??= now() + STOP_RECONNECT_WAIT_MS;
+				do {
 					if (now() >= until) throw error;
 					await pause(HOST_RECONNECT_POLL_MS, undefined);
-				}
+				} while (!hosts.hub.connected(hostId));
 			}
 		}
 	}

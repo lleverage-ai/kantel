@@ -94,6 +94,22 @@ describe("a stop while its host is away", () => {
 		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
 	});
 
+	it("keeps waiting while a view of the host that lags says it is connected (a replica's of a host another holds)", async () => {
+		const { api, root, service, hostId, host, sandbox } = await setup();
+		const connected = service.hub.connected.bind(service.hub);
+		// Stale: connected for a while after the host has gone, as a replica's cache until its next heartbeat.
+		service.hub.connected = () => true;
+		host.connection.closed(1006, "gone");
+		await root.stopSandbox(sandbox.id);
+		await new Promise((resolve) => setTimeout(resolve, 2_500));
+		expect(await stateOf(root, sandbox.id)).toBe("stopping");
+		service.hub.connected = connected;
+		const back = await reconnect(service, hostId, host);
+		await api.service.idle();
+		expect(await stateOf(root, sandbox.id)).toBe("stopped");
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+	});
+
 	it("fails as before when the host isn't back in time", async () => {
 		const { api, root, host, sandbox, skip } = await setup();
 		host.connection.closed(1006, "gone");
