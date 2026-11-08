@@ -48,6 +48,8 @@ class FakeHost {
 	ownBrowserDisplay = false;
 	/** What its hello says it is: the features it reports, say. */
 	facts: HostFacts = facts;
+	/** The phases a create, fork or resume answers with; absent, a host from before it said. */
+	phases?: unknown;
 	/**
 	 * What `sandbox.processes` answers; absent, a host from before it listed them. Answering undefined: a sandbox whose
 	 * guest agent is from before it could.
@@ -101,6 +103,7 @@ class FakeHost {
 			state: s.state,
 			createdAt: 1,
 			...(this.guest === undefined ? {} : { guest: this.guest }),
+			...(this.phases === undefined ? {} : { phases: this.phases }),
 		});
 		switch (message.method) {
 			case "sandbox.create": {
@@ -633,6 +636,47 @@ describe("the compute API on kantel-host hosts", () => {
 			desktop: false,
 			guest: { os: { id: "alpine" } },
 		});
+	});
+
+	it("keeps how a microVM's start took its time, by phase, on its record and its running event", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		// A host from before phases: none.
+		expect(sandbox.startup).toBeUndefined();
+		const saved = await root.saveSnapshot({ name: "warm", sandboxId: sandbox.id });
+
+		// Made from a disk-only snapshot on a host without reflinks: the disk copy is the slow part.
+		host.phases = { disk: "copy", diskMs: 18_234.56, bootMs: 1_900, agentMs: 612.3, totalMs: 21_400 };
+		const made = await root.createSandbox({ type: "microvm", from: saved.id, wait: true });
+		expect(made.startup).toMatchObject({
+			disk: "copy",
+			diskMs: 18_234.6,
+			bootMs: 1_900,
+			agentMs: 612.3,
+			hostMs: 21_400,
+		});
+		expect(made.startup?.totalMs).toBeGreaterThanOrEqual(21_400);
+		expect((await root.getSandbox(made.id)).startup).toEqual(made.startup);
+		const running = (await root.listEvents({ sandboxId: made.id, type: "sandbox.running" })).items;
+		expect(running.map((event) => event.data.startup)).toEqual([made.startup]);
+
+		// A fork of a running one: its source's live snapshot first.
+		host.phases = { disk: "move", diskMs: 0.4, snapshotMs: 950, bootMs: 300, agentMs: 20, totalMs: 1_400 };
+		const fork = (await root.forkSandbox(made.id, { wait: true })).items[0];
+		expect(fork?.startup).toMatchObject({ disk: "move", snapshotMs: 950, hostMs: 1_400 });
+
+		// A start whose host doesn't say leaves no previous start's phases behind; one it can't read is none.
+		host.phases = undefined;
+		await root.stopSandbox(made.id, { wait: true });
+		expect((await root.resumeSandbox(made.id, { wait: true })).startup).toBeUndefined();
+		host.phases = { disk: "teleport", diskMs: -1, bootMs: "fast", agentMs: 1, totalMs: 2 };
+		const odd = await root.createSandbox({ type: "microvm", from: saved.id, wait: true });
+		expect(odd.startup).toBeUndefined();
 	});
 
 	it("says why a sandbox can't be placed, at its create and when its host is gone", async () => {

@@ -2301,6 +2301,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			},
 			...host,
 			base: baseView(sandbox.base),
+			...(sandbox.startup === undefined ? {} : { startup: { ...sandbox.startup } }),
 		};
 	}
 
@@ -3999,11 +4000,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sent?: { readonly egressRevision: number | undefined },
 	): Promise<StoredSandbox | undefined> {
 		let placement: Placement;
+		const calledAt = now();
 		try {
 			placement = await run();
 		} catch (error) {
 			return fail(sandboxId, error, "starting");
 		}
+		// Its machine's phases, from this start: none where its backend didn't say, not a previous start's.
+		const startup: computeSchema.SandboxStartup | undefined =
+			placement.startup === undefined
+				? undefined
+				: { ...placement.startup, totalMs: Math.max(placement.startup.hostMs, now() - calledAt) };
 		// The revision its backend has: what the boot sent, or what reconciling sent since.
 		let applied = sent?.egressRevision;
 		// Made from a template snapshot whose host had no room, it booted the template fresh elsewhere: so its record says.
@@ -4038,6 +4045,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
+				startup,
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
 				...placedBase(placement),
 				...(sandbox.mounts === undefined
@@ -4118,7 +4126,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
-		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
+		await emit("sandbox.running", next.accountId, {
+			sandbox: next,
+			data: { previousState: "starting", ...(startup === undefined ? {} : { startup }) },
+		});
 		return next;
 	}
 

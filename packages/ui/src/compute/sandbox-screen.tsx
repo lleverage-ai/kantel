@@ -1,12 +1,11 @@
 // A sandbox's screen in the console: its desktop or its browser, on a page of its own (/sandboxes/<id>/desktop, /watch
-// or /browser) that the sandbox's page opens in a new tab, with Control and Watch and full screen. Nothing streams
+// or /browser) that the sandbox's page opens in a new tab, with full screen. Nothing streams
 // anywhere else: the stream is this page's frame, and it goes when the page closes or has been hidden a while. Where
 // there's nothing real to show (the sample data) a drawing of a desktop or a browser in the theme's colours stands in.
 
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
 import { Button, buttonClass, buttonLabelClass, IconButton } from "../primitives/button.tsx";
-import { SegmentedControl } from "../primitives/controls.tsx";
 import { GlobeIcon } from "../primitives/icons.tsx";
 import { DesktopIcon, FullScreenIcon } from "../primitives/lucide.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -154,8 +153,8 @@ export interface SandboxViewerProps {
 }
 
 /**
- * The desktop or the browser as a page of its own, the whole window. Control and Watch switch the desktop between
- * using it and watching only; Full screen fills the display. From the browser the desktop is a button away; not the
+ * The desktop or the browser as a page of its own, the whole window. The desktop is always the one to use; Full
+ * screen fills the display. From the browser the desktop is a button away; not the
  * other way, since the browser runs on the desktop and shows the same picture there.
  */
 export function SandboxViewer({
@@ -176,7 +175,6 @@ export function SandboxViewer({
 	const ready = access !== "loading" && !(access instanceof Error) ? access : undefined;
 	const unavailable = ready === undefined ? undefined : screenUnavailable(ready, view);
 	const url = ready === undefined || unavailable !== undefined ? undefined : embedUrl(ready, view);
-	const go = (next: ScreenView) => (onView === undefined ? window.location.assign(viewHref(next)) : onView(next));
 	const other: ScreenView = view === "browser" ? "desktop" : "browser";
 	const otherUnavailable = ready === undefined ? undefined : screenUnavailable(ready, other);
 	const otherButton =
@@ -262,17 +260,6 @@ export function SandboxViewer({
 					/>
 				</div>
 				<div className="flex flex-none items-center gap-1">
-					{view === "browser" || unavailable !== undefined ? null : (
-						<SegmentedControl
-							label="Desktop"
-							options={[
-								{ value: "desktop", label: "Control" },
-								{ value: "watch", label: "Watch" },
-							]}
-							value={view}
-							onChange={go}
-						/>
-					)}
 					{otherButton}
 					<IconButton
 						size="sm"
