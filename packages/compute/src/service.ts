@@ -1761,8 +1761,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const exportedUntil = new Map<string, number>();
 	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
 	const tickArrivedAt = new Map<string, number>();
-	/** Each sandbox's guest's newest count of OOM kills since boot, from its readings: for `sandbox.oom_kill`. */
+	/**
+	 * Each sandbox's guest's newest OOM-kill count taken here (`takeOOMKills`), so an unchanged one isn't taken again;
+	 * and the sandboxes with a `sandbox.oom_kill` still to be stored, taken again with their next reading.
+	 */
 	const oomKillsSeen = new Map<string, number>();
+	const oomPending = new Set<string>();
 	/**
 	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in each of its
 	 * sampler's recent runs (`MAX_RUNS_KEPT`, newest last): one sent again after a reconnect, at or before it, is
@@ -3023,10 +3027,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		type: EventType,
 		accountId: string,
 		fields: { sandbox?: StoredSandbox; snapshotId?: string; data?: EventData },
+		/** Its ID, for an event that may be stored again (written over, not added twice); default a new one. */
+		eventId: string = randomId("evt"),
 	): Promise<void> {
 		const { sandbox } = fields;
 		const event: computeSchema.Event = {
-			id: randomId("evt"),
+			id: eventId,
 			type,
 			accountId,
 			createdAt: now(),
@@ -5145,6 +5151,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
 		const followed = new Set(sandboxSeries.keys());
 		for (const id of oomKillsSeen.keys()) if (!followed.has(id)) oomKillsSeen.delete(id);
+		for (const id of oomPending) if (!followed.has(id)) oomPending.delete(id);
 		// A host's backlog is minutes long: an hour without a tick, none of what it would send again is still to come.
 		for (const hostId of takenSeq.keys()) if (!tickArrivedAt.has(hostId)) takenSeq.delete(hostId);
 		for (const hostId of heldUsage.keys()) if (!tickArrivedAt.has(hostId)) heldUsage.delete(hostId);
@@ -5193,11 +5200,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 		if (report.sandboxes.length > 0) {
 			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
-			const oomKilled: { readonly id: string; readonly killed: number; readonly limit: number }[] = [];
+			const oomCounts: { readonly id: string; readonly count: number; readonly limit: number }[] = [];
 			for (const reading of report.sandboxes) {
 				if (!held.has(reading.id)) continue;
 				// The last disk size a reading had: one without (a guest that didn't answer in time) keeps it.
 				const diskTotal = reading.diskTotalBytes ?? sandboxSeries.meta(reading.id)?.diskTotalBytes;
+				// Whether the series takes it (only a point newer than its newest): an older one leaves the OOM count be.
+				const before = sandboxSeries.latest(reading.id);
+				const inOrder = Number.isFinite(at) && (before === undefined || Math.round(at) > before.at);
+				// Whether this replica took the reading just before this one itself: else (a first, one passed on, a gap while
+				// the host was on another replica) what it saw last of the OOM count may be behind what is kept.
+				const followed = before !== undefined && before.shared !== true && at - before.at <= 3 * report.intervalMs;
 				const rollup = sandboxSeries.add(
 					reading.id,
 					{
@@ -5218,42 +5231,80 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				);
 				if (rollup !== undefined) closed.push({ id: reading.id, rollup });
-				const killed = newOOMKills(reading.id, reading.oomKills);
-				if (killed > 0 && !shared) oomKilled.push({ id: reading.id, killed, limit: reading.memLimitBytes });
+				// Another replica's tick is that replica's to count; a count unchanged since this replica's own last reading
+				// needs nothing, unless an event for it is still to be stored.
+				const count = reading.oomKills;
+				if (inOrder && !shared && count !== undefined) {
+					if (!followed || oomKillsSeen.get(reading.id) !== count || oomPending.has(reading.id)) {
+						oomKillsSeen.set(reading.id, count);
+						oomCounts.push({ id: reading.id, count, limit: reading.memLimitBytes });
+					}
+				}
 			}
 			for (const { id, rollup } of closed) await keepRollup(id, rollup).catch(() => undefined);
-			for (const each of oomKilled) await emitOOMKill(each.id, each.killed, each.limit).catch(() => undefined);
+			for (const each of oomCounts) {
+				await takeOOMKills(each.id, each.count, at, each.limit).catch(() => {
+					// Not taken: the next reading tries again, whatever its count.
+					oomKillsSeen.delete(each.id);
+				});
+			}
 		}
 		// The tick is in: settling that fails is tried again with the next.
 		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage().catch(() => undefined);
 	}
 
 	/**
-	 * How many processes a sandbox's guest kernel has killed for memory since its last reading that said, from its count
-	 * since boot (`oomKills`): 0 for its first such reading here (whatever it counted before this process heard of it is
-	 * not new), and the whole count when it went down (the VM booted again since, so every kill counted is since).
+	 * Takes a sandbox's guest's OOM-kill count since boot, read at `at`, against the one its record keeps
+	 * (`StoredSandbox.oomKills`), which every gateway shares: so a rise is counted once, whichever gateway the host is on
+	 * and however its readings were passed between them. The first count it keeps is a starting point (kills before it are
+	 * not new); one lower than kept means the VM booted again since, so all of it is new; a reading no newer than the one
+	 * kept is left out. New kills become a pending `sandbox.oom_kill` in the same write, with its event's ID, then the
+	 * event is stored under that ID and the pending one cleared: one that fails stays pending, and is stored (once, under
+	 * the same ID) with the next reading, adding any kills since.
 	 */
-	function newOOMKills(sandboxId: string, kills: number | undefined): number {
-		if (kills === undefined) return 0;
-		const before = oomKillsSeen.get(sandboxId);
-		oomKillsSeen.set(sandboxId, kills);
-		if (before === undefined) return 0;
-		return kills < before ? kills : kills - before;
-	}
-
-	/** `sandbox.oom_kill`: its guest's kernel killed `killed` processes for memory since its last reading. */
-	async function emitOOMKill(sandboxId: string, killed: number, memLimitBytes: number): Promise<void> {
-		const sandbox = await store.sandboxes.get(sandboxId);
-		if (sandbox === undefined || sandbox.state === "deleted" || sandbox.state === "deleting") return;
-		const memory = memLimitBytes > 0 ? ` (${Math.round((memLimitBytes / 1024 ** 3) * 10) / 10} GB)` : "";
-		const processes = killed === 1 ? "a process" : `${killed} processes`;
-		await emit("sandbox.oom_kill", sandbox.accountId, {
-			sandbox,
-			data: {
-				oomKills: killed,
-				reason: `It ran out of memory${memory}, and its kernel killed ${processes}. Give it more memory, or run less at once.`,
-			},
+	async function takeOOMKills(sandboxId: string, count: number, at: number, memLimitBytes: number): Promise<void> {
+		let record: StoredSandbox | undefined;
+		let pending: { readonly eventId: string; readonly kills: number } | undefined;
+		const written = await store.sandboxes.update(sandboxId, (current) => {
+			record = current;
+			pending = undefined;
+			if (current.state === "deleted" || current.state === "deleting") return undefined;
+			const kept = current.oomKills;
+			if (kept === undefined) return { ...current, oomKills: { count, at } };
+			pending = kept.pending;
+			if (at <= kept.at || count === kept.count) return undefined;
+			const kills = count < kept.count ? count : count - kept.count;
+			if (kills > 0) pending = { eventId: pending?.eventId ?? randomId("evt"), kills: (pending?.kills ?? 0) + kills };
+			return { ...current, oomKills: { count, at, ...(pending === undefined ? {} : { pending }) } };
 		});
+		const sandbox = written ?? record;
+		const due = pending;
+		if (sandbox === undefined || due === undefined) {
+			oomPending.delete(sandboxId);
+			return;
+		}
+		oomPending.add(sandboxId);
+		const memory = memLimitBytes > 0 ? ` (${Math.round((memLimitBytes / 1024 ** 3) * 10) / 10} GB)` : "";
+		const processes = due.kills === 1 ? "a process" : `${due.kills} processes`;
+		await emit(
+			"sandbox.oom_kill",
+			sandbox.accountId,
+			{
+				sandbox,
+				data: {
+					oomKills: due.kills,
+					reason: `It ran out of memory${memory}, and its kernel killed ${processes}. Give it more memory, or run less at once.`,
+				},
+			},
+			due.eventId,
+		);
+		// Cleared only as stored: kills another gateway added meanwhile stay pending, for the event to be stored again.
+		await store.sandboxes.update(sandboxId, (current) => {
+			const kept = current.oomKills;
+			if (kept?.pending?.eventId !== due.eventId || kept.pending.kills !== due.kills) return undefined;
+			return { ...current, oomKills: { count: kept.count, at: kept.at } };
+		});
+		oomPending.delete(sandboxId);
 	}
 
 	/**

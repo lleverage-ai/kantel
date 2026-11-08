@@ -189,6 +189,17 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly healthAt?: number;
 	/**
+	 * Its guest's OOM-kill count (since boot) as last taken from a reading here, for `sandbox.oom_kill`: `count` and the
+	 * reading's time `at`, written only when the count changes, so every gateway measures a rise from the same place
+	 * and a range of kills is reported once. `pending` is an event for kills taken but not yet stored, with the ID it
+	 * is stored under when tried again.
+	 */
+	readonly oomKills?: {
+		readonly count: number;
+		readonly at: number;
+		readonly pending?: { readonly eventId: string; readonly kills: number };
+	};
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */
