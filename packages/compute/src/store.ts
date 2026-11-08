@@ -202,6 +202,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly healthAt?: number;
 	/**
+	 * When its host started the machine this run booted (the host's clock, ms: its first health stamp, `Placement.machineAt`):
+	 * a host's report of an exit stamped earlier is an earlier machine's, and is dropped (`ComputeService.reportExit`).
+	 * Absent from a backend that doesn't say. Set by every boot.
+	 */
+	readonly machineAt?: number;
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */

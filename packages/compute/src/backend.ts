@@ -338,6 +338,12 @@ export interface Placement {
 	 */
 	readonly mountsAt?: number;
 	/**
+	 * When the backend started the machine it answers for, by its own clock (a host's first health stamp for it, which only
+	 * moves on): the record keeps it, so a later report of an exit can be told apart from an earlier machine's
+	 * (`ComputeService.reportExit`). Absent where the backend doesn't say.
+	 */
+	readonly machineAt?: number;
+	/**
 	 * How its machine's start took its time on its host, by phase, without `totalMs` (the service measures that around
 	 * the call). Absent where the backend doesn't say (the stub, an older host, an isolate).
 	 */
