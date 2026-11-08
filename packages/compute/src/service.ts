@@ -5276,6 +5276,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					records === undefined ||
 					kept === undefined ||
 					kept.pending !== undefined ||
+					(kept.unreported ?? 0) > 0 ||
 					(count !== kept.count && Math.round(at) > kept.at);
 				if (inOrder && !shared && count !== undefined && due) {
 					oomCounts.push({ id: reading.id, count, limit: reading.memLimitBytes });
@@ -5298,11 +5299,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * not new); one lower than kept means the VM booted again since, so all of it is new; a reading no newer than the one
 	 * kept is left out.
 	 *
-	 * New kills become a pending `sandbox.oom_kill` in the same write that moves the count, with its event's ID and all it
-	 * says, then the event is stored under that ID and the pending one cleared. While one is pending the count stays
-	 * where it is: each reading stores the same event again (written over under its ID, never changed), and kills since
-	 * are counted once it is cleared, in an event of their own. So an event, once tried, never says anything else, on any
-	 * gateway, and none is lost to a write that failed.
+	 * One path for every reading, in one write: a newer, different count moves the count on and adds its kills to
+	 * `unreported` (a rise, or a reset's whole count), whatever is pending; then, with no event pending, what is
+	 * unreported becomes a pending `sandbox.oom_kill`, with its event's ID and all it says. The pending event is then
+	 * stored under that ID and cleared, and each later reading stores it again until it is (written over under its ID,
+	 * never changed). So no reading's kills are dropped, an event once tried never says anything else on any gateway,
+	 * and none is lost to a write that failed.
 	 */
 	async function takeOOMKills(sandboxId: string, count: number, at: number, memLimitBytes: number): Promise<void> {
 		let record: StoredSandbox | undefined;
@@ -5313,14 +5315,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (current.state === "deleted" || current.state === "deleting") return undefined;
 			const kept = current.oomKills;
 			if (kept === undefined) return { ...current, oomKills: { count, at } };
-			if (kept.pending !== undefined) {
-				pending = kept.pending;
-				return undefined;
+			// 1. The reading, if newer and different: the count moves on, and the kills it adds are unreported.
+			const moves = at > kept.at && count !== kept.count;
+			const added = !moves ? 0 : count < kept.count ? count : count - kept.count;
+			let unreported = (kept.unreported ?? 0) + added;
+			// 2. With no event pending, what is unreported becomes one, never changed after.
+			pending = kept.pending;
+			if (pending === undefined && unreported > 0) {
+				pending = { eventId: randomId("evt"), kills: unreported, memLimitBytes, at: moves ? at : kept.at };
+				unreported = 0;
 			}
-			if (at <= kept.at || count === kept.count) return undefined;
-			const kills = count < kept.count ? count : count - kept.count;
-			if (kills > 0) pending = { eventId: randomId("evt"), kills, memLimitBytes, at };
-			return { ...current, oomKills: { count, at, ...(pending === undefined ? {} : { pending }) } };
+			if (!moves && pending === kept.pending) return undefined;
+			return {
+				...current,
+				oomKills: {
+					count: moves ? count : kept.count,
+					at: moves ? at : kept.at,
+					...(unreported > 0 ? { unreported } : {}),
+					...(pending === undefined ? {} : { pending }),
+				},
+			};
 		});
 		const sandbox = written ?? record;
 		const due: OOMPending | undefined = pending;
@@ -5339,10 +5353,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			},
 			due.eventId,
 		);
+		// Cleared once stored; kills unreported since stay, for the next reading to make an event of.
 		await store.sandboxes.update(sandboxId, (current) => {
 			const kept = current.oomKills;
 			if (kept?.pending?.eventId !== due.eventId) return undefined;
-			return { ...current, oomKills: { count: kept.count, at: kept.at } };
+			const { pending: _, ...rest } = kept;
+			return { ...current, oomKills: rest };
 		});
 	}
 

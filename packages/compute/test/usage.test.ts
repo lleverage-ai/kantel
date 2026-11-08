@@ -772,10 +772,10 @@ describe("usage ticks across gateway replicas over one store", () => {
 		await on(1);
 		expect(await oomEvents(tom, id)).toEqual([]);
 		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 1, pending: { kills: 1 } });
-		// A kill meanwhile doesn't change the event: it is stored as it was, and the new kill gets one of its own.
+		// A kill meanwhile doesn't change the event: it waits as unreported, and gets one of its own once that is stored.
 		failing = 1;
 		await on(2);
-		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 1, pending: { kills: 1 } });
+		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 2, unreported: 1, pending: { kills: 1 } });
 		await on(2);
 		expect(await oomEvents(tom, id)).toEqual([1]);
 		await on(2);
@@ -791,6 +791,31 @@ describe("usage ticks across gateway replicas over one store", () => {
 		await on(3);
 		expect(await oomEvents(tom, id)).toEqual([1, 1, 1]);
 		expect((await store.sandboxes.get(id))?.oomKills).toEqual({ count: 3, at });
+	});
+
+	it("keep a reboot's kills seen while an OOM event is pending", async () => {
+		let clock = T0;
+		const { a, tom, store, id } = await replicas(() => clock);
+		const on = async (kills: number) => {
+			clock += USAGE_INTERVAL_MS;
+			await a.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
+		};
+		const put = store.events.put.bind(store.events);
+		await on(0);
+		let failing = 3;
+		store.events.put = async (event) => {
+			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("store unavailable");
+			return put(event);
+		};
+		// Three kills, whose event can't be stored; then it boots again and counts five more past the three before.
+		await on(3);
+		await on(0);
+		await on(5);
+		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 5, unreported: 5, pending: { kills: 3 } });
+		await on(5);
+		await on(5);
+		expect(await oomEvents(tom, id)).toEqual([3, 5]);
+		expect((await store.sandboxes.get(id))?.oomKills).toEqual({ count: 5, at: clock - 2 * USAGE_INTERVAL_MS });
 	});
 
 	it("store an OOM event as it was taken, whichever replica's write of it lands last", async () => {

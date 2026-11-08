@@ -215,12 +215,14 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	/**
 	 * Its guest's OOM-kill count (since boot) as last taken from a reading here, for `sandbox.oom_kill`: `count` and the
 	 * reading's time `at`, written only when the count changes, so every gateway measures a rise from the same place
-	 * and a range of kills is reported once. `pending` is an event for kills taken but not yet stored, with the ID it
-	 * is stored under when tried again and all it says; while it is there the count doesn't move.
+	 * and a range of kills is reported once. Every newer reading moves the count, and the kills it adds go to
+	 * `unreported`; with no event pending, what is unreported becomes `pending`, an event with the ID it is stored
+	 * under and all it says, never changed, until it is stored.
 	 */
 	readonly oomKills?: {
 		readonly count: number;
 		readonly at: number;
+		readonly unreported?: number;
 		readonly pending?: OOMPending;
 	};
 	/**
