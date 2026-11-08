@@ -754,7 +754,7 @@ describe("usage ticks across gateway replicas over one store", () => {
 		});
 	});
 
-	it("keep an OOM kill whose event couldn't be stored, and store it once with the next reading", async () => {
+	it("keep an OOM kill whose event couldn't be stored, and store it once, unchanged, with a later reading", async () => {
 		let clock = T0;
 		const { a, tom, store, id } = await replicas(() => clock);
 		const on = async (kills: number) => {
@@ -771,12 +771,15 @@ describe("usage ticks across gateway replicas over one store", () => {
 		};
 		await on(1);
 		expect(await oomEvents(tom, id)).toEqual([]);
-		expect((await store.sandboxes.get(id))?.oomKills?.pending?.kills).toBe(1);
-		// Kills since are added to it; the next reading stores it.
+		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 1, pending: { kills: 1 } });
+		// A kill meanwhile doesn't change the event: it is stored as it was, and the new kill gets one of its own.
 		failing = 1;
 		await on(2);
+		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 1, pending: { kills: 1 } });
 		await on(2);
-		expect(await oomEvents(tom, id)).toEqual([2]);
+		expect(await oomEvents(tom, id)).toEqual([1]);
+		await on(2);
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
 		// Written, but its answer lost: stored again under the same ID, so still one event.
 		store.events.put = async (event) => {
 			await put(event);
@@ -784,9 +787,59 @@ describe("usage ticks across gateway replicas over one store", () => {
 		};
 		failing = 1;
 		await on(3);
+		const at = clock;
 		await on(3);
-		expect(await oomEvents(tom, id)).toEqual([2, 1]);
-		expect((await store.sandboxes.get(id))?.oomKills).toEqual({ count: 3, at: clock - USAGE_INTERVAL_MS });
+		expect(await oomEvents(tom, id)).toEqual([1, 1, 1]);
+		expect((await store.sandboxes.get(id))?.oomKills).toEqual({ count: 3, at });
+	});
+
+	it("store an OOM event as it was taken, whichever replica's write of it lands last", async () => {
+		let clock = T0;
+		const { a, b, tom, store, id } = await replicas(() => clock);
+		const on = async (replica: ComputeApi, kills: number) => {
+			clock += USAGE_INTERVAL_MS;
+			await replica.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
+		};
+		await on(a, 0);
+		// A's write of its event is slow; meanwhile the host moves to B, which stores it too and counts a kill since.
+		const put = store.events.put.bind(store.events);
+		let release: () => void = () => undefined;
+		const slow = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let first = true;
+		store.events.put = async (event) => {
+			if (event.type === "sandbox.oom_kill" && first) {
+				first = false;
+				await slow;
+			}
+			return put(event);
+		};
+		const onA = on(a, 1);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		await on(b, 2);
+		await on(b, 2);
+		release();
+		await onA;
+		// Each kill once: A's late write of the first event says what B's did.
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
+		await on(b, 2);
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
+	});
+
+	it("count a rebooted guest's kills when the host comes back to a replica that last saw its count before", async () => {
+		let clock = T0;
+		const { a, b, tom, id } = await replicas(() => clock);
+		const on = async (replica: ComputeApi, kills: number) => {
+			clock += USAGE_INTERVAL_MS;
+			await replica.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
+		};
+		await on(a, 0);
+		await on(b, 1);
+		// Booted again, and back on A within a few ticks, its count back at 0 and then 1: a new kill.
+		await on(a, 0);
+		await on(a, 1);
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
 	});
 
 	it("export each point once when the host moves replica before either exports", async () => {

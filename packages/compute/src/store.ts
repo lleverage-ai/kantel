@@ -15,6 +15,17 @@ import { KantelError } from "@kantel/contracts";
 import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
 import type { SealedValue } from "./secrets.ts";
 
+/**
+ * A `sandbox.oom_kill` taken and not yet stored (`StoredSandbox.oomKills`): its event's ID, how many kills it reports,
+ * the sandbox's memory then and the reading's time. Never changed once written, so every try stores the same event.
+ */
+export interface OOMPending {
+	readonly eventId: string;
+	readonly kills: number;
+	readonly memLimitBytes: number;
+	readonly at: number;
+}
+
 /** One kind of record. */
 export interface Collection<T extends { readonly id: string }> {
 	get(id: string): Promise<T | undefined>;
@@ -205,12 +216,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * Its guest's OOM-kill count (since boot) as last taken from a reading here, for `sandbox.oom_kill`: `count` and the
 	 * reading's time `at`, written only when the count changes, so every gateway measures a rise from the same place
 	 * and a range of kills is reported once. `pending` is an event for kills taken but not yet stored, with the ID it
-	 * is stored under when tried again.
+	 * is stored under when tried again and all it says; while it is there the count doesn't move.
 	 */
 	readonly oomKills?: {
 		readonly count: number;
 		readonly at: number;
-		readonly pending?: { readonly eventId: string; readonly kills: number };
+		readonly pending?: OOMPending;
 	};
 	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
