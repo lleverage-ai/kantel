@@ -24,11 +24,36 @@ type Stats struct {
 	// IO. A difference of two over the time between them is the share of the time IO held something up. Absent when the
 	// kernel has no pressure figures (PSI off: a VM booted without psi=1).
 	IOSomeMicros *uint64 `json:"ioSomeMicros,omitempty"`
+	// OOMKills is /proc/vmstat's oom_kill: how many processes the kernel has killed for memory since boot, those
+	// MemoryWatch had it kill included. Absent when it can't be read (and from an agent that predates it).
+	OOMKills *int64 `json:"oomKills,omitempty"`
+	// MemorySomeAvg10 and MemoryFullAvg10 are /proc/pressure/memory's avg10s, 0 to 100: the share of the last ten
+	// seconds in which at least one task (some), or every task that wanted to run (full), was stalled on memory. Absent
+	// without pressure figures (PSI off).
+	MemorySomeAvg10 *float64 `json:"memorySomeAvg10,omitempty"`
+	MemoryFullAvg10 *float64 `json:"memoryFullAvg10,omitempty"`
 }
 
 // stats answers Stats.
 func (s *Server) stats(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, ReadStats(diskMount, "/proc/pressure/io"))
+	out := ReadStats(diskMount, "/proc/pressure/io")
+	out.ReadMemory("/proc/pressure/memory", "/proc/vmstat")
+	writeJSON(w, 200, out)
+}
+
+// ReadMemory adds the memory pressure file's avg10s at pressure and the vmstat file's oom_kill at vmstat, each it can
+// read.
+func (s *Stats) ReadMemory(pressure, vmstat string) {
+	if raw, err := os.ReadFile(pressure); err == nil {
+		for kind, into := range map[string]**float64{"some": &s.MemorySomeAvg10, "full": &s.MemoryFullAvg10} {
+			if v, err := ParsePressureAvg10(strings.NewReader(string(raw)), kind); err == nil && v >= 0 {
+				*into = &v
+			}
+		}
+	}
+	if n := oomKillsIn(vmstat); n >= 0 {
+		s.OOMKills = &n
+	}
 }
 
 // diskMount is where the guest has its own disk (guestinit and the image path's kantel-init both mount it there).

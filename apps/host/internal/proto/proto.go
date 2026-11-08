@@ -1178,6 +1178,15 @@ type SandboxUsage struct {
 	// kernel's IO pressure, "some"). Absent when the guest has no pressure figures (a kernel booted without psi=1, an
 	// agent that predates them) or for its first reading.
 	IOPressure *float64 `json:"ioPressure,omitempty"`
+	// OOMKills is how many processes a microVM's guest kernel has killed for memory since it booted (its
+	// /proc/vmstat oom_kill, its agent's memory watch's kills included): a count that only grows until the VM boots
+	// again. MemPressureSome and MemPressureFull are its memory pressure's ten-second averages, 0 to 1: the share of
+	// the last ten seconds in which at least one of its tasks (some), or every one that wanted to run (full), was
+	// stalled on memory. Each absent where the guest's agent didn't answer in time, predates them, or (pressure) its
+	// kernel has no pressure figures.
+	OOMKills        *int64   `json:"oomKills,omitempty"`
+	MemPressureSome *float64 `json:"memPressureSome,omitempty"`
+	MemPressureFull *float64 `json:"memPressureFull,omitempty"`
 }
 
 // SandboxUsage.MemSource's values.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,6 +309,67 @@ func TestUsageSampleMicroVMDiskAndIOPressure(t *testing.T) {
 	// On the wire, both are left out when there are none (a host that predates them sends the same).
 	raw, _ := json.Marshal(proto.SandboxUsage{ID: "sbx_a", Kind: "microvm"})
 	if string(raw) != `{"id":"sbx_a","kind":"microvm","cpu":0,"memUsedBytes":0,"memLimitBytes":0}` {
+		t.Fatalf("wire %s", raw)
+	}
+}
+
+// A guest's OOM kills and memory pressure come with each answer, as they are: a count since boot, and the kernel's
+// ten-second averages as shares.
+func TestUsageSampleMicroVMOOMKillsAndMemoryPressure(t *testing.T) {
+	stats := usage.GuestStats{DiskUsedBytes: 1 << 30, DiskTotalBytes: 10 << 30}
+	var statsErr error
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 1_000, Idle: 500},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 10, Start: 7}},
+		rss:   map[int]int64{100: 600 << 20},
+		vms: []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 2, MemLimitBytes: 2 << 30,
+			ReadStats: func(context.Context) (usage.GuestStats, error) { return stats, statsErr }}},
+	}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	tick := 0
+	read := func() proto.SandboxUsage {
+		t.Helper()
+		tick++
+		f.host.Total += 1_000
+		f.host.Idle += 500
+		f.procs[100] = usage.ProcCPU{Ticks: f.procs[100].Ticks + 100, Start: 7}
+		sample, ok := s.sample(t0.Add(time.Duration(tick) * 5 * time.Second))
+		if !ok {
+			t.Fatal("want a sample")
+		}
+		return byID(sample)["sbx_a"]
+	}
+	s.sample(t0)
+
+	// An agent that predates them: none.
+	if a := read(); a.OOMKills != nil || a.MemPressureSome != nil || a.MemPressureFull != nil {
+		t.Fatalf("figures from an agent without them: %+v", a)
+	}
+	// From the first answer with them: nothing to differ from.
+	kills, some, full := int64(2), 85.0, 140.0
+	stats.OOMKills, stats.MemorySomeAvg10, stats.MemoryFullAvg10 = &kills, &some, &full
+	a := read()
+	if a.OOMKills == nil || *a.OOMKills != 2 || a.MemPressureSome == nil || a.MemPressureFull == nil {
+		t.Fatalf("with figures %+v", a)
+	}
+	approx(t, "memory pressure some", *a.MemPressureSome, 0.85)
+	// A figure past 100 is taken as all of the time.
+	approx(t, "memory pressure full", *a.MemPressureFull, 1)
+	nan := math.NaN()
+	stats.MemoryFullAvg10 = &nan
+	if a = read(); a.MemPressureFull != nil {
+		t.Fatalf("a pressure that isn't a number: %v", *a.MemPressureFull)
+	}
+	// A guest that doesn't answer has none this time.
+	statsErr = errors.New("timeout")
+	if a = read(); a.OOMKills != nil || a.MemPressureSome != nil {
+		t.Fatalf("unanswered %+v", a)
+	}
+
+	raw, _ := json.Marshal(proto.SandboxUsage{ID: "sbx_a", Kind: "microvm", OOMKills: &kills, MemPressureSome: &some})
+	if !strings.Contains(string(raw), `"oomKills":2`) || !strings.Contains(string(raw), `"memPressureSome":85`) ||
+		strings.Contains(string(raw), "memPressureFull") {
 		t.Fatalf("wire %s", raw)
 	}
 }

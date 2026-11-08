@@ -24,12 +24,16 @@ type Process struct {
 	Held bool
 }
 
-// GuestStats is a guest's own disk and IO figures (guest.Stats): its disk as df counts it, and its IO pressure's "some"
-// total in microseconds since boot, nil when its kernel has none.
+// GuestStats is a guest's own disk, IO and memory figures (guest.Stats): its disk as df counts it, its IO pressure's
+// "some" total in microseconds since boot, nil when its kernel has none, and its memory pressure's avg10s (0 to 100)
+// and its kernel's OOM kills since boot, each nil when its agent didn't say.
 type GuestStats struct {
-	DiskUsedBytes  int64
-	DiskTotalBytes int64
-	IOSomeMicros   *uint64
+	DiskUsedBytes   int64
+	DiskTotalBytes  int64
+	IOSomeMicros    *uint64
+	OOMKills        *int64
+	MemorySomeAvg10 *float64
+	MemoryFullAvg10 *float64
 }
 
 // Shared is a process that runs several sandboxes, which can't be measured apart from the host's side: an account's

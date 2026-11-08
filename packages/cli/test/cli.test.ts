@@ -486,6 +486,31 @@ describe("retries", () => {
 		expect(result.slept).toEqual([]);
 	});
 
+	it("shows a guest's memory pressure and OOM kills in info and usage, and nothing where it has none", async () => {
+		const memory = { at: Date.now(), oomKills: 2, pressureSome: 0.85, pressureFull: 0.415 };
+		const usage = {
+			sandboxId: "sbx_test1",
+			intervalSeconds: 300,
+			points: [],
+			totals: { runningSeconds: 60, cpuSeconds: 30, cost: { currency: "USD", total: 0, ratePerHour: 0 } },
+			series: { intervalMs: 5000, points: [] },
+		};
+		const routes = {
+			"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, usage: { ...SANDBOX.usage, memory } }),
+			"GET /v1/sandboxes/sbx_test1/usage": () => ({ ...usage, memory: { at: memory.at, oomKills: 1 } }),
+			"GET /v1/sandboxes/sbx_plain": () => SANDBOX,
+			"GET /v1/sandboxes/sbx_plain/usage": () => usage,
+		};
+		const info = await kantel(["info", "sbx_test1"], { routes });
+		expect(info.stdout).toMatch(/memory +pressure 85% \(full 42%\), 2 processes killed for memory since boot/);
+		const used = await kantel(["usage", "sbx_test1"], { routes });
+		expect(used.stdout).toMatch(/memory +1 process killed for memory since boot/);
+		const plainInfo = await kantel(["info", "sbx_plain"], { routes });
+		expect(plainInfo.stdout).not.toContain("memory");
+		const plainUsage = await kantel(["usage", "sbx_plain"], { routes });
+		expect(plainUsage.stdout).not.toContain("memory");
+	});
+
 	it("saves a snapshot with the least memory a sandbox made from it may have, in GB", async () => {
 		const routes = {
 			"POST /v1/snapshots": () => ({ id: "snap_1", name: "checks", kind: "saved", minMemoryMb: 16_384 }),

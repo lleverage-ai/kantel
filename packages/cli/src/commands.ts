@@ -19,6 +19,7 @@ import {
 	type EventType,
 	type ExposedPort,
 	type FileList,
+	type GuestMemory,
 	type Host,
 	type IssuedApiKey,
 	KantelApiError,
@@ -283,6 +284,7 @@ const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.error",
 	"sandbox.degraded",
 	"sandbox.recovered",
+	"sandbox.oom_kill",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
@@ -468,6 +470,25 @@ function idleStopText(sandbox: Sandbox): string | undefined {
 	return sandbox.idleStopsAt === undefined ? idle : `${idle} (stops ${until(sandbox.idleStopsAt)} unless used)`;
 }
 
+/**
+ * A guest's memory figures, for info and usage: "pressure 85% (full 41%), 2 processes killed for memory since boot".
+ * Undefined with none.
+ */
+function guestMemoryText(memory: GuestMemory | undefined): string | undefined {
+	if (memory === undefined) return undefined;
+	const percent = (share: number) => `${Math.round(share * 100)}%`;
+	const parts: string[] = [];
+	if (memory.pressureSome !== undefined) {
+		const full = memory.pressureFull === undefined ? "" : ` (full ${percent(memory.pressureFull)})`;
+		parts.push(`pressure ${percent(memory.pressureSome)}${full}`);
+	}
+	if (memory.oomKills !== undefined) {
+		const kills = memory.oomKills === 0 ? "none" : memory.oomKills === 1 ? "1 process" : `${memory.oomKills} processes`;
+		parts.push(`${kills} killed for memory since boot`);
+	}
+	return parts.length === 0 ? undefined : parts.join(", ");
+}
+
 function describeSandbox(sandbox: Sandbox): string {
 	const resources = sandbox.resources;
 	const machine = [
@@ -499,6 +520,7 @@ function describeSandbox(sandbox: Sandbox): string {
 		["created", `${timestamp(sandbox.createdAt)} (${ago(sandbox.createdAt)})`],
 		["started in", startupText(sandbox)],
 		["running", duration(sandbox.usage.runningSeconds)],
+		["memory", guestMemoryText(sandbox.usage.memory)],
 		["cost", `${money(cost.total, cost.currency)} (${money(cost.ratePerHour, cost.currency)} an hour)`],
 	]);
 }
@@ -1652,6 +1674,7 @@ const SECTIONS: readonly Section[] = [
 						fields([
 							["running", duration(totals.runningSeconds)],
 							["cpu", `${totals.cpuSeconds.toFixed(1)} s`],
+							["memory", guestMemoryText(usage.memory)],
 							["cost", money(totals.cost.total, totals.cost.currency)],
 							[
 								"peak memory",

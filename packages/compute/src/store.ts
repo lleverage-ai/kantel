@@ -15,6 +15,17 @@ import { KantelError } from "@kantel/contracts";
 import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
 import type { SealedValue } from "./secrets.ts";
 
+/**
+ * A `sandbox.oom_kill` taken and not yet stored (`StoredSandbox.oomKills`): its event's ID, how many kills it reports,
+ * the sandbox's memory then and the reading's time. Never changed once written, so every try stores the same event.
+ */
+export interface OOMPending {
+	readonly eventId: string;
+	readonly kills: number;
+	readonly memLimitBytes: number;
+	readonly at: number;
+}
+
 /** One kind of record. */
 export interface Collection<T extends { readonly id: string }> {
 	get(id: string): Promise<T | undefined>;
@@ -201,6 +212,19 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * says an earlier or the same time is older than what is here, and is dropped.
 	 */
 	readonly healthAt?: number;
+	/**
+	 * Its guest's OOM-kill count (since boot) as last taken from a reading here, for `sandbox.oom_kill`: `count` and the
+	 * reading's time `at`, written only when the count changes, so every gateway measures a rise from the same place
+	 * and a range of kills is reported once. Every newer reading moves the count, and the kills it adds go to
+	 * `unreported`; with no event pending, what is unreported becomes `pending`, an event with the ID it is stored
+	 * under and all it says, never changed, until it is stored.
+	 */
+	readonly oomKills?: {
+		readonly count: number;
+		readonly at: number;
+		readonly unreported?: number;
+		readonly pending?: OOMPending;
+	};
 	/**
 	 * When its host started the machine this run booted (the host's clock, ms: its first health stamp, `Placement.machineAt`):
 	 * a host's report of an exit stamped earlier is an earlier machine's, and is dropped (`ComputeService.reportExit`).

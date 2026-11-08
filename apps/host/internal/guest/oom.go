@@ -141,11 +141,15 @@ func ReadMemoryState() (MemoryState, error) {
 }
 
 // ParsePressureFullAvg10 reads a /proc/pressure file's "full" line's avg10=.
-func ParsePressureFullAvg10(r io.Reader) (float64, error) {
+func ParsePressureFullAvg10(r io.Reader) (float64, error) { return ParsePressureAvg10(r, "full") }
+
+// ParsePressureAvg10 reads the avg10= of a /proc/pressure file's line of that kind ("some" or "full"): the share, 0
+// to 100, of the last ten seconds in which at least one task (for "full", every task that wanted to run) was stalled.
+func ParsePressureAvg10(r io.Reader, kind string) (float64, error) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) == 0 || fields[0] != "full" {
+		if len(fields) == 0 || fields[0] != kind {
 			continue
 		}
 		for _, field := range fields[1:] {
@@ -157,7 +161,7 @@ func ParsePressureFullAvg10(r io.Reader) (float64, error) {
 	if err := scanner.Err(); err != nil {
 		return 0, err
 	}
-	return 0, fmt.Errorf("no full avg10")
+	return 0, fmt.Errorf("no %s avg10", kind)
 }
 
 // ParseAvailablePercent reads MemAvailable as a share of MemTotal from /proc/meminfo.
@@ -190,13 +194,21 @@ func ParseAvailablePercent(r io.Reader) (float64, error) {
 }
 
 // OOMKills is the kernel's count of OOM kills since boot (/proc/vmstat oom_kill), or -1 when it can't be read.
-func OOMKills() int64 {
-	f, err := os.Open("/proc/vmstat")
+func OOMKills() int64 { return oomKillsIn("/proc/vmstat") }
+
+// oomKillsIn is OOMKills from the vmstat file at path.
+func oomKillsIn(path string) int64 {
+	f, err := os.Open(path)
 	if err != nil {
 		return -1
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
+	return ParseOOMKills(f)
+}
+
+// ParseOOMKills reads oom_kill from a /proc/vmstat, or -1 when it has none.
+func ParseOOMKills(r io.Reader) int64 {
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		if value, ok := strings.CutPrefix(scanner.Text(), "oom_kill "); ok {
 			n, err := strconv.ParseInt(value, 10, 64)

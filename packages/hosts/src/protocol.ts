@@ -800,6 +800,18 @@ export interface HostSandboxUsage {
 	 * pressure, "some"). None from a guest without pressure figures (booted without psi=1) or for its first reading.
 	 */
 	readonly ioPressure?: number;
+	/**
+	 * How many processes a microVM's guest kernel has killed for memory since it booted (its `/proc/vmstat` `oom_kill`):
+	 * a count that grows until the VM boots again. None from a guest agent that predates it or didn't answer in time.
+	 */
+	readonly oomKills?: number;
+	/**
+	 * A microVM's guest memory pressure, its kernel's ten-second averages as shares, 0 to 1: of the last ten seconds, how
+	 * much at least one task (`some`), or every task that wanted to run (`full`), was stalled on memory. None from a
+	 * guest without pressure figures, or one whose agent predates them or didn't answer in time.
+	 */
+	readonly memPressureSome?: number;
+	readonly memPressureFull?: number;
 }
 
 /** `HostSandboxUsage.memSource`. */

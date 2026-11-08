@@ -26,6 +26,7 @@ The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage 
 | `sandbox.error` | It went into `error` |
 | `sandbox.degraded` | Its host lost full contact with it |
 | `sandbox.recovered` | Its host has it back |
+| `sandbox.oom_kill` | A microVM ran out of memory and its kernel killed processes (`data.oomKills` of them); it keeps running |
 | `sandbox.deleted` | It has been erased |
 | `snapshot.saved` | A saved snapshot was made |
 | `snapshot.deleted` | A saved snapshot was deleted |

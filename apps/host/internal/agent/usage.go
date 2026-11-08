@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -273,6 +274,11 @@ func (s *usageSampler) applyStats(a *statsAsk, reading *proto.SandboxUsage) {
 	if st.DiskTotalBytes > 0 && st.DiskUsedBytes >= 0 && st.DiskUsedBytes <= st.DiskTotalBytes {
 		reading.DiskUsedBytes, reading.DiskTotalBytes = st.DiskUsedBytes, st.DiskTotalBytes
 	}
+	if st.OOMKills != nil && *st.OOMKills >= 0 {
+		kills := *st.OOMKills
+		reading.OOMKills = &kills
+	}
+	reading.MemPressureSome, reading.MemPressureFull = share(st.MemorySomeAvg10), share(st.MemoryFullAvg10)
 	if st.IOSomeMicros == nil {
 		return
 	}
@@ -282,6 +288,15 @@ func (s *usageSampler) applyStats(a *statsAsk, reading *proto.SandboxUsage) {
 		pressure := min(1, max(0, grew/over.Seconds()))
 		reading.IOPressure = &pressure
 	}
+}
+
+// share is a pressure avg10 (0 to 100) as a share, 0 to 1; nil for none, or one that isn't a number.
+func share(avg10 *float64) *float64 {
+	if avg10 == nil || math.IsNaN(*avg10) || math.IsInf(*avg10, 0) {
+		return nil
+	}
+	v := min(1, max(0, *avg10/100))
+	return &v
 }
 
 // isolates shares out an account's runtime among its running sandboxes: CPU by the time each spent running commands

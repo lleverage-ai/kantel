@@ -1632,6 +1632,7 @@ export type WebhookEvent =
 	| "sandbox.error"
 	| "sandbox.degraded"
 	| "sandbox.recovered"
+	| "sandbox.oom_kill"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1644,6 +1645,7 @@ export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly l
 	{ event: "sandbox.error", label: "A sandbox failed" },
 	{ event: "sandbox.degraded", label: "A sandbox is degraded" },
 	{ event: "sandbox.recovered", label: "A sandbox recovered" },
+	{ event: "sandbox.oom_kill", label: "A sandbox ran out of memory" },
 	{ event: "sandbox.deleted", label: "A sandbox was deleted" },
 	{ event: "snapshot.saved", label: "A snapshot was saved" },
 	{ event: "snapshot.deleted", label: "A snapshot was deleted" },

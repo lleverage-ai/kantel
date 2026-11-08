@@ -269,6 +269,72 @@ describe("a host's usage ticks", () => {
 		expect((await api.store.sandboxes.get(box.id))?.peak?.memoryBytes).toBe(22 * 1024 * MIB);
 	});
 
+	it("carry a microVM's OOM kills and memory pressure to its series and its latest, with an event when kills rise", async () => {
+		let clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const reading = {
+			id: box.id,
+			kind: "microvm" as const,
+			cpu: 1,
+			memUsedBytes: 7406 * MIB,
+			memLimitBytes: 8192 * MIB,
+		};
+		const start = clock;
+		const send = async (figures: Partial<ReportedUsage["sandboxes"][number]>, shared = false) => {
+			clock += USAGE_INTERVAL_MS;
+			await api.service.recordUsage(STUB_HOST_ID, tick(clock, [{ ...reading, ...figures }]), { shared });
+		};
+		const ooms = async () =>
+			(await tom.listEvents({ sandboxId: box.id })).items.filter((event) => event.type === "sandbox.oom_kill");
+
+		// Its first count is a baseline, whatever it is: kills before this process heard of it aren't new.
+		await send({ oomKills: 3, memPressureSome: 0.1, memPressureFull: 0 });
+		expect(await ooms()).toEqual([]);
+		// The same count: nothing. Then two more: one event, saying so.
+		await send({ oomKills: 3, memPressureSome: 0.4, memPressureFull: 0.05 });
+		await send({ oomKills: 5, memPressureSome: 0.85, memPressureFull: 0.41 });
+		let events = await ooms();
+		expect(events).toHaveLength(1);
+		expect(events[0]?.data).toMatchObject({ oomKills: 2, state: "running" });
+		expect(events[0]?.data.reason).toContain("killed 2 processes");
+		expect(events[0]?.data.reason).toContain("8 GB");
+		// A tick its agent missed has none, and the next answer is still measured from the last count.
+		await send({});
+		await send({ oomKills: 6, memPressureSome: 0.9 });
+		events = await ooms();
+		expect(events).toHaveLength(2);
+		expect(events[0]?.data.oomKills).toBe(1);
+		// Booted again (a recovery): its count starts again, and every kill it has counted since is new.
+		await send({ oomKills: 1 });
+		expect((await ooms()).map((event) => event.data.oomKills)).toEqual([1, 1, 2]);
+		// A tick another replica passed on is that replica's to report.
+		await send({ oomKills: 4 }, true);
+		expect(await ooms()).toHaveLength(3);
+
+		const usage = await tom.getSandboxUsage(box.id, { since: start });
+		expect(usage.series.points[2]).toMatchObject({ oomKills: 5, memPressureSome: 0.85, memPressureFull: 0.41 });
+		expect(usage.series.points[3]).not.toHaveProperty("oomKills");
+		// The newest figures it has, for info and usage.
+		expect(usage.memory).toEqual({ at: clock, oomKills: 4 });
+		expect((await tom.getSandbox(box.id)).usage.memory).toEqual({ at: clock, oomKills: 4 });
+		// Not in the 5-minute means.
+		expect(usage.points.some((each) => "oomKills" in each)).toBe(false);
+	});
+
+	it("leave a sandbox without guest memory figures without them", async () => {
+		const clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const reading = { id: box.id, kind: "microvm" as const, cpu: 0.2, memUsedBytes: MIB, memLimitBytes: 0 };
+		await api.service.recordUsage(STUB_HOST_ID, tick(clock, [reading]));
+		const usage = await tom.getSandboxUsage(box.id);
+		expect(usage.memory).toBeUndefined();
+		expect((await tom.getSandbox(box.id)).usage.memory).toBeUndefined();
+	});
+
 	it("count CPU seconds by the time each kept mean covers, and only within the span asked for", async () => {
 		const HOUR = 3_600_000;
 		const DAY = 24 * HOUR;
@@ -614,6 +680,192 @@ describe("usage ticks across gateway replicas over one store", () => {
 		const box = await a.tom.createSandbox({ wait: true });
 		return { a: a.api, b: b.api, tom: a.tom, store, id: box.id };
 	}
+
+	/** A microVM reading with its guest's OOM-kill count. */
+	const oom = (id: string, oomKills: number) => ({
+		id,
+		kind: "microvm" as const,
+		cpu: 1,
+		memUsedBytes: MIB,
+		memLimitBytes: 8192 * MIB,
+		oomKills,
+	});
+	const oomEvents = async (tom: ReturnType<typeof setup>["tom"], id: string) =>
+		(await tom.listEvents({ sandboxId: id })).items
+			.filter((event) => event.type === "sandbox.oom_kill")
+			.map((event) => event.data.oomKills)
+			.reverse();
+
+	async function oomHandover(
+		open: (clock: () => number) => Promise<{
+			readonly a: ComputeApi;
+			readonly b: ComputeApi;
+			readonly tom: ReturnType<typeof setup>["tom"];
+			readonly id: string;
+		}>,
+	) {
+		let clock = T0;
+		const { a, b, tom, id } = await open(() => clock);
+		const on = async (replica: ComputeApi, kills: number, shared = false) => {
+			clock += USAGE_INTERVAL_MS;
+			await replica.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]), { shared });
+		};
+		await on(a, 0);
+		await on(b, 0);
+		// A takes a kill, and its copy never reaches B. The host moves to B with the count unchanged: not again.
+		await on(a, 1);
+		await on(b, 1);
+		await on(b, 1);
+		expect(await oomEvents(tom, id)).toEqual([1]);
+		// A genuine rise on B: only the new kills. A reading older than the newest taken leaves the count be.
+		await on(b, 3);
+		await b.service.recordUsage(STUB_HOST_ID, tick(clock - 1, [oom(id, 0)]));
+		await on(b, 3);
+		expect(await oomEvents(tom, id)).toEqual([1, 2]);
+		// Back on A, which last saw 1: measured from what is kept, not from its own view.
+		await on(a, 3);
+		// Booted again: every kill it counts since is new, once.
+		await on(a, 1);
+		await on(b, 1);
+		expect(await oomEvents(tom, id)).toEqual([1, 2, 1]);
+		// A tick passed on is the other replica's to count.
+		await on(b, 2, true);
+		expect(await oomEvents(tom, id)).toEqual([1, 2, 1]);
+	}
+
+	it("report each guest OOM kill once when the host moves replica, whatever each replica saw", async () => {
+		await oomHandover(async (clock) => {
+			const { a, b, tom, id } = await replicas(clock);
+			return { a, b, tom, id };
+		});
+	});
+
+	it("report each guest OOM kill once over the SQL store too", {
+		...(pgliteDatabase.testTimeoutMs === undefined ? {} : { timeout: pgliteDatabase.testTimeoutMs }),
+	}, async () => {
+		const database = await pgliteDatabase.open();
+		databases.push(database);
+		await migrateComputeStore(database.driver);
+		await oomHandover(async (clock) => {
+			const a = setup(hostless(clock).backend, clock, createSqlComputeStore(database.driver));
+			const b = setup(hostless(clock).backend, clock, createSqlComputeStore(database.driver));
+			const box = await a.tom.createSandbox({ wait: true });
+			return { a: a.api, b: b.api, tom: a.tom, id: box.id };
+		});
+	});
+
+	it("keep an OOM kill whose event couldn't be stored, and store it once, unchanged, with a later reading", async () => {
+		let clock = T0;
+		const { a, tom, store, id } = await replicas(() => clock);
+		const on = async (kills: number) => {
+			clock += USAGE_INTERVAL_MS;
+			await a.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
+		};
+		const put = store.events.put.bind(store.events);
+		await on(0);
+		// The event's write fails: the kill stays pending, and the tick is still taken.
+		let failing = 1;
+		store.events.put = async (event) => {
+			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("store unavailable");
+			return put(event);
+		};
+		await on(1);
+		expect(await oomEvents(tom, id)).toEqual([]);
+		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 1, pending: { kills: 1 } });
+		// A kill meanwhile doesn't change the event: it waits as unreported, and gets one of its own once that is stored.
+		failing = 1;
+		await on(2);
+		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 2, unreported: 1, pending: { kills: 1 } });
+		await on(2);
+		expect(await oomEvents(tom, id)).toEqual([1]);
+		await on(2);
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
+		// Written, but its answer lost: stored again under the same ID, so still one event.
+		store.events.put = async (event) => {
+			await put(event);
+			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("answer lost");
+		};
+		failing = 1;
+		await on(3);
+		const at = clock;
+		await on(3);
+		expect(await oomEvents(tom, id)).toEqual([1, 1, 1]);
+		expect((await store.sandboxes.get(id))?.oomKills).toEqual({ count: 3, at });
+	});
+
+	it("keep a reboot's kills seen while an OOM event is pending", async () => {
+		let clock = T0;
+		const { a, tom, store, id } = await replicas(() => clock);
+		const on = async (kills: number) => {
+			clock += USAGE_INTERVAL_MS;
+			await a.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
+		};
+		const put = store.events.put.bind(store.events);
+		await on(0);
+		let failing = 3;
+		store.events.put = async (event) => {
+			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("store unavailable");
+			return put(event);
+		};
+		// Three kills, whose event can't be stored; then it boots again and counts five more past the three before.
+		await on(3);
+		await on(0);
+		await on(5);
+		expect((await store.sandboxes.get(id))?.oomKills).toMatchObject({ count: 5, unreported: 5, pending: { kills: 3 } });
+		await on(5);
+		await on(5);
+		expect(await oomEvents(tom, id)).toEqual([3, 5]);
+		expect((await store.sandboxes.get(id))?.oomKills).toEqual({ count: 5, at: clock - 2 * USAGE_INTERVAL_MS });
+	});
+
+	it("store an OOM event as it was taken, whichever replica's write of it lands last", async () => {
+		let clock = T0;
+		const { a, b, tom, store, id } = await replicas(() => clock);
+		const on = async (replica: ComputeApi, kills: number) => {
+			clock += USAGE_INTERVAL_MS;
+			await replica.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
+		};
+		await on(a, 0);
+		// A's write of its event is slow; meanwhile the host moves to B, which stores it too and counts a kill since.
+		const put = store.events.put.bind(store.events);
+		let release: () => void = () => undefined;
+		const slow = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let first = true;
+		store.events.put = async (event) => {
+			if (event.type === "sandbox.oom_kill" && first) {
+				first = false;
+				await slow;
+			}
+			return put(event);
+		};
+		const onA = on(a, 1);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		await on(b, 2);
+		await on(b, 2);
+		release();
+		await onA;
+		// Each kill once: A's late write of the first event says what B's did.
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
+		await on(b, 2);
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
+	});
+
+	it("count a rebooted guest's kills when the host comes back to a replica that last saw its count before", async () => {
+		let clock = T0;
+		const { a, b, tom, id } = await replicas(() => clock);
+		const on = async (replica: ComputeApi, kills: number) => {
+			clock += USAGE_INTERVAL_MS;
+			await replica.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
+		};
+		await on(a, 0);
+		await on(b, 1);
+		// Booted again, and back on A within a few ticks, its count back at 0 and then 1: a new kill.
+		await on(a, 0);
+		await on(a, 1);
+		expect(await oomEvents(tom, id)).toEqual([1, 1]);
+	});
 
 	it("export each point once when the host moves replica before either exports", async () => {
 		let clock = T0 + 1000;

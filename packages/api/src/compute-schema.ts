@@ -584,6 +584,44 @@ export const Cost = Type.Object(
 	},
 );
 
+export const GuestMemory = Type.Object(
+	{
+		at: Timestamp,
+		oomKills: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"How many processes its kernel has killed for memory since it booted (its `oom_kill`). It grows until the VM " +
+					"boots again: a stop and start, or a recovery.",
+			}),
+		),
+		pressureSome: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The share of the last 10 seconds in which at least one of its tasks was stalled waiting for memory (its " +
+					"kernel's memory pressure, `some` avg10).",
+			}),
+		),
+		pressureFull: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The share of the last 10 seconds in which every task that wanted to run was stalled waiting for memory " +
+					"(`full` avg10). Near 1, the machine does little but reclaim memory and stops answering.",
+			}),
+		),
+	},
+	{
+		title: "GuestMemory",
+		description:
+			"A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't " +
+			"send it (an image from before them) or its kernel has none.",
+	},
+);
+
 export const UsageSummary = Type.Object(
 	{
 		runningSeconds: Type.Number(),
@@ -596,6 +634,7 @@ export const UsageSummary = Type.Object(
 		recentMemory: Type.Array(Type.Number({ minimum: 0 }), {
 			description: "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first.",
 		}),
+		memory: Type.Optional(GuestMemory),
 		peakMemoryBytes: Type.Optional(
 			Type.Integer({
 				minimum: 0,
@@ -1251,6 +1290,31 @@ export const SandboxSeriesPoint = Type.Object(
 					"guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures.",
 			}),
 		),
+		oomKills: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"How many processes a microVM's kernel had killed for memory since it booted, at `at`. Absent where its " +
+					"guest's agent doesn't send it or didn't answer in time.",
+			}),
+		),
+		memPressureSome: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"A microVM's memory pressure at `at`: the share of the 10 seconds before it in which at least one of its " +
+					"tasks was stalled waiting for memory (`some` avg10). Absent where the guest has no pressure figures.",
+			}),
+		),
+		memPressureFull: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"As `memPressureSome`, for the share in which every task that wanted to run was stalled (`full` avg10).",
+			}),
+		),
 	},
 	{ title: "SandboxSeriesPoint" },
 );
@@ -1306,6 +1370,7 @@ export const SandboxUsage = Type.Object(
 			}),
 		),
 		series: SandboxUsageSeries,
+		memory: Type.Optional(GuestMemory),
 	},
 	{ title: "SandboxUsage" },
 );
@@ -2743,6 +2808,7 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.error"),
 		Type.Literal("sandbox.degraded"),
 		Type.Literal("sandbox.recovered"),
+		Type.Literal("sandbox.oom_kill"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
 		Type.Literal("snapshot.deleted"),
@@ -2756,6 +2822,8 @@ export const EventType = Type.Union(
 			"`sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason " +
 			"says which), which leaves it running, and when its guest agent stops answering (its `health` " +
 			"`unresponsive`), with `sandbox.recovered` once it answers again. " +
+			"`sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since " +
+			"its last reading); it keeps running. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -2776,6 +2844,12 @@ export const Event = Type.Object(
 				reason: Type.Optional(Type.String()),
 				placementReason: Type.Optional(PlacementReason),
 				actor: Type.Optional(CreatedBy),
+				oomKills: Type.Optional(
+					Type.Integer({
+						minimum: 1,
+						description: "`sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading.",
+					}),
+				),
 				// On `sandbox.running`, where its host said: the sandbox's `startup`.
 				startup: Type.Optional(SandboxStartup),
 			},
@@ -3622,6 +3696,7 @@ export type SandboxProcessList = Static<typeof SandboxProcessList>;
 export type SandboxProcessesQuery = Static<typeof SandboxProcessesQuery>;
 export type SandboxUsagePoint = Static<typeof SandboxUsagePoint>;
 export type SandboxSeriesPoint = Static<typeof SandboxSeriesPoint>;
+export type GuestMemory = Static<typeof GuestMemory>;
 export type UsageSparklines = Static<typeof UsageSparklines>;
 export type HostState = Static<typeof HostState>;
 export type HostJoinToken = Static<typeof HostJoinToken>;
@@ -3689,6 +3764,7 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.error",
 	"sandbox.degraded",
 	"sandbox.recovered",
+	"sandbox.oom_kill",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
