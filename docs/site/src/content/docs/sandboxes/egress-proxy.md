@@ -33,6 +33,32 @@ Whatever the account's rules say, the proxy refuses private, loopback and link-l
 
 Without proxy settings, a sandbox reaches any public address. That is the host's `egress` setting of `open`. A host set to `none` gives such sandboxes no network at all, not even the proxy. Once an account turns its settings on, its sandboxes use the proxy with those settings on any host.
 
+### Services
+
+A microVM's systemd services get the proxy and CA variables too, so a long-running server you start as a unit reaches the network as it does from a command. They point at the forwarder, not the proxy's own address, so a unit never needs a restart after a fork or resume:
+
+```text
+# /etc/systemd/system.conf.d/kantel-proxy.conf, DefaultEnvironment
+HTTP_PROXY=http://127.0.0.1:3128
+HTTPS_PROXY=http://127.0.0.1:3128
+NO_PROXY=localhost,127.0.0.1,::1
+NODE_USE_ENV_PROXY=1
+NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+```
+
+The lower-case forms are there as well. `/etc/environment` has the same lines, for `sudo`, `su`, cron and SSH sessions. A unit's own `Environment=` and `EnvironmentFile=` win over them.
+
+The sandbox's own variables, from `kantel new -e` and its environment's plain variables, are for commands only: every service on the machine, `sshd` and `dockerd` among them, would otherwise run with them. A unit that wants them reads the file the guest agent keeps them in:
+
+```ini
+[Service]
+EnvironmentFile=-/etc/kantel/env
+ExecStart=/home/user/app/server
+```
+
+The guest agent writes `/etc/kantel/env` each time the sandbox starts, resumes or is forked, and a unit reads it when the unit starts. Values read the same in a unit as in a command, except that a newline or tab in one arrives written as `\n` or `\t`. These settings come with the sandbox images after `host-images-20261107.1`. On an older image, write the variables into an `EnvironmentFile` of your own.
+
 ### Git over SSH
 
 `ssh` doesn't read the proxy variables, so a microVM's image comes with `kantel-connect`, which opens an SSH connection through the proxy with `CONNECT`, and SSH settings that use it for GitHub. `git clone git@github.com:acme/app.git` works as it does anywhere else, given a key GitHub accepts:

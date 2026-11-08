@@ -399,7 +399,8 @@ func writeAptProxy(path string, proxied bool) {
 	_ = os.WriteFile(path, []byte(conf), 0o644)
 }
 
-// envFile holds the sandbox's own variables, which every command gets.
+// envFile holds the sandbox's own variables, which every command gets, as does a systemd unit that reads it
+// (EnvironmentFile=-/etc/kantel/env): systemd reads its double-quoted values, though it keeps \n and \t as written.
 const envFile = "/etc/kantel/env"
 
 // writeEnv makes path hold exactly env: an identity's Env is the sandbox's whole environment (the host resolves a
