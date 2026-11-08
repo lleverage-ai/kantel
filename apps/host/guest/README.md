@@ -67,6 +67,12 @@ The host's egress proxy sits on each sandbox's own gateway address, which a fork
 from `/etc/kantel/proxy.env`; Chromium and dockerd, which read a proxy once at start, use the forwarder on 3128, which
 follows the sandbox's current proxy, so a fork or resume never restarts them (no lost tabs or containers).
 
+Every other systemd service gets the proxy and CA variables from `/etc/systemd/system.conf.d/kantel-proxy.conf`
+(`DefaultEnvironment`), and PAM sessions (sudo, su, SSH, cron) from `/etc/environment`, both pointing at the forwarder,
+so they are fixed in the image and never go stale (#730). The sandbox's own variables (`kantel new -e`) are for
+commands only; a unit that wants them adds `EnvironmentFile=-/etc/kantel/env`, which the guest agent rewrites on every
+start, resume and fork. A test in `internal/microvm` checks both files against the variables the host sets.
+
 Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay that carries a TCP stream carries the
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.
 
