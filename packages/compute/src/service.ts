@@ -420,6 +420,16 @@ export function unresponsiveReason(reported: string | undefined): string {
 	const why = said === "" ? "Its guest agent stopped answering" : said;
 	return /\brecover\b/i.test(why) ? why : `${why}. Recover it: a restart that keeps its disk`;
 }
+/**
+ * Why a running sandbox whose host ended its VM (`ComputeService.reportExit`) is in `error`: the host's words (its memory
+ * guard stopped it, the kernel killed it at the host's memory limit, it crashed, the host restarted), and what to do. Its
+ * disk is kept on its host, so a start boots it from there.
+ */
+export function hostExitReason(reported: string | undefined): string {
+	const said = reported?.trim().replace(/\.$/, "").slice(0, 1000) ?? "";
+	const why = said === "" ? "Its host stopped its VM" : `${said.charAt(0).toUpperCase()}${said.slice(1)}`;
+	return `${why}. Start it again to boot it from its disk, which is kept`;
+}
 /** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
 	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
@@ -562,6 +572,17 @@ export interface ComputeService {
 		reason: string | undefined,
 		healthAt?: number,
 	): Promise<void>;
+	/**
+	 * A host's word that a microVM it ran ended without Kantel asking (its memory guard stopped it, the kernel killed it
+	 * at the host's memory limit, it crashed, or the host restarted under it): a `running` sandbox on `hostId` moves to
+	 * `error` with the host's `error` as its reason (`hostExitReason`) and its ports cleared, its commands end, and it
+	 * emits `sandbox.error`. Dropped for a sandbox on another host or in any other state: a stop, start, recovery or
+	 * delete under way owns its outcome. `healthAt` is the host's last health stamp for the machine that ended (its clock,
+	 * from that machine's start on): one earlier than the stamp the sandbox's run was booted with (`machineAt`, the same
+	 * host's clock) is an earlier machine's exit, reported late, and dropped, as is one without a stamp for a run that
+	 * has one.
+	 */
+	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
@@ -3964,8 +3985,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
 	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
 	 */
-	async function killCommandsOf(sandboxId: string): Promise<void> {
-		const running = await store.commands.list({ sandboxId, state: "running" });
+	async function killCommandsOf(sandboxId: string, listed?: readonly StoredCommand[]): Promise<void> {
+		const running = listed ?? (await store.commands.list({ sandboxId, state: "running" }));
 		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
 		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
 		// time is marked killed.
@@ -4024,6 +4045,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const toRunning = (sandbox: StoredSandbox) =>
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
+				// This run's machine, which fences a late report of an earlier one's exit (`reportExit`); none where not said.
+				machineAt: placement.machineAt,
 				resources: placement.resources ?? sandbox.resources,
 				// A microVM's shape is what its machine runs as, where its backend says: a host that can't resize a stopped or
 				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
@@ -4181,6 +4204,45 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * `ComputeService.reportExit`: a running sandbox whose host ended its VM is in `error`, saying why, rather than left
+	 * `running` until something else touches it. Its run ends (`withState`), its ports go (an exposure ends with its next
+	 * boot), and the commands Kantel had running on that machine are ended. Its disk is kept on its host, so a start
+	 * boots it from there; a stop or delete works from `error` too.
+	 */
+	async function reportExit(
+		hostId: string,
+		sandboxId: string,
+		error: string | undefined,
+		healthAt?: number,
+	): Promise<void> {
+		const at = typeof healthAt === "number" && Number.isSafeInteger(healthAt) && healthAt > 0 ? healthAt : undefined;
+		const reason = hostExitReason(error);
+		// The machine's commands, read while it is still `running`: once it is `error` a start may boot another, whose
+		// commands are its own.
+		const commands = await store.commands.list({ sandboxId, state: "running" });
+		const result = await transition(
+			sandboxId,
+			"running",
+			(current) => withState(current, "error", { reason, ports: [] }),
+			// Its host's, and this run's machine: both stamps are that host's clock, and a machine's stamps only move on, so
+			// one before the run's machine started is an earlier machine's (a delayed event, or one from before a reconnect).
+			// A run whose machine was stamped is on a host that stamps every exit, so a report without one is stale too;
+			// only a run booted by a host that names no machine (one from before it did) takes an unstamped report.
+			(current) =>
+				current.hostId === hostId && (current.machineAt === undefined || (at !== undefined && at >= current.machineAt)),
+		).catch((cause: unknown) => {
+			if (cause instanceof KantelError && cause.code === "not_found") return undefined;
+			throw cause;
+		});
+		if (result === undefined || !("moved" in result)) return;
+		const next = result.moved;
+		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: "running", reason } });
+		// In the background: each is asked of its host first, which may take a while, and the report (a host's hello) needn't
+		// wait for that.
+		keepGoing(track([sandboxId], () => killCommandsOf(sandboxId, commands)));
+	}
+
+	/**
 	 * Records `error` for work that failed, only while the sandbox is still in `from`, the passing state that work set: a
 	 * stale step that lost to another call (a second stop, a delete) never writes `error` over the state that call left.
 	 */
@@ -4223,7 +4285,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const work = track([sandbox.id], async () => {
 			try {
 				await killCommandsOf(sandbox.id);
-				const taken = await backend.stop(sandbox.id, { keepMemory });
+				// A stop someone asked for waits a while for a host that is away, rather than leaving the sandbox in error
+				// (#737); a sweep's hands the sandbox back for a later sweep instead (`handBack`).
+				const taken = await backend.stop(sandbox.id, { keepMemory, waitForHost: !handBack });
 				// What it kept: a host that couldn't pause the machine (its Firecracker not answering) stops it cold, and says
 				// so (`memory: false`); it is then stopped, not paused.
 				const kept = keepMemory && taken.memory !== false;
@@ -8971,6 +9035,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		reportHealth,
+
+		reportExit,
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

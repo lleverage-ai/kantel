@@ -68,6 +68,7 @@ import {
 	type CreateSandboxInput,
 	DISK_COPY_TIMEOUT_MS,
 	type HostsService,
+	hostWasAway,
 	kantelErrorFromHost,
 	mountHandoff,
 	type SandboxPlacement,
@@ -96,6 +97,17 @@ const FINGERPRINT_MARK = "--kantel-host-key--";
 
 /** How long each `sandbox.exec.get` of a detached command asks the host to hold its answer for the command to end. */
 export const EXEC_WAIT_MS = 30_000;
+/** How long a stop whose host is away waits for it to connect again before it fails (`whileHostAway`). */
+export const STOP_RECONNECT_WAIT_MS = 120_000;
+/** How many times a stop may reach its host (sent, and never answered) while the host comes and goes. */
+const STOP_ATTEMPTS = 3;
+/**
+ * How long a stop that failed `unavailable`, with nothing saying its host was away, waits before asking whether the host
+ * is connected: past a gateway cluster's heartbeat, so a replica's view of a host another one held is current.
+ */
+const HOST_SETTLE_MS = 3_000;
+/** How long a stop waiting for its host waits between looks, and between sends. */
+const HOST_RECONNECT_POLL_MS = 1_000;
 /** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
 const EXEC_RETRY_MIN_MS = 1_000;
 const EXEC_RETRY_MAX_MS = 30_000;
@@ -425,6 +437,44 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
+	 * `attempt`, sent again while it fails because its host isn't there (#737): not connected, or its connection gone
+	 * while the call waited (a reconnect, a restart for an update). Each send's own failure decides, never the hub's view
+	 * of the host alone: away is what the hub holding the host said (`hostWasAway`, carried across replicas), or, for a
+	 * failure that doesn't say (an unreachable peer replica), the host not connected once `HOST_SETTLE_MS` has passed. Any
+	 * other failure is final: the host's own refusal, or a timeout with it connected. While away it is sent again every
+	 * `HOST_RECONNECT_POLL_MS` the host looks connected, so a view that lags (a replica's of a host another holds) only
+	 * costs a send that fails again, until `STOP_RECONNECT_WAIT_MS` has passed since the host was last reached; then it
+	 * fails as before. A send the host may have taken (`unanswered`) counts against `STOP_ATTEMPTS`; one that never left
+	 * doesn't. A host that carried out the stop it never answered (kantel-host runs a stop on past its connection) has the
+	 * sandbox stopped, and answers the next with a snapshot of its disk (`HOST_FEATURES.guestHealth`).
+	 */
+	async function whileHostAway<T>(hostId: string, attempt: () => Promise<T>): Promise<T> {
+		let reached = 0;
+		let until: number | undefined;
+		for (;;) {
+			try {
+				return await attempt();
+			} catch (error) {
+				if (!isKantelError(error) || error.code !== "unavailable") throw error;
+				if (unanswered(error)) {
+					reached += 1;
+					until = undefined;
+				}
+				if (reached >= STOP_ATTEMPTS) throw error;
+				if (!hostWasAway(error)) {
+					await pause(HOST_SETTLE_MS, undefined);
+					if (hosts.hub.connected(hostId)) throw error;
+				}
+				until ??= now() + STOP_RECONNECT_WAIT_MS;
+				do {
+					if (now() >= until) throw error;
+					await pause(HOST_RECONNECT_POLL_MS, undefined);
+				} while (!hosts.hub.connected(hostId));
+			}
+		}
+	}
+
+	/**
 	 * The placement the compute API records. What the registry answered with the sandbox (its placement as written, and
 	 * whether the host nests virtualisation) is taken as it is, so neither is read back; what it didn't answer is read,
 	 * both at once.
@@ -435,14 +485,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		hostId: string,
 		known: Omit<SandboxPlacement, "sandbox" | "hostId"> = {},
 	): Promise<Placement> {
-		const [placement, nested] = await Promise.all([
+		const stamped =
+			typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0;
+		// The host is read for its nested virtualisation, when not known, and for whether it stamps exits.
+		const readsHost = known.nestedVirtualisation === undefined || (sandbox.state === "running" && stamped);
+		const [placement, host] = await Promise.all([
 			known.placement ?? hosts.sandboxes.placement(sandboxId),
-			known.nestedVirtualisation ??
-				hosts
-					.get(hostId)
-					.then((host) => host.nestedVirtualisation)
-					.catch(() => undefined),
+			readsHost ? hosts.get(hostId).catch(() => undefined) : undefined,
 		]);
+		const nested = known.nestedVirtualisation ?? host?.nestedVirtualisation;
 		const tier = placement?.tier ?? (sandbox.tier as SandboxTier);
 		const startup = parseStartPhases(sandbox.phases);
 		return {
@@ -464,6 +515,11 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
 					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
+			// A running machine's health stamp names it, from a host that stamps every exit too (`HOST_FEATURES.exitStamps`);
+			// one that stamps only its health (`guestHealth`) doesn't stamp its exits, so its boots name no machine.
+			...(sandbox.state === "running" && stamped && host?.features.includes(HOST_FEATURES.exitStamps) === true
+				? { machineAt: sandbox.healthAt }
+				: {}),
 			...(known.mounts === undefined || parseMountsAt(sandbox.mountsAt) === undefined
 				? {}
 				: { mountsAt: parseMountsAt(sandbox.mountsAt) }),
@@ -831,20 +887,22 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// The host drops its copy; its next request that needs one fetches the new values.
 			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
 		},
-		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
+		async stop(sandboxId, { keepMemory, waitForHost }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
 			// A stopped sandbox's ports stay exposed while it is stopped, so a request to one is told so and why (its idle
 			// stop, say) rather than that nothing is there; nothing reaches a stopped machine. They end when it boots again.
 			// As long as a disk copy: a stop's automatic snapshot copies the whole disk. Given up on at 120 s, the stop
 			// failed here while the host went on and stopped it.
-			const snap = await call<HostSnapshot>(
-				sandboxId,
-				"sandbox.stop",
-				{ snapshotId: snapshotId(), memory: keepMemory },
-				undefined,
-				DISK_COPY_TIMEOUT_MS,
-			);
+			const send = () =>
+				call<HostSnapshot>(
+					sandboxId,
+					"sandbox.stop",
+					{ snapshotId: snapshotId(), memory: keepMemory },
+					undefined,
+					DISK_COPY_TIMEOUT_MS,
+				);
+			const snap = await (waitForHost === true ? whileHostAway(hostId, send) : send());
 			// Whether it kept the memory, said either way: a host that couldn't pause the machine stopped it cold.
 			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},

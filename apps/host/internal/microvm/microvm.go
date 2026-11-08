@@ -260,6 +260,10 @@ type meta struct {
 	SSHKeys   []string          `json:"sshKeys,omitempty"`
 	Owner     string            `json:"owner,omitempty"`
 	Error     string            `json:"error,omitempty"`
+	// HealthAt is the sandbox's healthAt as last written (FeatureExitStamps): its last machine's last health stamp, so a
+	// stopped sandbox's exit keeps naming the machine that ended across restarts of the host, and the next machine's
+	// stamps start above it.
+	HealthAt int64 `json:"healthAt,omitempty"`
 	// GrowDisk: the disk (its file, or the guest's file system) may still be smaller than the size's, as a sandbox
 	// restored from a shared template's or a snapshot's disk starts. Set until growDisk has made it the size's, so a
 	// stop, a host restart or a snapshot before then doesn't leave it smaller for good.
@@ -710,6 +714,7 @@ func conflict(format string, args ...any) error {
 }
 
 func (m *Manager) writeMeta(s *sandbox) error {
+	s.meta.HealthAt = s.healthAt
 	raw, err := json.MarshalIndent(s.meta, "", "  ")
 	if err != nil {
 		return err
@@ -732,12 +737,12 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
 	info.Mounts, info.MountsAt = m.mountStatus(s)
-	if s.meta.State == proto.StateRunning {
-		if s.unresponsive != "" {
-			info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
-		}
-		info.HealthAt = s.healthAt
+	if s.meta.State == proto.StateRunning && s.unresponsive != "" {
+		info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
 	}
+	// Its machine's last health stamp, from its start on, kept once it stops: with the error of an exit the host didn't
+	// cause by a call, it names the machine that ended, so Kantel never takes a late report of it for a later run's.
+	info.HealthAt = s.healthAt
 	return info
 }
 
@@ -957,9 +962,18 @@ func (m *Manager) adopt() error {
 		if err := json.Unmarshal(raw, &s.meta); err != nil || s.meta.State == proto.StateStarting {
 			continue
 		}
+		// Its last machine's stamp: a stopped sandbox's exit keeps it, and a later machine's stamps start above it.
+		s.healthAt = s.meta.HealthAt
 		if s.meta.State == proto.StateRunning && s.meta.Pid > 0 && processAlive(s.meta.Pid) {
 			machine, err := fc.Attach(s.vmDir(), s.meta.Pid)
 			if err == nil {
+				// Its API asked once, for the log: one that doesn't answer can't be paused, so the VM runs on as it is and its
+				// stop ends it cold (its disk kept, its memory lost), as Stop does for any VM that won't pause.
+				actx, cancel := context.WithTimeout(context.Background(), adoptAPITimeout)
+				if err := machine.Barrier(actx); err != nil {
+					m.log.Warn("adopted a running sandbox whose Firecracker API doesn't answer; its stop will be cold", "sandbox", s.meta.ID, "pid", s.meta.Pid, "error", err)
+				}
+				cancel()
 				link := m.cfg.Network.LinkFor(s.meta.Slot, egressMode(s.meta.Egress))
 				if err := m.cfg.Network.Adopt(link); err != nil {
 					m.log.Warn("adopted sandbox's network rules", "sandbox", s.meta.ID, "error", err)
@@ -992,6 +1006,9 @@ func (m *Manager) adopt() error {
 		if s.meta.State != proto.StateStopped {
 			s.meta.State = proto.StateStopped
 			s.meta.Error = "the host restarted while it ran"
+			// Stamped now: after its machine's start, before any later machine's, so Kantel takes the report of this exit
+			// (the hello's) only for the run that machine was. One already stopped keeps the stamp its exit had.
+			s.healthAt = max(time.Now().UnixMilli(), s.healthAt+1)
 			_ = m.writeMeta(s)
 		}
 		m.sandboxes[s.meta.ID] = s
@@ -1016,6 +1033,9 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 	// Healthy, as of now: a machine's first health has a time too, so Kantel orders it against what it took of the
 	// machine before (an unresponsive report from before a restart of the host, say).
 	s.setUnresponsive("")
+	// Written before the boot answers with it (FeatureExitStamps): Kantel fences this machine's exit by it, so a restart
+	// of the host must never leave the stamp behind it, even if the host's clock has gone back.
+	_ = m.writeMeta(s)
 	m.watchHealth(s, machine)
 	go func() {
 		<-machine.Done()
@@ -2650,10 +2670,21 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 		}
 		if err := machine.Snapshot(ctx, filepath.Join(vm, "state.new"), memWrite); err != nil {
 			_ = memDone(false)
-			_ = machine.Resume(ctx)
-			return proto.SnapshotInfo{}, err
+			_ = os.Remove(filepath.Join(vm, "state.new"))
+			_ = os.Remove(beside)
+			// Resumed on a context of its own: the call's may be what ended the snapshot. A VM that won't resume isn't left
+			// paused and said to run: it is stopped cold, as one that won't pause is.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopResumeTimeout)
+			rerr := machine.Resume(rctx)
+			cancel()
+			if rerr == nil {
+				return proto.SnapshotInfo{}, err
+			}
+			m.log.Warn("a sandbox's VM won't resume after its stop's snapshot failed; stopping it cold", "sandbox", s.meta.ID, "snapshot", err, "error", rerr)
+			keepMemory = false
+		} else {
+			t.step("snapshot", &start)
 		}
-		t.step("snapshot", &start)
 	}
 	s.machine = nil
 	machine.Kill()

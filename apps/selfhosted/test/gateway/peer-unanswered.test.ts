@@ -33,6 +33,20 @@ describe("a relayed call's failure", () => {
 		const lost = { error: { code: "unavailable", message: "The host disconnected: gone", unanswered: true } };
 		const error = await failureOf(answering(`${JSON.stringify(lost)}\n`));
 		expect(error.unanswered).toBe(true);
+		expect(error.disconnected).toBe(false);
+	});
+
+	it("carries the peer's word that the host wasn't there, so a stop waits for it (#737)", async () => {
+		const gone = {
+			error: { code: "unavailable", message: "The host disconnected: gone", unanswered: true, disconnected: true },
+		};
+		const error = await failureOf(answering(`${JSON.stringify(gone)}\n`));
+		expect(error.disconnected).toBe(true);
+		expect(error.unanswered).toBe(true);
+		expect(
+			(await failureOf(answering(`${JSON.stringify({ error: { code: "capacity", message: "full" } })}\n`)))
+				.disconnected,
+		).toBe(false);
 	});
 
 	it("is unanswered when the peer's answer never comes", async () => {

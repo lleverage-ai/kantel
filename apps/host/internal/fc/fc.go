@@ -81,8 +81,12 @@ func Moved(m *Machine, dir string) *Machine {
 	return m
 }
 
-// Launch starts Firecracker in dir, with no VM configured yet.
+// Launch starts Firecracker in dir, with no VM configured yet. A Firecracker still working in dir (one an interrupted
+// run of the host left, or a kill that hadn't finished) is ended first (KillLeftover): the sockets are about to be
+// unlinked, which would leave it running a VM on the same disk that nothing can reach, and the path refusing once the
+// new one has gone.
 func Launch(ctx context.Context, binary, dir string) (*Machine, error) {
+	KillLeftover(dir)
 	_ = os.Remove(filepath.Join(dir, APISocket))
 	_ = os.Remove(filepath.Join(dir, VsockSocket))
 	logFile, err := os.OpenFile(filepath.Join(dir, LogFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)

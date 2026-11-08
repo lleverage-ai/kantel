@@ -2,6 +2,7 @@ package microvm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -310,6 +311,66 @@ func TestStopOfAMachineThatWontPauseStopsItCold(t *testing.T) {
 	}
 }
 
+// snapshotFailing is a running sandbox whose Firecracker pauses but refuses its snapshot, and its resume too when
+// resumeFails: the API a stop meets once its call's context has ended mid-snapshot (#737), or with its disk full.
+func snapshotFailing(t *testing.T, resumeFails bool) (*Manager, *sandbox, *fakeVMAPI, *fc.Machine) {
+	t.Helper()
+	m, s, _, machine := runningSandbox(t, &events{})
+	m.cfg.AutoSnapshots = 2
+	m.spool = newSpool(filepath.Join(m.cfg.Root, "spool"), 0, m.log)
+	if err := os.Remove(filepath.Join(s.vmDir(), fc.APISocket)); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeVMAPI{failSnapshot: true, failResume: resumeFails}
+	api.serve(t, s.vmDir())
+	if err := os.WriteFile(filepath.Join(s.vmDir(), fc.DiskFile), []byte("disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return m, s, api, machine
+}
+
+// A stop whose snapshot fails resumes the VM and fails, the sandbox running as before.
+func TestStopWhoseSnapshotFailsResumesTheMachine(t *testing.T) {
+	m, s, api, machine := snapshotFailing(t, false)
+	yes := true
+	if _, err := m.Stop(context.Background(), proto.StopParams{SandboxID: s.meta.ID, SnapshotID: "snap_x", Memory: &yes}); err == nil {
+		t.Fatal("a stop whose snapshot failed was answered")
+	}
+	if asked, paused := api.state(); paused || strings.Join(asked, ",") != "Paused,Resumed" {
+		t.Fatalf("asked %v, paused %v", asked, paused)
+	}
+	if s.meta.State != proto.StateRunning || s.machine != machine {
+		t.Fatalf("state %q", s.meta.State)
+	}
+}
+
+// A stop whose snapshot fails and whose VM then won't resume stops it cold, its disk kept and its memory lost, rather
+// than leaving a paused VM said to be running.
+func TestStopWhoseMachineWontResumeStopsItCold(t *testing.T) {
+	m, s, _, machine := snapshotFailing(t, true)
+	yes := true
+	snap, err := m.Stop(context.Background(), proto.StopParams{SandboxID: s.meta.ID, SnapshotID: "snap_cold", Memory: &yes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Memory || s.meta.State != proto.StateStopped || s.meta.Memory || s.machine != nil {
+		t.Fatalf("snapshot %+v, state %q memory %v", snap, s.meta.State, s.meta.Memory)
+	}
+	select {
+	case <-machine.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the machine is still running")
+	}
+	for _, name := range []string{"state", "mem", "state.new", "mem.new"} {
+		if _, err := os.Stat(filepath.Join(s.vmDir(), name)); err == nil {
+			t.Fatalf("%s is left", name)
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(m.snapshotDir("snap_cold"), fc.DiskFile)); err != nil || string(raw) != "disk" {
+		t.Fatalf("the snapshot's disk: %q %v", raw, err)
+	}
+}
+
 // A stop of a sandbox the host has stopped already answers a snapshot of its disk rather than a conflict.
 func TestStopOfAStoppedSandboxAnswersItsDisk(t *testing.T) {
 	root := t.TempDir()
@@ -337,5 +398,145 @@ func TestStopOfAStoppedSandboxAnswersItsDisk(t *testing.T) {
 	}
 	if _, err := m.Stop(context.Background(), proto.StopParams{SandboxID: s.meta.ID}); err == nil {
 		t.Fatal("a stop with no snapshot of a stopped sandbox was answered")
+	}
+}
+
+// A VM that exits without being asked is reported stopped with its error and its machine's last health stamp, which
+// Kantel fences the exit with: the next machine's stamps all come later.
+func TestAnExitIsReportedWithItsMachinesHealthStamp(t *testing.T) {
+	fastHealth(t)
+	ev := &events{}
+	m, s, _, machine := runningSandbox(t, ev)
+	s.mu.Lock()
+	m.watch(s, machine)
+	started := m.info(s).HealthAt
+	s.mu.Unlock()
+	if started <= 0 {
+		t.Fatalf("a running machine's HealthAt is %d, want its start's stamp", started)
+	}
+	machine.Kill()
+	waitFor(t, "the exit's event", func() bool { return len(ev.all()) == 1 })
+	got := ev.all()[0]
+	if got.State != proto.StateStopped || got.Error != "the VM exited" || got.HealthAt != started {
+		t.Fatalf("exit event %+v, want stopped, its error and HealthAt %d", got, started)
+	}
+	s.mu.Lock()
+	next := reapedMachine(t, s.vmDir())
+	s.machine = next
+	s.meta.State = proto.StateRunning
+	m.watch(s, next)
+	again := m.info(s).HealthAt
+	s.mu.Unlock()
+	if again <= started {
+		t.Fatalf("the next machine's HealthAt %d isn't after the one that ended (%d)", again, started)
+	}
+}
+
+// A sandbox whose VM a restart of the host ended is stopped with that error and stamped then, so the hello's report of
+// it names the machine that ended (its HealthAt is after that machine's start, before any later machine's).
+func TestARestartsEndedSandboxIsStamped(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sandboxes", "sbx_restarted")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(meta{ID: "sbx_restarted", Size: "small", State: proto.StateRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{cfg: Config{Root: root}, log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{}}
+	before := time.Now().UnixMilli()
+	if err := m.adopt(); err != nil {
+		t.Fatal(err)
+	}
+	s := m.sandboxes["sbx_restarted"]
+	if s == nil {
+		t.Fatal("not loaded")
+	}
+	info := m.info(s)
+	if info.State != proto.StateStopped || info.Error != "the host restarted while it ran" || info.HealthAt < before {
+		t.Fatalf("info %+v, want stopped with the restart's error, stamped from %d on", info, before)
+	}
+}
+
+// An exit's stamp is written with the sandbox, so it outlasts restarts of the host: a sandbox adopted already stopped
+// keeps the stamp its exit had, and the next machine's stamps start above it.
+func TestAnExitsStampOutlastsARestart(t *testing.T) {
+	fastHealth(t)
+	ev := &events{}
+	m, s, _, machine := runningSandbox(t, ev)
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	m.watch(s, machine)
+	s.mu.Unlock()
+	machine.Kill()
+	waitFor(t, "the exit's event", func() bool { return len(ev.all()) == 1 })
+	stamp := ev.all()[0].HealthAt
+	if stamp <= 0 {
+		t.Fatalf("the exit's HealthAt is %d", stamp)
+	}
+
+	for range 2 {
+		again := &Manager{cfg: Config{Root: m.cfg.Root}, log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{}}
+		if err := again.adopt(); err != nil {
+			t.Fatal(err)
+		}
+		adopted := again.sandboxes[s.meta.ID]
+		if adopted == nil {
+			t.Fatal("not loaded")
+		}
+		info := again.info(adopted)
+		if info.State != proto.StateStopped || info.Error != "the VM exited" || info.HealthAt != stamp {
+			t.Fatalf("after a restart %+v, want the exit as it was, stamped %d", info, stamp)
+		}
+		adopted.setUnresponsive("")
+		if adopted.healthAt <= stamp {
+			t.Fatalf("a later machine's stamp %d isn't above the exit's %d", adopted.healthAt, stamp)
+		}
+	}
+}
+
+// A machine's first stamp is written as it starts, before its boot answers with it, so a restart of the host while it
+// runs never stamps its exit before it.
+func TestAMachinesStampIsWrittenAsItStarts(t *testing.T) {
+	fastHealth(t)
+	ev := &events{}
+	m, s, _, machine := runningSandbox(t, ev)
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s.healthAt = time.Now().UnixMilli() + 60_000 // a stamp ahead of the clock, as after the clock went back
+	s.mu.Lock()
+	m.watch(s, machine)
+	started := m.info(s).HealthAt
+	s.mu.Unlock()
+	raw, err := os.ReadFile(filepath.Join(s.dir, "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var written meta
+	if err := json.Unmarshal(raw, &written); err != nil {
+		t.Fatal(err)
+	}
+	if written.HealthAt != started {
+		t.Fatalf("meta.json has HealthAt %d, want the machine's first stamp %d", written.HealthAt, started)
+	}
+	// The host restarts while it runs, and finds its VM gone: the exit is stamped after the machine's start.
+	written.Pid = 0
+	raw, _ = json.Marshal(written)
+	if err := os.WriteFile(filepath.Join(s.dir, "meta.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again := &Manager{cfg: Config{Root: m.cfg.Root}, log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{}}
+	if err := again.adopt(); err != nil {
+		t.Fatal(err)
+	}
+	if info := again.info(again.sandboxes[s.meta.ID]); info.Error != "the host restarted while it ran" || info.HealthAt <= started {
+		t.Fatalf("after a restart %+v, want the restart's exit stamped after %d", info, started)
 	}
 }

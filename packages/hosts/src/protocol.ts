@@ -229,6 +229,14 @@ export const HOST_FEATURES = {
 	 * disk. Without it a recovery of a sandbox the host has running changes nothing there.
 	 */
 	guestHealth: "guest-health",
+	/**
+	 * Exit stamps: every report of a microVM that ended without Kantel asking (`stopped` or `error`, with its `error`)
+	 * carries `healthAt`, its machine's last health stamp, kept across restarts of the host (a VM a restart ended is
+	 * stamped then), and such exits are sent again once a connection carries events. A running sandbox's `healthAt` in a
+	 * call's answer is its machine's. So Kantel records each boot's machine (`Placement.machineAt`) and takes an exit
+	 * only for the run whose machine ended (`ComputeService.reportExit`). Without it a boot names no machine.
+	 */
+	exitStamps: "exit-stamps",
 } as const;
 
 /**

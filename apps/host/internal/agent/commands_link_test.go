@@ -150,3 +150,90 @@ func errorOf(err error, m proto.Message) error {
 	}
 	return m.Error
 }
+
+// stopTier is a linkTier whose stop holds until released, and says whether its context was ended meanwhile.
+type stopTier struct {
+	linkTier
+	stopping chan struct{}
+	finish   chan struct{}
+	ended    chan error
+}
+
+func (f *stopTier) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotInfo, error) {
+	f.stopping <- struct{}{}
+	select {
+	case <-f.finish:
+	case <-ctx.Done():
+	}
+	f.ended <- ctx.Err()
+	return proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: p.SandboxID}, nil
+}
+
+// A stop's context outlives its session by stopGrace, then ends: one stuck on a Firecracker that never answers doesn't
+// hold its sandbox for good.
+func TestOutlivingEndsItsGraceAfterItsParent(t *testing.T) {
+	parent, end := context.WithCancel(context.Background())
+	ctx, cancel := outliving(parent, 50*time.Millisecond)
+	defer cancel()
+	end()
+	select {
+	case <-ctx.Done():
+		t.Fatal("ended with its parent")
+	case <-time.After(20 * time.Millisecond):
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("still running after its grace")
+	}
+}
+
+// A stop is under way when the host's connection goes (#737): it isn't cut off half-way, which could leave its VM
+// paused with no resume, or stopped cold for a pause the cancel refused; it runs on to its end on the host.
+func TestAStopRunsOnWhenItsConnectionGoes(t *testing.T) {
+	tier := &stopTier{linkTier: linkTier{newHeldTier()}, stopping: make(chan struct{}, 1), finish: make(chan struct{}), ended: make(chan error, 1)}
+	failed := make(chan error, 1)
+	hub := &takeoverHub{}
+	hub.script = []func(func(string, any) (proto.Message, error), func()){
+		func(call func(string, any) (proto.Message, error), takeOver func()) {
+			go func() {
+				_, _ = call(proto.MethodStop, proto.StopParams{SandboxID: "sbx_1", SnapshotID: "snap_1"})
+			}()
+			select {
+			case <-tier.stopping:
+			case <-time.After(5 * time.Second):
+				failed <- context.DeadlineExceeded
+				return
+			}
+			takeOver()
+		},
+		func(func(string, any) (proto.Message, error), func()) {
+			// The next connection: the stop the last one sent is still running, and ends as it would have.
+			close(tier.finish)
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(hub.serve))
+	t.Cleanup(srv.Close)
+	h := hostWith(t, tier)
+	h.cfg.ControlPlane, h.cfg.Credential, h.cfg.HostID, h.version = srv.URL, "khc_test", "host_a", "test"
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = h.Run(ctx, nil)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	select {
+	case err := <-tier.ended:
+		if err != nil {
+			t.Fatalf("the stop's context ended with its connection: %v", err)
+		}
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(20 * time.Second):
+		t.Fatal("the stop never ended")
+	}
+}

@@ -9,7 +9,10 @@ both add (`rootfs/`). `rootfs.sh` turns the image into the read-only ext4 every 
 
 Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUNTU_SNAPSHOT`), systemd, and:
 
-- Docker CE and containerd (pinned versions), with Buildx and Compose
+- Docker CE and containerd (pinned versions), with Buildx and Compose. Containers reach the egress proxy through the
+  guest agent's forwarder on docker0's gateway (`172.17.0.1:3128`), which doesn't move on a fork or resume as the
+  proxy's own address does; `~/.docker/config.json` (user's and root's) gives every container and build
+  `HTTPS_PROXY` there, and no `HTTP_PROXY`, so containers still call each other by name over plain HTTP (#760)
 - git, curl, wget, jq, build-essential, pkg-config, Python 3 with pip and venv, Node and Go (pinned releases,
   checked against their SHA-256). Node (`NODE_VERSION`, 26) is the only one, in `/usr/local`, with npm and no corepack;
   a project that needs another installs it beside it (docs: Isolates and microVMs, "Node")
@@ -62,6 +65,7 @@ nothing in the guest listens on the sandbox's network except SSH.
 | 6081 | Selkies on the browser's own display: the browser alone, started on demand | `kantel-browser-stream.service` | |
 | (socket) | Docker | `docker.service` | `docker` |
 | 3128 | The guest agent's forwarder to the host's egress proxy (Chromium's and dockerd's proxy) | `kantel-guest.service` | |
+| 172.17.0.1:3128 | The same forwarder on docker0's gateway, for containers (bound before docker0 is up) | `kantel-guest.service` | |
 
 The host's egress proxy sits on each sandbox's own gateway address, which a fork changes. Shells and `exec` get it
 from `/etc/kantel/proxy.env`; Chromium and dockerd, which read a proxy once at start, use the forwarder on 3128, which

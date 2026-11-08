@@ -147,12 +147,13 @@ export function createPeerTransport(options: {
 					const message = JSON.parse(line) as {
 						event?: HostEvent;
 						result?: unknown;
-						error?: { code: string; message: string };
+						error?: { code: string; message: string; unanswered?: boolean; disconnected?: boolean };
 					};
 					if (message.event !== undefined) callOptions.onEvent?.(message.event);
 					else if (message.error !== undefined) {
 						await reader.cancel().catch(() => undefined);
-						throw new HostCallError(message.error);
+						const { disconnected, ...error } = message.error;
+						throw new HostCallError(error, { disconnected: disconnected === true });
 					} else if ("result" in message) {
 						await reader.cancel().catch(() => undefined);
 						return message.result;
@@ -328,6 +329,8 @@ export async function createGatewayCluster(options: {
 													message: error.message,
 													// Whether the host may have carried it out, for the caller to keep what it placed.
 													...(error.unanswered ? { unanswered: true } : {}),
+													// Whether the host wasn't there (gone while it waited), for a stop to wait for it.
+													...(error.disconnected ? { disconnected: true } : {}),
 												}
 											: { code: "internal", message: "The call failed on the replica holding the host" },
 								}),
