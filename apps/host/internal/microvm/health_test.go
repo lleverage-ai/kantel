@@ -2,6 +2,7 @@ package microvm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -368,5 +369,35 @@ func TestAnExitIsReportedWithItsMachinesHealthStamp(t *testing.T) {
 	s.mu.Unlock()
 	if again <= started {
 		t.Fatalf("the next machine's HealthAt %d isn't after the one that ended (%d)", again, started)
+	}
+}
+
+// A sandbox whose VM a restart of the host ended is stopped with that error and stamped then, so the hello's report of
+// it names the machine that ended (its HealthAt is after that machine's start, before any later machine's).
+func TestARestartsEndedSandboxIsStamped(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sandboxes", "sbx_restarted")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(meta{ID: "sbx_restarted", Size: "small", State: proto.StateRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{cfg: Config{Root: root}, log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{}}
+	before := time.Now().UnixMilli()
+	if err := m.adopt(); err != nil {
+		t.Fatal(err)
+	}
+	s := m.sandboxes["sbx_restarted"]
+	if s == nil {
+		t.Fatal("not loaded")
+	}
+	info := m.info(s)
+	if info.State != proto.StateStopped || info.Error != "the host restarted while it ran" || info.HealthAt < before {
+		t.Fatalf("info %+v, want stopped with the restart's error, stamped from %d on", info, before)
 	}
 }

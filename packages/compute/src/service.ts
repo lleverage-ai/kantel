@@ -577,7 +577,8 @@ export interface ComputeService {
 	 * emits `sandbox.error`. Dropped for a sandbox on another host or in any other state: a stop, start, recovery or
 	 * delete under way owns its outcome. `healthAt` is the host's last health stamp for the machine that ended (its clock,
 	 * from that machine's start on): one earlier than the stamp the sandbox's run was booted with (`machineAt`, the same
-	 * host's clock) is an earlier machine's exit, reported late, and dropped.
+	 * host's clock) is an earlier machine's exit, reported late, and dropped, as is one without a stamp for a run that
+	 * has one.
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
@@ -4202,8 +4203,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(current) => withState(current, "error", { reason, ports: [] }),
 			// Its host's, and this run's machine: both stamps are that host's clock, and a machine's stamps only move on, so
 			// one before the run's machine started is an earlier machine's (a delayed event, or one from before a reconnect).
+			// A run whose machine was stamped is on a host that stamps every exit, so a report without one is stale too;
+			// only a run booted by a host that names no machine (one from before it did) takes an unstamped report.
 			(current) =>
-				current.hostId === hostId && (at === undefined || current.machineAt === undefined || at >= current.machineAt),
+				current.hostId === hostId && (current.machineAt === undefined || (at !== undefined && at >= current.machineAt)),
 		).catch((cause: unknown) => {
 			if (cause instanceof KantelError && cause.code === "not_found") return undefined;
 			throw cause;

@@ -992,6 +992,9 @@ func (m *Manager) adopt() error {
 		if s.meta.State != proto.StateStopped {
 			s.meta.State = proto.StateStopped
 			s.meta.Error = "the host restarted while it ran"
+			// Stamped now: after its machine's start, before any later machine's, so Kantel takes the report of this exit
+			// (the hello's) only for the run that machine was.
+			s.healthAt = time.Now().UnixMilli()
 			_ = m.writeMeta(s)
 		}
 		m.sandboxes[s.meta.ID] = s

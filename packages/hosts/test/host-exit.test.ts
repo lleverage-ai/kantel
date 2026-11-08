@@ -92,7 +92,7 @@ describe("a microVM its host ended", () => {
 		expect(host.calls.at(-1)?.method).toBe("sandbox.start");
 	});
 
-	it("is caught up from the hello of a host that restarted under it", async () => {
+	it("is caught up from the hello of a host that restarted under it, one that names no machine included", async () => {
 		const { root, host } = await setup();
 		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
 		const held = host.sandboxes.get(sandbox.id);
@@ -131,6 +131,32 @@ describe("a microVM its host ended", () => {
 		// The new machine's own exit is taken.
 		report(host, { ...held, state: "stopped", memory: false, error: KERNEL_KILL, healthAt: 2_000 });
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).reason).toBe(hostExitReason(KERNEL_KILL)));
+	});
+
+	it("takes a restart's hello only for the run whose machine the restart ended", async () => {
+		const { root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const held = host.sandboxes.get(sandbox.id);
+		if (held === undefined) throw new Error("not held");
+		// Stopped and started again: this run's machine is stamped 2,000 on its host.
+		await root.stopSandbox(sandbox.id, { wait: true });
+		host.sandboxes.set(sandbox.id, { ...held, healthAt: 2_000 });
+		expect(await root.startSandbox(sandbox.id, { wait: true })).toMatchObject({ state: "running" });
+		const restarted: HostSandbox = { ...held, state: "stopped", error: HOST_RESTART };
+
+		// Late hellos from restarts that ended earlier machines: one stamped before this machine started, and one with no
+		// stamp (a host that names its machines always stamps an exit). Neither touches this run.
+		for (const late of [{ ...restarted, healthAt: 1_500 }, restarted]) {
+			host.connect([late]);
+			await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+		}
+
+		// The restart that ended this machine, stamped then.
+		host.connect([{ ...restarted, healthAt: 3_000 }]);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("error"));
+		expect((await root.getSandbox(sandbox.id)).reason).toBe(hostExitReason(HOST_RESTART));
 	});
 
 	it("leaves a running sandbox as it is for a report with no error, which only a stop Kantel asked for has", async () => {
