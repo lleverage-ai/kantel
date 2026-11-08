@@ -114,6 +114,12 @@ func main() {
 	} else {
 		log.Printf("local proxy %s: %v", guest.LocalProxyAddr, err)
 	}
+	// The same forwarder for Docker's containers, on docker0's gateway (whether or not docker0 is there yet).
+	if l, err := guest.ListenFreebind(guest.BridgeProxyAddr); err == nil {
+		go func() { log.Print(server.ServeLocalProxy(l)) }()
+	} else {
+		log.Printf("containers' proxy %s: %v", guest.BridgeProxyAddr, err)
+	}
 	log.Printf("kantel-guest %s listening on vsock:%d", version, vsock.AgentPort)
 	log.Fatal((&http.Server{Handler: server.Handler()}).Serve(listener))
 }

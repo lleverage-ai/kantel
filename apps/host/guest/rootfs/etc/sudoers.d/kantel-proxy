@@ -1,0 +1,6 @@
+# The sandbox's egress proxy and CA bundle survive sudo (lleverage-ai/kantel#731). A sandbox has no DNS and no route
+# out but the proxy, so with env_reset dropping these, `sudo npm i -g pnpm` failed on getaddrinfo. The guest agent
+# writes them (/etc/kantel/proxy.env); exec and login shells have them, and sudo now passes them on.
+# No "." in this file's name: sudo skips files in sudoers.d whose names have one.
+Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy"
+Defaults env_keep += "NODE_EXTRA_CA_CERTS NODE_USE_ENV_PROXY REQUESTS_CA_BUNDLE"

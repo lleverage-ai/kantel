@@ -1,0 +1,12 @@
+# Ubuntu's PATH, then the egress proxy and CA bundle for PAM sessions (sudo, su, SSH, cron), as in
+# /etc/systemd/system.conf.d/kantel-proxy.conf. A variable sudo keeps from its caller wins over these.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+HTTP_PROXY=http://127.0.0.1:3128
+HTTPS_PROXY=http://127.0.0.1:3128
+http_proxy=http://127.0.0.1:3128
+https_proxy=http://127.0.0.1:3128
+NO_PROXY=localhost,127.0.0.1,::1
+no_proxy=localhost,127.0.0.1,::1
+NODE_USE_ENV_PROXY=1
+NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt

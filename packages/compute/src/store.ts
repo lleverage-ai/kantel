@@ -122,6 +122,12 @@ export interface StoredSample {
 	readonly cpu: number;
 	readonly memoryMb: number;
 	/**
+	 * The highest reading of its span, where it is a mean: CPU 0 to 1, memory in MiB. Absent on a single reading and on a
+	 * mean kept before peaks were, whose highest is taken as its mean.
+	 */
+	readonly cpuMax?: number;
+	readonly memoryMbMax?: number;
+	/**
 	 * A 5-minute mean's (what hosts' ticks are kept as, `at` its start): how many readings it is the mean of. Absent on a
 	 * single reading, as samples were kept before hosts sent ticks.
 	 */
@@ -141,6 +147,13 @@ export interface StoredSample {
 	 */
 	readonly diskReadings?: number;
 	readonly ioReadings?: number;
+}
+
+/** A sandbox's highest readings (`StoredSandbox.peak`). */
+export interface StoredPeak {
+	readonly memoryBytes: number;
+	readonly memoryAt: number;
+	readonly cpu: number;
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
@@ -220,6 +233,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly runs: readonly RunPeriod[];
 	/** The newest readings: a day of 5-minute means (`MAX_SAMPLES`), and hourly ones before it (`HOURLY_SAMPLES`). */
 	readonly samples: readonly StoredSample[];
+	/**
+	 * The highest readings it has had since it was made, kept with each 5-minute mean (`keepRollup`) and so after its
+	 * samples are folded or it is deleted: memory in bytes and when, CPU 0 to 1. Absent: no mean kept since peaks were.
+	 */
+	readonly peak?: StoredPeak;
 	readonly ports: readonly computeSchema.ExposedPort[];
 	/** The snapshot its memory was paused into, while `paused`. */
 	readonly pausedSnapshotId?: string;
