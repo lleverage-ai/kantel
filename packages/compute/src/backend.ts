@@ -337,6 +337,12 @@ export interface Placement {
 	 * later reports (`ComputeService.reportMounts`). Absent where the backend doesn't say.
 	 */
 	readonly mountsAt?: number;
+	/**
+	 * When the backend started the machine it answers for, by its own clock (a host's first health stamp for it, which only
+	 * moves on): the record keeps it, so a later report of an exit can be told apart from an earlier machine's
+	 * (`ComputeService.reportExit`). Absent where the backend doesn't say.
+	 */
+	readonly machineAt?: number;
 }
 
 /** How to boot a machine for a sandbox that has none. */

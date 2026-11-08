@@ -339,3 +339,34 @@ func TestStopOfAStoppedSandboxAnswersItsDisk(t *testing.T) {
 		t.Fatal("a stop with no snapshot of a stopped sandbox was answered")
 	}
 }
+
+// A VM that exits without being asked is reported stopped with its error and its machine's last health stamp, which
+// Kantel fences the exit with: the next machine's stamps all come later.
+func TestAnExitIsReportedWithItsMachinesHealthStamp(t *testing.T) {
+	fastHealth(t)
+	ev := &events{}
+	m, s, _, machine := runningSandbox(t, ev)
+	s.mu.Lock()
+	m.watch(s, machine)
+	started := m.info(s).HealthAt
+	s.mu.Unlock()
+	if started <= 0 {
+		t.Fatalf("a running machine's HealthAt is %d, want its start's stamp", started)
+	}
+	machine.Kill()
+	waitFor(t, "the exit's event", func() bool { return len(ev.all()) == 1 })
+	got := ev.all()[0]
+	if got.State != proto.StateStopped || got.Error != "the VM exited" || got.HealthAt != started {
+		t.Fatalf("exit event %+v, want stopped, its error and HealthAt %d", got, started)
+	}
+	s.mu.Lock()
+	next := reapedMachine(t, s.vmDir())
+	s.machine = next
+	s.meta.State = proto.StateRunning
+	m.watch(s, next)
+	again := m.info(s).HealthAt
+	s.mu.Unlock()
+	if again <= started {
+		t.Fatalf("the next machine's HealthAt %d isn't after the one that ended (%d)", again, started)
+	}
+}

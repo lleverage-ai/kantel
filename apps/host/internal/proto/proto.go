@@ -438,7 +438,8 @@ type SandboxInfo struct {
 	// answer, with HealthReason saying why in words (how long, and whether it is out of memory); empty while it does.
 	// The host sends the sandbox's info as an event each time it changes, and once more for each running sandbox once a
 	// connection can carry events. HealthAt (Unix ms) is when it was last set (from its machine's start on): reports of
-	// it are ordered by it, so one sent earlier never replaces a later one.
+	// it are ordered by it, so one sent earlier never replaces a later one. A stopped sandbox keeps its last machine's
+	// HealthAt (none after the host restarts), so the report of an exit names the machine that ended.
 	Health       string `json:"health,omitempty"`
 	HealthReason string `json:"healthReason,omitempty"`
 	HealthAt     int64  `json:"healthAt,omitempty"`

@@ -575,9 +575,11 @@ export interface ComputeService {
 	 * at the host's memory limit, it crashed, or the host restarted under it): a `running` sandbox on `hostId` moves to
 	 * `error` with the host's `error` as its reason (`hostExitReason`) and its ports cleared, its commands end, and it
 	 * emits `sandbox.error`. Dropped for a sandbox on another host or in any other state: a stop, start, recovery or
-	 * delete under way owns its outcome.
+	 * delete under way owns its outcome. `healthAt` is the host's last health stamp for the machine that ended (its clock,
+	 * from that machine's start on): one earlier than the stamp the sandbox's run was booted with (`machineAt`, the same
+	 * host's clock) is an earlier machine's exit, reported late, and dropped.
 	 */
-	reportExit(hostId: string, sandboxId: string, error: string | undefined): Promise<void>;
+	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
@@ -4012,6 +4014,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const toRunning = (sandbox: StoredSandbox) =>
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
+				// This run's machine, which fences a late report of an earlier one's exit (`reportExit`); none where not said.
+				machineAt: placement.machineAt,
 				resources: placement.resources ?? sandbox.resources,
 				// A microVM's shape is what its machine runs as, where its backend says: a host that can't resize a stopped or
 				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
@@ -4170,7 +4174,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * boot), and the commands Kantel had running on that machine are ended. Its disk is kept on its host, so a start
 	 * boots it from there; a stop or delete works from `error` too.
 	 */
-	async function reportExit(hostId: string, sandboxId: string, error: string | undefined): Promise<void> {
+	async function reportExit(
+		hostId: string,
+		sandboxId: string,
+		error: string | undefined,
+		healthAt?: number,
+	): Promise<void> {
+		const at = typeof healthAt === "number" && Number.isSafeInteger(healthAt) && healthAt > 0 ? healthAt : undefined;
 		const reason = hostExitReason(error);
 		// The machine's commands, read while it is still `running`: once it is `error` a start may boot another, whose
 		// commands are its own.
@@ -4179,7 +4189,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sandboxId,
 			"running",
 			(current) => withState(current, "error", { reason, ports: [] }),
-			(current) => current.hostId === hostId,
+			// Its host's, and this run's machine: both stamps are that host's clock, and a machine's stamps only move on, so
+			// one before the run's machine started is an earlier machine's (a delayed event, or one from before a reconnect).
+			(current) =>
+				current.hostId === hostId && (at === undefined || current.machineAt === undefined || at >= current.machineAt),
 		).catch((cause: unknown) => {
 			if (cause instanceof KantelError && cause.code === "not_found") return undefined;
 			throw cause;

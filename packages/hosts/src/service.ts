@@ -346,9 +346,11 @@ export interface HostComputeLink {
 	 * A host's word that a sandbox's machine there ended without Kantel asking: it reports the sandbox `stopped` (or
 	 * `error`) with an `error` saying why, in an event when the VM exits (its memory guard, the kernel's OOM killer at
 	 * its limit, a crash) or in its hello after a restart (`ComputeService.reportExit`). A stop Kantel asks for leaves
-	 * no error, so it is never sent for one; the compute plane takes it only for a sandbox it has `running` there.
+	 * no error, so it is never sent for one; the compute plane takes it only for a sandbox it has `running` there, and
+	 * only for the machine its run booted: `healthAt` is the host's last health stamp for the machine that ended
+	 * (absent from a host that predates sending it with a stopped sandbox).
 	 */
-	reportExit?(hostId: string, sandboxId: string, error: string): Promise<void>;
+	reportExit?(hostId: string, sandboxId: string, error: string, healthAt?: number): Promise<void>;
 	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
@@ -736,6 +738,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		sandbox.error.trim() !== ""
 			? sandbox.error.slice(0, 1000)
 			: undefined;
+	/** Each host's events here whose exit report is still being taken (`onEvent`), which its next hello waits for. */
+	const exitsReporting = new Map<string, Set<Promise<void>>>();
 	/** When it last changed, when the host says. */
 	const healthAtOf = (sandbox: { healthAt?: unknown }): number | undefined =>
 		typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
@@ -854,7 +858,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// Its running sandboxes' guest health, where it watches it: one that went unresponsive, or answered again, while
 		// it was away is caught up.
 		const watchesHealth = facts.value.features?.includes(HOST_FEATURES.guestHealth) === true;
-		const exits: { sandboxId: string; error: string }[] = [];
+		const exits: { sandboxId: string; error: string; healthAt?: number }[] = [];
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
@@ -862,7 +866,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			// One whose machine ended while the host was away, or that the host's restart ended (`the host restarted while
 			// it ran`), is caught up: the compute plane may still have it running.
 			const exit = sandbox === undefined ? undefined : exitOf(sandbox);
-			if (exit !== undefined) exits.push({ sandboxId: placement.sandboxId, error: exit });
+			if (exit !== undefined && sandbox !== undefined) {
+				exits.push({ sandboxId: placement.sandboxId, error: exit, healthAt: healthAtOf(sandbox) });
+			}
 			if (watchesHealth && sandbox?.state === "running" && compute?.reportHealth !== undefined) {
 				report(
 					compute.reportHealth(
@@ -883,10 +889,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		if (bases.length > 0 && compute?.recordBases !== undefined) {
 			report(compute.recordBases(hostId, { sandboxes: bases }));
 		}
-		// Taken before the host is welcomed, so no call reaches it until they are: one landing after a start of its
-		// sandbox would put the run that start booted in error. One that fails is logged, and the host connects.
+		// Taken before the host is welcomed, so no call reaches it until they are, after the exits its events here are still
+		// reporting (from its last connection): one landing after a start of its sandbox would put the run that start
+		// booted in error. Each is also fenced to the machine it names (`healthAt`), which a host that predates sending it
+		// doesn't. One that fails is logged, and the host connects.
+		await Promise.allSettled([...(exitsReporting.get(hostId) ?? [])]);
 		for (const exit of exits) {
-			await compute?.reportExit?.(hostId, exit.sandboxId, exit.error).catch((error: unknown) => {
+			await compute?.reportExit?.(hostId, exit.sandboxId, exit.error, exit.healthAt).catch((error: unknown) => {
 				const why = error instanceof Error ? error.message : String(error);
 				log(`[hosts] couldn't report sandbox ${exit.sandboxId}'s exit on host ${hostId}: ${why}`);
 			});
@@ -972,39 +981,50 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const sandbox = event.sandbox;
 			if (typeof sandbox !== "object" || sandbox === null) return;
 			if (typeof sandbox.id !== "string" || typeof sandbox.state !== "string") return;
-			report(
-				(async () => {
-					const placement = await store.getPlacement(sandbox.id);
-					if (placement === undefined || placement.hostId !== hostId) return;
-					const base = (sandbox as { base?: unknown }).base;
-					if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
-						await compute?.recordBases?.(hostId, {
-							sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
-						});
-					}
-					// The call that caused the event usually recorded it already (a create's `running`).
-					if (sandbox.state === "deleted") {
-						await store.removePlacement(sandbox.id);
-						return;
-					}
-					const latest = asReported(placement, sandbox, await store.getHost(hostId), clock.now());
-					if (latest !== placement) await store.putPlacement(latest);
-					// A running sandbox's guest health, which a host with `guestHealth` sends an event for each time it changes.
-					if (sandbox.state === "running") {
-						await compute?.reportHealth?.(
-							hostId,
-							sandbox.id,
-							healthOf(sandbox),
-							healthReasonOf(sandbox),
-							healthAtOf(sandbox),
-						);
-					}
-					// Its machine ended without Kantel asking (its memory guard, an OOM kill, a crash): the compute plane has it
-					// running until told.
-					const exit = exitOf(sandbox);
-					if (exit !== undefined) await compute?.reportExit?.(hostId, sandbox.id, exit);
-				})(),
-			);
+			const work = (async () => {
+				const placement = await store.getPlacement(sandbox.id);
+				if (placement === undefined || placement.hostId !== hostId) return;
+				const base = (sandbox as { base?: unknown }).base;
+				if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
+					await compute?.recordBases?.(hostId, {
+						sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
+					});
+				}
+				// The call that caused the event usually recorded it already (a create's `running`).
+				if (sandbox.state === "deleted") {
+					await store.removePlacement(sandbox.id);
+					return;
+				}
+				const latest = asReported(placement, sandbox, await store.getHost(hostId), clock.now());
+				if (latest !== placement) await store.putPlacement(latest);
+				// A running sandbox's guest health, which a host with `guestHealth` sends an event for each time it changes.
+				if (sandbox.state === "running") {
+					await compute?.reportHealth?.(
+						hostId,
+						sandbox.id,
+						healthOf(sandbox),
+						healthReasonOf(sandbox),
+						healthAtOf(sandbox),
+					);
+				}
+				// Its machine ended without Kantel asking (its memory guard, an OOM kill, a crash): the compute plane has it
+				// running until told.
+				const exit = exitOf(sandbox);
+				if (exit !== undefined) await compute?.reportExit?.(hostId, sandbox.id, exit, healthAtOf(sandbox));
+			})();
+			// An exit's, until it is taken: the host's next hello here waits for it (`hello`).
+			if (exitOf(sandbox) !== undefined) {
+				const reporting = exitsReporting.get(hostId) ?? new Set<Promise<void>>();
+				exitsReporting.set(hostId, reporting);
+				reporting.add(work);
+				void work
+					.finally(() => {
+						reporting.delete(work);
+						if (reporting.size === 0 && exitsReporting.get(hostId) === reporting) exitsReporting.delete(hostId);
+					})
+					.catch(() => undefined);
+			}
+			report(work);
 		},
 		async secrets(hostId, sandboxId) {
 			if (compute === undefined) throw new Error("The compute plane isn't linked yet");

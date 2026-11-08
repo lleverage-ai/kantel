@@ -728,12 +728,12 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
 	info.Mounts, info.MountsAt = m.mountStatus(s)
-	if s.meta.State == proto.StateRunning {
-		if s.unresponsive != "" {
-			info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
-		}
-		info.HealthAt = s.healthAt
+	if s.meta.State == proto.StateRunning && s.unresponsive != "" {
+		info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
 	}
+	// Its machine's last health stamp, from its start on, kept once it stops: with the error of an exit the host didn't
+	// cause by a call, it names the machine that ended, so Kantel never takes a late report of it for a later run's.
+	info.HealthAt = s.healthAt
 	return info
 }
 

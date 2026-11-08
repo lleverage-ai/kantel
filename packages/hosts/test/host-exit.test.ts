@@ -44,7 +44,7 @@ async function setup() {
 	service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: async () => undefined,
-		reportExit: (hostId, sandboxId, error) => api.service.reportExit(hostId, sandboxId, error),
+		reportExit: (hostId, sandboxId, error, healthAt) => api.service.reportExit(hostId, sandboxId, error, healthAt),
 	});
 	closers.push(
 		() => service.close(),
@@ -100,6 +100,37 @@ describe("a microVM its host ended", () => {
 		host.connect([{ ...held, state: "stopped", error: HOST_RESTART }]);
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("error"));
 		expect((await root.getSandbox(sandbox.id)).reason).toBe(hostExitReason(HOST_RESTART));
+	});
+
+	it("never puts a later run in error for a late report of an earlier machine's exit, by event or hello", async () => {
+		const { root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const held = host.sandboxes.get(sandbox.id);
+		if (held === undefined) throw new Error("not held");
+		// The machine that ends was stamped from 1,000 on; its exit is reported once and taken.
+		const ended: HostSandbox = { ...held, state: "stopped", memory: false, error: GUARD_KILL, healthAt: 1_000 };
+		host.sandboxes.set(sandbox.id, ended);
+		report(host, ended);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("error"));
+
+		// Started again: the host's answer stamps its new machine (2,000).
+		host.sandboxes.set(sandbox.id, { ...held, healthAt: 2_000 });
+		expect(await root.startSandbox(sandbox.id, { wait: true })).toMatchObject({ state: "running" });
+
+		// The same exit again, late: an event still being handled from before a reconnect, and a hello read before the
+		// start. Neither touches the new run.
+		report(host, ended);
+		host.connect([ended]);
+		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const after = await root.getSandbox(sandbox.id);
+		expect(after.state).toBe("running");
+		expect(after.reason).toBeUndefined();
+		expect((await root.runCommand(sandbox.id, { command: "echo hi" })).exitCode).toBe(0);
+
+		// The new machine's own exit is taken.
+		report(host, { ...held, state: "stopped", memory: false, error: KERNEL_KILL, healthAt: 2_000 });
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).reason).toBe(hostExitReason(KERNEL_KILL)));
 	});
 
 	it("leaves a running sandbox as it is for a report with no error, which only a stop Kantel asked for has", async () => {

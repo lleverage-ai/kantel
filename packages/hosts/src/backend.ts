@@ -463,6 +463,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
 					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
+			// A running machine's health stamp, set from its start on (`HOST_FEATURES.guestHealth`): it names this machine.
+			...(sandbox.state === "running" &&
+			typeof sandbox.healthAt === "number" &&
+			Number.isSafeInteger(sandbox.healthAt) &&
+			sandbox.healthAt > 0
+				? { machineAt: sandbox.healthAt }
+				: {}),
 			...(known.mounts === undefined || parseMountsAt(sandbox.mountsAt) === undefined
 				? {}
 				: { mountsAt: parseMountsAt(sandbox.mountsAt) }),
