@@ -11,6 +11,7 @@ import {
 	type ProcessesRead,
 	ProcessesSection,
 	ProcessTable,
+	peakMemoryOf,
 	peakOf,
 	percentText,
 	shareAt,
@@ -55,6 +56,16 @@ describe("a sandbox's metrics", () => {
 		// The newest point has no IO reading, so the one before it is the newest IO.
 		expect(latest.io?.point.at).toBe(0);
 		expect(peakOf("cpu", read)).toBe(0.9);
+		expect(peakMemoryOf(read)).toBe(2 * GB);
+		// A mean's peak is its interval's highest reading, not the mean.
+		const means = series([
+			{ at: 0, cpu: 0.2, cpuMax: 1, memUsedBytes: GB, memMaxBytes: 3 * GB },
+			{ at: 300_000, cpu: 0.3, memUsedBytes: 2 * GB },
+		]);
+		expect(peakOf("cpu", means)).toBe(1);
+		expect(peakOf("memory", means)).toBe(0.75);
+		expect(peakMemoryOf(means)).toBe(3 * GB);
+		expect(latestOf(means).memory?.share).toBe(0.5);
 		expect(percentText(0.004)).toBe("<1%");
 		expect(percentText(0)).toBe("0%");
 		expect(percentText(0.456)).toBe("46%");

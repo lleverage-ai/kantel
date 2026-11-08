@@ -760,6 +760,8 @@ export interface EventData {
 	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
 	readonly placementReason?: PlacementReason;
 	readonly actor?: CreatedBy;
+	/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
+	readonly startup?: SandboxStartup;
 }
 
 export interface EventPage {
@@ -1525,6 +1527,8 @@ export interface Sandbox {
 	readonly hostName?: string;
 	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
 	readonly base?: SandboxBase;
+	/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
+	readonly startup?: SandboxStartup;
 }
 
 /** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
@@ -1736,6 +1740,24 @@ export interface SandboxSource {
 	readonly sandboxId?: string;
 }
 
+/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
+export interface SandboxStartup {
+	/** How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume). */
+	readonly disk?: "reflink" | "copy" | "move" | "new";
+	/** Making its disk, in milliseconds. */
+	readonly diskMs: number;
+	/** For a fork of a running sandbox: the live snapshot of its source it was made from. */
+	readonly snapshotMs?: number;
+	/** Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. */
+	readonly bootMs: number;
+	/** From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too. */
+	readonly agentMs: number;
+	/** The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). */
+	readonly hostMs: number;
+	/** From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. */
+	readonly totalMs: number;
+}
+
 /** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 export type SandboxState =
 	| "starting"
@@ -1777,17 +1799,27 @@ export interface SandboxUsage {
 	readonly memLimitBytes?: number;
 	/** Its own disk's size, as its guest counts it, when its host sends disk figures. */
 	readonly diskTotalBytes?: number;
+	/** The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. */
+	readonly peakMemoryBytes?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly peakMemoryAt?: number;
+	/** Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. */
+	readonly peakCpu?: number;
 	/** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
 	readonly series: SandboxUsageSeries;
 }
 
-/** One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
+/** One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
 export interface SandboxUsagePoint {
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
 	/** CPU utilisation over the interval. */
 	readonly cpu: number;
 	readonly memoryMb: number;
+	/** The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean. */
+	readonly cpuMax?: number;
+	/** The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean. */
+	readonly memoryMbMax?: number;
 	readonly runningSeconds: number;
 	readonly cost: number;
 	/** Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. */
@@ -2331,6 +2363,12 @@ export interface UsageSummary {
 	readonly recentCpu: readonly number[];
 	/** Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. */
 	readonly recentMemory: readonly number[];
+	/** The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. */
+	readonly peakMemoryBytes?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly peakMemoryAt?: number;
+	/** Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. */
+	readonly peakCpu?: number;
 }
 
 export interface ViewAccessBody {

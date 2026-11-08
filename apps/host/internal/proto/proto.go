@@ -414,6 +414,9 @@ type SandboxInfo struct {
 	CreatedAt int64  `json:"createdAt"`
 	// Timings of the operation that answered with this, in milliseconds, by step.
 	Timings map[string]float64 `json:"timings,omitempty"`
+	// Phases is how the machine of the create, fork or resume that answered with this started, phase by phase
+	// (microVMs only): what Timings says under names that differ by path, in a shape the control plane keeps.
+	Phases *StartPhases `json:"phases,omitempty"`
 	// Source says how a create was served: "snapshot" (restored from a snapshot), "boot" (a cold boot), or for an
 	// isolate "pool" (an isolate its account's VM had pre-loaded) or "account" (its account's VM already ran).
 	Source string `json:"source,omitempty"`
@@ -443,6 +446,35 @@ type SandboxInfo struct {
 	HealthReason string `json:"healthReason,omitempty"`
 	HealthAt     int64  `json:"healthAt,omitempty"`
 }
+
+// StartPhases is how long a microVM's start took on its host, in milliseconds, by phase: its disk made, its machine
+// booted or its snapshot loaded, and its guest agent answering. A slow phase says what was slow (a full disk copy, a
+// busy CPU), where the total alone doesn't.
+type StartPhases struct {
+	// Disk is how its disk was made: DiskReflink, DiskCopy, DiskMove or DiskNew; empty when it kept its own (a resume).
+	Disk   string  `json:"disk,omitempty"`
+	DiskMs float64 `json:"diskMs"`
+	// SnapshotMs, for a live fork, is the snapshot of its running source it was made from.
+	SnapshotMs float64 `json:"snapshotMs,omitempty"`
+	// BootMs is its Firecracker process started and the machine booted (a cold boot) or its snapshot loaded (a restore).
+	BootMs float64 `json:"bootMs"`
+	// AgentMs is from then until its guest agent answered: on a cold boot, the guest's kernel and init too.
+	AgentMs float64 `json:"agentMs"`
+	// TotalMs is the whole operation on the host: these, and the rest (its network, identity and mounts).
+	TotalMs float64 `json:"totalMs"`
+}
+
+// How a sandbox's disk was made (StartPhases.Disk).
+const (
+	// DiskReflink is a clone of the source's disk that shares its blocks until either is written (XFS, btrfs): at once.
+	DiskReflink = "reflink"
+	// DiskCopy is a copy of the source's data, its holes kept: the host's file system has no reflinks (ext4).
+	DiskCopy = "copy"
+	// DiskMove is a live fork's own snapshot's disk, moved into the fork.
+	DiskMove = "move"
+	// DiskNew is a new empty disk.
+	DiskNew = "new"
+)
 
 // HealthUnresponsive is SandboxInfo.Health for a running sandbox whose guest agent doesn't answer.
 const HealthUnresponsive = "unresponsive"

@@ -337,6 +337,11 @@ export interface Placement {
 	 * later reports (`ComputeService.reportMounts`). Absent where the backend doesn't say.
 	 */
 	readonly mountsAt?: number;
+	/**
+	 * How its machine's start took its time on its host, by phase, without `totalMs` (the service measures that around
+	 * the call). Absent where the backend doesn't say (the stub, an older host, an isolate).
+	 */
+	readonly startup?: Omit<computeSchema.SandboxStartup, "totalMs">;
 }
 
 /** How to boot a machine for a sandbox that has none. */

@@ -378,9 +378,10 @@ func (s *Server) sync(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-// aptProxyFile points apt at the sandbox's egress proxy whatever environment it runs in. sudo resets the environment
-// (env_reset drops HTTP_PROXY), and a sandbox has no way out but the proxy, so a plain `sudo apt-get update` would
-// otherwise fail on every source with "Temporary failure resolving".
+// aptProxyFile points apt at the sandbox's egress proxy whatever environment it runs in. The image's sudo keeps the
+// proxy variables (guest/rootfs/etc/sudoers.d/kantel-proxy), but a root shell that never had them, or an image from
+// before that, would otherwise fail `apt-get update` on every source with "Temporary failure resolving": a sandbox has
+// no way out but the proxy.
 const aptProxyFile = "/etc/apt/apt.conf.d/90kantel-proxy"
 
 // writeAptProxy writes path for an identity with a proxy (in an image with apt), through LocalProxyAddr so that it
@@ -399,7 +400,8 @@ func writeAptProxy(path string, proxied bool) {
 	_ = os.WriteFile(path, []byte(conf), 0o644)
 }
 
-// envFile holds the sandbox's own variables, which every command gets.
+// envFile holds the sandbox's own variables, which every command gets, as does a systemd unit that reads it
+// (EnvironmentFile=-/etc/kantel/env): systemd reads its double-quoted values, though it keeps \n and \t as written.
 const envFile = "/etc/kantel/env"
 
 // writeEnv makes path hold exactly env: an identity's Env is the sandbox's whole environment (the host resolves a

@@ -517,6 +517,24 @@ export interface HostDiskUsage {
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";
 
+/** How a microVM's disk was made for its start: cloned (`reflink`), copied in full, moved (a live fork's), or new. */
+export type HostDiskMade = "reflink" | "copy" | "move" | "new";
+
+/** How long a microVM took to start on its host, in milliseconds, by phase (`HostSandbox.phases`). */
+export interface HostStartPhases {
+	/** How its disk was made; absent when it kept its own (a resume). */
+	readonly disk?: HostDiskMade;
+	readonly diskMs: number;
+	/** A live fork's snapshot of its running source. */
+	readonly snapshotMs?: number;
+	/** Its Firecracker process started and the machine booted, or its snapshot loaded. */
+	readonly bootMs: number;
+	/** From then until its guest agent answered (on a cold boot, the guest's kernel and init too). */
+	readonly agentMs: number;
+	/** The whole operation on the host: these and the rest (its network, identity and mounts). */
+	readonly totalMs: number;
+}
+
 /** A sandbox as its host sees it. */
 export interface HostSandbox {
 	readonly id: string;
@@ -530,6 +548,11 @@ export interface HostSandbox {
 	readonly createdAt: number;
 	/** The operation's timings in milliseconds, by step. */
 	readonly timings?: { readonly [step: string]: number };
+	/**
+	 * How the machine of the create, fork or resume that answered with this started, by phase (a microVM on a host from
+	 * this version on): `timings` in a shape that doesn't change with the path it took.
+	 */
+	readonly phases?: HostStartPhases;
 	/**
 	 * How a create was served: `snapshot` or `boot`; for an isolate, `pool` (one its account's VM had pre-loaded) or
 	 * `account` (its account's VM already ran).

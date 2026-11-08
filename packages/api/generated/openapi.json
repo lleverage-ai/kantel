@@ -13238,6 +13238,9 @@
 					},
 					"actor": {
 						"$ref": "#/components/schemas/CreatedBy"
+					},
+					"startup": {
+						"$ref": "#/components/schemas/SandboxStartup"
 					}
 				},
 				"title": "EventData"
@@ -15126,6 +15129,9 @@
 					},
 					"base": {
 						"$ref": "#/components/schemas/SandboxBase"
+					},
+					"startup": {
+						"$ref": "#/components/schemas/SandboxStartup"
 					}
 				},
 				"title": "Sandbox"
@@ -15624,6 +15630,59 @@
 				"title": "SandboxSource",
 				"description": "What it was made from."
 			},
+			"SandboxStartup": {
+				"type": "object",
+				"required": ["diskMs", "bootMs", "agentMs", "hostMs", "totalMs"],
+				"properties": {
+					"disk": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "reflink"
+							},
+							{
+								"type": "string",
+								"const": "copy"
+							},
+							{
+								"type": "string",
+								"const": "move"
+							},
+							{
+								"type": "string",
+								"const": "new"
+							}
+						],
+						"description": "How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume)."
+					},
+					"diskMs": {
+						"type": "number",
+						"description": "Making its disk, in milliseconds."
+					},
+					"snapshotMs": {
+						"type": "number",
+						"description": "For a fork of a running sandbox: the live snapshot of its source it was made from."
+					},
+					"bootMs": {
+						"type": "number",
+						"description": "Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds."
+					},
+					"agentMs": {
+						"type": "number",
+						"description": "From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too."
+					},
+					"hostMs": {
+						"type": "number",
+						"description": "The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts)."
+					},
+					"totalMs": {
+						"type": "number",
+						"description": "From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it."
+					}
+				},
+				"title": "SandboxStartup",
+				"description": "How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it."
+			},
 			"SandboxState": {
 				"anyOf": [
 					{
@@ -15753,6 +15812,21 @@
 						"minimum": 0,
 						"description": "Its own disk's size, as its guest counts it, when its host sends disk figures."
 					},
+					"peakMemoryBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept."
+					},
+					"peakMemoryAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"peakCpu": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs."
+					},
 					"series": {
 						"$ref": "#/components/schemas/SandboxUsageSeries"
 					}
@@ -15775,6 +15849,16 @@
 					},
 					"memoryMb": {
 						"type": "number"
+					},
+					"cpuMax": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean."
+					},
+					"memoryMbMax": {
+						"type": "number",
+						"description": "The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean."
 					},
 					"runningSeconds": {
 						"type": "number"
@@ -15799,7 +15883,7 @@
 					}
 				},
 				"title": "SandboxUsagePoint",
-				"description": "One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best."
+				"description": "One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best."
 			},
 			"SandboxUsageSeries": {
 				"type": "object",
@@ -17209,6 +17293,21 @@
 							"minimum": 0
 						},
 						"description": "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first."
+					},
+					"peakMemoryBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept."
+					},
+					"peakMemoryAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"peakCpu": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs."
 					}
 				},
 				"title": "UsageSummary"
