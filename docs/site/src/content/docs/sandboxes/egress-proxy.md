@@ -29,6 +29,8 @@ NO_PROXY=localhost,127.0.0.1,::1
 
 `curl`, `git` over HTTPS, `pip`, `npm` and Node (`NODE_USE_ENV_PROXY=1`) follow them. Chromium and Docker use a forwarder on `127.0.0.1:3128` inside the sandbox, which keeps working after a fork or resume changes the proxy's address. A program that ignores the proxy variables can't connect, and a name it looks up itself doesn't resolve: the proxy resolves names. Plain TCP and UDP don't get out. The proxy takes `CONNECT` to any port, though, so a client that can use an HTTP proxy for other protocols gets through.
 
+`sudo` keeps the proxy variables, with `NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY` and `REQUESTS_CA_BUNDLE`, so `sudo npm i -g pnpm` works as `npm i` does. They come from the environment `sudo` is run from, so run it from a command or a login shell, which have them. A sandbox has no DNS of its own: `getent hosts`, `ping` and `nslookup` fail on every name, though the same names work through the proxy. A sandbox image from before `sudo` kept them needs `sudo --preserve-env=HTTP_PROXY,HTTPS_PROXY,http_proxy,https_proxy,NO_PROXY,no_proxy`.
+
 Whatever the account's rules say, the proxy refuses private, loopback and link-local addresses, checked after it resolves the name. That covers your network, the host itself and the cloud metadata address `169.254.169.254`. A host's operator can let named private ranges through with `egressAllowCIDRs` in the [host's settings](/hosts/#the-settings-file).
 
 Without proxy settings, a sandbox reaches any public address. That is the host's `egress` setting of `open`. A host set to `none` gives such sandboxes no network at all, not even the proxy. Once an account turns its settings on, its sandboxes use the proxy with those settings on any host.
@@ -46,7 +48,7 @@ Host github.com
 	ProxyCommand /usr/local/bin/kantel-connect %h %p
 ```
 
-GitHub's connection goes to `ssh.github.com` on port 443, where GitHub serves SSH for networks that let only HTTPS's port out, so an upstream proxy that allows only 443 doesn't get in its way. GitHub's [published host keys](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints) are in `/etc/ssh/ssh_known_hosts`, so the first connection isn't asked to trust an unknown key. `kantel-connect` goes through the forwarder on `127.0.0.1:3128`, so it keeps working after a fork or resume and under `sudo`, which drops the proxy variables.
+GitHub's connection goes to `ssh.github.com` on port 443, where GitHub serves SSH for networks that let only HTTPS's port out, so an upstream proxy that allows only 443 doesn't get in its way. GitHub's [published host keys](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints) are in `/etc/ssh/ssh_known_hosts`, so the first connection isn't asked to trust an unknown key. `kantel-connect` goes through the forwarder on `127.0.0.1:3128`, so it keeps working after a fork or resume and in an environment without the proxy variables, such as a systemd service.
 
 For another host, add the same `ProxyCommand` to `~/.ssh/config`, which `ssh` reads first:
 
