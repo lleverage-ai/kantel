@@ -827,6 +827,49 @@ export const SandboxTemplate = Type.Object(
 	{ title: "SandboxTemplate", description: "The template a sandbox was made from." },
 );
 
+export const SandboxStartup = Type.Object(
+	{
+		disk: Type.Optional(
+			Type.Union([Type.Literal("reflink"), Type.Literal("copy"), Type.Literal("move"), Type.Literal("new")], {
+				description:
+					"How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a " +
+					"host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no " +
+					"reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a " +
+					"resume).",
+			}),
+		),
+		diskMs: Type.Number({ description: "Making its disk, in milliseconds." }),
+		snapshotMs: Type.Optional(
+			Type.Number({
+				description: "For a fork of a running sandbox: the live snapshot of its source it was made from.",
+			}),
+		),
+		bootMs: Type.Number({
+			description: "Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds.",
+		}),
+		agentMs: Type.Number({
+			description:
+				"From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too.",
+		}),
+		hostMs: Type.Number({
+			description:
+				"The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts).",
+		}),
+		totalMs: Type.Number({
+			description:
+				"From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the " +
+				"way to and from the host, not on it.",
+		}),
+	},
+	{
+		title: "SandboxStartup",
+		description:
+			"How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host " +
+			"measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs " +
+			"only, and only from a host that reports it.",
+	},
+);
+
 export const Sandbox = Type.Object(
 	{
 		id: id("The sandbox's ID, such as `sbx_4kq9x2mt`."),
@@ -922,6 +965,7 @@ export const Sandbox = Type.Object(
 		),
 		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
 		base: Type.Optional(SandboxBase),
+		startup: Type.Optional(SandboxStartup),
 	},
 	{ title: "Sandbox" },
 );
@@ -2685,6 +2729,8 @@ export const Event = Type.Object(
 				reason: Type.Optional(Type.String()),
 				placementReason: Type.Optional(PlacementReason),
 				actor: Type.Optional(CreatedBy),
+				// On `sandbox.running`, where its host said: the sandbox's `startup`.
+				startup: Type.Optional(SandboxStartup),
 			},
 			{ title: "EventData" },
 		),
@@ -3539,6 +3585,7 @@ export type DeviceLoginState = Static<typeof DeviceLoginState>;
 export type DeviceLoginResult = Static<typeof DeviceLoginResult>;
 export type DeviceLoginRequest = Static<typeof DeviceLoginRequest>;
 export type SandboxBase = Static<typeof SandboxBase>;
+export type SandboxStartup = Static<typeof SandboxStartup>;
 export type BaseImageVersion = Static<typeof BaseImageVersion>;
 export type BaseImage = Static<typeof BaseImage>;
 export type BaseImageTemplate = Static<typeof BaseImageTemplate>;

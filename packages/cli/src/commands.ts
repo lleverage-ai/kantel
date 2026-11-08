@@ -497,9 +497,29 @@ function describeSandbox(sandbox: Sandbox): string {
 		["idle stop", idleStopText(sandbox)],
 		["snapshot", sandbox.latestSnapshotId],
 		["created", `${timestamp(sandbox.createdAt)} (${ago(sandbox.createdAt)})`],
+		["started in", startupText(sandbox)],
 		["running", duration(sandbox.usage.runningSeconds)],
 		["cost", `${money(cost.total, cost.currency)} (${money(cost.ratePerHour, cost.currency)} an hour)`],
 	]);
+}
+
+const DISK_MADE = { reflink: "disk cloned", copy: "disk copied", move: "disk moved", new: "new disk" } as const;
+
+/**
+ * How its latest start took its time (`startup`): `21.4 s on its host (22.0 s in all): disk copied 18.2 s, boot 1.9 s,
+ * guest agent 0.6 s`. Undefined where its host didn't say.
+ */
+function startupText(sandbox: Sandbox): string | undefined {
+	const startup = sandbox.startup;
+	if (startup === undefined) return undefined;
+	const s = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+	const phases = [
+		...(startup.snapshotMs === undefined ? [] : [`snapshot ${s(startup.snapshotMs)}`]),
+		`${startup.disk === undefined ? "disk" : DISK_MADE[startup.disk]} ${s(startup.diskMs)}`,
+		`boot ${s(startup.bootMs)}`,
+		`guest agent ${s(startup.agentMs)}`,
+	];
+	return `${s(startup.hostMs)} on its host (${s(startup.totalMs)} in all): ${phases.join(", ")}`;
 }
 
 /** GB from MB: `16`, or `0.5`. */
@@ -1443,6 +1463,7 @@ const SECTIONS: readonly Section[] = [
 					ctx.emit(ports.length === 0 ? sandbox : { ...sandbox, hostedPorts: ports }, () =>
 						[
 							`Created ${sandbox.id} (${sandbox.name}): ${kindOf(sandbox)}${diskOf(sandbox)}, ${stateOf(sandbox)}.`,
+							...(sandbox.startup === undefined ? [] : [`  Started in:     ${startupText(sandbox)}`]),
 							...ports.map((port) => `  Port ${port.port}:      ${port.url}`),
 							`  Run a command:  kantel exec ${sandbox.id} -- echo hello`,
 							`  Stop it:        kantel stop ${sandbox.id}`,

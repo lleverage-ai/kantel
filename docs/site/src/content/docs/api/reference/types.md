@@ -693,6 +693,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `reason` | string | no |  |
 | `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
+| `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
 
 ### EventPage
 
@@ -1286,6 +1287,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `hostId` | string | no | The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. |
 | `hostName` | string | no | That host's name, with `hostId`. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+| `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
 
 ### SandboxBase
 
@@ -1487,6 +1489,20 @@ What it was made from.
 | --- | --- | --- | --- |
 | `snapshotId` | string | no |  |
 | `sandboxId` | string | no | Set when it was forked from another sandbox. |
+
+### SandboxStartup
+
+How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | `"reflink"` or `"copy"` or `"move"` or `"new"` | no | How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume). |
+| `diskMs` | number | yes | Making its disk, in milliseconds. |
+| `snapshotMs` | number | no | For a fork of a running sandbox: the live snapshot of its source it was made from. |
+| `bootMs` | number | yes | Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. |
+| `agentMs` | number | yes | From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too. |
+| `hostMs` | number | yes | The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). |
+| `totalMs` | number | yes | From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. |
 
 ### SandboxState
 

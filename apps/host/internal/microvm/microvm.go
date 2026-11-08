@@ -61,6 +61,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/mounts"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
+	"golang.org/x/sys/unix"
 )
 
 // Tier is the microVM tier's name.
@@ -600,6 +601,9 @@ func New(cfg Config) (*Manager, error) {
 	}
 	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}, preparing: map[int]bool{}, sharedFailed: map[int]time.Time{}}
 	m.bg, m.bgStop = context.WithCancel(context.Background())
+	if !canReflink(filepath.Join(cfg.Root, "snapshots")) {
+		m.log.Warn("the host's file system has no reflinks, so each sandbox made or forked from a snapshot copies its whole disk; XFS or btrfs clones it at once", "root", cfg.Root)
+	}
 	// Template builds a previous run left (it stopped or crashed mid-build) are ended by reapInterruptedBuilds, below.
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.shared = sharedShape(cfg, m.hostMemoryMiB, defaultCPUs())
@@ -1135,16 +1139,63 @@ func hostname(id string) string {
 // the source's blocks until either file is written and so takes no room yet, else cp's SEEK_DATA/SEEK_HOLE copy
 // (ext4 has no reflinks).
 func copySparse(src, dst string) error {
-	if exec.Command("cp", "--reflink=always", src, dst).Run() == nil {
-		return nil
+	_, err := cloneDisk(src, dst)
+	return err
+}
+
+// cloneDisk is copySparse, saying how the copy was made: proto.DiskReflink or proto.DiskCopy. The clone is FICLONE
+// itself, so a file system without reflinks answers at once and the copy is the only time spent.
+func cloneDisk(src, dst string) (string, error) {
+	if reflink(src, dst) == nil {
+		return proto.DiskReflink, nil
 	}
-	// The failed reflink may have made dst (empty, or part written): the sparse copy starts from none.
+	// The failed reflink may have made dst (empty): the sparse copy starts from none.
 	_ = os.Remove(dst)
 	out, err := exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("copy %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("copy %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return proto.DiskCopy, nil
+}
+
+// canReflink says whether dir's file system clones files (FICLONE), by cloning a file of one block there.
+func canReflink(dir string) bool {
+	probe, err := os.CreateTemp(dir, ".reflink-probe-")
+	if err != nil {
+		return false
+	}
+	src := probe.Name()
+	defer os.Remove(src)
+	_, err = probe.Write(make([]byte, 4096))
+	probe.Close()
+	if err != nil {
+		return false
+	}
+	dst := src + ".clone"
+	defer os.Remove(dst)
+	return reflink(src, dst) == nil
+}
+
+// reflink makes dst a clone of src (FICLONE), with src's permissions: its blocks shared until either is written.
+func reflink(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if err := unix.IoctlFileClone(int(out.Fd()), int(in.Fd())); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // unchanged says whether the file at path looks as it did when before was taken, by its size, inode, and modification
@@ -1163,12 +1214,12 @@ func unchanged(path string, before os.FileInfo) bool {
 	return okB && okN && b.Ctim == n.Ctim && b.Ino == n.Ino
 }
 
-// takeFile moves src to dst: a rename, or (another file system) a sparse copy.
-func takeFile(src, dst string) error {
+// takeFile moves src to dst: a rename (proto.DiskMove), or (another file system) a sparse copy.
+func takeFile(src, dst string) (string, error) {
 	if err := os.Rename(src, dst); err == nil {
-		return nil
+		return proto.DiskMove, nil
 	}
-	return copySparse(src, dst)
+	return cloneDisk(src, dst)
 }
 
 // newDisk makes an empty sparse ext4 disk of the size.
@@ -1228,6 +1279,25 @@ func (t timings) step(name string, since *time.Time) {
 	now := time.Now()
 	t[name] = float64(now.Sub(*since).Microseconds()) / 1000
 	*since = now
+}
+
+// msSince is the milliseconds since since, as timings has them.
+func msSince(since time.Time) float64 { return float64(time.Since(since).Microseconds()) / 1000 }
+
+// booted notes in ph, when set, its machine booted or its snapshot loaded since *since, and starts the agent's wait.
+func booted(ph *proto.StartPhases, since *time.Time) {
+	if ph != nil {
+		ph.BootMs = msSince(*since)
+		*since = time.Now()
+	}
+}
+
+// answered notes in ph, when set, its guest agent answered since *since.
+func answered(ph *proto.StartPhases, since *time.Time) {
+	if ph != nil {
+		ph.AgentMs = msSince(*since)
+		*since = time.Now()
+	}
 }
 
 // templateLock is the lock a template's directory is made under: a named size's, or a shared template's (made on
@@ -1773,7 +1843,8 @@ func tail(path string) string {
 }
 
 // restore starts a VM in dir/vm from a snapshot (state and memory, with dir/vm/disk.ext4 already in place).
-func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string, link network.Link) (*fc.Machine, *guest.Client, error) {
+func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string, link network.Link, ph *proto.StartPhases) (*fc.Machine, *guest.Client, error) {
+	start := time.Now()
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vmDir)
 	if err != nil {
 		return nil, nil, err
@@ -1782,6 +1853,7 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 		machine.Kill()
 		return nil, nil, fmt.Errorf("%w (firecracker log: %s)", err, tail(filepath.Join(vmDir, fc.LogFile)))
 	}
+	booted(ph, &start)
 	client := guest.NewClient(filepath.Join(vmDir, fc.VsockSocket))
 	readyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -1789,6 +1861,7 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 		machine.Kill()
 		return nil, nil, err
 	}
+	answered(ph, &start)
 	return machine, client, nil
 }
 
@@ -2099,6 +2172,7 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 		return proto.SandboxInfo{}, err
 	}
 	t := timings{}
+	ph := &proto.StartPhases{}
 	start := time.Now()
 	began := start
 	dir := filepath.Join(m.cfg.Root, "sandboxes", p.SandboxID)
@@ -2127,7 +2201,9 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	}
 	origin, err := m.startSandbox(ctx, p, size, func(origin sandboxOrigin) error {
 		origin.takeDisk = takeDisk && p.From != ""
-		return m.startMachine(ctx, s, origin, size, p.Egress, t)
+		// A template snapshot that didn't restore leaves what it got to: the fresh boot's phases replace them.
+		*ph = proto.StartPhases{}
+		return m.startMachine(ctx, s, origin, size, p.Egress, t, ph)
 	})
 	if err != nil {
 		return fail(err)
@@ -2225,8 +2301,9 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	}
 	t.step("finish", &start)
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
+	ph.TotalMs = t["total"]
 	info := m.info(s)
-	info.Timings, info.Source = t, source
+	info.Timings, info.Source, info.Phases = t, source, ph
 	m.emit(s)
 	m.log.Debug("create", "sandbox", s.meta.ID, "size", size.Name, "source", source, "timings", t)
 	return info, nil
@@ -2373,7 +2450,7 @@ func (m *Manager) startSandbox(ctx context.Context, p proto.CreateParams, size p
 // startMachine starts s's machine from origin in s's vm directory: the root filesystem linked, the disk copied (or a
 // new one), a network link, its record (meta.json, starting), and the snapshot restored (or the machine booted). On
 // failure it leaves no machine, link or vm directory behind; the record goes with s's directory (Create's fail).
-func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOrigin, size proto.Size, e *proto.Egress, t timings) (err error) {
+func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOrigin, size proto.Size, e *proto.Egress, t timings, ph *proto.StartPhases) (err error) {
 	vm := s.vmDir()
 	defer func() {
 		if err == nil {
@@ -2411,7 +2488,7 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 	if origin.reshape != nil {
 		// The disk, the network and the Firecracker process side by side: none needs another. Its record (meta.json,
 		// starting, with its slot) is written once the link is made, before the snapshot is loaded.
-		machine, client, link, err := m.restoreParallel(ctx, vm, origin.disk, origin.state, origin.mem, egressMode(e), t, func(link network.Link) error {
+		machine, client, link, err := m.restoreParallel(ctx, vm, origin.disk, origin.state, origin.mem, egressMode(e), t, ph, func(link network.Link) error {
 			s.meta.Slot = link.Slot
 			return m.writeMeta(s)
 		})
@@ -2425,15 +2502,16 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 	start := time.Now()
 	switch {
 	case origin.disk == "":
-		err = newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB)
+		ph.Disk, err = proto.DiskNew, newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB)
 	case origin.takeDisk:
-		err = takeFile(origin.disk, filepath.Join(vm, fc.DiskFile))
+		ph.Disk, err = takeFile(origin.disk, filepath.Join(vm, fc.DiskFile))
 	default:
-		err = copySparse(origin.disk, filepath.Join(vm, fc.DiskFile))
+		ph.Disk, err = cloneDisk(origin.disk, filepath.Join(vm, fc.DiskFile))
 	}
 	if err != nil {
 		return err
 	}
+	ph.DiskMs = msSince(start)
 	t.step("disk", &start)
 	link, err := m.cfg.Network.Add(egressMode(e))
 	if err != nil {
@@ -2448,13 +2526,13 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 		return err
 	}
 	if origin.state == "" {
-		if err := m.boot(ctx, s, size); err != nil {
+		if err := m.boot(ctx, s, size, ph); err != nil {
 			return err
 		}
 		t.step("boot", &start)
 		return nil
 	}
-	machine, client, err := m.restore(ctx, vm, origin.state, origin.mem, link)
+	machine, client, err := m.restore(ctx, vm, origin.state, origin.mem, link, ph)
 	if err != nil {
 		return err
 	}
@@ -2464,8 +2542,10 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 }
 
 // boot cold-boots s from its own disk (Start, or a snapshot with no memory), on the kernel of the version its root
-// filesystem is (kernelFor): the one it was made on, or a rebase moved it to.
-func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
+// filesystem is (kernelFor): the one it was made on, or a rebase moved it to. ph, when set, has its boot and its guest
+// agent's wait.
+func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size, ph *proto.StartPhases) error {
+	start := time.Now()
 	vm := s.vmDir()
 	kernel := m.kernelFor(vmRootfs(vm))
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
@@ -2489,6 +2569,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		machine.Kill()
 		return err
 	}
+	booted(ph, &start)
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
 	readyCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -2496,6 +2577,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		machine.Kill()
 		return fmt.Errorf("boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
+	answered(ph, &start)
 	s.machine, s.guest = machine, client
 	return nil
 }
@@ -2691,6 +2773,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		}
 	}
 	t := timings{}
+	ph := &proto.StartPhases{}
 	start := time.Now()
 	began := start
 	link, err := m.cfg.Network.Add(egressMode(s.meta.Egress))
@@ -2703,7 +2786,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	source := "snapshot"
 	_, statErr := os.Stat(filepath.Join(vm, "mem"))
 	if s.meta.Memory && statErr == nil && !coldBoot {
-		machine, client, err := m.restore(ctx, vm, filepath.Join(vm, "state"), filepath.Join(vm, "mem"), link)
+		machine, client, err := m.restore(ctx, vm, filepath.Join(vm, "state"), filepath.Join(vm, "mem"), link, ph)
 		if err != nil {
 			m.cfg.Network.Remove(link)
 			s.link = nil
@@ -2712,7 +2795,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		s.machine, s.guest = machine, client
 		t.step("restore", &start)
 	} else {
-		if err := m.boot(ctx, s, size); err != nil {
+		if err := m.boot(ctx, s, size, ph); err != nil {
 			m.cfg.Network.Remove(link)
 			s.link = nil
 			return proto.SandboxInfo{}, err
@@ -2766,8 +2849,9 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		m.finishBundles(s)
 	}
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
+	ph.TotalMs = t["total"]
 	info := m.info(s)
-	info.Timings, info.Source = t, source
+	info.Timings, info.Source, info.Phases = t, source, ph
 	m.emit(s)
 	return info, nil
 }
@@ -2788,6 +2872,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	start := time.Now()
 	began := start
 	var snapID, spooled string
+	var snapshotMs float64
 	live := false
 	src.mu.Lock()
 	switch src.meta.State {
@@ -2798,10 +2883,12 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		}
 		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: true, Tier: Tier}
 		var err error
+		snapAt := time.Now()
 		if spooled, err = m.liveSnapshot(ctx, src, &snap, t, !m.cfg.KeepForkSnapshots, nil); err != nil {
 			src.mu.Unlock()
 			return proto.SandboxInfo{}, err
 		}
+		snapshotMs = msSince(snapAt)
 		snapID, live = snap.ID, true
 	case proto.StateStopped:
 		latest := m.latestSnapshot(src.meta.ID)
@@ -2854,6 +2941,12 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	}
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info.Timings = t
+	if info.Phases != nil {
+		// The whole fork: its own create, and before it the source's live snapshot.
+		ph := *info.Phases
+		ph.SnapshotMs, ph.TotalMs = snapshotMs, t["total"]
+		info.Phases = &ph
+	}
 	info.Source = "fork"
 	// At info: the control plane keeps no host timings, so a host's log is where a slow fork can be taken apart.
 	m.log.Info("fork", "sandbox", p.NewID, "from", p.SandboxID, "size", src.meta.Size, "timings", t)
