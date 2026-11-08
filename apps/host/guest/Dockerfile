@@ -137,6 +137,7 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& sed -i "s|@MULTIARCH@|$(dpkg-architecture -qDEB_HOST_MULTIARCH)|" /home/user/.config/geany/geany.conf \
 	&& test -f "$(sed -n 's|^active_plugins=\(.*\);$|\1|p' /home/user/.config/geany/geany.conf)" \
 	&& chown -R 1000:1000 /home/user && mkdir -p /etc/kantel \
+	&& install -d -m 0700 /root/.docker && install -m 0600 /home/user/.docker/config.json /root/.docker/config.json \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-connect \
 	&& ssh-keygen -lf /etc/ssh/ssh_known_hosts >/dev/null \

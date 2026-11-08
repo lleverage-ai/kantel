@@ -67,6 +67,34 @@ git clone https://x-access-token:$GITHUB_TOKEN@github.com/acme/app.git
 
 The image's `kantel-connect` and its SSH settings come with the sandbox images from `host-images-20261107.1` on. In an image that boots with the injected guest agent (a [custom image](/sandboxes/custom-images/)), it is `/.kantel/bin/kantel-connect`, with no SSH settings: add the `Host` block above to the image or to `~/.ssh/config` with that path. On an older image, `kantel-guest connect %h %p` doesn't exist either; copy a newer `kantel-guest` in, or use HTTPS.
 
+### Docker containers
+
+A container can't use the sandbox's own proxy variables for long. `127.0.0.1` inside a container is the container's own, and the proxy's address in `HTTPS_PROXY` changes when the sandbox is forked or resumed, while a container keeps the environment it started with. So the forwarder also listens on Docker's default bridge gateway, `172.17.0.1:3128`, which every container reaches, on the default bridge or on a network of its own such as Compose's, and which doesn't move.
+
+The image's Docker settings (`~/.docker/config.json`, and root's) give every container and build HTTPS through it:
+
+```json
+{
+	"proxies": {
+		"default": {
+			"httpsProxy": "http://172.17.0.1:3128",
+			"noProxy": "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+		}
+	}
+}
+```
+
+`docker run`, `docker compose up` and `docker build` pass these on as `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` and `no_proxy`, so a container's `https://` requests reach the internet. There is no `httpProxy`: containers on one network call each other by name over plain HTTP (`http://api:8080`), which `NO_PROXY` can't list, and the proxy can't reach them. A container that needs plain HTTP out, such as `apt-get` in a Debian or Ubuntu image, needs `HTTP_PROXY` as well:
+
+```sh
+docker build --build-arg HTTP_PROXY=http://172.17.0.1:3128 --build-arg http_proxy=http://172.17.0.1:3128 .
+docker run -e HTTP_PROXY=http://172.17.0.1:3128 -e http_proxy=http://172.17.0.1:3128 debian:trixie apt-get update
+```
+
+In Compose, put the same variables under the service's `environment:`, or under `build.args:` for a build. A container has no DNS either, and Node in one follows the variables only with `NODE_USE_ENV_PROXY=1`. A program in a container that brings its own trusted certificates doesn't trust the proxy's certificate authority, so it can't reach a host a [protected variable](/sandboxes/environments/) is bound to. With `--network host` a container shares the sandbox's network and can use the forwarder on `127.0.0.1:3128`, like the sandbox's own programs.
+
+The settings are in the user's own `~/.docker/config.json`. `docker login` keeps them, but a file you write yourself replaces them, so keep the `proxies` block in it. Docker's default bridge has to stay on `172.17.0.0/16` (the default `bip`). The forwarder on `172.17.0.1` and the Docker settings come with the sandbox images after `host-images-20261107.1`. On an older image, pass the sandbox's current `HTTPS_PROXY` to the container, and pass it again after a fork or resume.
+
 ## Set the proxy settings
 
 Each account has one set of settings. Read them with `GET /v1/proxy`, which needs `account:read`, and replace them with `PUT /v1/proxy`, which needs `account:admin`. The console's **Egress proxy** page edits the same settings. The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start).
