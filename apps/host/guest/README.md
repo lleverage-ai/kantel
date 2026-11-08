@@ -38,8 +38,15 @@ and in a custom image's build, reads Ubuntu's live archive instead (`archive.ubu
 answered 503, 502 and 401 for hours, and a 4xx fails `apt-get update` outright, however the sources are pinned).
 `kantel-apt-sources` writes those sources last and moves `APT::Snapshot` to `/etc/kantel/apt-snapshot.conf`, which
 records the snapshot the image was built from; Debian's Chromium source then reads `deb.debian.org`, still limited to
-Chromium's packages. The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so a plain
-`sudo apt-get update` works too: sudo drops `HTTP_PROXY`, and a sandbox has no other way out.
+Chromium's packages. The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so apt
+goes through it in any environment, including a root shell that never read the proxy variables.
+
+sudo keeps the proxy and CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lower-case forms,
+`NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY`, `REQUESTS_CA_BUNDLE`) by `env_keep` in `/etc/sudoers.d/kantel-proxy`, so
+`sudo npm i -g pnpm` reaches the network as `npm i` does (#731). It keeps what the caller had: a root shell started some
+other way has them from `/etc/profile.d/kantel.sh` if it's a login shell. A sandbox has no DNS, so a name only resolves
+through the proxy: `getent hosts`, `ping` and `nslookup` fail, and a program that ignores the proxy variables can't
+connect.
 
 ## What listens where
 
