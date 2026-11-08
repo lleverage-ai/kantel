@@ -23,7 +23,8 @@ python3 e2e/memory-overcommit/memory_e2e.py cleanup            # always: deletes
 ```
 
 `spike` logs the host's memory report, each Firecracker's resident memory and the group's use, limit and
-`memory.events` every 2 seconds to `spike.log`, tries a create mid-spike, and prints how each sandbox's command ended.
+`memory.events` every 2 seconds to `spike.log` in the working directory, tries a create mid-spike, and prints how each
+sandbox's command ended.
 What to look for: no swap, the group's `oom_kill` at 0 (the guard acted before the kernel had to), each sandbox hit
 saying it ran out of memory, the mid-spike create refused, and the residents falling after the spike.
 

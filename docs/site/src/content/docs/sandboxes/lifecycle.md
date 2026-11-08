@@ -149,6 +149,8 @@ The same goes for a start, resume or fork, and for a create from a snapshot. The
 
 A running sandbox can also report `health: "degraded"` when its host can't fully reach it. It keeps running, and `reason` says why.
 
+A microVM whose host ends it without being asked goes from `running` to `error`, with a `sandbox.error` event. That happens when the host runs short of memory and stops it, when the kernel kills it at the host's memory limit, when it crashes, or when the host restarts. Its `reason` gives the host's words, such as `Out of memory: …`. Its disk is kept on its host, so a start or a recovery boots it from there. Anything that was in memory is lost.
+
 ## List and find sandboxes
 
 The list shows the sandboxes that are starting, running or stopping, newest first. Add `all=true` for stopped, paused and errored ones too, `state` for one state, and `label.<key>=<value>` to filter by label:

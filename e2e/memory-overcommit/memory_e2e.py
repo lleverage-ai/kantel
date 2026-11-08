@@ -10,7 +10,7 @@ only. Every sandbox it makes is labelled e2e=memory-overcommit and recorded in m
     export KANTEL_URL=http://127.0.0.1:<port>/v1 KANTEL_API_KEY=... KANTEL_HOST_ID=host_... KANTEL_HOST_CONTAINER=...
     python3 memory_e2e.py memory            # the host's memory report
     python3 memory_e2e.py fill 4096         # create 4 GiB microVMs until one is refused
-    python3 memory_e2e.py spike 2400 200 60 # every one ramps to 2400 MiB at 200 MiB/s, holds 60 s; logs spike.log
+    python3 memory_e2e.py spike 2400 200 60 # every one ramps to 2400 MiB at 200 MiB/s, holds 60 s; logs spike.log in the working directory
     python3 memory_e2e.py cleanup           # delete every sandbox it made
 """
 import json
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     elif what == "fill":
         fill(*(args or [4096]))
     elif what == "spike":
-        spike(*(args + [2400, 200, 60][len(args):]), os.path.join(HERE, "spike.log"))
+        spike(*(args + [2400, 200, 60][len(args):]), os.path.abspath("spike.log"))
     elif what == "cleanup":
         sys.exit(0 if cleanup() else 1)
     else:

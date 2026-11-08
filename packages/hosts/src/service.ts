@@ -343,6 +343,14 @@ export interface HostComputeLink {
 		healthAt?: number,
 	): Promise<void>;
 	/**
+	 * A host's word that a sandbox's machine there ended without Kantel asking: it reports the sandbox `stopped` (or
+	 * `error`) with its `error` saying why, in an event when the VM exits (its memory guard, the kernel's OOM killer at
+	 * its limit, a crash) or in its hello after a restart (`ComputeService.reportExit`). Sent for every report of a
+	 * placement on that host in either state; the compute plane takes it only for a sandbox it has `running` there, so a
+	 * stop or delete Kantel asked for is that call's. `seenAt` is when it came (this deployment's clock).
+	 */
+	reportExit?(hostId: string, sandboxId: string, error: string | undefined, seenAt: number): Promise<void>;
+	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
 	 */
@@ -718,6 +726,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		typeof sandbox.healthReason === "string" && sandbox.healthReason !== ""
 			? sandbox.healthReason.slice(0, 1000)
 			: undefined;
+	/** Whether a host's report says the sandbox's machine there isn't running: its VM ended, or the host failed it. */
+	const endedOn = (sandbox: { state: string } | undefined): boolean =>
+		sandbox?.state === "stopped" || sandbox?.state === "error";
+	/** Why its machine ended, in the host's words, at most 1,000 characters. */
+	const exitErrorOf = (sandbox: { error?: unknown }): string | undefined =>
+		typeof sandbox.error === "string" && sandbox.error !== "" ? sandbox.error.slice(0, 1000) : undefined;
 	/** When it last changed, when the host says. */
 	const healthAtOf = (sandbox: { healthAt?: unknown }): number | undefined =>
 		typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
@@ -840,6 +854,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
 			if (latest !== placement) await store.putPlacement(latest);
+			// One whose machine ended while the host was away, or that the host's restart ended (`the host restarted while
+			// it ran`), is caught up: the compute plane may still have it running.
+			if (sandbox !== undefined && endedOn(sandbox) && compute?.reportExit !== undefined) {
+				report(compute.reportExit(hostId, placement.sandboxId, exitErrorOf(sandbox), now));
+			}
 			if (watchesHealth && sandbox?.state === "running" && compute?.reportHealth !== undefined) {
 				report(
 					compute.reportHealth(
@@ -941,6 +960,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const sandbox = event.sandbox;
 			if (typeof sandbox !== "object" || sandbox === null) return;
 			if (typeof sandbox.id !== "string" || typeof sandbox.state !== "string") return;
+			const seenAt = clock.now();
 			report(
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);
@@ -968,6 +988,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							healthAtOf(sandbox),
 						);
 					}
+					// Its machine ended without Kantel asking (its memory guard, an OOM kill, a crash): the compute plane has it
+					// running until told. One Kantel stopped is that stop's, and the compute plane drops this.
+					if (endedOn(sandbox)) await compute?.reportExit?.(hostId, sandbox.id, exitErrorOf(sandbox), seenAt);
 				})(),
 			);
 		},

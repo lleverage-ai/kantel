@@ -418,6 +418,16 @@ export function unresponsiveReason(reported: string | undefined): string {
 	const why = said === "" ? "Its guest agent stopped answering" : said;
 	return /\brecover\b/i.test(why) ? why : `${why}. Recover it: a restart that keeps its disk`;
 }
+/**
+ * Why a running sandbox whose host ended its VM (`ComputeService.reportExit`) is in `error`: the host's words (its memory
+ * guard stopped it, the kernel killed it at the host's memory limit, it crashed, the host restarted), and what to do. Its
+ * disk is kept on its host, so a start boots it from there.
+ */
+export function hostExitReason(reported: string | undefined): string {
+	const said = reported?.trim().replace(/\.$/, "").slice(0, 1000) ?? "";
+	const why = said === "" ? "Its host stopped its VM" : `${said.charAt(0).toUpperCase()}${said.slice(1)}`;
+	return `${why}. Start it again to boot it from its disk, which is kept`;
+}
 /** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
 	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
@@ -560,6 +570,15 @@ export interface ComputeService {
 		reason: string | undefined,
 		healthAt?: number,
 	): Promise<void>;
+	/**
+	 * A host's word that a microVM it ran ended without Kantel asking (its memory guard stopped it, the kernel killed it
+	 * at the host's memory limit, it crashed, or the host restarted under it): a `running` sandbox on `hostId` moves to
+	 * `error` with the host's `error` as its reason (`hostExitReason`) and its ports cleared, its commands end, and it
+	 * emits `sandbox.error`. Dropped for a sandbox on another host or in any other state: a stop, start, recovery or
+	 * delete under way owns its outcome. `seenAt` is when Kantel had the host's word (this deployment's clock, ms): one
+	 * had before the sandbox's run began is an earlier machine's, reported late, and dropped.
+	 */
+	reportExit(hostId: string, sandboxId: string, error: string | undefined, seenAt?: number): Promise<void>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
@@ -4144,6 +4163,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				data: { reason: "Its guest agent answers again" },
 			});
 		}
+	}
+
+	/**
+	 * `ComputeService.reportExit`: a running sandbox whose host ended its VM is in `error`, saying why, rather than left
+	 * `running` until something else touches it. Its run ends (`withState`), its ports go (an exposure ends with its next
+	 * boot), and the commands Kantel had running there are ended. Its disk is kept on its host, so a start boots it from
+	 * there; a stop or delete works from `error` too.
+	 */
+	async function reportExit(
+		hostId: string,
+		sandboxId: string,
+		error: string | undefined,
+		seenAt?: number,
+	): Promise<void> {
+		const reason = hostExitReason(error);
+		const result = await transition(
+			sandboxId,
+			"running",
+			(current) => withState(current, "error", { reason, ports: [] }),
+			// Its host's, and of this run: an exit Kantel had before the run began is an earlier machine's, reported late
+			// (handled after its stop, and a start, were done).
+			(current) =>
+				current.hostId === hostId &&
+				(seenAt === undefined || current.startedAt === undefined || current.startedAt <= seenAt),
+		).catch((cause: unknown) => {
+			if (cause instanceof KantelError && cause.code === "not_found") return undefined;
+			throw cause;
+		});
+		if (result === undefined || !("moved" in result)) return;
+		const next = result.moved;
+		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: "running", reason } });
+		await killCommandsOf(sandboxId);
 	}
 
 	/**
@@ -8740,6 +8791,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		reportHealth,
+
+		reportExit,
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);
