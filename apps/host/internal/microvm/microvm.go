@@ -960,6 +960,13 @@ func (m *Manager) adopt() error {
 		if s.meta.State == proto.StateRunning && s.meta.Pid > 0 && processAlive(s.meta.Pid) {
 			machine, err := fc.Attach(s.vmDir(), s.meta.Pid)
 			if err == nil {
+				// Its API asked once, for the log: one that doesn't answer can't be paused, so the VM runs on as it is and its
+				// stop ends it cold (its disk kept, its memory lost), as Stop does for any VM that won't pause.
+				actx, cancel := context.WithTimeout(context.Background(), adoptAPITimeout)
+				if err := machine.Barrier(actx); err != nil {
+					m.log.Warn("adopted a running sandbox whose Firecracker API doesn't answer; its stop will be cold", "sandbox", s.meta.ID, "pid", s.meta.Pid, "error", err)
+				}
+				cancel()
 				link := m.cfg.Network.LinkFor(s.meta.Slot, egressMode(s.meta.Egress))
 				if err := m.cfg.Network.Adopt(link); err != nil {
 					m.log.Warn("adopted sandbox's network rules", "sandbox", s.meta.ID, "error", err)
@@ -2650,10 +2657,21 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 		}
 		if err := machine.Snapshot(ctx, filepath.Join(vm, "state.new"), memWrite); err != nil {
 			_ = memDone(false)
-			_ = machine.Resume(ctx)
-			return proto.SnapshotInfo{}, err
+			_ = os.Remove(filepath.Join(vm, "state.new"))
+			_ = os.Remove(beside)
+			// Resumed on a context of its own: the call's may be what ended the snapshot. A VM that won't resume isn't left
+			// paused and said to run: it is stopped cold, as one that won't pause is.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopResumeTimeout)
+			rerr := machine.Resume(rctx)
+			cancel()
+			if rerr == nil {
+				return proto.SnapshotInfo{}, err
+			}
+			m.log.Warn("a sandbox's VM won't resume after its stop's snapshot failed; stopping it cold", "sandbox", s.meta.ID, "snapshot", err, "error", rerr)
+			keepMemory = false
+		} else {
+			t.step("snapshot", &start)
 		}
-		t.step("snapshot", &start)
 	}
 	s.machine = nil
 	machine.Kill()

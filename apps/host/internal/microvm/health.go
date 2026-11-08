@@ -26,6 +26,10 @@ var (
 	// stopSyncTimeout bounds the guest's sync before a stop pauses the VM: a guest that doesn't answer (out of memory,
 	// say) is stopped without it, as a crash would leave its disk, rather than the stop waiting out its call.
 	stopSyncTimeout = 10 * time.Second
+	// stopResumeTimeout bounds resuming a VM whose stop couldn't snapshot it, before it is stopped cold instead.
+	stopResumeTimeout = 10 * time.Second
+	// adoptAPITimeout bounds asking an adopted VM's Firecracker whether its API answers (adopt).
+	adoptAPITimeout = 2 * time.Second
 	// outOfMemoryShare is how little of its memory a guest may have available, as its balloon last reported it, for an
 	// unresponsive one to be called out of memory.
 	outOfMemoryShare = 0.05
