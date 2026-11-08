@@ -4189,7 +4189,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const work = track([sandbox.id], async () => {
 			try {
 				await killCommandsOf(sandbox.id);
-				const taken = await backend.stop(sandbox.id, { keepMemory });
+				// A stop someone asked for waits a while for a host that is away, rather than leaving the sandbox in error
+				// (#737); a sweep's hands the sandbox back for a later sweep instead (`handBack`).
+				const taken = await backend.stop(sandbox.id, { keepMemory, waitForHost: !handBack });
 				// What it kept: a host that couldn't pause the machine (its Firecracker not answering) stops it cold, and says
 				// so (`memory: false`); it is then stopped, not paused.
 				const kept = keepMemory && taken.memory !== false;

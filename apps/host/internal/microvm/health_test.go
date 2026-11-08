@@ -310,6 +310,66 @@ func TestStopOfAMachineThatWontPauseStopsItCold(t *testing.T) {
 	}
 }
 
+// snapshotFailing is a running sandbox whose Firecracker pauses but refuses its snapshot, and its resume too when
+// resumeFails: the API a stop meets once its call's context has ended mid-snapshot (#737), or with its disk full.
+func snapshotFailing(t *testing.T, resumeFails bool) (*Manager, *sandbox, *fakeVMAPI, *fc.Machine) {
+	t.Helper()
+	m, s, _, machine := runningSandbox(t, &events{})
+	m.cfg.AutoSnapshots = 2
+	m.spool = newSpool(filepath.Join(m.cfg.Root, "spool"), 0, m.log)
+	if err := os.Remove(filepath.Join(s.vmDir(), fc.APISocket)); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeVMAPI{failSnapshot: true, failResume: resumeFails}
+	api.serve(t, s.vmDir())
+	if err := os.WriteFile(filepath.Join(s.vmDir(), fc.DiskFile), []byte("disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return m, s, api, machine
+}
+
+// A stop whose snapshot fails resumes the VM and fails, the sandbox running as before.
+func TestStopWhoseSnapshotFailsResumesTheMachine(t *testing.T) {
+	m, s, api, machine := snapshotFailing(t, false)
+	yes := true
+	if _, err := m.Stop(context.Background(), proto.StopParams{SandboxID: s.meta.ID, SnapshotID: "snap_x", Memory: &yes}); err == nil {
+		t.Fatal("a stop whose snapshot failed was answered")
+	}
+	if asked, paused := api.state(); paused || strings.Join(asked, ",") != "Paused,Resumed" {
+		t.Fatalf("asked %v, paused %v", asked, paused)
+	}
+	if s.meta.State != proto.StateRunning || s.machine != machine {
+		t.Fatalf("state %q", s.meta.State)
+	}
+}
+
+// A stop whose snapshot fails and whose VM then won't resume stops it cold, its disk kept and its memory lost, rather
+// than leaving a paused VM said to be running.
+func TestStopWhoseMachineWontResumeStopsItCold(t *testing.T) {
+	m, s, _, machine := snapshotFailing(t, true)
+	yes := true
+	snap, err := m.Stop(context.Background(), proto.StopParams{SandboxID: s.meta.ID, SnapshotID: "snap_cold", Memory: &yes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Memory || s.meta.State != proto.StateStopped || s.meta.Memory || s.machine != nil {
+		t.Fatalf("snapshot %+v, state %q memory %v", snap, s.meta.State, s.meta.Memory)
+	}
+	select {
+	case <-machine.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the machine is still running")
+	}
+	for _, name := range []string{"state", "mem", "state.new", "mem.new"} {
+		if _, err := os.Stat(filepath.Join(s.vmDir(), name)); err == nil {
+			t.Fatalf("%s is left", name)
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(m.snapshotDir("snap_cold"), fc.DiskFile)); err != nil || string(raw) != "disk" {
+		t.Fatalf("the snapshot's disk: %q %v", raw, err)
+	}
+}
+
 // A stop of a sandbox the host has stopped already answers a snapshot of its disk rather than a conflict.
 func TestStopOfAStoppedSandboxAnswersItsDisk(t *testing.T) {
 	root := t.TempDir()

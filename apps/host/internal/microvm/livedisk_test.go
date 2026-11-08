@@ -24,14 +24,15 @@ import (
 )
 
 // fakeVMAPI is a Firecracker API for one VM: it records the states PATCH /vm asks for. dropPause applies a pause but
-// closes the connection without an answer (a lost reply); failResume refuses every resume.
+// closes the connection without an answer (a lost reply); failResume refuses every resume, failSnapshot every snapshot.
 type fakeVMAPI struct {
-	mu         sync.Mutex
-	asked      []string
-	barriers   int
-	paused     bool
-	dropPause  bool
-	failResume bool
+	mu           sync.Mutex
+	asked        []string
+	barriers     int
+	paused       bool
+	dropPause    bool
+	failResume   bool
+	failSnapshot bool
 }
 
 func (f *fakeVMAPI) serve(t *testing.T, dir string) {
@@ -47,6 +48,11 @@ func (f *fakeVMAPI) serve(t *testing.T, dir string) {
 			f.barriers++
 			f.mu.Unlock()
 			_, _ = io.WriteString(w, `{"vcpu_count":2,"mem_size_mib":2048}`)
+			return
+		}
+		if r.URL.Path == "/snapshot/create" && f.failSnapshot {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"fault_message":"no space left on device"}`)
 			return
 		}
 		var body struct {

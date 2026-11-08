@@ -371,6 +371,13 @@ func keptExec(method string, params json.RawMessage) bool {
 	return json.Unmarshal(params, &p) == nil && p.CommandID != ""
 }
 
+// pastSession is whether a call runs on to its end when the session it came on goes: a kept command (keptExec), or a
+// stop. A stop cut off half-way leaves its VM paused, with no resume, or stopped cold for a pause the cancel refused;
+// carried on, it is stopped as asked, and the stop Kantel sends again once the host is back answers that.
+func pastSession(method string, params json.RawMessage) bool {
+	return method == proto.MethodStop || keptExec(method, params)
+}
+
 // commandStatus is sandbox.exec.get.
 func (h *Host) commandStatus(ctx context.Context, p proto.ExecRef) (any, error) {
 	if !validCommandID(p.CommandID) {

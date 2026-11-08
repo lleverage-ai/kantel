@@ -96,6 +96,12 @@ const FINGERPRINT_MARK = "--kantel-host-key--";
 
 /** How long each `sandbox.exec.get` of a detached command asks the host to hold its answer for the command to end. */
 export const EXEC_WAIT_MS = 30_000;
+/** How long a stop whose host is away waits for it to connect again before it fails (`whileHostAway`). */
+export const STOP_RECONNECT_WAIT_MS = 120_000;
+/** How many times a stop is sent while its host comes and goes. */
+const STOP_ATTEMPTS = 3;
+/** How often a stop waiting for its host looks for it. */
+const HOST_RECONNECT_POLL_MS = 250;
 /** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
 const EXEC_RETRY_MIN_MS = 1_000;
 const EXEC_RETRY_MAX_MS = 30_000;
@@ -422,6 +428,36 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const placement = await hosts.sandboxes.placement(sandboxId);
 		if (placement === undefined) throw new KantelError("not_found", "No such sandbox on any host");
 		return { tier: placement.tier, hostId: placement.hostId };
+	}
+
+	/**
+	 * `attempt`, sent again once its host is back when it failed because the host wasn't there (#737): not connected, or
+	 * its connection gone while the call waited (a reconnect, a restart for an update). It waits up to
+	 * `STOP_RECONNECT_WAIT_MS` for the host to connect, up to `STOP_ATTEMPTS` sends in all; a host that isn't back by then
+	 * fails it as before. Only while the host is away: its own refusal or failure, or a timeout with it still connected,
+	 * is final. A host that carried out the stop it never answered (kantel-host runs a stop on past its connection) has
+	 * the sandbox stopped, and answers the next with a snapshot of its disk (`HOST_FEATURES.guestHealth`).
+	 */
+	async function whileHostAway<T>(hostId: string, attempt: () => Promise<T>): Promise<T> {
+		for (let sent = 1; ; sent++) {
+			try {
+				return await attempt();
+			} catch (error) {
+				if (
+					sent >= STOP_ATTEMPTS ||
+					!isKantelError(error) ||
+					error.code !== "unavailable" ||
+					hosts.hub.connected(hostId)
+				) {
+					throw error;
+				}
+				const until = now() + STOP_RECONNECT_WAIT_MS;
+				while (!hosts.hub.connected(hostId)) {
+					if (now() >= until) throw error;
+					await pause(HOST_RECONNECT_POLL_MS, undefined);
+				}
+			}
+		}
 	}
 
 	/**
@@ -829,20 +865,22 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// The host drops its copy; its next request that needs one fetches the new values.
 			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
 		},
-		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
+		async stop(sandboxId, { keepMemory, waitForHost }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
 			// A stopped sandbox's ports stay exposed while it is stopped, so a request to one is told so and why (its idle
 			// stop, say) rather than that nothing is there; nothing reaches a stopped machine. They end when it boots again.
 			// As long as a disk copy: a stop's automatic snapshot copies the whole disk. Given up on at 120 s, the stop
 			// failed here while the host went on and stopped it.
-			const snap = await call<HostSnapshot>(
-				sandboxId,
-				"sandbox.stop",
-				{ snapshotId: snapshotId(), memory: keepMemory },
-				undefined,
-				DISK_COPY_TIMEOUT_MS,
-			);
+			const send = () =>
+				call<HostSnapshot>(
+					sandboxId,
+					"sandbox.stop",
+					{ snapshotId: snapshotId(), memory: keepMemory },
+					undefined,
+					DISK_COPY_TIMEOUT_MS,
+				);
+			const snap = await (waitForHost === true ? whileHostAway(hostId, send) : send());
 			// Whether it kept the memory, said either way: a host that couldn't pause the machine stopped it cold.
 			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},

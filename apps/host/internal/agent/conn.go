@@ -279,9 +279,9 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	var err error
 	// A command with Kantel's ID runs past this session: a detached one the host runs itself runs on its own context
 	// (startDetached), and a foreground one runs on to its own end, its result kept for the next session (runCommand).
-	// So neither is ended by the connection going.
+	// So neither is ended by the connection going. Nor is a stop (pastSession).
 	callCtx := ctx
-	if keptExec(m.Method, m.Params) {
+	if pastSession(m.Method, m.Params) {
 		callCtx = context.WithoutCancel(ctx)
 	}
 	// start, when set, begins what follows the answer (a file stream's transfer), so nothing of it comes before it.

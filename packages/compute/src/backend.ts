@@ -554,9 +554,14 @@ export interface SandboxBackend {
 	): Promise<{ readonly running?: boolean } | undefined>;
 	/**
 	 * Saves the disk as a snapshot and lets the machine go, or with `keepMemory` pauses it, keeping its memory too
-	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken.
+	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken. With `waitForHost`, a stop whose
+	 * machine's host is away (not connected, or gone while it waited) waits a while for it to be back and is sent again,
+	 * rather than failing `unavailable` at once.
 	 */
-	stop(sandboxId: string, options: { readonly keepMemory: boolean }): Promise<TakenSnapshot>;
+	stop(
+		sandboxId: string,
+		options: { readonly keepMemory: boolean; readonly waitForHost?: boolean },
+	): Promise<TakenSnapshot>;
 	/** Carries a paused sandbox on from its memory, or boots a stopped one from `fromSnapshot`. */
 	resume(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/**
