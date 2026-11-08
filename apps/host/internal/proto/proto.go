@@ -247,6 +247,12 @@ const FeatureSnapshotSizes = "snapshot-sizes"
 // stopped answers a snapshot of its disk.
 const FeatureGuestHealth = "guest-health"
 
+// FeatureExitStamps (HOST_FEATURES.exitStamps): every report of a microVM that ended without Kantel asking (stopped or
+// error, with its Error) carries HealthAt, its machine's last health stamp, kept across restarts of the host (a VM a
+// restart ended is stamped then); a running sandbox's HealthAt, in a call's answer, is its machine's, so Kantel fences
+// an exit to the run whose machine ended. Such exits are sent again once a connection can carry events.
+const FeatureExitStamps = "exit-stamps"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {

@@ -435,14 +435,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		hostId: string,
 		known: Omit<SandboxPlacement, "sandbox" | "hostId"> = {},
 	): Promise<Placement> {
-		const [placement, nested] = await Promise.all([
+		const stamped =
+			typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0;
+		// The host is read for its nested virtualisation, when not known, and for whether it stamps exits.
+		const readsHost = known.nestedVirtualisation === undefined || (sandbox.state === "running" && stamped);
+		const [placement, host] = await Promise.all([
 			known.placement ?? hosts.sandboxes.placement(sandboxId),
-			known.nestedVirtualisation ??
-				hosts
-					.get(hostId)
-					.then((host) => host.nestedVirtualisation)
-					.catch(() => undefined),
+			readsHost ? hosts.get(hostId).catch(() => undefined) : undefined,
 		]);
+		const nested = known.nestedVirtualisation ?? host?.nestedVirtualisation;
 		const tier = placement?.tier ?? (sandbox.tier as SandboxTier);
 		const startup = parseStartPhases(sandbox.phases);
 		return {
@@ -464,11 +465,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
 					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
-			// A running machine's health stamp, set from its start on (`HOST_FEATURES.guestHealth`): it names this machine.
-			...(sandbox.state === "running" &&
-			typeof sandbox.healthAt === "number" &&
-			Number.isSafeInteger(sandbox.healthAt) &&
-			sandbox.healthAt > 0
+			// A running machine's health stamp names it, from a host that stamps every exit too (`HOST_FEATURES.exitStamps`);
+			// one that stamps only its health (`guestHealth`) doesn't stamp its exits, so its boots name no machine.
+			...(sandbox.state === "running" && stamped && host?.features.includes(HOST_FEATURES.exitStamps) === true
 				? { machineAt: sandbox.healthAt }
 				: {}),
 			...(known.mounts === undefined || parseMountsAt(sandbox.mountsAt) === undefined

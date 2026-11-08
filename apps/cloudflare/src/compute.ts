@@ -607,7 +607,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		reportHealth: (hostId, sandboxId, health, reason, healthAt) =>
 			api.service.reportHealth(hostId, sandboxId, health, reason, healthAt),
 		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
-		reportExit: (hostId, sandboxId, error) => api.service.reportExit(hostId, sandboxId, error),
+		reportExit: (...report) => api.service.reportExit(...report),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);

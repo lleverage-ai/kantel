@@ -98,11 +98,15 @@ func (h *Host) mountsEvent(info proto.SandboxInfo) {
 }
 
 // replayHealth sends, once a connection can carry events, a sandbox event for each running sandbox with its guest
-// health (HealthAt set): one that changed between its hello's read and the events being wired would otherwise reach
-// Kantel only in the hello's older read. Its HealthAt orders it against the hello and live events.
+// health (HealthAt set), and for each that ended without Kantel asking (stopped or error, with its Error: an exit,
+// FeatureExitStamps): one that changed between its hello's read and the events being wired would otherwise reach
+// Kantel only in the hello's older read, and an exit then would not reach it at all. Its HealthAt orders a health
+// report against the hello and live events, and fences an exit to the run whose machine ended, so a repeat is harmless.
 func (h *Host) replayHealth() {
 	for _, info := range h.List() {
-		if info.State == proto.StateRunning && info.HealthAt > 0 {
+		running := info.State == proto.StateRunning && info.HealthAt > 0
+		ended := (info.State == proto.StateStopped || info.State == proto.StateError) && info.Error != ""
+		if running || ended {
 			h.sandboxEvent(info)
 		}
 	}

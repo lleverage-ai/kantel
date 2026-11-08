@@ -401,3 +401,42 @@ func TestARestartsEndedSandboxIsStamped(t *testing.T) {
 		t.Fatalf("info %+v, want stopped with the restart's error, stamped from %d on", info, before)
 	}
 }
+
+// An exit's stamp is written with the sandbox, so it outlasts restarts of the host: a sandbox adopted already stopped
+// keeps the stamp its exit had, and the next machine's stamps start above it.
+func TestAnExitsStampOutlastsARestart(t *testing.T) {
+	fastHealth(t)
+	ev := &events{}
+	m, s, _, machine := runningSandbox(t, ev)
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	m.watch(s, machine)
+	s.mu.Unlock()
+	machine.Kill()
+	waitFor(t, "the exit's event", func() bool { return len(ev.all()) == 1 })
+	stamp := ev.all()[0].HealthAt
+	if stamp <= 0 {
+		t.Fatalf("the exit's HealthAt is %d", stamp)
+	}
+
+	for range 2 {
+		again := &Manager{cfg: Config{Root: m.cfg.Root}, log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{}}
+		if err := again.adopt(); err != nil {
+			t.Fatal(err)
+		}
+		adopted := again.sandboxes[s.meta.ID]
+		if adopted == nil {
+			t.Fatal("not loaded")
+		}
+		info := again.info(adopted)
+		if info.State != proto.StateStopped || info.Error != "the VM exited" || info.HealthAt != stamp {
+			t.Fatalf("after a restart %+v, want the exit as it was, stamped %d", info, stamp)
+		}
+		adopted.setUnresponsive("")
+		if adopted.healthAt <= stamp {
+			t.Fatalf("a later machine's stamp %d isn't above the exit's %d", adopted.healthAt, stamp)
+		}
+	}
+}

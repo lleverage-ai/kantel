@@ -24,7 +24,7 @@ const KERNEL_KILL = "the host ran out of memory, and the kernel stopped this san
 const PLAIN_EXIT = "the VM exited";
 const HOST_RESTART = "the host restarted while it ran";
 
-async function setup() {
+async function setup(features: readonly string[] = [HOST_FEATURES.guestHealth, HOST_FEATURES.exitStamps]) {
 	const service = createHostsService({
 		store: createMemoryHostStore(),
 		publicUrl: "https://kantel.test",
@@ -44,7 +44,7 @@ async function setup() {
 	service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: async () => undefined,
-		reportExit: (hostId, sandboxId, error, healthAt) => api.service.reportExit(hostId, sandboxId, error, healthAt),
+		reportExit: (...report) => api.service.reportExit(...report),
 	});
 	closers.push(
 		() => service.close(),
@@ -58,7 +58,7 @@ async function setup() {
 	});
 	const token = await root.createHostJoinToken({ name: "box" });
 	const { hostId } = await service.register({ token: token.token });
-	const host = new FakeHost(service, hostId, [HOST_FEATURES.egressPolicy, HOST_FEATURES.guestHealth]);
+	const host = new FakeHost(service, hostId, [HOST_FEATURES.egressPolicy, ...features]);
 	host.connect();
 	await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 	return { api, root, host, service, hostId };
@@ -157,6 +157,19 @@ describe("a microVM its host ended", () => {
 		host.connect([{ ...restarted, healthAt: 3_000 }]);
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("error"));
 		expect((await root.getSandbox(sandbox.id)).reason).toBe(hostExitReason(HOST_RESTART));
+	});
+
+	it("takes an unstamped exit for a run booted by a host that doesn't stamp its exits", async () => {
+		// It stamps its health while running, but not its exits: its boots name no machine.
+		const { root, host } = await setup([HOST_FEATURES.guestHealth]);
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const held = host.sandboxes.get(sandbox.id);
+		if (held === undefined) throw new Error("not held");
+		await root.stopSandbox(sandbox.id, { wait: true });
+		host.sandboxes.set(sandbox.id, { ...held, healthAt: 2_000 });
+		expect(await root.startSandbox(sandbox.id, { wait: true })).toMatchObject({ state: "running" });
+		report(host, { ...held, state: "stopped", memory: false, error: PLAIN_EXIT });
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("error"));
 	});
 
 	it("leaves a running sandbox as it is for a report with no error, which only a stop Kantel asked for has", async () => {

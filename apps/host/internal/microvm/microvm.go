@@ -260,6 +260,10 @@ type meta struct {
 	SSHKeys   []string          `json:"sshKeys,omitempty"`
 	Owner     string            `json:"owner,omitempty"`
 	Error     string            `json:"error,omitempty"`
+	// HealthAt is the sandbox's healthAt as last written (FeatureExitStamps): its last machine's last health stamp, so a
+	// stopped sandbox's exit keeps naming the machine that ended across restarts of the host, and the next machine's
+	// stamps start above it.
+	HealthAt int64 `json:"healthAt,omitempty"`
 	// GrowDisk: the disk (its file, or the guest's file system) may still be smaller than the size's, as a sandbox
 	// restored from a shared template's or a snapshot's disk starts. Set until growDisk has made it the size's, so a
 	// stop, a host restart or a snapshot before then doesn't leave it smaller for good.
@@ -710,6 +714,7 @@ func conflict(format string, args ...any) error {
 }
 
 func (m *Manager) writeMeta(s *sandbox) error {
+	s.meta.HealthAt = s.healthAt
 	raw, err := json.MarshalIndent(s.meta, "", "  ")
 	if err != nil {
 		return err
@@ -957,6 +962,8 @@ func (m *Manager) adopt() error {
 		if err := json.Unmarshal(raw, &s.meta); err != nil || s.meta.State == proto.StateStarting {
 			continue
 		}
+		// Its last machine's stamp: a stopped sandbox's exit keeps it, and a later machine's stamps start above it.
+		s.healthAt = s.meta.HealthAt
 		if s.meta.State == proto.StateRunning && s.meta.Pid > 0 && processAlive(s.meta.Pid) {
 			machine, err := fc.Attach(s.vmDir(), s.meta.Pid)
 			if err == nil {
@@ -993,8 +1000,8 @@ func (m *Manager) adopt() error {
 			s.meta.State = proto.StateStopped
 			s.meta.Error = "the host restarted while it ran"
 			// Stamped now: after its machine's start, before any later machine's, so Kantel takes the report of this exit
-			// (the hello's) only for the run that machine was.
-			s.healthAt = time.Now().UnixMilli()
+			// (the hello's) only for the run that machine was. One already stopped keeps the stamp its exit had.
+			s.healthAt = max(time.Now().UnixMilli(), s.healthAt+1)
 			_ = m.writeMeta(s)
 		}
 		m.sandboxes[s.meta.ID] = s
