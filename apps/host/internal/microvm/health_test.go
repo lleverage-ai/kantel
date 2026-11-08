@@ -440,3 +440,43 @@ func TestAnExitsStampOutlastsARestart(t *testing.T) {
 		}
 	}
 }
+
+// A machine's first stamp is written as it starts, before its boot answers with it, so a restart of the host while it
+// runs never stamps its exit before it.
+func TestAMachinesStampIsWrittenAsItStarts(t *testing.T) {
+	fastHealth(t)
+	ev := &events{}
+	m, s, _, machine := runningSandbox(t, ev)
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s.healthAt = time.Now().UnixMilli() + 60_000 // a stamp ahead of the clock, as after the clock went back
+	s.mu.Lock()
+	m.watch(s, machine)
+	started := m.info(s).HealthAt
+	s.mu.Unlock()
+	raw, err := os.ReadFile(filepath.Join(s.dir, "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var written meta
+	if err := json.Unmarshal(raw, &written); err != nil {
+		t.Fatal(err)
+	}
+	if written.HealthAt != started {
+		t.Fatalf("meta.json has HealthAt %d, want the machine's first stamp %d", written.HealthAt, started)
+	}
+	// The host restarts while it runs, and finds its VM gone: the exit is stamped after the machine's start.
+	written.Pid = 0
+	raw, _ = json.Marshal(written)
+	if err := os.WriteFile(filepath.Join(s.dir, "meta.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again := &Manager{cfg: Config{Root: m.cfg.Root}, log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{}}
+	if err := again.adopt(); err != nil {
+		t.Fatal(err)
+	}
+	if info := again.info(again.sandboxes[s.meta.ID]); info.Error != "the host restarted while it ran" || info.HealthAt <= started {
+		t.Fatalf("after a restart %+v, want the restart's exit stamped after %d", info, started)
+	}
+}

@@ -1026,6 +1026,9 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 	// Healthy, as of now: a machine's first health has a time too, so Kantel orders it against what it took of the
 	// machine before (an unresponsive report from before a restart of the host, say).
 	s.setUnresponsive("")
+	// Written before the boot answers with it (FeatureExitStamps): Kantel fences this machine's exit by it, so a restart
+	// of the host must never leave the stamp behind it, even if the host's clock has gone back.
+	_ = m.writeMeta(s)
 	m.watchHealth(s, machine)
 	go func() {
 		<-machine.Done()
