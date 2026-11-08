@@ -161,9 +161,31 @@ type stopTier struct {
 
 func (f *stopTier) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotInfo, error) {
 	f.stopping <- struct{}{}
-	<-f.finish
+	select {
+	case <-f.finish:
+	case <-ctx.Done():
+	}
 	f.ended <- ctx.Err()
 	return proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: p.SandboxID}, nil
+}
+
+// A stop's context outlives its session by stopGrace, then ends: one stuck on a Firecracker that never answers doesn't
+// hold its sandbox for good.
+func TestOutlivingEndsItsGraceAfterItsParent(t *testing.T) {
+	parent, end := context.WithCancel(context.Background())
+	ctx, cancel := outliving(parent, 50*time.Millisecond)
+	defer cancel()
+	end()
+	select {
+	case <-ctx.Done():
+		t.Fatal("ended with its parent")
+	case <-time.After(20 * time.Millisecond):
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("still running after its grace")
+	}
 }
 
 // A stop is under way when the host's connection goes (#737): it isn't cut off half-way, which could leave its VM

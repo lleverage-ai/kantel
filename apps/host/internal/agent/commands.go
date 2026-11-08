@@ -371,11 +371,30 @@ func keptExec(method string, params json.RawMessage) bool {
 	return json.Unmarshal(params, &p) == nil && p.CommandID != ""
 }
 
-// pastSession is whether a call runs on to its end when the session it came on goes: a kept command (keptExec), or a
-// stop. A stop cut off half-way leaves its VM paused, with no resume, or stopped cold for a pause the cancel refused;
-// carried on, it is stopped as asked, and the stop Kantel sends again once the host is back answers that.
-func pastSession(method string, params json.RawMessage) bool {
-	return method == proto.MethodStop || keptExec(method, params)
+// stopGrace is how long a stop runs on after the session it came on has gone (outliving): long enough for a pause and
+// a snapshot to finish, as asked, rather than be cut off half-way; short enough that one stuck on a Firecracker that
+// never answers ends (it holds the sandbox, which the next session's hello lists) before Kantel stops waiting for the
+// host to come back and send the stop again (STOP_RECONNECT_WAIT_MS, 2 minutes).
+var stopGrace = 60 * time.Second
+
+// outliving is a context for a call that runs on for grace once parent has ended, then ends too.
+func outliving(parent context.Context, grace time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-parent.Done():
+		}
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+			cancel()
+		}
+	}()
+	return ctx, cancel
 }
 
 // commandStatus is sandbox.exec.get.

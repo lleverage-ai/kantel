@@ -600,11 +600,23 @@ export function unanswered(error: unknown): boolean {
 	return typeof error === "object" && error !== null && unansweredErrors.has(error);
 }
 
+/** Kantel's errors for host calls whose host wasn't there to answer (`HostCallError.disconnected`). */
+const awayErrors = new WeakSet<object>();
+
+/**
+ * Whether `error` is a host call whose host wasn't there, as this replica saw it: not connected, or gone while the call
+ * waited. A peer replica's relay of the call doesn't carry it.
+ */
+export function hostWasAway(error: unknown): boolean {
+	return typeof error === "object" && error !== null && awayErrors.has(error);
+}
+
 /** A host's error as Kantel's: the codes line up where they can. */
 export function kantelErrorFromHost(error: unknown): unknown {
 	if (!(error instanceof HostCallError)) return error;
 	const mapped = kantelCodeError(error);
 	if (error.unanswered) unansweredErrors.add(mapped);
+	if (error.disconnected) awayErrors.add(mapped);
 	return mapped;
 }
 

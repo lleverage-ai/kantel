@@ -68,6 +68,7 @@ import {
 	type CreateSandboxInput,
 	DISK_COPY_TIMEOUT_MS,
 	type HostsService,
+	hostWasAway,
 	kantelErrorFromHost,
 	mountHandoff,
 	type SandboxPlacement,
@@ -100,6 +101,11 @@ export const EXEC_WAIT_MS = 30_000;
 export const STOP_RECONNECT_WAIT_MS = 120_000;
 /** How many times a stop is sent while its host comes and goes. */
 const STOP_ATTEMPTS = 3;
+/**
+ * How long a stop that failed `unavailable`, with nothing saying its host was away, waits before asking whether the host
+ * is connected: past a gateway cluster's heartbeat, so a replica's view of a host another one held is current.
+ */
+const HOST_SETTLE_MS = 3_000;
 /** How often a stop waiting for its host looks for it. */
 const HOST_RECONNECT_POLL_MS = 250;
 /** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
@@ -435,21 +441,20 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	 * its connection gone while the call waited (a reconnect, a restart for an update). It waits up to
 	 * `STOP_RECONNECT_WAIT_MS` for the host to connect, up to `STOP_ATTEMPTS` sends in all; a host that isn't back by then
 	 * fails it as before. Only while the host is away: its own refusal or failure, or a timeout with it still connected,
-	 * is final. A host that carried out the stop it never answered (kantel-host runs a stop on past its connection) has
-	 * the sandbox stopped, and answers the next with a snapshot of its disk (`HOST_FEATURES.guestHealth`).
+	 * is final. Away is what this replica's hub said (`hostWasAway`), or, for a call a peer replica relayed, which doesn't
+	 * say, the host not connected once `HOST_SETTLE_MS` has passed. A host that carried out the stop it never answered
+	 * (kantel-host runs a stop on past its connection) has the sandbox stopped, and answers the next with a snapshot of
+	 * its disk (`HOST_FEATURES.guestHealth`).
 	 */
 	async function whileHostAway<T>(hostId: string, attempt: () => Promise<T>): Promise<T> {
 		for (let sent = 1; ; sent++) {
 			try {
 				return await attempt();
 			} catch (error) {
-				if (
-					sent >= STOP_ATTEMPTS ||
-					!isKantelError(error) ||
-					error.code !== "unavailable" ||
-					hosts.hub.connected(hostId)
-				) {
-					throw error;
+				if (sent >= STOP_ATTEMPTS || !isKantelError(error) || error.code !== "unavailable") throw error;
+				if (!hostWasAway(error)) {
+					await pause(HOST_SETTLE_MS, undefined);
+					if (hosts.hub.connected(hostId)) throw error;
 				}
 				const until = now() + STOP_RECONNECT_WAIT_MS;
 				while (!hosts.hub.connected(hostId)) {
