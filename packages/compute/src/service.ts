@@ -5133,9 +5133,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const index = latest.samples.findIndex((each) => each.at >= rollup.at);
 			if (index === -1) return { ...latest, peak, samples: keptSamples([...latest.samples, sample]) };
 			const there = latest.samples[index];
-			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return peaked;
-			return { ...latest, peak, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
+			if (there?.at !== rollup.at) return peaked;
+			// The fuller mean is kept, but the highest readings of both: the other may have seen a peak this one didn't.
+			const fuller = (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings ? there : sample;
+			const merged = withHighest(fuller, there, sample);
+			if (merged === there) return peaked;
+			return { ...latest, peak, samples: latest.samples.map((each, at) => (at === index ? merged : each)) };
 		});
+	}
+
+	/** `mean` with the higher of `a`'s and `b`'s highest CPU and memory (a mean stands for its own where it has none). */
+	function withHighest(mean: StoredSample, a: StoredSample, b: StoredSample): StoredSample {
+		const cpuMax = Math.max(a.cpuMax ?? a.cpu, b.cpuMax ?? b.cpu);
+		const memoryMbMax = Math.max(a.memoryMbMax ?? a.memoryMb, b.memoryMbMax ?? b.memoryMb);
+		if (mean.cpuMax === cpuMax && mean.memoryMbMax === memoryMbMax) return mean;
+		return { ...mean, cpuMax, memoryMbMax };
 	}
 
 	/**

@@ -683,6 +683,42 @@ describe("usage ticks across gateway replicas over one store", () => {
 		expect(samples[0]?.readings).toBe(ticks);
 		expect(samples[0]?.cpu).toBeCloseTo(0.4, 10);
 	});
+
+	for (const order of ["fuller first", "shorter first"] as const) {
+		it(`keep the highest readings of both replicas' means of the same 5 minutes, ${order}`, async () => {
+			let clock = T0;
+			const { a, b, store, id } = await replicas(() => clock);
+			const ticks = ROLLUP_MS / USAGE_INTERVAL_MS;
+			const spike = (index: number) => index === ticks - 2;
+			// A holds the host for two thirds of the 5 minutes, B for the rest, which has the spike; neither passes on.
+			for (let index = 0; index < ticks; index += 1) {
+				clock = T0 + index * USAGE_INTERVAL_MS;
+				const sent = tick(clock, [
+					{ ...reading(id, spike(index) ? 0.9 : 0.1), memUsedBytes: (spike(index) ? 900 : 100) * MIB },
+				]);
+				await (index < (ticks * 2) / 3 ? a : b).service.recordUsage(STUB_HOST_ID, sent);
+			}
+			clock = T0 + ROLLUP_MS;
+			const next = tick(clock, [reading(id, 0.1)]);
+			const [first, second] = order === "fuller first" ? [a, b] : [b, a];
+			await first.service.recordUsage(STUB_HOST_ID, next);
+			await second.service.recordUsage(STUB_HOST_ID, next);
+			const samples = (await store.sandboxes.get(id))?.samples ?? [];
+			expect(samples).toHaveLength(1);
+			// The fuller mean, A's, with B's peak.
+			expect(samples[0]).toMatchObject({ readings: (ticks * 2) / 3, cpuMax: 0.9, memoryMbMax: 900 });
+			expect(samples[0]?.cpu).toBeCloseTo(0.1, 10);
+			// And kept when it is folded into its hour.
+			const later = Array.from({ length: MAX_SAMPLES }, (_, i) => ({
+				at: T0 + (i + 12) * ROLLUP_MS,
+				cpu: 0.1,
+				memoryMb: 1,
+				readings: 60,
+			}));
+			const [hour] = keptSamples([...samples, ...later]);
+			expect(hour).toMatchObject({ cpuMax: 0.9, memoryMbMax: 900 });
+		});
+	}
 });
 
 // A host with `usage-acks` numbers its ticks (`run`, `seq`) and, after a reconnect, sends again every tick no
