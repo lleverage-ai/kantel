@@ -216,6 +216,72 @@ describe("a host's usage ticks", () => {
 		expect(stored?.samples[0]).toMatchObject({ readings: 60, diskReadings: 55, ioReadings: 55 });
 	});
 
+	it("carry a microVM's OOM kills and memory pressure to its series and its latest, with an event when kills rise", async () => {
+		let clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const reading = {
+			id: box.id,
+			kind: "microvm" as const,
+			cpu: 1,
+			memUsedBytes: 7406 * MIB,
+			memLimitBytes: 8192 * MIB,
+		};
+		const start = clock;
+		const send = async (figures: Partial<ReportedUsage["sandboxes"][number]>, shared = false) => {
+			clock += USAGE_INTERVAL_MS;
+			await api.service.recordUsage(STUB_HOST_ID, tick(clock, [{ ...reading, ...figures }]), { shared });
+		};
+		const ooms = async () =>
+			(await tom.listEvents({ sandboxId: box.id })).items.filter((event) => event.type === "sandbox.oom_kill");
+
+		// Its first count is a baseline, whatever it is: kills before this process heard of it aren't new.
+		await send({ oomKills: 3, memPressureSome: 0.1, memPressureFull: 0 });
+		expect(await ooms()).toEqual([]);
+		// The same count: nothing. Then two more: one event, saying so.
+		await send({ oomKills: 3, memPressureSome: 0.4, memPressureFull: 0.05 });
+		await send({ oomKills: 5, memPressureSome: 0.85, memPressureFull: 0.41 });
+		let events = await ooms();
+		expect(events).toHaveLength(1);
+		expect(events[0]?.data).toMatchObject({ oomKills: 2, state: "running" });
+		expect(events[0]?.data.reason).toContain("killed 2 processes");
+		expect(events[0]?.data.reason).toContain("8 GB");
+		// A tick its agent missed has none, and the next answer is still measured from the last count.
+		await send({});
+		await send({ oomKills: 6, memPressureSome: 0.9 });
+		events = await ooms();
+		expect(events).toHaveLength(2);
+		expect(events[0]?.data.oomKills).toBe(1);
+		// Booted again (a recovery): its count starts again, and every kill it has counted since is new.
+		await send({ oomKills: 1 });
+		expect((await ooms()).map((event) => event.data.oomKills)).toEqual([1, 1, 2]);
+		// A tick another replica passed on is that replica's to report.
+		await send({ oomKills: 4 }, true);
+		expect(await ooms()).toHaveLength(3);
+
+		const usage = await tom.getSandboxUsage(box.id, { since: start });
+		expect(usage.series.points[2]).toMatchObject({ oomKills: 5, memPressureSome: 0.85, memPressureFull: 0.41 });
+		expect(usage.series.points[3]).not.toHaveProperty("oomKills");
+		// The newest figures it has, for info and usage.
+		expect(usage.memory).toEqual({ at: clock, oomKills: 4 });
+		expect((await tom.getSandbox(box.id)).usage.memory).toEqual({ at: clock, oomKills: 4 });
+		// Not in the 5-minute means.
+		expect(usage.points.some((each) => "oomKills" in each)).toBe(false);
+	});
+
+	it("leave a sandbox without guest memory figures without them", async () => {
+		const clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const reading = { id: box.id, kind: "microvm" as const, cpu: 0.2, memUsedBytes: MIB, memLimitBytes: 0 };
+		await api.service.recordUsage(STUB_HOST_ID, tick(clock, [reading]));
+		const usage = await tom.getSandboxUsage(box.id);
+		expect(usage.memory).toBeUndefined();
+		expect((await tom.getSandbox(box.id)).usage.memory).toBeUndefined();
+	});
+
 	it("count CPU seconds by the time each kept mean covers, and only within the span asked for", async () => {
 		const HOUR = 3_600_000;
 		const DAY = 24 * HOUR;

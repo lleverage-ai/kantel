@@ -693,6 +693,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `reason` | string | no |  |
 | `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
+| `oomKills` | integer | no | `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading. (minimum 1) |
 
 ### EventPage
 
@@ -703,9 +704,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
-One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.oom_kill"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
 ### ExposedPort
 
@@ -852,6 +853,17 @@ One thing a microVM's image has or lacks.
 | `available` | boolean | yes |  |
 | `detail` | string | no | What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. |
 | `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
+
+### GuestMemory
+
+A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't send it (an image from before them) or its kernel has none.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `oomKills` | integer | no | How many processes its kernel has killed for memory since it booted (its `oom_kill`). It grows until the VM boots again: a stop and start, or a recovery. (minimum 0) |
+| `pressureSome` | number | no | The share of the last 10 seconds in which at least one of its tasks was stalled waiting for memory (its kernel's memory pressure, `some` avg10). (minimum 0, maximum 1) |
+| `pressureFull` | number | no | The share of the last 10 seconds in which every task that wanted to run was stalled waiting for memory (`full` avg10). Near 1, the machine does little but reclaim memory and stops answering. (minimum 0, maximum 1) |
 
 ### GuestOs
 
@@ -1443,6 +1455,9 @@ A protected variable as one sandbox has it: never its value.
 | `memUsedBytes` | integer | yes | Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. (minimum 0) |
 | `diskUsedBytes` | integer | no | A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it. (minimum 0) |
 | `ioPressure` | number | no | The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. (minimum 0, maximum 1) |
+| `oomKills` | integer | no | How many processes a microVM's kernel had killed for memory since it booted, at `at`. Absent where its guest's agent doesn't send it or didn't answer in time. (minimum 0) |
+| `memPressureSome` | number | no | A microVM's memory pressure at `at`: the share of the 10 seconds before it in which at least one of its tasks was stalled waiting for memory (`some` avg10). Absent where the guest has no pressure figures. (minimum 0, maximum 1) |
+| `memPressureFull` | number | no | As `memPressureSome`, for the share in which every task that wanted to run was stalled (`full` avg10). (minimum 0, maximum 1) |
 
 ### SandboxShape
 
@@ -1523,6 +1538,7 @@ One of: `"isolate"` or `"microvm"`.
 | `memLimitBytes` | integer | no | The memory it may use, when its host reports it or its size sets it. (minimum 0) |
 | `diskTotalBytes` | integer | no | Its own disk's size, as its guest counts it, when its host sends disk figures. (minimum 0) |
 | `series` | [SandboxUsageSeries](/api/reference/types/#sandboxusageseries) | yes |  |
+| `memory` | [GuestMemory](/api/reference/types/#guestmemory) | no |  |
 
 ### SandboxUsagePoint
 
@@ -2057,6 +2073,7 @@ A host's recent CPU and memory, for sparklines.
 | `cpuSeconds` | number | yes |  |
 | `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way. |
 | `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
+| `memory` | [GuestMemory](/api/reference/types/#guestmemory) | no |  |
 
 ### ViewAccessBody
 

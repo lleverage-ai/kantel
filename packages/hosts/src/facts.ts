@@ -324,19 +324,25 @@ function sandboxUsage(value: unknown, at: number): HostSandboxUsage | undefined 
 const figure = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 /**
- * A microVM's disk and IO pressure, which a host sends from its guest's agent when it has them. Optional, and left out
+ * A microVM's disk, IO and memory pressure and OOM kills, which a host sends from its guest's agent when it has them. Optional, and left out
  * rather than refused when they make no sense (a used beyond its size, a share outside 0 to 1): the tick's CPU and
  * memory still stand.
  */
 function guestFigures(
 	value: Record<string, unknown>,
-): Pick<HostSandboxUsage, "diskUsedBytes" | "diskTotalBytes" | "ioPressure"> {
-	const { diskUsedBytes: used, diskTotalBytes: total, ioPressure } = value;
+): Pick<
+	HostSandboxUsage,
+	"diskUsedBytes" | "diskTotalBytes" | "ioPressure" | "oomKills" | "memPressureSome" | "memPressureFull"
+> {
+	const { diskUsedBytes: used, diskTotalBytes: total, ioPressure, oomKills, memPressureSome, memPressureFull } = value;
 	return {
 		...(figure(used) && figure(total) && total > 0 && used <= total
 			? { diskUsedBytes: used, diskTotalBytes: total }
 			: {}),
 		...(figure(ioPressure) && ioPressure <= 1 ? { ioPressure } : {}),
+		...(figure(oomKills) && Number.isSafeInteger(oomKills) ? { oomKills } : {}),
+		...(figure(memPressureSome) && memPressureSome <= 1 ? { memPressureSome } : {}),
+		...(figure(memPressureFull) && memPressureFull <= 1 ? { memPressureFull } : {}),
 	};
 }
 

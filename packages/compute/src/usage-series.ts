@@ -51,6 +51,11 @@ export interface ReportedUsage {
 		readonly diskTotalBytes?: number;
 		/** A microVM's guest's IO pressure over the interval, 0 to 1, when its kernel has the figures. */
 		readonly ioPressure?: number;
+		/** A microVM's guest kernel's OOM kills since it booted, when its agent says. */
+		readonly oomKills?: number;
+		/** A microVM's guest memory pressure, its kernel's ten-second averages (`some`, `full`), 0 to 1. */
+		readonly memPressureSome?: number;
+		readonly memPressureFull?: number;
 	}[];
 }
 
@@ -70,6 +75,13 @@ export interface UsagePoint {
 	readonly noDisk?: boolean;
 	/** A sandbox's IO pressure over the interval, 0 to 1; absent where its guest has none. */
 	readonly ioPressure?: number;
+	/**
+	 * A sandbox's guest kernel's OOM kills since it booted, and its memory pressure (ten-second averages, 0 to 1), as
+	 * read at `at`; absent where its guest has none. Not in the 5-minute means.
+	 */
+	readonly oomKills?: number;
+	readonly memPressureSome?: number;
+	readonly memPressureFull?: number;
 	/** Passed on by the gateway replica holding the host, which exports it; not taken here. */
 	readonly shared?: boolean;
 }
@@ -207,6 +219,15 @@ export function createUsageSeries(): UsageSeries {
 				...(point.ioPressure === undefined || !Number.isFinite(point.ioPressure)
 					? {}
 					: { ioPressure: clamp01(point.ioPressure) }),
+				...(point.oomKills === undefined || !Number.isSafeInteger(point.oomKills) || point.oomKills < 0
+					? {}
+					: { oomKills: point.oomKills }),
+				...(point.memPressureSome === undefined || !Number.isFinite(point.memPressureSome)
+					? {}
+					: { memPressureSome: clamp01(point.memPressureSome) }),
+				...(point.memPressureFull === undefined || !Number.isFinite(point.memPressureFull)
+					? {}
+					: { memPressureFull: clamp01(point.memPressureFull) }),
 				...(point.shared === true ? { shared: true } : {}),
 			};
 			track.meta = meta;

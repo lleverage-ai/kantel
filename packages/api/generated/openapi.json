@@ -8136,7 +8136,7 @@
 						"name": "type",
 						"in": "query",
 						"required": false,
-						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
+						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 						"schema": {
 							"$ref": "#/components/schemas/EventType"
 						}
@@ -13238,6 +13238,11 @@
 					},
 					"actor": {
 						"$ref": "#/components/schemas/CreatedBy"
+					},
+					"oomKills": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "`sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading."
 					}
 				},
 				"title": "EventData"
@@ -13291,6 +13296,10 @@
 					},
 					{
 						"type": "string",
+						"const": "sandbox.oom_kill"
+					},
+					{
+						"type": "string",
 						"const": "sandbox.deleted"
 					},
 					{
@@ -13303,7 +13312,7 @@
 					}
 				],
 				"title": "EventType",
-				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
+				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
 			},
 			"ExposedPort": {
 				"type": "object",
@@ -13701,6 +13710,35 @@
 				},
 				"title": "GuestFeature",
 				"description": "One thing a microVM's image has or lacks."
+			},
+			"GuestMemory": {
+				"type": "object",
+				"required": ["at"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"oomKills": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many processes its kernel has killed for memory since it booted (its `oom_kill`). It grows until the VM boots again: a stop and start, or a recovery."
+					},
+					"pressureSome": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the last 10 seconds in which at least one of its tasks was stalled waiting for memory (its kernel's memory pressure, `some` avg10)."
+					},
+					"pressureFull": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the last 10 seconds in which every task that wanted to run was stalled waiting for memory (`full` avg10). Near 1, the machine does little but reclaim memory and stops answering."
+					}
+				},
+				"title": "GuestMemory",
+				"description": "A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't send it (an image from before them) or its kernel has none."
 			},
 			"GuestOs": {
 				"type": "object",
@@ -15530,6 +15568,23 @@
 						"minimum": 0,
 						"maximum": 1,
 						"description": "The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures."
+					},
+					"oomKills": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many processes a microVM's kernel had killed for memory since it booted, at `at`. Absent where its guest's agent doesn't send it or didn't answer in time."
+					},
+					"memPressureSome": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "A microVM's memory pressure at `at`: the share of the 10 seconds before it in which at least one of its tasks was stalled waiting for memory (`some` avg10). Absent where the guest has no pressure figures."
+					},
+					"memPressureFull": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "As `memPressureSome`, for the share in which every task that wanted to run was stalled (`full` avg10)."
 					}
 				},
 				"title": "SandboxSeriesPoint"
@@ -15755,6 +15810,9 @@
 					},
 					"series": {
 						"$ref": "#/components/schemas/SandboxUsageSeries"
+					},
+					"memory": {
+						"$ref": "#/components/schemas/GuestMemory"
 					}
 				},
 				"title": "SandboxUsage"
@@ -17209,6 +17267,9 @@
 							"minimum": 0
 						},
 						"description": "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first."
+					},
+					"memory": {
+						"$ref": "#/components/schemas/GuestMemory"
 					}
 				},
 				"title": "UsageSummary"

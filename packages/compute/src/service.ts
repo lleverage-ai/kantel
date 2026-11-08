@@ -1761,6 +1761,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const exportedUntil = new Map<string, number>();
 	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
 	const tickArrivedAt = new Map<string, number>();
+	/** Each sandbox's guest's newest count of OOM kills since boot, from its readings: for `sandbox.oom_kill`. */
+	const oomKillsSeen = new Map<string, number>();
 	/**
 	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in each of its
 	 * sampler's recent runs (`MAX_RUNS_KEPT`, newest last): one sent again after a reconnect, at or before it, is
@@ -2278,6 +2280,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
 				...sparklines(sandbox),
+				...(sandbox.state === "running" ? guestMemoryView(sandbox.id) : {}),
 			},
 			...host,
 			base: baseView(sandbox.base),
@@ -5140,6 +5143,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		hostSeries.settle(asOf);
 		for (const { key, rollup } of sandboxSeries.settle(asOf)) await keepRollup(key, rollup).catch(() => undefined);
 		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
+		const followed = new Set(sandboxSeries.keys());
+		for (const id of oomKillsSeen.keys()) if (!followed.has(id)) oomKillsSeen.delete(id);
 		// A host's backlog is minutes long: an hour without a tick, none of what it would send again is still to come.
 		for (const hostId of takenSeq.keys()) if (!tickArrivedAt.has(hostId)) takenSeq.delete(hostId);
 		for (const hostId of heldUsage.keys()) if (!tickArrivedAt.has(hostId)) heldUsage.delete(hostId);
@@ -5188,6 +5193,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 		if (report.sandboxes.length > 0) {
 			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
+			const oomKilled: { readonly id: string; readonly killed: number; readonly limit: number }[] = [];
 			for (const reading of report.sandboxes) {
 				if (!held.has(reading.id)) continue;
 				// The last disk size a reading had: one without (a guest that didn't answer in time) keeps it.
@@ -5202,6 +5208,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							? { diskUsedBytes: 0, noDisk: true }
 							: { diskUsedBytes: reading.diskUsedBytes }),
 						...(reading.ioPressure === undefined ? {} : { ioPressure: reading.ioPressure }),
+						...guestMemoryOf(reading),
 						...(shared ? { shared: true } : {}),
 					},
 					{
@@ -5211,12 +5218,79 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				);
 				if (rollup !== undefined) closed.push({ id: reading.id, rollup });
+				const killed = newOOMKills(reading.id, reading.oomKills);
+				if (killed > 0 && !shared) oomKilled.push({ id: reading.id, killed, limit: reading.memLimitBytes });
 			}
 			for (const { id, rollup } of closed) await keepRollup(id, rollup).catch(() => undefined);
+			for (const each of oomKilled) await emitOOMKill(each.id, each.killed, each.limit).catch(() => undefined);
 		}
 		// The tick is in: settling that fails is tried again with the next.
 		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage().catch(() => undefined);
 	}
+
+	/**
+	 * How many processes a sandbox's guest kernel has killed for memory since its last reading that said, from its count
+	 * since boot (`oomKills`): 0 for its first such reading here (whatever it counted before this process heard of it is
+	 * not new), and the whole count when it went down (the VM booted again since, so every kill counted is since).
+	 */
+	function newOOMKills(sandboxId: string, kills: number | undefined): number {
+		if (kills === undefined) return 0;
+		const before = oomKillsSeen.get(sandboxId);
+		oomKillsSeen.set(sandboxId, kills);
+		if (before === undefined) return 0;
+		return kills < before ? kills : kills - before;
+	}
+
+	/** `sandbox.oom_kill`: its guest's kernel killed `killed` processes for memory since its last reading. */
+	async function emitOOMKill(sandboxId: string, killed: number, memLimitBytes: number): Promise<void> {
+		const sandbox = await store.sandboxes.get(sandboxId);
+		if (sandbox === undefined || sandbox.state === "deleted" || sandbox.state === "deleting") return;
+		const memory = memLimitBytes > 0 ? ` (${Math.round((memLimitBytes / 1024 ** 3) * 10) / 10} GB)` : "";
+		const processes = killed === 1 ? "a process" : `${killed} processes`;
+		await emit("sandbox.oom_kill", sandbox.accountId, {
+			sandbox,
+			data: {
+				oomKills: killed,
+				reason: `It ran out of memory${memory}, and its kernel killed ${processes}. Give it more memory, or run less at once.`,
+			},
+		});
+	}
+
+	/**
+	 * A sandbox's guest's newest memory figures (`GuestMemory`): from the newest point of its series that has any, so a
+	 * tick its agent missed doesn't hide them. None without one.
+	 */
+	function guestMemoryView(sandboxId: string): { memory?: computeSchema.GuestMemory } {
+		// Most often the newest point has them: no copy of the series for each sandbox a list shows.
+		const newest = sandboxSeries.latest(sandboxId);
+		if (newest === undefined) return {};
+		const { points } =
+			newest.oomKills === undefined && newest.memPressureSome === undefined
+				? sandboxSeries.read(sandboxId)
+				: { points: [newest] };
+		for (let index = points.length - 1; index >= 0; index -= 1) {
+			const point = points[index];
+			if (point === undefined) continue;
+			const { oomKills, memPressureSome, memPressureFull } = point;
+			if (oomKills === undefined && memPressureSome === undefined && memPressureFull === undefined) continue;
+			return {
+				memory: {
+					at: point.at,
+					...(oomKills === undefined ? {} : { oomKills }),
+					...(memPressureSome === undefined ? {} : { pressureSome: memPressureSome }),
+					...(memPressureFull === undefined ? {} : { pressureFull: memPressureFull }),
+				},
+			};
+		}
+		return {};
+	}
+
+	/** A reading's guest memory figures, those it has, for its series. */
+	const guestMemoryOf = (reading: ReportedUsage["sandboxes"][number]) => ({
+		...(reading.oomKills === undefined ? {} : { oomKills: reading.oomKills }),
+		...(reading.memPressureSome === undefined ? {} : { memPressureSome: reading.memPressureSome }),
+		...(reading.memPressureFull === undefined ? {} : { memPressureFull: reading.memPressureFull }),
+	});
 
 	/** Each host's tick being taken, so the next waits for it (`recordUsage`). */
 	const ingesting = new Map<string, Promise<void>>();
@@ -6963,8 +7037,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						memUsedBytes: point.memUsedBytes,
 						...(point.noDisk === true ? {} : { diskUsedBytes: point.diskUsedBytes }),
 						...(point.ioPressure === undefined ? {} : { ioPressure: point.ioPressure }),
+						...(point.oomKills === undefined ? {} : { oomKills: point.oomKills }),
+						...(point.memPressureSome === undefined ? {} : { memPressureSome: point.memPressureSome }),
+						...(point.memPressureFull === undefined ? {} : { memPressureFull: point.memPressureFull }),
 					})),
 				},
+				...guestMemoryView(current.id),
 			};
 		},
 
