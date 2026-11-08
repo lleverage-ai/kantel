@@ -13238,6 +13238,9 @@
 					},
 					"actor": {
 						"$ref": "#/components/schemas/CreatedBy"
+					},
+					"startup": {
+						"$ref": "#/components/schemas/SandboxStartup"
 					}
 				},
 				"title": "EventData"
@@ -15126,6 +15129,9 @@
 					},
 					"base": {
 						"$ref": "#/components/schemas/SandboxBase"
+					},
+					"startup": {
+						"$ref": "#/components/schemas/SandboxStartup"
 					}
 				},
 				"title": "Sandbox"
@@ -15623,6 +15629,59 @@
 				},
 				"title": "SandboxSource",
 				"description": "What it was made from."
+			},
+			"SandboxStartup": {
+				"type": "object",
+				"required": ["diskMs", "bootMs", "agentMs", "hostMs", "totalMs"],
+				"properties": {
+					"disk": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "reflink"
+							},
+							{
+								"type": "string",
+								"const": "copy"
+							},
+							{
+								"type": "string",
+								"const": "move"
+							},
+							{
+								"type": "string",
+								"const": "new"
+							}
+						],
+						"description": "How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume)."
+					},
+					"diskMs": {
+						"type": "number",
+						"description": "Making its disk, in milliseconds."
+					},
+					"snapshotMs": {
+						"type": "number",
+						"description": "For a fork of a running sandbox: the live snapshot of its source it was made from."
+					},
+					"bootMs": {
+						"type": "number",
+						"description": "Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds."
+					},
+					"agentMs": {
+						"type": "number",
+						"description": "From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too."
+					},
+					"hostMs": {
+						"type": "number",
+						"description": "The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts)."
+					},
+					"totalMs": {
+						"type": "number",
+						"description": "From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it."
+					}
+				},
+				"title": "SandboxStartup",
+				"description": "How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it."
 			},
 			"SandboxState": {
 				"anyOf": [
