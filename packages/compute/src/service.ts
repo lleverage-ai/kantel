@@ -575,10 +575,9 @@ export interface ComputeService {
 	 * at the host's memory limit, it crashed, or the host restarted under it): a `running` sandbox on `hostId` moves to
 	 * `error` with the host's `error` as its reason (`hostExitReason`) and its ports cleared, its commands end, and it
 	 * emits `sandbox.error`. Dropped for a sandbox on another host or in any other state: a stop, start, recovery or
-	 * delete under way owns its outcome. `seenAt` is when Kantel had the host's word (this deployment's clock, ms): one
-	 * had before the sandbox's run began is an earlier machine's, reported late, and dropped.
+	 * delete under way owns its outcome.
 	 */
-	reportExit(hostId: string, sandboxId: string, error: string | undefined, seenAt?: number): Promise<void>;
+	reportExit(hostId: string, sandboxId: string, error: string | undefined): Promise<void>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
@@ -3959,8 +3958,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
 	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
 	 */
-	async function killCommandsOf(sandboxId: string): Promise<void> {
-		const running = await store.commands.list({ sandboxId, state: "running" });
+	async function killCommandsOf(sandboxId: string, listed?: readonly StoredCommand[]): Promise<void> {
+		const running = listed ?? (await store.commands.list({ sandboxId, state: "running" }));
 		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
 		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
 		// time is marked killed.
@@ -4168,25 +4167,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * `ComputeService.reportExit`: a running sandbox whose host ended its VM is in `error`, saying why, rather than left
 	 * `running` until something else touches it. Its run ends (`withState`), its ports go (an exposure ends with its next
-	 * boot), and the commands Kantel had running there are ended. Its disk is kept on its host, so a start boots it from
-	 * there; a stop or delete works from `error` too.
+	 * boot), and the commands Kantel had running on that machine are ended. Its disk is kept on its host, so a start
+	 * boots it from there; a stop or delete works from `error` too.
 	 */
-	async function reportExit(
-		hostId: string,
-		sandboxId: string,
-		error: string | undefined,
-		seenAt?: number,
-	): Promise<void> {
+	async function reportExit(hostId: string, sandboxId: string, error: string | undefined): Promise<void> {
 		const reason = hostExitReason(error);
+		// The machine's commands, read while it is still `running`: once it is `error` a start may boot another, whose
+		// commands are its own.
+		const commands = await store.commands.list({ sandboxId, state: "running" });
 		const result = await transition(
 			sandboxId,
 			"running",
 			(current) => withState(current, "error", { reason, ports: [] }),
-			// Its host's, and of this run: an exit Kantel had before the run began is an earlier machine's, reported late
-			// (handled after its stop, and a start, were done).
-			(current) =>
-				current.hostId === hostId &&
-				(seenAt === undefined || current.startedAt === undefined || current.startedAt <= seenAt),
+			(current) => current.hostId === hostId,
 		).catch((cause: unknown) => {
 			if (cause instanceof KantelError && cause.code === "not_found") return undefined;
 			throw cause;
@@ -4194,7 +4187,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (result === undefined || !("moved" in result)) return;
 		const next = result.moved;
 		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: "running", reason } });
-		await killCommandsOf(sandboxId);
+		// In the background: each is asked of its host first, which may take a while, and the report (a host's hello) needn't
+		// wait for that.
+		keepGoing(track([sandboxId], () => killCommandsOf(sandboxId, commands)));
 	}
 
 	/**

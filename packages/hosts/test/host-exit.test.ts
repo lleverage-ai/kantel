@@ -44,7 +44,7 @@ async function setup() {
 	service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: async () => undefined,
-		reportExit: (hostId, sandboxId, error, seenAt) => api.service.reportExit(hostId, sandboxId, error, seenAt),
+		reportExit: (hostId, sandboxId, error) => api.service.reportExit(hostId, sandboxId, error),
 	});
 	closers.push(
 		() => service.close(),
@@ -102,15 +102,26 @@ describe("a microVM its host ended", () => {
 		expect((await root.getSandbox(sandbox.id)).reason).toBe(hostExitReason(HOST_RESTART));
 	});
 
+	it("leaves a running sandbox as it is for a report with no error, which only a stop Kantel asked for has", async () => {
+		const { root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const held = host.sandboxes.get(sandbox.id);
+		if (held === undefined) throw new Error("not held");
+		// Such as a stop's event handled late, once the sandbox had been started again.
+		report(host, { ...held, state: "stopped" });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+	});
+
 	it("leaves a sandbox Kantel stopped as it is", async () => {
 		const { root, host } = await setup();
 		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
 		const held = host.sandboxes.get(sandbox.id);
 		if (held === undefined) throw new Error("not held");
 		expect((await root.stopSandbox(sandbox.id, { wait: true })).state).toBe("stopped");
-		// The host's word on that stop, its event and a hello, changes nothing.
+		// The host's word on that stop, its event and a hello, changes nothing, even with an error the host kept.
 		report(host, { ...held, state: "stopped" });
-		host.connect([{ ...held, state: "stopped" }]);
+		host.connect([{ ...held, state: "stopped", error: PLAIN_EXIT }]);
 		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "stopped" });

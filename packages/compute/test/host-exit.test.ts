@@ -1,7 +1,7 @@
 // A microVM its host ends without Kantel asking (its memory guard, the kernel's OOM killer at its limit, a crash) is in
 // error, saying why, rather than left running until something else touches it (#808).
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { hostExitReason } from "../src/service.ts";
@@ -56,7 +56,7 @@ describe("a running sandbox whose host ended its VM", () => {
 		const sandbox = await tom.createSandbox({ type: "microvm", wait: true, autoStopMinutes: 30 });
 		await tom.exposePort(sandbox.id, { port: 3000 });
 		expect((await api.store.sandboxes.get(sandbox.id))?.ports).toHaveLength(1);
-		await api.service.reportExit(STUB_HOST_ID, sandbox.id, GUARD_KILL, Date.now());
+		await api.service.reportExit(STUB_HOST_ID, sandbox.id, GUARD_KILL);
 
 		const ended = await tom.getSandbox(sandbox.id);
 		expect(ended).toMatchObject({ state: "error", reason: hostExitReason(GUARD_KILL) });
@@ -81,32 +81,37 @@ describe("a running sandbox whose host ended its VM", () => {
 	it("says its host stopped it when the host gives no reason, and can be stopped from error", async () => {
 		const { api, tom } = setup();
 		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
-		await api.service.reportExit(STUB_HOST_ID, sandbox.id, undefined, Date.now());
+		await api.service.reportExit(STUB_HOST_ID, sandbox.id, undefined);
 		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "error", reason: hostExitReason(undefined) });
 		expect(hostExitReason(undefined)).toMatch(/^Its host stopped its VM\. /);
 		expect((await tom.stopSandbox(sandbox.id, { wait: true })).state).toBe("stopped");
 	});
 
-	it("is dropped for another host, for a sandbox Kantel stopped, and for an exit had before its run began", async () => {
+	it("ends the commands that ran on the machine that ended, and not those of its next run", async () => {
+		const { api, tom } = setup();
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const before = await tom.runCommand(sandbox.id, { command: "sleep 600", detached: true });
+		await api.service.reportExit(STUB_HOST_ID, sandbox.id, GUARD_KILL);
+		await vi.waitFor(async () => expect((await tom.getCommand(sandbox.id, before.id)).state).toBe("killed"));
+
+		await tom.startSandbox(sandbox.id, { wait: true });
+		const after = await tom.runCommand(sandbox.id, { command: "sleep 600", detached: true });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect((await tom.getCommand(sandbox.id, after.id)).state).toBe("running");
+	});
+
+	it("is dropped for another host, for a sandbox Kantel stopped, and for one that isn't there", async () => {
 		const { api, tom } = setup();
 		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
 
-		await api.service.reportExit("host_other", sandbox.id, GUARD_KILL, Date.now());
+		await api.service.reportExit("host_other", sandbox.id, GUARD_KILL);
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
 
-		// A stop Kantel asked for is that stop's: the host's word on it once done changes nothing.
+		// A stop Kantel asked for is that stop's.
 		await tom.stopSandbox(sandbox.id, { wait: true });
-		const seenBefore = Date.now();
-		await api.service.reportExit(STUB_HOST_ID, sandbox.id, undefined, seenBefore);
+		await api.service.reportExit(STUB_HOST_ID, sandbox.id, GUARD_KILL);
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
 
-		// Started again since: an exit had before this run began is the earlier machine's, handled late.
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		await tom.startSandbox(sandbox.id, { wait: true });
-		await api.service.reportExit(STUB_HOST_ID, sandbox.id, GUARD_KILL, seenBefore);
-		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
-
-		// A sandbox that isn't there is nothing to do.
-		await expect(api.service.reportExit(STUB_HOST_ID, "sbx_gone", GUARD_KILL, Date.now())).resolves.toBeUndefined();
+		await expect(api.service.reportExit(STUB_HOST_ID, "sbx_gone", GUARD_KILL)).resolves.toBeUndefined();
 	});
 });
