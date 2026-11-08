@@ -100,11 +100,18 @@ export function percentText(share: number): string {
 	return `${Math.round(share * 100)}%`;
 }
 
-/** The highest reading of a metric in a series, as a share. */
+/** A point at its highest CPU and memory: a mean's, where it says them. */
+const highestOf = (point: UsagePoint): UsagePoint => ({
+	...point,
+	cpu: point.cpuMax ?? point.cpu,
+	memUsedBytes: point.memMaxBytes ?? point.memUsedBytes,
+});
+
+/** The highest reading of a metric in a series, as a share: of a mean, its interval's highest where it says it. */
 export function peakOf(key: MetricKey, series: UsageSeries | undefined): number | undefined {
 	let peak: number | undefined;
 	for (const point of series?.points ?? []) {
-		const share = series === undefined ? undefined : shareAt(key, point, series);
+		const share = series === undefined ? undefined : shareAt(key, highestOf(point), series);
 		if (share !== undefined && (peak === undefined || share > peak)) peak = share;
 	}
 	return peak;
@@ -115,6 +122,16 @@ const ofGb = (used: number, total: number): string =>
 	total < 1024 ** 3
 		? `${Math.round(used / 1024 ** 2)} of ${Math.round(total / 1024 ** 2)} MB`
 		: `${gbText(used)} of ${gbText(total)} GB`;
+
+/** The most memory in use in a series, in bytes: of a mean, its interval's highest where it says it. */
+export function peakMemoryOf(series: UsageSeries | undefined): number | undefined {
+	let peak: number | undefined;
+	for (const point of series?.points ?? []) {
+		const used = point.memMaxBytes ?? point.memUsedBytes;
+		if (peak === undefined || used > peak) peak = used;
+	}
+	return peak;
+}
 
 /** What a metric's reading says beside its share: how much of how much, where that's known. */
 function detailOf(key: MetricKey, point: UsagePoint, series: UsageSeries): string | undefined {
@@ -668,6 +685,16 @@ function Stats({
 	const disk = latest.disk;
 	const io = latest.io;
 	const peak = peakOf("cpu", series);
+	const memoryPeak = peakMemoryOf(series);
+	const memoryDetail =
+		memory === undefined || series === undefined
+			? undefined
+			: [
+					detailOf("memory", memory.point, series),
+					memoryPeak === undefined ? undefined : `peak ${gbText(memoryPeak)} GB in ${range}`,
+				]
+					.filter((part) => part !== undefined)
+					.join(", ");
 	const when = running ? "" : ", when it last ran";
 	const [cpuMetric, memoryMetric, diskMetric, ioMetric] = METRICS as unknown as [Metric, Metric, Metric, Metric];
 	return (
@@ -681,7 +708,7 @@ function Stats({
 			<Stat
 				metric={memoryMetric}
 				{...(memory === undefined ? {} : { value: percentText(memory.share) })}
-				{...(memory === undefined || series === undefined ? {} : { detail: detailOf("memory", memory.point, series) })}
+				{...(memoryDetail === undefined ? {} : { detail: memoryDetail })}
 				{...(missing("memory") === undefined ? {} : { missing: missing("memory") })}
 			/>
 			<Stat

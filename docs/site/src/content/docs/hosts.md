@@ -36,7 +36,7 @@ Kantel Connect, a link through kantel.dev for hosts and self-hosted control plan
 | Root | `kantel-host` makes TAP devices and iptables rules |
 | Tools | `ip`, `iptables`, `mkfs.ext4`, `cp`, and `/dev/net/tun` (`modprobe tun`). For bundle mounts (experimental), `mkfs.erofs` from erofs-utils too |
 | Disk and memory | 20 GiB free under `/var/lib/kantel-host` and 4 GiB of memory, or more |
-| File system | Any. XFS (made with reflinks, the default in current `mkfs.xfs`) or btrfs is best for `/var/lib/kantel-host`: snapshots, forks and sandboxes made from them then share disk blocks with what they were copied from until those blocks change, so each one costs only what differs. On ext4 each is a full copy of the sandbox's disk |
+| File system | Any. XFS (made with reflinks, the default in current `mkfs.xfs`) or btrfs is best for `/var/lib/kantel-host`: snapshots, forks and sandboxes made from them then share disk blocks with what they were copied from until those blocks change, so each one costs only what differs. On ext4 each is a full copy of the sandbox's disk, which for a disk of tens of gigabytes takes tens of seconds and is most of the time a sandbox made from a snapshot takes to start. A sandbox's `startup` says which its host did (`disk`: `reflink` or `copy`) and how long it took |
 | Network | Outbound to the control plane's public URL. When installing, also to GitHub, for `kantel-host`, Firecracker and the images |
 
 ## Check a machine

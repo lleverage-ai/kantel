@@ -635,6 +635,22 @@ export const UsageSummary = Type.Object(
 			description: "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first.",
 		}),
 		memory: Type.Optional(GuestMemory),
+		peakMemoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the " +
+					"readings themselves are gone and after it is deleted. Absent until a reading is kept.",
+			}),
+		),
+		peakMemoryAt: Type.Optional(Timestamp),
+		peakCpu: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description: "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs.",
+			}),
+		),
 	},
 	{ title: "UsageSummary" },
 );
@@ -866,6 +882,49 @@ export const SandboxTemplate = Type.Object(
 	{ title: "SandboxTemplate", description: "The template a sandbox was made from." },
 );
 
+export const SandboxStartup = Type.Object(
+	{
+		disk: Type.Optional(
+			Type.Union([Type.Literal("reflink"), Type.Literal("copy"), Type.Literal("move"), Type.Literal("new")], {
+				description:
+					"How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a " +
+					"host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no " +
+					"reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a " +
+					"resume).",
+			}),
+		),
+		diskMs: Type.Number({ description: "Making its disk, in milliseconds." }),
+		snapshotMs: Type.Optional(
+			Type.Number({
+				description: "For a fork of a running sandbox: the live snapshot of its source it was made from.",
+			}),
+		),
+		bootMs: Type.Number({
+			description: "Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds.",
+		}),
+		agentMs: Type.Number({
+			description:
+				"From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too.",
+		}),
+		hostMs: Type.Number({
+			description:
+				"The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts).",
+		}),
+		totalMs: Type.Number({
+			description:
+				"From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the " +
+				"way to and from the host, not on it.",
+		}),
+	},
+	{
+		title: "SandboxStartup",
+		description:
+			"How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host " +
+			"measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs " +
+			"only, and only from a host that reports it.",
+	},
+);
+
 export const Sandbox = Type.Object(
 	{
 		id: id("The sandbox's ID, such as `sbx_4kq9x2mt`."),
@@ -961,6 +1020,7 @@ export const Sandbox = Type.Object(
 		),
 		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
 		base: Type.Optional(SandboxBase),
+		startup: Type.Optional(SandboxStartup),
 	},
 	{ title: "Sandbox" },
 );
@@ -1149,6 +1209,21 @@ export const SandboxUsagePoint = Type.Object(
 		at: Timestamp,
 		cpu: Type.Number({ minimum: 0, maximum: 1, description: "CPU utilisation over the interval." }),
 		memoryMb: Type.Number(),
+		cpuMax: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean.",
+			}),
+		),
+		memoryMbMax: Type.Optional(
+			Type.Number({
+				description:
+					"The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its " +
+					"mean or more, so size it from this. From a mean kept before peaks were, its mean.",
+			}),
+		),
 		runningSeconds: Type.Number(),
 		cost: Type.Number(),
 		measured: Type.Optional(
@@ -1178,7 +1253,7 @@ export const SandboxUsagePoint = Type.Object(
 	{
 		title: "SandboxUsagePoint",
 		description:
-			"One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an " +
+			"One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an " +
 			"interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.",
 	},
 );
@@ -1276,6 +1351,22 @@ export const SandboxUsage = Type.Object(
 			Type.Integer({
 				minimum: 0,
 				description: "Its own disk's size, as its guest counts it, when its host sends disk figures.",
+			}),
+		),
+		peakMemoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the " +
+					"readings themselves are gone and after it is deleted. Absent until a reading is kept.",
+			}),
+		),
+		peakMemoryAt: Type.Optional(Timestamp),
+		peakCpu: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description: "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs.",
 			}),
 		),
 		series: SandboxUsageSeries,
@@ -2759,6 +2850,8 @@ export const Event = Type.Object(
 						description: "`sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading.",
 					}),
 				),
+				// On `sandbox.running`, where its host said: the sandbox's `startup`.
+				startup: Type.Optional(SandboxStartup),
 			},
 			{ title: "EventData" },
 		),
@@ -3614,6 +3707,7 @@ export type DeviceLoginState = Static<typeof DeviceLoginState>;
 export type DeviceLoginResult = Static<typeof DeviceLoginResult>;
 export type DeviceLoginRequest = Static<typeof DeviceLoginRequest>;
 export type SandboxBase = Static<typeof SandboxBase>;
+export type SandboxStartup = Static<typeof SandboxStartup>;
 export type BaseImageVersion = Static<typeof BaseImageVersion>;
 export type BaseImage = Static<typeof BaseImage>;
 export type BaseImageTemplate = Static<typeof BaseImageTemplate>;

@@ -289,4 +289,6 @@ curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/usage?intervalSeconds=3600" \
 
 It covers the last 24 hours unless `since` gives another start, as epoch milliseconds.
 
+Each point is an interval's means, with its highest readings beside them: `memoryMbMax` and `cpuMax`. A sandbox's memory can peak at twice its mean or more, so size it from the highest. The 5-second readings (`series`) are kept for an hour; after that the highest are all that's left of a peak. `usage.peakMemoryBytes` (with `peakMemoryAt`) and `usage.peakCpu` are its highest since it was made, and stay on its record after it's deleted. `kantel usage <id>` prints them.
+
 <!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:318-507, packages/api/src/compute-schema.ts:201-504, packages/api/src/sdk-runtime.ts:1-60, packages/api/src/route.ts:40-90 -->

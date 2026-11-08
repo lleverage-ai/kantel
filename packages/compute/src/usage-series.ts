@@ -98,9 +98,13 @@ export interface UsageMeta {
  * A 5-minute mean: `at` is its start. `readings`: how many points it is the mean of. `local`: whether any was taken
  * here rather than passed on (`UsagePoint.shared`), so this replica may keep it. Disk and IO pressure are the means of
  * the points that had them: `noDisk` when none did, no `ioPressure` when none did. `diskReadings` and `ioReadings`:
- * how many points had each, so a longer mean can weight them by those alone.
+ * how many points had each, so a longer mean can weight them by those alone. `cpuMax` and `memMaxBytes`: the highest
+ * of its points, so a peak outlasts the hour its points are kept for; `memMaxAt` when the memory one was taken.
  */
 export type Rollup = Omit<UsagePoint, "shared"> & {
+	readonly cpuMax: number;
+	readonly memMaxBytes: number;
+	readonly memMaxAt: number;
 	readonly readings: number;
 	readonly local: boolean;
 	readonly diskReadings: number;
@@ -137,6 +141,9 @@ interface Bucket {
 	local: number;
 	cpu: number;
 	mem: number;
+	cpuMax: number;
+	memMax: number;
+	memMaxAt: number;
 	disk: number;
 	/** Of `count`, the points with a disk figure, and those with IO pressure (and its sum). */
 	disks: number;
@@ -160,6 +167,9 @@ const mean = (bucket: Bucket): Rollup => ({
 	at: bucket.from,
 	cpu: clamp01(bucket.cpu / bucket.count),
 	memUsedBytes: bytes(bucket.mem / bucket.count),
+	cpuMax: clamp01(bucket.cpuMax),
+	memMaxBytes: bytes(bucket.memMax),
+	memMaxAt: bucket.memMaxAt,
 	diskUsedBytes: bucket.disks === 0 ? 0 : bytes(bucket.disk / bucket.disks),
 	...(bucket.disks === 0 ? { noDisk: true } : {}),
 	...(bucket.ios === 0 ? {} : { ioPressure: clamp01(bucket.io / bucket.ios) }),
@@ -240,11 +250,29 @@ export function createUsageSeries(): UsageSeries {
 			// one mean per 5 minutes.
 			const lastRollup = track.rollups[track.rollups.length - 1];
 			if (track.bucket === undefined && lastRollup !== undefined && lastRollup.at >= from) return closed;
-			track.bucket ??= { from, count: 0, local: 0, cpu: 0, mem: 0, disk: 0, disks: 0, ios: 0, io: 0 };
+			track.bucket ??= {
+				from,
+				count: 0,
+				local: 0,
+				cpu: 0,
+				mem: 0,
+				cpuMax: 0,
+				memMax: 0,
+				memMaxAt: clean.at,
+				disk: 0,
+				disks: 0,
+				ios: 0,
+				io: 0,
+			};
 			track.bucket.count += 1;
 			if (clean.shared !== true) track.bucket.local += 1;
 			track.bucket.cpu += clean.cpu;
 			track.bucket.mem += clean.memUsedBytes;
+			track.bucket.cpuMax = Math.max(track.bucket.cpuMax, clean.cpu);
+			if (clean.memUsedBytes > track.bucket.memMax) {
+				track.bucket.memMax = clean.memUsedBytes;
+				track.bucket.memMaxAt = clean.at;
+			}
 			if (clean.noDisk !== true) {
 				track.bucket.disk += clean.diskUsedBytes;
 				track.bucket.disks += 1;

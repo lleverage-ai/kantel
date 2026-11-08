@@ -343,18 +343,19 @@ func checkVirtioMem(ctx context.Context, client *guest.Client) error {
 // restoreParallel makes a new sandbox's disk, its network and its Firecracker process side by side, then restores the
 // snapshot into it; linked, when set, runs once all three are made and before the snapshot loads. The link is
 // returned when it was made, even on an error, for the caller to remove.
-func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, memPath, egress string, t timings, linked func(network.Link) error) (*fc.Machine, *guest.Client, *network.Link, error) {
+func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, memPath, egress string, t timings, ph *proto.StartPhases, linked func(network.Link) error) (*fc.Machine, *guest.Client, *network.Link, error) {
 	start := time.Now()
 	var wg sync.WaitGroup
 	var diskErr, netErr, launchErr error
 	var link network.Link
 	var machine *fc.Machine
 	var diskMs, netMs, launchMs float64
+	var disk string
 	elapsed := func(since time.Time) float64 { return float64(time.Since(since).Microseconds()) / 1000 }
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		diskErr = copySparse(diskPath, filepath.Join(vm, fc.DiskFile))
+		disk, diskErr = cloneDisk(diskPath, filepath.Join(vm, fc.DiskFile))
 		diskMs = elapsed(start)
 	}()
 	go func() {
@@ -369,6 +370,11 @@ func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, 
 	}()
 	wg.Wait()
 	t["prepare.disk"], t["prepare.network"], t["prepare.launch"] = diskMs, netMs, launchMs
+	// Its Firecracker process launched beside the disk and the network: its boot is the snapshot's load.
+	if ph != nil {
+		ph.Disk, ph.DiskMs = disk, diskMs
+	}
+	launched := time.Now()
 	t.step("prepare", &start)
 	var made *network.Link
 	if netErr == nil {
@@ -391,6 +397,7 @@ func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, 
 		return nil, nil, made, fmt.Errorf("%w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("load", &start)
+	booted(ph, &launched)
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
 	readyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -399,6 +406,7 @@ func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, 
 		return nil, nil, made, fmt.Errorf("%w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
+	answered(ph, &launched)
 	return machine, client, made, nil
 }
 

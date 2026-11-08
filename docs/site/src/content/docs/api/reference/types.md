@@ -694,6 +694,7 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `oomKills` | integer | no | `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading. (minimum 1) |
+| `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
 
 ### EventPage
 
@@ -1298,6 +1299,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `hostId` | string | no | The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. |
 | `hostName` | string | no | That host's name, with `hostId`. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+| `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
 
 ### SandboxBase
 
@@ -1503,6 +1505,20 @@ What it was made from.
 | `snapshotId` | string | no |  |
 | `sandboxId` | string | no | Set when it was forked from another sandbox. |
 
+### SandboxStartup
+
+How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | `"reflink"` or `"copy"` or `"move"` or `"new"` | no | How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume). |
+| `diskMs` | number | yes | Making its disk, in milliseconds. |
+| `snapshotMs` | number | no | For a fork of a running sandbox: the live snapshot of its source it was made from. |
+| `bootMs` | number | yes | Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. |
+| `agentMs` | number | yes | From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too. |
+| `hostMs` | number | yes | The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). |
+| `totalMs` | number | yes | From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. |
+
 ### SandboxState
 
 `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
@@ -1537,18 +1553,23 @@ One of: `"isolate"` or `"microvm"`.
 | `totals` | object | yes |  |
 | `memLimitBytes` | integer | no | The memory it may use, when its host reports it or its size sets it. (minimum 0) |
 | `diskTotalBytes` | integer | no | Its own disk's size, as its guest counts it, when its host sends disk figures. (minimum 0) |
+| `peakMemoryBytes` | integer | no | The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. (minimum 0) |
+| `peakMemoryAt` | integer | no | Epoch milliseconds, UTC. |
+| `peakCpu` | number | no | Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. (minimum 0, maximum 1) |
 | `series` | [SandboxUsageSeries](/api/reference/types/#sandboxusageseries) | yes |  |
 | `memory` | [GuestMemory](/api/reference/types/#guestmemory) | no |  |
 
 ### SandboxUsagePoint
 
-One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.
+One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 | `cpu` | number | yes | CPU utilisation over the interval. (minimum 0, maximum 1) |
 | `memoryMb` | number | yes |  |
+| `cpuMax` | number | no | The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean. (minimum 0, maximum 1) |
+| `memoryMbMax` | number | no | The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean. |
 | `runningSeconds` | number | yes |  |
 | `cost` | number | yes |  |
 | `measured` | boolean | no | Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. |
@@ -2074,6 +2095,9 @@ A host's recent CPU and memory, for sparklines.
 | `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way. |
 | `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
 | `memory` | [GuestMemory](/api/reference/types/#guestmemory) | no |  |
+| `peakMemoryBytes` | integer | no | The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. (minimum 0) |
+| `peakMemoryAt` | integer | no | Epoch milliseconds, UTC. |
+| `peakCpu` | number | no | Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. (minimum 0, maximum 1) |
 
 ### ViewAccessBody
 

@@ -1369,7 +1369,7 @@ func TestStartMachineRecordsTheCreateBeforeItsMachineStarts(t *testing.T) {
 	s := &sandbox{dir: dir, meta: meta{ID: "sbx_1", Size: "default", State: proto.StateStarting}}
 	// A template booted fresh: a cold boot, then its setup.
 	origin := sandboxOrigin{rootfs: filepath.Join(root, "rootfs.ext4"), disk: disk, setup: "touch /opt/app/marker", source: "boot"}
-	if err := m.startMachine(context.Background(), s, origin, DefaultSizes[1], nil, timings{}); err == nil {
+	if err := m.startMachine(context.Background(), s, origin, DefaultSizes[1], nil, timings{}, &proto.StartPhases{}); err == nil {
 		t.Fatal("a machine that exits at its start started")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "launched.json"))

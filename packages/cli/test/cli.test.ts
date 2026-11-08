@@ -876,6 +876,19 @@ describe("sandboxes", () => {
 		expect(wrong.calls).toEqual([]);
 	});
 
+	it("says how a create's start took its time, and gives the phases with --json", async () => {
+		const startup = { disk: "copy", diskMs: 18_200, bootMs: 1_900, agentMs: 600, hostMs: 21_400, totalMs: 22_000 };
+		const routes = { "POST /v1/sandboxes": () => ({ ...SANDBOX, startup }) };
+		const created = await kantel(["new", "--from", "warm"], { routes });
+		expect(created.stdout).toContain(
+			"Started in:     21.4 s on its host (22.0 s in all): disk copied 18.2 s, boot 1.9 s, guest agent 0.6 s",
+		);
+		const json = await kantel(["new", "--from", "warm", "--json"], { routes });
+		expect(JSON.parse(json.stdout).startup).toEqual(startup);
+		const plain = await kantel(["new"], { routes: { "POST /v1/sandboxes": () => SANDBOX } });
+		expect(plain.stdout).not.toContain("Started in");
+	});
+
 	it("sizes a microVM with --vcpus and --memory, beside --disk", async () => {
 		const routes = { "POST /v1/sandboxes": () => SANDBOX };
 		const created = await kantel(["new", "--type", "microvm", "--vcpus", "8", "--memory", "16", "--disk", "60"], {
