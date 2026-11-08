@@ -596,6 +596,22 @@ export const UsageSummary = Type.Object(
 		recentMemory: Type.Array(Type.Number({ minimum: 0 }), {
 			description: "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first.",
 		}),
+		peakMemoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the " +
+					"readings themselves are gone and after it is deleted. Absent until a reading is kept.",
+			}),
+		),
+		peakMemoryAt: Type.Optional(Timestamp),
+		peakCpu: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description: "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs.",
+			}),
+		),
 	},
 	{ title: "UsageSummary" },
 );
@@ -1110,6 +1126,21 @@ export const SandboxUsagePoint = Type.Object(
 		at: Timestamp,
 		cpu: Type.Number({ minimum: 0, maximum: 1, description: "CPU utilisation over the interval." }),
 		memoryMb: Type.Number(),
+		cpuMax: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean.",
+			}),
+		),
+		memoryMbMax: Type.Optional(
+			Type.Number({
+				description:
+					"The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its " +
+					"mean or more, so size it from this. From a mean kept before peaks were, its mean.",
+			}),
+		),
 		runningSeconds: Type.Number(),
 		cost: Type.Number(),
 		measured: Type.Optional(
@@ -1139,7 +1170,7 @@ export const SandboxUsagePoint = Type.Object(
 	{
 		title: "SandboxUsagePoint",
 		description:
-			"One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an " +
+			"One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an " +
 			"interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.",
 	},
 );
@@ -1212,6 +1243,22 @@ export const SandboxUsage = Type.Object(
 			Type.Integer({
 				minimum: 0,
 				description: "Its own disk's size, as its guest counts it, when its host sends disk figures.",
+			}),
+		),
+		peakMemoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the " +
+					"readings themselves are gone and after it is deleted. Absent until a reading is kept.",
+			}),
+		),
+		peakMemoryAt: Type.Optional(Timestamp),
+		peakCpu: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description: "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs.",
 			}),
 		),
 		series: SandboxUsageSeries,

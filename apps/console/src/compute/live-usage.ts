@@ -86,6 +86,8 @@ export function sandboxMeans(usage: SandboxUsage, now: number): UsageSeries {
 				at: Math.min(point.at + intervalMs, now),
 				cpu: point.cpu,
 				memUsedBytes: Math.round(point.memoryMb * MIB),
+				...(point.cpuMax === undefined ? {} : { cpuMax: point.cpuMax }),
+				...(point.memoryMbMax === undefined ? {} : { memMaxBytes: Math.round(point.memoryMbMax * MIB) }),
 				...(point.diskUsedBytes === undefined ? {} : { diskUsedBytes: point.diskUsedBytes }),
 				...(point.ioPressure === undefined ? {} : { ioPressure: point.ioPressure }),
 			})),

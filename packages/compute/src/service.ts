@@ -125,6 +125,7 @@ import type {
 	StoredHost,
 	StoredIdempotency,
 	StoredInvite,
+	StoredPeak,
 	StoredProxy,
 	StoredSample,
 	StoredSandbox,
@@ -744,10 +745,20 @@ export function spanMean(
 	samples: readonly StoredSample[],
 	from: number,
 	to: number,
-): { cpu: number; memoryMb: number; measured: boolean; diskMb?: number; io?: number } {
+): {
+	cpu: number;
+	memoryMb: number;
+	measured: boolean;
+	cpuMax?: number;
+	memoryMbMax?: number;
+	diskMb?: number;
+	io?: number;
+} {
 	let weight = 0;
 	let cpu = 0;
 	let memoryMb = 0;
+	let cpuMax = 0;
+	let memoryMbMax = 0;
 	const disk = { weight: 0, sum: 0 };
 	const io = { weight: 0, sum: 0 };
 	for (const sample of samples) {
@@ -762,6 +773,9 @@ export function spanMean(
 		weight += covered;
 		cpu += covered * sample.cpu;
 		memoryMb += covered * sample.memoryMb;
+		// The highest of any mean the span touches: a peak isn't spread over its neighbours.
+		cpuMax = Math.max(cpuMax, sample.cpuMax ?? sample.cpu);
+		memoryMbMax = Math.max(memoryMbMax, sample.memoryMbMax ?? sample.memoryMb);
 		// Disk and IO count for the share of its readings that had them.
 		if (sample.diskMb !== undefined) {
 			const share = covered * (diskReadings(sample) / readings);
@@ -779,6 +793,8 @@ export function spanMean(
 		cpu: cpu / weight,
 		memoryMb: memoryMb / weight,
 		measured: true,
+		cpuMax,
+		memoryMbMax,
 		...(disk.weight === 0 ? {} : { diskMb: disk.sum / disk.weight }),
 		...(io.weight === 0 ? {} : { io: io.sum / io.weight }),
 	};
@@ -831,6 +847,8 @@ function foldSample(into: StoredSample, sample: StoredSample, end: number): Stor
 		at: into.at,
 		cpu: (into.cpu * a + sample.cpu * b) / readings,
 		memoryMb: (into.memoryMb * a + sample.memoryMb * b) / readings,
+		cpuMax: Math.max(into.cpuMax ?? into.cpu, sample.cpuMax ?? sample.cpu),
+		memoryMbMax: Math.max(into.memoryMbMax ?? into.memoryMb, sample.memoryMbMax ?? sample.memoryMb),
 		readings,
 		spanMs: Math.max(into.at + (into.spanMs ?? ROLLUP_MS), end) - into.at,
 		...(diskMb === undefined ? {} : { diskMb, ...(disks === readings ? {} : { diskReadings: disks }) }),
@@ -2278,6 +2296,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
 				...sparklines(sandbox),
+				...peakView(peakOf(sandbox)),
 			},
 			...host,
 			base: baseView(sandbox.base),
@@ -5106,13 +5125,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function keepRollup(sandboxId: string, rollup: Rollup): Promise<void> {
 		if (!rollup.local) return;
 		await patchSandbox(sandboxId, (latest) => {
-			if (latest.state === "deleted") return undefined;
+			const peak = peakWith(latest.peak, rollup);
+			const peaked = peak === latest.peak ? undefined : { ...latest, peak };
+			// A deleted sandbox keeps no more means, but its last 5 minutes (closed once it stopped reporting) may hold its peak.
+			if (latest.state === "deleted") return peaked;
 			const sample = sampleOf(rollup);
 			const index = latest.samples.findIndex((each) => each.at >= rollup.at);
-			if (index === -1) return { ...latest, samples: keptSamples([...latest.samples, sample]) };
+			if (index === -1) return { ...latest, peak, samples: keptSamples([...latest.samples, sample]) };
 			const there = latest.samples[index];
-			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return undefined;
-			return { ...latest, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
+			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return peaked;
+			return { ...latest, peak, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
 		});
 	}
 
@@ -5477,12 +5499,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return [...sandbox.samples, sampleOf(partial)];
 	}
 
+	/** A sandbox's peak with a 5-minute mean's highest readings in it: `peak` itself where they are no higher. */
+	function peakWith(peak: StoredPeak | undefined, rollup: Rollup): StoredPeak | undefined {
+		const memory = peak === undefined || rollup.memMaxBytes > peak.memoryBytes;
+		const cpu = peak === undefined || rollup.cpuMax > peak.cpu;
+		if (!memory && !cpu) return peak;
+		return {
+			memoryBytes: memory ? rollup.memMaxBytes : peak.memoryBytes,
+			memoryAt: memory ? rollup.memMaxAt : peak.memoryAt,
+			cpu: cpu ? rollup.cpuMax : peak.cpu,
+		};
+	}
+
+	/** A sandbox's peak, with the 5-minute mean under way in this process's memory, if any. */
+	function peakOf(sandbox: StoredSandbox): StoredPeak | undefined {
+		// A deleted one's too: its last 5 minutes are still settled into its record (`keepRollup`).
+		const partial = sandboxSeries.partial(sandbox.id);
+		return partial === undefined ? sandbox.peak : peakWith(sandbox.peak, partial);
+	}
+
+	/** A peak as the API answers it, in `Sandbox.usage` and `SandboxUsage`. */
+	function peakView(peak: StoredPeak | undefined): {
+		peakMemoryBytes?: number;
+		peakMemoryAt?: number;
+		peakCpu?: number;
+	} {
+		if (peak === undefined) return {};
+		return {
+			peakMemoryBytes: Math.round(peak.memoryBytes),
+			peakMemoryAt: peak.memoryAt,
+			peakCpu: Math.min(1, peak.cpu),
+		};
+	}
+
 	/** A 5-minute mean as a sandbox's record keeps it. */
 	function sampleOf(rollup: Rollup): StoredSample {
 		return {
 			at: rollup.at,
 			cpu: rollup.cpu,
 			memoryMb: rollup.memUsedBytes / MIB,
+			cpuMax: rollup.cpuMax,
+			memoryMbMax: rollup.memMaxBytes / MIB,
 			readings: rollup.readings,
 			...(rollup.noDisk === true
 				? {}
@@ -6927,6 +6984,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					runningSeconds: round(seconds),
 					cost: round((seconds / 3600) * rate),
 					measured: mean.measured,
+					...(mean.cpuMax === undefined ? {} : { cpuMax: Math.min(1, mean.cpuMax) }),
+					...(mean.memoryMbMax === undefined ? {} : { memoryMbMax: round(mean.memoryMbMax) }),
 					...(mean.diskMb === undefined ? {} : { diskUsedBytes: Math.round(mean.diskMb * MIB) }),
 					...(mean.io === undefined ? {} : { ioPressure: Math.min(1, mean.io) }),
 				});
@@ -6954,6 +7013,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				},
 				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
 				...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
+				...peakView(peakOf(current)),
 				series: {
 					intervalMs:
 						series.meta?.intervalMs ?? (hostReports(current.hostId) ? USAGE_INTERVAL_MS : FALLBACK_INTERVAL_MS),

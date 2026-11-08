@@ -87,6 +87,9 @@ describe("a usage series", () => {
 			at: start,
 			cpu: 0.30000000000000004,
 			memUsedBytes: 200,
+			cpuMax: 0.4,
+			memMaxBytes: 300,
+			memMaxAt: start + 5000,
 			diskUsedBytes: 0,
 			readings: 2,
 			diskReadings: 2,
@@ -108,7 +111,16 @@ describe("a usage series", () => {
 		const start = ROLLUP_MS * 1000;
 		series.add("s", point(start), { intervalMs: 5000 });
 		expect(series.settle(start + ROLLUP_MS)).toEqual([]);
-		const mean = { ...point(start), readings: 1, diskReadings: 1, ioReadings: 0, local: true };
+		const mean = {
+			...point(start),
+			cpuMax: point(start).cpu,
+			memMaxBytes: point(start).memUsedBytes,
+			memMaxAt: start,
+			readings: 1,
+			diskReadings: 1,
+			ioReadings: 0,
+			local: true,
+		};
 		expect(series.settle(start + ROLLUP_MS + 10_000)).toEqual([{ key: "s", rollup: mean }]);
 		expect(series.keys()).toEqual(["s"]);
 		// A point late for the closed 5 minutes is kept, but makes no second mean for them.
@@ -214,6 +226,47 @@ describe("a host's usage ticks", () => {
 		expect(stored?.samples[0]).toMatchObject({ at: start, diskMb: 2048, io: 0.25 });
 		// With how many of its 60 readings had them, for when it is folded into an hour.
 		expect(stored?.samples[0]).toMatchObject({ readings: 60, diskReadings: 55, ioReadings: 55 });
+	});
+
+	it("keep each interval's highest CPU and memory beside its means, and the sandbox's peak after it is deleted", async () => {
+		let clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const start = clock;
+		const spikeAt = start + 60_000;
+		// Ten minutes at 2 GiB and 10% CPU, but for one 5 s reading at 22 GiB and full CPU in the first five.
+		for (let at = start; at < start + 10 * 60_000; at += USAGE_INTERVAL_MS) {
+			clock = at;
+			const spike = at === spikeAt;
+			const reading = {
+				id: box.id,
+				kind: "microvm" as const,
+				cpu: spike ? 1 : 0.1,
+				memUsedBytes: (spike ? 22 * 1024 : 2048) * MIB,
+				memLimitBytes: 0,
+			};
+			await api.service.recordUsage(STUB_HOST_ID, tick(at, [reading]));
+		}
+		const usage = await tom.getSandboxUsage(box.id, { since: start, intervalSeconds: 300 });
+		const [first, second] = usage.points;
+		// The first 5 minutes' mean hides the spike; its highest doesn't.
+		expect(first?.memoryMb).toBeLessThan(2500);
+		expect(first).toMatchObject({ memoryMbMax: 22 * 1024, cpuMax: 1 });
+		expect(second).toMatchObject({ memoryMbMax: 2048, cpuMax: 0.1 });
+		expect(usage).toMatchObject({ peakMemoryBytes: 22 * 1024 * MIB, peakMemoryAt: spikeAt, peakCpu: 1 });
+		expect((await tom.getSandbox(box.id)).usage).toMatchObject({ peakMemoryBytes: 22 * 1024 * MIB, peakCpu: 1 });
+		// An hour's interval keeps the highest of the means in it.
+		const hourly = await tom.getSandboxUsage(box.id, { since: start, intervalSeconds: 3600 });
+		expect(hourly.points[0]).toMatchObject({ memoryMbMax: 22 * 1024 });
+		// Kept in the record, so it outlasts the series and the sandbox.
+		expect((await api.store.sandboxes.get(box.id))?.peak).toEqual({
+			memoryBytes: 22 * 1024 * MIB,
+			memoryAt: spikeAt,
+			cpu: 1,
+		});
+		await tom.deleteSandbox(box.id);
+		expect((await api.store.sandboxes.get(box.id))?.peak?.memoryBytes).toBe(22 * 1024 * MIB);
 	});
 
 	it("count CPU seconds by the time each kept mean covers, and only within the span asked for", async () => {
@@ -462,7 +515,7 @@ describe("a host's usage ticks, when things happen in between", () => {
 				T0 + USAGE_INTERVAL_MS,
 			]);
 			expect((await api.store.sandboxes.get(id))?.samples).toEqual([
-				{ at: T0 - ROLLUP_MS, cpu: 0.1, memoryMb: 1, readings: 1 },
+				{ at: T0 - ROLLUP_MS, cpu: 0.1, memoryMb: 1, cpuMax: 0.1, memoryMbMax: 1, readings: 1 },
 			]);
 		}
 	});
@@ -1090,17 +1143,35 @@ describe("spanMean", () => {
 			{ at: 0, cpu: 0.2, memoryMb: 100, readings: 60 },
 			{ at: ROLLUP_MS, cpu: 0.6, memoryMb: 300, readings: 60 },
 		];
-		expect(spanMean(samples, 0, ROLLUP_MS)).toEqual({ cpu: 0.2, memoryMb: 100, measured: true });
+		expect(spanMean(samples, 0, ROLLUP_MS)).toEqual({
+			cpu: 0.2,
+			memoryMb: 100,
+			measured: true,
+			cpuMax: 0.2,
+			memoryMbMax: 100,
+		});
 		const straddling = spanMean(samples, ROLLUP_MS / 2, ROLLUP_MS + ROLLUP_MS / 2);
 		expect(straddling.cpu).toBeCloseTo(0.4);
 		expect(straddling.memoryMb).toBeCloseTo(200);
 		const single = [{ at: 12_345, cpu: 0.7, memoryMb: 9 }];
-		expect(spanMean(single, 0, ROLLUP_MS)).toEqual({ cpu: 0.7, memoryMb: 9, measured: true });
+		expect(spanMean(single, 0, ROLLUP_MS)).toEqual({
+			cpu: 0.7,
+			memoryMb: 9,
+			measured: true,
+			cpuMax: 0.7,
+			memoryMbMax: 9,
+		});
 		expect(spanMean(single, 20_000, ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0, measured: false });
 		// A single reading taken on a 5-minute boundary is still a single reading: it counts only where it falls.
 		const onBoundary = [{ at: ROLLUP_MS, cpu: 0.7, memoryMb: 9 }];
 		expect(spanMean(onBoundary, ROLLUP_MS + 60_000, 2 * ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0, measured: false });
-		expect(spanMean(onBoundary, ROLLUP_MS, ROLLUP_MS + 60_000)).toEqual({ cpu: 0.7, memoryMb: 9, measured: true });
+		expect(spanMean(onBoundary, ROLLUP_MS, ROLLUP_MS + 60_000)).toEqual({
+			cpu: 0.7,
+			memoryMb: 9,
+			measured: true,
+			cpuMax: 0.7,
+			memoryMbMax: 9,
+		});
 	});
 
 	it("means disk and IO over the samples that have them, and covers an hourly mean's whole span", () => {
@@ -1110,7 +1181,13 @@ describe("spanMean", () => {
 		];
 		const both = spanMean(samples, 0, 2 * ROLLUP_MS);
 		expect(both).toMatchObject({ measured: true, diskMb: 1000, io: 0.1 });
-		expect(spanMean(samples, ROLLUP_MS, 2 * ROLLUP_MS)).toEqual({ cpu: 0.6, memoryMb: 300, measured: true });
+		expect(spanMean(samples, ROLLUP_MS, 2 * ROLLUP_MS)).toEqual({
+			cpu: 0.6,
+			memoryMb: 300,
+			measured: true,
+			cpuMax: 0.6,
+			memoryMbMax: 300,
+		});
 		const hourly = [{ at: 0, cpu: 0.5, memoryMb: 50, readings: 720, spanMs: 3_600_000 }];
 		expect(spanMean(hourly, 3_000_000, 3_300_000)).toMatchObject({ cpu: 0.5, measured: true });
 		expect(spanMean(hourly, 3_600_000, 3_900_000).measured).toBe(false);
@@ -1138,6 +1215,8 @@ describe("keptSamples", () => {
 		expect(hour).toMatchObject({ at: 0, readings: 720, spanMs: HOUR, diskMb: 100, io: 0.5 });
 		expect(hour?.cpu).toBeCloseTo(0.3);
 		expect(kept[1]).toEqual(samples[12]);
+		// An hour's highest is the highest of its 5-minute means: their own where kept, else their means.
+		expect(hour).toMatchObject({ cpuMax: 0.4, memoryMbMax: 10 });
 		// Under a day, nothing changes.
 		expect(keptSamples(samples.slice(12))).toEqual(samples.slice(12));
 	});
