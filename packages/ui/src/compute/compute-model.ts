@@ -833,6 +833,12 @@ export interface UsagePoint {
 	/** CPU use over it, 0 to 1 of what it has: a sandbox's vCPUs, a host's. The unit of `Sandbox.usage`. */
 	readonly cpu: number;
 	readonly memUsedBytes: number;
+	/**
+	 * Where the point is a mean over its interval (a day's or a week's): the highest CPU and memory reading in it, which
+	 * can be twice the mean or more. Absent on a reading as it came, which is its own highest.
+	 */
+	readonly cpuMax?: number;
+	readonly memMaxBytes?: number;
 	/** Its disk in use, where its host says: a host's always, a sandbox's where its host reads its filesystem. */
 	readonly diskUsedBytes?: number;
 	/**

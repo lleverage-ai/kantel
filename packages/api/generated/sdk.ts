@@ -1799,17 +1799,27 @@ export interface SandboxUsage {
 	readonly memLimitBytes?: number;
 	/** Its own disk's size, as its guest counts it, when its host sends disk figures. */
 	readonly diskTotalBytes?: number;
+	/** The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. */
+	readonly peakMemoryBytes?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly peakMemoryAt?: number;
+	/** Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. */
+	readonly peakCpu?: number;
 	/** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
 	readonly series: SandboxUsageSeries;
 }
 
-/** One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
+/** One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
 export interface SandboxUsagePoint {
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
 	/** CPU utilisation over the interval. */
 	readonly cpu: number;
 	readonly memoryMb: number;
+	/** The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean. */
+	readonly cpuMax?: number;
+	/** The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean. */
+	readonly memoryMbMax?: number;
 	readonly runningSeconds: number;
 	readonly cost: number;
 	/** Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. */
@@ -2353,6 +2363,12 @@ export interface UsageSummary {
 	readonly recentCpu: readonly number[];
 	/** Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. */
 	readonly recentMemory: readonly number[];
+	/** The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. */
+	readonly peakMemoryBytes?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly peakMemoryAt?: number;
+	/** Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. */
+	readonly peakCpu?: number;
 }
 
 export interface ViewAccessBody {
