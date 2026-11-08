@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // A live fork takes its snapshot's disk: moved, not copied, and gone from the snapshot.
@@ -15,8 +17,12 @@ func TestTakeFileMoves(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := os.Stat(src)
-	if err := takeFile(src, dst); err != nil {
+	how, err := takeFile(src, dst)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if how != proto.DiskMove {
+		t.Fatalf("taken as %q, want a move", how)
 	}
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Fatalf("the snapshot still has its disk: %v", err)
@@ -68,7 +74,7 @@ func TestUnchangedSeesAWrite(t *testing.T) {
 // A rename that can't be done (here: no such source) falls back to a copy, which says what failed.
 func TestTakeFileFallsBackToCopy(t *testing.T) {
 	dir := t.TempDir()
-	if err := takeFile(filepath.Join(dir, "missing"), filepath.Join(dir, "dst")); err == nil {
+	if _, err := takeFile(filepath.Join(dir, "missing"), filepath.Join(dir, "dst")); err == nil {
 		t.Fatal("taking a missing file worked")
 	}
 }

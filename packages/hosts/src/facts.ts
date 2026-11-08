@@ -4,10 +4,12 @@
  * listing, which read every host's facts. So registration and hello refuse a report that isn't shaped as kantel-host
  * sends it, and reading a stored one that isn't (kept before this check) treats it as no report at all.
  */
+import type { Placement } from "@kantel/compute";
 import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
 	HostDiskLimits,
+	HostDiskMade,
 	HostDiskUsage,
 	HostFacts,
 	HostImages,
@@ -412,6 +414,38 @@ const MOUNT_STATUSES: ReadonlySet<string> = new Set<HostMountStatus["status"]>([
 /** As long as a mount's path may be. */
 const MAX_MOUNT_PATH = 1024;
 const MAX_MOUNT_ERROR = 512;
+
+const DISK_MADE: ReadonlySet<string> = new Set<HostDiskMade>(["reflink", "copy", "move", "new"]);
+/** A phase's milliseconds, as long as a day at most: rounded to a tenth. */
+const phaseMs = (value: unknown): number | undefined =>
+	typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 86_400_000
+		? Math.round(value * 10) / 10
+		: undefined;
+
+/**
+ * A start's phases as a host reports them (`HostSandbox.phases`), named as the compute API keeps them: undefined unless
+ * each phase is a number of milliseconds (an older host sends none), the disk's method left out when it isn't one.
+ */
+export function parseStartPhases(value: unknown): Placement["startup"] {
+	if (typeof value !== "object" || value === null) return undefined;
+	const phases = value as { readonly [key: string]: unknown };
+	const diskMs = phaseMs(phases.diskMs);
+	const bootMs = phaseMs(phases.bootMs);
+	const agentMs = phaseMs(phases.agentMs);
+	const hostMs = phaseMs(phases.totalMs);
+	if (diskMs === undefined || bootMs === undefined || agentMs === undefined || hostMs === undefined) return undefined;
+	const snapshotMs = phaseMs(phases.snapshotMs);
+	const disk =
+		typeof phases.disk === "string" && DISK_MADE.has(phases.disk) ? (phases.disk as HostDiskMade) : undefined;
+	return {
+		...(disk === undefined ? {} : { disk }),
+		diskMs,
+		...(snapshotMs === undefined || snapshotMs === 0 ? {} : { snapshotMs }),
+		bootMs,
+		agentMs,
+		hostMs,
+	};
+}
 
 /** When a host set a sandbox's mounts (`HostSandbox.mountsAt`): a positive whole number of milliseconds, or undefined. */
 export function parseMountsAt(value: unknown): number | undefined {

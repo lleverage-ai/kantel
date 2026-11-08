@@ -41,8 +41,15 @@ and in a custom image's build, reads Ubuntu's live archive instead (`archive.ubu
 answered 503, 502 and 401 for hours, and a 4xx fails `apt-get update` outright, however the sources are pinned).
 `kantel-apt-sources` writes those sources last and moves `APT::Snapshot` to `/etc/kantel/apt-snapshot.conf`, which
 records the snapshot the image was built from; Debian's Chromium source then reads `deb.debian.org`, still limited to
-Chromium's packages. The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so a plain
-`sudo apt-get update` works too: sudo drops `HTTP_PROXY`, and a sandbox has no other way out.
+Chromium's packages. The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so apt
+goes through it in any environment, including a root shell that never read the proxy variables.
+
+sudo keeps the proxy and CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lower-case forms,
+`NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY`, `REQUESTS_CA_BUNDLE`) by `env_keep` in `/etc/sudoers.d/kantel-proxy`, so
+`sudo npm i -g pnpm` reaches the network as `npm i` does (#731). It keeps what the caller had: a root shell started some
+other way has them from `/etc/profile.d/kantel.sh` if it's a login shell. A sandbox has no DNS, so a name only resolves
+through the proxy: `getent hosts`, `ping` and `nslookup` fail, and a program that ignores the proxy variables can't
+connect.
 
 ## What listens where
 
@@ -63,6 +70,12 @@ nothing in the guest listens on the sandbox's network except SSH.
 The host's egress proxy sits on each sandbox's own gateway address, which a fork changes. Shells and `exec` get it
 from `/etc/kantel/proxy.env`; Chromium and dockerd, which read a proxy once at start, use the forwarder on 3128, which
 follows the sandbox's current proxy, so a fork or resume never restarts them (no lost tabs or containers).
+
+Every other systemd service gets the proxy and CA variables from `/etc/systemd/system.conf.d/kantel-proxy.conf`
+(`DefaultEnvironment`), and PAM sessions (sudo, su, SSH, cron) from `/etc/environment`, both pointing at the forwarder,
+so they are fixed in the image and never go stale (#730). The sandbox's own variables (`kantel new -e`) are for
+commands only; a unit that wants them adds `EnvironmentFile=-/etc/kantel/env`, which the guest agent rewrites on every
+start, resume and fork. A test in `internal/microvm` checks both files against the variables the host sets.
 
 Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay that carries a TCP stream carries the
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.
