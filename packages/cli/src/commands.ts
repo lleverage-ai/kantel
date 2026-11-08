@@ -1640,8 +1640,11 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "usage",
-				summary: "A sandbox's running time, CPU and cost over the last day",
+				summary: "A sandbox's running time, CPU and cost over the last day, and its peak memory and CPU",
 				args: ID_ARG,
+				details:
+					"The peaks are its highest single readings since it was made, kept after the readings themselves are gone and\n" +
+					"after it is deleted: size a sandbox from them, as a mean can be half its peak or less.",
 				async run(ctx) {
 					const usage = await (await ctx.client()).getSandboxUsage(ctx.arg(0));
 					const { totals } = usage;
@@ -1650,6 +1653,15 @@ const SECTIONS: readonly Section[] = [
 							["running", duration(totals.runningSeconds)],
 							["cpu", `${totals.cpuSeconds.toFixed(1)} s`],
 							["cost", money(totals.cost.total, totals.cost.currency)],
+							[
+								"peak memory",
+								usage.peakMemoryBytes === undefined
+									? undefined
+									: `${bytes(usage.peakMemoryBytes)}${
+											usage.memLimitBytes === undefined ? "" : ` of ${bytes(usage.memLimitBytes)}`
+										}${usage.peakMemoryAt === undefined ? "" : `, ${ago(usage.peakMemoryAt)}`}`,
+							],
+							["peak cpu", usage.peakCpu === undefined ? undefined : `${Math.round(usage.peakCpu * 100)}%`],
 						]),
 					);
 				},

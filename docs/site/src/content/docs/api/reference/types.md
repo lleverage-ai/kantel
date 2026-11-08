@@ -1538,17 +1538,22 @@ One of: `"isolate"` or `"microvm"`.
 | `totals` | object | yes |  |
 | `memLimitBytes` | integer | no | The memory it may use, when its host reports it or its size sets it. (minimum 0) |
 | `diskTotalBytes` | integer | no | Its own disk's size, as its guest counts it, when its host sends disk figures. (minimum 0) |
+| `peakMemoryBytes` | integer | no | The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. (minimum 0) |
+| `peakMemoryAt` | integer | no | Epoch milliseconds, UTC. |
+| `peakCpu` | number | no | Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. (minimum 0, maximum 1) |
 | `series` | [SandboxUsageSeries](/api/reference/types/#sandboxusageseries) | yes |  |
 
 ### SandboxUsagePoint
 
-One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.
+One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 | `cpu` | number | yes | CPU utilisation over the interval. (minimum 0, maximum 1) |
 | `memoryMb` | number | yes |  |
+| `cpuMax` | number | no | The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean. (minimum 0, maximum 1) |
+| `memoryMbMax` | number | no | The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean. |
 | `runningSeconds` | number | yes |  |
 | `cost` | number | yes |  |
 | `measured` | boolean | no | Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. |
@@ -2073,6 +2078,9 @@ A host's recent CPU and memory, for sparklines.
 | `cpuSeconds` | number | yes |  |
 | `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way. |
 | `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
+| `peakMemoryBytes` | integer | no | The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. (minimum 0) |
+| `peakMemoryAt` | integer | no | Epoch milliseconds, UTC. |
+| `peakCpu` | number | no | Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. (minimum 0, maximum 1) |
 
 ### ViewAccessBody
 

@@ -76,6 +76,15 @@ export function stubUsage(id: string, options: StubUsageOptions): UsageSeries {
 			at: tick * interval,
 			cpu: Math.round(cpu * 1000) / 1000,
 			memUsedBytes: Math.round(options.memLimitBytes * share),
+			// A longer mean hides its interval's highest readings, which a live source says beside it.
+			...(scale === 1
+				? {}
+				: {
+						cpuMax: Math.round(clamp(cpu * (1.4 + noise(seed + 4, step) * 0.8), 0, 1) * 1000) / 1000,
+						memMaxBytes: Math.round(
+							options.memLimitBytes * clamp(share * (1.2 + noise(seed + 5, step) * 0.6), share, 0.99),
+						),
+					}),
 			...(options.diskTotalBytes === undefined
 				? {}
 				: {
