@@ -399,6 +399,11 @@ export interface Sandbox {
 	 * Recover (a restart that keeps its disk) is offered. Absent while it answers.
 	 */
 	readonly unresponsive?: string;
+	/**
+	 * Its host isn't connected to Kantel: nothing reaches its machine, and `state` is only what it was last known to be.
+	 * Nothing that needs the machine is offered; a stop is, and waits for the host. Absent while its host is connected.
+	 */
+	readonly hostUnreachable?: boolean;
 	/** Shared with the organisation it belongs to (an organisation's sandboxes are shared unless made private). */
 	readonly shared?: boolean;
 	/** The sandbox it was forked from. */
@@ -2029,6 +2034,46 @@ export const SANDBOX_STATE_LABELS: Readonly<Record<SandboxState, string>> = {
 /** What a running sandbox whose guest agent doesn't answer shows for its state, in the error colour. */
 export const UNRESPONSIVE_LABEL = "Unresponsive";
 
+/** What a sandbox whose host isn't connected shows for its state, in the warning colour: its real state is unknown. */
+export const HOST_UNREACHABLE_LABEL = "Host unreachable";
+export const HOST_UNREACHABLE_STATUS: Status = "approval";
+/**
+ * How often a page reads again while a sandbox it shows runs, or has its host away: the live feed says when a host goes
+ * or comes back, and this is the backstop for when it can't (the gateway that held the host's connection went with it,
+ * or a gateway read the sandbox before it had seen the change), so a wrong `hostUnreachable` lasts 15 seconds at most.
+ */
+export const HOST_CHECK_POLL_MS = 15_000;
+
+/**
+ * How long a page showing `sandboxes` waits before it reads them again: `movingMs` while any is between states, else
+ * `HOST_CHECK_POLL_MS` while any runs or has its host away (not for a page frozen at one time, `frozen`, a story's),
+ * else never: the live feed says what changes.
+ */
+export function sandboxesPollMs(
+	sandboxes: readonly Pick<Sandbox, "state" | "hostUnreachable">[],
+	movingMs: number,
+	frozen = false,
+): number | undefined {
+	if (sandboxes.some((box) => sandboxMoving(box.state))) return movingMs;
+	if (frozen) return undefined;
+	return sandboxes.some((box) => box.state === "running" || box.hostUnreachable === true)
+		? HOST_CHECK_POLL_MS
+		: undefined;
+}
+
+/** What the sandbox's page says of a sandbox whose host isn't connected. */
+export const HOST_UNREACHABLE_NOTICE =
+	"Its host isn't connected to Kantel, so the sandbox can't be reached and its real state can't be confirmed. " +
+	"It shows what it was last known to be until the host reconnects.";
+
+/**
+ * Whether a sandbox shows "Host unreachable" in place of its state: one with a machine that may be up (starting,
+ * running, stopping, paused) whose host isn't connected. A stopped one, or one in error, keeps its state, which nothing
+ * on the host can change.
+ */
+export const showsHostUnreachable = (sandbox: Pick<Sandbox, "state" | "hostUnreachable">): boolean =>
+	sandbox.hostUnreachable === true && sandbox.state !== "stopped" && sandbox.state !== "error";
+
 /** The status colour each state shows in. */
 export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
 	starting: "working",
@@ -2171,11 +2216,13 @@ export const shortId = (id: string): string => {
 
 /**
  * What a state lets a person do, in the order the actions menu lists them. A running sandbox whose guest agent doesn't
- * answer (`unresponsive`) can't be connected to or forked, only stopped or recovered.
+ * answer (`unresponsive`) can't be connected to or forked, only stopped or recovered. One whose host isn't connected
+ * (`hostUnreachable`) can only be stopped: everything else needs its host, and a stop waits for it.
  */
 export function sandboxActions(
 	state: SandboxState,
 	unresponsive = false,
+	hostUnreachable = false,
 ): {
 	readonly connect: boolean;
 	readonly stop: boolean;
@@ -2183,10 +2230,12 @@ export function sandboxActions(
 	readonly fork: boolean;
 	readonly recover: boolean;
 } {
+	const stop = state === "running" || state === "paused";
+	if (hostUnreachable) return { connect: false, stop, resume: false, fork: false, recover: false };
 	const answering = state === "running" && !unresponsive;
 	return {
 		connect: answering,
-		stop: state === "running" || state === "paused",
+		stop,
 		resume: state === "stopped" || state === "paused" || state === "error",
 		fork: answering || state === "stopped" || state === "paused",
 		recover: state === "error" || (state === "running" && unresponsive),

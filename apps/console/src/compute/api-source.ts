@@ -619,6 +619,8 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.state === "running" && sandbox.health === "unresponsive"
 			? { unresponsive: sandbox.reason ?? "Its guest agent isn't answering. Recover it: a restart that keeps its disk" }
 			: {}),
+		// Its host isn't connected: its state is only the last known, and nothing reaches its machine.
+		...(sandbox.hostReachable === false ? { hostUnreachable: true } : {}),
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
 		...environmentRefOf(sandbox, context),

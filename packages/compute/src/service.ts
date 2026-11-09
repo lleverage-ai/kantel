@@ -70,9 +70,11 @@ import {
 	type BootOptions,
 	type CommandProgress,
 	type ExecResult,
+	hostNotConnected,
 	isCommandProgress,
 	isDetachedWaitEnded,
 	type Placement,
+	refusedBeforeTheMachine,
 	type SandboxBackend,
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
@@ -591,6 +593,12 @@ export interface ComputeService {
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
+	 * A host connected to this gateway, or its connection here ended: each of its sandboxes that isn't deleted is
+	 * published to the live feed as it is (its state unchanged), so an open console reads it again and shows whether it can
+	 * be reached (`hostReachable`). Nothing is written.
+	 */
+	reportHostConnection(hostId: string, connected: boolean): Promise<void>;
+	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
 	 * `hostId` holds its placement); a path the sandbox doesn't mount is ignored. `mountsAt` is when the host set them:
@@ -950,7 +958,8 @@ const REFUSALS: ReadonlySet<string> = new Set([
 	"not_supported",
 	"expired",
 ]);
-const refusedBeforeEffects = (error: unknown): boolean => error instanceof KantelError && REFUSALS.has(error.code);
+const refusedBeforeEffects = (error: unknown): boolean =>
+	error instanceof KantelError && (REFUSALS.has(error.code) || refusedBeforeTheMachine(error));
 /** Where an idempotent call's sealed answer is kept, as its additional data. */
 const idempotencyAad = (id: string) => sealedAt("idempotency", id, "body");
 /** Whether a stored key is for this request: a key kept before fingerprints were is taken to be. */
@@ -2278,12 +2287,52 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return mayKnowHost(principal, host, sandbox.accountId) ? { hostId: id, hostName: host.name } : {};
 	}
 
+	/**
+	 * Whether the host a sandbox is placed on is connected now (`Sandbox.hostReachable`), told to anyone who sees the
+	 * sandbox, whether or not they may know which host it is; absent until it's placed. A host the backend has no word on
+	 * (the stub's) is. `reach` keeps the answers for one response, so a page of sandboxes asks once per host.
+	 */
+	async function hostReachableOf(
+		sandbox: StoredSandbox,
+		reach: Map<string, Promise<boolean | undefined>> = new Map(),
+	): Promise<Pick<Sandbox, "hostReachable">> {
+		const id = sandbox.hostId;
+		if (id === undefined) return {};
+		if (backend.hostConnected === undefined) return { hostReachable: true };
+		let read = reach.get(id);
+		if (read === undefined) {
+			// One that can't be read says nothing: it's left as reachable rather than failing the answer.
+			read = backend.hostConnected(id).catch(() => undefined);
+			reach.set(id, read);
+		}
+		return { hostReachable: (await read) ?? true };
+	}
+
+	/** Whether a call that needs the sandbox's machine can reach it: refused at once while its host isn't connected. */
+	async function requireHostReachable(sandbox: StoredSandbox): Promise<void> {
+		if ((await hostReachableOf(sandbox)).hostReachable === false) throw hostNotConnected();
+	}
+
+	/**
+	 * `requireHostReachable` for what's on a snapshot's host (its files, a copy of its bytes): refused at once, without
+	 * naming the host, rather than failing in the host call. A ref no host backend names (the stub's) always passes.
+	 */
+	async function requireSnapshotHostReachable(ref: string): Promise<void> {
+		const hostId = refHost(ref);
+		if (hostId === undefined || backend.hostConnected === undefined) return;
+		if ((await backend.hostConnected(hostId).catch(() => undefined)) === false) throw hostNotConnected();
+	}
+
 	async function sandboxView(
 		sandbox: StoredSandbox,
 		principal: Principal,
 		hosts?: Map<string, Promise<StoredHost | undefined>>,
+		reach?: Map<string, Promise<boolean | undefined>>,
 	): Promise<Sandbox> {
-		const host = await hostOfView(sandbox, principal, hosts);
+		const [host, reachable] = await Promise.all([
+			hostOfView(sandbox, principal, hosts),
+			hostReachableOf(sandbox, reach),
+		]);
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
 		const rate = rateOf(sandbox);
 		return {
@@ -2329,6 +2378,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...peakView(peakOf(sandbox)),
 			},
 			...host,
+			...reachable,
 			base: baseView(sandbox.base),
 			...(sandbox.startup === undefined ? {} : { startup: { ...sandbox.startup } }),
 		};
@@ -3422,7 +3472,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * stays stopped.
 	 */
 	function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
-		return runningOnce(sandboxId, (id) => settledFor(principal, id));
+		return runningOnce(
+			sandboxId,
+			(id) => settledFor(principal, id),
+			(sandbox) => refuseShared(principal, sandbox),
+		);
 	}
 
 	/**
@@ -3440,6 +3494,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function runningOnce(
 		sandboxId: string,
 		settled: (sandboxId: string) => Promise<StoredSandbox>,
+		authorise: (sandbox: StoredSandbox) => Promise<void> = async () => undefined,
 	): Promise<StoredSandbox> {
 		let held = false;
 		const hold = delay(startHoldMs);
@@ -3449,10 +3504,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		try {
 			for (;;) {
 				const latest = await mustGetSandbox(sandboxId);
+				// Its host isn't connected: refused at once, before waiting for its start (a placed sandbox starting again on a
+				// host that went), behind what's queued on it (a stop waits up to minutes for the host), or on anything its guest
+				// said, which can't be known now. One not yet placed has no host to ask, and waits for its start as before.
+				if (latest.state !== "deleted") {
+					await authorise(latest);
+					await requireHostReachable(latest);
+				}
 				if (latest.state !== "starting") {
 					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
 					const sandbox = await settled(sandboxId);
 					if (sandbox.state === "running") {
+						// Its host went while the call waited: nothing reaches the machine (an SSH or desktop grant would only
+						// fail when used).
+						await requireHostReachable(sandbox);
 						// Its guest agent doesn't answer its host: the call would only hang.
 						if (sandbox.health === "unresponsive") throw sandboxUnresponsive(sandbox, apiBasePath);
 						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
@@ -4314,6 +4379,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await emit("sandbox.recovered", written.accountId, {
 				sandbox: written,
 				data: { reason: "Its guest agent answers again" },
+			});
+		}
+	}
+
+	/** `ComputeService.reportHostConnection`: its sandboxes, published as they are, for a console to read again. */
+	async function reportHostConnection(hostId: string, _connected: boolean): Promise<void> {
+		for (const sandbox of await store.sandboxes.list({ hostId })) {
+			if (sandbox.state === "deleted") continue;
+			live.publish({
+				sandboxId: sandbox.id,
+				accountId: sandbox.accountId,
+				state: sandbox.state,
+				previousState: sandbox.state,
+				at: now(),
 			});
 		}
 	}
@@ -6522,6 +6601,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			requireScope(principal, "sandboxes:read", role);
 			const active: readonly SandboxState[] = ["starting", "running", "stopping"];
 			const hosts = new Map<string, Promise<StoredHost | undefined>>();
+			const reach = new Map<string, Promise<boolean | undefined>>();
 			const onHost =
 				query.host === undefined
 					? undefined
@@ -6543,7 +6623,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			return {
 				items: await withSnapshotTimes(
-					await withMakersNamed(await Promise.all(page.items.map((sandbox) => sandboxView(sandbox, principal, hosts)))),
+					await withMakersNamed(
+						await Promise.all(page.items.map((sandbox) => sandboxView(sandbox, principal, hosts, reach))),
+					),
 				),
 				nextCursor: page.nextCursor,
 			};
@@ -7684,6 +7766,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("not_supported", "This deployment's sandboxes can't list their processes");
 			}
 			if (sandbox.state !== "running") throw sandboxNotRunning(sandbox, apiBasePath);
+			await requireHostReachable(sandbox);
 			const { processes, total } = await backend.processes(sandbox.id, query.limit ?? 10);
 			return {
 				items: processes.map(({ pid, command, cpuPercent, memoryBytes }) => ({
@@ -7880,6 +7963,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, body.sandboxId, "snapshots:write");
 			// A retry would be `conflict` on its own name, or with `replace` save it again and delete the first.
 			return once(principal, "saveSnapshot", { body, idempotencyKey }, async () => {
+				// Its host away: refused before waiting behind what's queued on it (a stop waits minutes for the host).
+				await requireHostReachable(sandbox);
 				const current = await settledFor(principal, sandbox.id);
 				// Not a refused save of the name still having its bytes deleted (`withdrawSave`).
 				const [existing] = (
@@ -7928,6 +8013,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				if (source !== undefined) {
 					const from = readyRef(source);
+					await requireSnapshotHostReachable(from);
 					const kept = await backend.keepSnapshot?.(from);
 					ref = kept?.ref ?? from;
 					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
@@ -7940,6 +8026,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					takenAt = source.takenAt ?? (source.kind === "automatic" ? source.createdAt : undefined);
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
+					// Its host went while the save waited.
+					await requireHostReachable(current);
 					// At the host's limit already: nothing is taken.
 					const full = await savedBytesOver(current.accountId, current.hostId, existing);
 					if (full !== undefined) throw full;
@@ -8004,14 +8092,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listSnapshotFiles: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
 			const path = resolvePath(query.path ?? HOME);
-			const page = paginate(await backend.listSnapshotFiles(readyRef(snapshot), path), query.limit, query.cursor);
+			const ref = readyRef(snapshot);
+			// Its files are on its host: refused at once while that's away (its record and history are still answered).
+			await requireSnapshotHostReachable(ref);
+			const page = paginate(await backend.listSnapshotFiles(ref, path), query.limit, query.cursor);
 			return { path, items: page.items.map(fileEntry), nextCursor: page.nextCursor };
 		},
 
 		readSnapshotFile: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
 			const path = resolvePath(query.path);
-			const bytes = await backend.readSnapshotFile(readyRef(snapshot), path);
+			const ref = readyRef(snapshot);
+			await requireSnapshotHostReachable(ref);
+			const bytes = await backend.readSnapshotFile(ref, path);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", `${path} is larger than 1 MiB`);
 			const encoding = query.encoding ?? "utf8";
 			return {
@@ -9287,6 +9380,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		reportHealth,
 
 		reportExit,
+		reportHostConnection,
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

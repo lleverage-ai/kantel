@@ -11,6 +11,7 @@
  * no host can take the work.
  */
 import type { computeSchema } from "@kantel/api";
+import { KantelError } from "@kantel/contracts";
 import type { BackendUsageReport } from "./usage-series.ts";
 
 /**
@@ -545,9 +546,40 @@ export interface UsageSample {
  * Where sandboxes run. Lane 2's host scheduler implements it over the hosts that joined; `createStubBackend` implements
  * it in memory. Paths are absolute (the control plane resolves relative ones against the user's home).
  */
+/** The `hostNotConnected` refusals made in this process, which are known to come before the call did anything. */
+const refusedBeforeMachine = new WeakSet<KantelError>();
+
+/**
+ * A call that needs a sandbox's machine while its host isn't connected (`Sandbox.hostReachable` false), refused before it
+ * did anything. The host isn't named: a sandbox on a shared host doesn't show its host.
+ */
+export function hostNotConnected(): KantelError {
+	const error = new KantelError(
+		"unavailable",
+		"The sandbox's host isn't connected to Kantel, so the sandbox can't be reached now; try again once the host reconnects",
+	);
+	refusedBeforeMachine.add(error);
+	return error;
+}
+
+/**
+ * Whether `error` is a `hostNotConnected` refusal, made before the call did anything, so an Idempotency-Key it held is
+ * freed for a retry once the host is back. Any other `unavailable` (a host's own, a call cut off part way) may follow an
+ * effect, and keeps the key.
+ */
+export function refusedBeforeTheMachine(error: unknown): boolean {
+	return error instanceof KantelError && refusedBeforeMachine.has(error);
+}
+
 export interface SandboxBackend {
 	/** The types, sizes and hosts available now. */
 	capabilities(): Promise<BackendCapabilities>;
+	/**
+	 * Whether one of its hosts is connected now (a sandbox's `hostReachable`); undefined for a host it doesn't have. Asked
+	 * for the sandboxes of every answer, so a connected host is answered without a read. Absent: every host it has always
+	 * is (the stub).
+	 */
+	hostConnected?(hostId: string): Promise<boolean | undefined>;
 	/** Places and boots a new machine. */
 	create(spec: SandboxSpec): Promise<Placement>;
 	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */

@@ -30,6 +30,7 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	type FileStream,
+	hostNotConnected,
 	isDetachedWaitEnded,
 	type Placement,
 	type SandboxBackend,
@@ -700,7 +701,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		grantee?: string,
 		desktop?: DesktopMode,
 	): Promise<string> {
-		await tierOf(sandboxId);
+		const { hostId } = await tierOf(sandboxId);
+		// A ticket is used later, through the gateway, which reaches the machine only through its host: refused now rather
+		// than handed out to fail when it's opened.
+		if (!hosts.hub.connected(hostId)) throw hostNotConnected();
 		return options.tickets.issue({
 			sandboxId,
 			port,
@@ -835,6 +839,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
+		},
+		async hostConnected(hostId) {
+			if (hosts.hub.connected(hostId)) return true;
+			// Not connected, or not one of these hosts at all (a routed backend's other side): only a host there is to read
+			// says which.
+			return (await hosts.get(hostId).then(
+				() => true,
+				() => false,
+			))
+				? false
+				: undefined;
 		},
 		create: createOne,
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
