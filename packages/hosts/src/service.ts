@@ -1117,6 +1117,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		...(options.callTimeoutMs === undefined ? {} : { callTimeoutMs: options.callTimeoutMs }),
 	});
 	const hub = cluster === undefined ? local : cluster.route(local);
+	// A host another replica gained or lost: this one's answer for it changed only now, perhaps after a console here read
+	// its sandboxes on the word of the replica that held it, so it's said again from here.
+	cluster?.onRemoteChange((hostId) => compute?.hostConnection?.(hostId, hub.connected(hostId)));
 
 	// Read the latest release now, so the first list after a start has it rather than starting the read itself.
 	options.releases?.known();

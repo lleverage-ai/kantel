@@ -31,7 +31,6 @@ import {
 	costText,
 	type EgressSource,
 	HOST_UNREACHABLE_NOTICE,
-	HOST_UNREACHABLE_POLL_MS,
 	type HostingMode,
 	idleStopText,
 	imageLacks,
@@ -43,6 +42,7 @@ import {
 	type SandboxImage,
 	type SnapshotsSource,
 	sandboxActions,
+	sandboxesPollMs,
 	sandboxMoving,
 	sandboxScreen,
 	sandboxSpec,
@@ -245,22 +245,14 @@ export function SandboxPage({
 	}, [state]);
 	const sandbox = local ?? read;
 
-	// Read again while it moves between states; while it runs, now and then for its CPU; while its host isn't connected,
-	// more often, as a backstop to the live feed (a gateway that held the host's connection and went says nothing).
+	// Read again while it moves between states; while it runs or its host isn't connected, every 15 seconds, for its CPU
+	// and as the backstop to the live feed's word of its host (`HOST_CHECK_POLL_MS`).
 	const moving = sandbox !== undefined && sandboxMoving(sandbox.state);
 	const running = sandbox?.state === "running";
 	const away = sandbox?.hostUnreachable === true;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: each read schedules the next.
 	useEffect(() => {
-		const wait = moving
-			? pollMs
-			: fixedNow !== undefined
-				? undefined
-				: away
-					? HOST_UNREACHABLE_POLL_MS
-					: running
-						? 30_000
-						: undefined;
+		const wait = sandbox === undefined ? undefined : sandboxesPollMs([sandbox], pollMs, fixedNow !== undefined);
 		if (wait === undefined) return;
 		const timer = setTimeout(reload, wait);
 		return () => clearTimeout(timer);

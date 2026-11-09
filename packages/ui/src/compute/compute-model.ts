@@ -2038,10 +2038,28 @@ export const UNRESPONSIVE_LABEL = "Unresponsive";
 export const HOST_UNREACHABLE_LABEL = "Host unreachable";
 export const HOST_UNREACHABLE_STATUS: Status = "approval";
 /**
- * How often a page reads again while a sandbox it shows has its host away: the live feed says when the host comes back,
- * and this is the backstop for when it can't (the gateway that held the host's connection went with it).
+ * How often a page reads again while a sandbox it shows runs, or has its host away: the live feed says when a host goes
+ * or comes back, and this is the backstop for when it can't (the gateway that held the host's connection went with it,
+ * or a gateway read the sandbox before it had seen the change), so a wrong `hostUnreachable` lasts 15 seconds at most.
  */
-export const HOST_UNREACHABLE_POLL_MS = 15_000;
+export const HOST_CHECK_POLL_MS = 15_000;
+
+/**
+ * How long a page showing `sandboxes` waits before it reads them again: `movingMs` while any is between states, else
+ * `HOST_CHECK_POLL_MS` while any runs or has its host away (not for a page frozen at one time, `frozen`, a story's),
+ * else never: the live feed says what changes.
+ */
+export function sandboxesPollMs(
+	sandboxes: readonly Pick<Sandbox, "state" | "hostUnreachable">[],
+	movingMs: number,
+	frozen = false,
+): number | undefined {
+	if (sandboxes.some((box) => sandboxMoving(box.state))) return movingMs;
+	if (frozen) return undefined;
+	return sandboxes.some((box) => box.state === "running" || box.hostUnreachable === true)
+		? HOST_CHECK_POLL_MS
+		: undefined;
+}
 
 /** What the sandbox's page says of a sandbox whose host isn't connected. */
 export const HOST_UNREACHABLE_NOTICE =

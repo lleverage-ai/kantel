@@ -38,7 +38,6 @@ import {
 	type Environment,
 	fitDisk,
 	fitMemory,
-	HOST_UNREACHABLE_POLL_MS,
 	type HostChoice,
 	type HostingMode,
 	memoryRangeFor,
@@ -55,8 +54,8 @@ import {
 	type SavedSnapshot,
 	type SaveSnapshotOptions,
 	sandboxActions,
+	sandboxesPollMs,
 	sandboxMachineText,
-	sandboxMoving,
 	sandboxScreen,
 	sandboxSpec,
 	shapeCentsPerHour,
@@ -238,17 +237,15 @@ export function SandboxesPage({
 		return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 	}, [listed, local]);
 
-	// Read again while anything is between states, then forget what this page changed: the list has it now.
-	const moving = sandboxes?.some((box) => sandboxMoving(box.state)) === true;
-	// And, less often, while any has its host away: the live feed says when it's back, this is the backstop.
-	const away = sandboxes?.some((box) => box.hostUnreachable === true) === true;
+	// Read again while anything is between states, then forget what this page changed: the list has it now. And, less
+	// often, while any runs or has its host away: the backstop to the live feed's word of a host (`sandboxesPollMs`).
+	const wait = sandboxes === undefined ? undefined : sandboxesPollMs(sandboxes, pollMs, fixedNow !== undefined);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: each read schedules the next while something moves.
 	useEffect(() => {
-		const wait = moving ? pollMs : away ? HOST_UNREACHABLE_POLL_MS : undefined;
 		if (wait === undefined) return;
 		const timer = setTimeout(reload, wait);
 		return () => clearTimeout(timer);
-	}, [moving, away, reload, pollMs, listed]);
+	}, [wait, reload, listed]);
 	// And at once when one changes elsewhere: the CLI, the API, an auto-stop, its host going or coming back.
 	useFollowSandboxes(source, account.id, reload);
 	useEffect(() => {

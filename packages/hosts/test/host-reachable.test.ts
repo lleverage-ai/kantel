@@ -132,6 +132,55 @@ describe("a sandbox whose host isn't connected", () => {
 		expect(isKantelError(refused) && refused.code).toBe("unavailable");
 	});
 
+	it("refuses a save, its processes and its snapshots' files without naming the host, and still lists its snapshots", async () => {
+		const { root, hostId, host, sandbox } = await setup();
+		const taken = await root.takeSnapshot(sandbox.id);
+		await vi.waitFor(async () => expect((await root.getSnapshot(taken.id)).state).toBe("ready"));
+		host.connection.closed(1006, "gone");
+		for (const call of [
+			root.saveSnapshot({ name: "kept", sandboxId: sandbox.id }),
+			root.saveSnapshot({ name: "kept-entry", sandboxId: sandbox.id, snapshotId: taken.id }),
+			root.listSandboxProcesses(sandbox.id),
+			root.listSnapshotFiles(taken.id),
+			root.readSnapshotFile(taken.id, { path: "/etc/hostname" }),
+		]) {
+			const refused = await failure(call);
+			expect(refused).toMatchObject({ status: 503, code: "unavailable" });
+			expect(refused?.message).toMatch(/host isn't connected/);
+			expect(refused?.message).not.toContain(hostId);
+		}
+		// Its records are Kantel's, answered while the host is away.
+		expect((await root.getSnapshot(taken.id)).id).toBe(taken.id);
+		expect((await root.listSnapshots({ sandboxId: sandbox.id })).items.map((item) => item.id)).toContain(taken.id);
+	});
+
+	it("is refused at once, not after a stop queued on it that waits for the host", async () => {
+		const { api, root, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		// The stop waits up to minutes for the host to reconnect.
+		await root.stopSandbox(sandbox.id);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("stopping");
+		const started = Date.now();
+		const refused = await failure(root.runCommand(sandbox.id, { command: "true" }));
+		expect(refused).toMatchObject({ status: 503, code: "unavailable" });
+		expect(Date.now() - started).toBeLessThan(2_000);
+		// Back, the stop carries on.
+		await reconnect(service, hostId, host);
+		await api.service.idle();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+	});
+
+	it("says its host is away rather than that its guest agent doesn't answer, which can't be known now", async () => {
+		const { api, root, hostId, host, sandbox } = await setup();
+		await api.service.reportHealth(hostId, sandbox.id, "unresponsive", "out of memory", Date.now());
+		expect(await failure(root.runCommand(sandbox.id, { command: "true" }))).toMatchObject({ status: 409 });
+		host.connection.closed(1006, "gone");
+		expect(await failure(root.runCommand(sandbox.id, { command: "true" }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+		});
+	});
+
 	it("can still be stopped: the stop waits for its host", async () => {
 		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");

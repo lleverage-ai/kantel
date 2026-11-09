@@ -2311,6 +2311,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if ((await hostReachableOf(sandbox)).hostReachable === false) throw hostNotConnected();
 	}
 
+	/**
+	 * `requireHostReachable` for what's on a snapshot's host (its files, a copy of its bytes): refused at once, without
+	 * naming the host, rather than failing in the host call. A ref no host backend names (the stub's) always passes.
+	 */
+	async function requireSnapshotHostReachable(ref: string): Promise<void> {
+		const hostId = refHost(ref);
+		if (hostId === undefined || backend.hostConnected === undefined) return;
+		if ((await backend.hostConnected(hostId).catch(() => undefined)) === false) throw hostNotConnected();
+	}
+
 	async function sandboxView(
 		sandbox: StoredSandbox,
 		principal: Principal,
@@ -3460,7 +3470,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * stays stopped.
 	 */
 	function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
-		return runningOnce(sandboxId, (id) => settledFor(principal, id));
+		return runningOnce(
+			sandboxId,
+			(id) => settledFor(principal, id),
+			(sandbox) => refuseShared(principal, sandbox),
+		);
 	}
 
 	/**
@@ -3478,6 +3492,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function runningOnce(
 		sandboxId: string,
 		settled: (sandboxId: string) => Promise<StoredSandbox>,
+		authorise: (sandbox: StoredSandbox) => Promise<void> = async () => undefined,
 	): Promise<StoredSandbox> {
 		let held = false;
 		const hold = delay(startHoldMs);
@@ -3488,13 +3503,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (;;) {
 				const latest = await mustGetSandbox(sandboxId);
 				if (latest.state !== "starting") {
+					// Its host isn't connected: refused at once, before waiting behind what's queued on it (a stop waits up to
+					// minutes for the host) and before anything its guest said, which can't be known now.
+					if (latest.state !== "deleted") {
+						await authorise(latest);
+						await requireHostReachable(latest);
+					}
 					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
 					const sandbox = await settled(sandboxId);
 					if (sandbox.state === "running") {
+						// Its host went while the call waited: nothing reaches the machine (an SSH or desktop grant would only
+						// fail when used).
+						await requireHostReachable(sandbox);
 						// Its guest agent doesn't answer its host: the call would only hang.
 						if (sandbox.health === "unresponsive") throw sandboxUnresponsive(sandbox, apiBasePath);
-						// Its host isn't connected: nothing reaches the machine (an SSH or desktop grant would only fail when used).
-						await requireHostReachable(sandbox);
 						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
 						noteActivity(sandbox.id);
 						return sandbox;
@@ -7741,6 +7763,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("not_supported", "This deployment's sandboxes can't list their processes");
 			}
 			if (sandbox.state !== "running") throw sandboxNotRunning(sandbox, apiBasePath);
+			await requireHostReachable(sandbox);
 			const { processes, total } = await backend.processes(sandbox.id, query.limit ?? 10);
 			return {
 				items: processes.map(({ pid, command, cpuPercent, memoryBytes }) => ({
@@ -7937,6 +7960,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, body.sandboxId, "snapshots:write");
 			// A retry would be `conflict` on its own name, or with `replace` save it again and delete the first.
 			return once(principal, "saveSnapshot", { body, idempotencyKey }, async () => {
+				// Its host away: refused before waiting behind what's queued on it (a stop waits minutes for the host).
+				await requireHostReachable(sandbox);
 				const current = await settledFor(principal, sandbox.id);
 				// Not a refused save of the name still having its bytes deleted (`withdrawSave`).
 				const [existing] = (
@@ -7985,6 +8010,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				if (source !== undefined) {
 					const from = readyRef(source);
+					await requireSnapshotHostReachable(from);
 					const kept = await backend.keepSnapshot?.(from);
 					ref = kept?.ref ?? from;
 					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
@@ -7997,6 +8023,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					takenAt = source.takenAt ?? (source.kind === "automatic" ? source.createdAt : undefined);
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
+					// Its host went while the save waited.
+					await requireHostReachable(current);
 					// At the host's limit already: nothing is taken.
 					const full = await savedBytesOver(current.accountId, current.hostId, existing);
 					if (full !== undefined) throw full;
@@ -8061,14 +8089,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listSnapshotFiles: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
 			const path = resolvePath(query.path ?? HOME);
-			const page = paginate(await backend.listSnapshotFiles(readyRef(snapshot), path), query.limit, query.cursor);
+			const ref = readyRef(snapshot);
+			// Its files are on its host: refused at once while that's away (its record and history are still answered).
+			await requireSnapshotHostReachable(ref);
+			const page = paginate(await backend.listSnapshotFiles(ref, path), query.limit, query.cursor);
 			return { path, items: page.items.map(fileEntry), nextCursor: page.nextCursor };
 		},
 
 		readSnapshotFile: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
 			const path = resolvePath(query.path);
-			const bytes = await backend.readSnapshotFile(readyRef(snapshot), path);
+			const ref = readyRef(snapshot);
+			await requireSnapshotHostReachable(ref);
+			const bytes = await backend.readSnapshotFile(ref, path);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", `${path} is larger than 1 MiB`);
 			const encoding = query.encoding ?? "utf8";
 			return {

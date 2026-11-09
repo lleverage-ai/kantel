@@ -83,10 +83,18 @@ export async function setIdleStop(
 	if (changed !== undefined) onChange(changed, changed.id, since);
 }
 
-/** Whether a sandbox can be restarted on the latest base now: it's on an outdated one, and running, stopped or failed. */
-export const canRestartOnLatest = (sandbox: Pick<Sandbox, "state" | "base">): boolean =>
+/**
+ * Whether a sandbox can be restarted on the latest base now: it's on an outdated one, running, stopped or failed, and
+ * its host is connected (its disk is there).
+ */
+export const canRestartOnLatest = (sandbox: Pick<Sandbox, "state" | "base" | "hostUnreachable">): boolean =>
 	sandbox.base?.outdated === true &&
+	sandbox.hostUnreachable !== true &&
 	(sandbox.state === "running" || sandbox.state === "stopped" || sandbox.state === "error");
+
+/** Whether a snapshot of a sandbox can be saved now: it has one to save, and its host (which holds it) is connected. */
+export const canSaveSnapshot = (sandbox: Pick<Sandbox, "snapshot" | "hostUnreachable">): boolean =>
+	sandbox.snapshot !== undefined && sandbox.hostUnreachable !== true;
 
 /**
  * The menu's items for `sandbox`, and the dialogs they open (render `dialogs` once beside the menu). Each item is
@@ -142,7 +150,7 @@ export function useSandboxMenu(
 									id: "save",
 									label: "Save snapshot",
 									icon: <SnapshotIcon />,
-									disabled: sandbox.snapshot === undefined,
+									disabled: !canSaveSnapshot(sandbox),
 									onSelect: () => setOpen("save"),
 								},
 							]),
