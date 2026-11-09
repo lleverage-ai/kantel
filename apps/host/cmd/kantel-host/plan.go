@@ -278,7 +278,7 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 		} else {
 			p.systemctl("enable", "--now", "kantel-host")
 			p.systemctl("restart", "kantel-host")
-			p.plan.done = "Done. This host is on Kantel's Hosts page; `kantel-host status` and `journalctl -u kantel-host` show it here."
+			p.plan.done = "Done. This host is on Kantel's Hosts page; `kantel-host status` and `kantel-host logs` show it here."
 		}
 	}
 

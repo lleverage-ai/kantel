@@ -28,6 +28,8 @@ type Check struct {
 	MicroVM bool `json:"microvm"`
 	// Required: kantel-host can't run what it's asked to without it. The others are advice.
 	Required bool `json:"required"`
+	// Fix is what to do about a check that didn't pass, when there's an obvious fix: set only then.
+	Fix string `json:"fix,omitempty"`
 }
 
 // A check's states.
@@ -234,8 +236,35 @@ func Checks(root string, native bool) []Check {
 	for i := range out {
 		c := &out[i]
 		c.Required = c.MicroVM && (!native || c.Name == "root" || c.Name == "os")
+		if c.State != StateOK {
+			c.Fix = fixFor(c.Name, c.Detail)
+		}
 	}
 	return out
+}
+
+// fixFor is the obvious fix for a check that didn't pass, or "" when there isn't one (the detail says what's wrong).
+func fixFor(name, detail string) string {
+	switch name {
+	case "root":
+		return "run it as root, with sudo: sudo kantel-host doctor"
+	case "kvm":
+		if strings.Contains(detail, "missing") {
+			return "load the module, with sudo modprobe kvm_intel (or kvm_amd); if /dev/kvm is still missing, virtualisation is off (see above)"
+		}
+		return "run it as root, with sudo: sudo kantel-host doctor"
+	case "ip":
+		return "install iproute2 (apt install iproute2; dnf install iproute)"
+	case "iptables":
+		return "install iptables (apt install iptables; dnf install iptables-nft)"
+	case "mkfs.ext4":
+		return "install e2fsprogs (apt install e2fsprogs; dnf install e2fsprogs)"
+	case "cp":
+		return "install coreutils (apt install coreutils; dnf install coreutils)"
+	case "tun":
+		return "load the module, with sudo modprobe tun"
+	}
+	return ""
 }
 
 // Passed is whether every required check is ok: one that failed or couldn't be found out doesn't pass.

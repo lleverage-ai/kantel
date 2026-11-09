@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -70,29 +69,41 @@ func (l labelFlag) Set(v string) error {
 
 // parseInstall reads install's options.
 func parseInstall(args []string) (installOptions, error) {
-	fs := flag.NewFlagSet("install", flag.ContinueOnError)
-	controlPlane := fs.String("url", os.Getenv("KANTEL_URL"), "Kantel's URL")
-	token := fs.String("token", os.Getenv("KANTEL_HOST_TOKEN"), "a kth_ registration token from Kantel's Hosts page")
-	name := fs.String("name", "", "the host's name in Kantel (default: its hostname)")
+	return parseInstallAs("install", args)
+}
+
+// parseInstallAs reads the options of install, or of plan (then help and usage errors are plan's).
+func parseInstallAs(cmd string, args []string) (installOptions, error) {
+	fs := newFlags(cmd)
+	// Not the environment as the flags' defaults: help would print a token that's set.
+	controlPlane := fs.String("url", "", "Kantel's `URL` (default: $KANTEL_URL)")
+	token := fs.String("token", "", "A kth_ registration `token` from Kantel's Hosts page (default: $KANTEL_HOST_TOKEN)")
+	name := fs.String("name", "", "The host's `name` in Kantel (default: its hostname)")
 	labels := labelFlag{}
-	fs.Var(labels, "label", "a label, key=value (repeatable, or comma-separated)")
-	images := fs.String("images", "", "where to get the kernel and images: a URL or a directory (default: Kantel's)")
-	root := fs.String("root", agent.DefaultRoot, "where sandboxes live")
-	configPath := fs.String("config", defaultConfigPath, "config file")
-	tiers := fs.String("tiers", "", "tiers to run: microvm,isolate (default: what the machine can)")
-	isolateRuntime := fs.String("isolate-runtime", "", `"native" runs isolates with workerd on the host itself (no KVM; trusted code only)`)
-	proxyDataPath := fs.Bool("proxy-data-path", false, "turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
-	injectGuestAgent := fs.Bool("inject-guest-agent", false, "boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
-	noStart := fs.Bool("no-start", false, "install and register, but don't start the service")
-	dryRun := fs.Bool("dry-run", false, "print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
-	if err := fs.Parse(args); err != nil {
+	fs.Var(labels, "label", "A label, `key=value` (repeatable, or comma-separated)")
+	images := fs.String("images", "", "The `source` of the kernel and images: a URL or a directory (default: Kantel's)")
+	root := fs.String("root", agent.DefaultRoot, "Where sandboxes live, a `directory`")
+	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
+	tiers := fs.String("tiers", "", "The `tiers` to run: microvm, isolate or both, comma-separated (default: what the machine can)")
+	isolateRuntime := fs.String("isolate-runtime", "", "The isolate `runtime`: native runs isolates with workerd on the host itself (no KVM; trusted code only)")
+	proxyDataPath := fs.Bool("proxy-data-path", false, "Turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
+	injectGuestAgent := fs.Bool("inject-guest-agent", false, "Boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
+	noStart := fs.Bool("no-start", false, "Install and register, but don't start the service")
+	dryRun := fs.Bool("dry-run", false, "Print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
+	if err := fs.parse(args); err != nil {
 		return installOptions{}, err
 	}
 	// install takes no operands. Go's flags stop at the first one, so anything after it (`--no-start false
 	// --dry-run`) would go unread: a dry run that was asked for must never become an install.
 	if fs.NArg() > 0 {
 		// Not echoed: what's left may hold the token, still unused.
-		return installOptions{}, errors.New("install takes options only, and stopped reading at an argument that isn't one (such as false after --no-start), so nothing from there on was read and nothing was done: give a true or false flag its value with =, as in --no-start=false")
+		return installOptions{}, usageErrorf(cmd, "%s takes options only, and stopped reading at an argument that isn't one (such as false after --no-start), so nothing from there on was read and nothing was done: give a true or false flag its value with =, as in --no-start=false", cmd)
+	}
+	if *controlPlane == "" {
+		*controlPlane = os.Getenv("KANTEL_URL")
+	}
+	if *token == "" {
+		*token = os.Getenv("KANTEL_HOST_TOKEN")
 	}
 	return installOptions{
 		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
@@ -105,17 +116,17 @@ func parseInstall(args []string) (installOptions, error) {
 // install.sh --dry-run runs `plan`, so an option that takes "--dry-run" as its value (`--name --dry-run`) can't turn
 // its preview into an install.
 func install(args []string, planOnly bool) error {
-	err := runInstall(thisMachine(), args, planOnly)
-	if errors.Is(err, flag.ErrHelp) {
-		return nil
-	}
-	return err
+	return runInstall(thisMachine(), args, planOnly)
 }
 
 // runInstall is `install`: its options read in full before anything else, then the plan, printed (--dry-run, or
 // planOnly) or done.
 func runInstall(in *installer, args []string, planOnly bool) error {
-	o, err := parseInstall(args)
+	cmd := "install"
+	if planOnly {
+		cmd = "plan"
+	}
+	o, err := parseInstallAs(cmd, args)
 	if err != nil {
 		return err
 	}
@@ -445,11 +456,17 @@ func downloadBinary(ctx context.Context, u, want string) error {
 }
 
 func updateCmd(args []string) error {
-	fs := flag.NewFlagSet("update", flag.ExitOnError)
-	_ = fs.String("config", defaultConfigPath, "config file (unused: kept so older scripts still parse)")
-	from := fs.String("url", "", "the binary's URL (default: Kantel's GitHub Release for --version, checked against its SHA256SUMS)")
-	ver := fs.String("version", "latest", "the release, such as 0.2.0, or latest")
-	_ = fs.Parse(args)
+	fs := newFlags("update")
+	_ = fs.String("config", defaultConfigPath, "Unused: kept so older scripts still parse")
+	fs.hide("config")
+	from := fs.String("url", "", "The binary's `URL` (default: Kantel's GitHub Release for --version, checked against its SHA256SUMS)")
+	ver := fs.String("version", "latest", "The `release`, such as 0.2.0, or latest")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
 	if os.Geteuid() != 0 {
 		return errors.New("update needs root")
 	}
@@ -475,14 +492,29 @@ func updateCmd(args []string) error {
 }
 
 func uninstall(args []string) error {
-	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "config file")
-	purge := fs.Bool("purge", false, "also delete sandboxes, snapshots and images")
-	_ = fs.Parse(args)
+	fs := newFlags("uninstall")
+	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
+	purge := fs.Bool("purge", false, "Also delete the sandboxes, snapshots, images, settings and the binary")
+	yes := fs.Bool("yes", false, "Confirm --purge")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
+	cfg, _ := agent.LoadConfig(*configPath)
+	cfg.Defaults() // a config it can't read (not root) still names the default root
+	if *purge && !*yes {
+		again := "sudo kantel-host uninstall --purge --yes"
+		if *configPath != defaultConfigPath {
+			again = fmt.Sprintf("sudo kantel-host uninstall --config %s --purge --yes", *configPath)
+		}
+		return usageErrorf("uninstall", "--purge deletes every sandbox and snapshot on this host and its images (%s), its settings (%s) and %s, and that can't be undone. To do it, run: %s",
+			cfg.Root, *configPath, binPath, again)
+	}
 	if os.Geteuid() != 0 {
 		return errors.New("uninstall needs root")
 	}
-	cfg, _ := agent.LoadConfig(*configPath)
 	_, _ = runOutput("systemctl", "disable", "--now", "kantel-host")
 	// The VMs outlive the service (KillMode=process): stop them too.
 	_, _ = runOutput("pkill", "-f", filepath.Join(cfg.Root, "bin", "firecracker"))

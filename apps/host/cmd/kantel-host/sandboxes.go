@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -28,54 +27,50 @@ func sandboxesCmd(args []string) error {
 	if show {
 		args = args[1:]
 	}
-	fs := flag.NewFlagSet("sandboxes", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "config file")
-	socket := fs.String("socket", "", "the daemon's control socket (default: the config's, or "+agent.DefaultControlSocket+")")
-	asJSON := fs.Bool("json", false, "JSON output")
-	rest := parseInterspersed(fs, args)
+	name := "sandboxes"
+	if show {
+		name = "sandboxes show"
+	}
+	fs := newFlags(name)
+	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
+	socket := fs.String("socket", "", "The daemon's control socket, a `path` (default: the config's, or "+agent.DefaultControlSocket+")")
+	asJSON := fs.Bool("json", false, "Print JSON")
+	rest, err := fs.parseInterspersed(args)
+	if err != nil {
+		return err
+	}
+	if show && len(rest) != 1 {
+		if len(rest) == 0 {
+			return usageErrorf(name, "sandboxes show needs <id>")
+		}
+		return usageErrorf(name, "sandboxes show takes one <id>, and got %d", len(rest))
+	}
+	if !show && len(rest) > 0 {
+		return usageErrorf(name, "unexpected %q (to see one sandbox: kantel-host sandboxes show <id>)", rest[0])
+	}
 	c := controlClient{path: controlSocketPath(*configPath, *socket)}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if show {
-		if len(rest) != 1 {
-			return errors.New("usage: kantel-host sandboxes show <id> [--json]")
-		}
 		info, err := c.sandbox(ctx, rest[0])
 		if err != nil {
 			return err
 		}
 		if *asJSON {
-			return writeJSON(os.Stdout, info)
+			return writeJSON(stdout, info)
 		}
-		printSandbox(os.Stdout, info, time.Now())
+		printSandbox(stdout, info, time.Now())
 		return nil
-	}
-	if len(rest) > 0 {
-		return fmt.Errorf("unexpected %q (to see one sandbox: kantel-host sandboxes show <id>)", rest[0])
 	}
 	list, err := c.list(ctx)
 	if err != nil {
 		return err
 	}
 	if *asJSON {
-		return writeJSON(os.Stdout, list)
+		return writeJSON(stdout, list)
 	}
-	printSandboxes(os.Stdout, list, time.Now())
+	printSandboxes(stdout, list, time.Now())
 	return nil
-}
-
-// parseInterspersed parses flags wherever they are among the arguments (flag stops at the first argument that isn't
-// one), so `sandboxes show <id> --json` works as well as `sandboxes show --json <id>`. It returns the arguments.
-func parseInterspersed(fs *flag.FlagSet, args []string) []string {
-	var rest []string
-	for {
-		_ = fs.Parse(args)
-		if fs.NArg() == 0 {
-			return rest
-		}
-		rest = append(rest, fs.Arg(0))
-		args = fs.Args()[1:]
-	}
 }
 
 // controlSocketPath is --socket, else the config's controlSocket, else the default. A config this user can't read
@@ -240,24 +235,35 @@ func printSandbox(w io.Writer, s proto.SandboxInfo, now time.Time) {
 
 // stateCounts is status's sandboxes line: how many, and how many in each state.
 func stateCounts(list []proto.SandboxInfo) string {
-	if len(list) == 0 {
-		return "none"
-	}
+	return countsText(countStates(list))
+}
+
+// countStates is how many sandboxes are in each state ("-" for none given).
+func countStates(list []proto.SandboxInfo) map[string]int {
 	counts := map[string]int{}
-	var states []string
 	for _, s := range list {
-		st := dash(s.State)
-		if counts[st] == 0 {
-			states = append(states, st)
-		}
-		counts[st]++
+		counts[dash(s.State)]++
+	}
+	return counts
+}
+
+// countsText is counts as status's sandboxes line: "3 (2 running, 1 stopped)", or "none".
+func countsText(counts map[string]int) string {
+	total := 0
+	states := make([]string, 0, len(counts))
+	for st, n := range counts {
+		total += n
+		states = append(states, st)
+	}
+	if total == 0 {
+		return "none"
 	}
 	sort.Strings(states)
 	parts := make([]string, len(states))
 	for i, st := range states {
 		parts[i] = fmt.Sprintf("%d %s", counts[st], st)
 	}
-	return fmt.Sprintf("%d (%s)", len(list), strings.Join(parts, ", "))
+	return fmt.Sprintf("%d (%s)", total, strings.Join(parts, ", "))
 }
 
 func dash(s string) string {

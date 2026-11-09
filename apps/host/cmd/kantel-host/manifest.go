@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,10 +13,18 @@ import (
 // gateway's /v1/hosts/images) or from --images. A file shipped gzipped (name.gz) is listed under its plain name with
 // gzip set; its checksum is the compressed file's, which is what install verifies as it downloads.
 func manifestCmd(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: kantel-host manifest <dir>")
+	fs := newFlags("manifest")
+	rest, err := fs.parseInterspersed(args)
+	if err != nil {
+		return err
 	}
-	dir := args[0]
+	if len(rest) != 1 {
+		if len(rest) == 0 {
+			return usageErrorf("manifest", "manifest needs <dir>")
+		}
+		return usageErrorf("manifest", "manifest takes one <dir>, and got %d", len(rest))
+	}
+	dir := rest[0]
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
