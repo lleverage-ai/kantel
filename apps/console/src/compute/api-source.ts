@@ -360,8 +360,15 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			? {}
 			: { deleteAccount: () => api.deleteCaller() }),
 		rename: async (accountId, name) => accountOf(await api.updateAccount(accountId, { name })),
-		setPersonalTokens: async (accountId, policy) =>
-			accountOf(await api.updateAccount(accountId, { personalTokens: policy })),
+		setPersonalTokens: async (accountId, policy) => {
+			const updated = await api.updateAccount(accountId, { personalTokens: policy });
+			// A gateway from before personal tokens drops the field and answers the account without it, having changed
+			// nothing: that isn't the policy saved, and the switch mustn't say it is.
+			if (updated.personalTokens !== policy) {
+				throw new Error("This Kantel doesn't support blocking personal access tokens yet. Try again after it updates.");
+			}
+			return accountOf(updated);
+		},
 		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }

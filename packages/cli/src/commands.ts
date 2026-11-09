@@ -225,7 +225,13 @@ interface Context {
 	string(flag: string): string | undefined;
 	boolean(flag: string): boolean;
 	list(flag: string): string[];
+	/** The settings, with the account a command acts in as its ID: a name (`--account Acme`) is looked up. */
 	config(): Promise<ResolvedConfig>;
+	/**
+	 * The settings as given, the account as it was named: for what doesn't act in it, so a saved name that can't be
+	 * reached (an organisation that blocks personal tokens) doesn't stop it.
+	 */
+	settings(): Promise<ResolvedConfig>;
 	client(): Promise<KantelClient>;
 	/** A line to stdout. */
 	out(text: string): void;
@@ -1506,7 +1512,7 @@ const SECTIONS: readonly Section[] = [
 				name: "whoami",
 				summary: "Who you are signed in as, and the accounts you may act in",
 				async run(ctx) {
-					const config = await ctx.config();
+					const config = await ctx.settings();
 					const caller = await (await ctx.client()).getCaller();
 					const { apiKey, personalToken } = caller;
 					const accounts = caller.accounts.map(
@@ -1737,10 +1743,10 @@ const SECTIONS: readonly Section[] = [
 					cursor: cursorFlag,
 				},
 				async run(ctx) {
-					const config = await ctx.config();
 					const all = ctx.boolean("all");
 					const mine = ctx.boolean("mine");
 					if (ctx.boolean("every-account")) return listEveryAccount(ctx, { all, mine });
+					const config = await ctx.config();
 					const page = await (await ctx.client()).listSandboxes({
 						account: config.account,
 						all: all ? true : undefined,
@@ -3270,9 +3276,15 @@ const SECTIONS: readonly Section[] = [
 				name: "org list",
 				summary: "Your personal account and your organisations; * marks the one commands act in",
 				async run(ctx) {
-					const config = await ctx.config();
+					const config = await ctx.settings();
 					const client = await ctx.client();
-					const [accounts, current] = await Promise.all([client.listAccounts(), currentAccountId(ctx, client)]);
+					const [accounts, caller] = await Promise.all([client.listAccounts(), client.getCaller()]);
+					// The saved account by its ID or name, as given: one that can't be reached is said so, not an error.
+					const named = config.account;
+					const current =
+						named === undefined
+							? caller.accountId
+							: (accounts.items.find((each) => each.id === named || sameAccountName(each, named))?.id ?? named);
 					const rows = accounts.items.map((account) => [
 						account.id === current ? "*" : "",
 						account.id,
@@ -3878,7 +3890,7 @@ const SECTIONS: readonly Section[] = [
 					}
 					if (claude) await put(join(base, SKILL_PATHS.claude), SKILL_MD);
 					if (others) await put(join(base, SKILL_PATHS.agents), SKILL_MD);
-					const signedIn = (await ctx.config()).apiKey !== undefined;
+					const signedIn = (await ctx.settings()).apiKey !== undefined;
 					// What it writes tells agents to run `kantel` by name, so say so when that would fail.
 					const found = await onPath("kantel", ctx.io.env);
 					ctx.emit({ written, kantelOnPath: found }, () =>
@@ -3930,7 +3942,7 @@ const SECTIONS: readonly Section[] = [
 						return;
 					}
 					const harness = choice(ctx.optional(0) ?? "all", [...HARNESSES, "all" as const], "the agent") ?? "all";
-					const url = originOf((await ctx.config()).url);
+					const url = originOf((await ctx.settings()).url);
 					const launch = await mcpLaunchFor(ctx.io);
 					const snippets = {
 						url,
@@ -4255,6 +4267,12 @@ async function withAccountId(io: Io, config: ResolvedConfig): Promise<ResolvedCo
 	return { ...config, account: (await accountNamed(makeClient(io, config), named)).id };
 }
 
+/** Whether `account` is the one `name` names: its name (case aside), or `personal` for a personal account. */
+function sameAccountName(account: Account, name: string): boolean {
+	const wanted = name.trim().toLowerCase();
+	return wanted === "personal" ? account.kind === "personal" : account.name.toLowerCase() === wanted;
+}
+
 /** The account of yours called `name` (case aside), or `personal` for your personal account. */
 async function accountNamed(client: KantelClient, name: string): Promise<Account> {
 	const accounts = (await client.listAccounts()).items;
@@ -4277,16 +4295,22 @@ function createContext(
 	positionals: readonly string[],
 	rest: readonly string[] | undefined,
 ): Context {
+	let settings: Promise<ResolvedConfig> | undefined;
 	let config: Promise<ResolvedConfig> | undefined;
-	const loadOnce = (): Promise<ResolvedConfig> => {
-		if (config === undefined) {
+	const settingsOnce = (): Promise<ResolvedConfig> => {
+		if (settings === undefined) {
 			const flags = {
 				url: stringFlag(parsed, "url"),
 				apiKey: stringFlag(parsed, "key") ?? stringFlag(parsed, "api-key"),
 				account: stringFlag(parsed, "account"),
 			};
-			config = loadConfig(flags, io.env, io.configDir).then((loaded) => withAccountId(io, loaded));
+			settings = loadConfig(flags, io.env, io.configDir);
 		}
+		return settings;
+	};
+	// The account's name is looked up only by a command that acts in it.
+	const loadOnce = (): Promise<ResolvedConfig> => {
+		if (config === undefined) config = settingsOnce().then((loaded) => withAccountId(io, loaded));
 		return config;
 	};
 	const json = booleanFlag(parsed, "json") === true;
@@ -4308,7 +4332,9 @@ function createContext(
 		boolean: (flag) => booleanFlag(parsed, flag) === true,
 		list: (flag) => listFlag(parsed, flag),
 		config: loadOnce,
-		client: async () => makeClient(io, await loadOnce()),
+		settings: settingsOnce,
+		// The client needs only the URL and the credential, never the account.
+		client: async () => makeClient(io, await settingsOnce()),
 		out,
 		note: (text) => {
 			io.stderr.write(`${text}\n`);

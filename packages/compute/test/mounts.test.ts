@@ -824,15 +824,23 @@ describe("signed file URLs", () => {
 	}, 30_000);
 
 	it("stop working once whoever made them may no longer: a revoked token or key, an expiring token", async () => {
-		const { tom, client, fetchApi, store } = setup();
+		const start = Date.now();
+		// A day's token made all but half an hour ago, so it ends half an hour from now.
+		let clock = start - 24 * 3_600_000 + 30 * 60_000;
+		const { tom, client, fetchApi, store } = setup({ now: () => clock });
+		const issued = await tom.createPersonalToken({ name: "t", expiresInDays: 1 });
+		clock = start;
+		expect(issued.token.expiresAt).toBe(clock + 30 * 60_000);
 		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
 		await tom.writeFile(sandbox.id, { path: "note.txt", content: "kept" });
-
-		const issued = await tom.createPersonalToken({ name: "t", expiresInDays: 1 });
 		const pat = client(issued.secret);
-		const download = await pat.createDownloadUrl(sandbox.id, { path: "note.txt", ttlSeconds: 3600 });
-		// No later than the token that made it.
-		expect(download.expiresAt).toBeLessThanOrEqual(issued.token.expiresAt);
+		// An hour's URL ends with the token instead.
+		const capped = await pat.createDownloadUrl(sandbox.id, { path: "note.txt", ttlSeconds: 3600 });
+		expect(capped.expiresAt).toBe(issued.token.expiresAt);
+		// A shorter one keeps what it asked for.
+		const brief = await pat.createDownloadUrl(sandbox.id, { path: "note.txt", ttlSeconds: 60 });
+		expect(brief.expiresAt).toBe(clock + 60_000);
+		const download = await pat.createDownloadUrl(sandbox.id, { path: "note.txt" });
 		expect((await fetchApi(download.url)).status).toBe(200);
 		await tom.revokePersonalToken(issued.token.id);
 		expect((await fetchApi(download.url)).status).toBe(404);

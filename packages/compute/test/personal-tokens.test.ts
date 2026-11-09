@@ -136,12 +136,36 @@ describe("personal access tokens", () => {
 		expect((await failure(reader.createPersonalToken({ name: "wider" }))).code).toBe("forbidden");
 		const narrower = await reader.createPersonalToken({ name: "narrower", scopes: ["sandboxes:read"] });
 		expect(narrower.token.scopes).toEqual(["sandboxes:read"]);
-		// Nor for longer than it lasts.
-		expect(narrower.token.expiresAt).toBeLessThanOrEqual(orgOnly.token.expiresAt);
 
 		expect((await failure(tom.createPersonalToken({ name: "x", accounts: ["acc_nope"] }))).code).toBe("forbidden");
 		expect((await failure(tom.createPersonalToken({ name: "x", scopes: ["hosts:admin"] }))).code).toBe("invalid");
 		expect((await failure(tom.createPersonalToken({ name: "x", expiresInDays: 400 }))).code).toBe("invalid");
+	});
+
+	it("make tokens that last no longer than themselves, and stop working with them", async () => {
+		const { client, tom, advance } = setup();
+		const parent = await tom.createPersonalToken({ name: "parent", expiresInDays: 5 });
+		const minted = client(parent.secret);
+		// Asked for nothing, or for longer: it ends when the token that made it does, not in 90 or 30 days.
+		const unasked = await minted.createPersonalToken({ name: "unasked" });
+		const longer = await minted.createPersonalToken({ name: "longer", expiresInDays: 30 });
+		expect(unasked.token.expiresAt).toBe(parent.token.expiresAt);
+		expect(longer.token.expiresAt).toBe(parent.token.expiresAt);
+		// Asked for less, it keeps that.
+		const shorter = await minted.createPersonalToken({ name: "shorter", expiresInDays: 2 });
+		expect(shorter.token.expiresAt).toBe(shorter.token.createdAt + 2 * DAY_MS);
+		expect(shorter.token.expiresAt).toBeLessThan(parent.token.expiresAt);
+		// A token made in the console keeps its 90 days.
+		const console90 = await tom.createPersonalToken({ name: "console" });
+		expect(console90.token.expiresAt - console90.token.createdAt).toBe(90 * DAY_MS);
+
+		advance(parent.token.expiresAt - parent.token.createdAt - 1);
+		await client(longer.secret).getCaller();
+		advance(1);
+		for (const secret of [parent.secret, unasked.secret, longer.secret]) {
+			expect((await failure(client(secret).getCaller())).status).toBe(401);
+		}
+		await client(console90.secret).getCaller();
 	});
 
 	it("never act as a super-admin, approve a device's sign-in or delete their person's account", async () => {

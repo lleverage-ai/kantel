@@ -338,8 +338,12 @@ function General({
 						manager={manager}
 						onChange={async (policy) => {
 							const changed = await source.setPersonalTokens?.(account.id, policy);
-							if (changed !== undefined) onRenamed?.(changed);
-							return changed?.personalTokens ?? policy;
+							// Only what Kantel says it saved: an answer without the policy hasn't saved it.
+							if (changed?.personalTokens === undefined) {
+								throw new Error("Kantel didn't confirm the change. Try again.");
+							}
+							onRenamed?.(changed);
+							return changed.personalTokens;
 						}}
 					/>
 				)}

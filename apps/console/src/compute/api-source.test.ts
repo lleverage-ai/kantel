@@ -1456,3 +1456,39 @@ describe("sandbox addresses", () => {
 		}
 	});
 });
+
+describe("an organisation's personal tokens", () => {
+	it("blocks and allows them, taking only the policy Kantel answers as saved", async () => {
+		const { fetchApi } = setup();
+		const source = await open(fetchApi);
+		const org = await source.accounts.createOrganisation({ name: "Acme", slug: "acme" });
+		expect((await source.accounts.setPersonalTokens?.(org.id, "blocked"))?.personalTokens).toBe("blocked");
+		expect((await source.accounts.setPersonalTokens?.(org.id, "allowed"))?.personalTokens).toBe("allowed");
+
+		// A gateway from before them drops the unknown field from the request and the answer, and changes nothing.
+		const legacy: typeof fetch = async (input, init) => {
+			const request =
+				typeof input === "string" || input instanceof URL
+					? new Request(new URL(input, ORIGIN), init)
+					: new Request(input, init);
+			if (request.method !== "PATCH" || !new URL(request.url).pathname.startsWith("/v1/accounts/"))
+				return fetchApi(request);
+			const body = (await request.json()) as Record<string, unknown>;
+			delete body.personalTokens;
+			const answer = await fetchApi(
+				new Request(request.url, { method: "PATCH", headers: request.headers, body: JSON.stringify(body) }),
+			);
+			const account = (await answer.json()) as Record<string, unknown>;
+			delete account.personalTokens;
+			return new Response(JSON.stringify(account), {
+				status: answer.status,
+				headers: { "content-type": "application/json" },
+			});
+		};
+		const old = await open(legacy);
+		await expect(old.accounts.setPersonalTokens?.(org.id, "blocked")).rejects.toThrow("doesn't support blocking");
+		// And nothing was blocked.
+		const listed = await (await open(fetchApi)).accounts.list();
+		expect(listed.find((account) => account.id === org.id)?.personalTokens).toBe("allowed");
+	});
+});

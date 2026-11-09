@@ -1897,6 +1897,26 @@ describe("accounts and organisations", () => {
 		expect(after.account).toBeUndefined();
 	});
 
+	it("looks up the account's name only for a command that acts in it, so one you can't reach stops nothing else", async () => {
+		const env = { ...ENV, KANTEL_ACCOUNT: "Gone" };
+		const routes = {
+			...base,
+			"GET /v1/sandboxes": () => ({ items: [] }),
+			"GET /v1/personal-tokens": () => ({ items: [] }),
+		};
+		expect((await kantel(["list", "--every-account"], { env, routes })).code).toBe(0);
+		expect((await kantel(["token", "list"], { env, routes })).code).toBe(0);
+		expect((await kantel(["whoami"], { env, routes })).code).toBe(0);
+		const listed = await kantel(["org", "list"], { env, routes });
+		expect(listed.code).toBe(0);
+		expect(listed.stdout).toContain("kantel acts in Gone, which you can't reach");
+		expect((await kantel(["org", "use", "personal"], { env, routes })).code).toBe(0);
+		// A command that acts in it says why it can't.
+		const there = await kantel(["list"], { env, routes });
+		expect(there.code).toBe(1);
+		expect(there.stderr).toContain('you have no account called "Gone"');
+	});
+
 	it("list --every-account lists each account's sandboxes with the account they're in", async () => {
 		const result = await kantel(["list", "--every-account", "--mine"], {
 			routes: {
