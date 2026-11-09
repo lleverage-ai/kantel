@@ -115,7 +115,7 @@ Every call sends `-H "authorization: Bearer $KANTEL_API_KEY"`, and calls with a 
       -d '{"type": "microvm", "name": "<short-task-name>", "labels": {"agent": "coding-agent"}, "wait": true}' | jq '{id, state}'
 
 - `type`: `microvm` is a full Linux machine with root, Docker and a browser. `isolate` starts at once but runs only a JavaScript shell over files.
-- `"from": "<saved-snapshot-name>"` starts from a template someone saved. List them with `GET /v1/snapshots?kind=saved`.
+- `"from": "<saved-snapshot-name>"` starts from a snapshot someone saved. List them with `GET /v1/snapshots?kind=saved`.
 - It stops by itself after 60 minutes. Give longer with `PATCH /v1/sandboxes/<id>` and `{"extendMinutes": 120}`.
 - Reuse a sandbox you made earlier in this task: `GET /v1/sandboxes?all=true&label.agent=coding-agent`.
 
@@ -148,7 +148,7 @@ Fork a prepared sandbox: `POST /v1/sandboxes/<id>/fork` with `{"count": 3, "wait
 ## When you're done
 
 - Stop the sandbox: `POST /v1/sandboxes/<id>/stop` with `{}`. Its disk is kept; resume with `POST /v1/sandboxes/<id>/resume`.
-- To keep a set-up state as a template, ask the user first, then `POST /v1/snapshots` with `{"name": "<name>", "sandboxId": "<id>"}`.
+- To keep a set-up state to start from later, ask the user first, then `POST /v1/snapshots` with `{"name": "<name>", "sandboxId": "<id>"}`.
 - This key can't delete sandboxes. Tell the user the IDs of sandboxes you made.
 
 ## Errors
