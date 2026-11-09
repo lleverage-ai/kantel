@@ -45,7 +45,7 @@ curl -fsSL https://kantel.dev/cli.sh | sh
 kantel login
 ```
 
-The first line installs `kantel` in `~/.local/bin`, with no sudo, and works in bash, zsh and fish. `kantel login` opens the console to approve the sign-in: check that the code matches the one in your terminal, and select **Approve**. The CLI gets an API key of its own, which lasts 90 days. See [Command line](/tools/cli/#install-it) for the installer's options.
+The first line installs `kantel` in `~/.local/bin`, with no sudo, and works in bash, zsh and fish. `kantel login` opens the console to approve the sign-in: check that the code matches the one in your terminal, and select **Approve**. The CLI gets a personal access token of its own, which acts as you in all your accounts and lasts 90 days. See [Command line](/tools/cli/#install-it) for the installer's options.
 
 ## 4. Your first sandbox
 

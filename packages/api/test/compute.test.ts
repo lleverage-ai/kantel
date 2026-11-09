@@ -17,6 +17,10 @@ const PEOPLE_OR_ANY = new Set([
 	"getDeviceLogin",
 	"denyDeviceLogin",
 	"listTemplateBases",
+	// A person's own tokens: a person or a personal token, never an API key.
+	"listPersonalTokens",
+	"createPersonalToken",
+	"revokePersonalToken",
 ]);
 
 describe("compute routes", () => {

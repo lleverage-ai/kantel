@@ -55,6 +55,8 @@ export type {
 	ImageFinding,
 	ImageScan,
 	ImageSeverity,
+	PersonalToken,
+	PersonalTokensSource,
 	ProxySource,
 	PublicUrlSource,
 	SandboxBase,

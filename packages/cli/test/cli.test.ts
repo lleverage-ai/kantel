@@ -1644,7 +1644,7 @@ describe("login in the browser", () => {
 			"GET /v1/whoami",
 		]);
 		expect(result.calls[0]?.authorization).toBeNull();
-		expect(result.calls[0]?.body).toEqual({ clientName: "kantel on box" });
+		expect(result.calls[0]?.body).toEqual({ clientName: "kantel on box", personal: true });
 		expect(result.calls[1]?.body).toEqual({ deviceCode: "kdc_secret" });
 		expect(result.calls[3]?.authorization).toBe("Bearer ksk_fromdevice");
 		const saved = JSON.parse(await readFile(join(configDir, "config.json"), "utf8")) as { apiKey?: string };
@@ -1672,6 +1672,159 @@ describe("login in the browser", () => {
 		await expect(stat(pending)).rejects.toThrow();
 	});
 
+	const TOKEN = {
+		token: { id: "pat_1", name: "kantel on box", prefix: "kpt_from", createdAt: 1, expiresAt: Date.now() + 86_400_000 },
+		secret: "kpt_fromdevice",
+	};
+	const TOKEN_CALLER: Caller = {
+		user: { id: "usr_1", name: "Tom", email: "tom@example.com" },
+		personalToken: { id: "pat_1", name: "kantel on box", expiresAt: TOKEN.token.expiresAt },
+		accountId: "acc_p_1",
+		accounts: [
+			{ id: "acc_p_1", kind: "personal", name: "Tom", role: "owner", defaultVisibility: "private", createdAt: 1 },
+			{
+				id: "acc_org",
+				kind: "organisation",
+				name: "Acme",
+				role: "member",
+				defaultVisibility: "organisation",
+				createdAt: 2,
+			},
+		],
+		superAdmin: false,
+		mode: "hosted",
+	};
+
+	it("asks for a personal token, which acts in every account, and saves it", async () => {
+		const result = await kantel(["login", "--url", "https://kantel.test"], {
+			env: {},
+			tty: true,
+			routes: {
+				"POST /v1/auth/device": () => STARTED,
+				"POST /v1/auth/device/token": () => ({ state: "approved", token: TOKEN }),
+				"GET /v1/whoami": () => TOKEN_CALLER,
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.calls[0]?.body).toMatchObject({ personal: true });
+		expect(result.stdout).toContain("with the personal token kantel on box for all your accounts");
+		expect(result.stdout).toContain("kantel org use picks another");
+		expect(result.stdout).not.toContain("kpt_fromdevice");
+		const saved = JSON.parse(await readFile(join(configDir, "config.json"), "utf8")) as { apiKey?: string };
+		expect(saved.apiKey).toBe("kpt_fromdevice");
+	});
+
+	it("asks a Kantel from before personal tokens for an API key, as it always did", async () => {
+		const result = await kantel(["login", "--url", "https://kantel.test", "--wait"], {
+			env: {},
+			routes: {
+				"POST /v1/auth/device": (call) =>
+					(call.body as { personal?: boolean }).personal === true
+						? kantelError(400, "invalid", "body/personal is not allowed")
+						: STARTED,
+				"POST /v1/auth/device/token": () => ({ state: "approved", issued: ISSUED }),
+				"GET /v1/whoami": () => CALLER,
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.calls.filter((call) => call.path === "/v1/auth/device").map((call) => call.body)).toEqual([
+			{ clientName: expect.any(String), personal: true },
+			{ clientName: expect.any(String) },
+		]);
+		const saved = JSON.parse(await readFile(join(configDir, "config.json"), "utf8")) as { apiKey?: string };
+		expect(saved.apiKey).toBe("ksk_fromdevice");
+	});
+
+	it("asks for an API key in one account with --account-key", async () => {
+		const result = await kantel(["login", "--url", "https://kantel.test", "--wait", "--account-key"], {
+			env: {},
+			routes: {
+				"POST /v1/auth/device": () => STARTED,
+				"POST /v1/auth/device/token": () => ({ state: "approved", issued: ISSUED }),
+				"GET /v1/whoami": () => CALLER,
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.calls[0]?.body).toEqual({ clientName: expect.any(String) });
+	});
+
+	it("carries on a kept sign-in only for the same kind: --account-key never collects a personal token", async () => {
+		const started: Call[] = [];
+		const routes = {
+			"POST /v1/auth/device": (call: Call) => {
+				started.push(call);
+				return STARTED;
+			},
+			"POST /v1/auth/device/token": () => ({ state: "approved", issued: ISSUED }),
+			"GET /v1/whoami": () => CALLER,
+		};
+		// A plain login with no terminal keeps a personal sign-in waiting.
+		await kantel(["login", "--url", "https://kantel.test"], {
+			env: {},
+			routes: { "POST /v1/auth/device": () => STARTED },
+		});
+		const keyed = await kantel(["login", "--url", "https://kantel.test", "--account-key"], { env: {}, routes });
+		// It starts its own, and says to wait with --account-key.
+		expect(started.map((call) => call.body)).toEqual([{ clientName: expect.any(String) }]);
+		expect(keyed.stderr).toContain("Then run: kantel login --wait --account-key --url https://kantel.test");
+		// And --wait --account-key carries that one on.
+		const waited = await kantel(["login", "--url", "https://kantel.test", "--account-key", "--wait"], {
+			env: {},
+			routes,
+		});
+		expect(waited.code).toBe(0);
+		expect(started).toHaveLength(1);
+	});
+
+	it("revokes the personal token it saved when you log out, or sign in again", async () => {
+		await writeFile(
+			join(configDir, "config.json"),
+			JSON.stringify({ url: "https://kantel.test/v1", apiKey: "kpt_old" }),
+		);
+		const routes = {
+			"GET /v1/whoami": () => TOKEN_CALLER,
+			"DELETE /v1/personal-tokens/pat_1": () => ({ ...TOKEN.token, revokedAt: 2 }),
+		};
+		const out = await kantel(["logout"], { env: {}, routes });
+		expect(out.code).toBe(0);
+		expect(out.stdout).toContain("Revoked the saved personal token");
+		expect(out.calls.map((call) => `${call.method} ${call.path} ${call.authorization}`)).toEqual([
+			"GET /v1/whoami Bearer kpt_old",
+			"DELETE /v1/personal-tokens/pat_1 Bearer kpt_old",
+		]);
+		const saved = JSON.parse(await readFile(join(configDir, "config.json"), "utf8")) as { apiKey?: string };
+		expect(saved.apiKey).toBeUndefined();
+
+		await writeFile(
+			join(configDir, "config.json"),
+			JSON.stringify({ url: "https://kantel.test/v1", apiKey: "kpt_old" }),
+		);
+		const again = await kantel(["login", "--key-stdin"], {
+			env: {},
+			stdin: input("kpt_new"),
+			routes,
+		});
+		expect(again.code).toBe(0);
+		expect(again.calls.some((call) => call.method === "DELETE" && call.authorization === "Bearer kpt_old")).toBe(true);
+
+		// Signing in to another Kantel revokes the old token on the one it came from, and sends it nowhere else.
+		await writeFile(
+			join(configDir, "config.json"),
+			JSON.stringify({ url: "https://kantel.test/v1", apiKey: "kpt_old" }),
+		);
+		const elsewhere = await kantel(["login", "--key-stdin", "--url", "https://other.test"], {
+			env: {},
+			stdin: input("kpt_new"),
+			routes,
+		});
+		expect(elsewhere.code).toBe(0);
+		const sentOld = elsewhere.calls.filter((call) => call.authorization === "Bearer kpt_old");
+		expect(sentOld.map((call) => `${call.method} ${new URL(call.url).host}`)).toEqual([
+			"GET kantel.test",
+			"DELETE kantel.test",
+		]);
+	});
+
 	it("with --json prints the code as JSON for an agent", async () => {
 		const result = await kantel(["login", "--json", "--url", "https://kantel.test"], {
 			env: {},
@@ -1683,6 +1836,212 @@ describe("login in the browser", () => {
 			code: "BCDF-GHJK",
 			expiresAt: STARTED.expiresAt,
 		});
+	});
+});
+
+describe("accounts and organisations", () => {
+	const PERSONAL = {
+		id: "acc_p_1",
+		kind: "personal",
+		name: "Tom",
+		role: "owner",
+		defaultVisibility: "private",
+		createdAt: 1,
+	} as const;
+	const ACME = {
+		id: "acc_org",
+		kind: "organisation",
+		name: "Acme",
+		role: "admin",
+		defaultVisibility: "organisation",
+		personalTokens: "allowed",
+		createdAt: 2,
+	} as const;
+	const ME: Caller = {
+		user: { id: "usr_1", name: "Tom", email: "tom@example.com" },
+		personalToken: { id: "pat_1", name: "laptop", expiresAt: Date.now() + 86_400_000 },
+		accountId: PERSONAL.id,
+		accounts: [PERSONAL, ACME],
+		superAdmin: false,
+		mode: "hosted",
+	};
+	const base = {
+		"GET /v1/whoami": () => ME,
+		"GET /v1/accounts": () => ({ items: [PERSONAL, ACME] }),
+		"GET /v1/accounts/acc_org": () => ACME,
+		"GET /v1/accounts/acc_p_1": () => PERSONAL,
+	};
+
+	it("org use saves the account commands act in, by name, and --account takes a name for one command", async () => {
+		await writeFile(join(configDir, "config.json"), JSON.stringify({ url: "https://kantel.test/v1", apiKey: "kpt_x" }));
+		const used = await kantel(["org", "use", "acme"], { env: {}, routes: base });
+		expect(used.code).toBe(0);
+		expect(used.stdout).toContain("Commands act in Acme (acc_org) from now on.");
+		const saved = JSON.parse(await readFile(join(configDir, "config.json"), "utf8")) as { account?: string };
+		expect(saved).toMatchObject({ apiKey: "kpt_x", account: "acc_org" });
+
+		const routes = { ...base, "GET /v1/sandboxes": () => ({ items: [] }) };
+		const listed = await kantel(["org", "list"], { env: {}, routes });
+		expect(listed.stdout).toMatch(/\*\s+acc_org/);
+		const there = await kantel(["list"], { env: {}, routes });
+		expect(there.calls.at(-1)?.query.get("account")).toBe("acc_org");
+		const personal = await kantel(["list", "--account", "personal"], { env: {}, routes });
+		expect(personal.calls.at(-1)?.query.get("account")).toBe("acc_p_1");
+		const unknown = await kantel(["list", "--account", "Nope"], { env: {}, routes });
+		expect(unknown.code).toBe(1);
+		expect(unknown.stderr).toContain('you have no account called "Nope"');
+
+		const cleared = await kantel(["org", "use", "--clear"], { env: {}, routes: base });
+		expect(cleared.code).toBe(0);
+		const after = JSON.parse(await readFile(join(configDir, "config.json"), "utf8")) as { account?: string };
+		expect(after.account).toBeUndefined();
+	});
+
+	it("looks up the account's name only for a command that acts in it, so one you can't reach stops nothing else", async () => {
+		const env = { ...ENV, KANTEL_ACCOUNT: "Gone" };
+		const routes = {
+			...base,
+			"GET /v1/sandboxes": () => ({ items: [] }),
+			"GET /v1/personal-tokens": () => ({ items: [] }),
+		};
+		expect((await kantel(["list", "--every-account"], { env, routes })).code).toBe(0);
+		expect((await kantel(["token", "list"], { env, routes })).code).toBe(0);
+		expect((await kantel(["whoami"], { env, routes })).code).toBe(0);
+		const listed = await kantel(["org", "list"], { env, routes });
+		expect(listed.code).toBe(0);
+		expect(listed.stdout).toContain("kantel acts in Gone, which you can't reach");
+		expect((await kantel(["org", "use", "personal"], { env, routes })).code).toBe(0);
+		// A command that acts in it says why it can't.
+		const there = await kantel(["list"], { env, routes });
+		expect(there.code).toBe(1);
+		expect(there.stderr).toContain('you have no account called "Gone"');
+	});
+
+	it("list --every-account lists each account's sandboxes with the account they're in", async () => {
+		const result = await kantel(["list", "--every-account", "--mine"], {
+			routes: {
+				...base,
+				"GET /v1/sandboxes": (call) =>
+					call.query.get("account") === "acc_org"
+						? { items: [{ ...SANDBOX, id: "sbx_org", accountId: "acc_org" }] }
+						: { items: [{ ...SANDBOX, accountId: "acc_p_1" }] },
+			},
+		});
+		expect(result.code).toBe(0);
+		const listCalls = result.calls.filter((call) => call.path === "/v1/sandboxes");
+		expect(listCalls.map((call) => [call.query.get("account"), call.query.get("mine")])).toEqual([
+			["acc_p_1", "true"],
+			["acc_org", "true"],
+		]);
+		expect(result.stdout).toMatch(/^ACCOUNT\s+ID/);
+		expect(result.stdout).toMatch(/personal\s+sbx_test1/);
+		expect(result.stdout).toMatch(/Acme\s+sbx_org/);
+	});
+
+	it("manages the organisation's settings, members and invites", async () => {
+		const env = { ...ENV, KANTEL_ACCOUNT: "Acme" };
+		const routes = {
+			...base,
+			"PATCH /v1/accounts/acc_org": (call: Call) => ({ ...ACME, ...(call.body as object) }),
+			"GET /v1/accounts/acc_org/members": () => ({
+				items: [
+					{ userId: "usr_1", name: "Tom", email: "tom@example.com", role: "admin", joinedAt: 1 },
+					{ userId: "usr_2", name: "Ann", email: "ann@example.com", role: "member", joinedAt: 2 },
+				],
+			}),
+			"PATCH /v1/accounts/acc_org/members/usr_2": () => ({
+				userId: "usr_2",
+				name: "Ann",
+				role: "admin",
+				joinedAt: 2,
+			}),
+			"DELETE /v1/accounts/acc_org/members/usr_2": () => undefined,
+			"POST /v1/accounts/acc_org/invites": () => ({
+				id: "inv_1",
+				accountId: "acc_org",
+				role: "member",
+				email: "bob@example.com",
+				code: "kji_code",
+				emailed: true,
+				expiresAt: Date.now() + 3_600_000,
+				createdAt: 1,
+			}),
+		};
+		const set = await kantel(["org", "set", "--personal-tokens", "blocked"], { env, routes });
+		expect(set.code).toBe(0);
+		expect(set.calls.at(-1)?.body).toEqual({ personalTokens: "blocked" });
+		expect(set.stdout).toMatch(/personal tokens\s+blocked/);
+		expect((await kantel(["org", "set"], { env, routes })).code).toBe(2);
+
+		const members = await kantel(["member", "list"], { env, routes });
+		expect(members.stdout).toMatch(/usr_2\s+Ann\s+ann@example.com\s+member/);
+		const promoted = await kantel(["member", "role", "ann@example.com", "admin"], { env, routes });
+		expect(promoted.code).toBe(0);
+		expect(promoted.calls.at(-1)?.body).toEqual({ role: "admin" });
+		expect(promoted.stdout).toBe("Ann is an admin of Acme.\n");
+		const removed = await kantel(["member", "rm", "usr_2"], { env, routes });
+		expect(removed.calls.at(-1)?.method).toBe("DELETE");
+
+		const invited = await kantel(["invite", "create", "--email", "bob@example.com"], { env, routes });
+		expect(invited.calls.at(-1)?.body).toEqual({ email: "bob@example.com" });
+		expect(invited.stdout).toContain("kantel org join kji_code");
+		expect(invited.stdout).toContain("Kantel emailed them a link to join.");
+
+		// Leaving and deleting need --yes, and say how to run it.
+		const leave = await kantel(["org", "leave"], { env, routes });
+		expect(leave.code).toBe(2);
+		expect(leave.stderr).toContain("kantel org leave --account acc_org --yes");
+	});
+
+	it("refuses an organisation's commands in a personal account, saying how to pick one", async () => {
+		const result = await kantel(["member", "list"], { routes: base });
+		expect(result.code).toBe(2);
+		expect(result.stderr).toContain("kantel org use <name>");
+	});
+
+	it("makes, lists and revokes personal tokens", async () => {
+		const routes = {
+			...base,
+			"POST /v1/personal-tokens": (call: Call) => ({
+				token: {
+					id: "pat_2",
+					name: "ci",
+					prefix: "kpt_abcd",
+					createdAt: 1,
+					expiresAt: Date.now() + 86_400_000,
+					...(call.body as object),
+				},
+				secret: "kpt_secret",
+			}),
+			"GET /v1/personal-tokens": () => ({
+				items: [
+					{
+						id: "pat_2",
+						name: "ci",
+						prefix: "kpt_abcd",
+						accounts: ["acc_org"],
+						createdAt: 1,
+						expiresAt: Date.now() + 86_400_000,
+					},
+				],
+			}),
+			"DELETE /v1/personal-tokens/pat_2": () => ({
+				id: "pat_2",
+				name: "ci",
+				prefix: "kpt_abcd",
+				createdAt: 1,
+				expiresAt: 2,
+				revokedAt: 3,
+			}),
+		};
+		const made = await kantel(["token", "create", "ci", "--only", "Acme", "--preset", "read-only"], { routes });
+		expect(made.code).toBe(0);
+		expect(made.calls.at(-1)?.body).toEqual({ name: "ci", preset: "read-only", accounts: ["acc_org"] });
+		expect(made.stdout).toContain("kpt_secret");
+		const listed = await kantel(["token", "list"], { routes });
+		expect(listed.stdout).toMatch(/pat_2\s+ci\s+active\s+as your role allows\s+acc_org/);
+		const revoked = await kantel(["token", "revoke", "pat_2"], { routes });
+		expect(revoked.stdout).toBe("Revoked pat_2 (ci).\n");
 	});
 });
 

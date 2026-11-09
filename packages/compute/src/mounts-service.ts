@@ -12,7 +12,7 @@ import {
 	mountPathsProblem,
 	mountsTouching,
 } from "@kantel/contracts";
-import { actingAccount, type Principal, requireScope, roleIn } from "./auth.ts";
+import { actingAccount, encodeGrantee, type Principal, requireScope, roleIn } from "./auth.ts";
 import {
 	type BackendMount,
 	type BackendMountStatus,
@@ -80,6 +80,8 @@ export interface MountsDeps {
 	readonly requireRunning: (principal: Principal, sandboxId: string) => Promise<StoredSandbox>;
 	/** `requireRunning` (a starting sandbox waited for) for a call a signed file URL authorises, with no principal. */
 	readonly requireRunningByToken: (sandboxId: string) => Promise<StoredSandbox>;
+	/** Whoever made a file URL (`encodeGrantee`'s text), as they are now; undefined once they may no longer act. */
+	readonly granteePrincipal: (grantee: string) => Promise<Principal | undefined>;
 	/** Does `work` once for the call's `Idempotency-Key` and request, answering a retry the first answer (the service's). */
 	/**
 	 * Whether an account still takes new records: it exists, and no account deletion holds it (`holdAccount` in the
@@ -573,15 +575,22 @@ export function createMounts(deps: MountsDeps) {
 		if (method === "PUT") refuseUnderMount(running, path);
 		const token = randomSecret("kfu_", 40);
 		const at = now();
-		const expiresAt = at + (body.ttlSeconds ?? DEFAULT_FILE_URL_TTL_SECONDS) * 1000;
+		// Never past the personal token it was made with, which stops working then.
+		const expiresAt = Math.min(
+			at + (body.ttlSeconds ?? DEFAULT_FILE_URL_TTL_SECONDS) * 1000,
+			principal.kind === "person" && principal.token !== undefined
+				? principal.token.expiresAt
+				: Number.POSITIVE_INFINITY,
+		);
 		await store.fileUrls.put({
-			id: await sha256Hex(token),
+			id: await boundFileUrlId(token),
 			sandboxId: running.id,
 			accountId: running.accountId,
 			path,
 			method,
 			expiresAt,
 			createdAt: at,
+			grantee: encodeGrantee(principal),
 		});
 		// Spent ones go as new ones are made, so the collection stays small.
 		void sweepFileUrls().catch(() => undefined);
@@ -917,13 +926,31 @@ export function createMounts(deps: MountsDeps) {
 		},
 
 		async serveFileUrl(token: string, request: Request): Promise<Response> {
-			const grant = await store.fileUrls.get(await sha256Hex(token));
+			// One bound to its maker first; else one made before they were, which lapses within its hour.
+			const grant =
+				(await store.fileUrls.get(await boundFileUrlId(token))) ?? (await store.fileUrls.get(await sha256Hex(token)));
 			if (grant === undefined || grant.expiresAt <= now()) {
 				throw new KantelError("not_found", "This file URL is unknown or has expired");
 			}
 			const wants = request.method === "HEAD" ? "GET" : request.method;
 			if (wants !== grant.method) {
 				throw new KantelError("invalid", `This file URL is for ${grant.method === "GET" ? "GET (or HEAD)" : "PUT"}`);
+			}
+			// Whoever made it must still be able to read and write the sandbox's files: a revoked key or personal token, an
+			// ended sign-in, a member who left, or an organisation that blocked personal tokens ends the URL with it. One
+			// made before this was kept has no maker to check, and lapses within its hour.
+			if (grant.grantee !== undefined) {
+				const maker = await deps.granteePrincipal(grant.grantee);
+				const allowed =
+					maker !== undefined &&
+					(await deps.sandboxFor(maker, grant.sandboxId, "files").then(
+						() => true,
+						(error: unknown) => {
+							if (error instanceof KantelError) return false;
+							throw error;
+						},
+					));
+				if (!allowed) throw new KantelError("not_found", "This file URL is unknown or has expired");
 			}
 			// One that is starting is waited for, as for any call that needs it running; a stopped one stays stopped.
 			const sandbox = await deps.requireRunningByToken(grant.sandboxId);
@@ -955,3 +982,10 @@ export function createMounts(deps: MountsDeps) {
 }
 
 export type Mounts = ReturnType<typeof createMounts>;
+
+/**
+ * Where a file URL bound to its maker (`StoredFileUrl.grantee`) is kept: not the bare SHA-256 of its token, which a
+ * gateway from before the binding looks up and would serve without checking its maker (a revoked personal token's URL
+ * included). Such a gateway finds nothing there and refuses the URL.
+ */
+export const boundFileUrlId = (token: string): Promise<string> => sha256Hex(`bound:${token}`);

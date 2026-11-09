@@ -1,6 +1,6 @@
 ---
 title: API keys
-description: Make scoped API keys for scripts, CI and agents, with presets, sandbox limits and expiry; what each scope allows; and rotating and revoking a key.
+description: Make scoped API keys for scripts, CI and agents, with presets, sandbox limits and expiry; what each scope allows; rotating and revoking a key; and personal access tokens, which act as you in all your accounts.
 sidebar:
   badge:
     text: Experimental
@@ -130,6 +130,37 @@ curl -s -X DELETE "$KANTEL_URL/v1/api-keys/key_5n2p8r" \
 ```
 
 The answer is the key, with `revokedAt` set. Rotating and revoking need `account:admin`.
+
+## Personal access tokens
+
+A personal access token (`kpt_…`) is your own credential, not an account's. It acts as you, in every account you belong to, with your role in each: one token reaches your personal account and all your organisations, and a call names the one it acts in with `account`, as a person's does. `kantel login` makes one when you approve it, and you can make more for your own scripts under **Profile** in the console or with `kantel token create`.
+
+| | Personal access token | API key |
+| --- | --- | --- |
+| Belongs to | You | An account |
+| Acts in | Every account you belong to, or the ones it names | The account it was made in |
+| What it may do | What your role allows there, capped by its scopes if it has any | Its scopes |
+| When you leave an organisation | It stops working there at once | Your keys there are revoked |
+| Lasts | 90 days by default, at most 366 | As long as it was made for, or for ever |
+| Who makes one | You, as a member of any account | An admin or owner of the account |
+
+Use a personal token for yourself at a terminal and your own scripts. For an agent or CI that works in one account, use an API key: it acts only there and does only what its scopes say, whatever your role. Either way it goes when you leave the organisation, as everything acting for you there does.
+
+```sh
+curl -s "$KANTEL_URL/v1/personal-tokens" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"name": "deploy script", "preset": "agent", "accounts": ["acc_7f3k2m9q"], "expiresInDays": 30}'
+```
+
+| Field | What it does |
+| --- | --- |
+| `name` | Up to 100 characters, to tell tokens apart |
+| `preset`, `scopes` | Cap what it may do, within your role. Leave both out for whatever your role allows |
+| `accounts` | Only these accounts. Leave it out for all of yours, ones you join later included |
+| `expiresInDays` | 1 to 366; 90 when left out |
+
+A token never acts as a deployment super-admin, and it can't approve another device's sign-in or delete your account: those need you signed in at the console. A token can make another token, but not one that does more, in more accounts, or lasts longer than itself. `GET /v1/personal-tokens` lists yours, and `DELETE /v1/personal-tokens/{tokenId}` revokes one; a token can revoke itself, as `kantel logout` does. An organisation can [block personal tokens](/accounts/organisations/#personal-access-tokens).
 
 ## Keep keys out of sandboxes
 

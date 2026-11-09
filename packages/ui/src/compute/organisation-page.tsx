@@ -20,6 +20,7 @@ import { OneTimeSecret } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { Switch } from "../primitives/switch.tsx";
 import { ACCOUNT_ROLE_LABELS, AccountMark } from "./account-switcher.tsx";
 import type {
 	AccountRole,
@@ -331,6 +332,21 @@ function General({
 			<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-organisation`}>
 				<SectionHeading id={`${headingId}-organisation`} title="Organisation" />
 				<NameField account={account} {...(rename === undefined ? {} : { rename })} />
+				{source.setPersonalTokens === undefined ? null : (
+					<PersonalTokensSwitch
+						account={account}
+						manager={manager}
+						onChange={async (policy) => {
+							const changed = await source.setPersonalTokens?.(account.id, policy);
+							// Only what Kantel says it saved: an answer without the policy hasn't saved it.
+							if (changed?.personalTokens === undefined) {
+								throw new Error("Kantel didn't confirm the change. Try again.");
+							}
+							onRenamed?.(changed);
+							return changed.personalTokens;
+						}}
+					/>
+				)}
 			</section>
 			{invited?.code === undefined ? null : (
 				<OneTimeSecret
@@ -459,6 +475,55 @@ function General({
 }
 
 /** The organisation's name: a field an admin can change and save; for anyone else, read only. */
+/**
+ * Whether members' personal access tokens work in the organisation: on by default. Off, a token's call there is refused
+ * and members use the console or the organisation's API keys. Applies at once; only an admin may change it.
+ */
+function PersonalTokensSwitch({
+	account,
+	manager,
+	onChange,
+}: {
+	account: ComputeAccount;
+	manager: boolean;
+	onChange: (policy: "allowed" | "blocked") => Promise<"allowed" | "blocked">;
+}) {
+	const [policy, setPolicy] = useState(account.personalTokens ?? "allowed");
+	const [busy, setBusy] = useState(false);
+	const [failure, setFailure] = useState<string>();
+	return (
+		<div className="flex min-w-0 flex-col gap-1 pt-2">
+			<Switch
+				label="Allow personal access tokens"
+				checked={policy === "allowed"}
+				busy={busy}
+				disabled={!manager}
+				hint={
+					manager
+						? "Members' kantel logins and scripts act here with their own role. Off, they use the console or the organisation's API keys."
+						: "Only an admin or owner changes this."
+				}
+				onChange={(on) => {
+					const next = on ? "allowed" : "blocked";
+					setBusy(true);
+					setFailure(undefined);
+					onChange(next).then(
+						(saved) => {
+							setPolicy(saved);
+							setBusy(false);
+						},
+						(caught: unknown) => {
+							setBusy(false);
+							setFailure(messageOf(caught, "Kantel couldn't change it. Try again."));
+						},
+					);
+				}}
+			/>
+			{failure === undefined ? null : <p className="m-0 text-sm text-status-error">{failure}</p>}
+		</div>
+	);
+}
+
 function NameField({ account, rename }: { account: ComputeAccount; rename?: (name: string) => Promise<void> }) {
 	const [name, setName] = useState(account.name);
 	const [busy, setBusy] = useState(false);

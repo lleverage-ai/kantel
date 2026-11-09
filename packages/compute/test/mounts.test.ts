@@ -12,11 +12,12 @@ import type { SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { createMemoryBundleStore } from "../src/bundles.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import type { BundleBlobStore } from "../src/mounts.ts";
+import { boundFileUrlId } from "../src/mounts-service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { entryPath, linkStaysInside, MAX_LINK_NODES, TarCheck } from "../src/tar.ts";
-import { bytesToBase64 } from "../src/util.ts";
+import { bytesToBase64, sha256Hex } from "../src/util.ts";
 
 const BASE_URL = "http://compute.test/v1";
 const PEOPLE: { readonly [token: string]: PersonIdentity } = {
@@ -196,6 +197,7 @@ function setup(options: SetupOptions = {}) {
 		blobs: bundles,
 		specs,
 		fetchApi,
+		client,
 		tom: client("tom-token"),
 		ann: client("ann-token"),
 	};
@@ -820,6 +822,43 @@ describe("signed file URLs", () => {
 		});
 		// The stub's files are slow at a megabyte, which the read in parts needs.
 	}, 30_000);
+
+	it("stop working once whoever made them may no longer: a revoked token or key, an expiring token", async () => {
+		const start = Date.now();
+		// A day's token made all but half an hour ago, so it ends half an hour from now.
+		let clock = start - 24 * 3_600_000 + 30 * 60_000;
+		const { tom, client, fetchApi, store } = setup({ now: () => clock });
+		const issued = await tom.createPersonalToken({ name: "t", expiresInDays: 1 });
+		clock = start;
+		expect(issued.token.expiresAt).toBe(clock + 30 * 60_000);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.writeFile(sandbox.id, { path: "note.txt", content: "kept" });
+		const pat = client(issued.secret);
+		// An hour's URL ends with the token instead.
+		const capped = await pat.createDownloadUrl(sandbox.id, { path: "note.txt", ttlSeconds: 3600 });
+		expect(capped.expiresAt).toBe(issued.token.expiresAt);
+		// A shorter one keeps what it asked for.
+		const brief = await pat.createDownloadUrl(sandbox.id, { path: "note.txt", ttlSeconds: 60 });
+		expect(brief.expiresAt).toBe(clock + 60_000);
+		const download = await pat.createDownloadUrl(sandbox.id, { path: "note.txt" });
+		expect((await fetchApi(download.url)).status).toBe(200);
+		await tom.revokePersonalToken(issued.token.id);
+		expect((await fetchApi(download.url)).status).toBe(404);
+
+		const key = await tom.createApiKey({ name: "k", preset: "agent" });
+		const upload = await client(key.secret).createUploadUrl(sandbox.id, { path: "up.txt" });
+		await tom.revokeApiKey(key.key.id);
+		expect((await fetchApi(upload.url, { method: "PUT", body: "x" })).status).toBe(404);
+
+		// Kept where a gateway from before the binding, which looks up the token's bare SHA-256, finds nothing.
+		const token = new URL(download.url).pathname.split("/").pop() ?? "";
+		expect(await store.fileUrls.get(await sha256Hex(token))).toBeUndefined();
+		expect(await store.fileUrls.get(await boundFileUrlId(token))).toMatchObject({ grantee: expect.any(String) });
+
+		// One made by someone who still may goes on working.
+		const still = await tom.createDownloadUrl(sandbox.id, { path: "note.txt" });
+		expect(await (await fetchApi(still.url)).text()).toBe("kept");
+	});
 
 	it("wait for a sandbox that is starting, as any call that needs it running does", async () => {
 		let release: () => void = () => {};

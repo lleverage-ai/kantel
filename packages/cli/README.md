@@ -30,9 +30,10 @@ but npm publishing is on hold, so `npx kantel` doesn't work: install it as above
 
 ## Signing in
 
-The CLI needs Kantel's URL and an API key (`ksk_…`). It takes each from the first of:
+The CLI needs Kantel's URL and a credential: a personal access token (`kpt_…`), which acts as you in all your
+accounts, or an API key (`ksk_…`), which acts in one. It takes each from the first of:
 
-1. flags: `--url`, `--key` (or `--api-key`) and `--account <id>`;
+1. flags: `--url`, `--key` (or `--api-key`) and `--account <id|name>`;
 2. the environment: `KANTEL_URL`, `KANTEL_API_KEY` and `KANTEL_ACCOUNT`;
 3. `${XDG_CONFIG_HOME:-~/.config}/kantel/config.json`, which `kantel login` writes, readable by you only.
 
@@ -49,9 +50,15 @@ kantel logout
 
 The browser sign-in is RFC 8628's device flow (`POST /v1/auth/device`): it prints a code, opens
 `/device?code=…` in the console, and polls until a signed-in person approves it there, which hands the CLI a
-new 90-day API key named `kantel on <host>`. A code waiting for approval is kept in `login-pending.json` beside the
+new 90-day personal access token named `kantel on <host>` (`login --account-key` asks for an API key in one
+account instead, and a Kantel from before personal tokens always gives one). `kantel logout` revokes the token, and
+signing in again revokes the one it replaces. A code waiting for approval is kept in `login-pending.json` beside the
 config, so running `kantel login` again shows the same one; with no terminal it prints the code and stops, and
 `kantel login --wait` waits for it. `kantel login` checks the key before it saves it.
+
+With a personal token, `--account` (or `KANTEL_ACCOUNT`) picks the account a command acts in, by ID or name, and
+`kantel org use <account>` saves one for every command after. `kantel list --every-account [--mine]` lists the
+sandboxes in all of them.
 
 ## Commands
 
@@ -62,7 +69,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | --- | --- |
 | `new [--type isolate\|microvm] [--size <size> \| --vcpus <n> --memory <GB>] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--env <env>] [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs; `--env` with no `=` names an environment to start from |
 | `sizes [--on <host>]` | The named sizes the hosts offer, and the other shapes `--vcpus` and `--memory` may ask for |
-| `list [--all] [--mine]`, `info <id>` | List and show sandboxes; `--mine` leaves out the ones others share in an organisation |
+| `list [--all] [--mine] [--every-account]`, `info <id>` | List and show sandboxes; `--mine` leaves out the ones others share in an organisation, `--every-account` lists all your accounts' |
 | `start\|stop\|resume\|recover <id>` | Its lifecycle; `stop --pause` keeps a microVM's memory |
 | `fork <id> [--count N]` | Copy it into new sandboxes |
 | `delete <id> --yes` | Delete it for good: it refuses without `--yes` |
@@ -80,7 +87,10 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `env file <env> <path> [--mode] [--from]`, `env file rm`, `env repo add\|rm`, `env grant <env> allow\|deny <host>`, `env grant rm` | Secret files, repositories to clone and grants |
 | `egress <sandbox> [--denied]`, `grant <sandbox> allow\|deny <host> [--method] [--path]`, `grant rm` | A sandbox's egress log, and its own grants |
 | `key list\|create\|rotate\|revoke …` | Scoped API keys; a new key's secret is shown once |
-| `org list\|create\|join …`, `webhook …`, `events`, `telemetry …` | Accounts, webhooks, events and OpenTelemetry |
+| `token list\|create\|revoke …` | Your personal access tokens; a new token's secret is shown once |
+| `org list\|use\|show\|create\|join\|set\|usage\|leave\|delete …` | Your accounts: which one commands act in, and their settings |
+| `member list\|role\|rm …`, `invite list\|create\|revoke …` | An organisation's members and invites |
+| `webhook …`, `events`, `telemetry …` | Webhooks, events and OpenTelemetry |
 | `hosts add\|list\|info\|drain\|rm …` | Your own hosts (experimental): machines of your own that run only your account's sandboxes |
 | `init [--global] [--for claude\|codex\|pi]` | AGENTS.md, CLAUDE.md and the kantel skill for coding agents |
 | `mcp` | The MCP server on stdio |
