@@ -148,6 +148,14 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 
 	return {
 		...templates,
+		// The backend that has the host says; one with no word (the stub) has every host it has connected.
+		...(primary.hostConnected === undefined && fallback.hostConnected === undefined
+			? {}
+			: {
+					async hostConnected(hostId: string) {
+						return (await primary.hostConnected?.(hostId)) ?? fallback.hostConnected?.(hostId);
+					},
+				}),
 		async capabilities(): Promise<BackendCapabilities> {
 			const [first, second] = await Promise.all([primary.capabilities(), fallback.capabilities()]);
 			const sizes = new Map<string, BackendSize>();

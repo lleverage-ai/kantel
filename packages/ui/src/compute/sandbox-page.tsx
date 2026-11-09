@@ -25,18 +25,17 @@ import {
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { PageTabs } from "../primitives/page-tabs.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
-import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { BaseOutdatedBadge, behindText } from "./base-outdated.tsx";
 import {
 	costText,
 	type EgressSource,
+	HOST_UNREACHABLE_NOTICE,
+	HOST_UNREACHABLE_POLL_MS,
 	type HostingMode,
 	idleStopText,
 	imageLacks,
 	SANDBOX_KIND_LABELS,
-	SANDBOX_STATE_LABELS,
-	SANDBOX_STATE_STATUS,
 	type Sandbox,
 	type SandboxAccess,
 	type SandboxesSource,
@@ -51,12 +50,11 @@ import {
 	sizeText,
 	stoppedByText,
 	stopsInText,
-	UNRESPONSIVE_LABEL,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
 import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
+import { computePage, messageOf, SandboxStateLabel, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
@@ -144,14 +142,6 @@ export interface SandboxPageProps {
 	/** The address of the Files tab at a folder and file; with `navigate`, the tab moves through the address. */
 	readonly filesHref?: (at: FilesAt) => string;
 }
-
-/** The state, in its colour; a running one whose guest agent doesn't answer, as that. */
-const StateLabel = ({ state, unresponsive = false }: { state: Sandbox["state"]; unresponsive?: boolean }) =>
-	state === "running" && unresponsive ? (
-		<StatusLabel status="error">{UNRESPONSIVE_LABEL}</StatusLabel>
-	) : (
-		<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
-	);
 
 type HeldAccess = { readonly value: SandboxAccess | "loading" | Error; readonly at: number };
 
@@ -255,21 +245,32 @@ export function SandboxPage({
 	}, [state]);
 	const sandbox = local ?? read;
 
-	// Read again while it moves between states; while it runs, now and then for its CPU.
+	// Read again while it moves between states; while it runs, now and then for its CPU; while its host isn't connected,
+	// more often, as a backstop to the live feed (a gateway that held the host's connection and went says nothing).
 	const moving = sandbox !== undefined && sandboxMoving(sandbox.state);
 	const running = sandbox?.state === "running";
+	const away = sandbox?.hostUnreachable === true;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: each read schedules the next.
 	useEffect(() => {
-		const wait = moving ? pollMs : running && fixedNow === undefined ? 30_000 : undefined;
+		const wait = moving
+			? pollMs
+			: fixedNow !== undefined
+				? undefined
+				: away
+					? HOST_UNREACHABLE_POLL_MS
+					: running
+						? 30_000
+						: undefined;
 		if (wait === undefined) return;
 		const timer = setTimeout(reload, wait);
 		return () => clearTimeout(timer);
-	}, [moving, running, pollMs, fixedNow, reload, state]);
-	// And at once when it changes elsewhere: the CLI, the API, its auto-stop.
+	}, [moving, running, away, pollMs, fixedNow, reload, state]);
+	// And at once when it changes elsewhere: the CLI, the API, its auto-stop, its host going or coming back.
 	useFollowSandboxes(source, sandbox?.accountId, reload, { id: sandboxId, onDeleted: () => setDeleted(true) });
 
-	// No way in to one whose guest agent doesn't answer: its SSH, screens and ports would be refused.
-	const windows = running && sandbox?.unresponsive === undefined && sandbox?.kind === "microvm";
+	// No way in to one whose guest agent doesn't answer, or whose host isn't connected: its SSH, screens and ports would
+	// be refused.
+	const windows = running && !away && sandbox?.unresponsive === undefined && sandbox?.kind === "microvm";
 	const { access, read: readAccess, stale: accessStale } = useAccess(source, sandboxId, windows);
 
 	const tabsShown: readonly SandboxTab[] = [
@@ -426,7 +427,7 @@ export function SandboxPage({
 		);
 	}
 
-	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined);
+	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined, sandbox.hostUnreachable === true);
 	const stop = () => act("stop", () => source.stop(sandbox.id));
 	const entries: readonly MenuEntry[] =
 		narrow && can.stop
@@ -536,7 +537,7 @@ export function SandboxPage({
 			<header className="kt-sandbox-header flex min-w-0 flex-col gap-3">
 				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-3">
 					<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
-					<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
+					<SandboxStateLabel sandbox={sandbox} />
 					<div className={`flex items-center gap-2 ${narrow ? "w-full" : "ml-auto"}`}>{actions}</div>
 				</div>
 				<div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted">
@@ -600,7 +601,9 @@ export function SandboxPage({
 				</div>
 			</header>
 			{sandbox.state === "error" && sandbox.error !== undefined ? <Notice level="error">{sandbox.error}</Notice> : null}
-			{sandbox.state === "running" && sandbox.unresponsive !== undefined ? (
+			{sandbox.hostUnreachable === true ? (
+				<Notice level="warning">{HOST_UNREACHABLE_NOTICE}</Notice>
+			) : sandbox.state === "running" && sandbox.unresponsive !== undefined ? (
 				<Notice level="error">{sandbox.unresponsive}</Notice>
 			) : null}
 			{sandbox.base?.outdated === true ? (
@@ -810,15 +813,19 @@ function Overview({
 	const hint =
 		sandbox.kind === "isolate"
 			? "An isolate has no desktop, browser or SSH."
-			: sandbox.state === "running" && sandbox.unresponsive !== undefined
+			: sandbox.hostUnreachable === true
 				? screen === undefined
-					? "Recover it to use SSH."
-					: `Recover it to use its ${screen} and SSH.`
-				: sandboxActions(sandbox.state).resume
+					? "SSH is back once its host reconnects."
+					: `Its ${screen} and SSH are back once its host reconnects.`
+				: sandbox.state === "running" && sandbox.unresponsive !== undefined
 					? screen === undefined
-						? "Resume it to use SSH."
-						: `Resume it to use its ${screen} and SSH.`
-					: undefined;
+						? "Recover it to use SSH."
+						: `Recover it to use its ${screen} and SSH.`
+					: sandboxActions(sandbox.state).resume
+						? screen === undefined
+							? "Resume it to use SSH."
+							: `Resume it to use its ${screen} and SSH.`
+						: undefined;
 
 	if (narrow) {
 		return (
@@ -1061,11 +1068,19 @@ function SnapshotsTab({
  * stopped, or nothing before it has one.
  */
 export function filesShown(
-	sandbox: Pick<Sandbox, "state" | "snapshot" | "unresponsive">,
+	sandbox: Pick<Sandbox, "state" | "snapshot" | "unresponsive" | "hostUnreachable">,
 	source: Pick<SandboxesSource, "files">,
 ): "live" | "snapshot" | "none" {
-	// One whose guest agent doesn't answer can't be read now: its latest snapshot's, as when it's stopped.
-	if (sandbox.state === "running" && sandbox.unresponsive === undefined && source.files !== undefined) return "live";
+	// One whose guest agent doesn't answer, or whose host isn't connected, can't be read now: its latest snapshot's, as
+	// when it's stopped.
+	if (
+		sandbox.state === "running" &&
+		sandbox.unresponsive === undefined &&
+		sandbox.hostUnreachable !== true &&
+		source.files !== undefined
+	) {
+		return "live";
+	}
 	return sandbox.snapshot === undefined ? "none" : "snapshot";
 }
 

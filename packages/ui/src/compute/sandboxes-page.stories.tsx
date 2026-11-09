@@ -178,6 +178,15 @@ export const Loading: Story = () => <Scenario options={{ hang: true }} />;
 /** The list when Kantel can't be reached. */
 export const Failed: Story = () => <Scenario options={{ fail: true }} />;
 
+/** A host that went away: its running sandboxes say Host unreachable, its stopped ones keep their state. */
+export const HostUnreachable: Story = () => <Scenario options={{ hostsAway: ["hst_hetzner_1", "hst_hetzner_2"] }} />;
+
+/** The same on a phone. */
+export const HostUnreachableMobile: Story = () => (
+	<Scenario options={{ hostsAway: ["hst_hetzner_1", "hst_hetzner_2"] }} narrow />
+);
+HostUnreachableMobile.meta = { width: 390 };
+
 /** On a phone: a row for each, its CPU beside its state. */
 export const Mobile: Story = () => <Scenario narrow />;
 Mobile.meta = { width: 390 };

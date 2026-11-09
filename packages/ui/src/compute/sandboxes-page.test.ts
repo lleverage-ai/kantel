@@ -3,15 +3,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import {
+	HOST_UNREACHABLE_LABEL,
 	type HostChoice,
 	idleStopText,
 	type Sandbox,
 	type SandboxState,
+	sandboxActions,
 	sandboxMachineText,
 	stoppedByText,
 	type Template,
 } from "./compute-model.ts";
 import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
+import { SandboxStateLabel } from "./parts.tsx";
 import { IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
 import {
 	creatorFilters,
@@ -140,6 +143,40 @@ describe("a sandbox's page", () => {
 		expect(filesShown(running, {})).toBe("none");
 		// One whose guest agent doesn't answer shows its snapshot's, as a stopped one does.
 		expect(filesShown({ ...stopped, state: "running", unresponsive: "It is out of memory" }, source)).toBe("snapshot");
+		// So does one whose host isn't connected.
+		expect(filesShown({ ...stopped, state: "running", hostUnreachable: true }, source)).toBe("snapshot");
+	});
+});
+
+describe("a sandbox whose host isn't connected", () => {
+	const label = (sandbox: Pick<Sandbox, "state" | "unresponsive" | "hostUnreachable">) =>
+		renderToStaticMarkup(createElement(SandboxStateLabel, { sandbox })).replace(/<[^>]+>/g, "");
+
+	it("shows Host unreachable in place of a state its host could have changed, and keeps stopped and error", () => {
+		for (const state of ["starting", "running", "stopping", "paused"] as const) {
+			expect(label({ state, hostUnreachable: true })).toBe(HOST_UNREACHABLE_LABEL);
+		}
+		expect(label({ state: "stopped", hostUnreachable: true })).toBe("Stopped");
+		expect(label({ state: "error", hostUnreachable: true })).toBe("Error");
+		// Its host being away says more than its guest agent not answering, which can't be known now.
+		expect(label({ state: "running", hostUnreachable: true, unresponsive: "It is out of memory" })).toBe(
+			HOST_UNREACHABLE_LABEL,
+		);
+		expect(label({ state: "running" })).toBe("Running");
+	});
+
+	it("offers only Stop: connecting, forking, resuming and recovering all need its host", () => {
+		expect(sandboxActions("running", false, true)).toEqual({
+			connect: false,
+			stop: true,
+			resume: false,
+			fork: false,
+			recover: false,
+		});
+		expect(sandboxActions("paused", false, true)).toMatchObject({ stop: true, resume: false });
+		expect(sandboxActions("stopped", false, true)).toMatchObject({ stop: false, resume: false, fork: false });
+		expect(sandboxActions("error", false, true)).toMatchObject({ resume: false, recover: false });
+		expect(sandboxActions("running")).toMatchObject({ connect: true, fork: true });
 	});
 });
 

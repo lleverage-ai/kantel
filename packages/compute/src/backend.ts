@@ -11,6 +11,7 @@
  * no host can take the work.
  */
 import type { computeSchema } from "@kantel/api";
+import { KantelError } from "@kantel/contracts";
 import type { BackendUsageReport } from "./usage-series.ts";
 
 /**
@@ -545,9 +546,26 @@ export interface UsageSample {
  * Where sandboxes run. Lane 2's host scheduler implements it over the hosts that joined; `createStubBackend` implements
  * it in memory. Paths are absolute (the control plane resolves relative ones against the user's home).
  */
+/**
+ * A call that needs a sandbox's machine while its host isn't connected (`Sandbox.hostReachable` false). The host isn't
+ * named: a sandbox on a shared host doesn't show its host.
+ */
+export function hostNotConnected(): KantelError {
+	return new KantelError(
+		"unavailable",
+		"The sandbox's host isn't connected to Kantel, so the sandbox can't be reached now; try again once the host reconnects",
+	);
+}
+
 export interface SandboxBackend {
 	/** The types, sizes and hosts available now. */
 	capabilities(): Promise<BackendCapabilities>;
+	/**
+	 * Whether one of its hosts is connected now (a sandbox's `hostReachable`); undefined for a host it doesn't have. Asked
+	 * for the sandboxes of every answer, so a connected host is answered without a read. Absent: every host it has always
+	 * is (the stub).
+	 */
+	hostConnected?(hostId: string): Promise<boolean | undefined>;
 	/** Places and boots a new machine. */
 	create(spec: SandboxSpec): Promise<Placement>;
 	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */

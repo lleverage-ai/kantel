@@ -166,6 +166,16 @@ export const StoppedFiles: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" vi
 /** One that failed: what went wrong, and Recover. */
 export const Failed: Story = () => <Scenario sandboxId="sbx_1o9p4a7se6" />;
 
+/**
+ * A running microVM whose host isn't connected: Host unreachable in place of Running, why, no previews, SSH or ports,
+ * and only Stop, which waits for the host.
+ */
+export const HostUnreachable: Story = () => <Scenario options={{ hostsAway: ["hst_hetzner_1"] }} />;
+
+/** The same on a phone. */
+export const HostUnreachableMobile: Story = () => <Scenario options={{ hostsAway: ["hst_hetzner_1"] }} narrow />;
+HostUnreachableMobile.meta = { width: 390 };
+
 /** An isolate: no desktop, browser or SSH. */
 export const Isolate: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" />;
 

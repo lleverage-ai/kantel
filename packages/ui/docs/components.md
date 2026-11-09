@@ -377,3 +377,19 @@ memory shows nothing.
 **States:** by reservation, by use, refusing, not reported; all in its stories.
 
 **Cost:** none: the host sends it with every heartbeat.
+
+### SandboxStateLabel
+
+A sandbox's state in words with its status dot (`src/compute/parts.tsx`), as the Sandboxes list and a sandbox's page
+show it: its lifecycle state in its colour, "Unresponsive" in the error colour for a running one whose guest agent
+doesn't answer, and "Host unreachable" in the warning colour for one whose host isn't connected to Kantel
+(`showsHostUnreachable`: starting, running, stopping or paused; a stopped one, or one in error, keeps its state). With
+its host away, the page says why in a warning notice and offers only Stop (`sandboxActions`), and the pages read it
+again every 15 seconds besides the live feed's word.
+
+**Don't use it for** a host's own state (the Hosts page's labels) or anything but a sandbox.
+
+**States:** each lifecycle state, unresponsive, host unreachable; the Sandboxes list's and Sandbox page's
+`HostUnreachable` stories, on a wide screen and a phone.
+
+**Cost:** none: it shows what the sandbox's answer says (`hostReachable`).

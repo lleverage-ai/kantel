@@ -25,7 +25,6 @@ import { SideScroll } from "../primitives/side-scroll.tsx";
 import { SliderField } from "../primitives/slider.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
-import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { HelpHint, Tooltip } from "../primitives/tooltip.tsx";
 import { BaseOutdatedBadge } from "./base-outdated.tsx";
@@ -39,6 +38,7 @@ import {
 	type Environment,
 	fitDisk,
 	fitMemory,
+	HOST_UNREACHABLE_POLL_MS,
 	type HostChoice,
 	type HostingMode,
 	memoryRangeFor,
@@ -47,14 +47,11 @@ import {
 	onGrid,
 	presetOf,
 	SANDBOX_KIND_LABELS,
-	SANDBOX_STATE_LABELS,
-	SANDBOX_STATE_STATUS,
 	type Sandbox,
 	type SandboxesSource,
 	type SandboxKind,
 	type SandboxShape,
 	type SandboxShapes,
-	type SandboxState,
 	type SavedSnapshot,
 	type SaveSnapshotOptions,
 	sandboxActions,
@@ -67,12 +64,11 @@ import {
 	sizeText,
 	stopsInText,
 	type Template,
-	UNRESPONSIVE_LABEL,
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { seriesOf, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf, tableFrame, td, th } from "./parts.tsx";
+import { computePage, messageOf, SandboxStateLabel, tableFrame, td, th } from "./parts.tsx";
 import {
 	AUTO_STOP_CHOICES,
 	DeleteDialog,
@@ -244,13 +240,16 @@ export function SandboxesPage({
 
 	// Read again while anything is between states, then forget what this page changed: the list has it now.
 	const moving = sandboxes?.some((box) => sandboxMoving(box.state)) === true;
+	// And, less often, while any has its host away: the live feed says when it's back, this is the backstop.
+	const away = sandboxes?.some((box) => box.hostUnreachable === true) === true;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: each read schedules the next while something moves.
 	useEffect(() => {
-		if (!moving) return;
-		const timer = setTimeout(reload, pollMs);
+		const wait = moving ? pollMs : away ? HOST_UNREACHABLE_POLL_MS : undefined;
+		if (wait === undefined) return;
+		const timer = setTimeout(reload, wait);
 		return () => clearTimeout(timer);
-	}, [moving, reload, pollMs, listed]);
-	// And at once when one changes elsewhere: the CLI, the API, an auto-stop.
+	}, [moving, away, reload, pollMs, listed]);
+	// And at once when one changes elsewhere: the CLI, the API, an auto-stop, its host going or coming back.
 	useFollowSandboxes(source, account.id, reload);
 	useEffect(() => {
 		if (listed === undefined) return;
@@ -655,7 +654,9 @@ function SandboxList({
 			else next.delete(id);
 			return next;
 		});
-	const stoppable = selected.filter((box) => sandboxActions(box.state, box.unresponsive !== undefined).stop);
+	const stoppable = selected.filter(
+		(box) => sandboxActions(box.state, box.unresponsive !== undefined, box.hostUnreachable === true).stop,
+	);
 	const [stopping, setStopping] = useState(false);
 	const stopSelected = async () => {
 		setStopping(true);
@@ -1063,7 +1064,7 @@ type LinkClick = Pick<
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const { source, save, onChange, asked, onNotice } = calls;
 	const pending = sandbox.id.startsWith("pending_");
-	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined);
+	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined, sandbox.hostUnreachable === true);
 	const windows = can.connect && sandbox.kind === "microvm";
 	// Its one screen: the desktop, where it has one (the browser runs on it), or else its browser.
 	const screen = sandboxScreen(sandbox);
@@ -1112,14 +1113,6 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const onLink = follow(calls.navigate);
 	return { pending, can, windows, screen, resume, recover, actions, href, onLink };
 }
-
-/** The state, in its colour; a running one whose guest agent doesn't answer, as that. */
-const StateLabel = ({ state, unresponsive = false }: { state: SandboxState; unresponsive?: boolean }) =>
-	state === "running" && unresponsive ? (
-		<StatusLabel status="error">{UNRESPONSIVE_LABEL}</StatusLabel>
-	) : (
-		<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
-	);
 
 /**
  * Its CPU, RAM, disk and IO over the last 10 minutes as one small chart, read again every few seconds while it runs;
@@ -1198,11 +1191,11 @@ function SandboxRow({
 			<td className={td}>
 				{sandbox.base?.outdated === true ? (
 					<span className="relative z-1 flex flex-col items-start gap-0.5">
-						<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
+						<SandboxStateLabel sandbox={sandbox} />
 						<BaseOutdatedBadge base={sandbox.base} now={now} />
 					</span>
 				) : (
-					<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
+					<SandboxStateLabel sandbox={sandbox} />
 				)}
 			</td>
 			<td className={td}>
@@ -1326,7 +1319,7 @@ function SandboxPhoneRow({
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
 				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<StateLabel state={sandbox.state} unresponsive={sandbox.unresponsive !== undefined} />
+				<SandboxStateLabel sandbox={sandbox} />
 			</div>
 			{(sandbox.state === "error" && sandbox.error !== undefined) || sandbox.unresponsive !== undefined ? (
 				<>
