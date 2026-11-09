@@ -59,6 +59,7 @@ import {
 } from "./auth.ts";
 import {
 	type BackendCapabilities,
+	type BackendDiskUsage,
 	type BackendEgress,
 	type BackendEgressGrant,
 	type BackendFileEntry,
@@ -75,6 +76,7 @@ import {
 	type SandboxBackend,
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
+	SNAPSHOT_KEEP_FEATURE,
 	type TakenSnapshot,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
@@ -87,8 +89,10 @@ import {
 	diskLimitsOf,
 	makesCustom,
 	makesShape,
+	memoryOf,
 	recordedMachine,
 	recordsMachine,
+	requireMinMemory,
 	restoreAsked,
 	sandboxMachine,
 } from "./machine.ts";
@@ -103,10 +107,18 @@ import {
 	reportMountStatuses,
 } from "./mounts-service.ts";
 import { isPlaceholderName, personName } from "./names.ts";
-import { delay, portNotRunningText, START_HOLD_MS, START_POLL_MS, sandboxNotRunning } from "./not-running.ts";
+import {
+	delay,
+	portNotRunningText,
+	START_HOLD_MS,
+	START_POLL_MS,
+	sandboxNotRunning,
+	sandboxUnresponsive,
+} from "./not-running.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
+	OOMPending,
 	RunPeriod,
 	StoredAccount,
 	StoredApiKey,
@@ -120,6 +132,7 @@ import type {
 	StoredHost,
 	StoredIdempotency,
 	StoredInvite,
+	StoredPeak,
 	StoredPersonalToken,
 	StoredProxy,
 	StoredSample,
@@ -307,6 +320,15 @@ export interface ComputeServiceOptions {
 	 * `conflict` with `sandbox_starting`. Not counted against a command's own timeout. Default `START_HOLD_MS`, 60 s.
 	 */
 	readonly startHoldMs?: number;
+	/**
+	 * Expiry of automatic snapshots (`expireSnapshots`). Off by default: it relies on every gateway adopting a snapshot
+	 * it makes a sandbox from (`adopt`), so a replicated install turns it on only once every gateway runs a version that
+	 * does. On, the first pass waits `snapshotExpiryDelayMs` after the process starts, so the requests an older version's
+	 * process still had in flight (a single instance being replaced) have ended.
+	 */
+	readonly snapshotExpiry?: boolean;
+	/** How long after it starts a process first expires snapshots. Default `SNAPSHOT_EXPIRY_START_DELAY_MS`, 15 minutes. */
+	readonly snapshotExpiryDelayMs?: number;
 	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
 	readonly startPollMs?: number;
 }
@@ -395,6 +417,26 @@ export const NEVER_MADE =
 
 /** A sandbox's reason once its host is revoked (`strandOn`). */
 export const HOST_REVOKED_REASON = "Its host was revoked, so it can't be reached; delete it to write it off";
+
+/**
+ * Why a sandbox whose guest agent stopped answering is in `error`: the host's words (how long, whether it is out of
+ * memory), and what to do, which a host's reason may already say.
+ */
+export function unresponsiveReason(reported: string | undefined): string {
+	const said = reported?.trim().replace(/\.$/, "") ?? "";
+	const why = said === "" ? "Its guest agent stopped answering" : said;
+	return /\brecover\b/i.test(why) ? why : `${why}. Recover it: a restart that keeps its disk`;
+}
+/**
+ * Why a running sandbox whose host ended its VM (`ComputeService.reportExit`) is in `error`: the host's words (its memory
+ * guard stopped it, the kernel killed it at the host's memory limit, it crashed, the host restarted), and what to do. Its
+ * disk is kept on its host, so a start boots it from there.
+ */
+export function hostExitReason(reported: string | undefined): string {
+	const said = reported?.trim().replace(/\.$/, "").slice(0, 1000) ?? "";
+	const why = said === "" ? "Its host stopped its VM" : `${said.charAt(0).toUpperCase()}${said.slice(1)}`;
+	return `${why}. Start it again to boot it from its disk, which is kept`;
+}
 /** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
 	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
@@ -524,6 +566,31 @@ export interface ComputeService {
 		bucketSourceId: string,
 	): Promise<ResolvedBucketSource | undefined>;
 	/**
+	 * A host's word on whether a running microVM's guest agent answers (`HOST_FEATURES.guestHealth`), from its events and
+	 * its hello: `health` `unresponsive`, with the host's `reason`, marks a `running` sandbox on `hostId` so, which
+	 * refuses its commands and files at once (they would hang); anything else, once its agent answers again, makes it `ok`.
+	 * `healthAt` is the host's clock when it set the health: a report no later than the last taken is dropped. Dropped for
+	 * a sandbox on another host or in any other state (one being recovered, stopped or started is that call's).
+	 */
+	reportHealth(
+		hostId: string,
+		sandboxId: string,
+		health: string | undefined,
+		reason: string | undefined,
+		healthAt?: number,
+	): Promise<void>;
+	/**
+	 * A host's word that a microVM it ran ended without Kantel asking (its memory guard stopped it, the kernel killed it
+	 * at the host's memory limit, it crashed, or the host restarted under it): a `running` sandbox on `hostId` moves to
+	 * `error` with the host's `error` as its reason (`hostExitReason`) and its ports cleared, its commands end, and it
+	 * emits `sandbox.error`. Dropped for a sandbox on another host or in any other state: a stop, start, recovery or
+	 * delete under way owns its outcome. `healthAt` is the host's last health stamp for the machine that ended (its clock,
+	 * from that machine's start on): one earlier than the stamp the sandbox's run was booted with (`machineAt`, the same
+	 * host's clock) is an earlier machine's exit, reported late, and dropped, as is one without a stamp for a run that
+	 * has one.
+	 */
+	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
+	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
 	 * `hostId` holds its placement); a path the sandbox doesn't mount is ignored. `mountsAt` is when the host set them:
@@ -645,6 +712,20 @@ const BASE_ROUTES = [
 ] as const satisfies readonly (keyof SignedInComputeRoutes)[];
 /** How long an automatic snapshot is kept. */
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
+/** How often the sweep looks for automatic snapshots past their `expiresAt` to delete (`expireSnapshots`). */
+export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
+/**
+ * How long after it starts a process first expires snapshots (`snapshotExpiry`): longer than any create or fork an older
+ * version's process, replaced by this one, could still have had in flight.
+ */
+export const SNAPSHOT_EXPIRY_START_DELAY_MS = 15 * 60_000;
+/** How long a process holds an expiry's mark (`markExpiring`) before another may take it over. */
+export const RETIRE_LEASE_MS = 10 * 60_000;
+/**
+ * How long a save may stay `creating` while its host's limit admits it (`admitSave`, a few reads) before the sweep
+ * takes it back as one whose gateway died, releasing its bytes (`withdrawSave`).
+ */
+export const SAVE_ADMISSION_LEASE_MS = 10 * 60_000;
 /** The usage readings kept per sandbox: a day of 5-minute means. */
 export const MAX_SAMPLES = 288;
 /** The hourly means kept per sandbox before its day of 5-minute ones (`keptSamples`): six more days, a week in all. */
@@ -693,10 +774,20 @@ export function spanMean(
 	samples: readonly StoredSample[],
 	from: number,
 	to: number,
-): { cpu: number; memoryMb: number; measured: boolean; diskMb?: number; io?: number } {
+): {
+	cpu: number;
+	memoryMb: number;
+	measured: boolean;
+	cpuMax?: number;
+	memoryMbMax?: number;
+	diskMb?: number;
+	io?: number;
+} {
 	let weight = 0;
 	let cpu = 0;
 	let memoryMb = 0;
+	let cpuMax = 0;
+	let memoryMbMax = 0;
 	const disk = { weight: 0, sum: 0 };
 	const io = { weight: 0, sum: 0 };
 	for (const sample of samples) {
@@ -711,6 +802,9 @@ export function spanMean(
 		weight += covered;
 		cpu += covered * sample.cpu;
 		memoryMb += covered * sample.memoryMb;
+		// The highest of any mean the span touches: a peak isn't spread over its neighbours.
+		cpuMax = Math.max(cpuMax, sample.cpuMax ?? sample.cpu);
+		memoryMbMax = Math.max(memoryMbMax, sample.memoryMbMax ?? sample.memoryMb);
 		// Disk and IO count for the share of its readings that had them.
 		if (sample.diskMb !== undefined) {
 			const share = covered * (diskReadings(sample) / readings);
@@ -728,6 +822,8 @@ export function spanMean(
 		cpu: cpu / weight,
 		memoryMb: memoryMb / weight,
 		measured: true,
+		cpuMax,
+		memoryMbMax,
 		...(disk.weight === 0 ? {} : { diskMb: disk.sum / disk.weight }),
 		...(io.weight === 0 ? {} : { io: io.sum / io.weight }),
 	};
@@ -780,6 +876,8 @@ function foldSample(into: StoredSample, sample: StoredSample, end: number): Stor
 		at: into.at,
 		cpu: (into.cpu * a + sample.cpu * b) / readings,
 		memoryMb: (into.memoryMb * a + sample.memoryMb * b) / readings,
+		cpuMax: Math.max(into.cpuMax ?? into.cpu, sample.cpuMax ?? sample.cpu),
+		memoryMbMax: Math.max(into.memoryMbMax ?? into.memoryMb, sample.memoryMbMax ?? sample.memoryMb),
 		readings,
 		spanMs: Math.max(into.at + (into.spanMs ?? ROLLUP_MS), end) - into.at,
 		...(diskMb === undefined ? {} : { diskMb, ...(disks === readings ? {} : { diskReadings: disks }) }),
@@ -1113,6 +1211,23 @@ function hostVersions(host: BackendHost): Pick<StoredHost, "latestVersion" | "up
 		...(host.latestVersion === undefined ? {} : { latestVersion: host.latestVersion }),
 		...(host.updateAvailable === true ? { updateAvailable: true } : {}),
 	};
+}
+
+/** A delete's error that says there was nothing to delete: a backend's `not_found`, or a host's. */
+function goneAlready(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "not_found";
+}
+
+/** The host a snapshot's ref names, `<hostId>/<id>` as a host backend's are; undefined for another backend's. */
+function refHost(ref: string): string | undefined {
+	const slash = ref.indexOf("/");
+	return slash > 0 ? ref.slice(0, slash) : undefined;
+}
+
+/** A byte count for a message: in GiB to one decimal place, or MiB below 1 GiB. */
+function bytesText(bytes: number): string {
+	const gib = bytes / 2 ** 30;
+	return gib >= 1 ? `${gib.toFixed(1)} GiB` : `${Math.round(bytes / 2 ** 20)} MiB`;
 }
 
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
@@ -1713,6 +1828,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** This process, as the owner of the usage ticks it claims to export (`StoredUsageClaim.owner`). */
 	const usageOwner = crypto.randomUUID();
 	let claimsSweptAt = Number.NEGATIVE_INFINITY;
+	/** When `expireSnapshots` last began a pass. */
+	let snapshotsExpiredAt = Number.NEGATIVE_INFINITY;
+	/** When this process may first expire snapshots (`snapshotExpiryDelayMs` after it started). */
+	const expiryStartsAt = now() + (options.snapshotExpiryDelayMs ?? SNAPSHOT_EXPIRY_START_DELAY_MS);
+	/** This process, as the owner of the expiry marks it makes (`markExpiring`). */
+	const retireOwner = crypto.randomUUID();
 	/** Set by `close`: a claim sweep under way stops. */
 	let closing = false;
 
@@ -1847,12 +1968,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// hosts (or the caller's read of them), and one is written only when it changed: a host's `lastSeenAt` alone moves
 	// on every heartbeat, so it is written once it is `HOST_SEEN_PRECISION_MS` stale, and the answer has it fresh.
 	let hostsReady: Promise<StoredHost[]> | undefined;
+	// Each host's memory as the backend last said, answered with it (`hostView`) but never stored: it moves on every
+	// heartbeat.
+	const hostMemory = new Map<string, computeSchema.HostMemory>();
 	const ensureHosts = (read?: Promise<BackendCapabilities>): Promise<StoredHost[]> => {
 		hostsReady ??= (async () => {
 			const [capabilities, records] = await Promise.all([read ?? backend.capabilities(), store.hosts.list()]);
 			const byId = new Map(records.map((record) => [record.id, record]));
 			const writes: Promise<void>[] = [];
+			hostMemory.clear();
 			for (const host of capabilities.hosts) {
+				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
@@ -1866,7 +1992,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const owner = current.accountId ?? accountId;
 					// The version to run is the backend's now; an update under way ends once the host is on it, or isn't
 					// after `HOST_UPDATE_WINDOW_MS` (the host couldn't, and says so in its log).
-					const { latestVersion: _latest, updateAvailable: _available, updating, ...rest } = current;
+					const {
+						latestVersion: _latest,
+						updateAvailable: _available,
+						updating,
+						diskUsage: keptDisk,
+						...rest
+					} = current;
 					const pending =
 						updating !== undefined &&
 						updating.version !== host.version &&
@@ -1884,6 +2016,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
 						capacity: { ...host.capacity },
+						// What its disk holds: the latest measure it sent, else the one kept.
+						...(host.diskUsage === undefined
+							? keptDisk === undefined
+								? {}
+								: { diskUsage: keptDisk }
+							: { diskUsage: { ...host.diskUsage } }),
 						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : current.lastSeenAt),
 					};
 				};
@@ -1908,6 +2046,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
 					capacity: { ...host.capacity },
+					...(host.diskUsage === undefined ? {} : { diskUsage: { ...host.diskUsage } }),
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
 					labels: { ...host.labels },
 					...(accountId === undefined ? {} : { accountId }),
@@ -2186,9 +2325,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
 				...sparklines(sandbox),
+				...(sandbox.state === "running" ? guestMemoryView(sandbox.id) : {}),
+				...peakView(peakOf(sandbox)),
 			},
 			...host,
 			base: baseView(sandbox.base),
+			...(sandbox.startup === undefined ? {} : { startup: { ...sandbox.startup } }),
 		};
 	}
 
@@ -2212,15 +2354,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		kind: snapshot.kind,
 		name: snapshot.name,
 		description: snapshot.description,
+		...(snapshot.labels === undefined ? {} : { labels: snapshot.labels }),
 		sandboxId: snapshot.sandboxId,
 		sandboxType: snapshot.sandboxType,
 		state: snapshot.state,
 		trigger: snapshot.trigger,
 		memory: snapshot.memory,
 		...recordedMachine(snapshot),
+		...(snapshot.minMemoryMb === undefined ? {} : { minMemoryMb: snapshot.minMemoryMb }),
 		sizeBytes: snapshot.sizeBytes,
 		uses,
 		createdAt: snapshot.createdAt,
+		// An automatic snapshot's state is from when it was taken; a saved one's only where it was kept, since one saved
+		// before then may be a copy of an older snapshot.
+		...(snapshot.takenAt !== undefined
+			? { takenAt: snapshot.takenAt }
+			: snapshot.kind === "automatic"
+				? { takenAt: snapshot.createdAt }
+				: {}),
 		createdBy: snapshot.createdBy,
 		expiresAt: snapshot.expiresAt,
 		base: baseView(snapshot.base),
@@ -2899,6 +3050,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 	}
 
+	/** A host's memory, as it last reported it, when it is connected. */
+	function hostMemoryOf(hostId: string): { memory?: computeSchema.HostMemory } {
+		const memory = hostMemory.get(hostId);
+		return memory === undefined ? {} : { memory: { ...memory } };
+	}
+
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
@@ -2909,12 +3066,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, ...rest } = host;
+		const { updating, diskUsage, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
 			...rest,
+			...(diskUsage === undefined ? {} : { diskUsage: await diskView(host.id, diskUsage) }),
 			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
+			...hostMemoryOf(host.id),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),
@@ -2989,10 +3148,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		type: EventType,
 		accountId: string,
 		fields: { sandbox?: StoredSandbox; snapshotId?: string; data?: EventData },
+		/** Its ID, for an event that may be stored again (written over, not added twice); default a new one. */
+		eventId: string = randomId("evt"),
 	): Promise<void> {
 		const { sandbox } = fields;
 		const event: computeSchema.Event = {
-			id: randomId("evt"),
+			id: eventId,
 			type,
 			accountId,
 			createdAt: now(),
@@ -3117,6 +3278,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (wasRunning && !running) runs = runs.map((run) => (run.to === undefined ? { ...run, to: at } : run));
 		if (!wasRunning && running) runs = [...runs, { from: at }];
 		const autoStop = extra.autoStopMinutes === undefined ? sandbox.autoStopMinutes : extra.autoStopMinutes;
+		// Its agent's health is its running machine's: a boot, or a stop once done, leaves none unresponsive
+		// (`reportHealth`). A stop under way keeps it and its reason, for one handed back running with the same machine.
+		const stillUnresponsive =
+			sandbox.health === "unresponsive" && extra.health === undefined && (state === "stopping" || state === "running");
 		return {
 			...sandbox,
 			...extra,
@@ -3134,10 +3299,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			startedAt: running && !wasRunning ? at : sandbox.startedAt,
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
 			lifecycle: (sandbox.lifecycle ?? 0) + 1,
-			reason: extra.reason,
+			reason: extra.reason ?? (stillUnresponsive ? sandbox.reason : undefined),
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
+			...(sandbox.health === "unresponsive" && extra.health === undefined && !stillUnresponsive
+				? { health: "ok" as const }
+				: {}),
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
@@ -3285,6 +3453,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
 					const sandbox = await settled(sandboxId);
 					if (sandbox.state === "running") {
+						// Its guest agent doesn't answer its host: the call would only hang.
+						if (sandbox.health === "unresponsive") throw sandboxUnresponsive(sandbox, apiBasePath);
 						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
 						noteActivity(sandbox.id);
 						return sandbox;
@@ -3511,10 +3681,254 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await backend.deleteSnapshot(ref).catch(() => undefined);
 	}
 
+	// Expiry of automatic snapshots. A record goes ready → marked (`deleting`, `retiring` {by, token, at}, which may be
+	// put back) → settling (`retiring.settling`, never put back) → gone; each move a compare-and-set on the record
+	// (`update`, which the SQL store writes only over the version it read):
+	//
+	// - `markExpiring` marks only a ready automatic snapshot past its `expiresAt`, on a host that keeps a saved snapshot's
+	//   own copy (`keepsCopies`, `snapshot-keep`), whose ref no other record has. On such a host nothing newly shares a
+	//   ref (only a save on a host without `snapshot.keep` does), so expiry never touches bytes another record names. A
+	//   host without it prunes its automatic snapshots itself, as before.
+	// - `settleSnapshot` is the only way from a mark to settling: by the mark's owner (or another process once the mark
+	//   is past `RETIRE_LEASE_MS`, taking it over with a new token), after reading afresh what depends on the snapshot
+	//   (`dependents`: what a sandbox resumes from, its pause, what a never-placed one is to be made from) for that very
+	//   token; something does, the mark is put back; the read fails, nothing moves.
+	// - `adopt` is the only way a create, a fork or a sandbox's newest moved back to an older one comes to depend on an
+	//   existing snapshot: the dependency is written first, then the snapshot read again, and anything but ready (or a
+	//   failed read) rolls it back. A mark happens before every dependents read, so either expiry sees the dependency or
+	//   the adopter sees the mark.
+	// - `releaseBytes` deletes a settling record's bytes, unless another record has their ref, and then the record; a
+	//   host that can't delete them leaves it settling, and the sweep tries again.
+	// - `withdrawSave` moves a save's own record that its host's limit refused (`admitSave`) from `creating` straight to
+	//   settling: nothing can depend on a snapshot that was never ready. The sweep retries these with expiry off too, and
+	//   takes back a save left `creating` past `SAVE_ADMISSION_LEASE_MS` the same way.
+	//
+	// A delete by hand, a save and a sandbox's delete are as they were: a delete of a snapshot expiry has marked simply
+	// wins (expiry's compare-and-sets then find no record and do nothing), and a record a delete removes is no holder.
+
 	/**
-	 * A kept copy's size (`keepSnapshot`) as a refresh will count it (`attributeSnapshotBytes`): its own bytes, and each
-	 * group of files it shares for the holder the records choose, itself included as a saved record made now. A backend
-	 * that doesn't say how its files are shared answers its size alone.
+	 * Whether the host a snapshot's bytes are on keeps a copy of its own for every save (`snapshot.keep`), so nothing
+	 * there ever shares the snapshot's ref. The host is its ref's (`<hostId>/<id>`), else its sandbox's. A backend that
+	 * can't keep copies, or a host that can't be told, doesn't.
+	 */
+	async function keepsCopies(snapshot: StoredSnapshot, hosts: ReadonlyMap<string, BackendHost>): Promise<boolean> {
+		if (backend.keepSnapshot === undefined || snapshot.ref === undefined) return false;
+		const slash = snapshot.ref.indexOf("/");
+		const hostId =
+			slash > 0
+				? snapshot.ref.slice(0, slash)
+				: snapshot.sandboxId === undefined
+					? undefined
+					: (await store.sandboxes.get(snapshot.sandboxId))?.hostId;
+		const host = hostId === undefined ? undefined : hosts.get(hostId);
+		// A backend's own hosts that say nothing of features (the stub) keep copies when the backend does.
+		return host !== undefined && (host.features === undefined || host.features.includes(SNAPSHOT_KEEP_FEATURE));
+	}
+
+	/** Marks an expired automatic snapshot `deleting`, provisionally, owned by this process; undefined when it isn't to be. */
+	async function markExpiring(snapshotId: string): Promise<StoredSnapshot | undefined> {
+		return store.snapshots.update(snapshotId, (latest) =>
+			latest.state !== "ready" || latest.kind !== "automatic"
+				? undefined
+				: { ...latest, state: "deleting", retiring: { by: retireOwner, token: randomId("ret"), at: now() } },
+		);
+	}
+
+	/** Puts this process's provisional mark back (`ready`), while it is still the mark with `token`. */
+	async function unmarkExpiring(snapshotId: string, token: string | undefined): Promise<void> {
+		await store.snapshots.update(snapshotId, (latest) => {
+			if (
+				latest.state !== "deleting" ||
+				latest.retiring?.by !== retireOwner ||
+				latest.retiring.token !== token ||
+				latest.retiring.settling === true
+			) {
+				return undefined;
+			}
+			const { retiring: _, ...rest } = latest;
+			return { ...rest, state: "ready" };
+		});
+	}
+
+	/**
+	 * Of `snapshotIds`, those a sandbox depends on, read afresh: what one resumes from (its newest), its pause while it is
+	 * paused or resuming, and what a never-placed one is to be made from. Only a deleted sandbox depends on nothing: one
+	 * being deleted may yet fail back to `error`, as it was. Throws when the read fails.
+	 */
+	async function dependents(snapshotIds: ReadonlySet<string>): Promise<Set<string>> {
+		const needed = new Set<string>();
+		for (const sandbox of await store.sandboxes.list()) {
+			if (sandbox.state === "deleted") continue;
+			for (const id of [
+				sandbox.latestSnapshotId,
+				sandbox.state === "paused" || sandbox.state === "starting" ? sandbox.pausedSnapshotId : undefined,
+				neverPlaced(sandbox) ? sandbox.source?.snapshotId : undefined,
+			]) {
+				if (id !== undefined && snapshotIds.has(id)) needed.add(id);
+			}
+		}
+		return needed;
+	}
+
+	/**
+	 * Carries an expiry's mark on to settling (the model above): this process's mark, or one held past its lease, taken
+	 * over; one that is fresh and not this process's is left to its owner. Answers `kept` when it isn't this process's to
+	 * settle, something depends on it (put back), or a read failed; `settling` when its bytes couldn't be released yet;
+	 * `gone` when its record is gone.
+	 */
+	async function settleSnapshot(
+		snapshot: StoredSnapshot,
+		/** What depends on it, read after it was marked (a pass's one read for all it marked). */
+		read?: ReadonlySet<string>,
+	): Promise<"kept" | "settling" | "gone"> {
+		const at = now();
+		const mine = (latest: StoredSnapshot) => latest.retiring?.by === retireOwner;
+		const stale = (latest: StoredSnapshot) =>
+			latest.retiring === undefined || latest.retiring.at + RETIRE_LEASE_MS <= at;
+		let current = await store.snapshots.get(snapshot.id);
+		if (current === undefined) return "gone";
+		if (current.state !== "deleting") return "kept";
+		if (!mine(current) || current.retiring?.token === undefined) {
+			current = await store.snapshots.update(current.id, (latest) =>
+				latest.state === "deleting" && stale(latest)
+					? { ...latest, retiring: { ...latest.retiring, by: retireOwner, token: randomId("ret"), at } }
+					: undefined,
+			);
+			if (current === undefined) return "kept";
+		}
+		if (current.retiring?.settling !== true) {
+			const token = current.retiring?.token;
+			let needed: boolean;
+			try {
+				// A pass's one read stands only for the mark it was read after.
+				const fresh = read !== undefined && snapshot.retiring?.token === token;
+				needed = (fresh ? read : await dependents(new Set([current.id]))).has(current.id);
+			} catch {
+				return "kept";
+			}
+			if (needed) {
+				await unmarkExpiring(current.id, token);
+				return "kept";
+			}
+			const claimed = await store.snapshots.update(current.id, (latest) =>
+				latest.state === "deleting" &&
+				mine(latest) &&
+				latest.retiring?.token === token &&
+				latest.retiring?.settling !== true
+					? {
+							...latest,
+							retiring: { ...latest.retiring, by: retireOwner, at: latest.retiring?.at ?? at, settling: true },
+						}
+					: undefined,
+			);
+			if (claimed === undefined) return (await store.snapshots.get(current.id)) === undefined ? "gone" : "kept";
+			current = claimed;
+		}
+		return (await releaseBytes(current).catch(() => false)) ? "gone" : "settling";
+	}
+
+	/**
+	 * Deletes a settling record: its bytes, unless another record has their ref, then the record. False, the record
+	 * kept for the sweep to try again, when a read failed or the host couldn't delete them; bytes the host no longer
+	 * has count as deleted.
+	 */
+	async function releaseBytes(snapshot: StoredSnapshot): Promise<boolean> {
+		const { ref } = snapshot;
+		if (ref !== undefined && !(await store.snapshots.list({ ref })).some((other) => other.id !== snapshot.id)) {
+			try {
+				await backend.deleteSnapshot(ref);
+			} catch (error) {
+				if (!goneAlready(error)) return false;
+			}
+		}
+		await store.snapshots.deleteIf(snapshot.id, (latest) => latest.state === "deleting");
+		return true;
+	}
+
+	/**
+	 * Makes something depend on an existing snapshot (the model above): `depend` writes the dependency, then the snapshot
+	 * is read again, and anything but ready, or a read that fails, has `undo` roll it back. Answers whether it stands.
+	 */
+	async function adopt(snapshotId: string, depend: () => Promise<void>, undo: () => Promise<void>): Promise<boolean> {
+		await depend();
+		const still = await store.snapshots.get(snapshotId).then(
+			(read) => read?.state === "ready",
+			() => false,
+		);
+		if (still) return true;
+		await undo();
+		return false;
+	}
+
+	/** The error a create or fork answers when the snapshot it is made from was deleted under it. */
+	const deletedMeanwhile = () => new KantelError("conflict", "The snapshot was deleted while it was being used");
+
+	/**
+	 * Expires automatic snapshots past their `expiresAt` (the model above), at most once each `SNAPSHOT_EXPIRY_EVERY_MS`,
+	 * in the background: first what is left `deleting` (settling ones, and marks past their lease), then the expired,
+	 * marked, one read of what depends on them, and each settled for its own mark. With expiry off, only the settling
+	 * ones (a refused save's bytes, `withdrawSave`) are tried again. Either way, a save left `creating` past
+	 * `SAVE_ADMISSION_LEASE_MS` (its gateway died) is taken back first.
+	 */
+	function expireSnapshots(): void {
+		const expiring = options.snapshotExpiry === true;
+		if (expiring && now() < expiryStartsAt) return;
+		if (now() - snapshotsExpiredAt < SNAPSHOT_EXPIRY_EVERY_MS) return;
+		snapshotsExpiredAt = now();
+		keepGoing(
+			(async () => {
+				const at = now();
+				// A save left `creating` past its lease (its gateway died mid-admission): taken back, its bytes with it.
+				for (const creating of await store.snapshots.list({ state: "creating", kind: "saved" })) {
+					if (closing) return;
+					if (creating.createdAt + SAVE_ADMISSION_LEASE_MS > at) continue;
+					await withdrawSave(creating.id, at).catch(() => undefined);
+				}
+				for (const deleting of await store.snapshots.list({ state: "deleting" })) {
+					if (closing) return;
+					const fresh = deleting.retiring !== undefined && deleting.retiring.at + RETIRE_LEASE_MS > at;
+					if (deleting.retiring?.settling !== true && (fresh || !expiring)) continue;
+					await settleSnapshot(deleting).catch(() => "kept");
+				}
+				if (!expiring) return;
+				// One read for the pass: the expired, and how many records name each ref.
+				const all = await store.snapshots.list();
+				const named = new Map<string, number>();
+				for (const snapshot of all) {
+					if (snapshot.ref !== undefined) named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+				}
+				const expired = all.filter(
+					(snapshot) =>
+						snapshot.kind === "automatic" &&
+						snapshot.expiresAt !== undefined &&
+						snapshot.expiresAt <= at &&
+						snapshot.state === "ready",
+				);
+				if (expired.length === 0) return;
+				const hosts = new Map((await backend.capabilities()).hosts.map((host) => [host.id, host]));
+				const marked: StoredSnapshot[] = [];
+				for (const snapshot of expired) {
+					if (snapshot.ref === undefined || !(await keepsCopies(snapshot, hosts))) continue;
+					if ((named.get(snapshot.ref) ?? 0) > 1) continue;
+					const written = await markExpiring(snapshot.id).catch(() => undefined);
+					if (written !== undefined) marked.push(written);
+				}
+				if (marked.length === 0) return;
+				const read = await dependents(new Set(marked.map((snapshot) => snapshot.id))).catch(() => undefined);
+				if (read === undefined) return;
+				for (const snapshot of marked) {
+					if (closing) return;
+					await settleSnapshot(snapshot, read).catch(() => "kept");
+				}
+			})(),
+		);
+	}
+
+	/**
+	 * A save's new bytes' size (a kept copy, `keepSnapshot`, or a live save's `takeSnapshot`) as a refresh will count it
+	 * (`attributeSnapshotBytes`): its own bytes, and each group of files it shares for the holder the records choose,
+	 * itself included as a saved record made now. A backend that doesn't say how its files are shared answers its size
+	 * alone.
 	 */
 	async function keptSize(kept: TakenSnapshot, replacing: StoredSnapshot | undefined): Promise<number> {
 		if (kept.uniqueBytes === undefined) return kept.sizeBytes;
@@ -3524,8 +3938,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		];
 		for (const ref of new Set(shared.flatMap((group) => group.refs))) {
 			if (ref === kept.ref) continue;
-			// Not the save it replaces, which goes once this one is put: its files are this one's to keep.
-			records.push(...(await store.snapshots.list({ ref })).filter((record) => record.id !== replacing?.id));
+			// Not the save it replaces, which goes once this one is put: its files are this one's to keep. Nor another save
+			// still being admitted (`creating`, `admitSave`): refused, it would take its files with it uncounted, so this one
+			// counts them too until a refresh says which keeps them.
+			records.push(
+				...(await store.snapshots.list({ ref })).filter(
+					(record) => record.id !== replacing?.id && record.state !== "creating",
+				),
+			);
 		}
 		return attributeSnapshotBytes(records, new Map([[kept.ref, kept.uniqueBytes]]), shared).get(kept.ref) ?? 0;
 	}
@@ -3680,8 +4100,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
 	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
 	 */
-	async function killCommandsOf(sandboxId: string): Promise<void> {
-		const running = await store.commands.list({ sandboxId, state: "running" });
+	async function killCommandsOf(sandboxId: string, listed?: readonly StoredCommand[]): Promise<void> {
+		const running = listed ?? (await store.commands.list({ sandboxId, state: "running" }));
 		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
 		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
 		// time is marked killed.
@@ -3719,11 +4139,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sent?: { readonly egressRevision: number | undefined },
 	): Promise<StoredSandbox | undefined> {
 		let placement: Placement;
+		const calledAt = now();
 		try {
 			placement = await run();
 		} catch (error) {
 			return fail(sandboxId, error, "starting");
 		}
+		// Its machine's phases, from this start: none where its backend didn't say, not a previous start's.
+		const startup: computeSchema.SandboxStartup | undefined =
+			placement.startup === undefined
+				? undefined
+				: { ...placement.startup, totalMs: Math.max(placement.startup.hostMs, now() - calledAt) };
 		// The revision its backend has: what the boot sent, or what reconciling sent since.
 		let applied = sent?.egressRevision;
 		// Made from a template snapshot whose host had no room, it booted the template fresh elsewhere: so its record says.
@@ -3734,6 +4160,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const toRunning = (sandbox: StoredSandbox) =>
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
+				// This run's machine, which fences a late report of an earlier one's exit (`reportExit`); none where not said.
+				machineAt: placement.machineAt,
 				resources: placement.resources ?? sandbox.resources,
 				// A microVM's shape is what its machine runs as, where its backend says: a host that can't resize a stopped or
 				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
@@ -3756,6 +4184,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
+				startup,
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
 				...placedBase(placement),
 				...(sandbox.mounts === undefined
@@ -3836,8 +4265,96 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
-		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
+		await emit("sandbox.running", next.accountId, {
+			sandbox: next,
+			data: { previousState: "starting", ...(startup === undefined ? {} : { startup }) },
+		});
 		return next;
+	}
+
+	/**
+	 * `ComputeService.reportHealth`: a running sandbox whose guest agent its host says doesn't answer stays `running`
+	 * (its machine is up: its egress, auto-stop, idle stop and allocation go on as for any running sandbox) with `health`
+	 * `unresponsive` and the host's reason, and its commands and files are refused at once (`sandbox_unresponsive`)
+	 * rather than left to hang. Recover it (a reset that keeps its disk), or stop and start it; its agent answering
+	 * again makes it `ok`. Reports are ordered by `healthAt`, the host's clock when it set them: one no later than the
+	 * last taken is dropped, so a delayed report never undoes a newer one.
+	 */
+	async function reportHealth(
+		hostId: string,
+		sandboxId: string,
+		health: string | undefined,
+		reason: string | undefined,
+		healthAt?: number,
+	): Promise<void> {
+		const unresponsive = health === "unresponsive";
+		const at = typeof healthAt === "number" && Number.isSafeInteger(healthAt) && healthAt > 0 ? healthAt : undefined;
+		let changed: "unresponsive" | "ok" | undefined;
+		const written = await store.sandboxes.update(sandboxId, (current) => {
+			changed = undefined;
+			if (current.hostId !== hostId || current.state !== "running") return undefined;
+			// Ordered: one no later than the last taken is older. An unstamped one (a host that doesn't stamp them) never
+			// replaces a stamped one.
+			if (current.healthAt !== undefined && (at === undefined || at <= current.healthAt)) return undefined;
+			const stamped = at === undefined ? {} : { healthAt: at };
+			if (unresponsive) {
+				const why = unresponsiveReason(reason);
+				if (current.health !== "unresponsive") changed = "unresponsive";
+				else if (current.reason === why) return at === undefined ? undefined : { ...current, ...stamped };
+				return { ...current, ...stamped, health: "unresponsive", reason: why };
+			}
+			if (current.health !== "unresponsive") return at === undefined ? undefined : { ...current, ...stamped };
+			changed = "ok";
+			return { ...current, ...stamped, health: "ok", reason: undefined };
+		});
+		if (changed === undefined || written === undefined) return;
+		if (changed === "unresponsive") {
+			await emit("sandbox.degraded", written.accountId, { sandbox: written, data: { reason: written.reason } });
+		} else {
+			await emit("sandbox.recovered", written.accountId, {
+				sandbox: written,
+				data: { reason: "Its guest agent answers again" },
+			});
+		}
+	}
+
+	/**
+	 * `ComputeService.reportExit`: a running sandbox whose host ended its VM is in `error`, saying why, rather than left
+	 * `running` until something else touches it. Its run ends (`withState`), its ports go (an exposure ends with its next
+	 * boot), and the commands Kantel had running on that machine are ended. Its disk is kept on its host, so a start
+	 * boots it from there; a stop or delete works from `error` too.
+	 */
+	async function reportExit(
+		hostId: string,
+		sandboxId: string,
+		error: string | undefined,
+		healthAt?: number,
+	): Promise<void> {
+		const at = typeof healthAt === "number" && Number.isSafeInteger(healthAt) && healthAt > 0 ? healthAt : undefined;
+		const reason = hostExitReason(error);
+		// The machine's commands, read while it is still `running`: once it is `error` a start may boot another, whose
+		// commands are its own.
+		const commands = await store.commands.list({ sandboxId, state: "running" });
+		const result = await transition(
+			sandboxId,
+			"running",
+			(current) => withState(current, "error", { reason, ports: [] }),
+			// Its host's, and this run's machine: both stamps are that host's clock, and a machine's stamps only move on, so
+			// one before the run's machine started is an earlier machine's (a delayed event, or one from before a reconnect).
+			// A run whose machine was stamped is on a host that stamps every exit, so a report without one is stale too;
+			// only a run booted by a host that names no machine (one from before it did) takes an unstamped report.
+			(current) =>
+				current.hostId === hostId && (current.machineAt === undefined || (at !== undefined && at >= current.machineAt)),
+		).catch((cause: unknown) => {
+			if (cause instanceof KantelError && cause.code === "not_found") return undefined;
+			throw cause;
+		});
+		if (result === undefined || !("moved" in result)) return;
+		const next = result.moved;
+		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: "running", reason } });
+		// In the background: each is asked of its host first, which may take a while, and the report (a host's hello) needn't
+		// wait for that.
+		keepGoing(track([sandboxId], () => killCommandsOf(sandboxId, commands)));
 	}
 
 	/**
@@ -3883,7 +4400,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const work = track([sandbox.id], async () => {
 			try {
 				await killCommandsOf(sandbox.id);
-				const taken = await backend.stop(sandbox.id, { keepMemory });
+				// A stop someone asked for waits a while for a host that is away, rather than leaving the sandbox in error
+				// (#737); a sweep's hands the sandbox back for a later sweep instead (`handBack`).
+				const taken = await backend.stop(sandbox.id, { keepMemory, waitForHost: !handBack });
+				// What it kept: a host that couldn't pause the machine (its Firecracker not answering) stops it cold, and says
+				// so (`memory: false`); it is then stopped, not paused.
+				const kept = keepMemory && taken.memory !== false;
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -3893,7 +4415,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxType: sandbox.type,
 					state: "ready",
 					trigger: "stop",
-					memory: keepMemory,
+					memory: kept,
 					...recordedMachine(sandbox),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
@@ -3904,18 +4426,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
-					withState(current, keepMemory ? "paused" : "stopped", {
+					withState(current, kept ? "paused" : "stopped", {
 						latestSnapshotId: snapshot.id,
 						latestSnapshotAt: snapshot.createdAt,
 						ports: [],
-						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
+						pausedSnapshotId: kept ? snapshot.id : undefined,
 						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
 						reason,
 					}),
 				);
 				if (!("moved" in result)) return;
 				const next = result.moved;
-				await emit(keepMemory ? "sandbox.paused" : "sandbox.stopped", next.accountId, {
+				await emit(kept ? "sandbox.paused" : "sandbox.stopped", next.accountId, {
 					sandbox: next,
 					data: {
 						previousState: sandbox.state,
@@ -3935,7 +4457,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						state: "running",
 						runs: sandbox.runs,
 						stopsAt: sandbox.stopsAt,
-						reason: undefined,
+						// The same machine: its guest agent's health (and why) as the stop found it.
+						reason: current.health === "unresponsive" ? current.reason : undefined,
 					}));
 					return;
 				}
@@ -3960,7 +4483,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("conflict", "The snapshot isn't ready");
 			return byId;
 		}
-		const [byName] = await store.snapshots.list({ accountId, kind: "saved", name: from });
+		// Not a refused save of the name still having its bytes deleted (`withdrawSave`).
+		const [byName] = (await store.snapshots.list({ accountId, kind: "saved", name: from })).filter(
+			(record) => record.state !== "deleting",
+		);
 		if (byName === undefined || byName.ref === undefined) throw notFound(`snapshot named ${from}`);
 		return byName;
 	}
@@ -3979,7 +4505,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		scope: computeSchema.ApiKeyScope,
 	): Promise<StoredSnapshot> {
 		const snapshot = await store.snapshots.get(snapshotId);
-		if (snapshot === undefined || !(await canSeeSnapshot(principal, snapshot))) throw notFound("snapshot");
+		// One expiry is deleting is gone to every read.
+		if (snapshot === undefined || snapshot.state === "deleting" || !(await canSeeSnapshot(principal, snapshot))) {
+			throw notFound("snapshot");
+		}
 		requireScope(principal, scope, (await roleIn(store, principal, snapshot.accountId)) ?? "member");
 		return snapshot;
 	}
@@ -4088,12 +4617,196 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 	}
 
+	/**
+	 * The host a snapshot's bytes are on: its ref's (`<hostId>/<id>`, a host backend's), else its sandbox's while that
+	 * is placed. Undefined when neither says.
+	 */
+	async function hostOfSnapshot(snapshot: StoredSnapshot): Promise<string | undefined> {
+		const named = snapshot.ref === undefined ? undefined : refHost(snapshot.ref);
+		if (named !== undefined) return named;
+		if (snapshot.sandboxId === undefined) return undefined;
+		return (await store.sandboxes.get(snapshot.sandboxId))?.hostId;
+	}
+
+	/**
+	 * The refs of `hostId` that saved records of `saved` hold, each with its size by `sizeOf`; records of the same ref (a
+	 * save that shares its source's) count once. A record being deleted holds nothing.
+	 */
+	async function savedRefsOn(
+		hostId: string,
+		saved: readonly StoredSnapshot[],
+		sizeOf: (record: StoredSnapshot) => number = (record) => record.sizeBytes ?? 0,
+	): Promise<Map<string, number>> {
+		const held = new Map<string, number>();
+		for (const record of saved) {
+			if (record.kind !== "saved" || record.state === "deleting" || record.ref === undefined) continue;
+			if ((await hostOfSnapshot(record)) !== hostId) continue;
+			held.set(record.ref, Math.max(held.get(record.ref) ?? 0, sizeOf(record)));
+		}
+		return held;
+	}
+
+	/**
+	 * `saved` with a full size for each live save on `hostId` recorded before full sizes were (`fullSizeBytes`), whose
+	 * `sizeBytes` may count files it shares for another holder only: read from the host now (`snapshotSizes`, as the
+	 * refresh reads it) and written back. A host that doesn't measure its snapshots never attributed their sizes, which
+	 * stand. A host that can't answer refuses the save, `unavailable`, rather than count less than the saves keep.
+	 */
+	async function withFullSizes(hostId: string, saved: readonly StoredSnapshot[]): Promise<readonly StoredSnapshot[]> {
+		const legacy: StoredSnapshot[] = [];
+		for (const record of saved) {
+			if (record.fullSizeBytes !== undefined || record.state === "deleting" || record.ref === undefined) continue;
+			if ((await hostOfSnapshot(record)) === hostId) legacy.push(record);
+		}
+		if (legacy.length === 0 || backend.snapshotSizes === undefined) return saved;
+		let sizes: ReadonlyMap<string, number> | undefined;
+		try {
+			sizes = await backend.snapshotSizes(hostId);
+		} catch {
+			throw new KantelError(
+				"unavailable",
+				"The host couldn't say how much its saved snapshots take, which its limit on saved snapshots needs. Try again once it's back.",
+			);
+		}
+		if (sizes === undefined) return saved;
+		const filled = new Map<string, StoredSnapshot>();
+		for (const record of legacy) {
+			const fullSizeBytes = record.ref === undefined ? undefined : sizes.get(record.ref);
+			if (fullSizeBytes === undefined) continue;
+			filled.set(record.id, { ...record, fullSizeBytes });
+			await store.snapshots
+				.update(record.id, (current) =>
+					current.ref === record.ref && current.fullSizeBytes === undefined ? { ...current, fullSizeBytes } : undefined,
+				)
+				.catch(() => undefined);
+		}
+		return saved.map((record) => filled.get(record.id) ?? record);
+	}
+
+	/** A save's full size, its shared files included, which a host's limit counts it at (`fullSizeBytes`). */
+	const fullSize = (record: StoredSnapshot): number => record.fullSizeBytes ?? record.sizeBytes ?? 0;
+
+	/**
+	 * A host's disk as the API answers it (`Host.diskUsage`): the snapshots the host measured, split by this plane's
+	 * records, as the host can't tell (`BackendDiskUsage`). Saved: what the saved records on it hold of the files the
+	 * host counted as snapshots, by its split by snapshot in this very measure (each saved ref's own files, and each
+	 * group a saved one holds, once), so files it counted elsewhere first (a stop's memory, a bundle drive, another
+	 * filesystem's) are in neither; automatic: the rest. A ref its split doesn't name (an isolate's, whose snapshots are
+	 * its sandbox's files) counts nothing. From a backend that doesn't split, the records' sizes, at most the snapshots
+	 * in all. For display only: the limit counts by full sizes (`savedBytesOver`).
+	 */
+	async function diskView(hostId: string, measure: BackendDiskUsage): Promise<computeSchema.HostDiskUsage> {
+		const { snapshotsBytes, snapshotOwnBytes, snapshotShared, ...rest } = measure;
+		const held = await savedRefsOn(hostId, await store.snapshots.list({ kind: "saved" }));
+		let saved = 0;
+		if (snapshotOwnBytes !== undefined) {
+			for (const ref of held.keys()) saved += snapshotOwnBytes[ref] ?? 0;
+			for (const group of snapshotShared ?? []) {
+				if (group.refs.some((ref) => held.has(ref))) saved += group.bytes;
+			}
+		} else {
+			// An isolate's snapshots are among its sandbox's files on the host, not its snapshots.
+			const microvm = (await store.snapshots.list({ kind: "saved" })).filter(
+				(record) => record.sandboxType !== "isolate",
+			);
+			for (const size of (await savedRefsOn(hostId, microvm)).values()) saved += size;
+		}
+		saved = Math.min(saved, snapshotsBytes);
+		return { ...rest, savedSnapshotsBytes: saved, automaticSnapshotsBytes: snapshotsBytes - saved };
+	}
+
+	/**
+	 * The `exhausted` error when an account's saved snapshots on a host are past the host's limit
+	 * (`Host.savedSnapshotBytesLimit`), or undefined when they aren't or it sets none. Each saved snapshot counts at its
+	 * full size (`fullSizeBytes`), the files it shares with others included: copies that share files count apart, so the
+	 * total is never less than what they keep, however they share. Records of the same ref (a save that shares its
+	 * source's) count once. A save being deleted counts nothing, nor does `replacing`, the save a new one replaces;
+	 * others still `creating` count, as they may yet be let through.
+	 *
+	 * `adding`: a save's own record, stored already (`creating`, `admitSave`). Without one (a live save about to take
+	 * its bytes), the limit reached already refuses.
+	 */
+	async function savedBytesOver(
+		accountId: string,
+		hostId: string | undefined,
+		replacing: StoredSnapshot | undefined,
+		adding?: StoredSnapshot,
+	): Promise<KantelError | undefined> {
+		if (hostId === undefined) return undefined;
+		const limit = (await store.hosts.get(hostId))?.savedSnapshotBytesLimit;
+		if (limit === undefined) return undefined;
+		const records = await withFullSizes(
+			hostId,
+			(await store.snapshots.list({ accountId, kind: "saved" })).filter(
+				(saved) => saved.id !== replacing?.id && saved.id !== adding?.id,
+			),
+		);
+		const held = await savedRefsOn(hostId, records, fullSize);
+		let total = 0;
+		for (const size of held.values()) total += size;
+		const own = adding?.ref === undefined || held.has(adding.ref) ? 0 : fullSize(adding);
+		if (adding === undefined ? total < limit : total + own <= limit) return undefined;
+		return new KantelError(
+			"exhausted",
+			`The account may keep ${bytesText(limit)} of saved snapshots on this host, and has ${bytesText(total)}` +
+				(own > 0 ? `; this one is ${bytesText(own)}` : "") +
+				". Delete saved snapshots you no longer need, and try again.",
+		);
+	}
+
+	/**
+	 * Admits a save's record against its host's limit on saved snapshot bytes (`savedBytesOver`): stored first,
+	 * `creating`, so every other save counts it from then on, on any gateway; then the account's total read again with
+	 * it in, and the record made `ready` only when that fits. Of two saves at once, the one that reads second counts
+	 * both: both may be refused, never both let through. Refused, or failing on the way, the record is taken back
+	 * (`withdrawSave`) and the error thrown. One whose gateway died on the way is taken back by the sweep once it is
+	 * `SAVE_ADMISSION_LEASE_MS` old; `ready` is written only over `creating` (compare-and-set), so an admission the sweep
+	 * took back meanwhile fails, `conflict`, its bytes already released.
+	 */
+	async function admitSave(snapshot: StoredSnapshot, replacing: StoredSnapshot | undefined): Promise<StoredSnapshot> {
+		await store.snapshots.put({ ...snapshot, state: "creating" });
+		try {
+			const over = await savedBytesOver(snapshot.accountId, await hostOfSnapshot(snapshot), replacing, snapshot);
+			if (over !== undefined) throw over;
+			const ready = await store.snapshots.update(snapshot.id, (latest) =>
+				latest.state === "creating" ? { ...latest, state: "ready" } : undefined,
+			);
+			if (ready === undefined) {
+				throw new KantelError("conflict", "The snapshot was deleted, or given up on, while it was being saved");
+			}
+			return ready;
+		} catch (error) {
+			await withdrawSave(snapshot.id).catch(() => undefined);
+			throw error;
+		}
+	}
+
+	/**
+	 * Takes back a save's record that wasn't admitted (`admitSave`) as expiry deletes a snapshot: settling, then its
+	 * bytes deleted unless another record has their ref (a save that shares its source's), then the record
+	 * (`releaseBytes`). A host that can't delete them now leaves it settling, and the sweep (`expireSnapshots`) tries
+	 * again, so bytes taken for a refused save are never left on the host unrecorded.
+	 */
+	async function withdrawSave(snapshotId: string, expiredBy?: number): Promise<void> {
+		const settling = await store.snapshots.update(snapshotId, (latest) =>
+			latest.state !== "creating" || (expiredBy !== undefined && latest.createdAt + SAVE_ADMISSION_LEASE_MS > expiredBy)
+				? undefined
+				: {
+						...latest,
+						state: "deleting",
+						retiring: { by: retireOwner, token: randomId("ret"), at: now(), settling: true },
+					},
+		);
+		if (settling !== undefined) await releaseBytes(settling);
+	}
+
 	async function changeHost(
 		host: StoredHost,
 		body: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			readonly savedSnapshotBytesLimit?: number | null;
 		},
 	): Promise<computeSchema.Host> {
 		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
@@ -4110,11 +4823,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			let state = current.state;
 			if (body.draining === true) state = "draining";
 			if (body.draining === false && current.state === "draining") state = "online";
+			const { savedSnapshotBytesLimit: kept, ...rest } = current;
+			const limit = body.savedSnapshotBytesLimit === undefined ? kept : (body.savedSnapshotBytesLimit ?? undefined);
 			return {
-				...current,
+				...rest,
 				name: body.name ?? current.name,
 				labels: body.labels === undefined ? current.labels : { ...body.labels },
 				state,
+				...(limit === undefined ? {} : { savedSnapshotBytesLimit: limit }),
 			};
 		});
 		if (revoked) throw new KantelError("conflict", "The host is revoked");
@@ -4619,14 +5335,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function keepRollup(sandboxId: string, rollup: Rollup): Promise<void> {
 		if (!rollup.local) return;
 		await patchSandbox(sandboxId, (latest) => {
-			if (latest.state === "deleted") return undefined;
+			const peak = peakWith(latest.peak, rollup);
+			const peaked = peak === latest.peak ? undefined : { ...latest, peak };
+			// A deleted sandbox keeps no more means, but its last 5 minutes (closed once it stopped reporting) may hold its peak.
+			if (latest.state === "deleted") return peaked;
 			const sample = sampleOf(rollup);
 			const index = latest.samples.findIndex((each) => each.at >= rollup.at);
-			if (index === -1) return { ...latest, samples: keptSamples([...latest.samples, sample]) };
+			if (index === -1) return { ...latest, peak, samples: keptSamples([...latest.samples, sample]) };
 			const there = latest.samples[index];
-			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return undefined;
-			return { ...latest, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
+			if (there?.at !== rollup.at) return peaked;
+			// The fuller mean is kept, but the highest readings of both: the other may have seen a peak this one didn't.
+			const fuller = (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings ? there : sample;
+			const merged = withHighest(fuller, there, sample);
+			if (merged === there) return peaked;
+			return { ...latest, peak, samples: latest.samples.map((each, at) => (at === index ? merged : each)) };
 		});
+	}
+
+	/** `mean` with the higher of `a`'s and `b`'s highest CPU and memory (a mean stands for its own where it has none). */
+	function withHighest(mean: StoredSample, a: StoredSample, b: StoredSample): StoredSample {
+		const cpuMax = Math.max(a.cpuMax ?? a.cpu, b.cpuMax ?? b.cpu);
+		const memoryMbMax = Math.max(a.memoryMbMax ?? a.memoryMb, b.memoryMbMax ?? b.memoryMb);
+		if (mean.cpuMax === cpuMax && mean.memoryMbMax === memoryMbMax) return mean;
+		return { ...mean, cpuMax, memoryMbMax };
 	}
 
 	/**
@@ -4687,7 +5418,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		tickArrivedAt.set(hostId, received);
 		// A host reports only its own sandboxes: one statement for all of them, not one per sandbox. Read before any
 		// reading goes in, so a tick it fails for has none in.
-		const held = report.sandboxes.length === 0 ? new Set<string>() : (how.known ?? (await sandboxesOn(hostId)));
+		// Their records too, as read for this, for their OOM counts (`takeOOMKills`): no read of its own each tick.
+		const records =
+			report.sandboxes.length === 0 || how.known !== undefined ? undefined : await sandboxRecordsOn(hostId);
+		const held = report.sandboxes.length === 0 ? new Set<string>() : (how.known ?? new Set(records?.keys()));
 		const shared = how.exports === undefined ? how.shared === true : !(await how.exports());
 		hostSeries.add(
 			hostId,
@@ -4701,10 +5435,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 		if (report.sandboxes.length > 0) {
 			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
+			const oomCounts: { readonly id: string; readonly count: number; readonly limit: number }[] = [];
 			for (const reading of report.sandboxes) {
 				if (!held.has(reading.id)) continue;
 				// The last disk size a reading had: one without (a guest that didn't answer in time) keeps it.
 				const diskTotal = reading.diskTotalBytes ?? sandboxSeries.meta(reading.id)?.diskTotalBytes;
+				// Whether the series takes it (only a point newer than its newest): an older one leaves the OOM count be.
+				const before = sandboxSeries.latest(reading.id);
+				const inOrder = Number.isFinite(at) && (before === undefined || Math.round(at) > before.at);
 				const rollup = sandboxSeries.add(
 					reading.id,
 					{
@@ -4715,6 +5453,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							? { diskUsedBytes: 0, noDisk: true }
 							: { diskUsedBytes: reading.diskUsedBytes }),
 						...(reading.ioPressure === undefined ? {} : { ioPressure: reading.ioPressure }),
+						...guestMemoryOf(reading),
 						...(shared ? { shared: true } : {}),
 					},
 					{
@@ -4724,12 +5463,135 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				);
 				if (rollup !== undefined) closed.push({ id: reading.id, rollup });
+				// Another replica's tick is that replica's to count. A count its record keeps already, as read for this tick,
+				// needs nothing, unless an event for it is still to be stored.
+				const count = reading.oomKills;
+				const kept = records?.get(reading.id)?.oomKills;
+				const due =
+					records === undefined ||
+					kept === undefined ||
+					kept.pending !== undefined ||
+					(kept.unreported ?? 0) > 0 ||
+					(count !== kept.count && Math.round(at) > kept.at);
+				if (inOrder && !shared && count !== undefined && due) {
+					oomCounts.push({ id: reading.id, count, limit: reading.memLimitBytes });
+				}
 			}
 			for (const { id, rollup } of closed) await keepRollup(id, rollup).catch(() => undefined);
+			for (const each of oomCounts) {
+				// Not taken: its record is as it was, so the next reading tries again.
+				await takeOOMKills(each.id, each.count, Math.round(at), each.limit).catch(() => undefined);
+			}
 		}
 		// The tick is in: settling that fails is tried again with the next.
 		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage().catch(() => undefined);
 	}
+
+	/**
+	 * Takes a sandbox's guest's OOM-kill count since boot, read at `at`, against the one its record keeps
+	 * (`StoredSandbox.oomKills`), which every gateway shares: so a rise is counted once, whichever gateway the host is on
+	 * and however its readings were passed between them. The first count it keeps is a starting point (kills before it are
+	 * not new); one lower than kept means the VM booted again since, so all of it is new; a reading no newer than the one
+	 * kept is left out.
+	 *
+	 * One path for every reading, in one write: a newer, different count moves the count on and adds its kills to
+	 * `unreported` (a rise, or a reset's whole count), whatever is pending; then, with no event pending, what is
+	 * unreported becomes a pending `sandbox.oom_kill`, with its event's ID and all it says. The pending event is then
+	 * stored under that ID and cleared, and each later reading stores it again until it is (written over under its ID,
+	 * never changed). So no reading's kills are dropped, an event once tried never says anything else on any gateway,
+	 * and none is lost to a write that failed.
+	 */
+	async function takeOOMKills(sandboxId: string, count: number, at: number, memLimitBytes: number): Promise<void> {
+		let record: StoredSandbox | undefined;
+		let pending: OOMPending | undefined;
+		const written = await store.sandboxes.update(sandboxId, (current) => {
+			record = current;
+			pending = undefined;
+			if (current.state === "deleted" || current.state === "deleting") return undefined;
+			const kept = current.oomKills;
+			if (kept === undefined) return { ...current, oomKills: { count, at } };
+			// 1. The reading, if newer and different: the count moves on, and the kills it adds are unreported.
+			const moves = at > kept.at && count !== kept.count;
+			const added = !moves ? 0 : count < kept.count ? count : count - kept.count;
+			let unreported = (kept.unreported ?? 0) + added;
+			// 2. With no event pending, what is unreported becomes one, never changed after.
+			pending = kept.pending;
+			if (pending === undefined && unreported > 0) {
+				pending = { eventId: randomId("evt"), kills: unreported, memLimitBytes, at: moves ? at : kept.at };
+				unreported = 0;
+			}
+			if (!moves && pending === kept.pending) return undefined;
+			return {
+				...current,
+				oomKills: {
+					count: moves ? count : kept.count,
+					at: moves ? at : kept.at,
+					...(unreported > 0 ? { unreported } : {}),
+					...(pending === undefined ? {} : { pending }),
+				},
+			};
+		});
+		const sandbox = written ?? record;
+		const due: OOMPending | undefined = pending;
+		if (sandbox === undefined || due === undefined) return;
+		const memory = due.memLimitBytes > 0 ? ` (${Math.round((due.memLimitBytes / 1024 ** 3) * 10) / 10} GB)` : "";
+		const processes = due.kills === 1 ? "a process" : `${due.kills} processes`;
+		await emit(
+			"sandbox.oom_kill",
+			sandbox.accountId,
+			{
+				sandbox,
+				data: {
+					oomKills: due.kills,
+					reason: `It ran out of memory${memory}, and its kernel killed ${processes}. Give it more memory, or run less at once.`,
+				},
+			},
+			due.eventId,
+		);
+		// Cleared once stored; kills unreported since stay, for the next reading to make an event of.
+		await store.sandboxes.update(sandboxId, (current) => {
+			const kept = current.oomKills;
+			if (kept?.pending?.eventId !== due.eventId) return undefined;
+			const { pending: _, ...rest } = kept;
+			return { ...current, oomKills: rest };
+		});
+	}
+
+	/**
+	 * A sandbox's guest's newest memory figures (`GuestMemory`): from the newest point of its series that has any, so a
+	 * tick its agent missed doesn't hide them. None without one.
+	 */
+	function guestMemoryView(sandboxId: string): { memory?: computeSchema.GuestMemory } {
+		// Most often the newest point has them: no copy of the series for each sandbox a list shows.
+		const newest = sandboxSeries.latest(sandboxId);
+		if (newest === undefined) return {};
+		const { points } =
+			newest.oomKills === undefined && newest.memPressureSome === undefined
+				? sandboxSeries.read(sandboxId)
+				: { points: [newest] };
+		for (let index = points.length - 1; index >= 0; index -= 1) {
+			const point = points[index];
+			if (point === undefined) continue;
+			const { oomKills, memPressureSome, memPressureFull } = point;
+			if (oomKills === undefined && memPressureSome === undefined && memPressureFull === undefined) continue;
+			return {
+				memory: {
+					at: point.at,
+					...(oomKills === undefined ? {} : { oomKills }),
+					...(memPressureSome === undefined ? {} : { pressureSome: memPressureSome }),
+					...(memPressureFull === undefined ? {} : { pressureFull: memPressureFull }),
+				},
+			};
+		}
+		return {};
+	}
+
+	/** A reading's guest memory figures, those it has, for its series. */
+	const guestMemoryOf = (reading: ReportedUsage["sandboxes"][number]) => ({
+		...(reading.oomKills === undefined ? {} : { oomKills: reading.oomKills }),
+		...(reading.memPressureSome === undefined ? {} : { memPressureSome: reading.memPressureSome }),
+		...(reading.memPressureFull === undefined ? {} : { memPressureFull: reading.memPressureFull }),
+	});
 
 	/** Each host's tick being taken, so the next waits for it (`recordUsage`). */
 	const ingesting = new Map<string, Promise<void>>();
@@ -4909,6 +5771,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (reports.length > 0 && now() - settledAt >= SETTLE_EVERY_MS) await settleTaken();
 	}
 
+	/** The sandboxes placed on a host and not deleted, by ID. */
+	async function sandboxRecordsOn(hostId: string): Promise<ReadonlyMap<string, StoredSandbox>> {
+		return new Map(
+			(await store.sandboxes.list({ hostId }))
+				.filter((sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting")
+				.map((sandbox) => [sandbox.id, sandbox]),
+		);
+	}
+
 	/** The sandboxes placed on a host and not deleted. */
 	async function sandboxesOn(hostId: string): Promise<ReadonlySet<string>> {
 		return new Set(
@@ -4990,12 +5861,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return [...sandbox.samples, sampleOf(partial)];
 	}
 
+	/** A sandbox's peak with a 5-minute mean's highest readings in it: `peak` itself where they are no higher. */
+	function peakWith(peak: StoredPeak | undefined, rollup: Rollup): StoredPeak | undefined {
+		const memory = peak === undefined || rollup.memMaxBytes > peak.memoryBytes;
+		const cpu = peak === undefined || rollup.cpuMax > peak.cpu;
+		if (!memory && !cpu) return peak;
+		return {
+			memoryBytes: memory ? rollup.memMaxBytes : peak.memoryBytes,
+			memoryAt: memory ? rollup.memMaxAt : peak.memoryAt,
+			cpu: cpu ? rollup.cpuMax : peak.cpu,
+		};
+	}
+
+	/** A sandbox's peak, with the 5-minute mean under way in this process's memory, if any. */
+	function peakOf(sandbox: StoredSandbox): StoredPeak | undefined {
+		// A deleted one's too: its last 5 minutes are still settled into its record (`keepRollup`).
+		const partial = sandboxSeries.partial(sandbox.id);
+		return partial === undefined ? sandbox.peak : peakWith(sandbox.peak, partial);
+	}
+
+	/** A peak as the API answers it, in `Sandbox.usage` and `SandboxUsage`. */
+	function peakView(peak: StoredPeak | undefined): {
+		peakMemoryBytes?: number;
+		peakMemoryAt?: number;
+		peakCpu?: number;
+	} {
+		if (peak === undefined) return {};
+		return {
+			peakMemoryBytes: Math.round(peak.memoryBytes),
+			peakMemoryAt: peak.memoryAt,
+			peakCpu: Math.min(1, peak.cpu),
+		};
+	}
+
 	/** A 5-minute mean as a sandbox's record keeps it. */
 	function sampleOf(rollup: Rollup): StoredSample {
 		return {
 			at: rollup.at,
 			cpu: rollup.cpu,
 			memoryMb: rollup.memUsedBytes / MIB,
+			cpuMax: rollup.cpuMax,
+			memoryMbMax: rollup.memMaxBytes / MIB,
 			readings: rollup.readings,
 			...(rollup.noDisk === true
 				? {}
@@ -5849,8 +6755,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// the sandbox its snapshot was taken of, or its size's; a shape named by the preset it matches, so a host restores
 				// that size's template snapshot rather than booting it.
 				// A snapshot's disk is on the host its sandbox is on: another size or shape is that host's.
-				const fromHostId =
-					from?.sandboxId === undefined ? undefined : (await store.sandboxes.get(from.sandboxId))?.hostId;
+				// Named by its ref, else its sandbox's (`hostOfSnapshot`), so still known once that sandbox is deleted.
+				const fromHostId = from === undefined ? undefined : await hostOfSnapshot(from);
+				const fromOn =
+					from === undefined
+						? undefined
+						: copiedOn(
+								capabilities.hosts.find((host) => host.id === fromHostId),
+								capabilities.sizes,
+							);
 				const machine =
 					type !== "microvm"
 						? undefined
@@ -5859,13 +6772,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									? { template: template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES }
 									: from === undefined
 										? undefined
-										: {
-												copies: from,
-												on: copiedOn(
-													capabilities.hosts.find((host) => host.id === fromHostId),
-													capabilities.sizes,
-												),
-											},
+										: { copies: from, on: fromOn },
 								machineAsked,
 								presets,
 							);
@@ -5875,6 +6782,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						"no_host_offers_size",
 						`No host this sandbox may use offers the size ${body.size ?? "default"}`,
 					);
+				}
+				// Not less memory than its snapshot's save asked for (`minMemoryMb`), refused before anything is stored.
+				if (type === "microvm" && from !== undefined) {
+					requireMinMemory(from, memoryOf(machine, fromOn?.presets ?? presets, from));
 				}
 				// A disk asked for alone, on the machine it went to: some host must give it, as `shapeFor` checks a whole shape.
 				if (diskAlone !== undefined && machine?.shape !== undefined) {
@@ -5939,7 +6850,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
-				await store.sandboxes.put(sandbox);
+				const put = () => store.sandboxes.put(sandbox);
+				if (from === undefined) await put();
+				else if (!(await adopt(from.id, put, () => store.sandboxes.delete(sandbox.id).then(() => undefined)))) {
+					throw deletedMeanwhile();
+				}
 				await holdAccount(account.id, [sandbox.id]);
 				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
 				// refuses the create, which forgets the sandbox before anything else saw it.
@@ -6051,7 +6966,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if ((current.state === "stopped" && !keepMemory) || (current.state === "paused" && keepMemory)) {
 				return sandboxView(current, principal);
 			}
-			if (current.state !== "running" && !(current.state === "paused" && !keepMemory)) {
+			// One in `error` on a host (its host lost while it ran, a stop that failed) is stopped too, without its memory:
+			// its host ends its machine, or answers its disk where it has none running, rather than the stop being refused
+			// until a resume. One in `error` that never got a host has nothing to stop.
+			const stopsError = current.state === "error" && current.hostId !== undefined && !keepMemory;
+			if (current.state !== "running" && !(current.state === "paused" && !keepMemory) && !stopsError) {
 				throw new KantelError("conflict", `The sandbox is ${current.state}`);
 			}
 			const { work } = await beginStop(current, keepMemory, undefined, principal);
@@ -6189,7 +7108,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(current.mounts === undefined ? {} : { mounts: pendingMounts(current.mounts), mountsAt: undefined }),
 					});
 				}
-				for (const fork of forks) await store.sandboxes.put(fork);
+				const putForks = async () => {
+					for (const fork of forks) await store.sandboxes.put(fork);
+				};
+				const dropForks = async () => {
+					for (const fork of forks) await store.sandboxes.delete(fork.id);
+				};
+				if (snapshot === undefined) await putForks();
+				else if (!(await adopt(snapshot.id, putForks, dropForks))) throw deletedMeanwhile();
 				if (forks[0] !== undefined)
 					await holdAccount(
 						forks[0].accountId,
@@ -6500,6 +7426,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					runningSeconds: round(seconds),
 					cost: round((seconds / 3600) * rate),
 					measured: mean.measured,
+					...(mean.cpuMax === undefined ? {} : { cpuMax: Math.min(1, mean.cpuMax) }),
+					...(mean.memoryMbMax === undefined ? {} : { memoryMbMax: round(mean.memoryMbMax) }),
 					...(mean.diskMb === undefined ? {} : { diskUsedBytes: Math.round(mean.diskMb * MIB) }),
 					...(mean.io === undefined ? {} : { ioPressure: Math.min(1, mean.io) }),
 				});
@@ -6527,6 +7455,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				},
 				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
 				...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
+				...peakView(peakOf(current)),
 				series: {
 					intervalMs:
 						series.meta?.intervalMs ?? (hostReports(current.hostId) ? USAGE_INTERVAL_MS : FALLBACK_INTERVAL_MS),
@@ -6536,8 +7465,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						memUsedBytes: point.memUsedBytes,
 						...(point.noDisk === true ? {} : { diskUsedBytes: point.diskUsedBytes }),
 						...(point.ioPressure === undefined ? {} : { ioPressure: point.ioPressure }),
+						...(point.oomKills === undefined ? {} : { oomKills: point.oomKills }),
+						...(point.memPressureSome === undefined ? {} : { memPressureSome: point.memPressureSome }),
+						...(point.memPressureFull === undefined ? {} : { memPressureFull: point.memPressureFull }),
 					})),
 				},
+				...guestMemoryView(current.id),
 			};
 		},
 
@@ -6912,6 +7845,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					accountId: current.accountId,
 					kind: "automatic",
 					description: body.description,
+					...(body.labels === undefined ? {} : { labels: body.labels }),
 					sandboxId: current.id,
 					sandboxType: current.type,
 					state: "ready",
@@ -6920,6 +7854,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...recordedMachine(current),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
+					takenAt: at,
 					createdBy: actorOf(principal),
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
@@ -6941,22 +7876,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// A retry would be `conflict` on its own name, or with `replace` save it again and delete the first.
 			return once(principal, "saveSnapshot", { body, idempotencyKey }, async () => {
 				const current = await settledFor(principal, sandbox.id);
-				const [existing] = await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name });
+				// Not a refused save of the name still having its bytes deleted (`withdrawSave`).
+				const [existing] = (
+					await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name })
+				).filter((saved) => saved.state !== "deleting");
 				if (existing !== undefined && body.replace !== true) {
 					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
+				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && current.type !== "microvm") {
+					throw new KantelError("invalid", "Only a microVM's snapshot takes minMemoryMb");
+				}
+				// The least memory a sandbox made from it may have: as given, 0 for none, else the one it replaces keeps its own.
+				const minMemoryMb =
+					body.minMemoryMb === undefined ? existing?.minMemoryMb : body.minMemoryMb > 0 ? body.minMemoryMb : undefined;
 				if (existing === undefined && limits.savedSnapshots !== undefined) {
-					const saved = await store.snapshots.list({ accountId: current.accountId, kind: "saved" });
+					const saved = (await store.snapshots.list({ accountId: current.accountId, kind: "saved" })).filter(
+						(record) => record.state !== "deleting",
+					);
 					if (saved.length >= limits.savedSnapshots) {
 						throw new KantelError("exhausted", `The account may keep ${limits.savedSnapshots} saved snapshots`);
 					}
 				}
 				let ref: string;
 				let sizeBytes: number | undefined;
+				// All its files take, shared ones included: what the host's limit counts it at.
+				let fullSizeBytes: number | undefined;
 				// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
 				let base: string | undefined;
 				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
 				let memory = false;
+				// When the bytes were taken: a copied snapshot's own time (its source's, for one saved before this was kept), else now.
+				let takenAt: number | undefined;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
 				let machine = recordedMachine(current);
 				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
@@ -6975,38 +7925,54 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const from = readyRef(source);
 					const kept = await backend.keepSnapshot?.(from);
 					ref = kept?.ref ?? from;
-					sizeBytes = kept === undefined ? source.sizeBytes : await keptSize(kept, existing);
+					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
+					sizeBytes =
+						kept === undefined ? source.sizeBytes : await keptSize(kept, existing).catch(() => kept.sizeBytes);
+					// Sharing its source's ref: the source's full size, where recorded (else read from the host when counted).
+					fullSizeBytes = kept === undefined ? source.fullSizeBytes : kept.sizeBytes;
 					base = kept?.base ?? source.base;
 					memory = kept?.memory ?? (await holdsMemory(source));
+					takenAt = source.takenAt ?? (source.kind === "automatic" ? source.createdAt : undefined);
 					if (recordsMachine(source)) machine = recordedMachine(source);
 				} else if (current.state === "running") {
+					// At the host's limit already: nothing is taken.
+					const full = await savedBytesOver(current.accountId, current.hostId, existing);
+					if (full !== undefined) throw full;
 					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
 					ref = taken.ref;
-					sizeBytes = taken.sizeBytes;
+					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
+					fullSizeBytes = taken.sizeBytes;
 					base = taken.base;
 					memory = taken.memory === true;
 				} else {
 					throw new KantelError("conflict", "The sandbox has no state to save yet");
 				}
+				const savedAt = now();
+				// Stored and counted before it's let through, so saves at once can't pass the limit together; refused, its
+				// new bytes go again (a shared source's stay).
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
 					accountId: current.accountId,
 					kind: "saved",
 					name: body.name,
 					description: body.description,
+					...(body.labels === undefined ? {} : { labels: body.labels }),
 					sandboxId: current.id,
 					sandboxType: current.type,
 					state: "ready",
 					trigger: "save",
 					memory,
 					...machine,
+					...(minMemoryMb === undefined ? {} : { minMemoryMb }),
 					sizeBytes,
-					createdAt: now(),
+					...(fullSizeBytes === undefined ? {} : { fullSizeBytes }),
+					createdAt: savedAt,
+					...(source === undefined ? { takenAt: savedAt } : takenAt === undefined ? {} : { takenAt }),
 					createdBy: actorOf(principal),
 					ref,
 					...(base === undefined ? {} : { base }),
 				};
-				await store.snapshots.put(snapshot);
+				await admitSave(snapshot, existing);
 				await holdSnapshot(snapshot);
 				if (existing !== undefined) {
 					await forgetSnapshot(existing);
@@ -7063,17 +8029,40 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot.ref);
+			// Its running sandbox's newest moves back to the one before it, by `adopt` (expiry may be deleting that one): the
+			// first still there, else none; a pointer another write moved meanwhile is left as it is.
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
-				const [newest] = newestFirst(
+				const older = newestFirst(
 					(await store.snapshots.list({ sandboxId: current.id, kind: "automatic" })).filter(
 						(entry) => entry.state === "ready",
 					),
 				);
-				await patchSandbox(current.id, (latest) =>
-					latest.latestSnapshotId === snapshot.id
-						? { ...latest, latestSnapshotId: newest?.id, latestSnapshotAt: newest?.createdAt }
-						: undefined,
-				);
+				const pointAt = async (to: StoredSnapshot | undefined, was: string | undefined) =>
+					(await patchSandbox(current.id, (latest) =>
+						latest.latestSnapshotId === was
+							? { ...latest, latestSnapshotId: to?.id, latestSnapshotAt: to?.createdAt }
+							: undefined,
+					)) !== undefined;
+				let was: string | undefined = snapshot.id;
+				let pointed = false;
+				for (const candidate of older) {
+					let wrote = false;
+					const kept = await adopt(
+						candidate.id,
+						async () => {
+							wrote = await pointAt(candidate, was);
+						},
+						async () => {
+							if (wrote) await pointAt(undefined, candidate.id);
+						},
+					);
+					if (!wrote || kept) {
+						pointed = true;
+						break;
+					}
+					was = undefined;
+				}
+				if (!pointed) await pointAt(undefined, was);
 			}
 			if (snapshot.kind === "saved") {
 				await emit("snapshot.deleted", snapshot.accountId, {
@@ -8034,7 +9023,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							state: "running",
 							stopsAt: at,
 							stopClaimedAt: undefined,
-							reason: undefined,
+							// The same machine: its guest agent's health (and why) as the stop found it.
+							reason: current.health === "unresponsive" ? current.reason : undefined,
 						}),
 						marker,
 					).catch(() => undefined);
@@ -8071,6 +9061,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			// Each template's cache, against the hosts' runtimes as they are now, in the background (one pass at a time).
 			keepGoing(templates.reconcileAll());
+			expireSnapshots();
 		},
 
 		publishTemplateBase: (input) => templates.publishTemplateBase(input),
@@ -8204,6 +9195,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (whole(uniqueBytes)) unique.set(ref, uniqueBytes);
 			}
 			if (reported.size === 0) return;
+			const full = new Map(reported);
 			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written.
 			const records = await store.snapshots.list();
 			// Each snapshot whose host says what is its own (a microVM's; an isolate's says nothing): its shared files counted
@@ -8216,11 +9208,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const ref of unique.keys()) reported.set(ref, attributed.get(ref) ?? 0);
 			}
 			for (const snapshot of records) {
-				const sizeBytes = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
-				if (sizeBytes === undefined || snapshot.sizeBytes === sizeBytes) continue;
+				if (snapshot.ref === undefined) continue;
+				const sizeBytes = reported.get(snapshot.ref);
+				// All its files, shared ones included: what a host's limit on saved bytes counts it at.
+				const fullSizeBytes = full.get(snapshot.ref);
+				if (sizeBytes === undefined || fullSizeBytes === undefined) continue;
+				if (snapshot.sizeBytes === sizeBytes && snapshot.fullSizeBytes === fullSizeBytes) continue;
 				const { ref } = snapshot;
 				await store.snapshots.update(snapshot.id, (current) =>
-					current.ref === ref && current.sizeBytes !== sizeBytes ? { ...current, sizeBytes } : undefined,
+					current.ref === ref && (current.sizeBytes !== sizeBytes || current.fullSizeBytes !== fullSizeBytes)
+						? { ...current, sizeBytes, fullSizeBytes }
+						: undefined,
 				);
 			}
 		},
@@ -8279,6 +9277,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Kept even with mounts off now: a sandbox made while they were on still has them.
 			await reportMountStatuses(store, hostId, sandboxId, statuses, mountsAt);
 		},
+
+		reportHealth,
+
+		reportExit,
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

@@ -4911,6 +4911,16 @@
 							}
 						}
 					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
 					"501": {
 						"description": "`not_supported`",
 						"content": {
@@ -8328,7 +8338,7 @@
 						"name": "type",
 						"in": "query",
 						"required": false,
-						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
+						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 						"schema": {
 							"$ref": "#/components/schemas/EventType"
 						}
@@ -9552,7 +9562,7 @@
 			"patch": {
 				"operationId": "updateHost",
 				"summary": "Change a host",
-				"description": "Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -10314,7 +10324,7 @@
 			"patch": {
 				"operationId": "updateAccountHost",
 				"summary": "Change one of an account's hosts",
-				"description": "Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"description": "Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
 				"parameters": [
 					{
@@ -13522,6 +13532,14 @@
 					},
 					"actor": {
 						"$ref": "#/components/schemas/CreatedBy"
+					},
+					"oomKills": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "`sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading."
+					},
+					"startup": {
+						"$ref": "#/components/schemas/SandboxStartup"
 					}
 				},
 				"title": "EventData"
@@ -13575,6 +13593,10 @@
 					},
 					{
 						"type": "string",
+						"const": "sandbox.oom_kill"
+					},
+					{
+						"type": "string",
 						"const": "sandbox.deleted"
 					},
 					{
@@ -13587,7 +13609,7 @@
 					}
 				],
 				"title": "EventType",
-				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
+				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
 			},
 			"ExposedPort": {
 				"type": "object",
@@ -13986,6 +14008,35 @@
 				"title": "GuestFeature",
 				"description": "One thing a microVM's image has or lacks."
 			},
+			"GuestMemory": {
+				"type": "object",
+				"required": ["at"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"oomKills": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many processes its kernel has killed for memory since it booted (its `oom_kill`). It grows until the VM boots again: a stop and start, or a recovery."
+					},
+					"pressureSome": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the last 10 seconds in which at least one of its tasks was stalled waiting for memory (its kernel's memory pressure, `some` avg10)."
+					},
+					"pressureFull": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The share of the last 10 seconds in which every task that wanted to run was stalled waiting for memory (`full` avg10). Near 1, the machine does little but reclaim memory and stops answering."
+					}
+				},
+				"title": "GuestMemory",
+				"description": "A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't send it (an image from before them) or its kernel has none."
+			},
 			"GuestOs": {
 				"type": "object",
 				"required": ["id", "name"],
@@ -14101,6 +14152,17 @@
 					},
 					"usage": {
 						"$ref": "#/components/schemas/UsageSparklines"
+					},
+					"diskUsage": {
+						"$ref": "#/components/schemas/HostDiskUsage"
+					},
+					"memory": {
+						"$ref": "#/components/schemas/HostMemory"
+					},
+					"savedSnapshotBytesLimit": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit."
 					}
 				},
 				"title": "Host",
@@ -14141,6 +14203,74 @@
 				},
 				"title": "HostCapacity"
 			},
+			"HostDiskUsage": {
+				"type": "object",
+				"required": [
+					"totalBytes",
+					"usedBytes",
+					"savedSnapshotsBytes",
+					"automaticSnapshotsBytes",
+					"sandboxesBytes",
+					"imagesBytes",
+					"templatesBytes",
+					"bundlesBytes",
+					"otherBytes",
+					"measuredAt"
+				],
+				"properties": {
+					"totalBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The size of the filesystem that holds the host's files."
+					},
+					"usedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What is used on it, by anything."
+					},
+					"savedSnapshotsBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, each file once."
+					},
+					"automaticSnapshotsBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The rest of the host's snapshots: automatic ones, and any Kantel has no record of."
+					},
+					"sandboxesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Sandboxes' own disks, and their memory while they're stopped."
+					},
+					"imagesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Base images: the guest kernel and root filesystems, and templates' root filesystems."
+					},
+					"templatesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Template snapshots, which new sandboxes start from."
+					},
+					"bundlesBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The cache of bundle images that sandboxes mount."
+					},
+					"otherBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The rest of the used space: the operating system, logs and other programs."
+					},
+					"measuredAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "HostDiskUsage",
+				"description": "What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host."
+			},
 			"HostJoinToken": {
 				"type": "object",
 				"required": ["id", "token", "command", "expiresAt"],
@@ -14176,6 +14306,129 @@
 					}
 				},
 				"title": "HostList"
+			},
+			"HostMemory": {
+				"type": "object",
+				"required": [
+					"mode",
+					"state",
+					"totalMiB",
+					"reserveMiB",
+					"capacityMiB",
+					"reservedMiB",
+					"committedMiB",
+					"guestUsedMiB",
+					"residentMiB",
+					"availableMiB",
+					"swapUsedMiB",
+					"pressureSome",
+					"pressureFull",
+					"maxRatio"
+				],
+				"properties": {
+					"mode": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "reserved"
+							},
+							{
+								"type": "string",
+								"const": "used"
+							}
+						],
+						"description": "How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times `capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, within what the machine has available and up to `maxRatio` times `capacityMiB` given."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "ok"
+							},
+							{
+								"type": "string",
+								"const": "tight"
+							},
+							{
+								"type": "string",
+								"const": "refusing"
+							},
+							{
+								"type": "string",
+								"const": "critical"
+							}
+						],
+						"description": "How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new sandboxes. `critical`: it ends the largest process in the guest holding the most memory."
+					},
+					"totalMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The machine's memory, or the limit of the control group kantel-host runs in."
+					},
+					"reserveMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What is kept for the host's own processes and never given to sandboxes."
+					},
+					"capacityMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`totalMiB` less `reserveMiB`."
+					},
+					"reservedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What the host's sandboxes were given."
+					},
+					"committedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What its microVMs count for: each its peak of the last minutes plus headroom, at most its size."
+					},
+					"guestUsedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What its microVMs' guests say they use, page cache aside."
+					},
+					"residentMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What its microVMs hold of the machine's memory, their guests' page cache included."
+					},
+					"availableMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What the machine has available now (MemAvailable)."
+					},
+					"swapUsedMiB": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Swap in use on the machine."
+					},
+					"pressureSome": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 100,
+						"description": "Memory pressure: the share of the last 10 seconds some task waited on memory."
+					},
+					"pressureFull": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 100,
+						"description": "The share of the last 10 seconds every task waited on memory."
+					},
+					"maxRatio": {
+						"type": "number",
+						"minimum": 0,
+						"description": "The most sandboxes may be given, as a multiple of `capacityMiB`."
+					},
+					"measuredAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "HostMemory",
+				"description": "A host's memory, in MiB, as it last reported it (every heartbeat)."
 			},
 			"HostReleaseCheck": {
 				"type": "object",
@@ -15169,7 +15422,7 @@
 					},
 					"image": {
 						"type": "string",
-						"description": "The base image a microVM was made from, such as `ubuntu-24.04`."
+						"description": "The base image a microVM was made from, such as `ubuntu-26.04`."
 					},
 					"state": {
 						"$ref": "#/components/schemas/SandboxState"
@@ -15298,6 +15551,9 @@
 					},
 					"base": {
 						"$ref": "#/components/schemas/SandboxBase"
+					},
+					"startup": {
+						"$ref": "#/components/schemas/SandboxStartup"
 					}
 				},
 				"title": "Sandbox"
@@ -15486,10 +15742,14 @@
 					{
 						"type": "string",
 						"const": "degraded"
+					},
+					{
+						"type": "string",
+						"const": "unresponsive"
 					}
 				],
 				"title": "SandboxHealth",
-				"description": "`degraded`: the machine is up but its host can't fully reach it; it keeps running."
+				"description": "`degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first."
 			},
 			"SandboxMount": {
 				"type": "object",
@@ -15562,10 +15822,14 @@
 					{
 						"type": "string",
 						"const": "sandbox_deleting"
+					},
+					{
+						"type": "string",
+						"const": "sandbox_unresponsive"
 					}
 				],
 				"title": "SandboxNotRunningCode",
-				"description": "Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted."
+				"description": "Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again."
 			},
 			"SandboxPage": {
 				"type": "object",
@@ -15694,6 +15958,23 @@
 						"minimum": 0,
 						"maximum": 1,
 						"description": "The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures."
+					},
+					"oomKills": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many processes a microVM's kernel had killed for memory since it booted, at `at`. Absent where its guest's agent doesn't send it or didn't answer in time."
+					},
+					"memPressureSome": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "A microVM's memory pressure at `at`: the share of the 10 seconds before it in which at least one of its tasks was stalled waiting for memory (`some` avg10). Absent where the guest has no pressure figures."
+					},
+					"memPressureFull": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "As `memPressureSome`, for the share in which every task that wanted to run was stalled (`full` avg10)."
 					}
 				},
 				"title": "SandboxSeriesPoint"
@@ -15787,6 +16068,59 @@
 				},
 				"title": "SandboxSource",
 				"description": "What it was made from."
+			},
+			"SandboxStartup": {
+				"type": "object",
+				"required": ["diskMs", "bootMs", "agentMs", "hostMs", "totalMs"],
+				"properties": {
+					"disk": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "reflink"
+							},
+							{
+								"type": "string",
+								"const": "copy"
+							},
+							{
+								"type": "string",
+								"const": "move"
+							},
+							{
+								"type": "string",
+								"const": "new"
+							}
+						],
+						"description": "How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume)."
+					},
+					"diskMs": {
+						"type": "number",
+						"description": "Making its disk, in milliseconds."
+					},
+					"snapshotMs": {
+						"type": "number",
+						"description": "For a fork of a running sandbox: the live snapshot of its source it was made from."
+					},
+					"bootMs": {
+						"type": "number",
+						"description": "Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds."
+					},
+					"agentMs": {
+						"type": "number",
+						"description": "From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too."
+					},
+					"hostMs": {
+						"type": "number",
+						"description": "The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts)."
+					},
+					"totalMs": {
+						"type": "number",
+						"description": "From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it."
+					}
+				},
+				"title": "SandboxStartup",
+				"description": "How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it."
 			},
 			"SandboxState": {
 				"anyOf": [
@@ -15917,8 +16251,26 @@
 						"minimum": 0,
 						"description": "Its own disk's size, as its guest counts it, when its host sends disk figures."
 					},
+					"peakMemoryBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept."
+					},
+					"peakMemoryAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"peakCpu": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs."
+					},
 					"series": {
 						"$ref": "#/components/schemas/SandboxUsageSeries"
+					},
+					"memory": {
+						"$ref": "#/components/schemas/GuestMemory"
 					}
 				},
 				"title": "SandboxUsage"
@@ -15939,6 +16291,16 @@
 					},
 					"memoryMb": {
 						"type": "number"
+					},
+					"cpuMax": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean."
+					},
+					"memoryMbMax": {
+						"type": "number",
+						"description": "The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean."
 					},
 					"runningSeconds": {
 						"type": "number"
@@ -15963,7 +16325,7 @@
 					}
 				},
 				"title": "SandboxUsagePoint",
-				"description": "One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best."
+				"description": "One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best."
 			},
 			"SandboxUsageSeries": {
 				"type": "object",
@@ -16021,9 +16383,26 @@
 						"type": "string",
 						"maxLength": 500
 					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string",
+								"maxLength": 500
+							}
+						},
+						"maxProperties": 20,
+						"description": "Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given."
+					},
 					"replace": {
 						"type": "boolean",
 						"description": "Replace a saved snapshot of the same name."
+					},
+					"minMemoryMb": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 4194304,
+						"description": "The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none."
 					},
 					"memory": {
 						"type": "boolean",
@@ -16206,6 +16585,17 @@
 					"description": {
 						"type": "string"
 					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string",
+								"maxLength": 500
+							}
+						},
+						"maxProperties": 20,
+						"description": "Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given."
+					},
 					"sandboxId": {
 						"type": "string",
 						"description": "The sandbox it was taken of; absent once that is deleted."
@@ -16247,6 +16637,11 @@
 					"resources": {
 						"$ref": "#/components/schemas/SandboxResources"
 					},
+					"minMemoryMb": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any."
+					},
 					"sizeBytes": {
 						"type": "integer",
 						"description": "The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown."
@@ -16259,6 +16654,10 @@
 					"createdAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"takenAt": {
+						"type": "integer",
+						"description": "When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept."
 					},
 					"createdBy": {
 						"$ref": "#/components/schemas/CreatedBy"
@@ -16414,6 +16813,17 @@
 					"description": {
 						"type": "string",
 						"maxLength": 500
+					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string",
+								"maxLength": 500
+							}
+						},
+						"maxProperties": 20,
+						"description": "Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given."
 					},
 					"memory": {
 						"type": "boolean",
@@ -17159,6 +17569,18 @@
 					"draining": {
 						"type": "boolean",
 						"description": "Stop placing new sandboxes on it."
+					},
+					"savedSnapshotBytesLimit": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"minimum": 0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit."
 					}
 				},
 				"title": "UpdateHostBody"
@@ -17320,6 +17742,24 @@
 							"minimum": 0
 						},
 						"description": "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first."
+					},
+					"memory": {
+						"$ref": "#/components/schemas/GuestMemory"
+					},
+					"peakMemoryBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept."
+					},
+					"peakMemoryAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"peakCpu": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs."
 					}
 				},
 				"title": "UsageSummary"

@@ -200,6 +200,111 @@ describe("hosts service", () => {
 		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(b.hostId);
 	});
 
+	it("shows what takes a host's disk as its latest heartbeat measured it, and drops a measure that isn't one", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		expect((await service.get(a.hostId)).diskUsage).toBeUndefined();
+		const disk = {
+			totalBytes: 1_000,
+			usedBytes: 700,
+			snapshotsBytes: 300,
+			snapshotOwnBytes: { snap_a: 200, snap_b: 40 },
+			snapshotShared: [{ snapshots: ["snap_a", "snap_b"], bytes: 60 }],
+			sandboxesBytes: 250,
+			imagesBytes: 50,
+			templatesBytes: 30,
+			bundlesBytes: 20,
+			otherBytes: 50,
+			measuredAt: 1_700_000_000_000,
+		};
+		const capacity = { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} };
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, disk } } });
+		await tick();
+		expect((await service.get(a.hostId)).diskUsage).toEqual(disk);
+		// A measure with a figure that isn't one is left out; the heartbeat's free disk still stands.
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { ...capacity, freeDiskGiB: 300, disk: { ...disk, otherBytes: -1 } } },
+		});
+		await tick();
+		const view = await service.get(a.hostId);
+		expect(view.diskUsage).toBeUndefined();
+		expect(view.freeDiskGb).toBe(300);
+	});
+
+	it("shows a host's memory as its latest heartbeat reports it, and drops a report that isn't one", async () => {
+		const { service, join, store } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		expect((await service.get(a.hostId)).memory).toBeUndefined();
+		const memory = {
+			mode: "used",
+			state: "tight",
+			totalMiB: 128_000,
+			reserveMiB: 12_800,
+			capacityMiB: 115_200,
+			reservedMiB: 262_144,
+			committedMiB: 90_112,
+			guestUsedMiB: 24_576,
+			residentMiB: 49_152,
+			availableMiB: 70_000,
+			swapUsedMiB: 0,
+			pressureSome: 6.5,
+			pressureFull: 0.25,
+			maxRatio: 2.5,
+			measuredAt: 1_700_000_000_000,
+		};
+		const capacity = { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0 };
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, memory } } });
+		await tick();
+		expect((await service.get(a.hostId)).memory).toEqual(memory);
+		// What it admits against is the scheduler's: kept with its capacity, not shown; one that isn't is left out.
+		const admission = {
+			reservableMiB: 26_000,
+			committableMiB: 9_000,
+			startMiB: 1024,
+			headroomMiB: 1024,
+			headroomPercent: 25,
+		};
+		for (const [sent, kept] of [
+			[admission, admission],
+			[{ ...admission, committableMiB: -5 }, undefined],
+		] as const) {
+			host.send({
+				type: "heartbeat",
+				heartbeat: { capacity: { ...capacity, memory: { ...memory, admission: sent } } },
+			});
+			await tick();
+			expect((await service.get(a.hostId)).memory).toEqual(memory);
+			const stored = (await store.getHost(a.hostId))?.capacity as { memory?: { admission?: unknown } } | undefined;
+			expect(stored?.memory?.admission).toEqual(kept);
+		}
+		// A mode it doesn't know, or a figure that isn't one, is left out; the rest of the heartbeat still stands.
+		for (const wrong of [
+			{ ...memory, mode: "guessed" },
+			{ ...memory, committedMiB: -1 },
+			{ ...memory, state: 3 },
+		]) {
+			host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, freeMemoryMiB: 9_000, memory: wrong } } });
+			await tick();
+			const view = await service.get(a.hostId);
+			expect(view.memory).toBeUndefined();
+		}
+		// Pressure over 100% is taken as 100%; no time, none said.
+		const { measuredAt: _, ...unmeasured } = memory;
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { ...capacity, memory: { ...unmeasured, pressureSome: 140 } } },
+		});
+		await tick();
+		expect((await service.get(a.hostId)).memory).toEqual({ ...unmeasured, pressureSome: 100 });
+	});
+
 	it("shows a host's free disk as its latest heartbeat reports it, not as it was when it connected", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");

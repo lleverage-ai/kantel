@@ -9,14 +9,22 @@ both add (`rootfs/`). `rootfs.sh` turns the image into the read-only ext4 every 
 
 Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUNTU_SNAPSHOT`), systemd, and:
 
-- Docker CE and containerd (pinned versions), with Buildx and Compose
+- Docker CE and containerd (pinned versions), with Buildx and Compose. Containers reach the egress proxy through the
+  guest agent's forwarder on docker0's gateway (`172.17.0.1:3128`), which doesn't move on a fork or resume as the
+  proxy's own address does; `~/.docker/config.json` (user's and root's) gives every container and build
+  `HTTPS_PROXY` there, and no `HTTP_PROXY`, so containers still call each other by name over plain HTTP (#760)
 - git, curl, wget, jq, build-essential, pkg-config, Python 3 with pip and venv, Node and Go (pinned releases,
-  checked against their SHA-256)
+  checked against their SHA-256). Node (`NODE_VERSION`, 26) is the only one, in `/usr/local`, with npm and no corepack;
+  a project that needs another installs it beside it (docs: Isolates and microVMs, "Node")
 - a desktop on a TigerVNC X server (display `:1`, 1920x1080 until a viewer resizes it): Openbox with a top bar and a
   dock ("The desktop" below), and Chromium (Debian 13's build, from `snapshot.debian.org` at the same date; Ubuntu's
   own Chromium is a snap, and Google Chrome can't be redistributed)
 - Selkies, streaming the desktop to a browser
 - OpenSSH, the guest agent (`kantel-guest`) and `kantel-init`
+- `kantel-connect` (the guest agent), ssh's `ProxyCommand` through the egress proxy, which
+  `/etc/ssh/ssh_config.d/kantel.conf` uses for `github.com` (to `ssh.github.com:443`), with GitHub's published host
+  keys in `/etc/ssh/ssh_known_hosts`: a sandbox has no DNS and no route out but the proxy, which ssh doesn't read
+  (docs: Egress proxy, "Git over SSH"). Update the keys if GitHub changes them; the build checks they parse
 
 `/etc/kantel/image.json` records every version that went in (`kantel-image-info` writes it at build time), and
 `/usr/share/kantel/packages.tsv` every package with its source package. What the image bundles, under which licences,
@@ -33,8 +41,15 @@ and in a custom image's build, reads Ubuntu's live archive instead (`archive.ubu
 answered 503, 502 and 401 for hours, and a 4xx fails `apt-get update` outright, however the sources are pinned).
 `kantel-apt-sources` writes those sources last and moves `APT::Snapshot` to `/etc/kantel/apt-snapshot.conf`, which
 records the snapshot the image was built from; Debian's Chromium source then reads `deb.debian.org`, still limited to
-Chromium's packages. The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so a plain
-`sudo apt-get update` works too: sudo drops `HTTP_PROXY`, and a sandbox has no other way out.
+Chromium's packages. The guest agent points apt at the egress proxy in `/etc/apt/apt.conf.d/90kantel-proxy`, so apt
+goes through it in any environment, including a root shell that never read the proxy variables.
+
+sudo keeps the proxy and CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lower-case forms,
+`NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY`, `REQUESTS_CA_BUNDLE`) by `env_keep` in `/etc/sudoers.d/kantel-proxy`, so
+`sudo npm i -g pnpm` reaches the network as `npm i` does (#731). It keeps what the caller had: a root shell started some
+other way has them from `/etc/profile.d/kantel.sh` if it's a login shell. A sandbox has no DNS, so a name only resolves
+through the proxy: `getent hosts`, `ping` and `nslookup` fail, and a program that ignores the proxy variables can't
+connect.
 
 ## What listens where
 
@@ -50,10 +65,17 @@ nothing in the guest listens on the sandbox's network except SSH.
 | 6081 | Selkies on the browser's own display: the browser alone, started on demand | `kantel-browser-stream.service` | |
 | (socket) | Docker | `docker.service` | `docker` |
 | 3128 | The guest agent's forwarder to the host's egress proxy (Chromium's and dockerd's proxy) | `kantel-guest.service` | |
+| 172.17.0.1:3128 | The same forwarder on docker0's gateway, for containers (bound before docker0 is up) | `kantel-guest.service` | |
 
 The host's egress proxy sits on each sandbox's own gateway address, which a fork changes. Shells and `exec` get it
 from `/etc/kantel/proxy.env`; Chromium and dockerd, which read a proxy once at start, use the forwarder on 3128, which
 follows the sandbox's current proxy, so a fork or resume never restarts them (no lost tabs or containers).
+
+Every other systemd service gets the proxy and CA variables from `/etc/systemd/system.conf.d/kantel-proxy.conf`
+(`DefaultEnvironment`), and PAM sessions (sudo, su, SSH, cron) from `/etc/environment`, both pointing at the forwarder,
+so they are fixed in the image and never go stale (#730). The sandbox's own variables (`kantel new -e`) are for
+commands only; a unit that wants them adds `EnvironmentFile=-/etc/kantel/env`, which the guest agent rewrites on every
+start, resume and fork. A test in `internal/microvm` checks both files against the variables the host sets.
 
 Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay that carries a TCP stream carries the
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.

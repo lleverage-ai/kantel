@@ -723,6 +723,8 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `reason` | string | no |  |
 | `placementReason` | [PlacementReason](/api/reference/types/#placementreason) | no |  |
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
+| `oomKills` | integer | no | `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading. (minimum 1) |
+| `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
 
 ### EventPage
 
@@ -733,9 +735,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
-One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.oom_kill"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
 ### ExposedPort
 
@@ -883,6 +885,17 @@ One thing a microVM's image has or lacks.
 | `detail` | string | no | What the guest agent found, such as `Xtigervnc, Openbox, Selkies`. |
 | `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
 
+### GuestMemory
+
+A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't send it (an image from before them) or its kernel has none.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `oomKills` | integer | no | How many processes its kernel has killed for memory since it booted (its `oom_kill`). It grows until the VM boots again: a stop and start, or a recovery. (minimum 0) |
+| `pressureSome` | number | no | The share of the last 10 seconds in which at least one of its tasks was stalled waiting for memory (its kernel's memory pressure, `some` avg10). (minimum 0, maximum 1) |
+| `pressureFull` | number | no | The share of the last 10 seconds in which every task that wanted to run was stalled waiting for memory (`full` avg10). Near 1, the machine does little but reclaim memory and stops answering. (minimum 0, maximum 1) |
+
 ### GuestOs
 
 | Field | Type | Required | Description |
@@ -916,6 +929,9 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
+| `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
+| `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
+| `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
 
@@ -934,6 +950,23 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `memoryMb` | integer | yes |  |
 | `diskGb` | integer | yes |  |
 
+### HostDiskUsage
+
+What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `totalBytes` | integer | yes | The size of the filesystem that holds the host's files. (minimum 0) |
+| `usedBytes` | integer | yes | What is used on it, by anything. (minimum 0) |
+| `savedSnapshotsBytes` | integer | yes | Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, each file once. (minimum 0) |
+| `automaticSnapshotsBytes` | integer | yes | The rest of the host's snapshots: automatic ones, and any Kantel has no record of. (minimum 0) |
+| `sandboxesBytes` | integer | yes | Sandboxes' own disks, and their memory while they're stopped. (minimum 0) |
+| `imagesBytes` | integer | yes | Base images: the guest kernel and root filesystems, and templates' root filesystems. (minimum 0) |
+| `templatesBytes` | integer | yes | Template snapshots, which new sandboxes start from. (minimum 0) |
+| `bundlesBytes` | integer | yes | The cache of bundle images that sandboxes mount. (minimum 0) |
+| `otherBytes` | integer | yes | The rest of the used space: the operating system, logs and other programs. (minimum 0) |
+| `measuredAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### HostJoinToken
 
 | Field | Type | Required | Description |
@@ -948,6 +981,28 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `items` | [Host](/api/reference/types/#host)[] | yes |  |
+
+### HostMemory
+
+A host's memory, in MiB, as it last reported it (every heartbeat).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `mode` | `"reserved"` or `"used"` | yes | How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times `capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, within what the machine has available and up to `maxRatio` times `capacityMiB` given. |
+| `state` | `"ok"` or `"tight"` or `"refusing"` or `"critical"` | yes | How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new sandboxes. `critical`: it ends the largest process in the guest holding the most memory. |
+| `totalMiB` | integer | yes | The machine's memory, or the limit of the control group kantel-host runs in. (minimum 0) |
+| `reserveMiB` | integer | yes | What is kept for the host's own processes and never given to sandboxes. (minimum 0) |
+| `capacityMiB` | integer | yes | `totalMiB` less `reserveMiB`. (minimum 0) |
+| `reservedMiB` | integer | yes | What the host's sandboxes were given. (minimum 0) |
+| `committedMiB` | integer | yes | What its microVMs count for: each its peak of the last minutes plus headroom, at most its size. (minimum 0) |
+| `guestUsedMiB` | integer | yes | What its microVMs' guests say they use, page cache aside. (minimum 0) |
+| `residentMiB` | integer | yes | What its microVMs hold of the machine's memory, their guests' page cache included. (minimum 0) |
+| `availableMiB` | integer | yes | What the machine has available now (MemAvailable). (minimum 0) |
+| `swapUsedMiB` | integer | yes | Swap in use on the machine. (minimum 0) |
+| `pressureSome` | number | yes | Memory pressure: the share of the last 10 seconds some task waited on memory. (minimum 0, maximum 100) |
+| `pressureFull` | number | yes | The share of the last 10 seconds every task waited on memory. (minimum 0, maximum 100) |
+| `maxRatio` | number | yes | The most sandboxes may be given, as a multiple of `capacityMiB`. (minimum 0) |
+| `measuredAt` | integer | no | Epoch milliseconds, UTC. |
 
 ### HostReleaseCheck
 
@@ -1280,7 +1335,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
 | `shape` | [SandboxShape](/api/reference/types/#sandboxshape) | no |  |
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
-| `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
+| `image` | string | no | The base image a microVM was made from, such as `ubuntu-26.04`. |
 | `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
 | `health` | [SandboxHealth](/api/reference/types/#sandboxhealth) | no |  |
 | `reason` | string | no | Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none. |
@@ -1309,6 +1364,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `hostId` | string | no | The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. |
 | `hostName` | string | no | That host's name, with `hostId`. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+| `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
 
 ### SandboxBase
 
@@ -1383,9 +1439,9 @@ A sandbox's egress: what it was made with, its own grants and its log.
 
 ### SandboxHealth
 
-`degraded`: the machine is up but its host can't fully reach it; it keeps running.
+`degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first.
 
-One of: `"ok"` or `"degraded"`.
+One of: `"ok"` or `"degraded"` or `"unresponsive"`.
 
 ### SandboxMount
 
@@ -1412,9 +1468,9 @@ The `details` of the `conflict` (409) a call that needs a running sandbox (comma
 
 ### SandboxNotRunningCode
 
-Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted.
+Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again.
 
-One of: `"sandbox_starting"` or `"sandbox_stopping"` or `"sandbox_stopped"` or `"sandbox_paused"` or `"sandbox_error"` or `"sandbox_deleting"`.
+One of: `"sandbox_starting"` or `"sandbox_stopping"` or `"sandbox_stopped"` or `"sandbox_paused"` or `"sandbox_error"` or `"sandbox_deleting"` or `"sandbox_unresponsive"`.
 
 ### SandboxPage
 
@@ -1466,6 +1522,9 @@ A protected variable as one sandbox has it: never its value.
 | `memUsedBytes` | integer | yes | Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. (minimum 0) |
 | `diskUsedBytes` | integer | no | A microVM's own disk in use at `at`, as its guest counts it (df's used). Absent for an isolate, and where the host or the guest's agent doesn't send it. (minimum 0) |
 | `ioPressure` | number | no | The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. (minimum 0, maximum 1) |
+| `oomKills` | integer | no | How many processes a microVM's kernel had killed for memory since it booted, at `at`. Absent where its guest's agent doesn't send it or didn't answer in time. (minimum 0) |
+| `memPressureSome` | number | no | A microVM's memory pressure at `at`: the share of the 10 seconds before it in which at least one of its tasks was stalled waiting for memory (`some` avg10). Absent where the guest has no pressure figures. (minimum 0, maximum 1) |
+| `memPressureFull` | number | no | As `memPressureSome`, for the share in which every task that wanted to run was stalled (`full` avg10). (minimum 0, maximum 1) |
 
 ### SandboxShape
 
@@ -1511,6 +1570,20 @@ What it was made from.
 | `snapshotId` | string | no |  |
 | `sandboxId` | string | no | Set when it was forked from another sandbox. |
 
+### SandboxStartup
+
+How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | `"reflink"` or `"copy"` or `"move"` or `"new"` | no | How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume). |
+| `diskMs` | number | yes | Making its disk, in milliseconds. |
+| `snapshotMs` | number | no | For a fork of a running sandbox: the live snapshot of its source it was made from. |
+| `bootMs` | number | yes | Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. |
+| `agentMs` | number | yes | From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too. |
+| `hostMs` | number | yes | The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). |
+| `totalMs` | number | yes | From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. |
+
 ### SandboxState
 
 `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
@@ -1545,17 +1618,23 @@ One of: `"isolate"` or `"microvm"`.
 | `totals` | object | yes |  |
 | `memLimitBytes` | integer | no | The memory it may use, when its host reports it or its size sets it. (minimum 0) |
 | `diskTotalBytes` | integer | no | Its own disk's size, as its guest counts it, when its host sends disk figures. (minimum 0) |
+| `peakMemoryBytes` | integer | no | The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. (minimum 0) |
+| `peakMemoryAt` | integer | no | Epoch milliseconds, UTC. |
+| `peakCpu` | number | no | Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. (minimum 0, maximum 1) |
 | `series` | [SandboxUsageSeries](/api/reference/types/#sandboxusageseries) | yes |  |
+| `memory` | [GuestMemory](/api/reference/types/#guestmemory) | no |  |
 
 ### SandboxUsagePoint
 
-One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.
+One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 | `cpu` | number | yes | CPU utilisation over the interval. (minimum 0, maximum 1) |
 | `memoryMb` | number | yes |  |
+| `cpuMax` | number | no | The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean. (minimum 0, maximum 1) |
+| `memoryMbMax` | number | no | The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean. |
 | `runningSeconds` | number | yes |  |
 | `cost` | number | yes |  |
 | `measured` | boolean | no | Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. |
@@ -1585,7 +1664,9 @@ One of: `"private"` or `"organisation"`.
 | `sandboxId` | string | yes | The sandbox to save, running or stopped. |
 | `snapshotId` | string | no | Save this snapshot of the sandbox's history. Default: its state now. |
 | `description` | string | no |  (at most 500 characters) |
+| `labels` | Record&lt;string, string&gt; | no | Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. |
 | `replace` | boolean | no | Replace a saved snapshot of the same name. |
+| `minMemoryMb` | integer | no | The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none. (minimum 0, maximum 4194304) |
 | `memory` | boolean | no | Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is. |
 
 ### ScanSeverity
@@ -1655,6 +1736,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `kind` | [SnapshotKind](/api/reference/types/#snapshotkind) | yes |  |
 | `name` | string | no | A saved snapshot's name, unique in its account. |
 | `description` | string | no |  |
+| `labels` | Record&lt;string, string&gt; | no | Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. |
 | `sandboxId` | string | no | The sandbox it was taken of; absent once that is deleted. |
 | `sandboxType` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
 | `state` | [SnapshotState](/api/reference/types/#snapshotstate) | yes |  |
@@ -1662,9 +1744,11 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `memory` | boolean | yes | Whether it holds the sandbox's memory as well as its disk (a pause). |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
+| `minMemoryMb` | integer | no | A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any. (minimum 1) |
 | `sizeBytes` | integer | no | The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. |
 | `uses` | integer | no | How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. (minimum 0) |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `takenAt` | integer | no | When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept. |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
@@ -1725,6 +1809,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `description` | string | no |  (at most 500 characters) |
+| `labels` | Record&lt;string, string&gt; | no | Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. |
 | `memory` | boolean | no | Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. |
 
 ### TelemetryExport
@@ -2021,6 +2106,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `draining` | boolean | no | Stop placing new sandboxes on it. |
+| `savedSnapshotBytesLimit` | integer or null | no | The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. |
 
 ### UpdateMemberBody
 
@@ -2075,6 +2161,10 @@ A host's recent CPU and memory, for sparklines.
 | `cpuSeconds` | number | yes |  |
 | `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way. |
 | `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
+| `memory` | [GuestMemory](/api/reference/types/#guestmemory) | no |  |
+| `peakMemoryBytes` | integer | no | The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. (minimum 0) |
+| `peakMemoryAt` | integer | no | Epoch milliseconds, UTC. |
+| `peakCpu` | number | no | Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. (minimum 0, maximum 1) |
 
 ### ViewAccessBody
 

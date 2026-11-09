@@ -90,6 +90,31 @@ func TestReplayMountsSendsSettledOnes(t *testing.T) {
 	}
 }
 
+// A connection replays each running sandbox's guest health and each exit the host didn't cause by a call, so one in
+// the handshake (after the hello's read, before events were wired) still reaches Kantel; a stop Kantel asked for (no
+// error) and a running sandbox without a stamp aren't sent.
+func TestReplayHealthSendsHealthAndExits(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	h.tiers["microvm"] = listTier{list: []proto.SandboxInfo{
+		{ID: "running", State: proto.StateRunning, HealthAt: 10},
+		{ID: "unstamped", State: proto.StateRunning},
+		{ID: "ended", State: proto.StateStopped, Error: "the VM exited", HealthAt: 20},
+		{ID: "failed", State: proto.StateError, Error: "it couldn't boot", HealthAt: 30},
+		{ID: "stopped", State: proto.StateStopped, HealthAt: 40},
+	}}
+	h.order = []string{"microvm"}
+	var got []string
+	h.events = func(e proto.Event) {
+		if e.Kind == "sandbox" && e.Sandbox != nil {
+			got = append(got, e.Sandbox.ID)
+		}
+	}
+	h.replayHealth()
+	if strings.Join(got, ",") != "running,ended,failed" {
+		t.Fatalf("replayed %v, want running,ended,failed", got)
+	}
+}
+
 type bundleTier struct{ *lifecycleTier }
 
 func (bundleTier) SupportsMount(kind string) bool { return kind == proto.MountBundle }

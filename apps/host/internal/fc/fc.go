@@ -81,8 +81,12 @@ func Moved(m *Machine, dir string) *Machine {
 	return m
 }
 
-// Launch starts Firecracker in dir, with no VM configured yet.
+// Launch starts Firecracker in dir, with no VM configured yet. A Firecracker still working in dir (one an interrupted
+// run of the host left, or a kill that hadn't finished) is ended first (KillLeftover): the sockets are about to be
+// unlinked, which would leave it running a VM on the same disk that nothing can reach, and the path refusing once the
+// new one has gone.
 func Launch(ctx context.Context, binary, dir string) (*Machine, error) {
+	KillLeftover(dir)
 	_ = os.Remove(filepath.Join(dir, APISocket))
 	_ = os.Remove(filepath.Join(dir, VsockSocket))
 	logFile, err := os.OpenFile(filepath.Join(dir, LogFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -192,6 +196,10 @@ type BootConfig struct {
 	// MiB, deflate_on_oom in case one is ever set), its guest driver's memory statistics refreshed this often, for
 	// ReadBalloonStats. A snapshot keeps the device, so every VM restored from one made with it reports too.
 	BalloonStatsSeconds int
+	// FreePageReporting turns on the balloon's free page reporting (Firecracker v1.14 on, a guest kernel with
+	// CONFIG_PAGE_REPORTING): the guest reports the memory it frees and Firecracker discards it, so the VM's resident
+	// memory falls after a peak. Only with the balloon (BalloonStatsSeconds); a snapshot keeps it.
+	FreePageReporting bool
 	// Drives are attached after rootfs (/dev/vda) and disk (/dev/vdb), in order, as /dev/vdc on: a template builder's
 	// output drive, or a sandbox's read-only bundle drives. Their paths are relative to the VM's directory, as the
 	// others' are.
@@ -235,9 +243,14 @@ type Drive struct {
 	ReadOnly bool
 }
 
-// balloon is the reporting-only balloon BootConfig.BalloonStatsSeconds asks for.
-func balloon(statsSeconds int) map[string]any {
-	return map[string]any{"amount_mib": 0, "deflate_on_oom": true, "stats_polling_interval_s": statsSeconds}
+// balloon is the balloon BootConfig.BalloonStatsSeconds asks for: a target of 0, so it only reports, and with free page
+// reporting when asked.
+func balloon(statsSeconds int, freePageReporting bool) map[string]any {
+	b := map[string]any{"amount_mib": 0, "deflate_on_oom": true, "stats_polling_interval_s": statsSeconds}
+	if freePageReporting {
+		b["free_page_reporting"] = true
+	}
+	return b
 }
 
 func bootSource(cfg BootConfig) map[string]any {
@@ -282,7 +295,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 		step{"/vsock", map[string]any{"guest_cid": cfg.GuestCID, "uds_path": VsockSocket}},
 		step{"/entropy", map[string]any{}},
 		step{"/hotplug/memory", map[string]any{"total_size_mib": cfg.HotplugMiB, "block_size_mib": HotplugBlockMiB, "slot_size_mib": HotplugSlotMiB}},
-		step{"/balloon", balloon(cfg.BalloonStatsSeconds)},
+		step{"/balloon", balloon(cfg.BalloonStatsSeconds, cfg.FreePageReporting)},
 	)
 	for _, step := range steps {
 		if step.path == "/network-interfaces/eth0" && cfg.TapDevice == "" {
@@ -396,6 +409,43 @@ type BalloonStats struct {
 	TotalMemory     *int64 `json:"total_memory"`
 	AvailableMemory *int64 `json:"available_memory"`
 	FreeMemory      *int64 `json:"free_memory"`
+	// TargetMiB is the balloon's target, ActualMiB what it holds now (SetBalloon).
+	TargetMiB int64 `json:"target_mib"`
+	ActualMiB int64 `json:"actual_mib"`
+}
+
+// SetBalloon sets the balloon's target of the Firecracker running in dir (PATCH /balloon): the guest's driver gives it
+// that much memory, dropping page cache to, and Firecracker frees it on the host; 0 gives it all back. With
+// deflate_on_oom the guest takes pages back from it rather than kill a process. Its own connection, as
+// ReadBalloonStats.
+func SetBalloon(ctx context.Context, dir string, mib int64) error {
+	socket := filepath.Join(dir, APISocket)
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+		DisableKeepAlives: true,
+	}}
+	raw, err := json.Marshal(map[string]int64{"amount_mib": max(0, mib)})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "http://firecracker/balloon", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("firecracker PATCH /balloon: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+		return fmt.Errorf("firecracker PATCH /balloon: %d %s", res.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // ReadBalloonStats asks the Firecracker running in dir for its balloon's statistics. It fails for a VM booted without

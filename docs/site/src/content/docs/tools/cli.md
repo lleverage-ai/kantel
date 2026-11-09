@@ -121,6 +121,8 @@ Created sbx_g2yy5jhyqr (fix-login-bug): microvm default, running.
 
 It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, `--env <env>` starts it from an [environment](#environments-and-protected-variables), and `--host 3000` gives a port a URL as soon as it runs.
 
+A microVM's machine is a named size (`--size large`) or a shape of its own (`--vcpus 8 --memory 16`, in GB). Which sizes there are, and what each holds, is up to the hosts: `kantel sizes` lists them, with the most `--vcpus` and `--memory` may ask for. On app.kantel.dev the sizes are `small`, `default` and `large` (4 vCPU, 8 GB); a large monorepo's type-check needs about 16 GB, so ask for that shape. From a snapshot, a sandbox is the machine the snapshot was taken of, unless you give `--size` or `--vcpus` and `--memory`: a snapshot of the disk alone (what `kantel snapshot save` keeps unless you add `--memory`) starts at any of them, as in `kantel new --from monorepo-ci --vcpus 8 --memory 16`. A snapshot that holds its sandbox's memory has that sandbox's machine, and Kantel refuses another before it makes anything.
+
 Copy your project in, run its tests, and copy a result out:
 
 ```sh
@@ -198,7 +200,35 @@ Push also leaves credentials behind, at any depth, and names each one it skips o
 
 `--no-default-excludes` sends the first two groups too; links outside the directory never go. Push refuses a directory inside one it leaves out, such as `~/.ssh`, unless you add `--no-default-excludes`. It refuses your home directory, or a directory holding it or Kantel's config directory (`~/.config/kantel`), unless you add `--allow-home`; even then Kantel's config directory, which holds your API key, stays behind, and nothing inside it is ever pushed.
 
-Both go through Kantel's files API, so they work on isolates as well as microVMs and need no SSH. The API moves at most 1 MiB a call: a bigger file comes out in ranged reads, and goes in in parts that a command in the sandbox joins, which needs a microVM. `kantel files` (`ls`, `cat`, `put`, `get`, `rm`) works on one file at a time.
+### Syncing a git checkout
+
+When the sandbox already has a clone of your repository, such as one made from a [saved snapshot](/snapshots/saved/) with its dependencies installed and its build caches warm, `kantel sync <id> --git` sends only the difference. Push sends every file, which takes minutes on a monorepo of 20,000 ([#726](https://github.com/lleverage-ai/kantel/issues/726)); sync sends one patch against the commit the clone started from:
+
+```sh
+kantel sync sbx_g2yy5jhyqr --git                                # this repository, to /home/user/<its name>
+kantel sync sbx_g2yy5jhyqr ~/src/app --git --to /srv/app       # another repository, to another clone
+```
+
+```
+Synced /home/user/lleverage in sbx_g2yy5jhyqr (467 files changed: a 2.5 MiB patch, 812 KiB sent) on 9540593c20 (.kantel-base-sha) in 2.4 s. Both trees are 24ec943e03.
+```
+
+The commit it diffs against, the base, is the first of:
+
+1. `--base <commit>`.
+2. The checkout's `.kantel-base-sha` file, for a checkout whose HEAD has moved on since it was made.
+3. The `git.base` [label](/snapshots/saved/#record-what-it-holds-and-how-fresh-it-is) on the snapshot the sandbox was made from.
+4. The checkout's HEAD.
+
+Your repository must have the base too: when it doesn't, sync says so, and `git fetch origin <commit>` gets it.
+
+Here, sync stages your working tree in a copy of your index, so yours isn't touched, and with objects of its own, so nothing it reads is left in your repository: your tracked changes, deletions and mode changes, and the new files `.gitignore` doesn't leave out. `git diff-tree --binary` from the base to that tree is the patch, binary files and links included. It goes up gzipped. In the sandbox, one command runs `git clean -fd`, which keeps the files the checkout's `.gitignore` leaves out, such as `node_modules` and build output, then `git reset --hard <base>` and `git apply --index`. Two syncs into one checkout take turns. Last, it checks that `git write-tree` names the same tree on both sides, and that the files match the index. Anything else in the checkout is lost: its own commits, changes and untracked files.
+
+It fails, and says which, when no base is recorded, when the base isn't in your repository or the sandbox's clone, when the patch doesn't apply, and when the trees don't match after it. A failure before the patch applies leaves the checkout as it was; one after the reset leaves it at the base.
+
+Sync leaves out what push would, but only among the files that changed: credentials, and new `.claude`, `.codex`, `.cursor`, `.npmrc` and `.env` files. Each stays at the base's version, and is named on stderr; `--no-default-excludes` sends them. As push does, it refuses a repository in Kantel's config directory or in one it leaves out, such as `.ssh`, and your home directory, or one that holds it, without `--allow-home`; Kantel's own config never goes, whatever the flags. It sends the whole repository, whichever of its directories you name, but not what's in submodules or a repository inside it, and Git LFS files go as their pointers. It needs a microVM with git, gzip and flock, which Kantel's image has.
+
+Both push and scp go through Kantel's files API, so they work on isolates as well as microVMs and need no SSH. The API moves at most 1 MiB a call: a bigger file comes out in ranged reads, and goes in in parts that a command in the sandbox joins, which needs a microVM. `kantel files` (`ls`, `cat`, `put`, `get`, `rm`) works on one file at a time.
 
 ## Ports, SSH, desktop and browser
 
@@ -263,6 +293,8 @@ kantel stop "$id"
 
 In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 
+When Kantel can't be reached, or a proxy in front of it fails (a 502, 503 or 504 that isn't Kantel's own answer), `kantel` sends a call again that is safe to send twice: any read, such as `info`, `list` or a poll, and a create, fork or command, which carry an `Idempotency-Key` so Kantel does them once. It waits 0.5, 1, 2 and 4 seconds between the five tries, then exits `1` saying why. Other changes, such as `stop`, `delete` or a file's write, are sent once, since the first may have happened.
+
 ## Commands
 
 `kantel help` lists every command, and `kantel help <command>` (or `--help` after one) shows its flags. `ls` is short for `list` and `rm` for `delete`. The first CLI's spellings, such as `kantel sandbox create` and `kantel sandbox get`, still work.
@@ -271,11 +303,11 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 | --- | --- |
 | Signing in | `login [--key-stdin] [--no-browser] [--wait] [--account-key]`, `logout`, `whoami`, `token list`, `token create [--preset] [--scope]… [--only <account>]…`, `token revoke` |
 | [Accounts and organisations](/accounts/organisations/) | `org list`, `org use <account>`, `org show`, `org create [--visibility] [--use]`, `org join`, `org set`, `org usage [--days]`, `org leave --yes`, `org delete --yes`, `member list`, `member role`, `member rm`, `invite list`, `invite create [--email] [--role]`, `invite revoke` |
-| [Sandboxes](/sandboxes/lifecycle/) | `new`, `list [--all] [--mine] [--every-account]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
+| [Sandboxes](/sandboxes/lifecycle/) | `new [--size S \| --vcpus N --memory GB]`, `sizes`, `list [--all] [--mine] [--every-account]`, `info`, `start`, `stop [--pause]`, `resume`, `recover`, `fork [--count N]`, `delete --yes`, `extend <id> <minutes>`, `usage` |
 | [Commands](/sandboxes/commands-and-files/) | `exec [-d] [--timeout <s>]`, `attach`, `ps`, `kill` |
-| [Files](/sandboxes/commands-and-files/) | `scp [-r]`, `push`, `files ls`, `files cat`, `files put`, `files get`, `files rm` |
+| [Files](/sandboxes/commands-and-files/) | `scp [-r]`, `push`, `sync --git`, `files ls`, `files cat`, `files put`, `files get`, `files rm` |
 | [Ports](/sandboxes/public-ports/), [SSH](/sandboxes/ssh/), [desktop and browser](/sandboxes/desktop-and-browser/) | `host <id> <port>`, `port list`, `port hide`, `ssh`, `desktop`, `browser` |
-| [Snapshots](/snapshots/history/) | `snapshot list`, `take`, `save <sandboxId> <name>`, `files`, `rm` |
+| [Snapshots](/snapshots/history/) | `snapshot list`, `info <id or name>`, `take`, `save <sandboxId> <name> [--label k=v]…`, `files`, `rm` |
 | [Environments](/sandboxes/environments/) and [egress](/sandboxes/egress-proxy/) | `env list`, `env create`, `env show`, `env delete`, `env set [--protected] [--bind …] [--value-stdin] [--keep-value]`, `env unset`, `env file`, `env file rm`, `env repo add`, `env repo rm`, `env grant`, `env grant rm`, `egress [--denied]`, `grant`, `grant rm` |
 | [API keys](/accounts/api-keys/) | `key list`, `key create`, `key rotate`, `key revoke` |
 | [Webhooks](/monitoring/webhooks/), events and [OpenTelemetry](/monitoring/opentelemetry/) | `webhook list`, `webhook create`, `webhook rm`, `webhook test`, `events`, `telemetry get`, `telemetry set`, `telemetry rm` |

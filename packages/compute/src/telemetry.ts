@@ -89,7 +89,7 @@ const resource = (accountId: string) => ({
 
 function severityOf(type: computeSchema.EventType): { readonly severityNumber: number; readonly severityText: string } {
 	if (type === "sandbox.error") return { severityNumber: 17, severityText: "ERROR" };
-	if (type === "sandbox.degraded") return { severityNumber: 13, severityText: "WARN" };
+	if (type === "sandbox.degraded" || type === "sandbox.oom_kill") return { severityNumber: 13, severityText: "WARN" };
 	return { severityNumber: 9, severityText: "INFO" };
 }
 

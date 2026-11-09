@@ -48,9 +48,43 @@ const warm = await kantel.saveSnapshot({ name: "web-app-warm", sandboxId: "sbx_4
 
 From the CLI, that's `kantel snapshot save sbx_4kq9x2mt web-app-warm --memory`; in the console, tick **Keep its memory too** in the Save snapshot dialog. Saving a stopped sandbox, or a snapshot from its history, keeps what that snapshot holds, as above: `memory` in the answer says which.
 
+### The least memory a sandbox from it needs
+
+A disk-only snapshot starts at any size, including one too small for the work it was saved for. A monorepo's type-check that needs 13 GB fails partway through on 8. Give `minMemoryMb` when you save it, and Kantel refuses a sandbox made from it with less memory (`invalid`, saying how much it needs) before it starts one:
+
+```ts
+await kantel.saveSnapshot({ name: "monorepo-checks", sandboxId: "sbx_4kq9x2mt", minMemoryMb: 16_384 });
+await kantel.createSandbox({ from: "monorepo-checks", resources: { vcpus: 8, memoryMb: 16_384 } });
+```
+
+From the CLI, that's `kantel snapshot save sbx_4kq9x2mt monorepo-checks --min-memory 16`, then `kantel new --from monorepo-checks --vcpus 8 --memory 16`. It applies to every create from the snapshot, whatever size it asks for or none. A replace keeps the least of the snapshot it replaces unless it gives its own; `0` removes it. The snapshot's own machine may be smaller: the least is for what is made from it.
+
 Kantel keeps a saved disk small: before it copies a running microVM's disk it asks the guest to trim the blocks deleted files left behind (with a sandbox image recent enough to do it), and on a host whose storage is XFS or btrfs the copy shares its blocks with the sandbox's disk until either changes.
 
 A name is up to 63 characters of lower-case letters, digits, `-`, `_` and `.`, starting with a letter or digit, and is unique in its account. The answer is the [Snapshot](/api/reference/types/#snapshot), with `kind: "saved"`.
+
+### Record what it holds, and how fresh it is
+
+A snapshot says when it was saved (`createdAt`) and when the state it holds was taken (`takenAt`). The two differ when you save a stopped sandbox, whose state is from its stop, or a snapshot from its history. A snapshot saved before Kantel kept `takenAt` has none.
+
+Kantel doesn't look inside the files, so it can't know what commit a checkout in the snapshot is at, or which lockfile its caches were built from. Record those yourself in `labels` when you save it (or take it), and read them back to tell how far a cache has fallen behind. Up to 20 labels, each value up to 500 characters:
+
+```sh
+base=$(kantel exec sbx_4kq9x2mt -- git -C /home/user/app rev-parse HEAD)
+kantel snapshot save sbx_4kq9x2mt app-warm --replace \
+  --description "Deps installed, build cache warm" --label git.base="$base"
+```
+
+```ts
+const warm = await kantel.saveSnapshot({
+	name: "app-warm",
+	sandboxId: "sbx_4kq9x2mt",
+	replace: true,
+	labels: { "git.base": base },
+});
+```
+
+`kantel snapshot info app-warm` shows its description, labels, when its state was taken and when it was saved; with `--json`, `jq -r '.labels["git.base"]'` gives the commit, for a client to diff its branch against. The console lists the description and labels under each saved snapshot's name. Labels are set when it's saved: to change them, save it again with `replace`.
 
 ## Start sandboxes from one
 
@@ -72,6 +106,18 @@ const sandboxes = await Promise.all(
 ```
 
 Each new sandbox records where it came from in `source.snapshotId`. A snapshot keeps its sandbox's type in `sandboxType`, so start a microVM template as a microVM. A name that doesn't exist in the account answers `404` with `not_found`.
+
+### Bring your branch into one
+
+A sandbox made from a snapshot with a clone of your repository in it, its dependencies installed, only needs the difference from the clone's base commit. `kantel sync --git` sends just that, as one patch, rather than every file as `kantel push` does, which on a large monorepo takes minutes ([#726](https://github.com/lleverage-ai/kantel/issues/726)):
+
+```sh
+id=$(kantel new --type microvm --from app-warm --json | jq -r .id)
+kantel sync "$id" --git --to /home/user/app
+kantel exec "$id" --timeout 0 -- 'cd app && pnpm test'
+```
+
+It finds the base in the `git.base` label above, or in a `.kantel-base-sha` file at the top of the clone, which beats the label, since it belongs to the checkout rather than the snapshot. Your working tree goes as it is, uncommitted changes and new files included, and the sandbox's `node_modules` and build caches stay. Sync fails, and says why, when the trees don't match afterwards. A 2.5 MiB patch of 467 files into a 21,000-file monorepo took about 2.5 seconds. See [Syncing a git checkout](/tools/cli/#syncing-a-git-checkout).
 
 Creating from a saved snapshot and [forking](/sandboxes/lifecycle/#fork) both copy a state. Fork when the source is a sandbox you're working in now; save and create when the state is a template you'll come back to, or the source sandbox will be deleted.
 
@@ -100,6 +146,8 @@ A saved snapshot's `sandboxId` is the sandbox it came from, and is gone once tha
 ## Limits
 
 A deployment may cap how many saved snapshots an account keeps. Saving past the cap answers `429` with `exhausted`. Your account's usage shows the cap as `limits.savedSnapshots`; see [Accounts and organisations](/accounts/organisations/#usage-and-limits).
+
+A host's admin may also limit how many bytes of saved snapshots each account keeps on that host (`savedSnapshotBytesLimit` on the [host](/hosts/#what-takes-the-disk)). A save that would take the account past it answers `429` with `exhausted`, saying how much the account has saved there, and the bytes it took for the save are deleted again. Each saved snapshot counts at its full size, including the files it shares with other snapshots, so copies that share files count separately.
 
 ## Delete a saved snapshot
 

@@ -153,11 +153,19 @@ func linkTemplateRootfs(dir, rootfs string) error {
 // runtimeFingerprint is the Firecracker and kernel the tier runs over rootfs now (kernelFor: a host image version's
 // own kernel for its file), with the host's image when rootfs is Config.Rootfs itself: an update replaces that in
 // place, whereas a host image version's file, like a pulled base's root filesystem under its key, never changes.
+// With free page reporting on, it says so too: the balloon is a device the snapshot keeps, so one made without
+// reporting is booted afresh instead (and one made with it isn't restored once it is off).
 func (m *Manager) runtimeFingerprint(rootfs string) string {
+	var fp string
 	if rootfs == m.cfg.Rootfs {
-		return fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs)
+		fp = fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs)
+	} else {
+		fp = fc.Fingerprint(m.cfg.Firecracker, m.kernelFor(rootfs))
 	}
-	return fc.Fingerprint(m.cfg.Firecracker, m.kernelFor(rootfs))
+	if m.cfg.FreePageReporting {
+		fp += "+free-page-reporting"
+	}
+	return fp
 }
 
 func badTemplateSnapshot() error {
@@ -415,7 +423,7 @@ func (m *Manager) restorableTemplateSnapshot(id string, size proto.Size) (sandbo
 		return sandboxOrigin{}, err
 	}
 	if kept.Runtime != m.runtimeFingerprint(kept.Rootfs) {
-		return sandboxOrigin{}, fmt.Errorf("made with another Firecracker, kernel or host image (%s)", kept.Runtime)
+		return sandboxOrigin{}, fmt.Errorf("made with another Firecracker, kernel, host image or balloon (%s)", kept.Runtime)
 	}
 	if kept.VCPUs != size.VCPUs || kept.MemoryMiB != size.MemoryMiB {
 		return sandboxOrigin{}, fmt.Errorf("built as %d vCPUs and %d MiB, not %d and %d", kept.VCPUs, kept.MemoryMiB, size.VCPUs, size.MemoryMiB)

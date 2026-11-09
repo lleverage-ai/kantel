@@ -240,6 +240,19 @@ const FeatureSnapshotKeep = "snapshot-keep"
 // carries its UniqueBytes and Shared alike.
 const FeatureSnapshotSizes = "snapshot-sizes"
 
+// FeatureGuestHealth (HOST_FEATURES.guestHealth): the host watches each running microVM's guest agent and reports one
+// that stops answering (SandboxInfo.Health, in its events and its hello), and again once it answers; a stop doesn't wait
+// on a guest that doesn't answer; a start or resume of a sandbox it has running whose agent doesn't answer, and a
+// sandbox.start with Reset (a recovery), reset its VM and boot it cold from its disk; a stop of a sandbox it has
+// stopped answers a snapshot of its disk.
+const FeatureGuestHealth = "guest-health"
+
+// FeatureExitStamps (HOST_FEATURES.exitStamps): every report of a microVM that ended without Kantel asking (stopped or
+// error, with its Error) carries HealthAt, its machine's last health stamp, kept across restarts of the host (a VM a
+// restart ended is stamped then); a running sandbox's HealthAt, in a call's answer, is its machine's, so Kantel fences
+// an exit to the run whose machine ended. Such exits are sent again once a connection can carry events.
+const FeatureExitStamps = "exit-stamps"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -295,6 +308,88 @@ type Capacity struct {
 	// memory and disk FreeMemoryMiB and FreeDiskGiB already leave out: a control plane holding room for one of them
 	// stops holding it once a report names it, so it is counted once.
 	Builds []string `json:"builds,omitempty"`
+	// Disk is what takes the space on the host's disk, measured every few minutes; absent until it first is, and from a
+	// host from before it said.
+	Disk *DiskUsage `json:"disk,omitempty"`
+	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
+	// has left. Absent from a host from before it said.
+	Memory *MemoryReport `json:"memory,omitempty"`
+}
+
+// MemoryModeReserved and MemoryModeUsed are MemoryReport.Mode: the host admits sandboxes by the memory they were
+// given (against MaxRatio times its capacity), or, with memory over-commit on (experimental), by what they use.
+const (
+	MemoryModeReserved = "reserved"
+	MemoryModeUsed     = "used"
+)
+
+// MemoryReport is a host's memory, in MiB (package memplan says how each is counted).
+type MemoryReport struct {
+	// Mode is how the host admits sandboxes: MemoryModeReserved or MemoryModeUsed.
+	Mode string `json:"mode"`
+	// TotalMiB is the machine's memory (or kantel-host's control group's limit); ReserveMiB what is kept for the host
+	// itself; CapacityMiB what sandboxes may use, the total less the reserve.
+	TotalMiB    int64 `json:"totalMiB"`
+	ReserveMiB  int64 `json:"reserveMiB"`
+	CapacityMiB int64 `json:"capacityMiB"`
+	// ReservedMiB is what the running sandboxes and template builds were given; CommittedMiB what they count as: each
+	// microVM its recent peak plus headroom, at most its size.
+	ReservedMiB  int64 `json:"reservedMiB"`
+	CommittedMiB int64 `json:"committedMiB"`
+	// GuestUsedMiB is what the microVMs' guests use now; ResidentMiB what their Firecracker processes hold of the
+	// host's memory (their guests' page cache too).
+	GuestUsedMiB int64 `json:"guestUsedMiB"`
+	ResidentMiB  int64 `json:"residentMiB"`
+	// AvailableMiB is what the machine has available now (MemAvailable); SwapUsedMiB the swap in use.
+	AvailableMiB int64 `json:"availableMiB"`
+	SwapUsedMiB  int64 `json:"swapUsedMiB"`
+	// PressureSome and PressureFull are the machine's memory pressure (PSI avg10), in percent.
+	PressureSome float64 `json:"pressureSome"`
+	PressureFull float64 `json:"pressureFull"`
+	// MaxRatio caps ReservedMiB at that many times CapacityMiB.
+	MaxRatio float64 `json:"maxRatio"`
+	// State is ok, tight (reclaiming), refusing (creates refused) or critical (out-of-memory step).
+	State string `json:"state"`
+	// MeasuredAt is when the machine's figures were read (Unix ms); 0 before they first were.
+	MeasuredAt int64 `json:"measuredAt,omitempty"`
+	// Admission, with Mode MemoryModeUsed, is what the host admits against, which the control plane counts what it
+	// places before the next report against (Capacity.FreeMemoryMiB is then the largest single microVM, not additive).
+	Admission *MemoryAdmission `json:"admission,omitempty"`
+}
+
+// MemoryAdmission is what a host admitting by use (memory over-commit) has left, in admission units: ReservableMiB of
+// sizes before its cap (maxRatio), and CommittableMiB of committed memory. A new microVM of size S costs S of the
+// first and min(S, StartMiB + headroom(S)) of the second, headroom(S) = min(S, max(HeadroomMiB, S * HeadroomPercent /
+// 100)); a template build costs S of both (memplan).
+type MemoryAdmission struct {
+	ReservableMiB   int64   `json:"reservableMiB"`
+	CommittableMiB  int64   `json:"committableMiB"`
+	StartMiB        int64   `json:"startMiB"`
+	HeadroomMiB     int64   `json:"headroomMiB"`
+	HeadroomPercent float64 `json:"headroomPercent"`
+}
+
+// DiskUsage is what takes the space on the filesystem holding a host's Root, in bytes, counting only files on that
+// filesystem. Each file counts once, in the first of these it is in: bundle images, base images, templates,
+// sandboxes, snapshots (memory a stop's snapshot shares with its sandbox counts for the sandbox). Which snapshots are
+// saved is the control plane's to say, by its own records. Other is the rest of the used space: the operating system,
+// logs, other programs, a snapshot being made.
+type DiskUsage struct {
+	TotalBytes     int64 `json:"totalBytes"`
+	UsedBytes      int64 `json:"usedBytes"`
+	SnapshotsBytes int64 `json:"snapshotsBytes"`
+	// SnapshotOwnBytes and SnapshotShared split SnapshotsBytes by snapshot, counting the same files: each snapshot's
+	// that no other holds (by ID), and those several hold, by their holders. The control plane counts for saved what its
+	// saved snapshots hold, each group once, and the rest for automatic.
+	SnapshotOwnBytes map[string]int64 `json:"snapshotOwnBytes,omitempty"`
+	SnapshotShared   []SharedBytes    `json:"snapshotShared,omitempty"`
+	SandboxesBytes   int64            `json:"sandboxesBytes"`
+	ImagesBytes      int64            `json:"imagesBytes"`
+	TemplatesBytes   int64            `json:"templatesBytes"`
+	BundlesBytes     int64            `json:"bundlesBytes"`
+	OtherBytes       int64            `json:"otherBytes"`
+	// MeasuredAt is when it was measured (Unix milliseconds).
+	MeasuredAt int64 `json:"measuredAt"`
 }
 
 type Heartbeat struct {
@@ -325,6 +420,9 @@ type SandboxInfo struct {
 	CreatedAt int64  `json:"createdAt"`
 	// Timings of the operation that answered with this, in milliseconds, by step.
 	Timings map[string]float64 `json:"timings,omitempty"`
+	// Phases is how the machine of the create, fork or resume that answered with this started, phase by phase
+	// (microVMs only): what Timings says under names that differ by path, in a shape the control plane keeps.
+	Phases *StartPhases `json:"phases,omitempty"`
 	// Source says how a create was served: "snapshot" (restored from a snapshot), "boot" (a cold boot), or for an
 	// isolate "pool" (an isolate its account's VM had pre-loaded) or "account" (its account's VM already ran).
 	Source string `json:"source,omitempty"`
@@ -345,7 +443,48 @@ type SandboxInfo struct {
 	// than the sandbox's last MountsAt): reports of a sandbox's mounts, from a call's answer, an EventMounts or the
 	// replay after a reconnect, are ordered by it, so one read earlier never replaces a later one.
 	MountsAt int64 `json:"mountsAt,omitempty"`
+	// Health, from a host with FeatureGuestHealth, is HealthUnresponsive while a running microVM's guest agent doesn't
+	// answer, with HealthReason saying why in words (how long, and whether it is out of memory); empty while it does.
+	// The host sends the sandbox's info as an event each time it changes, and once more for each running sandbox once a
+	// connection can carry events. HealthAt (Unix ms) is when it was last set (from its machine's start on): reports of
+	// it are ordered by it, so one sent earlier never replaces a later one. A stopped sandbox keeps its last machine's
+	// HealthAt (none after the host restarts), so the report of an exit names the machine that ended.
+	Health       string `json:"health,omitempty"`
+	HealthReason string `json:"healthReason,omitempty"`
+	HealthAt     int64  `json:"healthAt,omitempty"`
 }
+
+// StartPhases is how long a microVM's start took on its host, in milliseconds, by phase: its disk made, its machine
+// booted or its snapshot loaded, and its guest agent answering. A slow phase says what was slow (a full disk copy, a
+// busy CPU), where the total alone doesn't.
+type StartPhases struct {
+	// Disk is how its disk was made: DiskReflink, DiskCopy, DiskMove or DiskNew; empty when it kept its own (a resume).
+	Disk   string  `json:"disk,omitempty"`
+	DiskMs float64 `json:"diskMs"`
+	// SnapshotMs, for a live fork, is the snapshot of its running source it was made from.
+	SnapshotMs float64 `json:"snapshotMs,omitempty"`
+	// BootMs is its Firecracker process started and the machine booted (a cold boot) or its snapshot loaded (a restore).
+	BootMs float64 `json:"bootMs"`
+	// AgentMs is from then until its guest agent answered: on a cold boot, the guest's kernel and init too.
+	AgentMs float64 `json:"agentMs"`
+	// TotalMs is the whole operation on the host: these, and the rest (its network, identity and mounts).
+	TotalMs float64 `json:"totalMs"`
+}
+
+// How a sandbox's disk was made (StartPhases.Disk).
+const (
+	// DiskReflink is a clone of the source's disk that shares its blocks until either is written (XFS, btrfs): at once.
+	DiskReflink = "reflink"
+	// DiskCopy is a copy of the source's data, its holes kept: the host's file system has no reflinks (ext4).
+	DiskCopy = "copy"
+	// DiskMove is a live fork's own snapshot's disk, moved into the fork.
+	DiskMove = "move"
+	// DiskNew is a new empty disk.
+	DiskNew = "new"
+)
+
+// HealthUnresponsive is SandboxInfo.Health for a running sandbox whose guest agent doesn't answer.
+const HealthUnresponsive = "unresponsive"
 
 // GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and
 // Docker that Kantel can open. The compute API passes it on as a sandbox's capabilities.guest.
@@ -762,6 +901,10 @@ type ResumeParams struct {
 	// a host whose current images are another refuses the start before it changes anything, as it hasn't taken that
 	// update. Empty: whatever is current.
 	RebaseTo string `json:"rebaseTo,omitempty"`
+	// Reset, on sandbox.start, is a recovery: a sandbox the host has running is reset (its VM ended as a power cut
+	// would, its disk kept, its memory lost) and booted cold from its disk, rather than answered as running. Without it,
+	// a host with FeatureGuestHealth does the same for a running sandbox whose guest agent doesn't answer.
+	Reset bool `json:"reset,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its
@@ -1035,6 +1178,15 @@ type SandboxUsage struct {
 	// kernel's IO pressure, "some"). Absent when the guest has no pressure figures (a kernel booted without psi=1, an
 	// agent that predates them) or for its first reading.
 	IOPressure *float64 `json:"ioPressure,omitempty"`
+	// OOMKills is how many processes a microVM's guest kernel has killed for memory since it booted (its
+	// /proc/vmstat oom_kill, its agent's memory watch's kills included): a count that only grows until the VM boots
+	// again. MemPressureSome and MemPressureFull are its memory pressure's ten-second averages, 0 to 1: the share of
+	// the last ten seconds in which at least one of its tasks (some), or every one that wanted to run (full), was
+	// stalled on memory. Each absent where the guest's agent didn't answer in time, predates them, or (pressure) its
+	// kernel has no pressure figures.
+	OOMKills        *int64   `json:"oomKills,omitempty"`
+	MemPressureSome *float64 `json:"memPressureSome,omitempty"`
+	MemPressureFull *float64 `json:"memPressureFull,omitempty"`
 }
 
 // SandboxUsage.MemSource's values.

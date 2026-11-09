@@ -257,6 +257,16 @@ describe("deploy config", () => {
 		);
 	});
 
+	it("runs snapshot expiry on the deployed stack, and reads the switch strictly", () => {
+		const access = { KANTEL_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com", KANTEL_ACCESS_AUD: "aud" };
+		const deployed = deployConfig(rawConfig, deployValues(configured, "deploy")).vars as Record<string, string>;
+		expect(deployed.KANTEL_SNAPSHOT_EXPIRY).toBe("on");
+		expect(gatewayConfig({ ...access, KANTEL_SNAPSHOT_EXPIRY: "on" }).snapshotExpiry).toBe(true);
+		expect(gatewayConfig({ ...access }).snapshotExpiry).toBeUndefined();
+		expect(gatewayConfig({ ...access, KANTEL_SNAPSHOT_EXPIRY: "off" }).snapshotExpiry).toBeUndefined();
+		expect(() => gatewayConfig({ ...access, KANTEL_SNAPSHOT_EXPIRY: "yes" })).toThrow("KANTEL_SNAPSHOT_EXPIRY");
+	});
+
 	it("passes where account hosts' latest kantel-host is read on, a URL or off, and leaves the default unset", () => {
 		const vars = (env: Record<string, string>) =>
 			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;

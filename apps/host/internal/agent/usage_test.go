@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"github.com/lleverage-ai/kantel/apps/host/internal/usage"
 )
@@ -306,6 +309,67 @@ func TestUsageSampleMicroVMDiskAndIOPressure(t *testing.T) {
 	// On the wire, both are left out when there are none (a host that predates them sends the same).
 	raw, _ := json.Marshal(proto.SandboxUsage{ID: "sbx_a", Kind: "microvm"})
 	if string(raw) != `{"id":"sbx_a","kind":"microvm","cpu":0,"memUsedBytes":0,"memLimitBytes":0}` {
+		t.Fatalf("wire %s", raw)
+	}
+}
+
+// A guest's OOM kills and memory pressure come with each answer, as they are: a count since boot, and the kernel's
+// ten-second averages as shares.
+func TestUsageSampleMicroVMOOMKillsAndMemoryPressure(t *testing.T) {
+	stats := usage.GuestStats{DiskUsedBytes: 1 << 30, DiskTotalBytes: 10 << 30}
+	var statsErr error
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 1_000, Idle: 500},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 10, Start: 7}},
+		rss:   map[int]int64{100: 600 << 20},
+		vms: []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 2, MemLimitBytes: 2 << 30,
+			ReadStats: func(context.Context) (usage.GuestStats, error) { return stats, statsErr }}},
+	}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	tick := 0
+	read := func() proto.SandboxUsage {
+		t.Helper()
+		tick++
+		f.host.Total += 1_000
+		f.host.Idle += 500
+		f.procs[100] = usage.ProcCPU{Ticks: f.procs[100].Ticks + 100, Start: 7}
+		sample, ok := s.sample(t0.Add(time.Duration(tick) * 5 * time.Second))
+		if !ok {
+			t.Fatal("want a sample")
+		}
+		return byID(sample)["sbx_a"]
+	}
+	s.sample(t0)
+
+	// An agent that predates them: none.
+	if a := read(); a.OOMKills != nil || a.MemPressureSome != nil || a.MemPressureFull != nil {
+		t.Fatalf("figures from an agent without them: %+v", a)
+	}
+	// From the first answer with them: nothing to differ from.
+	kills, some, full := int64(2), 85.0, 140.0
+	stats.OOMKills, stats.MemorySomeAvg10, stats.MemoryFullAvg10 = &kills, &some, &full
+	a := read()
+	if a.OOMKills == nil || *a.OOMKills != 2 || a.MemPressureSome == nil || a.MemPressureFull == nil {
+		t.Fatalf("with figures %+v", a)
+	}
+	approx(t, "memory pressure some", *a.MemPressureSome, 0.85)
+	// A figure past 100 is taken as all of the time.
+	approx(t, "memory pressure full", *a.MemPressureFull, 1)
+	nan := math.NaN()
+	stats.MemoryFullAvg10 = &nan
+	if a = read(); a.MemPressureFull != nil {
+		t.Fatalf("a pressure that isn't a number: %v", *a.MemPressureFull)
+	}
+	// A guest that doesn't answer has none this time.
+	statsErr = errors.New("timeout")
+	if a = read(); a.OOMKills != nil || a.MemPressureSome != nil {
+		t.Fatalf("unanswered %+v", a)
+	}
+
+	raw, _ := json.Marshal(proto.SandboxUsage{ID: "sbx_a", Kind: "microvm", OOMKills: &kills, MemPressureSome: &some})
+	if !strings.Contains(string(raw), `"oomKills":2`) || !strings.Contains(string(raw), `"memPressureSome":85`) ||
+		strings.Contains(string(raw), "memPressureFull") {
 		t.Fatalf("wire %s", raw)
 	}
 }
@@ -678,6 +742,72 @@ func TestUsageHeldSandboxKeepsItsCounters(t *testing.T) {
 	got := byID(sample)
 	approx(t, "sbx_a", got["sbx_a"].CPU, 0.5)
 	approx(t, "iso_a", got["iso_a"].CPU, 0.2)
+}
+
+// Memory is read of now: the memory plan, and with it the guard, has a new or resumed VM from its first reading, before
+// its CPU has a figure; a held one keeps its place in the plan.
+func TestUsageMemoryPlanHasEveryVMAtOnce(t *testing.T) {
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 10_000, Idle: 9_000},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 0, Start: 7}},
+		rss:   map[int]int64{100: 700 << 20, 200: 3 << 30, 300: 900 << 20},
+		vms:   []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1, MemLimitBytes: 2 << 30}},
+	}
+	s := f.sampler()
+	plan := memplan.New(memplan.Settings{Enabled: true}, 10_000, 2_000, 1.5)
+	t0 := time.Unix(10_000, 0)
+	observe := func(at time.Time) []memplan.Reading {
+		t.Helper()
+		plan.Observe(at, s.memory, hostinfo.Memory{TotalMiB: 12_000, AvailableMiB: 8_000})
+		return plan.Readings()
+	}
+	// The very first sample, which only starts the CPU counters, reads memory.
+	s.sample(t0)
+	if got := observe(t0); len(got) != 1 || got[0].ID != "sbx_a" || got[0].RSSMiB != 700 || got[0].Pid != 100 {
+		t.Fatalf("first sample: %+v", got)
+	}
+	// sbx_b starts between ticks, already holding 3 GiB: no CPU figure yet, but the guard can take it.
+	f.vms = append(f.vms, usage.Process{SandboxID: "sbx_b", Pid: 200, CPUs: 4, MemLimitBytes: 8 << 30})
+	f.procs[200] = usage.ProcCPU{Ticks: 10, Start: 9}
+	f.host.Total += 1_000
+	sample, _ := s.sample(t0.Add(5 * time.Second))
+	if _, ok := byID(sample)["sbx_b"]; ok {
+		t.Fatal("a new VM's CPU has a figure on its first reading")
+	}
+	got := observe(t0.Add(5 * time.Second))
+	if len(got) != 2 || got[0].ID != "sbx_b" || got[0].RSSMiB != 3<<10 || got[0].Pid != 200 || got[0].SizeMiB != 8<<10 {
+		t.Fatalf("with a new VM: %+v", got)
+	}
+	// sbx_a resumes in a new Firecracker, sbx_b is held mid-operation: both stay candidates, sbx_a's new process at once.
+	f.vms = []usage.Process{{SandboxID: "sbx_a", Pid: 300, CPUs: 1, MemLimitBytes: 2 << 30}, {SandboxID: "sbx_b", Held: true}}
+	f.procs[300] = usage.ProcCPU{Ticks: 1, Start: 30}
+	f.host.Total += 1_000
+	s.sample(t0.Add(10 * time.Second))
+	got = observe(t0.Add(10 * time.Second))
+	if len(got) != 2 || got[0].ID != "sbx_b" || got[0].Pid != 200 || got[1].ID != "sbx_a" || got[1].Pid != 300 || got[1].RSSMiB != 900 {
+		t.Fatalf("resumed and held: %+v", got)
+	}
+}
+
+// RunUsage's samples, the very first (no CPU figures yet) too, go through takeUsage, which gives the plan their memory.
+func TestUsageTakeGivesThePlanTheFirstSample(t *testing.T) {
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 10_000, Idle: 9_000},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 0, Start: 7}},
+		rss:   map[int]int64{100: 700 << 20},
+		vms:   []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1, MemLimitBytes: 2 << 30}},
+	}
+	s := f.sampler()
+	s.now = func() time.Time { return time.Unix(10_000, 0) }
+	plan := memplan.New(memplan.Settings{}, 10_000, 2_000, 1.5)
+	h := quietHost()
+	h.plan = plan
+	if _, ok := h.takeUsage(s); ok {
+		t.Fatal("the host's first sample has CPU figures")
+	}
+	if got := plan.Readings(); len(got) != 1 || got[0].ID != "sbx_a" || got[0].RSSMiB != 700 || got[0].Pid != 100 {
+		t.Fatalf("plan after the first sample: %+v", got)
+	}
 }
 
 // The control plane takes an interval of 1 s to 5 minutes: a tick a little early, or the first after the host was

@@ -95,22 +95,9 @@ func InVM() bool {
 	return false
 }
 
-// MemoryMiB is the machine's total memory.
+// MemoryMiB is the machine's total memory, or kantel-host's control group's memory limit when that is less (ReadMemory).
 func MemoryMiB() int64 {
-	f, err := os.Open("/proc/meminfo")
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		fields := strings.Fields(s.Text())
-		if len(fields) >= 2 && fields[0] == "MemTotal:" {
-			kb, _ := strconv.ParseInt(fields[1], 10, 64)
-			return kb / 1024
-		}
-	}
-	return 0
+	return ReadMemory().TotalMiB
 }
 
 // AvailableMemoryMiB is what the kernel says is available now.
@@ -299,4 +286,14 @@ func lookPath(name string) (string, error) {
 		}
 	}
 	return "", os.ErrNotExist
+}
+
+// DiskUsed is the used and total bytes of the filesystem holding path (used counts what root's reserve keeps too);
+// zeros when it can't be read.
+func DiskUsed(path string) (used, total int64) {
+	var st syscall.Statfs_t
+	if syscall.Statfs(path, &st) != nil {
+		return 0, 0
+	}
+	return int64(st.Blocks-st.Bfree) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize)
 }

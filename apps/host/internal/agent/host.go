@@ -25,6 +25,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -104,6 +105,12 @@ type Host struct {
 	usageAcks bool
 	// usage samples the host and its sandboxes while RunUsage runs (usage.go).
 	usage *usageSampler
+	// disk is what takes the space on the host's disk, measured now and then for the heartbeat (diskusage.go).
+	disk diskMeasure
+	// plan is the host's account of its memory (memory.go), from once its facts are known.
+	plan *memplan.Plan
+	// guard acts when memory runs short, with memory over-commit on (memory.go).
+	guard memoryGuard
 }
 
 // New starts the tiers the host can run.
@@ -184,6 +191,11 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			MinDiskGiB:      cfg.MicroVM.MinDiskGiB, MaxDiskGiB: cfg.MicroVM.MaxDiskGiB,
 			// Creates, starts, resumes and template builds are admitted against the host's budget, as Capacity reports it.
 			Budget: h.budgetBeside(microvm.Tier),
+			// With memory over-commit on (experimental), their memory by what the VMs use, and every balloon reports the
+			// memory its guest frees.
+			AdmitMemory:       admitMemoryIf(cfg.overcommitOn(), h.admitMemory),
+			FreePageReporting: cfg.overcommitOn(),
+			ExitCause:         exitCauseIf(cfg.overcommitOn()),
 			// Discard on the disks where Firecracker can (v1.17 on): space the guest frees is freed on the host.
 			Discard: fc.DiscardSupported(hostinfo.FirecrackerVersion(cfg.Firecracker)),
 		})
@@ -225,6 +237,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		h.startImagePatching(kvm)
 	}
 	h.facts = h.withRuntime(h.makeFacts())
+	h.startMemoryPlan()
 	if mv, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
 		// Its shared templates, now the budget their builds are admitted against knows the host's memory.
 		mv.PrepareTemplates()
@@ -265,10 +278,7 @@ func (h *Host) makeFacts() proto.Facts {
 		disk = &limits
 	}
 	total := hostinfo.MemoryMiB()
-	reserve := h.cfg.ReserveMemoryMiB
-	if reserve == 0 {
-		reserve = max(2048, total/10)
-	}
+	reserve := h.cfg.reserveMemoryMiB(total)
 	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
@@ -286,6 +296,9 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 	if h.listsProcesses() {
 		features = append(features, proto.FeatureProcesses)
+	}
+	if _, ok := h.tiers[microvm.Tier]; ok {
+		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps)
 	}
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(SnapshotMeasurer); ok {
@@ -348,6 +361,14 @@ func (h *Host) Capacity() proto.Capacity {
 		c.Builds = ids
 	}
 	c.FreeMemoryMiB = max(0, h.memoryBudgetMiB()-used)
+	if report, free, byUse := h.memoryReport(); report != nil {
+		c.Memory = report
+		if byUse {
+			// Over-commit on: the largest microVM it would admit now, as the control plane places against.
+			c.FreeMemoryMiB = free
+		}
+	}
+	c.Disk = h.diskUsage()
 	return c
 }
 
@@ -658,7 +679,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		// and without a revision keeps the egress it has, CA certificate included.
 		states := p.Egress != nil || revision > 0
 		if info, err := t.Get(p.SandboxID); err == nil && info.State == proto.StateRunning {
-			// Running already, the tier changes nothing, so neither does the host: not its CA, nor what it holds.
+			// Running already, the tier changes nothing, so neither does the host: not its CA, nor what it holds. A reset
+			// (a recovery, or a guest that doesn't answer) boots it again with the egress it has.
 			states = false
 		}
 		if states {

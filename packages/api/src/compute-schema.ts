@@ -295,6 +295,7 @@ export const SandboxNotRunningCode = Type.Union(
 		Type.Literal("sandbox_paused"),
 		Type.Literal("sandbox_error"),
 		Type.Literal("sandbox_deleting"),
+		Type.Literal("sandbox_unresponsive"),
 	],
 	{
 		title: "SandboxNotRunningCode",
@@ -302,7 +303,9 @@ export const SandboxNotRunningCode = Type.Union(
 			"Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's " +
 			"wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, " +
 			"`sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. " +
-			"`sandbox_deleting`: it is being deleted.",
+			"`sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't " +
+			"answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it " +
+			"(`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again.",
 	},
 );
 
@@ -334,9 +337,13 @@ export const SandboxNotRunning = Type.Object(
 	},
 );
 
-export const SandboxHealth = Type.Union([Type.Literal("ok"), Type.Literal("degraded")], {
+export const SandboxHealth = Type.Union([Type.Literal("ok"), Type.Literal("degraded"), Type.Literal("unresponsive")], {
 	title: "SandboxHealth",
-	description: "`degraded`: the machine is up but its host can't fully reach it; it keeps running.",
+	description:
+		"`degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is " +
+		"running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its " +
+		"commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart " +
+		"that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first.",
 });
 
 export const SandboxSizeName = Type.Union(
@@ -602,6 +609,44 @@ export const Cost = Type.Object(
 	},
 );
 
+export const GuestMemory = Type.Object(
+	{
+		at: Timestamp,
+		oomKills: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"How many processes its kernel has killed for memory since it booted (its `oom_kill`). It grows until the VM " +
+					"boots again: a stop and start, or a recovery.",
+			}),
+		),
+		pressureSome: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The share of the last 10 seconds in which at least one of its tasks was stalled waiting for memory (its " +
+					"kernel's memory pressure, `some` avg10).",
+			}),
+		),
+		pressureFull: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The share of the last 10 seconds in which every task that wanted to run was stalled waiting for memory " +
+					"(`full` avg10). Near 1, the machine does little but reclaim memory and stops answering.",
+			}),
+		),
+	},
+	{
+		title: "GuestMemory",
+		description:
+			"A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't " +
+			"send it (an image from before them) or its kernel has none.",
+	},
+);
+
 export const UsageSummary = Type.Object(
 	{
 		runningSeconds: Type.Number(),
@@ -614,6 +659,23 @@ export const UsageSummary = Type.Object(
 		recentMemory: Type.Array(Type.Number({ minimum: 0 }), {
 			description: "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first.",
 		}),
+		memory: Type.Optional(GuestMemory),
+		peakMemoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the " +
+					"readings themselves are gone and after it is deleted. Absent until a reading is kept.",
+			}),
+		),
+		peakMemoryAt: Type.Optional(Timestamp),
+		peakCpu: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description: "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs.",
+			}),
+		),
 	},
 	{ title: "UsageSummary" },
 );
@@ -845,6 +907,49 @@ export const SandboxTemplate = Type.Object(
 	{ title: "SandboxTemplate", description: "The template a sandbox was made from." },
 );
 
+export const SandboxStartup = Type.Object(
+	{
+		disk: Type.Optional(
+			Type.Union([Type.Literal("reflink"), Type.Literal("copy"), Type.Literal("move"), Type.Literal("new")], {
+				description:
+					"How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a " +
+					"host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no " +
+					"reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a " +
+					"resume).",
+			}),
+		),
+		diskMs: Type.Number({ description: "Making its disk, in milliseconds." }),
+		snapshotMs: Type.Optional(
+			Type.Number({
+				description: "For a fork of a running sandbox: the live snapshot of its source it was made from.",
+			}),
+		),
+		bootMs: Type.Number({
+			description: "Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds.",
+		}),
+		agentMs: Type.Number({
+			description:
+				"From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too.",
+		}),
+		hostMs: Type.Number({
+			description:
+				"The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts).",
+		}),
+		totalMs: Type.Number({
+			description:
+				"From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the " +
+				"way to and from the host, not on it.",
+		}),
+	},
+	{
+		title: "SandboxStartup",
+		description:
+			"How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host " +
+			"measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs " +
+			"only, and only from a host that reports it.",
+	},
+);
+
 export const Sandbox = Type.Object(
 	{
 		id: id("The sandbox's ID, such as `sbx_4kq9x2mt`."),
@@ -858,7 +963,7 @@ export const Sandbox = Type.Object(
 		shape: Type.Optional(SandboxShape),
 		resources: Type.Optional(SandboxResources),
 		image: Type.Optional(
-			Type.String({ description: "The base image a microVM was made from, such as `ubuntu-24.04`." }),
+			Type.String({ description: "The base image a microVM was made from, such as `ubuntu-26.04`." }),
 		),
 		state: SandboxState,
 		health: Type.Optional(SandboxHealth),
@@ -940,6 +1045,7 @@ export const Sandbox = Type.Object(
 		),
 		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
 		base: Type.Optional(SandboxBase),
+		startup: Type.Optional(SandboxStartup),
 	},
 	{ title: "Sandbox" },
 );
@@ -1128,6 +1234,21 @@ export const SandboxUsagePoint = Type.Object(
 		at: Timestamp,
 		cpu: Type.Number({ minimum: 0, maximum: 1, description: "CPU utilisation over the interval." }),
 		memoryMb: Type.Number(),
+		cpuMax: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean.",
+			}),
+		),
+		memoryMbMax: Type.Optional(
+			Type.Number({
+				description:
+					"The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its " +
+					"mean or more, so size it from this. From a mean kept before peaks were, its mean.",
+			}),
+		),
 		runningSeconds: Type.Number(),
 		cost: Type.Number(),
 		measured: Type.Optional(
@@ -1157,7 +1278,7 @@ export const SandboxUsagePoint = Type.Object(
 	{
 		title: "SandboxUsagePoint",
 		description:
-			"One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an " +
+			"One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an " +
 			"interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best.",
 	},
 );
@@ -1192,6 +1313,31 @@ export const SandboxSeriesPoint = Type.Object(
 				description:
 					"The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its " +
 					"guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures.",
+			}),
+		),
+		oomKills: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"How many processes a microVM's kernel had killed for memory since it booted, at `at`. Absent where its " +
+					"guest's agent doesn't send it or didn't answer in time.",
+			}),
+		),
+		memPressureSome: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"A microVM's memory pressure at `at`: the share of the 10 seconds before it in which at least one of its " +
+					"tasks was stalled waiting for memory (`some` avg10). Absent where the guest has no pressure figures.",
+			}),
+		),
+		memPressureFull: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description:
+					"As `memPressureSome`, for the share in which every task that wanted to run was stalled (`full` avg10).",
 			}),
 		),
 	},
@@ -1232,7 +1378,24 @@ export const SandboxUsage = Type.Object(
 				description: "Its own disk's size, as its guest counts it, when its host sends disk figures.",
 			}),
 		),
+		peakMemoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the " +
+					"readings themselves are gone and after it is deleted. Absent until a reading is kept.",
+			}),
+		),
+		peakMemoryAt: Type.Optional(Timestamp),
+		peakCpu: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: 1,
+				description: "Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs.",
+			}),
+		),
 		series: SandboxUsageSeries,
+		memory: Type.Optional(GuestMemory),
 	},
 	{ title: "SandboxUsage" },
 );
@@ -1653,6 +1816,16 @@ export const SnapshotState = Type.Union(
 	{ title: "SnapshotState" },
 );
 
+/**
+ * A snapshot's own labels, given when it is taken or saved: what Kantel can't know about the files it holds, such as
+ * the commit a checkout in it is at, for a client to read back.
+ */
+const snapshotLabels = Type.Record(Type.String(), Type.String({ maxLength: 500 }), {
+	maxProperties: 20,
+	description:
+		"Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given.",
+});
+
 export const Snapshot = Type.Object(
 	{
 		id: id("The snapshot's ID, such as `snap_2h8d6f`."),
@@ -1660,6 +1833,7 @@ export const Snapshot = Type.Object(
 		kind: SnapshotKind,
 		name: Type.Optional(Type.String({ description: "A saved snapshot's name, unique in its account." })),
 		description: Type.Optional(Type.String()),
+		labels: Type.Optional(snapshotLabels),
 		sandboxId: Type.Optional(Type.String({ description: "The sandbox it was taken of; absent once that is deleted." })),
 		sandboxType: SandboxType,
 		state: SnapshotState,
@@ -1673,6 +1847,13 @@ export const Snapshot = Type.Object(
 		// from it gets it, unless it asks for another size.
 		size: Type.Optional(SandboxSizeName),
 		resources: Type.Optional(SandboxResources),
+		minMemoryMb: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description:
+					"A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any.",
+			}),
+		),
 		sizeBytes: Type.Optional(
 			Type.Integer({
 				description:
@@ -1687,6 +1868,12 @@ export const Snapshot = Type.Object(
 			}),
 		),
 		createdAt: Timestamp,
+		takenAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept.",
+			}),
+		),
 		// Who saved or took it: absent for an automatic one, and for one saved before this was kept.
 		createdBy: Type.Optional(CreatedBy),
 		expiresAt: Type.Optional(Timestamp),
@@ -1721,7 +1908,11 @@ const keepMemory = Type.Optional(
 );
 
 export const TakeSnapshotBody = Type.Object(
-	{ description: Type.Optional(Type.String({ maxLength: 500 })), memory: keepMemory },
+	{
+		description: Type.Optional(Type.String({ maxLength: 500 })),
+		labels: Type.Optional(snapshotLabels),
+		memory: keepMemory,
+	},
 	{ title: "TakeSnapshotBody" },
 );
 
@@ -1733,7 +1924,16 @@ export const SaveSnapshotBody = Type.Object(
 			Type.String({ description: "Save this snapshot of the sandbox's history. Default: its state now." }),
 		),
 		description: Type.Optional(Type.String({ maxLength: 500 })),
+		labels: Type.Optional(snapshotLabels),
 		replace: Type.Optional(Type.Boolean({ description: "Replace a saved snapshot of the same name." })),
+		minMemoryMb: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				maximum: 4_194_304,
+				description:
+					"The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none.",
+			}),
+		),
 		memory: Type.Optional(
 			Type.Boolean({
 				description:
@@ -2736,6 +2936,7 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.error"),
 		Type.Literal("sandbox.degraded"),
 		Type.Literal("sandbox.recovered"),
+		Type.Literal("sandbox.oom_kill"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
 		Type.Literal("snapshot.deleted"),
@@ -2747,7 +2948,10 @@ export const EventType = Type.Union(
 			"or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. " +
 			"`sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; " +
 			"`sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason " +
-			"says which), which leaves it running. " +
+			"says which), which leaves it running, and when its guest agent stops answering (its `health` " +
+			"`unresponsive`), with `sandbox.recovered` once it answers again. " +
+			"`sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since " +
+			"its last reading); it keeps running. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -2768,6 +2972,14 @@ export const Event = Type.Object(
 				reason: Type.Optional(Type.String()),
 				placementReason: Type.Optional(PlacementReason),
 				actor: Type.Optional(CreatedBy),
+				oomKills: Type.Optional(
+					Type.Integer({
+						minimum: 1,
+						description: "`sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading.",
+					}),
+				),
+				// On `sandbox.running`, where its host said: the sandbox's `startup`.
+				startup: Type.Optional(SandboxStartup),
 			},
 			{ title: "EventData" },
 		),
@@ -2964,6 +3176,77 @@ export const HostState = Type.Union(
 	},
 );
 
+const bytes = (description: string) => Type.Integer({ minimum: 0, description });
+
+export const HostDiskUsage = Type.Object(
+	{
+		totalBytes: bytes("The size of the filesystem that holds the host's files."),
+		usedBytes: bytes("What is used on it, by anything."),
+		savedSnapshotsBytes: bytes(
+			"Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, " +
+				"each file once.",
+		),
+		automaticSnapshotsBytes: bytes(
+			"The rest of the host's snapshots: automatic ones, and any Kantel has no record of.",
+		),
+		sandboxesBytes: bytes("Sandboxes' own disks, and their memory while they're stopped."),
+		imagesBytes: bytes("Base images: the guest kernel and root filesystems, and templates' root filesystems."),
+		templatesBytes: bytes("Template snapshots, which new sandboxes start from."),
+		bundlesBytes: bytes("The cache of bundle images that sandboxes mount."),
+		otherBytes: bytes("The rest of the used space: the operating system, logs and other programs."),
+		measuredAt: Timestamp,
+	},
+	{
+		title: "HostDiskUsage",
+		description:
+			"What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files " +
+			"on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: " +
+			"bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts " +
+			"for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host.",
+	},
+);
+
+const mib = (description: string) => Type.Integer({ minimum: 0, description });
+const percent = (description: string) => Type.Number({ minimum: 0, maximum: 100, description });
+
+export const HostMemory = Type.Object(
+	{
+		mode: Type.Union([Type.Literal("reserved"), Type.Literal("used")], {
+			description:
+				"How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times " +
+				"`capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, " +
+				"within what the machine has available and up to `maxRatio` times `capacityMiB` given.",
+		}),
+		state: Type.Union([Type.Literal("ok"), Type.Literal("tight"), Type.Literal("refusing"), Type.Literal("critical")], {
+			description:
+				"How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new " +
+				"sandboxes. `critical`: it ends the largest process in the guest holding the most memory.",
+		}),
+		totalMiB: mib("The machine's memory, or the limit of the control group kantel-host runs in."),
+		reserveMiB: mib("What is kept for the host's own processes and never given to sandboxes."),
+		capacityMiB: mib("`totalMiB` less `reserveMiB`."),
+		reservedMiB: mib("What the host's sandboxes were given."),
+		committedMiB: mib(
+			"What its microVMs count for: each its peak of the last minutes plus headroom, at most its size.",
+		),
+		guestUsedMiB: mib("What its microVMs' guests say they use, page cache aside."),
+		residentMiB: mib("What its microVMs hold of the machine's memory, their guests' page cache included."),
+		availableMiB: mib("What the machine has available now (MemAvailable)."),
+		swapUsedMiB: mib("Swap in use on the machine."),
+		pressureSome: percent("Memory pressure: the share of the last 10 seconds some task waited on memory."),
+		pressureFull: percent("The share of the last 10 seconds every task waited on memory."),
+		maxRatio: Type.Number({
+			minimum: 0,
+			description: "The most sandboxes may be given, as a multiple of `capacityMiB`.",
+		}),
+		measuredAt: Type.Optional(Timestamp),
+	},
+	{
+		title: "HostMemory",
+		description: "A host's memory, in MiB, as it last reported it (every heartbeat).",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -3031,6 +3314,17 @@ export const Host = Type.Object(
 		joinedAt: Timestamp,
 		lastSeenAt: Type.Optional(Timestamp),
 		usage: Type.Optional(UsageSparklines),
+		diskUsage: Type.Optional(HostDiskUsage),
+		memory: Type.Optional(HostMemory),
+		savedSnapshotBytesLimit: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full " +
+					"size, the files it shares with other snapshots included, so copies that share files count separately. " +
+					"A save past it answers `exhausted`. Absent: no limit.",
+			}),
+		),
 	},
 	{
 		title: "Host",
@@ -3088,6 +3382,13 @@ export const UpdateHostBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		draining: Type.Optional(Type.Boolean({ description: "Stop placing new sandboxes on it." })),
+		savedSnapshotBytesLimit: Type.Optional(
+			Type.Union([Type.Integer({ minimum: 0 }), Type.Null()], {
+				description:
+					"The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); " +
+					"`null` removes the limit.",
+			}),
+		),
 	},
 	{ title: "UpdateHostBody" },
 );
@@ -3516,6 +3817,8 @@ export type Webhook = Static<typeof Webhook>;
 export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
+export type HostDiskUsage = Static<typeof HostDiskUsage>;
+export type HostMemory = Static<typeof HostMemory>;
 export type HostUsage = Static<typeof HostUsage>;
 export type HostUsagePoint = Static<typeof HostUsagePoint>;
 export type SandboxUsage = Static<typeof SandboxUsage>;
@@ -3524,6 +3827,7 @@ export type SandboxProcessList = Static<typeof SandboxProcessList>;
 export type SandboxProcessesQuery = Static<typeof SandboxProcessesQuery>;
 export type SandboxUsagePoint = Static<typeof SandboxUsagePoint>;
 export type SandboxSeriesPoint = Static<typeof SandboxSeriesPoint>;
+export type GuestMemory = Static<typeof GuestMemory>;
 export type UsageSparklines = Static<typeof UsageSparklines>;
 export type HostState = Static<typeof HostState>;
 export type HostJoinToken = Static<typeof HostJoinToken>;
@@ -3534,6 +3838,7 @@ export type DeviceLoginState = Static<typeof DeviceLoginState>;
 export type DeviceLoginResult = Static<typeof DeviceLoginResult>;
 export type DeviceLoginRequest = Static<typeof DeviceLoginRequest>;
 export type SandboxBase = Static<typeof SandboxBase>;
+export type SandboxStartup = Static<typeof SandboxStartup>;
 export type BaseImageVersion = Static<typeof BaseImageVersion>;
 export type BaseImage = Static<typeof BaseImage>;
 export type BaseImageTemplate = Static<typeof BaseImageTemplate>;
@@ -3590,6 +3895,7 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.error",
 	"sandbox.degraded",
 	"sandbox.recovered",
+	"sandbox.oom_kill",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",

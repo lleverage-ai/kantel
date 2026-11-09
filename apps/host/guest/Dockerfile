@@ -137,7 +137,12 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& sed -i "s|@MULTIARCH@|$(dpkg-architecture -qDEB_HOST_MULTIARCH)|" /home/user/.config/geany/geany.conf \
 	&& test -f "$(sed -n 's|^active_plugins=\(.*\);$|\1|p' /home/user/.config/geany/geany.conf)" \
 	&& chown -R 1000:1000 /home/user && mkdir -p /etc/kantel \
-	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor
+	&& chmod 0440 /etc/sudoers.d/kantel-proxy && visudo -c >/dev/null \
+	&& install -d -m 0700 /root/.docker && install -m 0600 /home/user/.docker/config.json /root/.docker/config.json \
+	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor \
+	&& ln -sf kantel-guest /usr/local/bin/kantel-connect \
+	&& ssh-keygen -lf /etc/ssh/ssh_known_hosts >/dev/null \
+	&& test "$(ssh -G git@github.com | sed -n 's/^proxycommand //p')" = '/usr/local/bin/kantel-connect %h %p'
 
 # What a sandbox installs: Ubuntu's live archive (archive.ubuntu.com and security.ubuntu.com, ports.ubuntu.com on
 # arm64), as any Ubuntu machine, and not the snapshot: snapshot.ubuntu.com failed for hours on 5 Nov 2026

@@ -371,6 +371,32 @@ func keptExec(method string, params json.RawMessage) bool {
 	return json.Unmarshal(params, &p) == nil && p.CommandID != ""
 }
 
+// stopGrace is how long a stop runs on after the session it came on has gone (outliving): long enough for a pause and
+// a snapshot to finish, as asked, rather than be cut off half-way; short enough that one stuck on a Firecracker that
+// never answers ends (it holds the sandbox, which the next session's hello lists) before Kantel stops waiting for the
+// host to come back and send the stop again (STOP_RECONNECT_WAIT_MS, 2 minutes).
+var stopGrace = 60 * time.Second
+
+// outliving is a context for a call that runs on for grace once parent has ended, then ends too.
+func outliving(parent context.Context, grace time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-parent.Done():
+		}
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+			cancel()
+		}
+	}()
+	return ctx, cancel
+}
+
 // commandStatus is sandbox.exec.get.
 func (h *Host) commandStatus(ctx context.Context, p proto.ExecRef) (any, error) {
 	if !validCommandID(p.CommandID) {

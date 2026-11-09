@@ -74,6 +74,32 @@ describe("parseHostUsage", () => {
 		});
 	});
 
+	it("takes a microVM's OOM kills and memory pressure, and leaves out figures that make no sense", () => {
+		const reading = { id: "sbx_a", kind: "microvm", cpu: 1, memUsedBytes: 7e9, memLimitBytes: 8e9 };
+		const full = { ...reading, oomKills: 2, memPressureSome: 0.85, memPressureFull: 0.4 };
+		const parsed = parseHostUsage({
+			...TICK,
+			sandboxes: [
+				full,
+				{ ...reading, id: "sbx_b", oomKills: 0, memPressureSome: 0 },
+				{ ...reading, id: "sbx_c", oomKills: 1.5, memPressureSome: 1.2, memPressureFull: -0.1 },
+				{ ...reading, id: "sbx_d", oomKills: -1, memPressureSome: "0.5", memPressureFull: Number.NaN },
+			],
+		});
+		expect(parsed).toEqual({
+			ok: true,
+			value: {
+				...TICK,
+				sandboxes: [
+					full,
+					{ ...reading, id: "sbx_b", oomKills: 0, memPressureSome: 0 },
+					{ ...reading, id: "sbx_c" },
+					{ ...reading, id: "sbx_d" },
+				],
+			},
+		});
+	});
+
 	it("refuses one that isn't shaped as a tick", () => {
 		const reasons = [
 			{ ...TICK, at: "now" },

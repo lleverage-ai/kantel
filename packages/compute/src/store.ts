@@ -12,8 +12,19 @@
  */
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { SandboxTemplateBoot } from "./backend.ts";
+import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
 import type { SealedValue } from "./secrets.ts";
+
+/**
+ * A `sandbox.oom_kill` taken and not yet stored (`StoredSandbox.oomKills`): its event's ID, how many kills it reports,
+ * the sandbox's memory then and the reading's time. Never changed once written, so every try stores the same event.
+ */
+export interface OOMPending {
+	readonly eventId: string;
+	readonly kills: number;
+	readonly memLimitBytes: number;
+	readonly at: number;
+}
 
 /** One kind of record. */
 export interface Collection<T extends { readonly id: string }> {
@@ -124,6 +135,12 @@ export interface StoredSample {
 	readonly cpu: number;
 	readonly memoryMb: number;
 	/**
+	 * The highest reading of its span, where it is a mean: CPU 0 to 1, memory in MiB. Absent on a single reading and on a
+	 * mean kept before peaks were, whose highest is taken as its mean.
+	 */
+	readonly cpuMax?: number;
+	readonly memoryMbMax?: number;
+	/**
 	 * A 5-minute mean's (what hosts' ticks are kept as, `at` its start): how many readings it is the mean of. Absent on a
 	 * single reading, as samples were kept before hosts sent ticks.
 	 */
@@ -143,6 +160,13 @@ export interface StoredSample {
 	 */
 	readonly diskReadings?: number;
 	readonly ioReadings?: number;
+}
+
+/** A sandbox's highest readings (`StoredSandbox.peak`). */
+export interface StoredPeak {
+	readonly memoryBytes: number;
+	readonly memoryAt: number;
+	readonly cpu: number;
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
@@ -186,6 +210,30 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly strandedOn?: readonly string[];
 	/**
+	 * The host's clock (ms) when it set the guest-agent health last taken (`ComputeService.reportHealth`): a report that
+	 * says an earlier or the same time is older than what is here, and is dropped.
+	 */
+	readonly healthAt?: number;
+	/**
+	 * Its guest's OOM-kill count (since boot) as last taken from a reading here, for `sandbox.oom_kill`: `count` and the
+	 * reading's time `at`, written only when the count changes, so every gateway measures a rise from the same place
+	 * and a range of kills is reported once. Every newer reading moves the count, and the kills it adds go to
+	 * `unreported`; with no event pending, what is unreported becomes `pending`, an event with the ID it is stored
+	 * under and all it says, never changed, until it is stored.
+	 */
+	readonly oomKills?: {
+		readonly count: number;
+		readonly at: number;
+		readonly unreported?: number;
+		readonly pending?: OOMPending;
+	};
+	/**
+	 * When its host started the machine this run booted (the host's clock, ms: its first health stamp, `Placement.machineAt`):
+	 * a host's report of an exit stamped earlier is an earlier machine's, and is dropped (`ComputeService.reportExit`).
+	 * Absent from a backend that doesn't say. Set by every boot.
+	 */
+	readonly machineAt?: number;
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */
@@ -211,6 +259,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly runs: readonly RunPeriod[];
 	/** The newest readings: a day of 5-minute means (`MAX_SAMPLES`), and hourly ones before it (`HOURLY_SAMPLES`). */
 	readonly samples: readonly StoredSample[];
+	/**
+	 * The highest readings it has had since it was made, kept with each 5-minute mean (`keepRollup`) and so after its
+	 * samples are folded or it is deleted: memory in bytes and when, CPU 0 to 1. Absent: no mean kept since peaks were.
+	 */
+	readonly peak?: StoredPeak;
 	readonly ports: readonly computeSchema.ExposedPort[];
 	/** The snapshot its memory was paused into, while `paused`. */
 	readonly pausedSnapshotId?: string;
@@ -247,7 +300,26 @@ export type StoredCommand = computeSchema.Command & {
  * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
  * file system is (`TakenSnapshot.base`), answered as the API's `base`.
  */
-export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
+	readonly ref?: string;
+	readonly base?: string;
+	/**
+	 * All its files take on its host's disk, those it shares with other snapshots included, as the host last said (a
+	 * keep, a live save, a refresh), where `sizeBytes` counts shared files for one holder only. A host's limit on saved
+	 * bytes counts each save at this, its full size (`savedBytesOver`). Absent: `sizeBytes`.
+	 */
+	readonly fullSizeBytes?: number;
+	/**
+	 * While expiry deletes it (`deleting`): the process whose mark it is, the mark's token, since when; `settling` once its
+	 * bytes are being deleted, after which it is never put back.
+	 */
+	readonly retiring?: {
+		readonly by: string;
+		readonly token?: string;
+		readonly at: number;
+		readonly settling?: boolean;
+	};
+};
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
@@ -464,7 +536,8 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 	readonly accountId: string;
 };
 
-export type StoredHost = computeSchema.Host;
+/** A host, its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`). */
+export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & { readonly diskUsage?: BackendDiskUsage };
 
 export interface StoredJoinToken {
 	readonly id: string;

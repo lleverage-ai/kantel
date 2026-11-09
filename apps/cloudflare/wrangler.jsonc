@@ -99,6 +99,9 @@
 		// Experimental: `experimental` turns on templates (`/v1/templates`, src/compute.ts). Anything else: off, and their
 		// routes answer not_supported. The deploy sets it from the repository variable of the same name.
 		"KANTEL_TEMPLATES": "",
+		// Expiry of automatic snapshots past their expiresAt (packages/compute, expireSnapshots). The deployment runs one
+		// stack object, whose first pass waits 15 minutes after it starts, past a deploy's overlap with the one it replaces.
+		"KANTEL_SNAPSHOT_EXPIRY": "on",
 		// With account hosts: where the latest kantel-host release is read, hourly, to flag hosts that are behind it
 		// (src/config.ts). Empty: Kantel's latest GitHub Release; `off` reads none; or a mirror's URL. The deploy sets it
 		// from the repository variable of the same name.

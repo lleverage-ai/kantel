@@ -220,6 +220,23 @@ export const HOST_FEATURES = {
 	 * keep's answer carries the same. Without it, a snapshot keeps the size it was made with.
 	 */
 	snapshotSizes: "snapshot-sizes",
+	/**
+	 * Guest health: the host asks each running microVM's guest agent for its health, and reports one that stops answering
+	 * (`HostSandbox.health` `unresponsive`, with `healthReason`) in a `sandbox` event and its hello, and again once it
+	 * answers. A stop doesn't wait on a guest that doesn't answer; a start or resume of a sandbox it has running whose agent
+	 * doesn't answer, and a `sandbox.start` with `reset` (a recovery), end its VM (its disk kept, its memory lost) and boot
+	 * it cold from its disk rather than answer it as running; a stop of a sandbox it has stopped answers a snapshot of its
+	 * disk. Without it a recovery of a sandbox the host has running changes nothing there.
+	 */
+	guestHealth: "guest-health",
+	/**
+	 * Exit stamps: every report of a microVM that ended without Kantel asking (`stopped` or `error`, with its `error`)
+	 * carries `healthAt`, its machine's last health stamp, kept across restarts of the host (a VM a restart ended is
+	 * stamped then), and such exits are sent again once a connection carries events. A running sandbox's `healthAt` in a
+	 * call's answer is its machine's. So Kantel records each boot's machine (`Placement.machineAt`) and takes an exit
+	 * only for the run whose machine ended (`ComputeService.reportExit`). Without it a boot names no machine.
+	 */
+	exitStamps: "exit-stamps",
 } as const;
 
 /**
@@ -418,9 +435,113 @@ export interface HostCapacity {
 	 * `freeMemoryMiB` and `freeDiskGiB` already leave out. Absent from a host from before it named them.
 	 */
 	readonly builds?: readonly string[];
+	/** What takes the space on its disk, measured every few minutes. Absent until it first is, and from an older host. */
+	readonly disk?: HostDiskUsage;
+	/** Its memory: what sandboxes were given, use and may soon use, and what the machine has left. Absent from an older host. */
+	readonly memory?: HostMemoryReport;
+}
+
+/**
+ * How a host admits sandboxes' memory: by what they were given (`reserved`, against `maxRatio` times its capacity), or,
+ * with memory over-commit on (experimental), by what they use (`used`).
+ */
+export type HostMemoryMode = "reserved" | "used";
+
+/** How short of memory a host is: `tight` reclaims page cache, `refusing` refuses creates, `critical` ends processes. */
+export type HostMemoryState = "ok" | "tight" | "refusing" | "critical";
+
+/**
+ * A host's memory, in MiB (apps/host/internal/memplan). `committedMiB` counts each microVM as its recent peak plus
+ * headroom, at most its size; `reservedMiB` as its size.
+ */
+export interface HostMemoryReport {
+	readonly mode: HostMemoryMode;
+	/** The machine's memory (or kantel-host's control group's limit), what is kept for the host, and the rest. */
+	readonly totalMiB: number;
+	readonly reserveMiB: number;
+	readonly capacityMiB: number;
+	readonly reservedMiB: number;
+	readonly committedMiB: number;
+	/** What the microVMs' guests use, and what their processes hold of the host's memory (page cache too). */
+	readonly guestUsedMiB: number;
+	readonly residentMiB: number;
+	readonly availableMiB: number;
+	readonly swapUsedMiB: number;
+	/** Memory pressure (PSI avg10), in percent. */
+	readonly pressureSome: number;
+	readonly pressureFull: number;
+	readonly maxRatio: number;
+	readonly state: HostMemoryState;
+	/** When the machine's figures were read (epoch milliseconds); absent before they first were. */
+	readonly measuredAt?: number;
+	/**
+	 * With `mode` `used`: what it admits against. `freeMemoryMiB` is then the largest single microVM it would admit, which
+	 * isn't additive, so what is placed on it before its next report is counted against this (`freeMemoryOn`). Absent
+	 * from a host that predates it.
+	 */
+	readonly admission?: HostMemoryAdmission;
+}
+
+/**
+ * What a host admitting by use has left, in its admission units (apps/host/internal/memplan): `reservableMiB` of sizes
+ * before its cap, and `committableMiB` of committed memory. A new microVM of size S costs S of the first and
+ * min(S, startMiB + headroom(S)) of the second, headroom(S) = min(S, max(headroomMiB, S × headroomPercent / 100)); a
+ * template build costs S of both.
+ */
+export interface HostMemoryAdmission {
+	readonly reservableMiB: number;
+	readonly committableMiB: number;
+	readonly startMiB: number;
+	readonly headroomMiB: number;
+	readonly headroomPercent: number;
+}
+
+/**
+ * What takes the space on the filesystem holding a host's files, in bytes, counting only files on that filesystem. Each
+ * file counts once, in the first of these it is in: bundle images, base images, templates, sandboxes, snapshots (memory
+ * a stop's snapshot shares with its sandbox counts for the sandbox). Which snapshots are saved isn't the host's to say:
+ * the compute plane splits `snapshotsBytes` by its own records. `otherBytes` is the rest of the used space: the
+ * operating system, logs, other programs.
+ */
+export interface HostDiskUsage {
+	readonly totalBytes: number;
+	readonly usedBytes: number;
+	readonly snapshotsBytes: number;
+	/**
+	 * `snapshotsBytes` by snapshot, the same files: each one's that no other holds, by its ID, and those several hold, by
+	 * their holders (`HostSharedBytes`). The compute plane counts for saved what its saved snapshots hold, each group
+	 * once.
+	 */
+	readonly snapshotOwnBytes?: { readonly [snapshotId: string]: number };
+	readonly snapshotShared?: readonly { readonly snapshots: readonly string[]; readonly bytes: number }[];
+	readonly sandboxesBytes: number;
+	readonly imagesBytes: number;
+	readonly templatesBytes: number;
+	readonly bundlesBytes: number;
+	readonly otherBytes: number;
+	/** When it was measured (epoch milliseconds). */
+	readonly measuredAt: number;
 }
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";
+
+/** How a microVM's disk was made for its start: cloned (`reflink`), copied in full, moved (a live fork's), or new. */
+export type HostDiskMade = "reflink" | "copy" | "move" | "new";
+
+/** How long a microVM took to start on its host, in milliseconds, by phase (`HostSandbox.phases`). */
+export interface HostStartPhases {
+	/** How its disk was made; absent when it kept its own (a resume). */
+	readonly disk?: HostDiskMade;
+	readonly diskMs: number;
+	/** A live fork's snapshot of its running source. */
+	readonly snapshotMs?: number;
+	/** Its Firecracker process started and the machine booted, or its snapshot loaded. */
+	readonly bootMs: number;
+	/** From then until its guest agent answered (on a cold boot, the guest's kernel and init too). */
+	readonly agentMs: number;
+	/** The whole operation on the host: these and the rest (its network, identity and mounts). */
+	readonly totalMs: number;
+}
 
 /** A sandbox as its host sees it. */
 export interface HostSandbox {
@@ -435,6 +556,11 @@ export interface HostSandbox {
 	readonly createdAt: number;
 	/** The operation's timings in milliseconds, by step. */
 	readonly timings?: { readonly [step: string]: number };
+	/**
+	 * How the machine of the create, fork or resume that answered with this started, by phase (a microVM on a host from
+	 * this version on): `timings` in a shape that doesn't change with the path it took.
+	 */
+	readonly phases?: HostStartPhases;
 	/**
 	 * How a create was served: `snapshot` or `boot`; for an isolate, `pool` (one its account's VM had pre-loaded) or
 	 * `account` (its account's VM already ran).
@@ -459,6 +585,14 @@ export interface HostSandbox {
 	readonly mountsAt?: number;
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
+	/**
+	 * `unresponsive` while a running microVM's guest agent doesn't answer (`HOST_FEATURES.guestHealth`), with
+	 * `healthReason` saying why in words; absent while it answers, and from a host without the feature.
+	 */
+	readonly health?: string;
+	readonly healthReason?: string;
+	/** When its `health` last changed (the host's clock, ms), which orders reports of it; absent: it never has. */
+	readonly healthAt?: number;
 }
 
 /** One thing a microVM's image has or lacks. */
@@ -666,6 +800,18 @@ export interface HostSandboxUsage {
 	 * pressure, "some"). None from a guest without pressure figures (booted without psi=1) or for its first reading.
 	 */
 	readonly ioPressure?: number;
+	/**
+	 * How many processes a microVM's guest kernel has killed for memory since it booted (its `/proc/vmstat` `oom_kill`):
+	 * a count that grows until the VM boots again. None from a guest agent that predates it or didn't answer in time.
+	 */
+	readonly oomKills?: number;
+	/**
+	 * A microVM's guest memory pressure, its kernel's ten-second averages as shares, 0 to 1: of the last ten seconds, how
+	 * much at least one task (`some`), or every task that wanted to run (`full`), was stalled on memory. None from a
+	 * guest without pressure figures, or one whose agent predates them or didn't answer in time.
+	 */
+	readonly memPressureSome?: number;
+	readonly memPressureFull?: number;
 }
 
 /** `HostSandboxUsage.memSource`. */

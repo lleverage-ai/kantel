@@ -1001,7 +1001,8 @@ export const takeSnapshot = defineRoute({
 	body: TakeSnapshotBody,
 	idempotent: true,
 	answer: { status: 201, description: "The snapshot, being taken.", schema: Snapshot },
-	errors: lifecycleErrors,
+	// `exhausted`: its host hasn't the disk free for it.
+	errors: [...lifecycleErrors, "exhausted"],
 });
 
 export const saveSnapshot = defineRoute({
@@ -1943,7 +1944,10 @@ export const updateHost = defineRoute({
 	path: "/admin/hosts/{hostId}",
 	tag: "hosts",
 	summary: "Change a host",
-	description: describe("Renames it, replaces its labels, or drains it.", SUPER_ADMIN),
+	description: describe(
+		"Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots.",
+		SUPER_ADMIN,
+	),
 	params: HostPath,
 	body: UpdateHostBody,
 	answer: { status: 200, description: "The host.", schema: Host },
@@ -2184,7 +2188,11 @@ export const updateAccountHost = defineRoute({
 	path: "/hosts/{hostId}",
 	tag: "account-hosts",
 	summary: "Change one of an account's hosts",
-	description: describe("Renames it, replaces its labels, or drains it.", scope("account:admin"), ACCOUNT_HOSTS),
+	description: describe(
+		"Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
 	params: HostPath,
 	body: UpdateHostBody,
 	answer: { status: 200, description: "The host.", schema: Host },

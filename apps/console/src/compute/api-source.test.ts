@@ -13,7 +13,7 @@ import {
 } from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import { KantelError } from "@kantel/contracts";
-import { type ComputeSource, FilesRefusedError } from "@kantel/ui";
+import { type ComputeSource, FilesRefusedError, sandboxActions } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiCompute, SCREENS_NOT_SERVED, shapesOf } from "./api-source.ts";
 import { sandboxMeans } from "./live-usage.ts";
@@ -135,6 +135,29 @@ describe("accounts", () => {
 });
 
 describe("sandboxes", () => {
+	it("says why a running microVM's guest agent isn't answering, and offers Recover rather than connecting", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "frozen", kind: "microvm" });
+		await api.service.idle();
+		const reason = "Its guest agent hasn't answered for 60 seconds: it is out of memory (7.9 GB of 8.0 GB in use)";
+		await api.service.reportHealth(STUB_HOST_ID, made.id, "unresponsive", reason, 1_000);
+		const [listed] = await source.sandboxes.list(accountId);
+		expect(listed?.state).toBe("running");
+		expect(listed?.unresponsive).toContain("out of memory");
+		expect(sandboxActions("running", listed?.unresponsive !== undefined)).toMatchObject({
+			connect: false,
+			fork: false,
+			stop: true,
+			recover: true,
+		});
+		await api.service.reportHealth(STUB_HOST_ID, made.id, undefined, undefined, 2_000);
+		const [answering] = await source.sandboxes.list(accountId);
+		expect(answering?.unresponsive).toBeUndefined();
+		expect(sandboxActions("running", false)).toMatchObject({ connect: true, recover: false });
+	});
+
 	it("creates, lists, stops, resumes, forks and deletes", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
@@ -1104,6 +1127,17 @@ describe("hosts", () => {
 		const hosts = await source.hosts.list();
 		expect(hosts.map((host) => host.id)).toContain(STUB_HOST_ID);
 		expect(hosts.find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
+	});
+
+	it("sets and removes a host's limit on each account's saved snapshots", async () => {
+		const source = await open(setup().fetchApi);
+		const set = source.hosts?.setSnapshotLimit;
+		if (set === undefined) throw new Error("No saved snapshot limit for a super-admin");
+		expect((await set(STUB_HOST_ID, 50 * 1024 ** 3)).savedSnapshotLimitBytes).toBe(50 * 1024 ** 3);
+		expect((await source.hosts?.list())?.find((host) => host.id === STUB_HOST_ID)?.savedSnapshotLimitBytes).toBe(
+			50 * 1024 ** 3,
+		);
+		expect((await set(STUB_HOST_ID, null)).savedSnapshotLimitBytes).toBeUndefined();
 	});
 
 	it("offers a super-admin Images only where the gateway has image patching on", async () => {

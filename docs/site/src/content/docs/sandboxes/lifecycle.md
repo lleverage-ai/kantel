@@ -74,7 +74,7 @@ The answer is the [Sandbox](/api/reference/types/#sandbox). An abridged one:
   "name": "fix-login-bug",
   "type": "microvm",
   "size": "default",
-  "image": "ubuntu-24.04",
+  "image": "ubuntu-26.04",
   "state": "running",
   "visibility": "private",
   "capabilities": { "exec": true, "files": true, "ssh": true, "desktop": true, "browser": true, "ports": true, "docker": true, "kvm": true, "pause": true },
@@ -91,7 +91,7 @@ The fields you can set when you create one:
 | --- | --- |
 | `type` | `isolate` (the default) or `microvm`. See [Isolates and microVMs](/sandboxes/types/) |
 | `size` | A microVM's size: `small`, `default`, `large` or `xlarge`. A deployment may offer fewer |
-| `image` | A microVM's base image, such as `ubuntu-24.04`. Without it, the deployment's default |
+| `image` | A microVM's base image, such as `ubuntu-26.04`. Without it, the deployment's default |
 | `from` | Start from a snapshot instead: a snapshot's ID, or the name of a [saved snapshot](/snapshots/saved/) |
 | `name` | Up to 63 characters. Without it, a generated name such as `brave-otter` |
 | `autoStopMinutes` | Minutes after each start before it stops by itself. Default 60, at most 43,200 (30 days); `null` never |
@@ -148,6 +148,8 @@ The same goes for a start, resume or fork, and for a create from a snapshot. The
 | `deleting`, `deleted` | Erased for good |
 
 A running sandbox can also report `health: "degraded"` when its host can't fully reach it. It keeps running, and `reason` says why.
+
+A microVM whose host ends it without being asked goes from `running` to `error`, with a `sandbox.error` event. That happens when the host runs short of memory and stops it, when the kernel kills it at the host's memory limit, when it crashes, or when the host restarts. Its `reason` gives the host's words, such as `Out of memory: …`. Its disk is kept on its host, so a start or a recovery boots it from there. Anything that was in memory is lost.
 
 ## List and find sandboxes
 
@@ -288,5 +290,7 @@ curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/usage?intervalSeconds=3600" \
 ```
 
 It covers the last 24 hours unless `since` gives another start, as epoch milliseconds.
+
+Each point is an interval's means, with its highest readings beside them: `memoryMbMax` and `cpuMax`. A sandbox's memory can peak at twice its mean or more, so size it from the highest. The 5-second readings (`series`) are kept for an hour; after that the highest are all that's left of a peak. `usage.peakMemoryBytes` (with `peakMemoryAt`) and `usage.peakCpu` are its highest since it was made, and stay on its record after it's deleted. `kantel usage <id>` prints them.
 
 <!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:318-507, packages/api/src/compute-schema.ts:201-504, packages/api/src/sdk-runtime.ts:1-60, packages/api/src/route.ts:40-90 -->

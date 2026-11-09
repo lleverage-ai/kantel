@@ -306,6 +306,47 @@ export function copiedResources(
 	return same ? { vcpus: own.vcpus, memoryMb: own.memoryMb, diskGb: own.diskGb } : undefined;
 }
 
+/**
+ * The memory, in MB, a new microVM sized `machine` (from `sandboxMachine`) will have: its shape's, the copied machine's
+ * where it is that one (`copiedResources`), else its size's among `presets` (the hosts it may go to). Undefined where
+ * nothing says, or where those hosts' presets of that name differ in memory, so which it gets is placement's.
+ */
+export function memoryOf(
+	machine: SandboxMachine | undefined,
+	presets: readonly BackendSize[],
+	copies?: RecordedMachine & { readonly shape?: BackendShape },
+): number | undefined {
+	if (machine === undefined) return undefined;
+	if (machine.shape !== undefined) return machine.shape.memoryMb;
+	const copied = copies === undefined ? undefined : copiedResources(copies, machine);
+	if (copied !== undefined) return copied.memoryMb;
+	const named = new Set(presets.filter((each) => each.name === machine.size).map((each) => each.memoryMb));
+	return named.size === 1 ? [...named][0] : undefined;
+}
+
+/** A saved snapshot as far as the least memory a sandbox made from it may have goes. */
+export interface SizedSnapshot {
+	readonly id: string;
+	readonly name?: string;
+	readonly minMemoryMb?: number;
+}
+
+/**
+ * Refuses (`invalid`) a microVM made or forked from `snapshot` with less memory (`memoryMb`, from `memoryOf`) than the
+ * least its save gave it (`minMemoryMb`), before anything is made: a sandbox of a monorepo's checks started at 8 GB
+ * would only run out of memory part of the way through. One whose memory nothing says is let through, for its host to
+ * decide.
+ */
+export function requireMinMemory(snapshot: SizedSnapshot, memoryMb: number | undefined): void {
+	const least = snapshot.minMemoryMb;
+	if (least === undefined || least <= 0 || memoryMb === undefined || memoryMb >= least) return;
+	const gb = (mb: number): string => `${Math.round((mb / 1024) * 100) / 100} GB`;
+	throw new KantelError(
+		"invalid",
+		`Snapshot ${snapshot.name ?? snapshot.id} needs at least ${gb(least)} of memory (${least} MB), and this sandbox would have ${gb(memoryMb)}: ask for a bigger size, or resources with memoryMb of at least ${least}`,
+	);
+}
+
 /** A snapshot as far as what a sandbox made from it may be goes. */
 export interface RestoredSnapshot extends RecordedMachine {
 	readonly id: string;

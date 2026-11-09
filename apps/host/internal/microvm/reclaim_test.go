@@ -167,8 +167,9 @@ func TestReapUnpublished(t *testing.T) {
 	}
 }
 
-// A copy where the file system has no reflinks (here a cp that refuses them, after leaving a part-written file it can't
-// write over) falls back to a sparse copy of the whole disk.
+// A copy where the file system has no reflinks (tmpfs here, ext4 on most hosts: FICLONE refused) falls back to cp's
+// sparse copy of the whole disk, over a part-written file it can't write to, and says so. The clone is tried in the
+// host's own process, so cp runs only for the copy.
 func TestCopySparseFallsBackFromAReflink(t *testing.T) {
 	realCp, err := exec.LookPath("cp")
 	if err != nil {
@@ -176,19 +177,30 @@ func TestCopySparseFallsBackFromAReflink(t *testing.T) {
 	}
 	bin := t.TempDir()
 	log := filepath.Join(bin, "log")
-	script := "#!/bin/sh\necho \"$1\" >> " + log + "\nif [ \"$1\" = --reflink=always ]; then\n  for last; do :; done\n  echo partial > \"$last\"\n  chmod 400 \"$last\"\n  exit 1\nfi\nexec " + realCp + " \"$@\"\n"
+	script := "#!/bin/sh\necho \"$1\" >> " + log + "\nexec " + realCp + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "cp"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	dir := t.TempDir()
+	if d, err := os.MkdirTemp("/dev/shm", "kantel-reflink"); err == nil {
+		dir = d
+		t.Cleanup(func() { os.RemoveAll(d) })
+	}
 	src, dst := filepath.Join(dir, "src.ext4"), filepath.Join(dir, "dst.ext4")
 	data := bytes.Repeat([]byte("disk"), 1<<12)
 	if err := os.WriteFile(src, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := copySparse(src, dst); err != nil {
+	if tryClone(t, src, filepath.Join(dir, "probe")) {
+		t.Skipf("%s has reflinks", dir)
+	}
+	if err := os.WriteFile(dst, []byte("partial"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	how, err := cloneDisk(src, dst)
+	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(dst)
@@ -196,11 +208,33 @@ func TestCopySparseFallsBackFromAReflink(t *testing.T) {
 		t.Fatalf("the copy differs from its disk (%v)", err)
 	}
 	tried, _ := os.ReadFile(log)
-	if string(tried) != "--reflink=always\n--sparse=always\n" {
-		t.Fatalf("cp ran as %q, want a reflink then a sparse copy", tried)
+	if how != proto.DiskCopy || string(tried) != "--sparse=always\n" {
+		t.Fatalf("made as %q, cp ran as %q: want a sparse copy", how, tried)
 	}
 	if err := copySparse(filepath.Join(dir, "missing"), filepath.Join(dir, "none")); err == nil {
 		t.Fatal("copying a missing disk worked")
+	}
+}
+
+// Where the file system has reflinks, the copy is a clone, with the source's permissions.
+func TestCloneDiskReflinks(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src.ext4"), filepath.Join(dir, "dst.ext4")
+	data := bytes.Repeat([]byte("disk"), 1<<12)
+	if err := os.WriteFile(src, data, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if !tryClone(t, src, filepath.Join(dir, "probe")) {
+		t.Skipf("%s has no reflinks", dir)
+	}
+	how, err := cloneDisk(src, dst)
+	if err != nil || how != proto.DiskReflink {
+		t.Fatalf("made as %q (%v), want a reflink", how, err)
+	}
+	got, _ := os.ReadFile(dst)
+	info, _ := os.Stat(dst)
+	if !bytes.Equal(got, data) || info.Mode().Perm() != 0o640 {
+		t.Fatalf("the clone differs from its disk (mode %v)", info.Mode().Perm())
 	}
 }
 

@@ -63,9 +63,9 @@ export function bytes(size: number): string {
 	return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit] ?? "TiB"}`;
 }
 
-/** An amount of money, such as `0.12 USD`. */
+/** An amount of money, such as `0.12 USD`; under 1, to a tenth of a cent (`0.035 USD`), so a small rate isn't rounded. */
 export function money(amount: number, currency: string): string {
-	return `${amount.toFixed(2)} ${currency}`;
+	return `${amount.toFixed(amount > 0 && amount < 1 ? 3 : 2)} ${currency}`;
 }
 
 /** A time as `2026-11-03 14:05 UTC`. */

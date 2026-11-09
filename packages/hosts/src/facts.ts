@@ -4,13 +4,20 @@
  * listing, which read every host's facts. So registration and hello refuse a report that isn't shaped as kantel-host
  * sends it, and reading a stored one that isn't (kept before this check) treats it as no report at all.
  */
+import type { Placement } from "@kantel/compute";
 import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
 	HostDiskLimits,
+	HostDiskMade,
+	HostDiskUsage,
 	HostFacts,
 	HostImages,
+	HostMemoryAdmission,
+	HostMemoryMode,
+	HostMemoryReport,
 	HostMemorySource,
+	HostMemoryState,
 	HostMountStatus,
 	HostSandboxUsage,
 	HostSize,
@@ -159,7 +166,118 @@ function capacity(value: unknown): HostCapacity {
 		stopped: count(value.stopped, "stopped"),
 		load1: count(value.load1, "load1"),
 		...(builds.length === 0 ? {} : { builds }),
+		...diskUsage(value.disk),
+		...memoryReport(value.memory),
 	};
+}
+
+const MEMORY_MODES: ReadonlySet<string> = new Set<HostMemoryMode>(["reserved", "used"]);
+const MEMORY_STATES: ReadonlySet<string> = new Set<HostMemoryState>(["ok", "tight", "refusing", "critical"]);
+
+/** A capacity's memory (`HostMemoryReport`): left out, not refused, when it isn't one, so the rest still stands. */
+function memoryReport(value: unknown): { memory?: HostMemoryReport } {
+	if (!isObject(value)) return {};
+	if (typeof value.mode !== "string" || !MEMORY_MODES.has(value.mode)) return {};
+	if (typeof value.state !== "string" || !MEMORY_STATES.has(value.state)) return {};
+	const whole = [
+		"totalMiB",
+		"reserveMiB",
+		"capacityMiB",
+		"reservedMiB",
+		"committedMiB",
+		"guestUsedMiB",
+		"residentMiB",
+		"availableMiB",
+		"swapUsedMiB",
+	] as const;
+	const figures: { [K in (typeof whole)[number]]?: number } = {};
+	for (const field of whole) {
+		const figure = value[field];
+		if (typeof figure !== "number" || !Number.isSafeInteger(figure) || figure < 0) return {};
+		figures[field] = figure;
+	}
+	const share = (figure: unknown): figure is number =>
+		typeof figure === "number" && Number.isFinite(figure) && figure >= 0;
+	if (!share(value.pressureSome) || !share(value.pressureFull) || !share(value.maxRatio)) return {};
+	const measuredAt = value.measuredAt;
+	const admission = memoryAdmission(value.admission);
+	return {
+		memory: {
+			...(figures as { [K in (typeof whole)[number]]: number }),
+			mode: value.mode as HostMemoryMode,
+			state: value.state as HostMemoryState,
+			pressureSome: Math.min(100, value.pressureSome),
+			pressureFull: Math.min(100, value.pressureFull),
+			maxRatio: value.maxRatio,
+			...(typeof measuredAt === "number" && Number.isSafeInteger(measuredAt) && measuredAt > 0 ? { measuredAt } : {}),
+			...(admission === undefined ? {} : { admission }),
+		},
+	};
+}
+
+/** A host's memory report as it is shown: all but what it admits against (`admission`), the scheduler's alone. */
+export function withoutAdmission(memory: HostMemoryReport): Omit<HostMemoryReport, "admission"> {
+	const { admission: _admission, ...rest } = memory;
+	return rest;
+}
+
+/** A memory report's admission (`HostMemoryAdmission`), or undefined when it isn't one. */
+function memoryAdmission(value: unknown): HostMemoryAdmission | undefined {
+	if (!isObject(value)) return undefined;
+	const whole = (figure: unknown): figure is number =>
+		typeof figure === "number" && Number.isSafeInteger(figure) && figure >= 0;
+	const { reservableMiB, committableMiB, startMiB, headroomMiB, headroomPercent } = value;
+	if (!whole(reservableMiB) || !whole(committableMiB) || !whole(startMiB) || !whole(headroomMiB)) return undefined;
+	if (typeof headroomPercent !== "number" || !Number.isFinite(headroomPercent) || headroomPercent < 0) return undefined;
+	return { reservableMiB, committableMiB, startMiB, headroomMiB, headroomPercent };
+}
+
+/** A capacity's disk measure (`HostDiskUsage`): left out, not refused, when it isn't one, so the rest still stands. */
+function diskUsage(value: unknown): { disk?: HostDiskUsage } {
+	if (!isObject(value)) return {};
+	const fields = [
+		"totalBytes",
+		"usedBytes",
+		"snapshotsBytes",
+		"sandboxesBytes",
+		"imagesBytes",
+		"templatesBytes",
+		"bundlesBytes",
+		"otherBytes",
+		"measuredAt",
+	] as const;
+	const disk: { [K in (typeof fields)[number]]?: number } = {};
+	for (const field of fields) {
+		const figure = value[field];
+		if (typeof figure !== "number" || !Number.isSafeInteger(figure) || figure < 0) return {};
+		disk[field] = figure;
+	}
+	return { disk: { ...(disk as HostDiskUsage), ...snapshotSplit(value) } };
+}
+
+/** The most snapshots, or groups of shared files, a disk measure's split by snapshot may name. */
+const MAX_SPLIT_ENTRIES = 10_000;
+
+/**
+ * A disk measure's snapshots by snapshot (`HostDiskUsage.snapshotOwnBytes`, `snapshotShared`): left out whole when any
+ * of it isn't one, and the compute plane then splits by sizes alone.
+ */
+function snapshotSplit(value: Record<string, unknown>): Pick<HostDiskUsage, "snapshotOwnBytes" | "snapshotShared"> {
+	const bytes = (figure: unknown): figure is number =>
+		typeof figure === "number" && Number.isSafeInteger(figure) && figure >= 0;
+	const own = value.snapshotOwnBytes;
+	const shared = value.snapshotShared ?? [];
+	if (!isObject(own) || !Array.isArray(shared)) return {};
+	const entries = Object.entries(own);
+	if (entries.length > MAX_SPLIT_ENTRIES || shared.length > MAX_SPLIT_ENTRIES) return {};
+	if (!entries.every(([id, figure]) => id !== "" && bytes(figure))) return {};
+	const groups: { snapshots: string[]; bytes: number }[] = [];
+	for (const group of shared) {
+		if (!isObject(group) || !bytes(group.bytes) || !Array.isArray(group.snapshots)) return {};
+		if (!group.snapshots.every((id): id is string => typeof id === "string" && id !== "")) return {};
+		groups.push({ snapshots: [...group.snapshots], bytes: group.bytes });
+	}
+	return { snapshotOwnBytes: Object.fromEntries(entries) as { [id: string]: number }, snapshotShared: groups };
 }
 
 /** The most sandboxes one usage tick may name: more than any host runs. */
@@ -208,19 +326,25 @@ function sandboxUsage(value: unknown, at: number): HostSandboxUsage | undefined 
 const figure = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 /**
- * A microVM's disk and IO pressure, which a host sends from its guest's agent when it has them. Optional, and left out
+ * A microVM's disk, IO and memory pressure and OOM kills, which a host sends from its guest's agent when it has them. Optional, and left out
  * rather than refused when they make no sense (a used beyond its size, a share outside 0 to 1): the tick's CPU and
  * memory still stand.
  */
 function guestFigures(
 	value: Record<string, unknown>,
-): Pick<HostSandboxUsage, "diskUsedBytes" | "diskTotalBytes" | "ioPressure"> {
-	const { diskUsedBytes: used, diskTotalBytes: total, ioPressure } = value;
+): Pick<
+	HostSandboxUsage,
+	"diskUsedBytes" | "diskTotalBytes" | "ioPressure" | "oomKills" | "memPressureSome" | "memPressureFull"
+> {
+	const { diskUsedBytes: used, diskTotalBytes: total, ioPressure, oomKills, memPressureSome, memPressureFull } = value;
 	return {
 		...(figure(used) && figure(total) && total > 0 && used <= total
 			? { diskUsedBytes: used, diskTotalBytes: total }
 			: {}),
 		...(figure(ioPressure) && ioPressure <= 1 ? { ioPressure } : {}),
+		...(figure(oomKills) && Number.isSafeInteger(oomKills) ? { oomKills } : {}),
+		...(figure(memPressureSome) && memPressureSome <= 1 ? { memPressureSome } : {}),
+		...(figure(memPressureFull) && memPressureFull <= 1 ? { memPressureFull } : {}),
 	};
 }
 
@@ -296,6 +420,38 @@ const MOUNT_STATUSES: ReadonlySet<string> = new Set<HostMountStatus["status"]>([
 /** As long as a mount's path may be. */
 const MAX_MOUNT_PATH = 1024;
 const MAX_MOUNT_ERROR = 512;
+
+const DISK_MADE: ReadonlySet<string> = new Set<HostDiskMade>(["reflink", "copy", "move", "new"]);
+/** A phase's milliseconds, as long as a day at most: rounded to a tenth. */
+const phaseMs = (value: unknown): number | undefined =>
+	typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 86_400_000
+		? Math.round(value * 10) / 10
+		: undefined;
+
+/**
+ * A start's phases as a host reports them (`HostSandbox.phases`), named as the compute API keeps them: undefined unless
+ * each phase is a number of milliseconds (an older host sends none), the disk's method left out when it isn't one.
+ */
+export function parseStartPhases(value: unknown): Placement["startup"] {
+	if (typeof value !== "object" || value === null) return undefined;
+	const phases = value as { readonly [key: string]: unknown };
+	const diskMs = phaseMs(phases.diskMs);
+	const bootMs = phaseMs(phases.bootMs);
+	const agentMs = phaseMs(phases.agentMs);
+	const hostMs = phaseMs(phases.totalMs);
+	if (diskMs === undefined || bootMs === undefined || agentMs === undefined || hostMs === undefined) return undefined;
+	const snapshotMs = phaseMs(phases.snapshotMs);
+	const disk =
+		typeof phases.disk === "string" && DISK_MADE.has(phases.disk) ? (phases.disk as HostDiskMade) : undefined;
+	return {
+		...(disk === undefined ? {} : { disk }),
+		diskMs,
+		...(snapshotMs === undefined || snapshotMs === 0 ? {} : { snapshotMs }),
+		bootMs,
+		agentMs,
+		hostMs,
+	};
+}
 
 /** When a host set a sandbox's mounts (`HostSandbox.mountsAt`): a positive whole number of milliseconds, or undefined. */
 export function parseMountsAt(value: unknown): number | undefined {

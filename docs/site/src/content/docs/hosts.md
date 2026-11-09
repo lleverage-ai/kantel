@@ -36,7 +36,7 @@ Kantel Connect, a link through kantel.dev for hosts and self-hosted control plan
 | Root | `kantel-host` makes TAP devices and iptables rules |
 | Tools | `ip`, `iptables`, `mkfs.ext4`, `cp`, and `/dev/net/tun` (`modprobe tun`). For bundle mounts (experimental), `mkfs.erofs` from erofs-utils too |
 | Disk and memory | 20 GiB free under `/var/lib/kantel-host` and 4 GiB of memory, or more |
-| File system | Any. XFS (made with reflinks, the default in current `mkfs.xfs`) or btrfs is best for `/var/lib/kantel-host`: snapshots, forks and sandboxes made from them then share disk blocks with what they were copied from until those blocks change, so each one costs only what differs. On ext4 each is a full copy of the sandbox's disk |
+| File system | Any. XFS (made with reflinks, the default in current `mkfs.xfs`) or btrfs is best for `/var/lib/kantel-host`: snapshots, forks and sandboxes made from them then share disk blocks with what they were copied from until those blocks change, so each one costs only what differs. On ext4 each is a full copy of the sandbox's disk, which for a disk of tens of gigabytes takes tens of seconds and is most of the time a sandbox made from a snapshot takes to start. A sandbox's `startup` says which its host did (`disk`: `reflink` or `copy`) and how long it took |
 | Network | Outbound to the control plane's public URL. When installing, also to GitHub, for `kantel-host`, Firecracker and the images |
 
 ## Check a machine
@@ -199,7 +199,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 ==> Install kantel-host 0.3.0
   copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
 ==> Fetch Firecracker and the sandbox images
-  check  images host-images-20261105.1 from https://kantel.example.com/v1/hosts/images/manifest.json
+  check  images host-images-20261107.1 from https://kantel.example.com/v1/hosts/images/manifest.json
   mkdir  /var/lib/kantel-host (mode 0755)
   mkdir  /var/lib/kantel-host/bin (mode 0755)
   get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
@@ -282,12 +282,56 @@ Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each runn
 - A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is what the guest itself counts as used, its total less its available memory, as `free -m` shows it in the guest. The guest's kernel reports those figures to Firecracker through a virtio-balloon device that only reports (it never takes memory from the guest), and the host reads them from Firecracker, so nothing runs in the sandbox. Page cache isn't counted, and the figure falls when the guest frees memory.
 - A microVM restored from a snapshot made before the host had that device (or one on a kernel without `virtio_balloon`) can't report, so its memory is its Firecracker process's resident memory instead: the guest memory the VM has touched, page cache included. A microVM doesn't give that memory back to the host, so that figure stays near its high point after a spike. Each reading says which it is (`memSource`, `guest` or `rss`, on the host's link).
 - A microVM's disk is its own disk as `df` counts it in the guest, and its IO pressure is the share of the interval in which at least one of its tasks waited on IO (the guest kernel's `/proc/pressure/io`, `some`). The host asks the guest's agent for both, waiting at most half a second, so a guest that doesn't answer in time, or whose agent predates them, has neither in that reading. The guest kernel has pressure figures only when booted with `psi=1`, which hosts from this version add: a sandbox restored from a snapshot made before has disk but no IO pressure until it boots from scratch, and the host makes its templates again once.
+- The same answer has a microVM's memory pressure (the guest kernel's `/proc/pressure/memory` ten-second averages, `some` and `full`) and how many processes its kernel has killed for memory since it booted (`oom_kill` in `/proc/vmstat`). `kantel info` and `kantel usage` show the newest of both as `memory`, `GET /v1/sandboxes/{id}/usage` has them in each point of `series` and the newest in `memory`, and Kantel sends a `sandbox.oom_kill` event when the count goes up while the VM keeps running. An image whose guest agent predates them has neither.
 - An account's isolates share one runtime, so the host measures the runtime and shares it out. Each isolate's CPU is its part of the runtime's CPU time, split by how long each spent running commands, as a share of one CPU. The runtime's memory is split evenly.
 - The disk is the file system the host's data directory (`/var/lib/kantel-host`) is on.
 
 The host keeps each reading until Kantel confirms it has it, up to the last 120 readings (10 minutes' worth at the default interval). Kantel confirms a reading once the gateway holding the host's connection has added it to the sandbox's usage. If the connection drops or stalls, the host sends every unconfirmed reading again, oldest first, when it reconnects, so readings already sent into a connection that then failed aren't lost. Kantel ignores a reading it already has, so nothing appears twice in the usage or the [OpenTelemetry export](/monitoring/opentelemetry/), even when the host reconnects to a different gateway. A confirmation covers that reading and every earlier one. If Kantel can't add a reading, for example while its database is unavailable, it doesn't confirm it or any later one until it has added them all in order, so a failed reading is never skipped. If more than 120 readings go unconfirmed, for example because Kantel was out of reach for longer than 10 minutes, the oldest are dropped and the host logs how many.
 
 A host that predates this sends each reading once, and a reading sent into a connection that then fails is lost. The same applies to a newer host connected to a Kantel that predates it.
+
+### What takes the disk
+
+Every 5 minutes a host also measures what takes the space on its disk and sends it with its next heartbeat. The host record has it as `diskUsage`: the filesystem's size and used bytes, then the bytes of saved snapshots, automatic snapshots, sandboxes (their disks, and their memory while stopped), base images, templates, the bundle cache, and everything else (`otherBytes`, the operating system, logs and other programs). Each file counts once, in the first of those it's in, and in the order bundles, images, templates, sandboxes, then snapshots. So memory a stop's snapshot shares with its sandbox counts for the sandbox. Only files on the filesystem that holds the host's files count, so a bundle cache on another disk isn't in the figures. The host measures its snapshots together, and Kantel splits them into saved and automatic by its own records: saved is the snapshot files that saved snapshots hold, each file once, and automatic is the rest. In the console, open a host's row on the Hosts page to see it under the host's graphs. A host that predates this doesn't measure it, and its record has no `diskUsage`.
+
+A host's admin can also limit how much each account keeps in saved snapshots on it, with `savedSnapshotBytesLimit` on the host (`PATCH /v1/admin/hosts/{hostId}`, or `PATCH /v1/hosts/{hostId}` for an account's own host), or **Saved snapshot limit** in the host's menu in the console. A save that would take an account past the limit answers `429` with `exhausted`, saying what the account has saved there. Each saved snapshot counts at its full size, including the files it shares with other snapshots, so copies that share files count separately. A save that shares its source's bytes outright (on a host from before saves kept their own copy) counts them once. Saves made at the same time, through any gateway, can't pass the limit together, and a refused save's new bytes are deleted from the host again. A save whose gateway stops before it is let through is given up after 10 minutes, and its bytes are deleted the same way. `null` removes the limit.
+
+### Memory
+
+Every heartbeat also carries the host's memory, which the host record has as `memory`, `kantel hosts info` prints and the console shows when you open a host's row: the machine's memory (or the smallest limit of the control groups kantel-host runs in), what it keeps for itself (`reserveMiB`) and the rest, for sandboxes (`capacityMiB`); what its sandboxes were given (`reservedMiB`) and what its microVMs count for (`committedMiB`, below); what their guests use (`guestUsedMiB`) and what their Firecracker processes hold of the machine, page cache included (`residentMiB`); and the machine's available memory, swap in use and memory pressure (PSI, the share of the last 10 seconds some task, or every task, waited on memory). Available memory is never more than any of those control groups has left: a larger limit above, such as a slice shared with other services, can have the least. The host reads these figures for each heartbeat even with usage readings off. `mode` says how the host admits sandboxes, `reserved` or `used`, and `state` how short of memory it is: `ok`, `tight`, `refusing` or `critical`. A host that predates this sends none.
+
+### Memory over-commit
+
+By default a host admits a microVM against what sandboxes were given: their sizes, up to `overcommitMemory` times its memory less `reserveMemoryMiB`. A VM given 32 GiB that uses 3 counts as 32. With memory over-commit on (experimental), it counts as what it uses and may soon use instead:
+
+```json
+{ "memoryOvercommit": { "enabled": true } }
+```
+
+Each running microVM then counts as its peak use in the last `peakWindowMinutes` (what its guest uses, page cache aside) plus headroom, the larger of `headroomMiB` and `headroomPercent` of its size, and never more than its size. One not measured yet counts as `startMiB` plus its headroom, and a template build counts in full. The sum is the host's committed memory. A new microVM is admitted when the host isn't short of memory, what sandboxes are given stays within `maxRatio` times its memory for sandboxes, committed memory with it stays within that memory, and the machine has it available beyond `reserveMemoryMiB` and beyond what running VMs may still grow into. The free memory the host reports to Kantel for placement is the largest microVM it would admit. As that isn't a sum, it also reports what it admits against (the room left under `maxRatio` and for committed memory, and its headroom settings), and Kantel counts each sandbox it places there before the host's next heartbeat the way the host will: its size under `maxRatio`, and `startMiB` plus its headroom of committed memory (a template build its whole size of both). So a burst of creates goes on to another host once this one is full, rather than being refused by it.
+
+With it on, the host also limits the control group it runs in, which its microVMs run in too (on a systemd host, `kantel-host.service`'s): `memory.max` to the machine's memory less a quarter of `reserveMemoryMiB`, unless the group has a limit already, and `memory.swap.max` to 0. However its VMs grow, the machine's other processes keep that much, and no VM's memory is swapped. At the limit, the kernel takes the group's page cache and then ends its largest process, a VM's Firecracker; such a VM stops with the error that the host ran out of memory. The steps below come first, so the kernel doesn't need to.
+
+When sandboxes all want their memory at once, the host acts in steps. It reads the machine's memory every second, and its VMs' every usage reading (5 seconds):
+
+1. Its VMs' balloons report the memory their guests free (free page reporting), so Firecracker gives it back to the machine.
+2. `tight`, with less than twice `reserveMemoryMiB` available or memory pressure above 5%: it takes page cache back from the VMs holding the most of it, inflating each one's balloon for a few seconds and then giving the memory back, empty.
+3. `refusing`, with less than `reserveMemoryMiB` available, pressure above 20% or the machine swapping (256 MiB more swapped out within a minute): it refuses new sandboxes (`exhausted`) and reports no free memory.
+4. `critical`, with less than half `reserveMemoryMiB` available or every task waiting on memory 20% of the time or more, twice in a row (a second apart), or its control group within a quarter of `reserveMemoryMiB` of its limit: the guest of the VM holding the most memory now kills its largest process, as its own kernel would when out of memory, so a command running then says the sandbox ran out of memory. Then, every 5 seconds while it stays critical, the next VM holding the most (one asked in the last 10 seconds is left while what it freed comes back, and with every VM asked that recently, the host waits), and every second while the group is at its limit. A VM asked twice in a minute that still holds the most, or whose guest doesn't answer, is stopped, with the error that the host ran short of memory. A VM that started or resumed since the last reading counts from its first, and one taking page cache back (step 2), being snapshotted or stopping is still considered. A step against a VM whose sandbox has since been recovered onto a new VM is dropped, never taken out on the new one, and one against a sandbox a stop, snapshot or recovery holds isn't taken or waited for: the next step passes that VM over for 5 seconds.
+
+Every VM's Firecracker process is also the machine's own out-of-memory killer's first choice, so the host's processes are never the ones it ends.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `enabled` | `false` | Turns it on. Needs usage readings (`usageIntervalSeconds` not below 0) |
+| `maxRatio` | `2.5` | The most sandboxes may be given, as a multiple of the memory for sandboxes |
+| `headroomMiB`, `headroomPercent` | `1024`, `25` | A VM's headroom: the larger of the two |
+| `peakWindowMinutes` | `10` | How far back a VM's peak counts |
+| `startMiB` | `1024` | What a VM not measured yet counts as using |
+| `reclaim` | `true` | Whether step 2 happens |
+| `outOfMemory` | `true` | Whether step 4 happens. Off, a host that runs out relies on the guests' own out-of-memory killers and the balloons' |
+
+Turning it on makes the host's templates again once, as their balloons report free pages from then on; a user template's snapshot made before is booted afresh rather than restored (as after a Firecracker or kernel update, a few seconds rather than a few hundred milliseconds, until the template is built again), as is one made with it on once it is turned off. On a host where it is off, the memory figures are reported all the same.
 
 ### Top processes
 
@@ -403,6 +447,8 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `subnet` | `10.231.0.0/16` | Where sandboxes' addresses come from. Each microVM gets a `/30` of it |
 | `tiers` | what the machine can run | `["microvm"]`, `["isolate"]` or both |
 | `overcommitMemory` | `1.5` | How much more memory running sandboxes may be given than the host has, as a ratio. Restored sandboxes share their template's unchanged memory |
+| `reserveMemoryMiB` | 2048 or a tenth of the memory, whichever is more | Memory kept for the host's own processes, never given to sandboxes. The host has its memory less this for sandboxes |
+| `memoryOvercommit` | off | Admit microVMs by the memory they use rather than what they were given. Experimental; see [Memory over-commit](#memory-over-commit) |
 | `templateRegistry` | none | The registry the host pulls templates' base images from, by digest, such as `ghcr.io/lleverage-ai`. Without it, the host makes templates only from its own sandbox image, and refuses a template whose base is a published digest. Templates are experimental (`KANTEL_TEMPLATES`) |
 | `templateBuilder` | off | Builds templates' custom images (a Dockerfile, or an image reference) in a build microVM whose only network is the egress proxy, never with the host's Docker. `{ "registries": ["registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com"] }` names the registries, and the hosts their blobs redirect to, a build may reach besides the template's grants. Needs `injectGuestAgent`. See [Custom images](/sandboxes/custom-images/#a-templates-custom-image). Experimental |
 | `autoUpdate` | `true` | Whether the control plane may move the host to another version |

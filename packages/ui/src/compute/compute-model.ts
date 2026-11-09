@@ -394,6 +394,11 @@ export interface Sandbox {
 	readonly hostName?: string;
 	/** What went wrong, when it's in `error`. */
 	readonly error?: string;
+	/**
+	 * Why its guest agent isn't answering (out of memory, say), while it runs but doesn't: its calls are refused, and
+	 * Recover (a restart that keeps its disk) is offered. Absent while it answers.
+	 */
+	readonly unresponsive?: string;
 	/** Shared with the organisation it belongs to (an organisation's sandboxes are shared unless made private). */
 	readonly shared?: boolean;
 	/** The sandbox it was forked from. */
@@ -832,6 +837,12 @@ export interface UsagePoint {
 	/** CPU use over it, 0 to 1 of what it has: a sandbox's vCPUs, a host's. The unit of `Sandbox.usage`. */
 	readonly cpu: number;
 	readonly memUsedBytes: number;
+	/**
+	 * Where the point is a mean over its interval (a day's or a week's): the highest CPU and memory reading in it, which
+	 * can be twice the mean or more. Absent on a reading as it came, which is its own highest.
+	 */
+	readonly cpuMax?: number;
+	readonly memMaxBytes?: number;
 	/** Its disk in use, where its host says: a host's always, a sandbox's where its host reads its filesystem. */
 	readonly diskUsedBytes?: number;
 	/**
@@ -980,6 +991,10 @@ export interface SavedSnapshot {
 	readonly sandboxId?: string;
 	readonly sandboxName: string;
 	readonly kind: SandboxKind;
+	/** What it holds, in its saver's words. */
+	readonly description?: string;
+	/** Its saver's own labels, such as `git.base` for the commit a checkout in it is at. */
+	readonly labels?: { readonly [key: string]: string };
 	readonly createdAt: number;
 	/** Who saved it: unknown for one saved before Kantel kept that. */
 	readonly createdBy?: string;
@@ -1658,6 +1673,7 @@ export type WebhookEvent =
 	| "sandbox.error"
 	| "sandbox.degraded"
 	| "sandbox.recovered"
+	| "sandbox.oom_kill"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1670,6 +1686,7 @@ export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly l
 	{ event: "sandbox.error", label: "A sandbox failed" },
 	{ event: "sandbox.degraded", label: "A sandbox is degraded" },
 	{ event: "sandbox.recovered", label: "A sandbox recovered" },
+	{ event: "sandbox.oom_kill", label: "A sandbox ran out of memory" },
 	{ event: "sandbox.deleted", label: "A sandbox was deleted" },
 	{ event: "snapshot.saved", label: "A snapshot was saved" },
 	{ event: "snapshot.deleted", label: "A snapshot was deleted" },
@@ -1783,6 +1800,51 @@ export interface Host {
 	readonly labels: Readonly<Record<string, string>>;
 	readonly lastSeenAt: number;
 	readonly joinedAt: number;
+	/** What takes the space on its disk, as it last measured it. Absent until it has. */
+	readonly disk?: HostDisk;
+	/** Its memory, as it last reported it. Absent from an older host agent, or one not connected. */
+	readonly memory?: HostMemory;
+	/** The most bytes of saved snapshots each account may keep on it. Absent: no limit. */
+	readonly savedSnapshotLimitBytes?: number;
+}
+
+/**
+ * A host's memory, in MiB. `reserved`: what its sandboxes were given; `committed`: what its microVMs count for when it
+ * admits by use (each its recent peak plus headroom); `guestUsed`: what their guests use; `resident`: what they hold of
+ * the machine, page cache included. `mode` says which it admits by, `state` how short of memory it is.
+ */
+export interface HostMemory {
+	readonly mode: "reserved" | "used";
+	readonly state: "ok" | "tight" | "refusing" | "critical";
+	readonly totalMiB: number;
+	readonly reserveMiB: number;
+	readonly capacityMiB: number;
+	readonly reservedMiB: number;
+	readonly committedMiB: number;
+	readonly guestUsedMiB: number;
+	readonly residentMiB: number;
+	readonly availableMiB: number;
+	readonly swapUsedMiB: number;
+	readonly pressureSome: number;
+	readonly pressureFull: number;
+	readonly maxRatio: number;
+}
+
+/**
+ * What takes the space on a host's disk, in bytes, each file counted once: memory a stop's snapshot shares with its
+ * sandbox counts for the sandbox. `other` is the rest of what's used: the operating system, logs, other programs.
+ */
+export interface HostDisk {
+	readonly totalBytes: number;
+	readonly usedBytes: number;
+	readonly savedSnapshots: number;
+	readonly automaticSnapshots: number;
+	readonly sandboxes: number;
+	readonly images: number;
+	readonly templates: number;
+	readonly bundles: number;
+	readonly other: number;
+	readonly measuredAt: number;
 }
 
 /** A one-time join token, with the command that uses it. */
@@ -1835,6 +1897,11 @@ export interface HostsSource {
 	 * Absent: no Check for updates.
 	 */
 	checkForUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
+	/**
+	 * Sets the most bytes of saved snapshots each account may keep on the host, or `null` for no limit: a save past it is
+	 * refused. Absent: the limit isn't set from the console.
+	 */
+	setSnapshotLimit?(id: string, bytes: number | null): Promise<Host>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1958,6 +2025,9 @@ export const SANDBOX_STATE_LABELS: Readonly<Record<SandboxState, string>> = {
 	stopped: "Stopped",
 	error: "Error",
 };
+
+/** What a running sandbox whose guest agent doesn't answer shows for its state, in the error colour. */
+export const UNRESPONSIVE_LABEL = "Unresponsive";
 
 /** The status colour each state shows in. */
 export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
@@ -2099,20 +2169,27 @@ export const shortId = (id: string): string => {
 	return at === -1 ? id.slice(0, 10) : id.slice(0, at + 9);
 };
 
-/** What a state lets a person do, in the order the actions menu lists them. */
-export function sandboxActions(state: SandboxState): {
+/**
+ * What a state lets a person do, in the order the actions menu lists them. A running sandbox whose guest agent doesn't
+ * answer (`unresponsive`) can't be connected to or forked, only stopped or recovered.
+ */
+export function sandboxActions(
+	state: SandboxState,
+	unresponsive = false,
+): {
 	readonly connect: boolean;
 	readonly stop: boolean;
 	readonly resume: boolean;
 	readonly fork: boolean;
 	readonly recover: boolean;
 } {
+	const answering = state === "running" && !unresponsive;
 	return {
-		connect: state === "running",
+		connect: answering,
 		stop: state === "running" || state === "paused",
 		resume: state === "stopped" || state === "paused" || state === "error",
-		fork: state === "running" || state === "stopped" || state === "paused",
-		recover: state === "error",
+		fork: answering || state === "stopped" || state === "paused",
+		recover: state === "error" || (state === "running" && unresponsive),
 	};
 }
 

@@ -52,7 +52,10 @@ func (m *Manager) Processes() []usage.Process {
 				if err != nil {
 					return usage.GuestStats{}, err
 				}
-				return usage.GuestStats{DiskUsedBytes: st.DiskUsedBytes, DiskTotalBytes: st.DiskTotalBytes, IOSomeMicros: st.IOSomeMicros}, nil
+				return usage.GuestStats{
+					DiskUsedBytes: st.DiskUsedBytes, DiskTotalBytes: st.DiskTotalBytes, IOSomeMicros: st.IOSomeMicros,
+					OOMKills: st.OOMKills, MemorySomeAvg10: st.MemorySomeAvg10, MemoryFullAvg10: st.MemoryFullAvg10,
+				}, nil
 			}
 		}
 		if size, err := m.size(sizeName); err == nil {

@@ -14,6 +14,7 @@ import {
 	parseMountStatuses,
 	storedCapacity,
 	storedFacts,
+	withoutAdmission,
 } from "./facts.ts";
 import {
 	type CallOptions,
@@ -30,11 +31,13 @@ import {
 	HOST_FEATURES,
 	type HostBucketSource,
 	type HostDiskLimits,
+	type HostDiskUsage,
 	type HostEgress,
 	type HostEgressRecord,
 	type HostFacts,
 	type HostHello,
 	type HostImageChannel,
+	type HostMemoryReport,
 	HostMethods,
 	type HostMount,
 	type HostMountStatus,
@@ -58,7 +61,9 @@ import {
 	type ReleaseCheck,
 } from "./releases.ts";
 import {
+	buildFitsOn,
 	type Candidate,
+	type HeldMemory,
 	hostSizeNamed,
 	isRefusal,
 	makesCustomShapes,
@@ -169,6 +174,10 @@ export interface HostView {
 	 * `capacity.diskGb` is the same, else what it had free when it started. Absent until it has reported.
 	 */
 	readonly freeDiskGb?: number;
+	/** What takes the space on its disk, from its latest heartbeat that measured it (`HostDiskUsage`). */
+	readonly diskUsage?: HostDiskUsage;
+	/** Its memory, from its latest report. */
+	readonly memory?: Omit<HostMemoryReport, "admission">;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -321,6 +330,27 @@ export interface HostComputeLink {
 		mounts: readonly HostMountStatus[],
 		mountsAt?: number,
 	): Promise<void>;
+	/**
+	 * A host's word on whether a running microVM's guest agent answers (`HOST_FEATURES.guestHealth`): `health`
+	 * `unresponsive` with its `reason` while it doesn't, absent once it does (`ComputeService.reportHealth`), `healthAt`
+	 * ordering them. Only for a sandbox whose placement is on that host.
+	 */
+	reportHealth?(
+		hostId: string,
+		sandboxId: string,
+		health: string | undefined,
+		reason: string | undefined,
+		healthAt?: number,
+	): Promise<void>;
+	/**
+	 * A host's word that a sandbox's machine there ended without Kantel asking: it reports the sandbox `stopped` (or
+	 * `error`) with an `error` saying why, in an event when the VM exits (its memory guard, the kernel's OOM killer at
+	 * its limit, a crash) or in its hello after a restart (`ComputeService.reportExit`). A stop Kantel asks for leaves
+	 * no error, so it is never sent for one; the compute plane takes it only for a sandbox it has `running` there, and
+	 * only for the machine its run booted: `healthAt` is the host's last health stamp for the machine that ended
+	 * (absent from a host that predates sending it with a stopped sandbox).
+	 */
+	reportExit?(hostId: string, sandboxId: string, error: string, healthAt?: number): Promise<void>;
 	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
@@ -579,11 +609,23 @@ export function unanswered(error: unknown): boolean {
 	return typeof error === "object" && error !== null && unansweredErrors.has(error);
 }
 
+/** Kantel's errors for host calls whose host wasn't there to answer (`HostCallError.disconnected`). */
+const awayErrors = new WeakSet<object>();
+
+/**
+ * Whether `error` is a host call whose host wasn't there, as this replica saw it: not connected, or gone while the call
+ * waited. A peer replica's relay of the call doesn't carry it.
+ */
+export function hostWasAway(error: unknown): boolean {
+	return typeof error === "object" && error !== null && awayErrors.has(error);
+}
+
 /** A host's error as Kantel's: the codes line up where they can. */
 export function kantelErrorFromHost(error: unknown): unknown {
 	if (!(error instanceof HostCallError)) return error;
 	const mapped = kantelCodeError(error);
 	if (error.unanswered) unansweredErrors.add(mapped);
+	if (error.disconnected) awayErrors.add(mapped);
 	return mapped;
 }
 
@@ -640,6 +682,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return {
 			memoryMiB: held.reduce((sum, entry) => sum + entry.memoryMiB, 0),
 			diskGiB: held.reduce((sum, entry) => sum + entry.diskGiB, 0),
+			// As the host counts them (`freeMemoryOn`): a build in full.
+			memory: [
+				...live.map((entry) => ({ memoryMiB: entry.memoryMiB })),
+				...[...(builds?.values() ?? [])].map((entry) => ({ memoryMiB: entry.memoryMiB, build: true })),
+			] satisfies HeldMemory[],
 		};
 	};
 	/** When each host's last invalid usage tick was logged. */
@@ -684,6 +731,32 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	/** A host sandbox's `baseAt`, when it says one. */
 	const baseAtOf = (sandbox: { baseAt?: unknown }): { baseAt?: number } =>
 		typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {};
+	/** A host sandbox's guest health (`HostSandbox.health`), when it says one. */
+	const healthOf = (sandbox: { health?: unknown }): string | undefined =>
+		typeof sandbox.health === "string" && sandbox.health !== "" ? sandbox.health.slice(0, 40) : undefined;
+	/** Why, in words, at most 1,000 characters. */
+	const healthReasonOf = (sandbox: { healthReason?: unknown }): string | undefined =>
+		typeof sandbox.healthReason === "string" && sandbox.healthReason !== ""
+			? sandbox.healthReason.slice(0, 1000)
+			: undefined;
+	/**
+	 * Why a host's report says the sandbox's machine there ended without Kantel asking, in the host's words (at most
+	 * 1,000 characters): it is `stopped` or `error` with an `error`. A stop Kantel asked for clears the error, so it has
+	 * none; every exit the host didn't cause by a call (its memory guard, an OOM kill, a crash, its restart) has one.
+	 */
+	const exitOf = (sandbox: { state: string; error?: unknown }): string | undefined =>
+		(sandbox.state === "stopped" || sandbox.state === "error") &&
+		typeof sandbox.error === "string" &&
+		sandbox.error.trim() !== ""
+			? sandbox.error.slice(0, 1000)
+			: undefined;
+	/** Each host's events here whose exit report is still being taken (`onEvent`), which its next hello waits for. */
+	const exitsReporting = new Map<string, Set<Promise<void>>>();
+	/** When it last changed, when the host says. */
+	const healthAtOf = (sandbox: { healthAt?: unknown }): number | undefined =>
+		typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
+			? sandbox.healthAt
+			: undefined;
 	/** Hosts whose snapshot bases haven't been read on their connection yet (image patching hosts only). */
 	const snapshotBasesDue = new Set<string>();
 	/**
@@ -794,10 +867,31 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const sandboxes = message.sandboxes ?? [];
 		const held = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
 		const bases: { sandboxId: string; base: string; baseAt?: number }[] = [];
+		// Its running sandboxes' guest health, where it watches it: one that went unresponsive, or answered again, while
+		// it was away is caught up.
+		const watchesHealth = facts.value.features?.includes(HOST_FEATURES.guestHealth) === true;
+		const exits: { sandboxId: string; error: string; healthAt?: number }[] = [];
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
 			if (latest !== placement) await store.putPlacement(latest);
+			// One whose machine ended while the host was away, or that the host's restart ended (`the host restarted while
+			// it ran`), is caught up: the compute plane may still have it running.
+			const exit = sandbox === undefined ? undefined : exitOf(sandbox);
+			if (exit !== undefined && sandbox !== undefined) {
+				exits.push({ sandboxId: placement.sandboxId, error: exit, healthAt: healthAtOf(sandbox) });
+			}
+			if (watchesHealth && sandbox?.state === "running" && compute?.reportHealth !== undefined) {
+				report(
+					compute.reportHealth(
+						hostId,
+						placement.sandboxId,
+						healthOf(sandbox),
+						healthReasonOf(sandbox),
+						healthAtOf(sandbox),
+					),
+				);
+			}
 			// What its disk is on, where the host says (one without image patching doesn't, and nothing is erased).
 			if (typeof sandbox?.base === "string" && sandbox.base !== "") {
 				bases.push({ sandboxId: placement.sandboxId, base: sandbox.base, ...baseAtOf(sandbox) });
@@ -806,6 +900,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		if (bases.length > 0 && compute?.recordBases !== undefined) {
 			report(compute.recordBases(hostId, { sandboxes: bases }));
+		}
+		// Taken before the host is welcomed, so no call reaches it until they are, after the exits its events here are still
+		// reporting (from its last connection): one landing after a start of its sandbox would put the run that start
+		// booted in error. Each is also fenced to the machine it names (`healthAt`), which a host that predates sending it
+		// doesn't. One that fails is logged, and the host connects.
+		await Promise.allSettled([...(exitsReporting.get(hostId) ?? [])]);
+		for (const exit of exits) {
+			await compute?.reportExit?.(hostId, exit.sandboxId, exit.error, exit.healthAt).catch((error: unknown) => {
+				const why = error instanceof Error ? error.message : String(error);
+				log(`[hosts] couldn't report sandbox ${exit.sandboxId}'s exit on host ${hostId}: ${why}`);
+			});
 		}
 		// Its snapshots' bases, once it is welcomed (the hello doesn't carry them): on its first heartbeat.
 		if (facts.value.features?.includes(HOST_FEATURES.imagePatching) === true) snapshotBasesDue.add(hostId);
@@ -888,25 +993,50 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const sandbox = event.sandbox;
 			if (typeof sandbox !== "object" || sandbox === null) return;
 			if (typeof sandbox.id !== "string" || typeof sandbox.state !== "string") return;
-			report(
-				(async () => {
-					const placement = await store.getPlacement(sandbox.id);
-					if (placement === undefined || placement.hostId !== hostId) return;
-					const base = (sandbox as { base?: unknown }).base;
-					if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
-						await compute?.recordBases?.(hostId, {
-							sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
-						});
-					}
-					// The call that caused the event usually recorded it already (a create's `running`).
-					if (sandbox.state === "deleted") {
-						await store.removePlacement(sandbox.id);
-						return;
-					}
-					const latest = asReported(placement, sandbox, await store.getHost(hostId), clock.now());
-					if (latest !== placement) await store.putPlacement(latest);
-				})(),
-			);
+			const work = (async () => {
+				const placement = await store.getPlacement(sandbox.id);
+				if (placement === undefined || placement.hostId !== hostId) return;
+				const base = (sandbox as { base?: unknown }).base;
+				if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
+					await compute?.recordBases?.(hostId, {
+						sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
+					});
+				}
+				// The call that caused the event usually recorded it already (a create's `running`).
+				if (sandbox.state === "deleted") {
+					await store.removePlacement(sandbox.id);
+					return;
+				}
+				const latest = asReported(placement, sandbox, await store.getHost(hostId), clock.now());
+				if (latest !== placement) await store.putPlacement(latest);
+				// A running sandbox's guest health, which a host with `guestHealth` sends an event for each time it changes.
+				if (sandbox.state === "running") {
+					await compute?.reportHealth?.(
+						hostId,
+						sandbox.id,
+						healthOf(sandbox),
+						healthReasonOf(sandbox),
+						healthAtOf(sandbox),
+					);
+				}
+				// Its machine ended without Kantel asking (its memory guard, an OOM kill, a crash): the compute plane has it
+				// running until told.
+				const exit = exitOf(sandbox);
+				if (exit !== undefined) await compute?.reportExit?.(hostId, sandbox.id, exit, healthAtOf(sandbox));
+			})();
+			// An exit's, until it is taken: the host's next hello here waits for it (`hello`).
+			if (exitOf(sandbox) !== undefined) {
+				const reporting = exitsReporting.get(hostId) ?? new Set<Promise<void>>();
+				exitsReporting.set(hostId, reporting);
+				reporting.add(work);
+				void work
+					.finally(() => {
+						reporting.delete(work);
+						if (reporting.size === 0 && exitsReporting.get(hostId) === reporting) exitsReporting.delete(hostId);
+					})
+					.catch(() => undefined);
+			}
+			report(work);
 		},
 		async secrets(hostId, sandboxId) {
 			if (compute === undefined) throw new Error("The compute plane isn't linked yet");
@@ -1037,6 +1167,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				diskGb: reported?.freeDiskGiB ?? facts?.diskGiB ?? 0,
 			},
 			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
+			...(reported?.disk === undefined ? {} : { diskUsage: { ...reported.disk } }),
+			...(reported?.memory === undefined ? {} : { memory: withoutAdmission(reported.memory) }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),
@@ -1250,7 +1382,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const held = reservedOn(host);
 		if (
 			capacity === undefined ||
-			capacity.freeMemoryMiB - held.memoryMiB < shape.memoryMiB ||
+			!buildFitsOn(capacity, held.memory, shape.memoryMiB) ||
 			capacity.freeDiskGiB - held.diskGiB < shape.diskGiB
 		) {
 			throw placementError(
@@ -1497,6 +1629,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							connected: hub.connected(host.id),
 							reservedMemoryMiB: held.memoryMiB,
 							reservedDiskGiB: held.diskGiB,
+							heldMemory: held.memory,
 							owners: new Set(
 								placements
 									.filter((placement) => placement.tier === "isolate" && placement.owner !== undefined)

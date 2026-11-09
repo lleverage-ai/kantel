@@ -608,6 +608,10 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
 		...(sandbox.hostName === undefined ? {} : { hostName: sandbox.hostName }),
 		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
+		// Running, but its guest agent doesn't answer: why, for the page's notice and its Recover.
+		...(sandbox.state === "running" && sandbox.health === "unresponsive"
+			? { unresponsive: sandbox.reason ?? "Its guest agent isn't answering. Recover it: a restart that keeps its disk" }
+			: {}),
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
 		...environmentRefOf(sandbox, context),
@@ -954,6 +958,8 @@ function savedSnapshotOf(snapshot: Snapshot, sandboxName: string): UiSavedSnapsh
 		...(snapshot.sandboxId === undefined ? {} : { sandboxId: snapshot.sandboxId }),
 		sandboxName,
 		kind: snapshot.sandboxType,
+		...(snapshot.description === undefined ? {} : { description: snapshot.description }),
+		...(snapshot.labels === undefined ? {} : { labels: snapshot.labels }),
 		createdAt: snapshot.createdAt,
 		// One saved before the API kept who saved it doesn't say.
 		...(snapshot.createdBy === undefined ? {} : { createdBy: actorName(snapshot.createdBy) }),
@@ -1723,6 +1729,43 @@ function hostOf(host: Host): UiHost {
 		// A host not seen since it joined.
 		lastSeenAt: host.lastSeenAt ?? host.joinedAt,
 		joinedAt: host.joinedAt,
+		...(host.diskUsage === undefined
+			? {}
+			: {
+					disk: {
+						totalBytes: host.diskUsage.totalBytes,
+						usedBytes: host.diskUsage.usedBytes,
+						savedSnapshots: host.diskUsage.savedSnapshotsBytes,
+						automaticSnapshots: host.diskUsage.automaticSnapshotsBytes,
+						sandboxes: host.diskUsage.sandboxesBytes,
+						images: host.diskUsage.imagesBytes,
+						templates: host.diskUsage.templatesBytes,
+						bundles: host.diskUsage.bundlesBytes,
+						other: host.diskUsage.otherBytes,
+						measuredAt: host.diskUsage.measuredAt,
+					},
+				}),
+		...(host.memory === undefined
+			? {}
+			: {
+					memory: {
+						mode: host.memory.mode,
+						state: host.memory.state,
+						totalMiB: host.memory.totalMiB,
+						reserveMiB: host.memory.reserveMiB,
+						capacityMiB: host.memory.capacityMiB,
+						reservedMiB: host.memory.reservedMiB,
+						committedMiB: host.memory.committedMiB,
+						guestUsedMiB: host.memory.guestUsedMiB,
+						residentMiB: host.memory.residentMiB,
+						availableMiB: host.memory.availableMiB,
+						swapUsedMiB: host.memory.swapUsedMiB,
+						pressureSome: host.memory.pressureSome,
+						pressureFull: host.memory.pressureFull,
+						maxRatio: host.memory.maxRatio,
+					},
+				}),
+		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 	};
 }
 
@@ -1743,6 +1786,7 @@ function hostsSource({ api }: Context): HostsSource {
 			await api.revokeHost(id);
 		},
 		update: async (id) => hostOf(await api.updateHostAgent(id)),
+		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateHost(id, { savedSnapshotBytesLimit: bytes })),
 		checkForUpdates: () => api.checkHostUpdates(),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
@@ -1840,6 +1884,7 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 			await api.removeAccountHost(id);
 		},
 		update: async (id) => hostOf(await api.updateAccountHostAgent(id)),
+		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateAccountHost(id, { savedSnapshotBytesLimit: bytes })),
 	};
 }
 

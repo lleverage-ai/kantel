@@ -1,3 +1,4 @@
+import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { pgliteDatabase } from "@kantel/sql/testing";
@@ -5,16 +6,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type PersonIdentity, personalAccountIdOf } from "../src/auth.ts";
 import {
 	type BackendCapabilities,
+	type BackendDiskUsage,
 	DetachedWaitEnded,
 	type ExecRequest,
 	type ExecResult,
 	type SandboxBackend,
 	type SandboxSpec,
+	type SharedSnapshotBytes,
+	type TakenSnapshot,
 } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
-import { restoreAsked } from "../src/machine.ts";
+import { memoryOf, restoreAsked } from "../src/machine.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
+	AUTOMATIC_SNAPSHOT_TTL_MS,
 	attributeSnapshotBytes,
 	checkShape,
 	HOST_REVOKED_REASON,
@@ -27,8 +32,11 @@ import {
 	NEVER_MADE,
 	PLACEHOLDER_RATES,
 	publicOrigin,
+	RETIRE_LEASE_MS,
+	SAVE_ADMISSION_LEASE_MS,
 	SHARED_HOSTS_REFUSED,
 	SHARED_KEY_REFUSED,
+	SNAPSHOT_EXPIRY_EVERY_MS,
 	shapeFor,
 } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
@@ -102,6 +110,62 @@ async function failure(call: Promise<unknown>): Promise<KantelApiError> {
 		throw error;
 	}
 	throw new Error("Expected the call to fail");
+}
+
+const MiB = 2 ** 20;
+
+/** A snapshot's ref on its backend; fails the test when it has none. */
+async function refOf(store: ComputeStore, snapshotId: string): Promise<string> {
+	const ref = (await store.snapshots.get(snapshotId))?.ref;
+	if (ref === undefined) throw new Error(`no ref for ${snapshotId}`);
+	return ref;
+}
+
+/**
+ * The stub, its keeps and live saves `next.bytes` big (and with `next.unique`, that much their own and the files
+ * `next.shared` names shared), recording the refs it deletes and counting live saves. `oldHost`: no `snapshot.keep`,
+ * so a save shares its source's bytes. `failing.deletes`: a delete fails, as with its host away. `gate`: a live save
+ * waits for it.
+ */
+function sizedBackend(options: { oldHost?: boolean } = {}) {
+	const stub = createStubBackend();
+	const next: { bytes: number; unique?: number; shared: (ref: string) => SharedSnapshotBytes[] } = {
+		bytes: 0,
+		shared: () => [],
+	};
+	const released: string[] = [];
+	const failing = { deletes: false };
+	const takes = { count: 0, gate: undefined as Promise<void> | undefined };
+	// What the host says each snapshot takes in full now (`snapshotSizes`), or that it can't answer.
+	const measured = { sizes: undefined as Map<string, number> | undefined, offline: false };
+	const sized = (taken: TakenSnapshot): TakenSnapshot => ({
+		...taken,
+		sizeBytes: next.bytes,
+		...(next.unique === undefined ? {} : { uniqueBytes: next.unique, shared: next.shared(taken.ref) }),
+	});
+	const { keepSnapshot, ...withoutKeep } = stub;
+	const backend: SandboxBackend = {
+		...withoutKeep,
+		...(options.oldHost === true || keepSnapshot === undefined
+			? {}
+			: { keepSnapshot: async (ref: string) => sized((await keepSnapshot(ref)) ?? { ref, sizeBytes: 0 }) }),
+		takeSnapshot: async (sandboxId, taking) => {
+			takes.count += 1;
+			const taken = sized(await stub.takeSnapshot(sandboxId, taking));
+			await takes.gate;
+			return taken;
+		},
+		snapshotSizes: async () => {
+			if (measured.offline) throw new KantelError("unavailable", "The host is away");
+			return measured.sizes;
+		},
+		deleteSnapshot: async (ref) => {
+			if (failing.deletes) throw new KantelError("unavailable", "The host is away");
+			released.push(ref);
+			await stub.deleteSnapshot(ref);
+		},
+	};
+	return { backend, next, released, failing, takes, measured };
 }
 
 /**
@@ -739,6 +803,43 @@ describe("sandboxes", () => {
 		expect((await tom.readSnapshotFile(replaced.id, { path: "app.txt" })).content).toBe("v2");
 	});
 
+	it("keeps a snapshot's labels, and when the state it holds was taken beside when it was saved", async () => {
+		let clock = Date.UTC(2026, 10, 6, 9);
+		const { tom } = setup(createStubBackend(), { now: () => clock });
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		const taken = await tom.takeSnapshot(vm.id, { labels: { "git.base": "aaa" } });
+		expect(taken).toMatchObject({ labels: { "git.base": "aaa" }, createdAt: clock, takenAt: clock });
+
+		// Saved from the running sandbox: its state is the save's.
+		clock += 60_000;
+		const live = await tom.saveSnapshot({ name: "live", sandboxId: vm.id, labels: { "git.base": "bbb" } });
+		expect(live).toMatchObject({ labels: { "git.base": "bbb" }, createdAt: clock, takenAt: clock });
+
+		// Saved an hour after the sandbox stopped: its state is the stop's, which the save's own time would hide.
+		clock += 60_000;
+		const stopped = await tom.stopSandbox(vm.id, { wait: true });
+		const stoppedAt = (await tom.getSnapshot(stopped.latestSnapshotId ?? "")).createdAt;
+		clock += 3_600_000;
+		const later = await tom.saveSnapshot({ name: "later", sandboxId: vm.id });
+		expect(later.createdAt).toBe(clock);
+		expect(later.takenAt).toBe(stoppedAt);
+		expect(later.labels).toBeUndefined();
+		// One of its history: that entry's time.
+		const history = await tom.saveSnapshot({ name: "history", sandboxId: vm.id, snapshotId: taken.id });
+		expect(history.takenAt).toBe(taken.createdAt);
+
+		// Read back, one at a time and in the list.
+		expect(await tom.getSnapshot(live.id)).toMatchObject({ labels: { "git.base": "bbb" }, takenAt: live.createdAt });
+		const listed = (await tom.listSnapshots({ kind: "saved" })).items;
+		expect(listed.find((snapshot) => snapshot.id === later.id)?.takenAt).toBe(stoppedAt);
+
+		// Labels are bounded, as a description is.
+		const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, "v"]));
+		expect((await failure(tom.saveSnapshot({ name: "many", sandboxId: vm.id, labels: many }))).code).toBe("invalid");
+		const long = { "git.base": "x".repeat(501) };
+		expect((await failure(tom.takeSnapshot(vm.id, { labels: long }))).code).toBe("invalid");
+	});
+
 	it("records a kept save's memory as its backend says, and stores none it couldn't keep", async () => {
 		const stub = createStubBackend();
 		let answer: "pruned" | "refused" = "pruned";
@@ -904,6 +1005,9 @@ describe("sandboxes", () => {
 		expect((await tom.getSnapshot(saved.id)).sizeBytes).toBe(104);
 		// Its source, automatic, is left what is its own.
 		expect((await tom.getSnapshot(taken.id)).sizeBytes).toBe(10);
+		// Each keeps its full size too, shared files included, which a host's limit on saved bytes counts.
+		expect((await store.snapshots.get(saved.id))?.fullSizeBytes).toBe(104);
+		expect((await store.snapshots.get(taken.id))?.fullSizeBytes).toBe(110);
 
 		// A host with isolates too: their snapshots say nothing of what is their own, and keep their reported size, while
 		// the microVM ones are still counted by their shared files.
@@ -1264,6 +1368,62 @@ describe("sandboxes", () => {
 			wait: true,
 		});
 		expect(bigger.resources).toMatchObject({ vcpus: 4, memoryMb: 16_384 });
+	});
+
+	it("refuses a sandbox with less memory than its saved snapshot's least, and keeps the least through a replace", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		const saved = await tom.saveSnapshot({ name: "monorepo-checks", sandboxId: vm.id, minMemoryMb: 16_384 });
+		expect(saved.minMemoryMb).toBe(16_384);
+		expect((await tom.getSnapshot(saved.id)).minMemoryMb).toBe(16_384);
+
+		const before = (await tom.listSandboxes({ all: true })).items.length;
+		// Its own machine (large, 8 GB), another size and a smaller shape: each refused before anything is made.
+		for (const body of [{}, { size: "small" as const }, { resources: { vcpus: 8, memoryMb: 8192 } }]) {
+			const refused = await failure(tom.createSandbox({ from: saved.id, ...body }));
+			expect(refused.code).toBe("invalid");
+			expect(refused.message).toContain("needs at least 16 GB of memory (16384 MB)");
+		}
+		expect((await tom.listSandboxes({ all: true })).items.length).toBe(before);
+
+		const enough = await tom.createSandbox({ from: saved.id, resources: { vcpus: 8, memoryMb: 16_384 }, wait: true });
+		expect(enough.resources).toMatchObject({ vcpus: 8, memoryMb: 16_384 });
+
+		// A replace keeps it unless it says otherwise; 0 is none.
+		const replaced = await tom.saveSnapshot({ name: "monorepo-checks", sandboxId: vm.id, replace: true });
+		expect(replaced.minMemoryMb).toBe(16_384);
+		const cleared = await tom.saveSnapshot({
+			name: "monorepo-checks",
+			sandboxId: vm.id,
+			replace: true,
+			minMemoryMb: 0,
+		});
+		expect(cleared.minMemoryMb).toBeUndefined();
+		const any = await tom.createSandbox({ from: cleared.id, wait: true });
+		expect(any.state).toBe("running");
+
+		const isolate = await tom.createSandbox({ type: "isolate", wait: true });
+		const wrongType = await failure(tom.saveSnapshot({ name: "iso", sandboxId: isolate.id, minMemoryMb: 1024 }));
+		expect(wrongType.code).toBe("invalid");
+
+		// Its source sandbox deleted: still checked, on the host that holds it.
+		const kept = await tom.saveSnapshot({ name: "kept", sandboxId: vm.id, minMemoryMb: 16_384 });
+		await tom.deleteSandbox(vm.id);
+		for (const body of [{}, { size: "large" as const }]) {
+			expect((await failure(tom.createSandbox({ from: kept.id, ...body }))).message).toContain("needs at least 16 GB");
+		}
+	});
+
+	it("knows a size's memory only where the hosts it may go to agree on it", () => {
+		const large = (memoryMb: number) => ({ name: "large" as const, vcpus: 4, memoryMb, diskGb: 40 });
+		expect(memoryOf({ size: "large" }, [large(8192)])).toBe(8192);
+		expect(memoryOf({ size: "large" }, [large(8192), large(8192)])).toBe(8192);
+		expect(memoryOf({ size: "large" }, [large(16_384), large(8192)])).toBeUndefined();
+		expect(memoryOf({ size: "large", shape: { vcpus: 8, memoryMb: 16_384 } }, [large(8192)])).toBe(16_384);
+		// Its copied machine's, where it is that one.
+		const copies = { size: "large" as const, resources: { vcpus: 4, memoryMb: 12_288, diskGb: 40 } };
+		expect(memoryOf({ size: "large" }, [large(8192)], copies)).toBe(12_288);
+		expect(memoryOf(undefined, [large(8192)])).toBeUndefined();
 	});
 
 	it("refuses a shape it can't make", async () => {
@@ -3743,6 +3903,422 @@ describe("hosts", () => {
 		expect(await api.fetch(new Request("http://compute.test/elsewhere"))).toBeUndefined();
 	});
 
+	it("shows a host's memory as the backend last said, without writing it to the host's record", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const report: computeSchema.HostMemory = {
+			mode: "used",
+			state: "ok",
+			totalMiB: 128_000,
+			reserveMiB: 12_800,
+			capacityMiB: 115_200,
+			reservedMiB: 131_072,
+			committedMiB: 45_056,
+			guestUsedMiB: 12_288,
+			residentMiB: 24_576,
+			availableMiB: 100_000,
+			swapUsedMiB: 0,
+			pressureSome: 0,
+			pressureFull: 0,
+			maxRatio: 2.5,
+			measuredAt: 1_700_000_000_000,
+		};
+		let memory: computeSchema.HostMemory | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				return {
+					...read,
+					hosts: (read.hosts ?? []).map((host) => (memory === undefined ? host : { ...host, memory })),
+				};
+			},
+		};
+		const { root } = setup(backend, { store });
+		expect((await root.getHost(STUB_HOST_ID)).memory).toBeUndefined();
+		memory = report;
+		expect((await root.listHosts()).items[0]?.memory).toEqual(report);
+		// It moves on every heartbeat: the record is never written for it.
+		const written = await store.hosts.get(STUB_HOST_ID);
+		memory = { ...report, committedMiB: 50_000 };
+		expect((await root.listHosts()).items[0]?.memory?.committedMiB).toBe(50_000);
+		expect(await store.hosts.get(STUB_HOST_ID)).toEqual(written);
+		expect(written).not.toHaveProperty("memory");
+		// A host that stops saying has none.
+		memory = undefined;
+		expect((await root.listHosts()).items[0]?.memory).toBeUndefined();
+	});
+
+	it("shows what takes a host's disk as the host last measured it, its snapshots split by their records", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const rest = {
+			totalBytes: 1_000,
+			usedBytes: 600,
+			sandboxesBytes: 150,
+			imagesBytes: 50,
+			templatesBytes: 40,
+			bundlesBytes: 10,
+			otherBytes: 50,
+			measuredAt: 1_700_000_000_000,
+		};
+		const measured = { ...rest, snapshotsBytes: 300 };
+		let disk: BackendDiskUsage | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				return {
+					...read,
+					hosts: (read.hosts ?? []).map((host) => (disk === undefined ? host : { ...host, diskUsage: disk })),
+				};
+			},
+		};
+		const { root, tom } = setup(backend, { store });
+		expect((await root.getHost(STUB_HOST_ID)).diskUsage).toBeUndefined();
+		disk = measured;
+		await root.createHostJoinToken({});
+		// No saved snapshots: all of it is automatic, a manual take (which a host keeps as saved) included.
+		const sandbox = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		await tom.takeSnapshot(sandbox.id, {});
+		// An isolate's save is among its sandbox's files on the host, not its snapshots: it counts for neither.
+		const isolate = await tom.createSandbox({ type: "isolate", autoStopMinutes: null, wait: true });
+		const isolateSave = await tom.saveSnapshot({ name: "isolate", sandboxId: isolate.id });
+		await store.snapshots.update(isolateSave.id, (current) => ({ ...current, sizeBytes: 100 }));
+		expect((await root.listHosts()).items[0]?.diskUsage).toEqual({
+			...rest,
+			savedSnapshotsBytes: 0,
+			automaticSnapshotsBytes: 300,
+		});
+		// A save counts its size as saved, and the rest stays automatic.
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: sandbox.id });
+		await store.snapshots.update(saved.id, (current) => ({ ...current, sizeBytes: 100 }));
+		expect((await root.getHost(STUB_HOST_ID)).diskUsage).toMatchObject({
+			savedSnapshotsBytes: 100,
+			automaticSnapshotsBytes: 200,
+		});
+		// Never more than the host measured for its snapshots.
+		await store.snapshots.update(saved.id, (current) => ({ ...current, sizeBytes: 1_000 }));
+		expect((await root.getHost(STUB_HOST_ID)).diskUsage).toMatchObject({
+			savedSnapshotsBytes: 300,
+			automaticSnapshotsBytes: 0,
+		});
+
+		// A host that splits its snapshots by snapshot: saved is what the saved ones hold of those files, each group once,
+		// whatever their sizes say (memory the save shares with its sandbox, say, is the sandbox's).
+		const savedRef = await refOf(store, saved.id);
+		const autoRef = `${STUB_HOST_ID}/snap-auto`;
+		const otherRef = `${STUB_HOST_ID}/snap-other`;
+		disk = {
+			...measured,
+			snapshotOwnBytes: { [savedRef]: 40, [autoRef]: 100, [otherRef]: 60 },
+			snapshotShared: [
+				{ refs: [savedRef, autoRef], bytes: 70 },
+				{ refs: [autoRef, otherRef], bytes: 30 },
+			],
+		};
+		await root.createHostJoinToken({});
+		expect((await root.getHost(STUB_HOST_ID)).diskUsage).toEqual({
+			...rest,
+			savedSnapshotsBytes: 110,
+			automaticSnapshotsBytes: 190,
+		});
+	});
+
+	it("refuses a save past a host's limit on each account's saved snapshots, set by its admin", async () => {
+		const store = createMemoryStore();
+		const { backend, next, released, takes } = sizedBackend();
+		const { root, tom, ann } = setup(backend, { store });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		next.bytes = 40 * MiB;
+		const first = await tom.saveSnapshot({ name: "first", sandboxId: sandbox.id });
+		expect(first.sizeBytes).toBe(40 * MiB);
+		expect((await failure(tom.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 1 }))).code).toBe("forbidden");
+		const limited = await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+		expect(limited.savedSnapshotBytesLimit).toBe(50 * MiB);
+		// Another write keeps it.
+		expect((await root.updateHost(STUB_HOST_ID, { name: "renamed" })).savedSnapshotBytesLimit).toBe(50 * MiB);
+
+		// A history entry's copy of another 20 MiB would take it past: refused, and the copy's bytes go again, while the
+		// entry's stay.
+		const taken = await tom.takeSnapshot(sandbox.id, {});
+		const takenRef = await refOf(store, taken.id);
+		const firstRef = await refOf(store, first.id);
+		next.bytes = 20 * MiB;
+		const refused = await failure(tom.saveSnapshot({ name: "second", sandboxId: sandbox.id, snapshotId: taken.id }));
+		expect(refused.code).toBe("exhausted");
+		expect(refused.message).toContain("50 MiB of saved snapshots on this host");
+		expect(refused.message).toContain("has 40 MiB; this one is 20 MiB");
+		expect(released).toHaveLength(1);
+		expect(released).not.toContain(takenRef);
+		expect((await store.snapshots.list()).filter((snapshot) => snapshot.name === "second")).toEqual([]);
+		expect((await tom.getSnapshot(taken.id)).state).toBe("ready");
+
+		// Replacing the first with it fits: the first's bytes go.
+		const replaced = await tom.saveSnapshot({
+			name: "first",
+			sandboxId: sandbox.id,
+			snapshotId: taken.id,
+			replace: true,
+		});
+		expect(replaced.name).toBe("first");
+		expect(released).toContain(firstRef);
+		// Another account's saves count against its own.
+		const own = await ann.createSandbox({ autoStopMinutes: null, wait: true });
+		next.bytes = 45 * MiB;
+		await ann.saveSnapshot({ name: "anns", sandboxId: own.id });
+
+		// The limit reached: a save of a running sandbox's state now is refused before it's taken.
+		await store.snapshots.update(replaced.id, (current) => ({
+			...current,
+			sizeBytes: 50 * MiB,
+			fullSizeBytes: 50 * MiB,
+		}));
+		const before = takes.count;
+		expect((await failure(tom.saveSnapshot({ name: "third", sandboxId: sandbox.id }))).code).toBe("exhausted");
+		expect(takes.count).toBe(before);
+
+		// Removed, saves go through again.
+		const unlimited = await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: null });
+		expect(unlimited.savedSnapshotBytesLimit).toBeUndefined();
+		expect((await tom.saveSnapshot({ name: "third", sandboxId: sandbox.id })).name).toBe("third");
+	});
+
+	/**
+	 * A host whose keeps link an entry's 60 MiB of files into each copy, 1 MiB of each copy its own: a keep's answer
+	 * names, as a host does, only the snapshots still there (none whose bytes were deleted).
+	 */
+	async function linkingCopies() {
+		const store = createMemoryStore();
+		const sized = sizedBackend();
+		const { root, tom } = setup(sized.backend, { store });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const entry = await tom.takeSnapshot(sandbox.id, {});
+		const entryRef = await refOf(store, entry.id);
+		const copies: string[] = [];
+		sized.next.bytes = 61 * MiB;
+		sized.next.unique = MiB;
+		sized.next.shared = (ref) => {
+			copies.push(ref);
+			const there = copies.filter((copy) => !sized.released.includes(copy));
+			return [{ refs: [entryRef, ...there], bytes: 60 * MiB }];
+		};
+		const copy = (name: string, replace = false) =>
+			tom.saveSnapshot({ name, sandboxId: sandbox.id, snapshotId: entry.id, ...(replace ? { replace } : {}) });
+		const limit = (mib: number | null) =>
+			root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: mib === null ? null : mib * MiB });
+		return { ...sized, store, tom, sandbox, copy, limit };
+	}
+
+	it("counts each save at its full size: copies that share files count apart", async () => {
+		const { store, released, copy, limit } = await linkingCopies();
+		await limit(100);
+		const first = await copy("first");
+		// Its size counts the files it shares (it holds them); its full size is the same 61 MiB.
+		expect(first.sizeBytes).toBe(61 * MiB);
+		// A second copy sharing the same 60 MiB counts its full 61 MiB too: 122 MiB, past 100.
+		const refused = await failure(copy("second"));
+		expect(refused.code).toBe("exhausted");
+		expect(refused.message).toContain("has 61 MiB; this one is 61 MiB");
+		expect(released).toHaveLength(1);
+		expect((await store.snapshots.list()).filter((snapshot) => snapshot.name === "second")).toEqual([]);
+		// Up to 122 MiB, both fit.
+		await limit(122);
+		const second = await copy("second");
+		expect(second.state).toBe("ready");
+	});
+
+	it("reads the full size of a save recorded before full sizes were from its host, refusing when it can't", async () => {
+		const { store, next, measured, takes, tom, sandbox, copy, limit } = await linkingCopies();
+		// A holds the 60 MiB both copies share; B, beside it, was recorded at its own 1 MiB, before full sizes were.
+		const a = await copy("a");
+		const b = await copy("b");
+		const bRef = await refOf(store, b.id);
+		for (const old of [a, b]) {
+			await store.snapshots.update(old.id, ({ fullSizeBytes: _, ...current }) => current);
+		}
+		await tom.deleteSnapshot(a.id);
+		await limit(100);
+		// An unrelated 70 MiB would fit were B counted at 1 MiB; the host says it takes 61, so it doesn't.
+		measured.sizes = new Map([[bRef, 61 * MiB]]);
+		next.bytes = 70 * MiB;
+		next.unique = undefined;
+		const refused = await failure(tom.saveSnapshot({ name: "big", sandboxId: sandbox.id }));
+		expect(refused.code).toBe("exhausted");
+		expect(refused.message).toContain("has 61 MiB; this one is 70 MiB");
+		expect((await store.snapshots.get(b.id))?.fullSizeBytes).toBe(61 * MiB);
+		// A host that can't answer refuses the save, nothing taken, rather than count less.
+		await store.snapshots.update(b.id, ({ fullSizeBytes: _, ...current }) => current);
+		measured.offline = true;
+		const before = takes.count;
+		expect((await failure(tom.saveSnapshot({ name: "big", sandboxId: sandbox.id }))).code).toBe("unavailable");
+		expect(takes.count).toBe(before);
+		// With no limit, the host isn't asked.
+		await limit(null);
+		expect((await tom.saveSnapshot({ name: "big", sandboxId: sandbox.id })).state).toBe("ready");
+	});
+
+	it("counts a save still being admitted at its full size, and frees it once withdrawn", async () => {
+		const { store, backend, copy, limit } = await linkingCopies();
+		const first = await copy("first");
+		// The first still being admitted (on another gateway, say): it counts, so a second copy doesn't fit 100 MiB.
+		await store.snapshots.update(first.id, (current) => ({ ...current, state: "creating" }));
+		await limit(100);
+		expect((await failure(copy("second"))).message).toContain("has 61 MiB; this one is 61 MiB");
+		// Withdrawn, its bytes deleted: the second fits.
+		await backend.deleteSnapshot(await refOf(store, first.id));
+		await store.snapshots.delete(first.id);
+		expect((await copy("second")).state).toBe("ready");
+	});
+
+	it("counts the bytes a save shares with its source once, on a host that can't keep copies", async () => {
+		const store = createMemoryStore();
+		const { backend, released } = sizedBackend({ oldHost: true });
+		const { root, tom } = setup(backend, { store });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const entry = await tom.takeSnapshot(sandbox.id, {});
+		const other = await tom.takeSnapshot(sandbox.id, {});
+		await store.snapshots.update(entry.id, (current) => ({ ...current, sizeBytes: 40 * MiB }));
+		await store.snapshots.update(other.id, (current) => ({ ...current, sizeBytes: 20 * MiB }));
+		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+		// Both saves of the entry share its ref: 40 MiB in all.
+		await tom.saveSnapshot({ name: "one", sandboxId: sandbox.id, snapshotId: entry.id });
+		await tom.saveSnapshot({ name: "two", sandboxId: sandbox.id, snapshotId: entry.id });
+		// Refused, a save sharing its source's bytes leaves them be.
+		expect((await failure(tom.saveSnapshot({ name: "three", sandboxId: sandbox.id, snapshotId: other.id }))).code).toBe(
+			"exhausted",
+		);
+		expect(released).toEqual([]);
+		expect((await tom.getSnapshot(other.id)).state).toBe("ready");
+		expect((await store.snapshots.list()).filter((snapshot) => snapshot.name === "three")).toEqual([]);
+	});
+
+	it("takes back a save its gateway left being admitted, once its lease is past, freeing its bytes", async () => {
+		const memory = createMemoryStore();
+		// The gateway dies once the save is stored `creating`: nothing it writes after lands.
+		const died = { yes: false };
+		const store: ComputeStore = {
+			...memory,
+			snapshots: {
+				...memory.snapshots,
+				put: async (record) => {
+					if (died.yes) throw new Error("the gateway died");
+					await memory.snapshots.put(record);
+					if (record.state === "creating") died.yes = true;
+				},
+				update: async (id, change) => {
+					if (died.yes) throw new Error("the gateway died");
+					return memory.snapshots.update(id, change);
+				},
+			},
+		};
+		const { backend, next, released } = sizedBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const dying = setup(backend, { store, now: () => clock.at });
+		const sandbox = await dying.tom.createSandbox({ autoStopMinutes: null, wait: true });
+		await dying.root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+		next.bytes = 40 * MiB;
+		await failure(dying.tom.saveSnapshot({ name: "lost", sandboxId: sandbox.id }));
+		const [left] = (await memory.snapshots.list()).filter((snapshot) => snapshot.name === "lost");
+		expect(left?.state).toBe("creating");
+
+		// Another gateway: the stranded save counts against the limit while its lease runs.
+		const { api, tom } = setup(backend, { store: memory, now: () => clock.at });
+		next.bytes = 20 * MiB;
+		expect((await failure(tom.saveSnapshot({ name: "next", sandboxId: sandbox.id }))).code).toBe("exhausted");
+		clock.at += SAVE_ADMISSION_LEASE_MS - 60_000;
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await memory.snapshots.get(left?.id ?? ""))?.state).toBe("creating");
+		// Past it, the sweep takes it back, its bytes with it, and the next save fits.
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		await api.service.sweep();
+		await api.service.idle();
+		expect(released).toContain(left?.ref);
+		expect(await memory.snapshots.get(left?.id ?? "")).toBeUndefined();
+		expect((await tom.saveSnapshot({ name: "next", sandboxId: sandbox.id })).state).toBe("ready");
+	});
+
+	it("fails an admission the sweep took back meanwhile, its bytes released once", async () => {
+		const memory = createMemoryStore();
+		// The admission's read of the host's limit waits, once the save is stored `creating`.
+		let stored = false;
+		let resume = () => {};
+		const held = new Promise<void>((resolve) => {
+			resume = resolve;
+		});
+		let waiting = false;
+		const store: ComputeStore = {
+			...memory,
+			snapshots: {
+				...memory.snapshots,
+				put: async (record) => {
+					await memory.snapshots.put(record);
+					if (record.state === "creating") stored = true;
+				},
+			},
+			hosts: {
+				...memory.hosts,
+				get: async (id) => {
+					if (stored) {
+						stored = false;
+						waiting = true;
+						await held;
+					}
+					return memory.hosts.get(id);
+				},
+			},
+		};
+		const { backend, next, released } = sizedBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const { api, root, tom } = setup(backend, { store, now: () => clock.at });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+		next.bytes = 10 * MiB;
+		const saving = failure(tom.saveSnapshot({ name: "slow", sandboxId: sandbox.id }));
+		while (!waiting) await new Promise((resolve) => setTimeout(resolve, 5));
+		const [record] = (await memory.snapshots.list()).filter((snapshot) => snapshot.name === "slow");
+		clock.at += SAVE_ADMISSION_LEASE_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+		await api.service.sweep();
+		await api.service.idle();
+		expect(released).toEqual([record?.ref]);
+		resume();
+		expect((await saving).code).toBe("conflict");
+		expect(released).toEqual([record?.ref]);
+		expect((await memory.snapshots.list()).filter((snapshot) => snapshot.name === "slow")).toEqual([]);
+	});
+
+	it("keeps a refused save's bytes recorded until its host deletes them, and tries again", async () => {
+		const store = createMemoryStore();
+		const { backend, next, released, failing } = sizedBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		// An account may keep one saved snapshot: a refused save still settling doesn't count as one.
+		const { api, root, tom } = setup(backend, { store, now: () => clock.at, limits: { savedSnapshots: 1 } });
+		const sandbox = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		await root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 10 * MiB });
+		next.bytes = 20 * MiB;
+		failing.deletes = true;
+		expect((await failure(tom.saveSnapshot({ name: "big", sandboxId: sandbox.id }))).code).toBe("exhausted");
+		// The host couldn't delete them: the record stays, settling, counted for nothing and not in the name's way.
+		const [left] = (await store.snapshots.list()).filter((snapshot) => snapshot.name === "big");
+		expect(left?.state).toBe("deleting");
+		expect(left?.retiring?.settling).toBe(true);
+		next.bytes = 5 * MiB;
+		failing.deletes = false;
+		const fits = await tom.saveSnapshot({ name: "big", sandboxId: sandbox.id });
+		expect(fits.state).toBe("ready");
+		// Its name names the new one, not the one being deleted.
+		const made = await tom.createSandbox({ from: "big", autoStopMinutes: null, wait: true });
+		expect(made.state).toBe("running");
+		// The sweep deletes them once the host can, even with expiry off.
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		await api.service.sweep();
+		await api.service.idle();
+		expect(released).toContain(left?.ref);
+		expect(await store.snapshots.get(left?.id ?? "")).toBeUndefined();
+		expect((await tom.getSnapshot(fits.id)).state).toBe("ready");
+	});
+
 	it("sets the public URL join commands use, and goes back to the deployment's own", async () => {
 		const { root, tom } = setup();
 		const before = await root.getPublicUrl();
@@ -4202,5 +4778,874 @@ describe("people's names", () => {
 		await store.accounts.update(personal.id, (current) => ({ ...current, name: "usr_ann" }));
 		expect((await ann.getCaller()).accounts.find((account) => account.id === personal.id)?.name).toBe("Ann");
 		expect((await ann.getAccount(personal.id)).name).toBe("Ann");
+	});
+});
+
+describe("snapshot expiry", () => {
+	/**
+	 * A gateway on a clock, whose backend records the bytes it deletes. `oldHost`: no `snapshot.keep`, so a save shares
+	 * its source's bytes. `failDeletes`: a delete fails, as with its host away.
+	 */
+	function expiring(options: { oldHost?: boolean; store?: ReturnType<typeof createMemoryStore> } = {}) {
+		const store = options.store ?? createMemoryStore();
+		const stub = createStubBackend();
+		const released: string[] = [];
+		const failing = { deletes: false };
+		const { keepSnapshot: _keep, ...withoutKeep } = stub;
+		const backend: SandboxBackend = {
+			...(options.oldHost === true ? withoutKeep : stub),
+			deleteSnapshot: async (ref) => {
+				if (failing.deletes) throw new KantelError("unavailable", "The host is away");
+				released.push(ref);
+				await stub.deleteSnapshot(ref);
+			},
+		};
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const api = createComputeApi({
+			backend,
+			store,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+			now: () => clock.at,
+			snapshotExpiry: true,
+			snapshotExpiryDelayMs: 0,
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const sweep = async () => {
+			await api.service.sweep();
+			await api.service.idle();
+		};
+		/** Past the automatic snapshots' time, and the next expiry pass's. */
+		const expire = async () => {
+			clock.at += AUTOMATIC_SNAPSHOT_TTL_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+			await sweep();
+		};
+		const refOf = async (id: string) => (await store.snapshots.get(id))?.ref;
+		return { store, api, tom, clock, sweep, expire, released, failing, refOf };
+	}
+
+	it("deletes automatic snapshots past their time, keeping a sandbox's newest, a save's copy and shared bytes", async () => {
+		const { store, tom, clock, sweep, released, refOf } = expiring();
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const savedFrom = await tom.takeSnapshot(running.id, {});
+		const own = await tom.takeSnapshot(running.id, {});
+		const legacy = await tom.takeSnapshot(running.id, {});
+		const newest = await tom.takeSnapshot(running.id, {});
+		// A save keeps a copy of its own (snapshot.keep): its source's expiry doesn't touch it.
+		const saved = await tom.saveSnapshot({ name: "kept", sandboxId: running.id, snapshotId: savedFrom.id });
+		expect(await refOf(saved.id)).not.toBe(await refOf(savedFrom.id));
+		// A save from before its host kept copies shares its source's ref: expiry leaves that source be.
+		const legacyRef = await refOf(legacy.id);
+		const sharing = await tom.saveSnapshot({ name: "legacy", sandboxId: running.id, snapshotId: legacy.id });
+		await store.snapshots.update(sharing.id, (current) => ({ ...current, ref: legacyRef }));
+		const stopped = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		await tom.stopSandbox(stopped.id, { wait: true });
+		const resumesFrom = (await tom.getSandbox(stopped.id)).latestSnapshotId;
+		if (resumesFrom === undefined) throw new Error("the stop took no snapshot");
+		const [fromRef, ownRef] = [await refOf(savedFrom.id), await refOf(own.id)];
+
+		// Within its time, nothing goes.
+		clock.at += AUTOMATIC_SNAPSHOT_TTL_MS - 60_000;
+		await sweep();
+		expect(await store.snapshots.get(own.id)).toBeDefined();
+
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		await sweep();
+		expect(await store.snapshots.get(own.id)).toBeUndefined();
+		expect(released).toContain(ownRef);
+		expect(await store.snapshots.get(savedFrom.id)).toBeUndefined();
+		expect(released).toContain(fromRef);
+		expect((await tom.getSnapshot(saved.id)).id).toBe(saved.id);
+		// The shared one stays, record and bytes.
+		expect((await store.snapshots.get(legacy.id))?.state).toBe("ready");
+		expect(released).not.toContain(legacyRef);
+		// The running sandbox's newest, and the one the stopped sandbox resumes from, stay.
+		expect(await store.snapshots.get(newest.id)).toBeDefined();
+		expect(await store.snapshots.get(resumesFrom)).toBeDefined();
+		expect((await tom.resumeSandbox(stopped.id, { wait: true })).state).toBe("running");
+		// A save is never expired.
+		clock.at += 30 * 24 * 3_600_000;
+		await sweep();
+		expect(await store.snapshots.get(saved.id)).toBeDefined();
+	});
+
+	it("rolls an adoption back when its check of the snapshot can't be read", async () => {
+		const base = createMemoryStore();
+		let armed = false;
+		let failReads = false;
+		const store = {
+			...base,
+			snapshots: {
+				...base.snapshots,
+				get: async (id: string) => {
+					if (failReads) throw new KantelError("unavailable", "An injected failure");
+					return base.snapshots.get(id);
+				},
+			},
+			sandboxes: {
+				...base.sandboxes,
+				// Once the fork is stored, the check of its snapshot fails.
+				put: async (record: Parameters<typeof base.sandboxes.put>[0]) => {
+					await base.sandboxes.put(record);
+					if (armed) failReads = true;
+				},
+			},
+		} as ReturnType<typeof createMemoryStore>;
+		const { tom } = expiring({ store });
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const snapshot = await tom.takeSnapshot(running.id, {});
+		const before = (await base.sandboxes.list()).length;
+		armed = true;
+		const refused = await failure(tom.forkSandbox(running.id, { snapshotId: snapshot.id }));
+		armed = false;
+		failReads = false;
+		expect(refused.code).toBe("conflict");
+		expect((await base.sandboxes.list()).length).toBe(before);
+	});
+
+	it("settles only the mark whose dependents it read, not one made again by the same process meanwhile", async () => {
+		const base = createMemoryStore();
+		let target: string | undefined;
+		let remarks = 0;
+		const store = {
+			...base,
+			sandboxes: {
+				...base.sandboxes,
+				// Every read of what depends on it, the mark is put back and made again (another token) while it reads.
+				list: async (where?: Parameters<typeof base.sandboxes.list>[0]) => {
+					const read = await base.sandboxes.list(where);
+					if (where === undefined && target !== undefined) {
+						remarks += 1;
+						const token = `ret_again_${remarks}`;
+						await base.snapshots.update(target, (current) =>
+							current.retiring === undefined ? undefined : { ...current, retiring: { ...current.retiring, token } },
+						);
+					}
+					return read;
+				},
+			},
+		} as ReturnType<typeof createMemoryStore>;
+		const { tom, expire, released, refOf } = expiring({ store });
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		const ref = await refOf(old.id);
+		target = old.id;
+		await expire();
+		target = undefined;
+		expect(remarks).toBeGreaterThan(1);
+		expect(released).not.toContain(ref);
+		expect((await base.snapshots.get(old.id))?.retiring?.settling).not.toBe(true);
+	});
+
+	it("expires nothing with expiry off, and nothing before its start delay once it is on", async () => {
+		for (const [on, delay] of [
+			[false, 0],
+			[true, 60 * 60_000],
+		] as const) {
+			const store = createMemoryStore();
+			const clock = { at: Date.UTC(2026, 0, 1) };
+			const api = createComputeApi({
+				backend: createStubBackend(),
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+				snapshotExpiry: on,
+				snapshotExpiryDelayMs: delay,
+			});
+			opened.push(api);
+			const tom = createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+			const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+			const old = await tom.takeSnapshot(running.id, {});
+			await tom.takeSnapshot(running.id, {});
+			await store.snapshots.update(old.id, (current) => ({ ...current, expiresAt: clock.at - 1 }));
+			const sweep = async (by: number) => {
+				clock.at += by;
+				await api.service.sweep();
+				await api.service.idle();
+			};
+			if (on) {
+				// Within the delay: kept; past it: expired.
+				await sweep(delay - 1);
+				expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+				await sweep(2);
+				expect(await store.snapshots.get(old.id)).toBeUndefined();
+			} else {
+				await sweep(SNAPSHOT_EXPIRY_EVERY_MS);
+				await sweep(365 * 24 * 3_600_000);
+				expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+			}
+		}
+	});
+
+	it("leaves the source of an older gateway's create alone while expiry waits out its start delay", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const delay = SNAPSHOT_EXPIRY_EVERY_MS * 3;
+		const api = createComputeApi({
+			backend: stub,
+			store,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+			now: () => clock.at,
+			snapshotExpiry: true,
+			snapshotExpiryDelayMs: delay,
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		// Taken long ago (already past its expiry), as by the gateway this one replaced.
+		const old = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		await store.snapshots.update(old.id, (current) => ({ ...current, expiresAt: clock.at - 1 }));
+		// An older gateway's fork, which doesn't adopt: it has read the snapshot ready, and is held before it stores
+		// its sandbox. This gateway sweeps meanwhile, within its start delay.
+		const read = await store.snapshots.get(old.id);
+		expect(read?.state).toBe("ready");
+		for (let pass = 0; pass < 2; pass += 1) {
+			clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+			await api.service.sweep();
+			await api.service.idle();
+		}
+		expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+		// The older gateway stores its fork, never placed yet, made from it.
+		const [made] = (await tom.forkSandbox(running.id, { snapshotId: old.id, wait: true })).items;
+		if (made === undefined) throw new Error("no fork");
+		await store.sandboxes.update(made.id, (current) => ({
+			...current,
+			hostId: undefined,
+			latestSnapshotId: undefined,
+		}));
+		// Past the delay, expiry sees what depends on it, and keeps it.
+		clock.at += delay;
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+	});
+
+	it("expires nothing on a host that can't keep copies, which prunes its own", async () => {
+		const { store, tom, expire, released } = expiring({ oldHost: true });
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		await expire();
+		expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+		expect(released).toEqual([]);
+	});
+
+	it("keeps the snapshot a sandbox is made from only until it is placed", async () => {
+		const { store, tom, expire } = expiring();
+		const source = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const history = await tom.takeSnapshot(source.id, {});
+		await tom.takeSnapshot(source.id, {});
+		// A fork of history: placed, with snapshots of its own once it stops.
+		const [fork] = (await tom.forkSandbox(source.id, { snapshotId: history.id, wait: true })).items;
+		if (fork === undefined) throw new Error("no fork");
+		expect((await store.sandboxes.get(fork.id))?.source?.snapshotId).toBe(history.id);
+		await expire();
+		expect(await store.snapshots.get(history.id)).toBeUndefined();
+	});
+
+	it("keeps a snapshot whose bytes its host couldn't delete, hidden, and deletes them on a later sweep", async () => {
+		const { store, tom, expire, sweep, clock, released, failing, refOf } = expiring();
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		const ref = await refOf(old.id);
+		failing.deletes = true;
+		await expire();
+		// Gone to every read, its record kept with its ref for the retry.
+		expect((await store.snapshots.get(old.id))?.state).toBe("deleting");
+		expect((await failure(tom.getSnapshot(old.id))).code).toBe("not_found");
+		expect((await tom.listSnapshots({ sandboxId: running.id })).items.map((item) => item.id)).not.toContain(old.id);
+		failing.deletes = false;
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		await sweep();
+		expect(await store.snapshots.get(old.id)).toBeUndefined();
+		expect(released).toContain(ref);
+	});
+
+	for (const when of ["before", "after"] as const) {
+		it(`refuses a fork from a snapshot expiry marked, stored ${when} expiry reads the sandboxes`, async () => {
+			const base = createMemoryStore();
+			let hook: (() => Promise<unknown>) | undefined;
+			const sandboxes = base.sandboxes;
+			const store = {
+				...base,
+				sandboxes: {
+					...sandboxes,
+					// Expiry's read of every sandbox, once its snapshots are marked: the fork lands just before or just after it.
+					list: async (where?: Parameters<typeof sandboxes.list>[0]) => {
+						const run = where === undefined ? hook : undefined;
+						if (run !== undefined) hook = undefined;
+						if (run !== undefined && when === "before") await run();
+						const read = await sandboxes.list(where);
+						if (run !== undefined && when === "after") await run();
+						return read;
+					},
+				},
+			} as ReturnType<typeof createMemoryStore>;
+			const { tom, expire, released, refOf } = expiring({ store });
+			const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+			const old = await tom.takeSnapshot(running.id, {});
+			await tom.takeSnapshot(running.id, {});
+			const ref = await refOf(old.id);
+			const before = (await sandboxes.list()).length;
+			let refused: KantelApiError | undefined;
+			hook = async () => {
+				refused = await failure(tom.forkSandbox(running.id, { snapshotId: old.id }));
+			};
+			await expire();
+			// The fork saw the mark and let its record go; the snapshot, which nothing then depends on, is deleted.
+			expect(refused?.code).toBe("conflict");
+			expect((await sandboxes.list()).length).toBe(before);
+			expect(await base.snapshots.get(old.id)).toBeUndefined();
+			expect(released).toContain(ref);
+		});
+	}
+
+	it("keeps the snapshot a never-placed fork is to be made from, marked and put back", async () => {
+		const { tom, expire, store } = expiring();
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		// A fork whose create failed: never placed, it is to be made from the snapshot (`latestRef`).
+		const [stored] = (await tom.forkSandbox(running.id, { snapshotId: old.id, wait: true })).items;
+		if (stored === undefined) throw new Error("no fork");
+		await store.sandboxes.update(stored.id, (current) => ({
+			...current,
+			hostId: undefined,
+			latestSnapshotId: undefined,
+		}));
+		await expire();
+		expect((await store.snapshots.get(old.id))?.state).toBe("ready");
+	});
+});
+
+describe("snapshot expiry across gateways", () => {
+	/** Two gateways on one store, one backend and one clock, as replicas are; the backend records what it deletes. */
+	function replicas() {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const released: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			deleteSnapshot: async (ref) => {
+				released.push(ref);
+				await stub.deleteSnapshot(ref);
+			},
+		};
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const gateway = () => {
+			const api = createComputeApi({
+				backend,
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+				snapshotExpiry: true,
+				snapshotExpiryDelayMs: 0,
+			});
+			opened.push(api);
+			return api;
+		};
+		const [a, b] = [gateway(), gateway()];
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				a.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const sweep = async (api: ComputeApi) => {
+			await api.service.sweep();
+			await api.service.idle();
+		};
+		return { store, released, clock, a, b, tom, sweep };
+	}
+
+	it("keeps the source of a never-placed sandbox whose delete is under way, which may fail back to error", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		let hook: (() => Promise<void>) | undefined;
+		let failing: string | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			destroy: async (sandboxId) => {
+				if (sandboxId === failing) {
+					const run = hook;
+					hook = undefined;
+					if (run !== undefined) await run();
+					throw new KantelError("unavailable", "The host is away");
+				}
+				await stub.destroy(sandboxId);
+			},
+		};
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const gateway = () => {
+			const api = createComputeApi({
+				backend,
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+				snapshotExpiry: true,
+				snapshotExpiryDelayMs: 0,
+			});
+			opened.push(api);
+			return api;
+		};
+		const [a, b] = [gateway(), gateway()];
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				a.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const source = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		// A fork whose create failed: never placed, it is to be made from the snapshot.
+		const [fork] = (await tom.forkSandbox(running.id, { snapshotId: source.id, wait: true })).items;
+		if (fork === undefined) throw new Error("no fork");
+		await store.sandboxes.update(fork.id, (current) => ({
+			...current,
+			state: "error",
+			hostId: undefined,
+			latestSnapshotId: undefined,
+		}));
+		await store.snapshots.update(source.id, (current) => ({ ...current, expiresAt: clock.at - 1 }));
+		// Its delete is under way (deleting) when the other gateway expires snapshots; then its destroy fails.
+		failing = fork.id;
+		clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+		hook = async () => {
+			expect((await store.sandboxes.get(fork.id))?.state).toBe("deleting");
+			await b.service.sweep();
+			await b.service.idle();
+		};
+		await tom.deleteSandbox(fork.id).catch(() => undefined);
+		await a.service.idle();
+		expect(hook).toBeUndefined();
+		expect((await store.sandboxes.get(fork.id))?.state).toBe("error");
+		expect((await store.snapshots.get(source.id))?.state).toBe("ready");
+	});
+
+	it("leaves another gateway's mark alone, and expires what it puts back on a later pass", async () => {
+		const { store, released, clock, b, tom, sweep } = replicas();
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const old = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		const ref = (await store.snapshots.get(old.id))?.ref;
+		// Gateway A has marked it, and is checking what depends on it: B's sweep finds it deleting, not B's to settle.
+		await store.snapshots.update(old.id, (current) => ({
+			...current,
+			state: "deleting",
+			retiring: { by: "gateway-a", at: clock.at },
+		}));
+		await sweep(b);
+		expect((await store.snapshots.get(old.id))?.state).toBe("deleting");
+		expect(released).not.toContain(ref);
+		// A puts it back (something depended on it then); B expires it on a later pass.
+		await store.snapshots.update(old.id, ({ retiring: _, ...current }) => ({ ...current, state: "ready" }));
+		clock.at += AUTOMATIC_SNAPSHOT_TTL_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+		await sweep(b);
+		expect(await store.snapshots.get(old.id)).toBeUndefined();
+		expect(released).toContain(ref);
+	});
+
+	it("takes over a mark whose gateway went past its lease, checking what depends on it again", async () => {
+		const { store, released, clock, b, tom, sweep } = replicas();
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const kept = await tom.takeSnapshot(running.id, {});
+		const gone = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		const [keptRef, goneRef] = [(await store.snapshots.get(kept.id))?.ref, (await store.snapshots.get(gone.id))?.ref];
+		// A never-placed fork is to be made from one of them.
+		const [fork] = (await tom.forkSandbox(running.id, { snapshotId: kept.id, wait: true })).items;
+		if (fork === undefined) throw new Error("no fork");
+		await store.sandboxes.update(fork.id, (current) => ({
+			...current,
+			hostId: undefined,
+			latestSnapshotId: undefined,
+		}));
+		// Both marked by a gateway that then died.
+		for (const id of [kept.id, gone.id]) {
+			await store.snapshots.update(id, (current) => ({
+				...current,
+				state: "deleting",
+				retiring: { by: "gateway-gone", at: clock.at },
+			}));
+		}
+		// Within the lease, B leaves them be.
+		clock.at += RETIRE_LEASE_MS / 2;
+		await sweep(b);
+		expect((await store.snapshots.get(gone.id))?.state).toBe("deleting");
+		clock.at += RETIRE_LEASE_MS;
+		await sweep(b);
+		expect((await store.snapshots.get(kept.id))?.state).toBe("ready");
+		expect(released).not.toContain(keptRef);
+		expect(await store.snapshots.get(gone.id)).toBeUndefined();
+		expect(released).toContain(goneRef);
+	});
+
+	it("deletes an expired snapshot once when both gateways sweep at once, and keeps one something depends on", async () => {
+		const { store, released, clock, a, b, tom, sweep } = replicas();
+		const running = await tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const gone = await tom.takeSnapshot(running.id, {});
+		const kept = await tom.takeSnapshot(running.id, {});
+		await tom.takeSnapshot(running.id, {});
+		const [fork] = (await tom.forkSandbox(running.id, { snapshotId: kept.id, wait: true })).items;
+		if (fork === undefined) throw new Error("no fork");
+		await store.sandboxes.update(fork.id, (current) => ({
+			...current,
+			hostId: undefined,
+			latestSnapshotId: undefined,
+		}));
+		const goneRef = (await store.snapshots.get(gone.id))?.ref;
+		clock.at += AUTOMATIC_SNAPSHOT_TTL_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+		await Promise.all([sweep(a), sweep(b)]);
+		expect(await store.snapshots.get(gone.id)).toBeUndefined();
+		expect(released.filter((ref) => ref === goneRef)).toHaveLength(1);
+		expect((await store.snapshots.get(kept.id))?.state).toBe("ready");
+	});
+});
+
+describe("snapshot deletes under random interleavings", () => {
+	/** A small seeded generator (mulberry32), so a failing seed can be run again. */
+	function random(seed: number) {
+		let state = seed >>> 0;
+		const next = () => {
+			state = (state + 0x6d2b79f5) >>> 0;
+			let t = state;
+			t = Math.imul(t ^ (t >>> 15), t | 1);
+			t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+			return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+		};
+		return { next, pick: <T>(items: readonly T[]): T | undefined => items[Math.floor(next() * items.length)] };
+	}
+
+	async function run(seed: number) {
+		const rng = random(seed);
+		const base = createMemoryStore();
+		const faults = { on: false };
+		const flaky = () => faults.on && rng.next() < 0.3;
+		const fail = () => new KantelError("unavailable", "An injected failure");
+		// Transient failures of the reads expiry and deletes depend on: every sandbox, and a ref's records.
+		const store = {
+			...base,
+			sandboxes: {
+				...base.sandboxes,
+				list: async (where?: Parameters<typeof base.sandboxes.list>[0]) => {
+					if (where === undefined && flaky()) throw fail();
+					return base.sandboxes.list(where);
+				},
+			},
+			snapshots: {
+				...base.snapshots,
+				list: async (where?: Parameters<typeof base.snapshots.list>[0]) => {
+					if (where?.ref !== undefined && flaky()) throw fail();
+					return base.snapshots.list(where);
+				},
+			},
+		} as ReturnType<typeof createMemoryStore>;
+		const stub = createStubBackend();
+		const deleted = new Set<string>();
+		const violations: string[] = [];
+		const oldHost = seed % 2 === 0;
+		// Half the seeds on a host without snapshot.keep, where a save shares its source's bytes.
+		const { keepSnapshot: _keep, ...withoutKeep } = stub;
+		const backend: SandboxBackend = {
+			...(seed % 2 === 0 ? withoutKeep : stub),
+			deleteSnapshot: async (ref) => {
+				if (flaky()) throw fail();
+				// Bytes are deleted only once every record that names them is settling; and expiry deletes nothing on a
+				// host that can't keep copies (what a sweep there settles is a delete asked for by hand).
+				for (const record of await base.snapshots.list({ ref })) {
+					const settling = record.state === "deleting" && record.retiring?.settling === true;
+					if (!settling) violations.push(`seed ${seed}: ${ref} deleted under ${record.id} (${record.state})`);
+					else if (oldHost) {
+						violations.push(`seed ${seed}: expiry deleted ${ref} on a host that can't keep copies`);
+					}
+				}
+				deleted.add(ref);
+				await stub.deleteSnapshot(ref);
+			},
+		};
+		const clock = { at: Date.UTC(2026, 0, 1) };
+		const gateway = () => {
+			const api = createComputeApi({
+				backend,
+				store,
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer tom-token" ? PEOPLE["tom-token"] : undefined,
+				now: () => clock.at,
+				snapshotExpiry: true,
+				snapshotExpiryDelayMs: 0,
+			});
+			opened.push(api);
+			return api;
+		};
+		const gateways = [gateway(), gateway()] as const;
+		const clients = gateways.map((api) =>
+			createKantelClient({
+				baseUrl: BASE_URL,
+				token: "tom-token",
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			}),
+		);
+		const [primary] = clients;
+		if (primary === undefined) throw new Error("no client");
+		const client = () => rng.pick(clients) ?? primary;
+		const seen = new Set<string>();
+		const deletedByHand = new Set<string>();
+		const refsDeletedByHand = new Set<string>();
+
+		const check = async (step: string) => {
+			const records = await base.snapshots.list();
+			const byIdNow = new Map(records.map((record) => [record.id, record]));
+			for (const event of await base.events.list()) {
+				if (event.type !== "snapshot.deleted" || event.snapshotId === undefined) continue;
+				const record = byIdNow.get(event.snapshotId);
+				if (record !== undefined && record.state !== "deleting") {
+					throw new Error(`seed ${seed}, ${step}: ${record.id} said deleted, but ${record.state}`);
+				}
+			}
+			for (const record of records) {
+				if (record.ref !== undefined) seen.add(record.ref);
+				const settling = record.state === "deleting" && record.retiring?.settling === true;
+				if (!settling && record.ref !== undefined && deleted.has(record.ref)) {
+					throw new Error(`seed ${seed}, ${step}: ${record.id} (${record.state}) names deleted bytes ${record.ref}`);
+				}
+			}
+			const byId = new Map(records.map((record) => [record.id, record]));
+			for (const sandbox of await base.sandboxes.list()) {
+				if (sandbox.state === "deleted" || sandbox.state === "deleting") continue;
+				const needed = [
+					sandbox.latestSnapshotId,
+					sandbox.state === "paused" ? sandbox.pausedSnapshotId : undefined,
+					sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined
+						? sandbox.source?.snapshotId
+						: undefined,
+				];
+				for (const id of needed) {
+					// A delete by hand removes what it is asked to, as it always has; expiry never removes what is needed.
+					if (id === undefined || deletedByHand.has(id)) continue;
+					const record = byId.get(id);
+					if (record === undefined || record.retiring?.settling === true) {
+						throw new Error(`seed ${seed}, ${step}: ${sandbox.id} (${sandbox.state}) depends on ${id}, which is gone`);
+					}
+				}
+			}
+		};
+
+		await primary.createSandbox({ autoStopMinutes: null, wait: true });
+		await primary.createSandbox({ autoStopMinutes: null, wait: true });
+		for (let step = 0; step < 60; step += 1) {
+			faults.on = rng.next() < 0.5;
+			const sandboxes = (await base.sandboxes.list()).filter(
+				(sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting",
+			);
+			const running = sandboxes.filter((sandbox) => sandbox.state === "running");
+			const stopped = sandboxes.filter((sandbox) => sandbox.state === "stopped" || sandbox.state === "paused");
+			const snapshots = (await base.snapshots.list()).filter((record) => record.state === "ready");
+			// One to three actors at once, interleaved at every await: the gateways' requests and sweeps alike.
+			const choices = [
+				"take",
+				"take",
+				"delete",
+				"crash",
+				"fork",
+				"stop",
+				"resume",
+				"fail",
+				"advance",
+				"sweep",
+				"sweep",
+			] as const;
+			const actions = Array.from({ length: 1 + Math.floor(rng.next() * 3) }, () => rng.pick(choices) ?? "sweep");
+			const action = actions.join("+");
+			const done = async (call: () => Promise<unknown>) => {
+				await call().catch(() => undefined);
+				for (const api of gateways) await api.service.idle();
+			};
+			const act = async (action: (typeof choices)[number]) => {
+				switch (action) {
+					case "take": {
+						const sandbox = rng.pick(running);
+						if (sandbox !== undefined) await done(() => client().takeSnapshot(sandbox.id, {}));
+						break;
+					}
+					case "delete": {
+						const snapshot = rng.pick(snapshots);
+						if (snapshot !== undefined) {
+							deletedByHand.add(snapshot.id);
+							// A delete by hand gives up on bytes its host couldn't delete, as it always has: not expiry's leak.
+							if (snapshot.ref !== undefined) refsDeletedByHand.add(snapshot.ref);
+							await done(() => client().deleteSnapshot(snapshot.id));
+						}
+						break;
+					}
+					case "crash": {
+						// An expiry whose gateway died between its mark and its settling (on a host that keeps copies, where
+						// expiry runs): the mark is left, for the sweep after its lease.
+						const snapshot = rng.pick(
+							snapshots.filter(
+								(record) =>
+									record.kind === "automatic" && record.expiresAt !== undefined && record.expiresAt <= clock.at,
+							),
+						);
+						if (snapshot !== undefined && !oldHost) {
+							await base.snapshots.update(snapshot.id, (current) =>
+								current.state !== "ready"
+									? undefined
+									: {
+											...current,
+											state: "deleting",
+											retiring: { by: "gateway-dead", token: "ret_dead", at: clock.at },
+										},
+							);
+						}
+						break;
+					}
+					case "fork": {
+						const snapshot = rng.pick(snapshots.filter((record) => record.kind === "automatic"));
+						if (snapshot?.sandboxId !== undefined) {
+							const sandboxId = snapshot.sandboxId;
+							await done(() => client().forkSandbox(sandboxId, { snapshotId: snapshot.id, wait: true }));
+						}
+						break;
+					}
+					case "stop": {
+						const sandbox = rng.pick(running);
+						if (sandbox !== undefined) {
+							await done(() => client().stopSandbox(sandbox.id, { keepMemory: rng.next() < 0.5, wait: true }));
+						}
+						break;
+					}
+					case "resume": {
+						const sandbox = rng.pick(stopped);
+						if (sandbox !== undefined) await done(() => client().resumeSandbox(sandbox.id, { wait: true }));
+						break;
+					}
+					case "fail": {
+						// A fork whose create failed: never placed, it is to be made from its source (still there, as a create
+						// that failed after it adopted its source would find it).
+						const ready = new Set(snapshots.map((record) => record.id));
+						const sandbox = rng.pick(
+							sandboxes.filter((each) => each.source?.snapshotId !== undefined && ready.has(each.source.snapshotId)),
+						);
+						if (sandbox !== undefined) {
+							await base.sandboxes.update(sandbox.id, (current) => ({
+								...current,
+								state: "error",
+								hostId: undefined,
+								latestSnapshotId: undefined,
+							}));
+						}
+						break;
+					}
+					case "advance":
+						clock.at += Math.floor(rng.next() * 3 * 24 * 3_600_000);
+						break;
+					default: {
+						clock.at += SNAPSHOT_EXPIRY_EVERY_MS;
+						const api = rng.pick(gateways) ?? gateways[0];
+						await done(async () => {
+							await api.service.sweep();
+						});
+					}
+				}
+			};
+			await Promise.all(actions.map(act));
+			faults.on = false;
+			expect(violations).toEqual([]);
+			await check(`step ${step} (${action})`);
+		}
+		// Everything settles once nothing fails: no delete left under way, and no bytes nothing names.
+		faults.on = false;
+		for (let round = 0; round < 4; round += 1) {
+			clock.at += RETIRE_LEASE_MS + SNAPSHOT_EXPIRY_EVERY_MS;
+			for (const api of gateways) {
+				await api.service.sweep();
+				await api.service.idle();
+			}
+			await check(`settling round ${round}`);
+		}
+		expect(violations).toEqual([]);
+		const records = await base.snapshots.list();
+		const settling = records.filter((record) => record.state === "deleting");
+		expect(
+			settling.map((record) => record.id),
+			`seed ${seed}: deletes left settling`,
+		).toEqual([]);
+		const named = new Set(records.flatMap((record) => (record.ref === undefined ? [] : [record.ref])));
+		const leaked = [...seen].filter((ref) => !named.has(ref) && !deleted.has(ref) && !refsDeletedByHand.has(ref));
+		expect(leaked, `seed ${seed}: bytes no record names`).toEqual([]);
+	}
+
+	// KANTEL_SNAPSHOT_SEEDS runs more (200, say) locally.
+	const seeds = Number(process.env.KANTEL_SNAPSHOT_SEEDS ?? 16);
+	for (let seed = 1; seed <= seeds; seed += 1) {
+		it(`keeps every snapshot something names and leaks no bytes (seed ${seed})`, async () => {
+			await run(seed);
+		});
+	}
+});
+
+describe.each(STORES)("saves at once against a host's limit, stored $name", sqlTimeout, ({ make }) => {
+	it("never lets saves on two gateways at once past the limit together, and releases the refused ones' bytes", async () => {
+		const store = await make();
+		const { backend, next, released, takes } = sizedBackend();
+		const one = setup(backend, { store });
+		const two = setup(backend, { store });
+		const a = await one.tom.createSandbox({ autoStopMinutes: null, wait: true });
+		const b = await two.tom.createSandbox({ autoStopMinutes: null, wait: true });
+		next.bytes = 40 * MiB;
+		await one.tom.saveSnapshot({ name: "base", sandboxId: a.id });
+		await one.root.updateHost(STUB_HOST_ID, { savedSnapshotBytesLimit: 50 * MiB });
+
+		// Two live saves of 8 MiB, each through its own gateway, both taken before either is stored: only one fits.
+		next.bytes = 8 * MiB;
+		const before = takes.count;
+		let open = () => {};
+		takes.gate = new Promise((resolve) => {
+			open = resolve;
+		});
+		const saving = Promise.allSettled([
+			one.tom.saveSnapshot({ name: "a", sandboxId: a.id }),
+			two.tom.saveSnapshot({ name: "b", sandboxId: b.id }),
+		]);
+		while (takes.count < before + 2) await new Promise((resolve) => setTimeout(resolve, 5));
+		open();
+		const results = await saving;
+		const saved = results.filter((result) => result.status === "fulfilled");
+		const refused = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		expect(saved.length).toBeLessThanOrEqual(1);
+		expect(refused.length).toBeGreaterThanOrEqual(1);
+		for (const reason of refused) expect((reason as KantelApiError).code).toBe("exhausted");
+		const kept = (await store.snapshots.list({ kind: "saved" })).filter((snapshot) => snapshot.state !== "deleting");
+		expect(kept.every((snapshot) => snapshot.state === "ready")).toBe(true);
+		expect(kept.reduce((total, snapshot) => total + (snapshot.sizeBytes ?? 0), 0)).toBeLessThanOrEqual(50 * MiB);
+		// Each refused one's new bytes went again, and its record with them.
+		expect(released).toHaveLength(refused.length);
+		expect(await store.snapshots.list({ state: "deleting" })).toEqual([]);
 	});
 });

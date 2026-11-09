@@ -73,6 +73,8 @@
  *                                in KANTEL_BUNDLES_DIR, which replicas over one database must share: one whose store
  *                                isn't the deployment's refuses bundles' bytes (`BundleBlobStore.mark`).
  *                                Default off: their routes answer 501 not_supported
+ *   KANTEL_SNAPSHOT_EXPIRY       `on` deletes automatic snapshots past their expiry, on hosts that keep their own copies
+ *                                (off by default; a replicated install turns it on once every gateway runs this version)
  *   KANTEL_TEMPLATES             `experimental` turns on templates: versioned microVM profiles whose snapshots are built
  *                                in the background (`/v1/templates`, `/v1/template-bases`), on the stub or on hosts
  *                                that build them. Default off: those routes answer 501 not_supported
@@ -198,6 +200,11 @@ export interface ComputeConfig {
 	readonly mounts?: boolean;
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. */
 	readonly templates?: boolean;
+	/**
+	 * Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Off by default: a replicated install turns it on only
+	 * once every gateway runs a version that has it.
+	 */
+	readonly snapshotExpiry?: boolean;
 }
 
 /**
@@ -214,7 +221,8 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	// Read whatever the backend, so a typo stops the gateway on the stub too.
 	const mounts = mountsSwitch(env[MOUNTS_SWITCH]);
 	const templates = templatesSwitch(env.KANTEL_TEMPLATES) ? { templates: true } : {};
-	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...templates, ...patching };
+	const expiry = snapshotExpirySwitch(env.KANTEL_SNAPSHOT_EXPIRY) ? { snapshotExpiry: true } : {};
+	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...templates, ...patching, ...expiry };
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error(
@@ -254,6 +262,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	return {
 		...(mounts ? { mounts } : {}),
 		...templates,
+		...expiry,
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
 			...(accountHosts ? { accountHosts } : {}),
@@ -301,6 +310,17 @@ export function templatesSwitch(raw: string | undefined): boolean {
 	if (value === "" || value === "off") return false;
 	if (value === "experimental") return true;
 	throw new Error("KANTEL_TEMPLATES is `experimental` or `off`");
+}
+
+/**
+ * KANTEL_SNAPSHOT_EXPIRY: `on` expires automatic snapshots past their `expiresAt`; unset, empty or `off` leaves them be.
+ * A replicated install turns it on only once every gateway runs a version that has it. Anything else stops the gateway.
+ */
+export function snapshotExpirySwitch(raw: string | undefined): boolean {
+	const value = raw?.trim().toLowerCase() ?? "";
+	if (value === "" || value === "off") return false;
+	if (value === "on") return true;
+	throw new Error("KANTEL_SNAPSHOT_EXPIRY is `on` or `off`");
 }
 
 /** The registry of hosts (`@kantel/hosts`) the `hosts` backend places sandboxes on. */
@@ -572,6 +592,8 @@ export async function gatewayCompute(options: {
 	readonly invites?: InviteMailing;
 	/** Templates (KANTEL_TEMPLATES=experimental). Default off. */
 	readonly templates?: boolean;
+	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
+	readonly snapshotExpiry?: boolean;
 	/** Sandboxes' live changes from the other replicas over the database (live-relay.ts); absent, this gateway's only. */
 	readonly liveRelay?: LiveRelay;
 }): Promise<GatewayCompute> {
@@ -620,6 +642,7 @@ export async function gatewayCompute(options: {
 		...(hosts?.config.portsDomain === undefined ? {} : { sandboxDomain: hosts.config.portsDomain }),
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.templates === true ? { templates: true } : {}),
+		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(baseImages === undefined ? {} : { baseImages }),
@@ -642,6 +665,10 @@ export async function gatewayCompute(options: {
 		bucketSource: (hostId, sandboxId, id) => api.service.bucketSourceForHost(hostId, sandboxId, id),
 		reportMounts: (hostId, sandboxId, mounts, mountsAt) =>
 			api.service.reportMounts(hostId, sandboxId, mounts, mountsAt),
+		reportHealth: (hostId, sandboxId, health, reason, healthAt) =>
+			api.service.reportHealth(hostId, sandboxId, health, reason, healthAt),
+		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
+		reportExit: (...report) => api.service.reportExit(...report),
 	});
 	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
 	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));

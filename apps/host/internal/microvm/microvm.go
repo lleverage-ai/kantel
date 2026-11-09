@@ -57,9 +57,11 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
+	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/mounts"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
+	"golang.org/x/sys/unix"
 )
 
 // Tier is the microVM tier's name.
@@ -216,6 +218,17 @@ type Config struct {
 	// Each create, start or resume and template build is admitted against it (admit), beside what the tier holds. It is
 	// called with the tier's lock held, so it mustn't call the tier. Nil admits everything.
 	Budget func() (memoryMiB, diskGiB int64)
+	// AdmitMemory, when set (memory over-commit on, experimental), admits each create, start or resume and template
+	// build's memory instead of Budget's memory: vm beside held, what the tier holds now (heldVMsLocked). Called with
+	// the tier's lock held, so it mustn't call the tier.
+	AdmitMemory func(vm memplan.VM, held []memplan.VM) error
+	// FreePageReporting boots every microVM's balloon with free page reporting: the guest hands the pages it frees
+	// back to the host, so a VM's resident memory falls after a peak. In the templates' fingerprint.
+	FreePageReporting bool
+	// ExitCause, when set, says why a VM exited that the host didn't end itself ("": not known), such as the kernel's
+	// out-of-memory killer at the host's memory limit: the error its exit is reported with. Called with the sandbox's
+	// lock held, so it mustn't call the tier.
+	ExitCause func() string
 	// Mounts serves sandboxes' read-only bucket mounts; nil refuses a create with mounts.
 	Mounts *mounts.Manager
 	// Bundles is the host's cache of bundle images, for bundle mounts (bundles.go); nil, or BundleDrives 0, refuses
@@ -247,6 +260,10 @@ type meta struct {
 	SSHKeys   []string          `json:"sshKeys,omitempty"`
 	Owner     string            `json:"owner,omitempty"`
 	Error     string            `json:"error,omitempty"`
+	// HealthAt is the sandbox's healthAt as last written (FeatureExitStamps): its last machine's last health stamp, so a
+	// stopped sandbox's exit keeps naming the machine that ended across restarts of the host, and the next machine's
+	// stamps start above it.
+	HealthAt int64 `json:"healthAt,omitempty"`
 	// GrowDisk: the disk (its file, or the guest's file system) may still be smaller than the size's, as a sandbox
 	// restored from a shared template's or a snapshot's disk starts. Set until growDisk has made it the size's, so a
 	// stop, a host restart or a snapshot before then doesn't leave it smaller for good.
@@ -288,6 +305,20 @@ type sandbox struct {
 	reserved map[string]func()
 	// mountsSeen is what the sandbox last reported of its mounts' states (mountStatus), whose change moves MountsAt on.
 	mountsSeen string
+	// unresponsive is why its guest agent is taken not to answer (health.go: watchHealth), while it runs; "" while it
+	// answers.
+	unresponsive string
+	// healthAt is when unresponsive was last set (Unix ms), from its machine's start on: SandboxInfo.HealthAt, which
+	// orders its reports.
+	healthAt int64
+	// probe stands in for its guest agent's health in a test (nil: its guest).
+	probe healthClient
+	// killedFor is why the host itself ended the VM killed (memory.go: KillForMemory), the error that machine's exit is
+	// reported with; "" when it didn't.
+	killedFor string
+	killed    *fc.Machine
+	// reclaiming is a Reclaim under way (memory.go), which a stop or snapshot ends first.
+	reclaiming *reclaim
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -385,7 +416,7 @@ func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, driv
 	cfg := fc.BootConfig{
 		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
 		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: bundleDrives(drives),
-		Discard: m.cfg.Discard,
+		Discard: m.cfg.Discard, FreePageReporting: m.cfg.FreePageReporting,
 	}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
@@ -574,6 +605,9 @@ func New(cfg Config) (*Manager, error) {
 	}
 	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}, preparing: map[int]bool{}, sharedFailed: map[int]time.Time{}}
 	m.bg, m.bgStop = context.WithCancel(context.Background())
+	if !canReflink(filepath.Join(cfg.Root, "snapshots")) {
+		m.log.Warn("the host's file system has no reflinks, so each sandbox made or forked from a snapshot copies its whole disk; XFS or btrfs clones it at once", "root", cfg.Root)
+	}
 	// Template builds a previous run left (it stopped or crashed mid-build) are ended by reapInterruptedBuilds, below.
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.shared = sharedShape(cfg, m.hostMemoryMiB, defaultCPUs())
@@ -680,6 +714,7 @@ func conflict(format string, args ...any) error {
 }
 
 func (m *Manager) writeMeta(s *sandbox) error {
+	s.meta.HealthAt = s.healthAt
 	raw, err := json.MarshalIndent(s.meta, "", "  ")
 	if err != nil {
 		return err
@@ -702,6 +737,12 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
 	info.Mounts, info.MountsAt = m.mountStatus(s)
+	if s.meta.State == proto.StateRunning && s.unresponsive != "" {
+		info.Health, info.HealthReason = proto.HealthUnresponsive, s.unresponsive
+	}
+	// Its machine's last health stamp, from its start on, kept once it stops: with the error of an exit the host didn't
+	// cause by a call, it names the machine that ended, so Kantel never takes a late report of it for a later run's.
+	info.HealthAt = s.healthAt
 	return info
 }
 
@@ -921,9 +962,18 @@ func (m *Manager) adopt() error {
 		if err := json.Unmarshal(raw, &s.meta); err != nil || s.meta.State == proto.StateStarting {
 			continue
 		}
+		// Its last machine's stamp: a stopped sandbox's exit keeps it, and a later machine's stamps start above it.
+		s.healthAt = s.meta.HealthAt
 		if s.meta.State == proto.StateRunning && s.meta.Pid > 0 && processAlive(s.meta.Pid) {
 			machine, err := fc.Attach(s.vmDir(), s.meta.Pid)
 			if err == nil {
+				// Its API asked once, for the log: one that doesn't answer can't be paused, so the VM runs on as it is and its
+				// stop ends it cold (its disk kept, its memory lost), as Stop does for any VM that won't pause.
+				actx, cancel := context.WithTimeout(context.Background(), adoptAPITimeout)
+				if err := machine.Barrier(actx); err != nil {
+					m.log.Warn("adopted a running sandbox whose Firecracker API doesn't answer; its stop will be cold", "sandbox", s.meta.ID, "pid", s.meta.Pid, "error", err)
+				}
+				cancel()
 				link := m.cfg.Network.LinkFor(s.meta.Slot, egressMode(s.meta.Egress))
 				if err := m.cfg.Network.Adopt(link); err != nil {
 					m.log.Warn("adopted sandbox's network rules", "sandbox", s.meta.ID, "error", err)
@@ -956,6 +1006,9 @@ func (m *Manager) adopt() error {
 		if s.meta.State != proto.StateStopped {
 			s.meta.State = proto.StateStopped
 			s.meta.Error = "the host restarted while it ran"
+			// Stamped now: after its machine's start, before any later machine's, so Kantel takes the report of this exit
+			// (the hello's) only for the run that machine was. One already stopped keeps the stamp its exit had.
+			s.healthAt = max(time.Now().UnixMilli(), s.healthAt+1)
 			_ = m.writeMeta(s)
 		}
 		m.sandboxes[s.meta.ID] = s
@@ -974,16 +1027,31 @@ func egressMode(e *proto.Egress) string {
 	return e.Mode
 }
 
-// watch marks a sandbox stopped (with an error) when its VM exits without being asked to.
+// watch marks a sandbox stopped (with an error) when its VM exits without being asked to, and watches its guest
+// agent's health while it runs (watchHealth).
 func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
+	// Healthy, as of now: a machine's first health has a time too, so Kantel orders it against what it took of the
+	// machine before (an unresponsive report from before a restart of the host, say).
+	s.setUnresponsive("")
+	// Written before the boot answers with it (FeatureExitStamps): Kantel fences this machine's exit by it, so a restart
+	// of the host must never leave the stamp behind it, even if the host's clock has gone back.
+	_ = m.writeMeta(s)
+	m.watchHealth(s, machine)
 	go func() {
 		<-machine.Done()
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		killedFor := ""
+		if s.killed == machine {
+			killedFor, s.killedFor, s.killed = s.killedFor, "", nil
+		}
 		if s.machine != machine {
 			return
 		}
 		s.machine = nil
+		if s.unresponsive != "" {
+			s.setUnresponsive("")
+		}
 		if s.link != nil {
 			m.cfg.Network.Remove(*s.link)
 			m.detach(s.link.Slot)
@@ -995,6 +1063,13 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 		s.meta.State = proto.StateStopped
 		s.meta.Memory = false
 		s.meta.Error = "the VM exited"
+		if killedFor != "" {
+			s.meta.Error = killedFor
+		} else if m.cfg.ExitCause != nil {
+			if why := m.cfg.ExitCause(); why != "" {
+				s.meta.Error = why
+			}
+		}
 		s.meta.Pid = 0
 		_ = m.writeMeta(s)
 		m.log.Warn("sandbox VM exited", "sandbox", s.meta.ID)
@@ -1084,16 +1159,63 @@ func hostname(id string) string {
 // the source's blocks until either file is written and so takes no room yet, else cp's SEEK_DATA/SEEK_HOLE copy
 // (ext4 has no reflinks).
 func copySparse(src, dst string) error {
-	if exec.Command("cp", "--reflink=always", src, dst).Run() == nil {
-		return nil
+	_, err := cloneDisk(src, dst)
+	return err
+}
+
+// cloneDisk is copySparse, saying how the copy was made: proto.DiskReflink or proto.DiskCopy. The clone is FICLONE
+// itself, so a file system without reflinks answers at once and the copy is the only time spent.
+func cloneDisk(src, dst string) (string, error) {
+	if reflink(src, dst) == nil {
+		return proto.DiskReflink, nil
 	}
-	// The failed reflink may have made dst (empty, or part written): the sparse copy starts from none.
+	// The failed reflink may have made dst (empty): the sparse copy starts from none.
 	_ = os.Remove(dst)
 	out, err := exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("copy %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("copy %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return proto.DiskCopy, nil
+}
+
+// canReflink says whether dir's file system clones files (FICLONE), by cloning a file of one block there.
+func canReflink(dir string) bool {
+	probe, err := os.CreateTemp(dir, ".reflink-probe-")
+	if err != nil {
+		return false
+	}
+	src := probe.Name()
+	defer os.Remove(src)
+	_, err = probe.Write(make([]byte, 4096))
+	probe.Close()
+	if err != nil {
+		return false
+	}
+	dst := src + ".clone"
+	defer os.Remove(dst)
+	return reflink(src, dst) == nil
+}
+
+// reflink makes dst a clone of src (FICLONE), with src's permissions: its blocks shared until either is written.
+func reflink(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if err := unix.IoctlFileClone(int(out.Fd()), int(in.Fd())); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // unchanged says whether the file at path looks as it did when before was taken, by its size, inode, and modification
@@ -1112,12 +1234,12 @@ func unchanged(path string, before os.FileInfo) bool {
 	return okB && okN && b.Ctim == n.Ctim && b.Ino == n.Ino
 }
 
-// takeFile moves src to dst: a rename, or (another file system) a sparse copy.
-func takeFile(src, dst string) error {
+// takeFile moves src to dst: a rename (proto.DiskMove), or (another file system) a sparse copy.
+func takeFile(src, dst string) (string, error) {
 	if err := os.Rename(src, dst); err == nil {
-		return nil
+		return proto.DiskMove, nil
 	}
-	return copySparse(src, dst)
+	return cloneDisk(src, dst)
 }
 
 // newDisk makes an empty sparse ext4 disk of the size.
@@ -1179,6 +1301,25 @@ func (t timings) step(name string, since *time.Time) {
 	*since = now
 }
 
+// msSince is the milliseconds since since, as timings has them.
+func msSince(since time.Time) float64 { return float64(time.Since(since).Microseconds()) / 1000 }
+
+// booted notes in ph, when set, its machine booted or its snapshot loaded since *since, and starts the agent's wait.
+func booted(ph *proto.StartPhases, since *time.Time) {
+	if ph != nil {
+		ph.BootMs = msSince(*since)
+		*since = time.Now()
+	}
+}
+
+// answered notes in ph, when set, its guest agent answered since *since.
+func answered(ph *proto.StartPhases, since *time.Time) {
+	if ph != nil {
+		ph.AgentMs = msSince(*since)
+		*since = time.Now()
+	}
+}
+
 // templateLock is the lock a template's directory is made under: a named size's, or a shared template's (made on
 // first use). nil for any other name: no template is kept for a custom shape.
 func (m *Manager) templateLock(name string) *sync.Mutex {
@@ -1225,6 +1366,10 @@ func (m *Manager) templateFingerprint(sh shape) string {
 	if m.cfg.Discard {
 		// A template from before keeps a disk without discard, and so would every sandbox restored from it.
 		devices += ",discard"
+	}
+	if m.cfg.FreePageReporting {
+		// The balloon is a device the snapshot keeps: one made without reporting never reports.
+		devices += ",free-page-reporting"
 	}
 	return fc.Fingerprint(images...) + devices + " boot=" + guest.BrowserSurfaceBootArg + psiBootArg + m.shapeKey(sh)
 }
@@ -1718,7 +1863,8 @@ func tail(path string) string {
 }
 
 // restore starts a VM in dir/vm from a snapshot (state and memory, with dir/vm/disk.ext4 already in place).
-func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string, link network.Link) (*fc.Machine, *guest.Client, error) {
+func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string, link network.Link, ph *proto.StartPhases) (*fc.Machine, *guest.Client, error) {
+	start := time.Now()
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vmDir)
 	if err != nil {
 		return nil, nil, err
@@ -1727,6 +1873,7 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 		machine.Kill()
 		return nil, nil, fmt.Errorf("%w (firecracker log: %s)", err, tail(filepath.Join(vmDir, fc.LogFile)))
 	}
+	booted(ph, &start)
 	client := guest.NewClient(filepath.Join(vmDir, fc.VsockSocket))
 	readyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -1734,6 +1881,7 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 		machine.Kill()
 		return nil, nil, err
 	}
+	answered(ph, &start)
 	return machine, client, nil
 }
 
@@ -1754,7 +1902,7 @@ func (m *Manager) register(s *sandbox, size proto.Size) error {
 	if _, ok := m.sandboxes[s.meta.ID]; ok {
 		return conflict("sandbox %s already exists on this host", s.meta.ID)
 	}
-	if err := m.admit(size, "sandbox"); err != nil {
+	if err := m.admit(size, "sandbox", memplan.VM{ID: s.meta.ID, SizeMiB: int64(size.MemoryMiB)}); err != nil {
 		return err
 	}
 	m.sandboxes[s.meta.ID] = s
@@ -1764,12 +1912,24 @@ func (m *Manager) register(s *sandbox, size proto.Size) error {
 // admit refuses (ErrCapacity) a machine of size that the budget hasn't room for beside what the tier holds
 // (heldLocked). Called with m.mu held: what it admits is registered or held before the lock goes, so two never share
 // the same room.
-func (m *Manager) admit(size proto.Size, what string) error {
+//
+// With AdmitMemory (memory over-commit on), memory is admitted by what the machine's VMs use (memplan.Plan.Check)
+// instead of by what they were given; the disk as before.
+func (m *Manager) admit(size proto.Size, what string, vm memplan.VM) error {
 	if m.cfg.Budget == nil {
 		return nil
 	}
 	memory, disk := m.cfg.Budget()
 	used, held := m.heldLocked()
+	if m.cfg.AdmitMemory != nil {
+		if disk-held < int64(size.DiskGiB) {
+			return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("this host hasn't %d GiB of disk free for a %s now", size.DiskGiB, what)}
+		}
+		if err := m.cfg.AdmitMemory(vm, m.heldVMsLocked()); err != nil {
+			return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("no room for a %s of %d MiB: %v", what, size.MemoryMiB, err)}
+		}
+		return nil
+	}
 	if memory-used < int64(size.MemoryMiB) || disk-held < int64(size.DiskGiB) {
 		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("this host hasn't %d MiB and %d GiB free for a %s now", size.MemoryMiB, size.DiskGiB, what)}
 	}
@@ -1785,7 +1945,7 @@ func (m *Manager) holdBuild(id string, size proto.Size) (release func(), err err
 	if _, ok := m.builds[id]; ok {
 		return nil, &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("template snapshot %s is building already", id)}
 	}
-	if err := m.admit(size, "template build"); err != nil {
+	if err := m.admit(size, "template build", memplan.VM{SizeMiB: int64(size.MemoryMiB), Full: true}); err != nil {
 		return nil, err
 	}
 	if m.builds == nil {
@@ -1836,7 +1996,7 @@ func (m *Manager) holdResume(s *sandbox, size proto.Size) (release func(), err e
 	need.DiskGiB = max(0, size.DiskGiB-int(diskUsage(filepath.Join(s.vmDir(), fc.DiskFile))>>30))
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.admit(need, "sandbox to start"); err != nil {
+	if err := m.admit(need, "sandbox to start", memplan.VM{ID: id, SizeMiB: int64(need.MemoryMiB)}); err != nil {
 		return nil, err
 	}
 	if m.resuming == nil {
@@ -1875,7 +2035,7 @@ func (m *Manager) TemplateBuilds() (ids []string, memoryMiB, diskGiB int64) {
 func (m *Manager) holdOwnBuild(sh shape) (release func(), err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.admit(sh.Size, "template build"); err != nil {
+	if err := m.admit(sh.Size, "template build", memplan.VM{SizeMiB: int64(sh.Size.MemoryMiB), Full: true}); err != nil {
 		return nil, err
 	}
 	if m.ownBuilds == nil {
@@ -2032,6 +2192,7 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 		return proto.SandboxInfo{}, err
 	}
 	t := timings{}
+	ph := &proto.StartPhases{}
 	start := time.Now()
 	began := start
 	dir := filepath.Join(m.cfg.Root, "sandboxes", p.SandboxID)
@@ -2060,7 +2221,9 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	}
 	origin, err := m.startSandbox(ctx, p, size, func(origin sandboxOrigin) error {
 		origin.takeDisk = takeDisk && p.From != ""
-		return m.startMachine(ctx, s, origin, size, p.Egress, t)
+		// A template snapshot that didn't restore leaves what it got to: the fresh boot's phases replace them.
+		*ph = proto.StartPhases{}
+		return m.startMachine(ctx, s, origin, size, p.Egress, t, ph)
 	})
 	if err != nil {
 		return fail(err)
@@ -2158,8 +2321,9 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	}
 	t.step("finish", &start)
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
+	ph.TotalMs = t["total"]
 	info := m.info(s)
-	info.Timings, info.Source = t, source
+	info.Timings, info.Source, info.Phases = t, source, ph
 	m.emit(s)
 	m.log.Debug("create", "sandbox", s.meta.ID, "size", size.Name, "source", source, "timings", t)
 	return info, nil
@@ -2306,7 +2470,7 @@ func (m *Manager) startSandbox(ctx context.Context, p proto.CreateParams, size p
 // startMachine starts s's machine from origin in s's vm directory: the root filesystem linked, the disk copied (or a
 // new one), a network link, its record (meta.json, starting), and the snapshot restored (or the machine booted). On
 // failure it leaves no machine, link or vm directory behind; the record goes with s's directory (Create's fail).
-func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOrigin, size proto.Size, e *proto.Egress, t timings) (err error) {
+func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOrigin, size proto.Size, e *proto.Egress, t timings, ph *proto.StartPhases) (err error) {
 	vm := s.vmDir()
 	defer func() {
 		if err == nil {
@@ -2344,7 +2508,7 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 	if origin.reshape != nil {
 		// The disk, the network and the Firecracker process side by side: none needs another. Its record (meta.json,
 		// starting, with its slot) is written once the link is made, before the snapshot is loaded.
-		machine, client, link, err := m.restoreParallel(ctx, vm, origin.disk, origin.state, origin.mem, egressMode(e), t, func(link network.Link) error {
+		machine, client, link, err := m.restoreParallel(ctx, vm, origin.disk, origin.state, origin.mem, egressMode(e), t, ph, func(link network.Link) error {
 			s.meta.Slot = link.Slot
 			return m.writeMeta(s)
 		})
@@ -2358,15 +2522,16 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 	start := time.Now()
 	switch {
 	case origin.disk == "":
-		err = newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB)
+		ph.Disk, err = proto.DiskNew, newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB)
 	case origin.takeDisk:
-		err = takeFile(origin.disk, filepath.Join(vm, fc.DiskFile))
+		ph.Disk, err = takeFile(origin.disk, filepath.Join(vm, fc.DiskFile))
 	default:
-		err = copySparse(origin.disk, filepath.Join(vm, fc.DiskFile))
+		ph.Disk, err = cloneDisk(origin.disk, filepath.Join(vm, fc.DiskFile))
 	}
 	if err != nil {
 		return err
 	}
+	ph.DiskMs = msSince(start)
 	t.step("disk", &start)
 	link, err := m.cfg.Network.Add(egressMode(e))
 	if err != nil {
@@ -2381,13 +2546,13 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 		return err
 	}
 	if origin.state == "" {
-		if err := m.boot(ctx, s, size); err != nil {
+		if err := m.boot(ctx, s, size, ph); err != nil {
 			return err
 		}
 		t.step("boot", &start)
 		return nil
 	}
-	machine, client, err := m.restore(ctx, vm, origin.state, origin.mem, link)
+	machine, client, err := m.restore(ctx, vm, origin.state, origin.mem, link, ph)
 	if err != nil {
 		return err
 	}
@@ -2397,8 +2562,10 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 }
 
 // boot cold-boots s from its own disk (Start, or a snapshot with no memory), on the kernel of the version its root
-// filesystem is (kernelFor): the one it was made on, or a rebase moved it to.
-func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
+// filesystem is (kernelFor): the one it was made on, or a rebase moved it to. ph, when set, has its boot and its guest
+// agent's wait.
+func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size, ph *proto.StartPhases) error {
+	start := time.Now()
 	vm := s.vmDir()
 	kernel := m.kernelFor(vmRootfs(vm))
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
@@ -2422,6 +2589,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		machine.Kill()
 		return err
 	}
+	booted(ph, &start)
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
 	readyCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -2429,6 +2597,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		machine.Kill()
 		return fmt.Errorf("boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
+	answered(ph, &start)
 	s.machine, s.guest = machine, client
 	return nil
 }
@@ -2442,20 +2611,53 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	keepMemory := p.Memory == nil || *p.Memory
+	if s.meta.State == proto.StateStopped && p.SnapshotID != "" {
+		// Stopped already (its VM exited or was reset, or an earlier stop the control plane never heard back from): the
+		// stop is done, and answers a snapshot of its disk as it is, so a sandbox the control plane has in error can be
+		// stopped rather than refused. One paused with its memory and now stopped without it lets that memory go, so its
+		// next start boots from its disk, as the stop said.
+		if !keepMemory && s.meta.Memory {
+			_ = os.Remove(filepath.Join(s.vmDir(), "state"))
+			_ = os.Remove(filepath.Join(s.vmDir(), "mem"))
+			s.meta.Memory = false
+			if err := m.writeMeta(s); err != nil {
+				return proto.SnapshotInfo{}, err
+			}
+		}
+		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: s.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: keepMemory && s.meta.Memory, Tier: Tier}
+		if err := m.saveSnapshot(s, &snap, true); err != nil {
+			return snap, err
+		}
+		m.pruneAuto(s.meta.ID)
+		return snap, nil
+	}
 	if s.meta.State != proto.StateRunning || s.machine == nil {
 		return proto.SnapshotInfo{}, conflict("sandbox %s is %s, not running", s.meta.ID, s.meta.State)
 	}
-	keepMemory := p.Memory == nil || *p.Memory
 	vm := s.vmDir()
 	t := timings{}
 	start := time.Now()
 	defer func() { m.log.Debug("stop", "sandbox", s.meta.ID, "timings", t) }()
-	_ = s.guest.Sync(ctx)
+	if s.unresponsive == "" {
+		// Bounded: a guest that doesn't answer is stopped without its sync, as a crash would leave its disk.
+		sctx, cancel := context.WithTimeout(ctx, stopSyncTimeout)
+		_ = s.guest.Sync(sctx)
+		cancel()
+	}
+	if s.unresponsive != "" {
+		s.setUnresponsive("")
+	}
 	t.step("sync", &start)
 	s.guest.Close()
+	// Its balloon given back first, so its memory isn't saved inflated.
+	s.endReclaimLocked()
 	machine := s.machine
 	if err := machine.Pause(ctx); err != nil {
-		return proto.SnapshotInfo{}, err
+		// Its Firecracker doesn't answer (its API socket refused after a reconnect, say): stopped cold, its disk as a
+		// crash would leave it and its memory lost, rather than left running with the stop failed.
+		m.log.Warn("couldn't pause a sandbox's VM for its stop; stopping it cold", "sandbox", s.meta.ID, "error", err)
+		keepMemory = false
 	}
 	t.step("pause", &start)
 	beside := filepath.Join(vm, "mem.new")
@@ -2468,10 +2670,21 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 		}
 		if err := machine.Snapshot(ctx, filepath.Join(vm, "state.new"), memWrite); err != nil {
 			_ = memDone(false)
-			_ = machine.Resume(ctx)
-			return proto.SnapshotInfo{}, err
+			_ = os.Remove(filepath.Join(vm, "state.new"))
+			_ = os.Remove(beside)
+			// Resumed on a context of its own: the call's may be what ended the snapshot. A VM that won't resume isn't left
+			// paused and said to run: it is stopped cold, as one that won't pause is.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopResumeTimeout)
+			rerr := machine.Resume(rctx)
+			cancel()
+			if rerr == nil {
+				return proto.SnapshotInfo{}, err
+			}
+			m.log.Warn("a sandbox's VM won't resume after its stop's snapshot failed; stopping it cold", "sandbox", s.meta.ID, "snapshot", err, "error", rerr)
+			keepMemory = false
+		} else {
+			t.step("snapshot", &start)
 		}
-		t.step("snapshot", &start)
 	}
 	s.machine = nil
 	machine.Kill()
@@ -2526,6 +2739,17 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.meta.State == proto.StateRunning && s.machine != nil && (p.Reset || !m.answers(ctx, s)) {
+		// A recovery (Reset), or a start or resume of a machine whose guest agent doesn't answer: running as far as the
+		// host knows, but of no use. It is reset, its disk kept and its memory lost, and booted cold from that disk below,
+		// rather than answered as running.
+		why := "its guest agent doesn't answer"
+		if p.Reset {
+			why = "a recovery"
+		}
+		m.reset(s, why)
+		coldBoot = true
+	}
 	if s.meta.State == proto.StateRunning {
 		// A rebase is a cold boot on the target images: a machine running on others (one a gateway lost track of) isn't
 		// that, so it is refused rather than answered as done. One already on them is that boot, retried.
@@ -2580,6 +2804,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		}
 	}
 	t := timings{}
+	ph := &proto.StartPhases{}
 	start := time.Now()
 	began := start
 	link, err := m.cfg.Network.Add(egressMode(s.meta.Egress))
@@ -2592,7 +2817,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	source := "snapshot"
 	_, statErr := os.Stat(filepath.Join(vm, "mem"))
 	if s.meta.Memory && statErr == nil && !coldBoot {
-		machine, client, err := m.restore(ctx, vm, filepath.Join(vm, "state"), filepath.Join(vm, "mem"), link)
+		machine, client, err := m.restore(ctx, vm, filepath.Join(vm, "state"), filepath.Join(vm, "mem"), link, ph)
 		if err != nil {
 			m.cfg.Network.Remove(link)
 			s.link = nil
@@ -2601,7 +2826,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		s.machine, s.guest = machine, client
 		t.step("restore", &start)
 	} else {
-		if err := m.boot(ctx, s, size); err != nil {
+		if err := m.boot(ctx, s, size, ph); err != nil {
 			m.cfg.Network.Remove(link)
 			s.link = nil
 			return proto.SandboxInfo{}, err
@@ -2655,8 +2880,9 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		m.finishBundles(s)
 	}
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
+	ph.TotalMs = t["total"]
 	info := m.info(s)
-	info.Timings, info.Source = t, source
+	info.Timings, info.Source, info.Phases = t, source, ph
 	m.emit(s)
 	return info, nil
 }
@@ -2677,6 +2903,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	start := time.Now()
 	began := start
 	var snapID, spooled string
+	var snapshotMs float64
 	live := false
 	src.mu.Lock()
 	switch src.meta.State {
@@ -2687,10 +2914,12 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		}
 		snap := proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Memory: true, Tier: Tier}
 		var err error
-		if spooled, err = m.liveSnapshot(ctx, src, &snap, t, !m.cfg.KeepForkSnapshots); err != nil {
+		snapAt := time.Now()
+		if spooled, err = m.liveSnapshot(ctx, src, &snap, t, !m.cfg.KeepForkSnapshots, nil); err != nil {
 			src.mu.Unlock()
 			return proto.SandboxInfo{}, err
 		}
+		snapshotMs = msSince(snapAt)
 		snapID, live = snap.ID, true
 	case proto.StateStopped:
 		latest := m.latestSnapshot(src.meta.ID)
@@ -2743,6 +2972,12 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	}
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info.Timings = t
+	if info.Phases != nil {
+		// The whole fork: its own create, and before it the source's live snapshot.
+		ph := *info.Phases
+		ph.SnapshotMs, ph.TotalMs = snapshotMs, t["total"]
+		info.Phases = &ph
+	}
 	info.Source = "fork"
 	// At info: the control plane keeps no host timings, so a host's log is where a slow fork can be taken apart.
 	m.log.Info("fork", "sandbox", p.NewID, "from", p.SandboxID, "size", src.meta.Size, "timings", t)
@@ -2753,7 +2988,10 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 //
 // transient is a snapshot deleted once used (a live fork's): memory spooled to RAM isn't queued for the disk, and its
 // spool file is returned for the caller to cancel once the snapshot has gone.
-func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings, transient bool) (spooled string, err error) {
+//
+// reserve, where it isn't nil, reserves the snapshot's room on the disk once the machine is paused and its disk can no
+// longer change, before anything is copied (pausedForCopy); refused, the machine is resumed and the refusal answered.
+func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings, transient bool, reserve func() (func(), error)) (spooled string, err error) {
 	// Before anything is written: the ID is joined under snapshots/, so one such as ../sandboxes/<id>/vm would put this
 	// sandbox's disk into another's.
 	if !validID(snap.ID) {
@@ -2769,11 +3007,12 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	// Firecracker resets the VM's vsock connections when it snapshots: a kept-alive one would answer the next call
 	// with EOF (seen after a live fork). Drop them so the next call dials afresh.
 	s.guest.Close()
-	resume, err := m.pauseMachine(ctx, s)
+	resume, release, err := pausedForCopy(func() (func() error, error) { return m.pauseMachine(ctx, s) }, m.diskBarrier(s), reserve)
 	if err != nil {
 		os.RemoveAll(sdir)
 		return "", err
 	}
+	defer release()
 	defer func() {
 		// The snapshot is whole either way; a VM that won't resume has been stopped (pauseMachine), not left frozen.
 		if rerr := resume(); rerr != nil {
@@ -2924,7 +3163,7 @@ const diskCopies = 4
 //
 // With no memory kept, what the guest hadn't written back would be lost without a word: a sync that fails fails the
 // save, the VM running on as it was.
-func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo) error {
+func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, reserve func() (func(), error)) error {
 	if !validID(snap.ID) {
 		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
 	}
@@ -2936,11 +3175,12 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 		os.RemoveAll(sdir)
 		return fmt.Errorf("the sandbox couldn't write its files back to its disk for the snapshot: %w", err)
 	}
-	resume, err := m.pauseMachine(ctx, s)
+	resume, release, err := pausedForCopy(func() (func() error, error) { return m.pauseMachine(ctx, s) }, m.diskBarrier(s), reserve)
 	if err != nil {
 		os.RemoveAll(sdir)
 		return err
 	}
+	defer release()
 	barrier := func() error {
 		bctx, cancel := context.WithTimeout(context.Background(), resumeWait)
 		defer cancel()
@@ -2963,6 +3203,16 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 	return nil
 }
 
+// diskBarrier waits, bounded by resumeWait, until no write of s's guest is in flight (fc.Machine.Barrier: with the Sync
+// io_engine, a round trip to the VM's API answers only once the writes before it are done).
+func (m *Manager) diskBarrier(s *sandbox) func() error {
+	return func() error {
+		bctx, cancel := context.WithTimeout(context.Background(), resumeWait)
+		defer cancel()
+		return s.machine.Barrier(bctx)
+	}
+}
+
 // resumeWait bounds each try to resume a VM paused for a snapshot, apart from the call's context: a caller that has
 // gone (its connection closed) mustn't leave the VM paused.
 const resumeWait = 10 * time.Second
@@ -2976,6 +3226,8 @@ const resumeTries = 3
 // each within resumeWait whatever ctx says; a VM that still won't resume is killed, so it is stopped (with its disk) as
 // an exited VM is, rather than left frozen while it is reported running, and resume says so. Called with s.mu held.
 func (m *Manager) pauseMachine(ctx context.Context, s *sandbox) (resume func() error, err error) {
+	// Its balloon given back first, so a snapshot doesn't save it inflated.
+	s.endReclaimLocked()
 	machine := s.machine
 	resume = func() error {
 		var err error
@@ -3157,22 +3409,84 @@ const snapshotHeadroom = 10 << 30
 // through, its copy's size is reserved until release is called, once the copy is done or has failed. A file system
 // that can't be measured is let through.
 func (m *Manager) roomForSnapshot(s *sandbox, disk string) (release func(), err error) {
+	return m.reserveSnapshotRoom(disk, 0, func(free, size int64) error {
+		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", size+snapshotHeadroom)
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
+	})
+}
+
+// roomToSave is roomForSnapshot for a snapshot taken or saved by hand (SaveSnapshot): its disk's copy, and for a
+// running sandbox its memory as well, which reaches the disk even when it goes to RAM first. Refused, it says how
+// much is free, and the control plane passes that on (exhausted). A keep (KeepSnapshot) links its source's files and
+// takes no room, so it isn't asked.
+func (m *Manager) roomToSave(s *sandbox, withMemory bool) (release func(), err error) {
+	var memory int64
+	if withMemory {
+		if size, err := m.size(s.meta.Size); err == nil {
+			memory = int64(size.MemoryMiB) << 20
+		}
+	}
+	return m.reserveSnapshotRoom(filepath.Join(s.vmDir(), fc.DiskFile), memory, func(free, size int64) error {
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
+			"This host has %s of disk free, and a snapshot of this sandbox needs about %s and must leave %s free. Delete snapshots you no longer need, or free space on the host, and try again.",
+			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
+	})
+}
+
+// pausedForCopy pauses a machine (pause), waits until no write of its guest is in flight (barrier, fc.Machine.Barrier),
+// and then, its disk still, reserves the copy's room (reserve; nil reserves nothing, and waits for nothing): measured now, it is exact, where a measure taken while it ran could be outgrown by the writes its guest
+// flushed before the pause. Refused, the machine is resumed (pause's resume, which stops one that won't) and the
+// refusal answered. Otherwise the caller resumes it, and releases the room once the copy is written.
+func pausedForCopy(
+	pause func() (func() error, error),
+	barrier func() error,
+	reserve func() (func(), error),
+) (resume func() error, release func(), err error) {
+	resume, err = pause()
+	if err != nil {
+		return nil, nil, err
+	}
+	if reserve == nil {
+		return resume, func() {}, nil
+	}
+	// No guest write still in flight once the barrier answers: the disk measured after it is the disk copied.
+	if err := barrier(); err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("the sandbox's disk couldn't be settled for the snapshot: %w", err), resume())
+	}
+	release, err = reserve()
+	if err != nil {
+		return nil, nil, errors.Join(err, resume())
+	}
+	return resume, release, nil
+}
+
+// gibText is a byte count in GiB, to one decimal place.
+func gibText(n int64) string {
+	return fmt.Sprintf("%.1f GiB", float64(n)/float64(1<<30))
+}
+
+// reserveSnapshotRoom reserves the room a snapshot's copy of disk (its allocated blocks) and extra bytes take, until
+// release, when the file system has that and snapshotHeadroom free beside what other copies have reserved; else it
+// answers refuse's error, given the free bytes and the size. A file system that can't be measured is let through.
+func (m *Manager) reserveSnapshotRoom(disk string, extra int64, refuse func(free, size int64) error) (release func(), err error) {
 	statfs := m.statfs
 	if statfs == nil {
 		statfs = syscall.Statfs
 	}
-	size := diskUsage(disk)
+	size := diskUsage(disk) + extra
 	m.snapshotRoom.Lock()
 	defer m.snapshotRoom.Unlock()
+	// Memory still in the RAM spool reaches this disk once it is flushed: counted as taken already. Read before the
+	// file system, so a flush that finishes between the two reads is counted twice (in both), never in neither.
+	pending := m.spool.pending()
 	var st syscall.Statfs_t
 	if err := statfs(filepath.Join(m.cfg.Root, "snapshots"), &st); err != nil {
 		return func() {}, nil
 	}
-	free := int64(st.Bavail)*st.Bsize - m.snapshotReserved
+	free := int64(st.Bavail)*st.Bsize - m.snapshotReserved - pending
 	need := size + snapshotHeadroom
 	if free < need {
-		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", need)
-		return nil, &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
+		return nil, refuse(free, size)
 	}
 	m.snapshotReserved += size
 	var once sync.Once
@@ -3379,14 +3693,29 @@ func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (pro
 	switch s.meta.State {
 	case proto.StateRunning:
 		snap.Memory = p.Memory
-		m.trimDisk(ctx, s)
-		if !snap.Memory {
-			return snap, m.liveDiskSnapshot(ctx, s, &snap)
+		// Memory too only when it is asked for: the disk alone otherwise.
+		// A cheap refusal first, before the trim; the room is reserved for good once the machine is paused, its disk
+		// still (pausedForCopy), since the guest's writes flushed before the pause may grow it.
+		early, err := m.roomToSave(s, snap.Memory)
+		if err != nil {
+			return snap, err
 		}
-		_, err := m.liveSnapshot(ctx, s, &snap, timings{}, false)
+		early()
+		m.trimDisk(ctx, s)
+		reserve := func() (func(), error) { return m.roomToSave(s, snap.Memory) }
+		if !snap.Memory {
+			return snap, m.liveDiskSnapshot(ctx, s, &snap, reserve)
+		}
+		_, err = m.liveSnapshot(ctx, s, &snap, timings{}, false, reserve)
 		return snap, err
 	case proto.StateStopped:
-		// As its stop left it, as a save of a stopped sandbox or a history entry is: memory only matters live.
+		// As its stop left it, as a save of a stopped sandbox or a history entry is: memory only matters live. Its memory,
+		// if any, is linked, not copied: only its disk takes room.
+		release, err := m.roomToSave(s, false)
+		if err != nil {
+			return snap, err
+		}
+		defer release()
 		snap.Memory = s.meta.Memory
 		return snap, m.saveSnapshot(s, &snap, false)
 	default:

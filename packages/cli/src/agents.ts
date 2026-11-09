@@ -104,7 +104,8 @@ const CHEAT_SHEET = `- Create one: \`id=$(kantel new --type microvm --json | jq 
   \`kantel attach "$id" <command>\` follows its output, and \`kantel kill "$id" <command>\` stops it and what it
   started. It has no time limit; a host whose kantel-host predates exec-control still ends it after about 2 minutes
   on a microVM and can't kill it (\`pkill -f\` does).
-- Copy files: \`kantel push "$id" .\` (git-tracked files, to /home/user/<dir>), or
+- Copy files: \`kantel push "$id" .\` (git-tracked files, to /home/user/<dir>); into a sandbox that already has
+  a clone of the repository (one from a snapshot), \`kantel sync "$id" --git\` sends only a patch; or
   \`kantel scp ./file "$id":/home/user/\` and \`kantel scp "$id":/home/user/out.zip .\` (\`-r\` for a directory).
 - A URL for a port: \`kantel host "$id" 3000\` (private, with a token; \`--public\` for none).
 - When done: \`kantel stop "$id"\`. It keeps the disk, costs nothing stopped, and \`kantel resume "$id"\`

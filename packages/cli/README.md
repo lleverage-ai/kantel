@@ -67,7 +67,8 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 
 | Command | What it does |
 | --- | --- |
-| `new [--type isolate\|microvm] [--size] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--env <env>] [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs; `--env` with no `=` names an environment to start from |
+| `new [--type isolate\|microvm] [--size <size> \| --vcpus <n> --memory <GB>] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--env <env>] [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs; `--env` with no `=` names an environment to start from |
+| `sizes [--on <host>]` | The named sizes the hosts offer, and the other shapes `--vcpus` and `--memory` may ask for |
 | `list [--all] [--mine] [--every-account]`, `info <id>` | List and show sandboxes; `--mine` leaves out the ones others share in an organisation, `--every-account` lists all your accounts' |
 | `start\|stop\|resume\|recover <id>` | Its lifecycle; `stop --pause` keeps a microVM's memory |
 | `fork <id> [--count N]` | Copy it into new sandboxes |
@@ -76,10 +77,11 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `exec <id> [--cwd] [--env K=V]… [--timeout <s>] [-d] [--] <command…>` | Run a command; its output and exit code are kantel's |
 | `attach <id> <cmd>`, `ps <id>`, `kill <id> <cmd>` | Follow, list and stop detached commands |
 | `scp [-r] <from> <to>`, `push <id> [dir]` | Copy files; `<id>:<path>` is the sandbox's side, and push sends what git would commit |
+| `sync <id> [dir] --git [--to <path>] [--base <commit>]` | Bring a clone in a microVM to this working tree with one patch against its base commit |
 | `files ls\|cat\|put\|get\|rm …` | A sandbox's files, up to 1 MiB each |
 | `host <id> <port> [--public]`, `port list\|hide …` | HTTPS URLs for a sandbox's ports |
 | `ssh <id> [--print] [-- <command…>]`, `desktop <id>`, `browser <id>` | SSH (a shell, one command, or the ssh command printed), desktop and browser access to a microVM |
-| `snapshot list\|take\|save\|files\|rm …` | Snapshots, and saved snapshots to start sandboxes from |
+| `snapshot list\|info\|take\|save\|files\|rm …` | Snapshots, and saved snapshots to start sandboxes from; `take` and `save` take `--label k=v`, which `info` shows |
 | `env list\|create\|show\|delete …` | Environments: the variables, secret files, repos and grants new sandboxes start with |
 | `env set <env> NAME=value [--protected --bind <host>[/path][:METHOD,…]]… [--value-stdin] [--keep-value]`, `env unset` | Plain and protected variables; a protected value never enters a sandbox, and is never printed |
 | `env file <env> <path> [--mode] [--from]`, `env file rm`, `env repo add\|rm`, `env grant <env> allow\|deny <host>`, `env grant rm` | Secret files, repositories to clone and grants |
@@ -105,6 +107,13 @@ prints `kantel: <code>: <message>` on stderr and exits 1.
 
 `scp` and `push` use the files API, which moves 1 MiB a call. A bigger file comes out in 1 MiB ranged reads, on any
 sandbox; one going in goes in 768 KiB parts joined by a command in the sandbox, so that needs a microVM.
+
+`sync --git` is for a sandbox that already has a clone of the repository, such as one from a snapshot with its
+dependencies installed: only a patch goes over, where `push` sends every file (#726). Its base is `--base`, else the
+checkout's `.kantel-base-sha`, else the `git.base` label on the sandbox's snapshot, else the checkout's HEAD. It
+stages the working tree in a copy of the index (tracked changes and new unignored files), sends
+`git diff-tree --binary <base> <tree>` gzipped, and in the sandbox runs `git clean -fd` (ignored files stay),
+`git reset --hard <base>` and `git apply --index`, then checks `git write-tree` gives the same tree on both sides.
 
 `push` leaves credentials behind at any depth, naming each on stderr: always `.ssh`, `.gnupg`, `.aws`, `.azure`,
 `.kube`, `.netrc`, `.pypirc` and `.docker/config.json`; `.claude`, `.codex`, `.cursor`, `.npmrc` and `.env` files

@@ -25,6 +25,7 @@ import {
 	type Placement,
 	type SandboxBackend,
 	type SandboxSpec,
+	SNAPSHOT_KEEP_FEATURE,
 	type SshGrant,
 	type TakenSnapshot,
 	type TemplateBuildSpec,
@@ -278,7 +279,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		nestedVirtualisation: false,
 		capacity: { vcpus: 64, memoryMb: 262_144, diskGb: 2048 },
 		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
-		features: ["egress-policy", CUSTOM_SHAPES_FEATURE],
+		features: ["egress-policy", CUSTOM_SHAPES_FEATURE, SNAPSHOT_KEEP_FEATURE],
 		sizes: SIZES,
 		// The disk it gives a shape off its sizes, as kantel-host's defaults: its smallest size's, up to 1024 GB.
 		disk: { minGb: 10, maxGb: 1024 },
@@ -428,7 +429,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 
 	return {
 		async capabilities(): Promise<BackendCapabilities> {
-			return { types, sizes: SIZES, defaultImage: "ubuntu-24.04", hosts: [host] };
+			return { types, sizes: SIZES, defaultImage: "ubuntu-26.04", hosts: [host] };
 		},
 
 		create,
@@ -439,7 +440,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			const machine = machineOf(sandboxId);
 			if (keepMemory) microvmOnly(machine, "Pausing with memory");
 			if (machine.fs === undefined) throw new KantelError("conflict", `${sandboxId} has no machine to stop`);
-			const taken = keep(await capture(machine.fs));
+			const taken = { ...keep(await capture(machine.fs)), memory: keepMemory };
 			machine.bash = undefined;
 			machine.ports.clear();
 			if (keepMemory) machine.state = "paused";

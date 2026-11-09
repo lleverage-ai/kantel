@@ -286,6 +286,27 @@ describe("parsing", () => {
 		expect(moved.calls).toEqual([]);
 	});
 
+	it("keeps put working as files put, saying on stderr what to use now", async () => {
+		await writeFile(join(configDir, "notes.txt"), "hello\n");
+		const routes = {
+			"PUT /v1/sandboxes/sbx_test1/files": () => ({ path: "/home/user/notes.txt", kind: "file", size: 6 }),
+		};
+		const put = await kantel(["put", "sbx_test1", "notes.txt", "/home/user/notes.txt"], { routes });
+		expect(put.code).toBe(0);
+		expect(put.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["PUT /v1/sandboxes/sbx_test1/files"]);
+		expect(put.calls[0]?.body).toMatchObject({ path: "/home/user/notes.txt", content: "hello\n" });
+		expect(put.stdout).toContain("Wrote /home/user/notes.txt");
+		expect(put.stderr).toBe(
+			'kantel: "kantel put" is going: use kantel files put <id> <local> <remote> (a file of up to 1 MiB), or kantel scp <local> <id>:<remote> for bigger files and directories\n',
+		);
+		// Not in the help, and the help for it is files put's.
+		expect((await kantel(["help"])).stdout).not.toMatch(/^ {2}put /m);
+		expect((await kantel(["help", "put"])).stdout).toContain("Usage: kantel files put <id> <local> <remote>");
+		const missing = await kantel(["put", "sbx_test1"]);
+		expect(missing.code).toBe(2);
+		expect(missing.stderr).toContain("Usage: kantel files put");
+	});
+
 	it("prints the version", async () => {
 		const version = await kantel(["--version"]);
 		expect(version.code).toBe(0);
@@ -311,7 +332,7 @@ describe("retries", () => {
 		expect(result.calls).toHaveLength(3);
 		expect(result.keys[0]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(new Set(result.keys)).toEqual(new Set([result.keys[0]]));
-		expect(result.slept).toEqual([500, 2_000]);
+		expect(result.slept).toEqual([500, 1_000]);
 	});
 
 	it("gives each invocation its own key, and gives up after the last retry", async () => {
@@ -324,7 +345,104 @@ describe("retries", () => {
 			routes: { "POST /v1/sandboxes/sbx_test1/commands": () => new Response("Unavailable", { status: 503 }) },
 		});
 		expect(down.code).not.toBe(0);
-		expect(down.calls).toHaveLength(3);
+		// Five tries, each wait twice the last, then the error.
+		expect(down.calls).toHaveLength(5);
+		expect(down.slept).toEqual([500, 1_000, 2_000, 4_000]);
+	});
+
+	it("reads again with a doubling backoff while Kantel can't be reached, then gives up with why", async () => {
+		// A blip on a poll: the same read, sent again as it is, gets the answer.
+		let looks = 0;
+		const blip = await kantel(["info", "sbx_test1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => {
+					looks++;
+					if (looks === 1) throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED") });
+					if (looks === 2) return new Response("Bad gateway", { status: 502 });
+					if (looks === 3) return new Response("Gateway timeout", { status: 504 });
+					return SANDBOX;
+				},
+			},
+		});
+		expect(blip.code).toBe(0);
+		expect(blip.stdout).toContain("brave-otter");
+		expect(blip.stderr).toBe("");
+		expect(blip.calls.map((call) => `${call.method} ${call.path}`)).toEqual(
+			Array.from({ length: 4 }, () => "GET /v1/sandboxes/sbx_test1"),
+		);
+		// A read takes no key: it is safe to send again without one.
+		expect(blip.keys).toEqual([null, null, null, null]);
+		expect(blip.slept).toEqual([500, 1_000, 2_000]);
+
+		const down = await kantel(["list"], {
+			routes: {
+				"GET /v1/sandboxes": () => {
+					throw new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND kantel.test") });
+				},
+			},
+		});
+		expect(down.code).toBe(1);
+		expect(down.calls).toHaveLength(5);
+		expect(down.slept).toEqual([500, 1_000, 2_000, 4_000]);
+		expect(down.stderr).toBe(
+			"kantel: couldn't reach Kantel at https://kantel.test: getaddrinfo ENOTFOUND kantel.test\n",
+		);
+	});
+
+	it("reads once when Kantel itself answers, even a 503, as that is its answer", async () => {
+		const result = await kantel(["snapshot", "files", "snap_1"], {
+			routes: {
+				"GET /v1/snapshots/snap_1/files": () => kantelError(503, "unavailable", "The compute API failed"),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("kantel: unavailable: The compute API failed");
+		expect(result.calls).toHaveLength(1);
+		expect(result.slept).toEqual([]);
+	});
+
+	it("never sends a change again that a retry could do twice: a delete", async () => {
+		const unkeyed = await kantel(["delete", "sbx_test1", "--yes"], {
+			routes: {
+				"DELETE /v1/sandboxes/sbx_test1": () => new Response("Bad gateway", { status: 502 }),
+			},
+		});
+		expect(unkeyed.code).not.toBe(0);
+		expect(unkeyed.calls).toHaveLength(1);
+		expect(unkeyed.slept).toEqual([]);
+	});
+
+	it("writes a file again, the same bytes to the same path, when Kantel can't be reached (#800)", async () => {
+		await writeFile(join(configDir, "notes.txt"), "hello\n");
+		let writes = 0;
+		const written = await kantel(["files", "put", "sbx_test1", "notes.txt", "/home/user/notes.txt"], {
+			routes: {
+				"PUT /v1/sandboxes/sbx_test1/files": () => {
+					writes++;
+					if (writes === 1) throw new TypeError("fetch failed", { cause: new Error("read ECONNRESET") });
+					if (writes === 2) return new Response("Bad gateway", { status: 502 });
+					return { name: "notes.txt", path: "/home/user/notes.txt", type: "file", size: 6, mode: 420 };
+				},
+			},
+		});
+		expect(written.code).toBe(0);
+		expect(written.calls).toHaveLength(3);
+		// Each try sends the same body.
+		expect(new Set(written.calls.map((call) => JSON.stringify(call.body)))).toEqual(
+			new Set([JSON.stringify(written.calls[0]?.body)]),
+		);
+		expect(written.calls[0]?.body).toMatchObject({ path: "/home/user/notes.txt", content: "hello\n" });
+		expect(written.slept).toEqual([500, 1_000]);
+
+		// Kantel's own refusal is final.
+		const refused = await kantel(["files", "put", "sbx_test1", "notes.txt", "/home/user/notes.txt"], {
+			routes: {
+				"PUT /v1/sandboxes/sbx_test1/files": () => kantelError(503, "unavailable", "The compute API failed"),
+			},
+		});
+		expect(refused.code).not.toBe(0);
+		expect(refused.calls).toHaveLength(1);
+		expect(refused.slept).toEqual([]);
 	});
 
 	it("sends a keyed call once when Kantel itself answers, even a 503, and never loops on a held key's 409", async () => {
@@ -366,6 +484,49 @@ describe("retries", () => {
 		expect(saves).toBe(1);
 		expect(result.keys[0]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(result.slept).toEqual([]);
+	});
+
+	it("shows a guest's memory pressure and OOM kills in info and usage, and nothing where it has none", async () => {
+		const memory = { at: Date.now(), oomKills: 2, pressureSome: 0.85, pressureFull: 0.415 };
+		const usage = {
+			sandboxId: "sbx_test1",
+			intervalSeconds: 300,
+			points: [],
+			totals: { runningSeconds: 60, cpuSeconds: 30, cost: { currency: "USD", total: 0, ratePerHour: 0 } },
+			series: { intervalMs: 5000, points: [] },
+		};
+		const routes = {
+			"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, usage: { ...SANDBOX.usage, memory } }),
+			"GET /v1/sandboxes/sbx_test1/usage": () => ({ ...usage, memory: { at: memory.at, oomKills: 1 } }),
+			"GET /v1/sandboxes/sbx_plain": () => SANDBOX,
+			"GET /v1/sandboxes/sbx_plain/usage": () => usage,
+		};
+		const info = await kantel(["info", "sbx_test1"], { routes });
+		expect(info.stdout).toMatch(/memory +pressure 85% \(full 42%\), 2 processes killed for memory since boot/);
+		const used = await kantel(["usage", "sbx_test1"], { routes });
+		expect(used.stdout).toMatch(/memory +1 process killed for memory since boot/);
+		const plainInfo = await kantel(["info", "sbx_plain"], { routes });
+		expect(plainInfo.stdout).not.toContain("memory");
+		const plainUsage = await kantel(["usage", "sbx_plain"], { routes });
+		expect(plainUsage.stdout).not.toContain("memory");
+	});
+
+	it("saves a snapshot with the least memory a sandbox made from it may have, in GB", async () => {
+		const routes = {
+			"POST /v1/snapshots": () => ({ id: "snap_1", name: "checks", kind: "saved", minMemoryMb: 16_384 }),
+		};
+		const saved = await kantel(["snapshot", "save", "sbx_test1", "checks", "--min-memory", "16"], { routes });
+		expect(saved.code).toBe(0);
+		expect(saved.calls[0]?.body).toMatchObject({ sandboxId: "sbx_test1", name: "checks", minMemoryMb: 16_384 });
+		const cleared = await kantel(["snapshot", "save", "sbx_test1", "checks", "--replace", "--min-memory", "0"], {
+			routes,
+		});
+		expect(cleared.calls[0]?.body).toMatchObject({ replace: true, minMemoryMb: 0 });
+		const plain = await kantel(["snapshot", "save", "sbx_test1", "checks"], { routes });
+		expect(plain.calls[0]?.body).not.toHaveProperty("minMemoryMb");
+		const wrong = await kantel(["snapshot", "save", "sbx_test1", "checks", "--min-memory", "16GB"], { routes });
+		expect(wrong.code).toBe(2);
+		expect(wrong.calls).toEqual([]);
 	});
 
 	it("sends a call that takes no key once, however it fails", async () => {
@@ -506,9 +667,9 @@ describe("exec", () => {
 		});
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("Reading package lists...\nSetting up gcc\nDone\n");
-		expect(result.stderr).toContain(
-			"kantel: couldn't reach Kantel at https://kantel.test: read ECONNRESET; trying again",
-		);
+		// The dropped connection was read again at once (the client's retry); Kantel's own 503 is follow's to wait out.
+		expect(result.stderr).not.toContain("read ECONNRESET");
+		expect(result.stderr).toContain("kantel: Kantel can't answer for now (The gateway is restarting); trying again");
 	});
 
 	it("gives up following once Kantel has been out of reach for a while, saying the command may still run and how to attach", async () => {
@@ -590,8 +751,8 @@ describe("exec", () => {
 			},
 		});
 		expect(result.code).toBe(1);
-		// Sent three times under one key, then given up on.
-		expect(result.calls).toHaveLength(3);
+		// Sent five times under one key, then given up on.
+		expect(result.calls).toHaveLength(5);
 		expect(result.stderr).toContain("read ECONNRESET");
 		expect(result.stderr).toContain("it may have started: kantel ps sbx_test1 lists it");
 	});
@@ -715,6 +876,19 @@ describe("sandboxes", () => {
 		expect(wrong.calls).toEqual([]);
 	});
 
+	it("says how a create's start took its time, and gives the phases with --json", async () => {
+		const startup = { disk: "copy", diskMs: 18_200, bootMs: 1_900, agentMs: 600, hostMs: 21_400, totalMs: 22_000 };
+		const routes = { "POST /v1/sandboxes": () => ({ ...SANDBOX, startup }) };
+		const created = await kantel(["new", "--from", "warm"], { routes });
+		expect(created.stdout).toContain(
+			"Started in:     21.4 s on its host (22.0 s in all): disk copied 18.2 s, boot 1.9 s, guest agent 0.6 s",
+		);
+		const json = await kantel(["new", "--from", "warm", "--json"], { routes });
+		expect(JSON.parse(json.stdout).startup).toEqual(startup);
+		const plain = await kantel(["new"], { routes: { "POST /v1/sandboxes": () => SANDBOX } });
+		expect(plain.stdout).not.toContain("Started in");
+	});
+
 	it("sizes a microVM with --vcpus and --memory, beside --disk", async () => {
 		const routes = { "POST /v1/sandboxes": () => SANDBOX };
 		const created = await kantel(["new", "--type", "microvm", "--vcpus", "8", "--memory", "16", "--disk", "60"], {
@@ -733,13 +907,124 @@ describe("sandboxes", () => {
 			[["--type", "microvm", "--memory", "lots", "--vcpus", "2"], "--memory is in GB"],
 			[["--vcpus", "2", "--memory", "4"], "are a microVM's"],
 			[["--type", "microvm", "--size", "large", "--vcpus", "2", "--memory", "4"], "not both"],
-			[["--type", "microvm", "--from", "snap_1", "--vcpus", "2", "--memory", "4"], "that snapshot's machine"],
+			[["--type", "isolate", "--from", "snap_1", "--vcpus", "2", "--memory", "4"], "are a microVM's"],
+			[["--type", "microvm", "--from", "snap_1", "--vcpus", "8", "--memory", "16", "--disk", "60"], "leave out --disk"],
 		] as const) {
 			const refused = await kantel(["new", ...args], { routes });
 			expect(refused.code).toBe(2);
 			expect(refused.stderr).toContain(message);
 			expect(refused.calls).toEqual([]);
 		}
+	});
+
+	it("starts a snapshot of the disk alone at the shape --vcpus and --memory ask for", async () => {
+		const routes = { "POST /v1/sandboxes": () => ({ ...SANDBOX, type: "microvm" }) };
+		// --type can be left out: from a snapshot, the sandbox is the snapshot's type.
+		const created = await kantel(["new", "--from", "monorepo-ci", "--vcpus", "8", "--memory", "16"], { routes });
+		expect(created.code).toBe(0);
+		expect(created.calls[0]?.body).toEqual({
+			from: "monorepo-ci",
+			resources: { vcpus: 8, memoryMb: 16384 },
+			wait: true,
+		});
+		const sized = await kantel(["new", "--from", "monorepo-ci", "--size", "large"], { routes });
+		expect(sized.calls[0]?.body).toEqual({ from: "monorepo-ci", size: "large", wait: true });
+
+		// One that holds its sandbox's memory has that sandbox's machine: Kantel refuses another before it makes anything.
+		const held = await kantel(["new", "--type", "microvm", "--from", "paused-dev", "--vcpus", "8", "--memory", "16"], {
+			routes: {
+				"POST /v1/sandboxes": () =>
+					kantelError(
+						400,
+						"invalid",
+						"Snapshot snap_1 holds its sandbox's memory, so a sandbox made from it has that sandbox's machine (size large, 4 vCPU and 8192 MB of memory). Leave resources and size out, or ask for that machine",
+					),
+			},
+		});
+		expect(held.code).toBe(1);
+		expect(held.stderr).toContain("holds its sandbox's memory");
+		expect(held.calls).toHaveLength(1);
+	});
+
+	it("names no size the hosts may not offer, lists theirs with kantel sizes, and points there when one is refused", async () => {
+		const help = await kantel(["new", "--help"]);
+		expect(help.stdout).toContain("--size <size>");
+		expect(help.stdout).not.toContain("xlarge");
+		expect(help.stdout).toContain("kantel sizes lists");
+
+		const wrong = await kantel(["new", "--type", "microvm", "--size", "checks"]);
+		expect(wrong.code).toBe(2);
+		expect(wrong.stderr).toContain('--size takes a named size, such as small, default or large, not "checks"');
+		expect(wrong.stderr).toContain("kantel sizes lists");
+		expect(wrong.calls).toEqual([]);
+
+		const shapes = {
+			isolate: { memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false },
+			microvm: {
+				vcpus: { min: 1, max: 32, step: 1, default: 4 },
+				memoryMb: { min: 1024, max: 65536, step: 256, default: 2048 },
+				memoryMbPerVcpu: { min: 256, max: 8192 },
+				diskGb: { min: 10, max: 1024, step: 1, default: 20 },
+				presets: [
+					{ name: "small", vcpus: 1, memoryMb: 1024, diskGb: 10 },
+					{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 },
+					{ name: "large", vcpus: 4, memoryMb: 8192, diskGb: 50 },
+				],
+				custom: true,
+			},
+			rates: { currency: "USD", microvmPerVcpuHour: 0.0075, microvmPerGbHour: 0.00125, isolatePerGbHour: 0.001 },
+		};
+		const sizes = await kantel(["sizes", "--on", "hetzner-1"], { routes: { "GET /v1/sandbox-shapes": () => shapes } });
+		expect(sizes.code).toBe(0);
+		expect(sizes.calls[0]?.query.get("host")).toBe("hetzner-1");
+		expect(sizes.stdout).toMatch(/^large +4 +8 GB +50 GB +0\.040 USD$/m);
+		expect(sizes.stdout).toMatch(/^small +1 +1 GB +10 GB +0\.009 USD$/m);
+		expect(sizes.stdout).not.toContain("xlarge");
+		expect(sizes.stdout).toContain("1 to 32 vCPUs and 1 to 64 GB of memory, 0.25 to 8 GB a vCPU");
+		expect(sizes.stdout).toContain("A disk of 10 to 1024 GB with --disk");
+		const presetsOnly = await kantel(["sizes"], {
+			routes: { "GET /v1/sandbox-shapes": () => ({ ...shapes, microvm: { ...shapes.microvm, custom: false } }) },
+		});
+		expect(presetsOnly.stdout).toContain("No other shapes");
+		const none = await kantel(["sizes"], { routes: { "GET /v1/sandbox-shapes": () => ({ isolate: shapes.isolate }) } });
+		expect(none.stdout).toContain("No host this account may use runs microVMs");
+
+		const refused = await kantel(["new", "--type", "microvm", "--size", "xlarge"], {
+			routes: {
+				"POST /v1/sandboxes": () =>
+					json(
+						{
+							error: {
+								code: "not_supported",
+								message: "This deployment doesn't offer the size xlarge",
+								details: { reason: "no_host_offers_size" },
+							},
+						},
+						400,
+					),
+			},
+		});
+		expect(refused.code).toBe(1);
+		expect(refused.stderr).toContain("This deployment doesn't offer the size xlarge");
+		expect(refused.stderr).toContain("kantel sizes lists the sizes and shapes the hosts offer.");
+	});
+
+	it("lists one sandbox's snapshots by its ID, and shows a small rate to a tenth of a cent", async () => {
+		const routes = {
+			"GET /v1/snapshots": () => ({ items: [] }),
+			"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, cost: { currency: "USD", total: 0, ratePerHour: 0.035 } }),
+		};
+		const listed = await kantel(["snapshot", "list", "sbx_test1"], { routes });
+		expect(listed.code).toBe(0);
+		expect(listed.calls[0]?.query.get("sandboxId")).toBe("sbx_test1");
+		const flagged = await kantel(["snapshot", "list", "--sandbox", "sbx_test1"], { routes });
+		expect(flagged.calls[0]?.query.get("sandboxId")).toBe("sbx_test1");
+		const both = await kantel(["snapshot", "list", "sbx_test1", "--sandbox", "sbx_other"], { routes });
+		expect(both.code).toBe(2);
+		expect(both.calls).toEqual([]);
+
+		const info = await kantel(["info", "sbx_test1"], { routes });
+		expect(info.stdout).toContain("0.00 USD (0.035 USD an hour)");
 	});
 
 	it("sets an idle stop with --idle-stop on new and extend, apart from the auto-stop", async () => {
@@ -803,6 +1088,94 @@ describe("sandboxes", () => {
 		expect(paused.code).toBe(0);
 		expect(paused.calls[0]?.body).toEqual({ keepMemory: true });
 		expect(paused.stdout).toBe("sbx_test1 paused\n");
+	});
+});
+
+describe("snapshots", () => {
+	const SAVED = {
+		id: "snap_1",
+		accountId: "acc_1",
+		kind: "saved",
+		name: "checks-warm",
+		description: "Warm Turbo cache",
+		labels: { "git.base": "9540593c" },
+		sandboxId: "sbx_test1",
+		sandboxType: "microvm",
+		state: "ready",
+		memory: false,
+		uses: 3,
+		createdAt: Date.UTC(2026, 10, 6, 12),
+		takenAt: Date.UTC(2026, 10, 6, 9),
+	};
+
+	it("saves and takes a snapshot with --label", async () => {
+		const routes = { "POST /v1/snapshots": () => SAVED, "POST /v1/sandboxes/sbx_test1/snapshots": () => SAVED };
+		const saved = await kantel(
+			["snapshot", "save", "sbx_test1", "checks-warm", "--label", "git.base=9540593c", "--label", "node=24"],
+			{ routes },
+		);
+		expect(saved.code).toBe(0);
+		expect(saved.calls[0]?.body).toEqual({
+			sandboxId: "sbx_test1",
+			name: "checks-warm",
+			labels: { "git.base": "9540593c", node: "24" },
+		});
+		const taken = await kantel(["snapshot", "take", "sbx_test1", "--label", "git.base=abc"], { routes });
+		expect(taken.calls[0]?.body).toEqual({ labels: { "git.base": "abc" } });
+		const wrong = await kantel(["snapshot", "save", "sbx_test1", "x", "--label", "git.base"], { routes });
+		expect(wrong.code).toBe(2);
+		expect(wrong.calls).toEqual([]);
+	});
+
+	it("shows a snapshot by ID or saved name, with its labels and when it was taken and saved", async () => {
+		const routes = {
+			"GET /v1/snapshots": (call: Call) =>
+				call.query.get("cursor") === null
+					? { items: [{ ...SAVED, id: "snap_0", name: "other" }], nextCursor: "c2" }
+					: { items: [SAVED] },
+			"GET /v1/snapshots/snap_1": () => SAVED,
+		};
+		const byName = await kantel(["snapshot", "info", "checks-warm"], { routes });
+		expect(byName.code).toBe(0);
+		expect(byName.calls.map((call) => call.path)).toEqual(["/v1/snapshots", "/v1/snapshots", "/v1/snapshots/snap_1"]);
+		expect(byName.calls[0]?.query.get("kind")).toBe("saved");
+		expect(byName.stdout).toMatch(/^labels\s+git\.base=9540593c$/m);
+		expect(byName.stdout).toMatch(/^description\s+Warm Turbo cache$/m);
+		expect(byName.stdout).toMatch(/^taken\s+2026-11-06 09:00/m);
+		expect(byName.stdout).toMatch(/^saved\s+2026-11-06 12:00/m);
+		const byId = await kantel(["snapshot", "info", "snap_1", "--json"], { routes });
+		expect(byId.calls.map((call) => call.path)).toEqual(["/v1/snapshots/snap_1"]);
+		expect(JSON.parse(byId.stdout).labels).toEqual({ "git.base": "9540593c" });
+		// Saved straight from a running sandbox, its state is the save's: one time.
+		const now = await kantel(["snapshot", "info", "snap_1"], {
+			routes: { "GET /v1/snapshots/snap_1": () => ({ ...SAVED, takenAt: SAVED.createdAt }) },
+		});
+		expect(now.stdout).not.toMatch(/^taken/m);
+		const missing = await kantel(["snapshot", "info", "nope"], {
+			routes: { "GET /v1/snapshots": () => ({ items: [] }) },
+		});
+		expect(missing.code).toBe(1);
+		expect(missing.stderr).toContain('there is no snapshot nope, or saved one called "nope"');
+		// A saved name may start as an ID does: not found as an ID, it is looked for by name.
+		const prefixed = await kantel(["snapshot", "info", "snap_checks"], {
+			routes: {
+				"GET /v1/snapshots": () => ({ items: [{ ...SAVED, name: "snap_checks" }] }),
+				"GET /v1/snapshots/snap_1": () => ({ ...SAVED, name: "snap_checks" }),
+			},
+		});
+		expect(prefixed.code).toBe(0);
+		expect(prefixed.calls.map((call) => call.path)).toEqual([
+			"/v1/snapshots/snap_checks",
+			"/v1/snapshots",
+			"/v1/snapshots/snap_1",
+		]);
+		expect(prefixed.stdout).toMatch(/^name\s+snap_checks$/m);
+		// Any other failure of the ID lookup is that failure, not a missing name.
+		const failing = await kantel(["snapshot", "info", "snap_1"], {
+			routes: { "GET /v1/snapshots/snap_1": () => kantelError(403, "forbidden", "No") },
+		});
+		expect(failing.code).not.toBe(0);
+		expect(failing.calls).toHaveLength(1);
 	});
 });
 
@@ -999,6 +1372,8 @@ describe("errors", () => {
 			stdout,
 			stderr,
 			configDir,
+			// Its retries' waits.
+			sleep: async () => undefined,
 		});
 		expect(code).toBe(1);
 		expect(stderr.text()).toBe("kantel: couldn't reach Kantel at https://kantel.test: connect ECONNREFUSED\n");
@@ -2253,6 +2628,193 @@ describe("copying files", () => {
 		const both = await kantel(["scp", "sbx_1:a", "sbx_2:b"]);
 		expect(both.code).toBe(2);
 		expect(both.calls).toEqual([]);
+	});
+
+	/**
+	 * Syncs `local` into a microVM whose checkout is `checkout` on this machine: its files are written here and its
+	 * commands run here with sh. The sandbox was made from snap_1, labelled `labels`.
+	 */
+	async function synced(
+		args: readonly string[],
+		cwd: string,
+		labels: Record<string, string> = {},
+		kantelConfig = join(configDir, "kantel"),
+	) {
+		return kantel(["sync", "sbx_test1", ...args], {
+			configDir: kantelConfig,
+			cwd,
+			routes: {
+				"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, type: "microvm", source: { snapshotId: "snap_1" } }),
+				"GET /v1/snapshots/snap_1": () => ({ id: "snap_1", kind: "saved", name: "app-warm", labels }),
+				"PUT /v1/sandboxes/sbx_test1/files": async (call) => {
+					const body = call.body as Written;
+					await writeFile(body.path, Buffer.from(body.content, body.encoding === "base64" ? "base64" : "utf8"));
+					return { path: body.path, size: 1 };
+				},
+				"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+					const line = (call.body as { command: string }).command;
+					try {
+						return command({ stdout: execFileSync("sh", ["-c", line], { encoding: "utf8", stdio: "pipe" }) });
+					} catch (error) {
+						const failed = error as { status: number; stdout: string; stderr: string };
+						return command({ exitCode: failed.status, stdout: failed.stdout, stderr: failed.stderr });
+					}
+				},
+			},
+		});
+	}
+
+	it("sync --git sends a patch against the snapshot's git.base, which the sandbox applies to the same tree", async () => {
+		const git =
+			(dir: string) =>
+			(...args: string[]): string =>
+				execFileSync(
+					"git",
+					["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
+					{
+						cwd: dir,
+						encoding: "utf8",
+					},
+				).trim();
+		const local = join(configDir, "repo");
+		await mkdir(local);
+		await writeFile(join(local, "a.ts"), "1\n");
+		await writeFile(join(local, ".gitignore"), "node_modules/\n");
+		git(local)("init", "-q");
+		git(local)("add", "-A");
+		git(local)("commit", "-q", "-m", "base");
+		const base = git(local)("rev-parse", "HEAD");
+		const checkout = join(configDir, "checkout");
+		git(configDir)("clone", "-q", local, checkout);
+		// The sandbox's HEAD has moved on; the label still names the base.
+		await writeFile(join(checkout, "theirs.ts"), "x\n");
+		git(checkout)("add", "theirs.ts");
+		git(checkout)("commit", "-q", "-m", "theirs");
+		await mkdir(join(checkout, "node_modules"));
+		await writeFile(join(checkout, "node_modules", "dep.js"), "kept\n");
+		await writeFile(join(local, "a.ts"), "2\n");
+		await mkdir(join(local, "src"));
+		await writeFile(join(local, "src", "b.ts"), "new\n");
+		await writeFile(join(local, ".env"), "SECRET=1\n");
+
+		const result = await synced(["--git", "src", "--to", checkout], local, { "git.base": base });
+		expect(result.code).toBe(0);
+		expect(result.stdout).toMatch(
+			new RegExp(
+				`^Synced ${checkout} in sbx_test1 \\(2 files changed: a \\d+ B patch, \\d+ B sent\\) on ${base.slice(0, 10)} ` +
+					"\\(its snapshot's git\\.base\\) in \\d+\\.\\d s\\. Both trees are [0-9a-f]{10}\\.\\n$",
+			),
+		);
+		expect(result.stderr).toContain("kantel: left out .env (an environment file)");
+		expect(result.stderr).toContain("kantel: --no-default-excludes sends credentials, sign-ins and .env files too");
+		expect(git(checkout)("rev-parse", "HEAD")).toBe(base);
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("2\n");
+		expect(await readFile(join(checkout, "src", "b.ts"), "utf8")).toBe("new\n");
+		expect(await readFile(join(checkout, "node_modules", "dep.js"), "utf8")).toBe("kept\n");
+		await expect(stat(join(checkout, "theirs.ts"))).rejects.toThrow();
+		await expect(stat(join(checkout, ".env"))).rejects.toThrow();
+
+		const json = await synced(["--git", "--to", checkout, "--json"], local, { "git.base": base });
+		expect(json.code).toBe(0);
+		const answer = JSON.parse(json.stdout);
+		expect(answer).toMatchObject({ sandboxId: "sbx_test1", path: checkout, base, baseSource: "label", files: 2 });
+		expect(answer.tree).toBe(git(checkout)("write-tree"));
+		expect(Object.keys(answer.timings)).toEqual(["probeMs", "patchMs", "uploadMs", "applyMs", "totalMs"]);
+	});
+
+	/** Runs git in `dir` as a test user. */
+	const gitIn =
+		(dir: string) =>
+		(...args: string[]): string =>
+			execFileSync(
+				"git",
+				["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
+				{
+					cwd: dir,
+					encoding: "utf8",
+				},
+			).trim();
+
+	/** A repository at `local` with one commit, and a clone of it at `checkout`, the sandbox's. */
+	async function cloned(local: string, checkout: string): Promise<string> {
+		await mkdir(local, { recursive: true });
+		await writeFile(join(local, "a.ts"), "1\n");
+		gitIn(local)("init", "-q");
+		gitIn(local)("add", "-A");
+		gitIn(local)("commit", "-q", "-m", "base");
+		gitIn(configDir)("clone", "-q", local, checkout);
+		return gitIn(local)("rev-parse", "HEAD");
+	}
+
+	it("sync refuses a repository as push refuses a directory, and never sends Kantel's config", async () => {
+		// The home is a repository, with Kantel's config in it.
+		const home = join(configDir, "home");
+		const checkout = join(configDir, "checkout");
+		const base = await cloned(home, checkout);
+		const config = join(home, ".config", "kantel");
+		await mkdir(config, { recursive: true });
+		await writeFile(join(config, "config.json"), '{"apiKey":"ksk_secret"}\n');
+		await writeFile(join(home, "a.ts"), "2\n");
+		const refused = await synced(["--git", "--to", checkout, "--base", base], home, {}, config);
+		expect(refused.code).toBe(1);
+		expect(refused.stderr).toContain("is your home directory: sync a project repository, or add --allow-home");
+		expect(refused.calls).toEqual([]);
+		const args = ["--git", "--to", checkout, "--base", base, "--allow-home", "--no-default-excludes"];
+		const result = await synced(args, join(home, ".config"), {}, config);
+		expect(result.code).toBe(0);
+		expect(result.stderr).toContain("kantel: left out .config/kantel (Kantel's config, with your API key)");
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("2\n");
+		await expect(stat(join(checkout, ".config", "kantel", "config.json"))).rejects.toThrow();
+		const sent = result.calls.filter((call) => call.method === "PUT").map((call) => (call.body as Written).content);
+		for (const part of sent) expect(Buffer.from(part, "base64").toString("latin1")).not.toContain("ksk_secret");
+
+		// A repository in .ssh, named from a directory in it.
+		const keys = join(configDir, ".ssh", "keys");
+		await cloned(keys, join(configDir, "keys-checkout"));
+		await mkdir(join(keys, "sub"));
+		const ssh = await synced(["--git", "sub"], keys);
+		expect(ssh.code).toBe(1);
+		expect(ssh.stderr).toContain("is in ");
+		expect(ssh.stderr).toContain("one sync leaves out (credentials): add --no-default-excludes if you mean it");
+		expect(ssh.calls).toEqual([]);
+
+		// A repository named .docker: its changed config.json stays behind.
+		const docker = join(configDir, ".docker");
+		const dockerCheckout = join(configDir, "docker-checkout");
+		await cloned(docker, dockerCheckout);
+		await writeFile(join(docker, "config.json"), '{"auths":{"r":{"auth":"c2VjcmV0"}}}\n');
+		const auth = await synced(["--git", "--to", dockerCheckout], docker);
+		expect(auth.code).toBe(0);
+		expect(auth.stderr).toContain("kantel: left out config.json (credentials)");
+		await expect(stat(join(dockerCheckout, "config.json"))).rejects.toThrow();
+	});
+
+	it("sync works from a worktree in .claude/worktrees, as push does", async () => {
+		const project = join(configDir, "project");
+		const checkout = join(configDir, "checkout");
+		await cloned(project, checkout);
+		const worktree = join(project, ".claude", "worktrees", "fix");
+		gitIn(project)("worktree", "add", "-q", worktree);
+		await writeFile(join(worktree, "a.ts"), "from the worktree\n");
+		await writeFile(join(worktree, "b.ts"), "new\n");
+		const result = await synced(["--git", "--to", checkout], worktree);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("(2 files changed:");
+		expect(await readFile(join(checkout, "a.ts"), "utf8")).toBe("from the worktree\n");
+		expect(await readFile(join(checkout, "b.ts"), "utf8")).toBe("new\n");
+	});
+
+	it("sync needs --git, a git working tree here, and no other arguments", async () => {
+		const bare = await kantel(["sync", "sbx_test1"]);
+		expect(bare.code).toBe(2);
+		expect(bare.stderr).toContain("sync works as a git patch for now: add --git");
+		const plain = join(configDir, "plain");
+		await mkdir(plain);
+		const outside = await kantel(["sync", "sbx_test1", plain, "--git"]);
+		expect(outside.code).toBe(1);
+		expect(outside.stderr).toContain(`${plain} isn't in a git working tree`);
+		expect([...bare.calls, ...outside.calls]).toEqual([]);
+		expect((await kantel(["help"])).stdout).toMatch(/^ {2}sync <id> \[dir\] {2,}Bring a git checkout in a microVM/m);
 	});
 });
 

@@ -773,7 +773,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -793,6 +793,10 @@ export interface EventData {
 	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
 	readonly placementReason?: PlacementReason;
 	readonly actor?: CreatedBy;
+	/** `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading. */
+	readonly oomKills?: number;
+	/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
+	readonly startup?: SandboxStartup;
 }
 
 export interface EventPage {
@@ -801,7 +805,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -810,6 +814,7 @@ export type EventType =
 	| "sandbox.error"
 	| "sandbox.degraded"
 	| "sandbox.recovered"
+	| "sandbox.oom_kill"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -973,6 +978,18 @@ export interface GuestFeature {
 	readonly reason?: string;
 }
 
+/** A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't send it (an image from before them) or its kernel has none. */
+export interface GuestMemory {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	/** How many processes its kernel has killed for memory since it booted (its `oom_kill`). It grows until the VM boots again: a stop and start, or a recovery. */
+	readonly oomKills?: number;
+	/** The share of the last 10 seconds in which at least one of its tasks was stalled waiting for memory (its kernel's memory pressure, `some` avg10). */
+	readonly pressureSome?: number;
+	/** The share of the last 10 seconds in which every task that wanted to run was stalled waiting for memory (`full` avg10). Near 1, the machine does little but reclaim memory and stops answering. */
+	readonly pressureFull?: number;
+}
+
 export interface GuestOs {
 	/** `/etc/os-release`'s `ID`, such as `debian`, `alpine` or `ubuntu`. */
 	readonly id: string;
@@ -1016,6 +1033,12 @@ export interface Host {
 	readonly lastSeenAt?: number;
 	/** A host's recent CPU and memory, for sparklines. */
 	readonly usage?: UsageSparklines;
+	/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
+	readonly diskUsage?: HostDiskUsage;
+	/** A host's memory, in MiB, as it last reported it (every heartbeat). */
+	readonly memory?: HostMemory;
+	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
+	readonly savedSnapshotBytesLimit?: number;
 }
 
 export interface HostAllocated {
@@ -1031,6 +1054,30 @@ export interface HostCapacity {
 	readonly diskGb: number;
 }
 
+/** What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host. */
+export interface HostDiskUsage {
+	/** The size of the filesystem that holds the host's files. */
+	readonly totalBytes: number;
+	/** What is used on it, by anything. */
+	readonly usedBytes: number;
+	/** Saved snapshots: of the snapshot files counted here, those every account's saved snapshots on the host hold, each file once. */
+	readonly savedSnapshotsBytes: number;
+	/** The rest of the host's snapshots: automatic ones, and any Kantel has no record of. */
+	readonly automaticSnapshotsBytes: number;
+	/** Sandboxes' own disks, and their memory while they're stopped. */
+	readonly sandboxesBytes: number;
+	/** Base images: the guest kernel and root filesystems, and templates' root filesystems. */
+	readonly imagesBytes: number;
+	/** Template snapshots, which new sandboxes start from. */
+	readonly templatesBytes: number;
+	/** The cache of bundle images that sandboxes mount. */
+	readonly bundlesBytes: number;
+	/** The rest of the used space: the operating system, logs and other programs. */
+	readonly otherBytes: number;
+	/** Epoch milliseconds, UTC. */
+	readonly measuredAt: number;
+}
+
 export interface HostJoinToken {
 	/** The token's ID. */
 	readonly id: string;
@@ -1044,6 +1091,40 @@ export interface HostJoinToken {
 
 export interface HostList {
 	readonly items: readonly Host[];
+}
+
+/** A host's memory, in MiB, as it last reported it (every heartbeat). */
+export interface HostMemory {
+	/** How the host admits microVMs' memory. `reserved`: by what they were given, up to `maxRatio` times `capacityMiB`. `used` (memory over-commit, experimental): by `committedMiB`, what they use and may soon use, within what the machine has available and up to `maxRatio` times `capacityMiB` given. */
+	readonly mode: "reserved" | "used";
+	/** How short of memory the host is. `tight`: it reclaims guests' page cache. `refusing`: it refuses new sandboxes. `critical`: it ends the largest process in the guest holding the most memory. */
+	readonly state: "ok" | "tight" | "refusing" | "critical";
+	/** The machine's memory, or the limit of the control group kantel-host runs in. */
+	readonly totalMiB: number;
+	/** What is kept for the host's own processes and never given to sandboxes. */
+	readonly reserveMiB: number;
+	/** `totalMiB` less `reserveMiB`. */
+	readonly capacityMiB: number;
+	/** What the host's sandboxes were given. */
+	readonly reservedMiB: number;
+	/** What its microVMs count for: each its peak of the last minutes plus headroom, at most its size. */
+	readonly committedMiB: number;
+	/** What its microVMs' guests say they use, page cache aside. */
+	readonly guestUsedMiB: number;
+	/** What its microVMs hold of the machine's memory, their guests' page cache included. */
+	readonly residentMiB: number;
+	/** What the machine has available now (MemAvailable). */
+	readonly availableMiB: number;
+	/** Swap in use on the machine. */
+	readonly swapUsedMiB: number;
+	/** Memory pressure: the share of the last 10 seconds some task waited on memory. */
+	readonly pressureSome: number;
+	/** The share of the last 10 seconds every task waited on memory. */
+	readonly pressureFull: number;
+	/** The most sandboxes may be given, as a multiple of `capacityMiB`. */
+	readonly maxRatio: number;
+	/** Epoch milliseconds, UTC. */
+	readonly measuredAt?: number;
 }
 
 export interface HostReleaseCheck {
@@ -1142,7 +1223,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -1471,11 +1552,11 @@ export interface Sandbox {
 	/** The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes. */
 	readonly shape?: SandboxShape;
 	readonly resources?: SandboxResources;
-	/** The base image a microVM was made from, such as `ubuntu-24.04`. */
+	/** The base image a microVM was made from, such as `ubuntu-26.04`. */
 	readonly image?: string;
 	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
-	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
+	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
 	readonly health?: SandboxHealth;
 	/** Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none. */
 	readonly reason?: string;
@@ -1529,6 +1610,8 @@ export interface Sandbox {
 	readonly hostName?: string;
 	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
 	readonly base?: SandboxBase;
+	/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
+	readonly startup?: SandboxStartup;
 }
 
 /** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
@@ -1606,8 +1689,8 @@ export interface SandboxEgressQuery {
 	readonly limit?: number;
 }
 
-/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
-export type SandboxHealth = "ok" | "degraded";
+/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
+export type SandboxHealth = "ok" | "degraded" | "unresponsive";
 
 /** A mount of a sandbox's, and whether its files are in place. */
 export interface SandboxMount {
@@ -1621,7 +1704,7 @@ export interface SandboxMount {
 
 /** The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call. */
 export interface SandboxNotRunning {
-	/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. */
+	/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. */
 	readonly code: SandboxNotRunningCode;
 	readonly sandboxId: string;
 	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
@@ -1632,14 +1715,15 @@ export interface SandboxNotRunning {
 	readonly hint: string;
 }
 
-/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. */
+/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. */
 export type SandboxNotRunningCode =
 	| "sandbox_starting"
 	| "sandbox_stopping"
 	| "sandbox_stopped"
 	| "sandbox_paused"
 	| "sandbox_error"
-	| "sandbox_deleting";
+	| "sandbox_deleting"
+	| "sandbox_unresponsive";
 
 export interface SandboxPage {
 	readonly items: readonly Sandbox[];
@@ -1694,6 +1778,12 @@ export interface SandboxSeriesPoint {
 	readonly diskUsedBytes?: number;
 	/** The share of the interval ending at `at` in which at least one of a microVM's tasks waited on IO (its guest kernel's IO pressure, `some`). Absent where the guest has no pressure figures. */
 	readonly ioPressure?: number;
+	/** How many processes a microVM's kernel had killed for memory since it booted, at `at`. Absent where its guest's agent doesn't send it or didn't answer in time. */
+	readonly oomKills?: number;
+	/** A microVM's memory pressure at `at`: the share of the 10 seconds before it in which at least one of its tasks was stalled waiting for memory (`some` avg10). Absent where the guest has no pressure figures. */
+	readonly memPressureSome?: number;
+	/** As `memPressureSome`, for the share in which every task that wanted to run was stalled (`full` avg10). */
+	readonly memPressureFull?: number;
 }
 
 /** The vCPUs and memory a sandbox asked for: the shape it was made with (a fork, its source's), and once its host places it, what it runs as. Known from the moment it's made, before its host says what it got (`resources`, with its disk). Absent: made by a named size and not yet placed, or made before shapes. */
@@ -1739,6 +1829,24 @@ export interface SandboxSource {
 	readonly sandboxId?: string;
 }
 
+/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
+export interface SandboxStartup {
+	/** How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume). */
+	readonly disk?: "reflink" | "copy" | "move" | "new";
+	/** Making its disk, in milliseconds. */
+	readonly diskMs: number;
+	/** For a fork of a running sandbox: the live snapshot of its source it was made from. */
+	readonly snapshotMs?: number;
+	/** Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. */
+	readonly bootMs: number;
+	/** From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too. */
+	readonly agentMs: number;
+	/** The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). */
+	readonly hostMs: number;
+	/** From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. */
+	readonly totalMs: number;
+}
+
 /** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 export type SandboxState =
 	| "starting"
@@ -1780,17 +1888,29 @@ export interface SandboxUsage {
 	readonly memLimitBytes?: number;
 	/** Its own disk's size, as its guest counts it, when its host sends disk figures. */
 	readonly diskTotalBytes?: number;
+	/** The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. */
+	readonly peakMemoryBytes?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly peakMemoryAt?: number;
+	/** Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. */
+	readonly peakCpu?: number;
 	/** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
 	readonly series: SandboxUsageSeries;
+	/** A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't send it (an image from before them) or its kernel has none. */
+	readonly memory?: GuestMemory;
 }
 
-/** One interval's means. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
+/** One interval's means, and its highest CPU and memory. A sandbox keeps a day of 5-minute means and hourly ones for the six days before, so an interval within the day can be as fine as 5 minutes, and one before it is an hour's mean at best. */
 export interface SandboxUsagePoint {
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
 	/** CPU utilisation over the interval. */
 	readonly cpu: number;
 	readonly memoryMb: number;
+	/** The highest CPU reading in the interval, where `measured`. From a mean kept before peaks were, its mean. */
+	readonly cpuMax?: number;
+	/** The most memory in use in one reading in the interval, where `measured`: a sandbox's peak can be twice its mean or more, so size it from this. From a mean kept before peaks were, its mean. */
+	readonly memoryMbMax?: number;
 	readonly runningSeconds: number;
 	readonly cost: number;
 	/** Whether any kept reading covers the interval: false where there is none (stopped, or older than the week kept), and `cpu` and `memoryMb` are then 0 for want of a figure, not measured as 0. Absent from a gateway before it. */
@@ -1819,8 +1939,14 @@ export interface SaveSnapshotBody {
 	/** Save this snapshot of the sandbox's history. Default: its state now. */
 	readonly snapshotId?: string;
 	readonly description?: string;
+	/** Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. */
+	readonly labels?: {
+		readonly [key: string]: string;
+	};
 	/** Replace a saved snapshot of the same name. */
 	readonly replace?: boolean;
+	/** The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none. */
+	readonly minMemoryMb?: number;
 	/** Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is. */
 	readonly memory?: boolean;
 }
@@ -1885,6 +2011,10 @@ export interface Snapshot {
 	/** A saved snapshot's name, unique in its account. */
 	readonly name?: string;
 	readonly description?: string;
+	/** Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. */
+	readonly labels?: {
+		readonly [key: string]: string;
+	};
 	/** The sandbox it was taken of; absent once that is deleted. */
 	readonly sandboxId?: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
@@ -1897,12 +2027,16 @@ export interface Snapshot {
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
 	readonly resources?: SandboxResources;
+	/** A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any. */
+	readonly minMemoryMb?: number;
 	/** The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. */
 	readonly sizeBytes?: number;
 	/** How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. */
 	readonly uses?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
+	/** When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept. */
+	readonly takenAt?: number;
 	readonly createdBy?: CreatedBy;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
@@ -1970,6 +2104,10 @@ export interface StopSandboxBody {
 
 export interface TakeSnapshotBody {
 	readonly description?: string;
+	/** Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given. */
+	readonly labels?: {
+		readonly [key: string]: string;
+	};
 	/** Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. */
 	readonly memory?: boolean;
 }
@@ -2251,6 +2389,8 @@ export interface UpdateHostBody {
 	};
 	/** Stop placing new sandboxes on it. */
 	readonly draining?: boolean;
+	/** The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. */
+	readonly savedSnapshotBytesLimit?: number | null;
 }
 
 export interface UpdateMemberBody {
@@ -2318,6 +2458,14 @@ export interface UsageSummary {
 	readonly recentCpu: readonly number[];
 	/** Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. */
 	readonly recentMemory: readonly number[];
+	/** A microVM's newest memory figures from inside its guest, as of `at`: each absent where its guest's agent doesn't send it (an image from before them) or its kernel has none. */
+	readonly memory?: GuestMemory;
+	/** The most memory it has used in one reading since it was made (5 s apart from a current host), kept after the readings themselves are gone and after it is deleted. Absent until a reading is kept. */
+	readonly peakMemoryBytes?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly peakMemoryAt?: number;
+	/** Its highest CPU utilisation in one reading since it was made, 0 to 1 of its own vCPUs. */
+	readonly peakCpu?: number;
 }
 
 export interface ViewAccessBody {
@@ -2346,7 +2494,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -3010,7 +3158,7 @@ export interface KantelClient {
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get a host's usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}/usage` */
 	getHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
+	/** Change a host. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
@@ -3030,7 +3178,7 @@ export interface KantelClient {
 	getAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get one of an account's hosts' usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}/usage` */
 	getAccountHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change one of an account's hosts. Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
+	/** Change one of an account's hosts. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
 	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeAPI is a Firecracker API on dir's api.sock that records what it is sent and answers GET /balloon/statistics
@@ -75,6 +76,39 @@ func TestBootAddsAReportingBalloon(t *testing.T) {
 	// Every device before the start.
 	if last := api.order[len(api.order)-1]; last != "PUT /actions" {
 		t.Fatalf("order %v", api.order)
+	}
+}
+
+// Free page reporting is only asked for when wanted (memory over-commit): a balloon without it is as before, so its
+// templates' snapshots stay the same.
+func TestBootFreePageReporting(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		dir, api := serveFake(t, "")
+		m := &Machine{Dir: dir, http: apiClient(dir)}
+		if err := m.Boot(context.Background(), BootConfig{VCPUs: 1, MemoryMiB: 512, Kernel: "vmlinux", GuestCID: 3, BalloonStatsSeconds: 1, FreePageReporting: on}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := api.puts["/balloon"]["free_page_reporting"]
+		if on && got != true || !on && ok {
+			t.Fatalf("free page reporting %v: balloon %v", on, api.puts["/balloon"])
+		}
+	}
+}
+
+func TestSetBalloon(t *testing.T) {
+	dir, api := serveFake(t, "")
+	if err := SetBalloon(context.Background(), dir, 1500); err != nil {
+		t.Fatal(err)
+	}
+	if api.order[0] != "PATCH /balloon" || api.puts["/balloon"]["amount_mib"] != float64(1500) {
+		t.Fatalf("%v %v", api.order, api.puts)
+	}
+	// Never below nothing.
+	if err := SetBalloon(context.Background(), dir, -3); err != nil || api.puts["/balloon"]["amount_mib"] != float64(0) {
+		t.Fatalf("%v %v", err, api.puts)
+	}
+	if err := SetBalloon(context.Background(), t.TempDir(), 0); err == nil {
+		t.Fatal("no API socket")
 	}
 }
 
@@ -146,6 +180,9 @@ func TestReadBalloonStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if stats.TargetMiB != 0 || stats.ActualMiB != 0 {
+		t.Fatalf("balloon sizes %+v", stats)
+	}
 	if stats.TotalMemory == nil || *stats.TotalMemory != 2_068_000_000 || stats.AvailableMemory == nil ||
 		*stats.AvailableMemory != 1_500_000_000 || stats.FreeMemory == nil || *stats.FreeMemory != 1_200_000_000 {
 		t.Fatalf("stats %+v", stats)
@@ -167,5 +204,62 @@ func TestReadBalloonStatsWithoutABalloon(t *testing.T) {
 	// Nor does a directory with no Firecracker in it.
 	if _, err := ReadBalloonStats(context.Background(), t.TempDir()); err == nil {
 		t.Fatal("no API socket")
+	}
+}
+
+// TestFakeFirecrackerProcess is fakeFirecracker's process, not a test: it listens on api.sock in its working directory,
+// as Firecracker does, until it is killed.
+func TestFakeFirecrackerProcess(t *testing.T) {
+	if os.Getenv("KANTEL_FAKE_FIRECRACKER") == "" {
+		t.Skip("run by fakeFirecracker")
+	}
+	ln, err := net.Listen("unix", APISocket)
+	if err != nil {
+		os.Exit(1)
+	}
+	_ = http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+}
+
+// fakeFirecracker is a binary Launch can start: this test binary as TestFakeFirecrackerProcess, Launch's flags dropped.
+func fakeFirecracker(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "firecracker")
+	body := "#!/bin/sh\nKANTEL_FAKE_FIRECRACKER=1 exec '" + self + "' -test.run='^TestFakeFirecrackerProcess$'\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+// A launch in a directory a Firecracker is still working in (one an interrupted run of the host left) ends that one
+// first, rather than unlinking its API socket from under it and leaving it running unreachable (#737).
+func TestLaunchEndsAFirecrackerLeftInItsDirectory(t *testing.T) {
+	binary := fakeFirecracker(t)
+	dir, err := os.MkdirTemp("", "fc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	left, err := Launch(context.Background(), binary, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(left.Kill)
+	next, err := Launch(context.Background(), binary, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(next.Kill)
+	select {
+	case <-left.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Firecracker left in the directory is still running")
+	}
+	if err := next.Barrier(context.Background()); err != nil {
+		t.Fatalf("the new one's API: %v", err)
 	}
 }

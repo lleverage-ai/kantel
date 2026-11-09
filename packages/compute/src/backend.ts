@@ -25,6 +25,26 @@ export interface BackendShape {
 
 /** A host feature: it makes microVMs of any shape, not only its named sizes (`@kantel/hosts`'s `custom-shapes`). */
 export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
+/**
+ * A host that keeps a saved snapshot as a copy with a ref of its own (`keepSnapshot`, `HOST_FEATURES.snapshotKeep`), so
+ * no two of its snapshot records ever share a ref.
+ */
+export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
+
+/**
+ * What takes the space on a host's disk as the host measures it: `Host.diskUsage` with its snapshots in one
+ * (`snapshotsBytes`), which the compute plane splits into saved and automatic by its own records, as the host can't tell
+ * (a manual take it keeps as saved is automatic here, and a save may share an automatic snapshot's bytes).
+ */
+export type BackendDiskUsage = Omit<computeSchema.HostDiskUsage, "savedSnapshotsBytes" | "automaticSnapshotsBytes"> & {
+	readonly snapshotsBytes: number;
+	/**
+	 * `snapshotsBytes` by snapshot, counting the same files: each ref's files no other holds, and the files several
+	 * hold, by their refs. Absent: the backend doesn't say, and the split goes by the records' sizes.
+	 */
+	readonly snapshotOwnBytes?: { readonly [ref: string]: number };
+	readonly snapshotShared?: readonly SharedSnapshotBytes[];
+};
 
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
@@ -60,6 +80,10 @@ export interface BackendHost {
 	 * had free when it started). Absent: it hasn't reported, or the backend doesn't say (the stub).
 	 */
 	readonly freeDiskGb?: number;
+	/** What takes the space on its disk, as it last measured it (`BackendDiskUsage`). Absent: it hasn't said. */
+	readonly diskUsage?: BackendDiskUsage;
+	/** Its memory, as it last reported it. Absent: it hasn't said (an older host, the stub). */
+	readonly memory?: computeSchema.HostMemory;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**
@@ -313,6 +337,17 @@ export interface Placement {
 	 * later reports (`ComputeService.reportMounts`). Absent where the backend doesn't say.
 	 */
 	readonly mountsAt?: number;
+	/**
+	 * When the backend started the machine it answers for, by its own clock (a host's first health stamp for it, which only
+	 * moves on): the record keeps it, so a later report of an exit can be told apart from an earlier machine's
+	 * (`ComputeService.reportExit`). Absent where the backend doesn't say.
+	 */
+	readonly machineAt?: number;
+	/**
+	 * How its machine's start took its time on its host, by phase, without `totalMs` (the service measures that around
+	 * the call). Absent where the backend doesn't say (the stub, an older host, an isolate).
+	 */
+	readonly startup?: Omit<computeSchema.SandboxStartup, "totalMs">;
 }
 
 /** How to boot a machine for a sandbox that has none. */
@@ -530,9 +565,14 @@ export interface SandboxBackend {
 	): Promise<{ readonly running?: boolean } | undefined>;
 	/**
 	 * Saves the disk as a snapshot and lets the machine go, or with `keepMemory` pauses it, keeping its memory too
-	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken.
+	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken. With `waitForHost`, a stop whose
+	 * machine's host is away (not connected, or gone while it waited) waits a while for it to be back and is sent again,
+	 * rather than failing `unavailable` at once.
 	 */
-	stop(sandboxId: string, options: { readonly keepMemory: boolean }): Promise<TakenSnapshot>;
+	stop(
+		sandboxId: string,
+		options: { readonly keepMemory: boolean; readonly waitForHost?: boolean },
+	): Promise<TakenSnapshot>;
 	/** Carries a paused sandbox on from its memory, or boots a stopped one from `fromSnapshot`. */
 	resume(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/**
@@ -617,6 +657,13 @@ export interface SandboxBackend {
 	 * when the host drops the source's bytes.
 	 */
 	keepSnapshot?(ref: string): Promise<TakenSnapshot | undefined>;
+	/**
+	 * The full size of each snapshot on a host now (all its files, shared ones included), by ref: what the periodic
+	 * refresh reads (`snapshot.list`), asked for when a host's limit on saved bytes must count a save recorded before
+	 * full sizes were (`savedBytesOver`). `undefined` when the host doesn't measure its snapshots, whose recorded sizes
+	 * then count no file for one holder only. Throws when the host can't answer. Absent: the same as `undefined`.
+	 */
+	snapshotSizes?(hostId: string): Promise<ReadonlyMap<string, number> | undefined>;
 	listSnapshotFiles(ref: string, path: string): Promise<BackendFileEntry[]>;
 	readSnapshotFile(ref: string, path: string): Promise<Uint8Array>;
 	deleteSnapshot(ref: string): Promise<void>;

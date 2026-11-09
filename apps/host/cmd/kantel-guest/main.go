@@ -5,6 +5,7 @@
 //	kantel-guest doctor (also run as kantel-doctor)
 //	kantel-guest init (as an initramfs's /init: boots any Linux image with this agent in it; see internal/guestinit)
 //	kantel-guest ssh-access (lets $KANTEL_PUBLIC_KEY in, or a new key it prints, and prints the host key's SHA256)
+//	kantel-guest connect <host> <port> (also run as kantel-connect: ssh's ProxyCommand through the egress proxy)
 //
 // doctor checks, from inside the sandbox, that its protected environment variables will be swapped by the host's
 // proxy: one line per check, exiting 1 if any fails.
@@ -49,6 +50,12 @@ func main() {
 	if len(os.Args) >= 3 && os.Args[1] == "init" && os.Args[2] == "--stage2" {
 		log.Fatal(guestinit.Stage2())
 	}
+	if filepath.Base(os.Args[0]) == "kantel-connect" {
+		os.Exit(connect(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "connect" {
+		os.Exit(connect(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "ssh-access" {
 		os.Exit(sshAccess(os.Stdout, os.Stderr))
 	}
@@ -56,7 +63,7 @@ func main() {
 		guest.ExecCommandMain(os.Args[2:])
 	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		fmt.Fprintln(os.Stderr, "usage: kantel-guest serve [--bridge addr=hostport ...] [--injected --init systemd|kantel] | kantel-guest doctor | kantel-guest init | kantel-guest ssh-access")
+		fmt.Fprintln(os.Stderr, "usage: kantel-guest serve [--bridge addr=hostport ...] [--injected --init systemd|kantel] | kantel-guest doctor | kantel-guest init | kantel-guest ssh-access | kantel-guest connect <host> <port>")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
@@ -106,6 +113,12 @@ func main() {
 		go func() { log.Print(server.ServeLocalProxy(l)) }()
 	} else {
 		log.Printf("local proxy %s: %v", guest.LocalProxyAddr, err)
+	}
+	// The same forwarder for Docker's containers, on docker0's gateway (whether or not docker0 is there yet).
+	if l, err := guest.ListenFreebind(guest.BridgeProxyAddr); err == nil {
+		go func() { log.Print(server.ServeLocalProxy(l)) }()
+	} else {
+		log.Printf("containers' proxy %s: %v", guest.BridgeProxyAddr, err)
 	}
 	log.Printf("kantel-guest %s listening on vsock:%d", version, vsock.AgentPort)
 	log.Fatal((&http.Server{Handler: server.Handler()}).Serve(listener))

@@ -397,6 +397,8 @@ export interface StackComputeOptions {
 	};
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
 	readonly templates?: boolean;
+	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
+	readonly snapshotExpiry?: boolean;
 	/**
 	 * KANTEL_SECRETS_KEY: 32 bytes, base64, sealing environments' protected values and secret files. Absent, the stack
 	 * object's SQLite store refuses them (`not_supported`); the memory store (tests) seals with a key of its own.
@@ -584,6 +586,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
 		...(options.templates === true ? { templates: true } : {}),
+		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
 	// The operator's advice goes to the log, never to a user: they are told only that the deployment doesn't support it.
@@ -600,6 +603,11 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
 		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
 		activity: (sandboxId) => api.service.noteActivity(sandboxId),
+		// Whether a running microVM's guest agent answers, so one that doesn't refuses its calls rather than hanging them.
+		reportHealth: (hostId, sandboxId, health, reason, healthAt) =>
+			api.service.reportHealth(hostId, sandboxId, health, reason, healthAt),
+		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
+		reportExit: (...report) => api.service.reportExit(...report),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);

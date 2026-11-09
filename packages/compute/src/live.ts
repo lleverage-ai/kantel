@@ -137,8 +137,9 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
 
 /**
  * The sandboxes' collection, publishing each change of a record's state to `publish`: an update that moves a record to
- * another state (or another step of its lifecycle), a put or an insert (a new sandbox), and a delete. Reads, and updates
- * that leave the state as it was (usage, ports, labels), publish nothing.
+ * another state (or another step of its lifecycle), or that changes its health (its guest agent stopping or starting to
+ * answer, `ComputeService.reportHealth`) or, while it doesn't, the reason why, a put or an insert (a new sandbox), and a delete. Reads, and updates that
+ * leave the state and health as they were (usage, ports, labels), publish nothing.
  */
 export function watchSandboxes(
 	sandboxes: Collection<StoredSandbox>,
@@ -146,7 +147,16 @@ export function watchSandboxes(
 	now: () => number,
 ): Collection<StoredSandbox> {
 	const changed = (record: StoredSandbox, before: StoredSandbox | undefined) => {
-		if (before !== undefined && before.state === record.state && before.lifecycle === record.lifecycle) return;
+		if (
+			before !== undefined &&
+			before.state === record.state &&
+			before.lifecycle === record.lifecycle &&
+			before.health === record.health &&
+			// What an unresponsive one says of why (out of memory now, say), which the console shows.
+			(record.health !== "unresponsive" || before.reason === record.reason)
+		) {
+			return;
+		}
 		publish({
 			sandboxId: record.id,
 			accountId: record.accountId,

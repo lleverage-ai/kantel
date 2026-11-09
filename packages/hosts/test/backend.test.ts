@@ -48,6 +48,8 @@ class FakeHost {
 	ownBrowserDisplay = false;
 	/** What its hello says it is: the features it reports, say. */
 	facts: HostFacts = facts;
+	/** The phases a create, fork or resume answers with; absent, a host from before it said. */
+	phases?: unknown;
 	/**
 	 * What `sandbox.processes` answers; absent, a host from before it listed them. Answering undefined: a sandbox whose
 	 * guest agent is from before it could.
@@ -55,6 +57,9 @@ class FakeHost {
 	processes?: (params: { [key: string]: unknown }) => unknown;
 	/** An error `snapshot.keep` answers instead of keeping, such as a conflict on its ID. */
 	keepRefusal?: { code: string; message: string };
+	/** What `snapshot.list` answers, and whether it refuses instead. */
+	listing: { id: string; sizeBytes?: number }[] = [];
+	listRefusal = false;
 	receive!: (text: string) => void;
 
 	constructor(
@@ -98,6 +103,7 @@ class FakeHost {
 			state: s.state,
 			createdAt: 1,
 			...(this.guest === undefined ? {} : { guest: this.guest }),
+			...(this.phases === undefined ? {} : { phases: this.phases }),
 		});
 		switch (message.method) {
 			case "sandbox.create": {
@@ -205,6 +211,10 @@ class FakeHost {
 				// As a host whose source has lost its memory to pruning answers.
 				return answer({ id: p.snapshotId, kind: "saved", sizeBytes: 40, memory: false, base: "v2" });
 			}
+			case "snapshot.list":
+				return this.listRefusal
+					? fail("unavailable", "the host is busy")
+					: answer({ snapshots: this.listing, shared: [] });
 			case "host.images":
 				return this.images === undefined
 					? fail("unsupported", "image patching is off on this host")
@@ -628,6 +638,47 @@ describe("the compute API on kantel-host hosts", () => {
 		});
 	});
 
+	it("keeps how a microVM's start took its time, by phase, on its record and its running event", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		// A host from before phases: none.
+		expect(sandbox.startup).toBeUndefined();
+		const saved = await root.saveSnapshot({ name: "warm", sandboxId: sandbox.id });
+
+		// Made from a disk-only snapshot on a host without reflinks: the disk copy is the slow part.
+		host.phases = { disk: "copy", diskMs: 18_234.56, bootMs: 1_900, agentMs: 612.3, totalMs: 21_400 };
+		const made = await root.createSandbox({ type: "microvm", from: saved.id, wait: true });
+		expect(made.startup).toMatchObject({
+			disk: "copy",
+			diskMs: 18_234.6,
+			bootMs: 1_900,
+			agentMs: 612.3,
+			hostMs: 21_400,
+		});
+		expect(made.startup?.totalMs).toBeGreaterThanOrEqual(21_400);
+		expect((await root.getSandbox(made.id)).startup).toEqual(made.startup);
+		const running = (await root.listEvents({ sandboxId: made.id, type: "sandbox.running" })).items;
+		expect(running.map((event) => event.data.startup)).toEqual([made.startup]);
+
+		// A fork of a running one: its source's live snapshot first.
+		host.phases = { disk: "move", diskMs: 0.4, snapshotMs: 950, bootMs: 300, agentMs: 20, totalMs: 1_400 };
+		const fork = (await root.forkSandbox(made.id, { wait: true })).items[0];
+		expect(fork?.startup).toMatchObject({ disk: "move", snapshotMs: 950, hostMs: 1_400 });
+
+		// A start whose host doesn't say leaves no previous start's phases behind; one it can't read is none.
+		host.phases = undefined;
+		await root.stopSandbox(made.id, { wait: true });
+		expect((await root.resumeSandbox(made.id, { wait: true })).startup).toBeUndefined();
+		host.phases = { disk: "teleport", diskMs: -1, bootMs: "fast", agentMs: 1, totalMs: 2 };
+		const odd = await root.createSandbox({ type: "microvm", from: saved.id, wait: true });
+		expect(odd.startup).toBeUndefined();
+	});
+
 	it("says why a sandbox can't be placed, at its create and when its host is gone", async () => {
 		const { service, root } = setup();
 		const none = await failure(root.createSandbox({ type: "microvm" }));
@@ -741,7 +792,7 @@ describe("a restart on the latest base, checked with the host first", () => {
 
 describe("saving a stopped sandbox on a host", () => {
 	async function connected(features: readonly string[]) {
-		const { service, root } = setup();
+		const { service, root, backend } = setup();
 		const told = { ...facts, features: [...features] };
 		const token = await root.createHostJoinToken({ name: "box-1" });
 		const { hostId } = await service.register({ token: token.token, facts: told });
@@ -753,8 +804,30 @@ describe("saving a stopped sandbox on a host", () => {
 		await root.writeFile(sandbox.id, { path: "/home/user/app.txt", content: "v1" });
 		const stopped = await root.stopSandbox(sandbox.id, { wait: true });
 		const stopSnapshot = String(host.params.find((call) => call.method === "sandbox.stop")?.params.snapshotId);
-		return { service, hostId, root, host, sandbox, stopped, stopSnapshot };
+		return { service, hostId, root, host, backend, sandbox, stopped, stopSnapshot };
 	}
+
+	it("reads each snapshot's full size from a host that measures them, for a limit on saved bytes", async () => {
+		const { hostId, host, backend } = await connected(["snapshot-keep", "snapshot-sizes"]);
+		host.listing = [{ id: "snap_1", sizeBytes: 61 }, { id: "snap_2", sizeBytes: 5 }, { id: "snap_3" }];
+		expect(await backend.snapshotSizes?.(hostId)).toEqual(
+			new Map([
+				[`${hostId}/snap_1`, 61],
+				[`${hostId}/snap_2`, 5],
+			]),
+		);
+		expect(host.params.filter((call) => call.method === "snapshot.list").at(-1)?.params).toEqual({ sandboxId: "" });
+		// A host that can't answer: an error, not a guess.
+		host.listRefusal = true;
+		await expect(backend.snapshotSizes?.(hostId)).rejects.toMatchObject({ code: "unavailable" });
+	});
+
+	it("says nothing of snapshots' full sizes for a host that doesn't measure them, and doesn't ask it", async () => {
+		const { hostId, host, backend } = await connected(["snapshot-keep"]);
+		const asked = host.calls.filter((method) => method === "snapshot.list").length;
+		expect(await backend.snapshotSizes?.(hostId)).toBeUndefined();
+		expect(host.calls.filter((method) => method === "snapshot.list")).toHaveLength(asked);
+	});
 
 	it("keeps the stop's snapshot as one of the save's own on the host, which outlasts the automatic one", async () => {
 		const { root, host, sandbox, stopped, stopSnapshot } = await connected(["snapshot-keep"]);

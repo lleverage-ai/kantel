@@ -81,6 +81,25 @@ export function portNotRunningText(
 }
 
 /**
+ * The refusal for `sandbox`, running but with a guest agent its host says doesn't answer (`health` `unresponsive`): a
+ * call would only hang. `reason` is the host's word on why.
+ */
+export function sandboxUnresponsive(sandbox: NotRunningSandbox, apiBasePath: string): KantelError {
+	const recover = `kantel recover ${sandbox.id} or POST ${apiBasePath.replace(/\/+$/, "")}/sandboxes/${sandbox.id}/recover`;
+	const why = sandbox.reason === undefined || sandbox.reason === "" ? "" : ` (${sandbox.reason.replace(/\.$/, "")})`;
+	const details: computeSchema.SandboxNotRunning = {
+		code: "sandbox_unresponsive",
+		sandboxId: sandbox.id,
+		state: sandbox.state,
+		...(sandbox.reason === undefined ? {} : { stopReason: sandbox.reason }),
+		hint: `Recover it with ${recover} (a restart that keeps its disk), or wait for its agent to answer again`,
+	};
+	return new KantelError("conflict", `The sandbox's guest agent isn't answering${why}; recover it first`, {
+		...details,
+	});
+}
+
+/**
  * The refusal for `sandbox`, not running. `apiBasePath` is where the API's routes are served (such as `/v1`), for the
  * resume call it names; `heldMs` is how long the call waited for a start that didn't finish.
  */
