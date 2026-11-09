@@ -127,7 +127,7 @@ export function PersonalTokensSection({
 			</div>
 			<p className="m-0 text-sm text-muted">
 				They act as you, with your role in each of your accounts. kantel login makes one when you approve it. For an
-				agent or CI in one account, an API key is usually better: it belongs to the account, not to you.
+				agent or CI in one account, an API key is usually better: it acts only there, with only its scopes.
 			</p>
 			{state.status === "error" && tokens === undefined ? (
 				<Notice

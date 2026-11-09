@@ -3236,7 +3236,7 @@ const SECTIONS: readonly Section[] = [
 					"A personal token acts as you, in every account you belong to (or the --only ones), with your role there.\n" +
 					"--preset and --scope cap what it may do beyond that. It lasts 90 days unless --expires-days says, at most\n" +
 					"366. For an agent or CI that works in one account, an API key (kantel key create) is usually better: it\n" +
-					`belongs to the account, not to you.\nScopes: ${SCOPES.filter((scope) => scope !== "hosts:admin").join(", ")}.`,
+					`acts only there, with only its scopes.\nScopes: ${SCOPES.filter((scope) => scope !== "hosts:admin").join(", ")}.`,
 				async run(ctx) {
 					const client = await ctx.client();
 					const only = await Promise.all(ctx.list("only").map(async (ref) => (await accountRef(client, ref)).id));

@@ -683,8 +683,12 @@ export const usageClaimId = (hostId: string, run: string, seq: number): string =
 /** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
 export interface StoredDeviceLogin {
 	readonly id: string;
-	/** `ABCD-EFGH`, as the device shows it. */
-	readonly userCode: string;
+	/**
+	 * `ABCD-EFGH`, as the device shows it: an API key's sign-in's. A personal token's keeps it in `personalUserCode`
+	 * instead, which a gateway from before personal tokens never looks up, so it can't approve one as an API key.
+	 */
+	readonly userCode?: string;
+	readonly personalUserCode?: string;
 	readonly clientName: string;
 	readonly state: computeSchema.DeviceLoginState;
 	readonly createdAt: number;

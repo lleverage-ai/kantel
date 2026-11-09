@@ -140,11 +140,11 @@ A personal access token (`kpt_…`) is your own credential, not an account's. It
 | Belongs to | You | An account |
 | Acts in | Every account you belong to, or the ones it names | The account it was made in |
 | What it may do | What your role allows there, capped by its scopes if it has any | Its scopes |
-| When you leave an organisation | It stops working there at once | It keeps working until someone revokes it |
+| When you leave an organisation | It stops working there at once | Your keys there are revoked |
 | Lasts | 90 days by default, at most 366 | As long as it was made for, or for ever |
 | Who makes one | You, as a member of any account | An admin or owner of the account |
 
-Use a personal token for yourself at a terminal and your own scripts. For an agent, CI or anything that should outlive your membership, use an API key: it belongs to the account and does only what its scopes say.
+Use a personal token for yourself at a terminal and your own scripts. For an agent or CI that works in one account, use an API key: it acts only there and does only what its scopes say, whatever your role. Either way it goes when you leave the organisation, as everything acting for you there does.
 
 ```sh
 curl -s "$KANTEL_URL/v1/personal-tokens" \

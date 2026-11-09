@@ -345,6 +345,23 @@ describe("device sign-in for a personal token", () => {
 		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "expired" });
 	});
 
+	it("keeps a personal sign-in's code where a gateway from before personal tokens can't find it to approve", async () => {
+		const { client, store, tom } = setup();
+		const device = client(undefined);
+		const started = await device.startDeviceLogin({ personal: true });
+		// An older gateway finds a sign-in by its `userCode`, and so would approve this one as an API key: it finds none.
+		expect(await store.deviceLogins.list({ userCode: started.userCode })).toEqual([]);
+		// One that knows personal tokens finds it, shows its code and approves it as one.
+		expect((await tom.getDeviceLogin(started.userCode)).userCode).toBe(started.userCode);
+		await tom.approveDeviceLogin(started.userCode, { personal: true });
+		const approved = await device.pollDeviceLogin({ deviceCode: started.deviceCode });
+		expect(approved.token?.secret).toMatch(/^kpt_/);
+		expect(approved.issued).toBeUndefined();
+		// An API key's sign-in is where it always was.
+		const keyed = await device.startDeviceLogin({});
+		expect(await store.deviceLogins.list({ userCode: keyed.userCode })).toHaveLength(1);
+	});
+
 	it("refuses an approval that doesn't say it is for a personal token, as an older console's, storing nothing", async () => {
 		const { client, store, tom } = setup();
 		const org = await tom.createOrganisation({ name: "Acme" });

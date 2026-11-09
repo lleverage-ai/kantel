@@ -6015,7 +6015,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// Device sign-ins.
 
 	const deviceLoginView = (login: StoredDeviceLogin): computeSchema.DeviceLoginRequest => ({
-		userCode: login.userCode,
+		userCode: login.userCode ?? login.personalUserCode ?? "",
 		clientName: login.clientName,
 		...(login.personal === true ? { personal: true } : {}),
 		state: login.state === "pending" && login.expiresAt <= now() ? "expired" : login.state,
@@ -6027,7 +6027,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function pendingDeviceLogin(userCode: string): Promise<StoredDeviceLogin> {
 		const typed = userCode.toUpperCase().replace(/[^A-Z]/g, "");
 		const code = typed.length === 8 ? `${typed.slice(0, 4)}-${typed.slice(4)}` : userCode;
-		const [login] = await store.deviceLogins.list({ userCode: code });
+		const [keyed] = await store.deviceLogins.list({ userCode: code });
+		const login = keyed ?? (await store.deviceLogins.list({ personalUserCode: code }))[0];
 		if (login === undefined || login.expiresAt <= now()) throw new KantelError("not_found", "No such sign-in code");
 		return login;
 	}
@@ -6044,11 +6045,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("exhausted", "Too many sign-ins are waiting; try again in a few minutes");
 			}
 			const deviceCode = randomSecret("kdc_", 40);
+			const taken = async (code: string) =>
+				(await store.deviceLogins.list({ userCode: code })).length > 0 ||
+				(await store.deviceLogins.list({ personalUserCode: code })).length > 0;
 			let userCode = randomUserCode();
-			while ((await store.deviceLogins.list({ userCode })).length > 0) userCode = randomUserCode();
+			while (await taken(userCode)) userCode = randomUserCode();
 			const login: StoredDeviceLogin = {
 				id: await sha256Hex(deviceCode),
-				userCode,
+				// A personal sign-in's code where only a gateway that knows personal tokens looks (`personalUserCode`).
+				...(body.personal === true ? { personalUserCode: userCode } : { userCode }),
 				clientName: body.clientName ?? "kantel",
 				...(body.personal === true ? { personal: true } : {}),
 				state: "pending",
@@ -8216,7 +8221,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const revoked = await store.personalTokens.update(token.id, (current) =>
 				current.revokedAt === undefined ? { ...current, revokedAt: now() } : undefined,
 			);
-			return personalTokenView(revoked ?? token);
+			// Another revoke may have won: answer the token as it is stored now, revoked, not as it was read.
+			return personalTokenView(revoked ?? (await store.personalTokens.get(token.id)) ?? token);
 		},
 
 		// The proxy.
