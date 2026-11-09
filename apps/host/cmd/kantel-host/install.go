@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -99,10 +100,14 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 		// Not echoed: what's left may hold the token, still unused.
 		return installOptions{}, usageErrorf(cmd, "%s takes options only, and stopped reading at an argument that isn't one (such as false after --no-start), so nothing from there on was read and nothing was done: give a true or false flag its value with =, as in --no-start=false", cmd)
 	}
-	if *controlPlane == "" {
+	// The environment only for a flag that wasn't given: --token= (empty) on purpose keeps the registration, whatever
+	// KANTEL_HOST_TOKEN says.
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	if !given["url"] {
 		*controlPlane = os.Getenv("KANTEL_URL")
 	}
-	if *token == "" {
+	if !given["token"] {
 		*token = os.Getenv("KANTEL_HOST_TOKEN")
 	}
 	return installOptions{
@@ -134,6 +139,11 @@ func runInstall(in *installer, args []string, planOnly bool) error {
 		o.dryRun = true
 	}
 	plan, err := in.planInstall(o)
+	var usage *usageError
+	if errors.As(err, &usage) {
+		// A missing --url or --token is a usage error of the command that was run.
+		usage.cmd = cmd
+	}
 	if err != nil {
 		return err
 	}

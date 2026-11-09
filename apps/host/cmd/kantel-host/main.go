@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -382,7 +383,7 @@ func logs(args []string) error {
 	fs := newFlags("logs")
 	follow := fs.Bool("follow", false, "Keep printing new lines as the service logs them")
 	fs.alias("f", "follow")
-	lines := fs.Int("lines", 0, "Show only the last `n` lines (default: all of them)")
+	lines := fs.Int("lines", -1, "Show only the last `n` lines; 0 with --follow shows only new ones (default: all of them)")
 	fs.alias("n", "lines")
 	if err := fs.parse(args); err != nil {
 		return err
@@ -390,7 +391,10 @@ func logs(args []string) error {
 	if err := fs.noArgs(); err != nil {
 		return err
 	}
-	if *lines < 0 {
+	// -1, the default, is all of them; a value given must be 0 or more.
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "lines" || f.Name == "n" })
+	if given && *lines < 0 {
 		return usageErrorf("logs", "--lines must be 0 or more, not %d", *lines)
 	}
 	cmd := exec.Command(journalctl, journalArgs(*follow, *lines)...)
@@ -412,7 +416,7 @@ func journalArgs(follow bool, lines int) []string {
 	if follow {
 		args = append(args, "-f")
 	}
-	if lines > 0 {
+	if lines >= 0 {
 		args = append(args, "-n", strconv.Itoa(lines))
 	}
 	return args

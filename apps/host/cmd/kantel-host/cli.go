@@ -290,12 +290,12 @@ func (c *cmdFlags) noArgs() error {
 
 var flagValueRe = regexp.MustCompile(`for flag -([^:\s]+)`)
 
-// flagMessage says Go's flag errors with GNU flags: "flag provided but not defined: -foo" is "there is no flag
+// flagMessage says Go's flag errors with GNU flags: "flag provided but not defined: -foo" is "unknown flag
 // --foo" (and a one-letter flag keeps its one dash).
 func flagMessage(err error) string {
 	msg := err.Error()
 	if name, ok := strings.CutPrefix(msg, "flag provided but not defined: -"); ok {
-		return "there is no flag " + gnu(name)
+		return "unknown flag " + gnu(name)
 	}
 	if name, ok := strings.CutPrefix(msg, "flag needs an argument: -"); ok {
 		return gnu(name) + " needs a value"

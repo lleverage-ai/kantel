@@ -149,7 +149,7 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 		return nil, errors.New("install needs root: run it with sudo (sudo kantel-host install …)")
 	}
 	if o.controlPlane == "" {
-		return nil, errors.New("--url is required: Kantel's URL, such as https://kantel.example.com")
+		return nil, usageErrorf("install", "--url is required: Kantel's URL, such as https://kantel.example.com")
 	}
 	controlPlane := strings.TrimRight(o.controlPlane, "/")
 	loaded, _ := agent.LoadConfig(o.configPath)
@@ -166,7 +166,7 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 		resumed = fmt.Sprintf("already registered with %s as %s with this token: carrying on with the install, without using the token again", cfg.ControlPlane, cfg.HostID)
 		token = ""
 	case token == "":
-		return nil, errors.New("--token is required: make one on Kantel's Hosts page (a kth_ token)")
+		return nil, usageErrorf("install", "--token is required: make one on Kantel's Hosts page (a kth_ token)")
 	}
 
 	cfg.ControlPlane = controlPlane

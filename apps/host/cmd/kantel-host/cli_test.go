@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -115,27 +116,27 @@ func TestUsageErrors(t *testing.T) {
 		msg  string
 		cmd  string
 	}{
-		{[]string{"install", "--bogus"}, "there is no flag --bogus", "install --url <kantel> --token <kth_…>"},
+		{[]string{"install", "--bogus"}, "unknown flag --bogus", "install --url <kantel> --token <kth_…>"},
 		{[]string{"plan", "--url"}, "--url needs a value", "plan --url <kantel> --token <kth_…>"},
 		{[]string{"install", "builder-1"}, "install takes options only", "install --url <kantel> --token <kth_…>"},
-		{[]string{"doctor", "--nope"}, "there is no flag --nope", "doctor"},
+		{[]string{"doctor", "--nope"}, "unknown flag --nope", "doctor"},
 		{[]string{"doctor", "extra"}, `doctor takes no arguments, and got "extra"`, "doctor"},
 		{[]string{"status", "extra"}, `status takes no arguments, and got "extra"`, "status"},
 		{[]string{"update", "0.3.0"}, `update takes no arguments, and got "0.3.0"`, "update"},
 		{[]string{"uninstall", "now"}, `uninstall takes no arguments, and got "now"`, "uninstall"},
-		{[]string{"uninstall", "--bogus"}, "there is no flag --bogus", "uninstall"},
+		{[]string{"uninstall", "--bogus"}, "unknown flag --bogus", "uninstall"},
 		{[]string{"sandboxes", "sb_1"}, `unexpected "sb_1"`, "sandboxes"},
 		{[]string{"sandboxes", "show"}, "sandboxes show needs <id>", "sandboxes show <id>"},
 		{[]string{"sandboxes", "show", "a", "b"}, "sandboxes show takes one <id>, and got 2", "sandboxes show <id>"},
 		{[]string{"logs", "-n", "x"}, `invalid value "x" for -n`, "logs"},
-		{[]string{"logs", "-x"}, "there is no flag -x", "logs"},
+		{[]string{"logs", "-x"}, "unknown flag -x", "logs"},
 		{[]string{"logs", "--lines=-1"}, "--lines must be 0 or more", "logs"},
 		{[]string{"bench", "--runs", "many"}, `invalid value "many" for --runs`, "bench"},
 		{[]string{"bench", "extra"}, `bench takes no arguments`, "bench"},
 		{[]string{"run", "extra"}, `run takes no arguments`, "run"},
 		{[]string{"manifest"}, "manifest needs <dir>", "manifest <dir>"},
 		{[]string{"manifest", "a", "b"}, "manifest takes one <dir>, and got 2", "manifest <dir>"},
-		{[]string{"version", "--bogus"}, "there is no flag --bogus", "version"},
+		{[]string{"version", "--bogus"}, "unknown flag --bogus", "version"},
 	} {
 		out, errOut, code := cli(t, tc.args...)
 		usage := "\nUsage: kantel-host " + tc.cmd + " [flags]\n"
@@ -269,11 +270,15 @@ func TestDoctorFix(t *testing.T) {
 }
 
 func TestLogs(t *testing.T) {
-	if got := strings.Join(journalArgs(false, 0), " "); got != "-u kantel-host" {
+	if got := strings.Join(journalArgs(false, -1), " "); got != "-u kantel-host" {
 		t.Errorf("logs: %q", got)
 	}
 	if got := strings.Join(journalArgs(true, 50), " "); got != "-u kantel-host -f -n 50" {
 		t.Errorf("logs -f -n 50: %q", got)
+	}
+	// -n 0 with --follow: only what comes next.
+	if got := strings.Join(journalArgs(true, 0), " "); got != "-u kantel-host -f -n 0" {
+		t.Errorf("logs -f -n 0: %q", got)
 	}
 	echo, err := exec.LookPath("echo")
 	if err != nil {
@@ -294,5 +299,46 @@ func TestLogs(t *testing.T) {
 	journalctl = filepath.Join(t.TempDir(), "journalctl")
 	if _, errOut, code := cli(t, "logs"); code != 1 || !strings.Contains(errOut, "no journalctl") {
 		t.Errorf("no journalctl: exit %d, %q", code, errOut)
+	}
+}
+
+// An explicit --token= keeps the registration, whatever KANTEL_HOST_TOKEN says; an absent one takes it.
+func TestInstallTokenFromEnvironmentOnlyWhenAbsent(t *testing.T) {
+	t.Setenv("KANTEL_HOST_TOKEN", "kth_env")
+	t.Setenv("KANTEL_URL", "https://env.example.com")
+	o, err := parseInstall([]string{"--token="})
+	if err != nil || o.token != "" || o.controlPlane != "https://env.example.com" {
+		t.Fatalf("--token=: token %q url %q err %v", o.token, o.controlPlane, err)
+	}
+	o, err = parseInstall(nil)
+	if err != nil || o.token != "kth_env" {
+		t.Fatalf("no --token: token %q err %v", o.token, err)
+	}
+	o, err = parseInstall([]string{"--token", "kth_flag", "--url", "https://flag.example.com"})
+	if err != nil || o.token != "kth_flag" || o.controlPlane != "https://flag.example.com" {
+		t.Fatalf("--token kth_flag: token %q url %q err %v", o.token, o.controlPlane, err)
+	}
+}
+
+// A missing --url or --token is a usage error of the command run, exit 2 with its usage line.
+func TestInstallMissingOptionsAreUsageErrors(t *testing.T) {
+	m := newFakeMachine(t)
+	for _, tc := range []struct {
+		planOnly bool
+		cmd      string
+	}{{false, "install"}, {true, "plan"}} {
+		o := m.options("")
+		o.controlPlane = ""
+		_, err := m.in.planInstall(o)
+		var usage *usageError
+		if !errors.As(err, &usage) {
+			t.Fatalf("%s without --url: %v is not a usage error", tc.cmd, err)
+		}
+		t.Setenv("KANTEL_URL", "")
+		t.Setenv("KANTEL_HOST_TOKEN", "")
+		err = runInstall(m.in, []string{"--config", o.configPath, "--root", o.root}, tc.planOnly)
+		if !errors.As(err, &usage) || usage.cmd != tc.cmd || !strings.Contains(usage.msg, "--url is required") {
+			t.Errorf("%s without --url: %v", tc.cmd, err)
+		}
 	}
 }
