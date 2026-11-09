@@ -74,6 +74,7 @@ import {
 	isCommandProgress,
 	isDetachedWaitEnded,
 	type Placement,
+	refusedBeforeTheMachine,
 	type SandboxBackend,
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
@@ -957,7 +958,8 @@ const REFUSALS: ReadonlySet<string> = new Set([
 	"not_supported",
 	"expired",
 ]);
-const refusedBeforeEffects = (error: unknown): boolean => error instanceof KantelError && REFUSALS.has(error.code);
+const refusedBeforeEffects = (error: unknown): boolean =>
+	error instanceof KantelError && (REFUSALS.has(error.code) || refusedBeforeTheMachine(error));
 /** Where an idempotent call's sealed answer is kept, as its additional data. */
 const idempotencyAad = (id: string) => sealedAt("idempotency", id, "body");
 /** Whether a stored key is for this request: a key kept before fingerprints were is taken to be. */
@@ -3502,13 +3504,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		try {
 			for (;;) {
 				const latest = await mustGetSandbox(sandboxId);
+				// Its host isn't connected: refused at once, before waiting for its start (a placed sandbox starting again on a
+				// host that went), behind what's queued on it (a stop waits up to minutes for the host), or on anything its guest
+				// said, which can't be known now. One not yet placed has no host to ask, and waits for its start as before.
+				if (latest.state !== "deleted") {
+					await authorise(latest);
+					await requireHostReachable(latest);
+				}
 				if (latest.state !== "starting") {
-					// Its host isn't connected: refused at once, before waiting behind what's queued on it (a stop waits up to
-					// minutes for the host) and before anything its guest said, which can't be known now.
-					if (latest.state !== "deleted") {
-						await authorise(latest);
-						await requireHostReachable(latest);
-					}
 					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
 					const sandbox = await settled(sandboxId);
 					if (sandbox.state === "running") {

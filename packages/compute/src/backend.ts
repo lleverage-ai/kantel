@@ -546,15 +546,29 @@ export interface UsageSample {
  * Where sandboxes run. Lane 2's host scheduler implements it over the hosts that joined; `createStubBackend` implements
  * it in memory. Paths are absolute (the control plane resolves relative ones against the user's home).
  */
+/** The `hostNotConnected` refusals made in this process, which are known to come before the call did anything. */
+const refusedBeforeMachine = new WeakSet<KantelError>();
+
 /**
- * A call that needs a sandbox's machine while its host isn't connected (`Sandbox.hostReachable` false). The host isn't
- * named: a sandbox on a shared host doesn't show its host.
+ * A call that needs a sandbox's machine while its host isn't connected (`Sandbox.hostReachable` false), refused before it
+ * did anything. The host isn't named: a sandbox on a shared host doesn't show its host.
  */
 export function hostNotConnected(): KantelError {
-	return new KantelError(
+	const error = new KantelError(
 		"unavailable",
 		"The sandbox's host isn't connected to Kantel, so the sandbox can't be reached now; try again once the host reconnects",
 	);
+	refusedBeforeMachine.add(error);
+	return error;
+}
+
+/**
+ * Whether `error` is a `hostNotConnected` refusal, made before the call did anything, so an Idempotency-Key it held is
+ * freed for a retry once the host is back. Any other `unavailable` (a host's own, a call cut off part way) may follow an
+ * effect, and keeps the key.
+ */
+export function refusedBeforeTheMachine(error: unknown): boolean {
+	return error instanceof KantelError && refusedBeforeMachine.has(error);
 }
 
 export interface SandboxBackend {

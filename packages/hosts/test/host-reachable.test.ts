@@ -170,6 +170,35 @@ describe("a sandbox whose host isn't connected", () => {
 		expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
 	});
 
+	it("is refused at once while it starts again on a host that went, rather than waited for", async () => {
+		const { api, root, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		// A placed sandbox read as starting (its start was carried by a gateway that went with the host's connection).
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		if (stored === undefined) throw new Error("no sandbox");
+		await api.store.sandboxes.put({ ...stored, state: "starting" });
+		const started = Date.now();
+		expect(await failure(root.runCommand(sandbox.id, { command: "true" }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+		});
+		expect(Date.now() - started).toBeLessThan(2_000);
+	});
+
+	it("frees an Idempotency-Key it refused with, so the same key runs the command once its host is back", async () => {
+		const { root, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		const options = { idempotencyKey: "cmd-away" };
+		expect(await failure(root.runCommand(sandbox.id, { command: "true" }, options))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+		});
+		await reconnect(service, hostId, host);
+		const ran = await root.runCommand(sandbox.id, { command: "true" }, options);
+		// Done once: a retry under the key answers the same command.
+		expect((await root.runCommand(sandbox.id, { command: "true" }, options)).id).toBe(ran.id);
+	});
+
 	it("says its host is away rather than that its guest agent doesn't answer, which can't be known now", async () => {
 		const { api, root, hostId, host, sandbox } = await setup();
 		await api.service.reportHealth(hostId, sandbox.id, "unresponsive", "out of memory", Date.now());
