@@ -1367,6 +1367,15 @@ func (c *Client) PutSandboxGrants(ctx context.Context, sandboxID string, body Pu
 	return &out, nil
 }
 
+// RefreshSandboxMounts POST /sandboxes/{sandboxId}/mounts/refresh: Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+func (c *Client) RefreshSandboxMounts(ctx context.Context, sandboxID string, body RefreshMountsBody, opts ...CallOption) (*RefreshedMountList, error) {
+	var out RefreshedMountList
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/mounts/refresh", url.PathEscape(sandboxID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListPorts GET /sandboxes/{sandboxId}/ports: List a sandbox's public ports. A key needs `access`.
 func (c *Client) ListPorts(ctx context.Context, sandboxID string, opts ...CallOption) (*ExposedPortList, error) {
 	var out ExposedPortList
