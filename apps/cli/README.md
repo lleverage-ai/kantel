@@ -6,6 +6,7 @@ coding agent, and its MCP server) and `kantel-admin` (running a self-hosted Kant
 
 ```sh
 go build -o kantel ./cmd/kantel      # about 8 ms to start, one static binary
+go build -o kantel-admin ./cmd/kantel-admin
 go test ./...
 go run ./internal/api/gen            # after the API changes: regenerate the client from openapi.json
 go run ./internal/api/gen -check     # CI: fails if the generated client is out of date
@@ -21,5 +22,8 @@ go run ./internal/api/gen -check     # CI: fails if the generated client is out 
 - `internal/kantel` is `kantel`'s commands, one file per section of its help (`sandboxes.go` is "Sandboxes"). A command
   reads its flags from `*cli.Context`, gets its client with `Client(c)`, and prints with `c.Emit(raw, value, human)`:
   Kantel's raw answer with `--json`, else the human text.
+- `internal/admin` is `kantel-admin`'s commands on the same framework: the stack (`stack.go`: install, upgrade,
+  apply, status, settings, the bootstrap key) and hosts (`hosts.go`). It runs docker compose, sh, ssh and kantel-host
+  through `admin.System`'s `Spawn`, which its tests replace, as they replace its HTTP client with a fake Kantel.
 - `internal/kantel/harness_test.go` runs the CLI against a fake Kantel (`run(t, argv, opts{routes: …})`); every
   command's examples are checked to parse.

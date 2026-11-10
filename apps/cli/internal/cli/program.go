@@ -233,6 +233,8 @@ type resolution struct {
 	unknown    string
 	word       string
 	moved      string
+	// next is the word after an unknown first one, for a two-word "did you mean" (`hots list`).
+	next string
 }
 
 // resolve finds the command argv names in its first one, two or three words (flags may come before them), and the
@@ -313,7 +315,7 @@ func (p *Program) resolve(argv []string) resolution {
 		return r
 	}
 	if _, ok := p.group(first); !ok {
-		return resolution{kind: "unknown", word: typed}
+		return resolution{kind: "unknown", word: typed, next: second}
 	}
 	if len(words) < 2 {
 		return resolution{kind: "group", group: first}
@@ -382,6 +384,22 @@ func (p *Program) dispatch(c *Context, argv []string) (int, error) {
 	case "unknown":
 		if r.word == "" {
 			return 0, UsageHint("give a command", p.helpHint())
+		}
+		if r.next != "" {
+			// Two words that are nearly a two-word command (`hots list`) suggest it, not just its first word.
+			phrase := r.word + " " + r.next
+			var names, near []string
+			for _, c := range visible(p.Commands()) {
+				if strings.Contains(c.Name, " ") {
+					names = append(names, c.Name)
+				}
+			}
+			for _, n := range Nearest(phrase, names, 3) {
+				near = append(near, p.Name+" "+n)
+			}
+			if len(near) > 0 {
+				return 0, UsageHint(`there is no command "`+phrase+`".`+DidYouMean(near), p.helpHint())
+			}
 		}
 		var near []string
 		for _, w := range Nearest(r.word, p.firstWords(), 3) {
