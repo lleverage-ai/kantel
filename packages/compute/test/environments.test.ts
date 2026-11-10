@@ -543,7 +543,7 @@ describe("sandboxes made from an environment", () => {
 			{ path: "/home/user/.npmrc", mode: 0o600, sizeBytes: npmrc.length, updatedAt: expect.any(Number) },
 		]);
 		expect(JSON.stringify(saved)).not.toContain("npm_FILESECRET789");
-		const sandbox = await tom.createSandbox({ environment: "files", wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", environment: "files", wait: true });
 		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe(npmrc);
 	});
 

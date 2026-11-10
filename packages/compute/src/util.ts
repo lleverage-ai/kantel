@@ -68,8 +68,14 @@ export async function sha256Hex(text: string): Promise<string> {
 	return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** The sandbox user's home, where relative paths start. */
+/** A microVM's user's home, where its relative paths and commands start. */
 export const HOME = "/home/user";
+
+/** An isolate's files, all of them: where its relative paths and commands start. Nothing outside it is kept. */
+export const ISOLATE_HOME = "/workspace";
+
+/** Where a sandbox of this type starts commands and resolves relative paths. */
+export const homeFor = (type: "isolate" | "microvm"): string => (type === "isolate" ? ISOLATE_HOME : HOME);
 
 /** An absolute, normalised path: relative ones start at `HOME`; `.` and `..` are resolved, never above `/`. */
 export function resolvePath(path: string, base = HOME): string {

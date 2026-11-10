@@ -303,15 +303,27 @@ describe("the MCP server", () => {
 
 	it("creates a sandbox, waiting until it runs, and runs a command in it", async () => {
 		const { mcp, calls } = server();
+		// An agent has to choose a type: the API's default, an isolate, is rarely what one that left it out wants.
+		const untyped = resultOf(
+			await mcp.handle(request(5, "tools/call", { name: "sandbox_create", arguments: { labels: { task: "T-1" } } })),
+		);
+		expect(untyped.isError).toBe(true);
+		expect(untyped.content[0]?.text).toContain("type is required");
+		expect(calls).toHaveLength(0);
 		const created = resultOf(
-			await mcp.handle(request(6, "tools/call", { name: "sandbox_create", arguments: { labels: { task: "T-1" } } })),
+			await mcp.handle(
+				request(6, "tools/call", {
+					name: "sandbox_create",
+					arguments: { type: "microvm", labels: { task: "T-1" } },
+				}),
+			),
 		);
 		expect(created.isError).toBeUndefined();
 		expect(created.structuredContent).toMatchObject({ id: "sbx_mcp1", state: "running" });
 		expect(calls[0]).toMatchObject({
 			method: "POST",
 			path: "/v1/sandboxes",
-			body: { labels: { task: "T-1" }, wait: true },
+			body: { type: "microvm", labels: { task: "T-1" }, wait: true },
 			authorization: "Bearer ksk_agent",
 		});
 		const ran = resultOf(
@@ -323,6 +335,12 @@ describe("the MCP server", () => {
 		expect(ran.structuredContent).toMatchObject({ exitCode: 0, stdout: "hi\n", state: "exited" });
 		expect(ran.content[0]?.text).toContain("exited with code 0");
 		expect(calls[1]).toMatchObject({ path: "/v1/sandboxes/sbx_mcp1/commands", body: { command: "echo hi" } });
+		// One made from a snapshot takes the snapshot's type, so it needs none.
+		const fromSnapshot = resultOf(
+			await mcp.handle(request(8, "tools/call", { name: "sandbox_create", arguments: { from: "base" } })),
+		);
+		expect(fromSnapshot.isError).toBeUndefined();
+		expect(calls[2]).toMatchObject({ path: "/v1/sandboxes", body: { from: "base", wait: true } });
 	});
 
 	it("sends a new Idempotency-Key with each sandbox_exec call, so a retried request runs it once", async () => {
@@ -750,7 +768,7 @@ describe("serving on stdio", () => {
 			env: { KANTEL_URL: "https://kantel.test", KANTEL_API_KEY: "ksk_agent" },
 			stdin: lines(
 				request(1, "initialize", { protocolVersion: "2025-06-18" }),
-				request(2, "tools/call", { name: "sandbox_create", arguments: {} }),
+				request(2, "tools/call", { name: "sandbox_create", arguments: { type: "isolate" } }),
 			),
 			stdout: { write: (chunk: string | Uint8Array) => out.push(String(chunk)) },
 			stderr: { write: (chunk: string | Uint8Array) => err.push(String(chunk)) },
