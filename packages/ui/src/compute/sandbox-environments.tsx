@@ -52,6 +52,9 @@ export interface SandboxEnvironmentsProps {
 	readonly attachOpen?: boolean;
 }
 
+/** How often a running sandbox's environments are read again while one is still being set up. */
+const PENDING_POLL_MS = 3000;
+
 export function SandboxEnvironments({
 	source,
 	sandboxId,
@@ -79,6 +82,14 @@ export function SandboxEnvironments({
 		onChanged?.();
 	};
 	const full = listed !== undefined && listed.length >= MAX_SANDBOX_ENVIRONMENTS;
+	// A running sandbox sets up what is pending in the background, with nothing else about it changing: read again
+	// every few seconds until nothing is.
+	const settingUp = state === "running" && (listed ?? []).some((env) => env.pending);
+	useEffect(() => {
+		if (!settingUp) return;
+		const timer = setInterval(reload, PENDING_POLL_MS);
+		return () => clearInterval(timer);
+	}, [settingUp, reload]);
 
 	return (
 		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-environments">
@@ -132,6 +143,7 @@ export function SandboxEnvironments({
 								env={env}
 								position={at + 1}
 								{...(environmentHref === undefined ? {} : { href: environmentHref(env.id) })}
+								running={state === "running"}
 								onDetach={() => setDetaching(env)}
 							/>
 						))}
@@ -179,11 +191,14 @@ function EnvironmentRow({
 	env,
 	position,
 	href,
+	running,
 	onDetach,
 }: {
 	env: SandboxEnvironment;
 	position: number;
 	href?: string;
+	/** Running: what is pending is being set up now, not on the next start. */
+	running: boolean;
 	onDetach: () => void;
 }) {
 	const lines = shadowedLines(env.shadowed);
@@ -210,10 +225,14 @@ function EnvironmentRow({
 							{env.name}
 						</a>
 					)}
-					{env.pending ? <Badge tone="approval">On next start</Badge> : null}
+					{env.pending ? <Badge tone="approval">{running ? "Setting up" : "On next start"}</Badge> : null}
 				</div>
 				{env.pending ? (
-					<span className="text-muted">Its secret files and repositories come when the sandbox next starts.</span>
+					<span className="text-muted">
+						{running
+							? "Its secret files and repositories are being written now."
+							: "Its secret files and repositories come when the sandbox next starts."}
+					</span>
 				) : null}
 				{lines.map((line) => (
 					<span key={line.label} className="min-w-0 text-faint wrap-anywhere">

@@ -3,7 +3,7 @@
 // own select and Add put one more at the end. Add is a button rather than the select's change, because a closed select
 // changes on each arrow key, which would add every option the keyboard passed over.
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button, IconButton } from "./button.tsx";
 import { SelectField, type SelectOption } from "./controls.tsx";
 import { describedBy, FormField, type FormFieldLayout } from "./form-layout.tsx";
@@ -56,10 +56,17 @@ export function OrderedSelectField({
 		onChange([...value, chosen]);
 		setChosen("");
 	};
+	// After a remove, the button that had focus is gone: the select is where a person goes on from, focused once the
+	// change has rendered (it isn't there while every option is picked, or `max` is reached).
+	const [refocus, setRefocus] = useState(false);
+	useEffect(() => {
+		if (!refocus) return;
+		setRefocus(false);
+		select.current?.focus();
+	}, [refocus]);
 	const remove = (at: number) => {
 		onChange(value.filter((_, index) => index !== at));
-		// The button that had focus is gone: the select is where a person goes on from.
-		select.current?.focus();
+		setRefocus(true);
 	};
 	return (
 		<FormField id={id} label={label} {...{ hint, error, layout, className }}>

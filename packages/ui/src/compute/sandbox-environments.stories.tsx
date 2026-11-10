@@ -95,6 +95,16 @@ export const Shadowed: Story = () => (
 /** Attached while it was stopped: its files and repositories come when the sandbox next starts. */
 export const Pending: Story = () => <Scenario sandboxId={RENDER.id} state="stopped" />;
 
+/** Running, with one being set up in the background: Setting up, and the section reads again until it's done. */
+export const SettingUp: Story = () => (
+	<Scenario
+		source={fixed([
+			{ id: "env_backend", name: "backend-dev", shadowed: shadowedNone, pending: false },
+			{ id: "env_npm", name: "npm", shadowed: shadowedNone, pending: true },
+		])}
+	/>
+);
+
 /** One environment: no word on order. */
 export const One: Story = () => <Scenario sandboxId={DEV_STACK.id} />;
 
