@@ -169,6 +169,18 @@ export interface StoredPeak {
 	readonly cpu: number;
 }
 
+/** One piece of a sandbox's environment set-up (`StoredSandbox.pendingProvision`). */
+export interface ProvisionWork {
+	readonly id: string;
+	/**
+	 * `files`: the environment's secret files at the paths it wins. `repos`: its repositories, cloned (only by a set-up a
+	 * caller who may run commands started). `paths`: whatever file wins each of `paths` now (a move changed the winner).
+	 */
+	readonly kind: "files" | "repos" | "paths";
+	readonly environmentId?: string;
+	readonly paths?: readonly string[];
+}
+
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
 export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base" | "hostReachable"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
@@ -264,13 +276,17 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * from it or deleted, so its host drops what it held of that environment's. Absent: none.
 	 */
 	readonly secretsFloor?: number;
-	/** Its environments whose secret files and repositories are written when it next runs (attached while it didn't). */
-	readonly pendingProvision?: readonly string[];
 	/**
-	 * The set-up writing its environments' files and repositories now, on whichever gateway: one at a time, each
-	 * renewing it before each item, and another taking it once it is let go or `until` has passed.
+	 * Environment set-up it still has to do, recorded when the change that needs it is (a create, an attach, a move), and
+	 * taken off by its ID once a set-up has done it: never before, so a stopped set-up leaves it for the next, and never
+	 * an item another change added. Absent: none.
 	 */
-	readonly provisionLease?: { readonly owner: string; readonly until: number };
+	readonly pendingProvision?: readonly ProvisionWork[];
+	/**
+	 * The fence of its newest set-up, moved on (in the store) by each one as it starts: its file writes carry it, and its
+	 * host drops a write with a lower one than it has taken, so an older set-up's write never lands over a newer one's.
+	 */
+	readonly provisionFence?: number;
 	readonly hostLabels: { readonly [key: string]: string };
 	/**
 	 * The one host its create asked for (`CreateSandboxBody.host`), which a boot that has to place it again keeps to.

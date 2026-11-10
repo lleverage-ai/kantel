@@ -35,6 +35,7 @@ type envTier struct {
 	execs   []proto.ExecParams
 	root    string
 	failRun bool
+	files   map[string]string
 }
 
 func newEnvTier(t *testing.T, name string) *envTier {
@@ -95,6 +96,17 @@ func (f *envTier) Exec(ctx context.Context, p proto.ExecParams, _ func(string, s
 }
 
 func (f *envTier) guestFile() string { return filepath.Join(f.root, guest.EnvFile) }
+
+// WriteFile keeps what was written at each path.
+func (f *envTier) WriteFile(_ context.Context, p proto.FileParams, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files == nil {
+		f.files = map[string]string{}
+	}
+	f.files[p.Path] = string(data)
+	return nil
+}
 
 func (f *envTier) execCount() int {
 	f.mu.Lock()
@@ -238,6 +250,30 @@ func TestSandboxEnvAppliesTheEnvKantelHasNow(t *testing.T) {
 		if !maps.Equal(tier.env["sbx_1"], map[string]string{"GIVEN": "1"}) {
 			t.Fatalf("%v: the env became %v", failure, tier.env["sbx_1"])
 		}
+	}
+}
+
+// A fenced write from an older set-up, delivered after a newer one's, is dropped; an unfenced write isn't ordered.
+func TestFencedWritesNeverLandOverANewerSetUps(t *testing.T) {
+	tier := newEnvTier(t, microvm.Tier)
+	tier.state["sbx_1"] = proto.StateRunning
+	h := newEnvHost(t, tier)
+	write := func(fence int64, content string) {
+		t.Helper()
+		data := base64.StdEncoding.EncodeToString([]byte(content))
+		if err := call(t, h, proto.MethodFileWrite, proto.FileParams{SandboxID: "sbx_1", Path: "/home/user/.npmrc", Data: data, Fence: fence}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(5, "newer")
+	write(3, "older")
+	if got := tier.files["/home/user/.npmrc"]; got != "newer" {
+		t.Fatalf("the file is %q, want the newer set-up's", got)
+	}
+	write(5, "newer again")
+	write(0, "the user's own")
+	if got := tier.files["/home/user/.npmrc"]; got != "the user's own" {
+		t.Fatalf("the file is %q, want an unfenced write taken", got)
 	}
 }
 

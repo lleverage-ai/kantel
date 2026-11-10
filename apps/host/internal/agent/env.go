@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -101,4 +102,36 @@ func writeGuestEnv(ctx context.Context, t Tier, sandboxID string, env map[string
 		return fmt.Errorf("exited %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 	return nil
+}
+
+// fencedWrite is a sandbox.files.write with a fence (an environment set-up's): writes for one sandbox are made one at
+// a time, and one whose fence is below the highest taken for it is dropped, so a set-up's write delivered after a newer
+// set-up's never lands over it. The fence is taken only once the write is made.
+func (h *Host) fencedWrite(ctx context.Context, t Tier, p proto.FileParams, data []byte) (map[string]bool, error) {
+	h.fenceMu.Lock()
+	if h.fences == nil {
+		h.fences = map[string]*fence{}
+	}
+	f := h.fences[p.SandboxID]
+	if f == nil {
+		f = &fence{}
+		h.fences[p.SandboxID] = f
+	}
+	h.fenceMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p.Fence < f.highest {
+		return map[string]bool{"ok": true, "fenced": true}, nil
+	}
+	if err := t.WriteFile(ctx, p, data); err != nil {
+		return nil, err
+	}
+	f.highest = p.Fence
+	return map[string]bool{"ok": true}, nil
+}
+
+// fence is one sandbox's highest set-up fence taken, and the lock its fenced writes are made under.
+type fence struct {
+	mu      sync.Mutex
+	highest int64
 }

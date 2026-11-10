@@ -1062,7 +1062,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { bytes, size: answer.fileSize };
 		},
-		async writeFile(sandboxId, path, content, mode) {
+		async writeFile(sandboxId, path, content, mode, options) {
 			// Past the host's message limit the host would drop its whole link, every sandbox's calls and streams on it.
 			if (content.length > HOST_WRITE_FILE_MAX_BYTES) {
 				throw new KantelError(
@@ -1074,6 +1074,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				path,
 				data: toBase64(content),
 				...(mode === undefined ? {} : { mode }),
+				...(options?.fence === undefined ? {} : { fence: options.fence }),
 			});
 			return { name: path.split("/").pop() ?? path, path, kind: "file", size: content.length, modifiedAt: now() };
 		},

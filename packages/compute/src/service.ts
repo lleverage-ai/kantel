@@ -134,6 +134,7 @@ import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sea
 import type {
 	ComputeStore,
 	OOMPending,
+	ProvisionWork,
 	RunPeriod,
 	StoredAccount,
 	StoredApiKey,
@@ -196,16 +197,32 @@ type EventData = computeSchema.Event["data"];
 const sameIds = (a: readonly string[], b: readonly string[]) =>
 	a.length === b.length && a.every((id, index) => id === b[index]);
 
-/** `pendingProvision` without an environment. */
+/** `pendingProvision` without an environment's own set-up (its files and repositories). */
 const pendingWithout = (
 	sandbox: Pick<StoredSandbox, "pendingProvision">,
 	environmentId: string,
 ): Pick<StoredSandbox, "pendingProvision"> => {
-	const pending = (sandbox.pendingProvision ?? []).filter((id) => id !== environmentId);
+	const pending = (sandbox.pendingProvision ?? []).filter((work) => work.environmentId !== environmentId);
 	return { pendingProvision: pending.length === 0 ? undefined : pending };
 };
 
-/** The environments whose secret files and repositories a boot sets up once it runs, as the call read them. */
+/** The set-up an environment a sandbox has just been given needs: its files, and its repositories. */
+const workFor = (environment: StoredEnvironment): ProvisionWork[] => [
+	...(environment.files.length > 0
+		? [{ id: randomId("pw", 8), kind: "files" as const, environmentId: environment.id }]
+		: []),
+	...(environment.repos.length > 0
+		? [{ id: randomId("pw", 8), kind: "repos" as const, environmentId: environment.id }]
+		: []),
+];
+
+/** The secret file paths whose winning environment differs between two resolutions, and that one of `after` wins. */
+const changedWinners = (before: EnvironmentResolution, after: EnvironmentResolution): string[] =>
+	[...after.files.entries()]
+		.filter(([path, winner]) => before.files.get(path)?.environment.id !== winner.environment.id)
+		.map(([path]) => path);
+
+/** The environments whose repositories a boot's set-up may clone once it runs, as the call read them. */
 interface Provisioning {
 	readonly environments: readonly StoredEnvironment[];
 }
@@ -944,10 +961,7 @@ export const MAX_ENVIRONMENT_FILES = 20;
 export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
 /** How long a repository's clone may take when a sandbox starts. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
-/** How long a set-up holds its sandbox's lease without renewing it (it renews before each item): past one clone. */
-const PROVISION_LEASE_MS = CLONE_TIMEOUT_MS + 60_000;
-/** How often a set-up waiting for the lease looks again. */
-const PROVISION_WAIT_MS = 500;
+
 /** How many times a boot sends egress changed while it started (or tries again), before it is stopped instead. */
 const BOOT_RECONCILE_ROUNDS = 5;
 /**
@@ -2978,7 +2992,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const environments = await environmentsOf(sandbox);
 		const resolution = resolved(environments);
 		const { own } = envLayersOf(sandbox);
-		const pending = new Set(sandbox.pendingProvision ?? []);
+		const pending = new Set((sandbox.pendingProvision ?? []).map((work) => work.environmentId));
 		return {
 			sandboxId: sandbox.id,
 			environments: environments.map((environment) => ({
@@ -3011,10 +3025,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const read = await Promise.all(ids.map((id) => store.environments.get(id)));
 		const environments = read.filter((environment): environment is StoredEnvironment => environment !== undefined);
 		// The version its host was last given: the new floor goes past it, so no fetch answers below what it holds.
-		const given = secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0;
+		const had = await environmentsOf(sandbox);
+		const given = secretsVersionOf(had, sandbox.secretsFloor) ?? 0;
 		const resolution = resolved(environments);
 		const attached = "attached" in how ? how.attached : undefined;
 		const moved = attached !== undefined && before.includes(attached.id);
+		// The set-up it needs, recorded with the change: a newly attached environment's files and repositories, and the
+		// paths whose winning file another environment now has (a move). A detach needs none: what it wrote stays.
+		const newly = attached !== undefined && !moved ? workFor(attached) : [];
+		const repaths = changedWinners(resolved(had), resolution).filter(
+			(path) => moved || resolution.files.get(path)?.environment.id !== attached?.id,
+		);
+		const work: ProvisionWork[] = [
+			...newly,
+			...(attached !== undefined && repaths.length > 0
+				? [{ id: randomId("pw", 8), kind: "paths" as const, paths: repaths }]
+				: []),
+		];
 		if (attached !== undefined) {
 			refuseProtectedClashes(envLayersOf(sandbox).own, resolution, environments.length);
 			const enforced = attached.grants.length > 0 || attached.variables.some((variable) => variable.protected);
@@ -3027,18 +3054,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!settled.includes(current.state)) throw new KantelError("conflict", `The sandbox is ${current.state}`);
 			const envLayers = envLayersOf(current);
 			const { env, placeholders } = composeEnv(envLayers, resolution, current.placeholders ?? {}, newPlaceholder);
-			// Pending until it is set up, running or not: a running one's set-up clears it, and if a stop gets there first,
-			// its next start does it.
-			// One it had already (moved) has its files and repositories there: only the files a move makes win are written.
-			const provisioned = attached !== undefined && !moved && (attached.files.length > 0 || attached.repos.length > 0);
-			const pending = "detached" in how ? pendingWithout(current, how.detached) : {};
+			// Pending until a set-up has done it, running or not: if a stop gets there first, its next start does it.
+			const kept =
+				"detached" in how ? pendingWithout(current, how.detached).pendingProvision : current.pendingProvision;
+			const pending = [...(kept ?? []), ...work];
 			return {
 				...current,
 				...environmentFields(environments.map((environment) => environment.id)),
-				...pending,
-				...(provisioned
-					? { pendingProvision: [...(current.pendingProvision ?? []).filter((id) => id !== attached.id), attached.id] }
-					: {}),
+				pendingProvision: pending.length === 0 ? undefined : pending,
 				env,
 				envLayers,
 				placeholders,
@@ -3078,15 +3101,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				keepGoing(updateSecrets(done.id, done.secretsFloor));
 			}
 			keepGoing(deliverEnv(done));
-			if (!gone && attached !== undefined && (attached.files.length > 0 || attached.repos.length > 0)) {
-				keepGoing(
-					track([done.id], async () => {
-						const latest = await store.sandboxes.get(done.id);
-						if (latest?.state === "running") {
-							await provision(latest, [attached], new Set(moved ? [] : [attached.id]), { files: "all" });
-						}
-					}),
-				);
+			if (!gone && work.length > 0) {
+				// Its repositories as this call read them, which the caller (who may run commands) authorised.
+				keepGoing(track([done.id], () => provision(done.id, attached === undefined ? [] : [attached])));
 			}
 		}
 		return sandboxEnvironmentsView(done);
@@ -3169,175 +3186,132 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Writes environments' secret files into a sandbox that has just started (or that one was just attached to), then
-	 * clones their repositories (through the sandbox's egress proxy, so a protected token bound to a repository's host is
-	 * swapped in). Only what each wins of the sandbox's environments (a later one's file at the same path is written
-	 * instead), and only of those in `which` (all of `authorised` when absent). A failure is an event on the sandbox,
-	 * which keeps running: what failed is named, never a file's contents. Those it set up leave its `pendingProvision`.
+	 * Does a running sandbox's pending environment set-up (`pendingProvision`): writes the secret files each item names
+	 * (an environment's, at the paths it wins; or whatever wins the paths a move changed), and clones an environment's
+	 * repositories through the sandbox's egress proxy (so a protected token bound to a repository's host is swapped in).
+	 * A failure is an event on the sandbox, which keeps running: what failed is named, never a file's contents.
 	 *
-	 * One set-up at a time per sandbox, on any gateway (`provisionLease`, taken in the store): what it writes is worked
-	 * out once it holds the lease, from the sandbox as it is then, and if its environments change while it works it stops
-	 * at the next item, leaving what it hadn't finished pending. So a set-up from an older set of environments never
-	 * writes after one from a newer set, and a newer set's set-up, or the next start, writes what it left.
+	 * Each item comes off by its ID once done, never before, so a set-up that stops leaves the rest for the next start,
+	 * and never one another change added. Each set-up takes a fence past every earlier one's (in the store), which its
+	 * writes carry: the host drops one below a fence it has taken, so an older set-up's write, however late it lands,
+	 * never overwrites a newer one's. Every change that moves a file's winner records the item that writes it, so the
+	 * newest set-up writes the newest winner.
 	 *
-	 * `authorised` is the environments as the call read them, when it checked that its caller may run commands (a clone
-	 * runs with the sandbox's env, which that caller chose): their repositories are cloned, not any added since, which no
-	 * one's authority covers. The files are the environments' as they are now (a rotation meanwhile is taken).
+	 * `authorised` is the environments whose repositories the call that started it may have cloned (its caller may run
+	 * commands, and a clone runs with the sandbox's env), as it read them: not any added since. A repositories item of
+	 * another environment waits for a set-up that may.
 	 */
-	async function provision(
-		sandbox: StoredSandbox,
-		authorised: readonly StoredEnvironment[],
-		which: ReadonlySet<string> = new Set(authorised.map((environment) => environment.id)),
-		/** `all`: every path's winning file, whosever it is (an attach can make another environment's file win a path). */
-		options: { readonly files?: "all" } = {},
-	): Promise<void> {
-		const owner = randomId("prv", 8);
-		const left = new Set(which);
-		let ids = environmentIdsOf(sandbox);
-		// A write or clone whose outcome is unknown (it failed in flight, and the host may still finish it): the lease is
-		// kept until it runs out, so no later set-up writes before it could land, and its environment stays pending.
-		let uncertain = false;
-		/**
-		 * The one way it ends, done or not: what it finished leaves `pendingProvision` (unless that environment was
-		 * attached again meanwhile, which moved it, so the newer attach's set-up decides), and what it didn't, of the
-		 * environments the sandbox still has, stays or goes there for the next start.
-		 */
-		const finish = () =>
-			patchSandbox(sandbox.id, (latest) => {
-				const kept = environmentIdsOf(latest);
-				const finished = [...which].filter((id) => !left.has(id) && kept.indexOf(id) === ids.indexOf(id));
-				const unfinished = [...left].filter((id) => kept.includes(id));
-				const pending = [
-					...new Set([...(latest.pendingProvision ?? []).filter((id) => !finished.includes(id)), ...unfinished]),
-				];
-				return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
-			}).then(() => undefined);
-		if (!(await takeProvisioning(sandbox.id, owner))) return finish();
-		try {
-			const current = await store.sandboxes.get(sandbox.id);
-			if (current === undefined || current.state !== "running") return await finish();
-			const asAuthorised = new Map(authorised.map((environment) => [environment.id, environment]));
-			const environments = await environmentsOf(current);
-			const resolution = resolved(
-				environments.map((latest) => {
-					const read = asAuthorised.get(latest.id);
-					return read === undefined ? latest : { ...latest, repos: read.repos };
-				}),
-			);
-			ids = environmentIdsOf(current);
-			const writes = (environmentId: string) => options.files === "all" || which.has(environmentId);
-			// Each environment's items it writes, counted down: one with none left is done, and isn't left pending.
-			const items = new Map<string, number>();
-			const count = (environmentId: string) => items.set(environmentId, (items.get(environmentId) ?? 0) + 1);
-			for (const { environment } of resolution.files.values()) if (which.has(environment.id)) count(environment.id);
-			for (const { environment } of resolution.repos.values()) if (which.has(environment.id)) count(environment.id);
-			for (const id of which) if (!items.has(id)) left.delete(id);
-			const did = (environmentId: string) => {
-				const remaining = (items.get(environmentId) ?? 1) - 1;
-				items.set(environmentId, remaining);
-				if (remaining <= 0) left.delete(environmentId);
-			};
-			/** Whether it may go on: it still holds the lease (renewed), and the sandbox's environments are as it read them. */
-			const mayGoOn = async () => {
-				const renewed = await patchSandbox(sandbox.id, (latest) =>
-					latest.provisionLease?.owner === owner
-						? { ...latest, provisionLease: { owner, until: now() + PROVISION_LEASE_MS } }
-						: undefined,
-				);
-				return renewed !== undefined && renewed.state === "running" && sameIds(environmentIdsOf(renewed), ids);
-			};
-			const degraded = (reason: string) =>
-				emit("sandbox.degraded", current.accountId, { sandbox: current, data: { reason } }).catch(() => undefined);
-			const label = (environment: StoredEnvironment) =>
-				environments.length > 1 ? `The environment ${environment.name}'s` : "The environment's";
-			const credentials = { variables: protectedWinners(current, resolution).map(({ winner }) => winner.item) };
-			for (const { environment, item: file } of resolution.files.values()) {
-				if (!writes(environment.id)) continue;
-				if (!(await mayGoOn())) return await finish();
-				let bytes: Uint8Array;
-				try {
-					bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
-				} catch (error) {
-					await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
-					if (which.has(environment.id)) did(environment.id);
-					continue;
-				}
-				try {
-					await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
-				} catch (error) {
-					// Failed in flight: it may yet land, so it holds the lease to its end and stays pending.
-					uncertain = true;
-					await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
-					return await finish();
-				}
-				if (which.has(environment.id)) did(environment.id);
+	async function provision(sandboxId: string, authorised: readonly StoredEnvironment[]): Promise<void> {
+		const fenced = await patchSandbox(sandboxId, (latest) =>
+			latest.state === "running" && (latest.pendingProvision?.length ?? 0) > 0
+				? { ...latest, provisionFence: (latest.provisionFence ?? 0) + 1 }
+				: undefined,
+		);
+		if (fenced === undefined) return;
+		const fence = fenced.provisionFence ?? 1;
+		const work = fenced.pendingProvision ?? [];
+		const asAuthorised = new Map(authorised.map((environment) => [environment.id, environment]));
+		const environments = await environmentsOf(fenced);
+		const resolution = resolved(
+			environments.map((latest) => {
+				const read = asAuthorised.get(latest.id);
+				return read === undefined ? latest : { ...latest, repos: read.repos };
+			}),
+		);
+		const degraded = (reason: string) =>
+			emit("sandbox.degraded", fenced.accountId, { sandbox: fenced, data: { reason } }).catch(() => undefined);
+		const label = (environment: StoredEnvironment) =>
+			environments.length > 1 ? `The environment ${environment.name}'s` : "The environment's";
+		const credentials = { variables: protectedWinners(fenced, resolution).map(({ winner }) => winner.item) };
+		/** Writes a file; false when its outcome is unknown (it failed in flight), so its item stays pending. */
+		const write = async ({
+			environment,
+			item: file,
+		}: {
+			environment: StoredEnvironment;
+			item: StoredEnvironmentFile;
+		}) => {
+			let bytes: Uint8Array;
+			try {
+				bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
+			} catch (error) {
+				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				return true;
 			}
-			for (const { environment, item: repo } of resolution.repos.values()) {
-				if (!which.has(environment.id)) continue;
-				if (!(await mayGoOn())) return await finish();
-				const path = clonePath(repo);
-				// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
-				// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
-				const credential = repoCredential(credentials, repo, current.placeholders ?? {});
-				const command = [
-					"git",
-					...(credential === undefined ? [] : gitCredentialArgs(credential)),
-					"clone --depth 1",
-					...(repo.ref === undefined ? [] : [`--branch ${shellWord(repo.ref)}`]),
-					"--",
-					shellWord(repo.url),
-					shellWord(path),
-				].join(" ");
-				try {
-					const result = await backend.exec(sandbox.id, {
-						command,
-						// No terminal to ask on: a repository that wants a login fails at once, saying so.
-						env: { ...current.env, GIT_TERMINAL_PROMPT: "0" },
-						timeoutMs: CLONE_TIMEOUT_MS,
-					});
-					if (result.exitCode !== 0 || result.timedOut) {
-						const why = result.timedOut
-							? "it took too long"
-							: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
-						await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${why}`);
-					}
-				} catch (error) {
-					uncertain = true;
-					await degraded(
-						`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`,
-					);
-					return await finish();
+			try {
+				await backend.writeFile(sandboxId, file.path, bytes, file.mode, { fence });
+				return true;
+			} catch (error) {
+				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				return false;
+			}
+		};
+		/** Clones a repository; false when its outcome is unknown, so its item stays pending. */
+		const clone = async ({
+			environment,
+			item: repo,
+		}: {
+			environment: StoredEnvironment;
+			item: computeSchema.EnvironmentRepo;
+		}) => {
+			const path = clonePath(repo);
+			// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
+			// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
+			const credential = repoCredential(credentials, repo, fenced.placeholders ?? {});
+			const command = [
+				"git",
+				...(credential === undefined ? [] : gitCredentialArgs(credential)),
+				"clone --depth 1",
+				...(repo.ref === undefined ? [] : [`--branch ${shellWord(repo.ref)}`]),
+				"--",
+				shellWord(repo.url),
+				shellWord(path),
+			].join(" ");
+			try {
+				const result = await backend.exec(sandboxId, {
+					command,
+					// No terminal to ask on: a repository that wants a login fails at once, saying so.
+					env: { ...fenced.env, GIT_TERMINAL_PROMPT: "0" },
+					timeoutMs: CLONE_TIMEOUT_MS,
+				});
+				if (result.exitCode !== 0 || result.timedOut) {
+					const why = result.timedOut
+						? "it took too long"
+						: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
+					await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${why}`);
 				}
-				did(environment.id);
+				return true;
+			} catch (error) {
+				await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+				return false;
 			}
-			await finish();
-		} finally {
-			if (!uncertain) {
-				await patchSandbox(sandbox.id, (latest) =>
-					latest.provisionLease?.owner === owner ? { ...latest, provisionLease: undefined } : undefined,
-				).catch(() => undefined);
+		};
+		const done: string[] = [];
+		for (const item of work) {
+			let finished = true;
+			if (item.kind === "repos") {
+				// Only for a set-up a caller who may run commands started; otherwise it waits for one.
+				if (item.environmentId === undefined || !asAuthorised.has(item.environmentId)) continue;
+				for (const winner of resolution.repos.values()) {
+					if (winner.environment.id === item.environmentId && !(await clone(winner))) finished = false;
+				}
+			} else {
+				const targets =
+					item.kind === "files"
+						? [...resolution.files.values()].filter((winner) => winner.environment.id === item.environmentId)
+						: (item.paths ?? []).flatMap((path) => {
+								const winner = resolution.files.get(path);
+								return winner === undefined ? [] : [winner];
+							});
+				for (const target of targets) if (!(await write(target))) finished = false;
 			}
+			if (finished) done.push(item.id);
 		}
-	}
-
-	/**
-	 * Takes a sandbox's set-up lease for `owner`, waiting while another set-up holds it (on any gateway) until it is let
-	 * go or runs out. False when it couldn't, or the sandbox is gone.
-	 */
-	async function takeProvisioning(sandboxId: string, owner: string): Promise<boolean> {
-		const deadline = Date.now() + PROVISION_LEASE_MS + 10_000;
-		for (;;) {
-			let gone = false;
-			const taken = await patchSandbox(sandboxId, (latest) => {
-				const lease = latest.provisionLease;
-				if (lease !== undefined && lease.owner !== owner && lease.until > now()) return undefined;
-				return { ...latest, provisionLease: { owner, until: now() + PROVISION_LEASE_MS } };
-			});
-			if (taken !== undefined) return true;
-			if ((await store.sandboxes.get(sandboxId)) === undefined) gone = true;
-			if (gone || Date.now() > deadline) return false;
-			await delay(PROVISION_WAIT_MS).done;
-		}
+		if (done.length === 0) return;
+		await patchSandbox(sandboxId, (latest) => {
+			const pending = (latest.pendingProvision ?? []).filter((item) => !done.includes(item.id));
+			return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
+		});
 	}
 
 	/**
@@ -4079,28 +4053,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	});
 
 	/**
-	 * The environment `bootAgain` provisions a sandbox it makes from its image with (its create failed, so the files and
-	 * repositories its create would have put there never were), checked as its create checks it: only a caller that may
-	 * run commands has repositories cloned. None for a sandbox on a disk of its own or made from a snapshot, which has them.
+	 * What a boot's set-up may do once the sandbox runs, if it has any pending (`pendingProvision`): the environments whose
+	 * repositories it may clone, checked as a create checks it (only a caller that may run commands has repositories
+	 * cloned; `lenient` leaves them pending for one that may, rather than refuse). A sandbox made before set-up was
+	 * recorded, whose create never placed it, has its environments' set-up recorded now.
 	 */
 	async function provisionedAgain(
 		principal: Principal,
 		role: MemberRole,
 		sandbox: StoredSandbox,
-		/** Leave out (pending) an environment with repositories the caller may not have cloned, rather than refuse. */
 		lenient = false,
 	): Promise<Provisioning | undefined> {
-		const again = neverPlaced(sandbox) && sandbox.source === undefined;
-		const ids = new Set(again ? environmentIdsOf(sandbox) : (sandbox.pendingProvision ?? []));
-		if (ids.size === 0) return undefined;
-		let environments = (await environmentsOf(sandbox)).filter((environment) => ids.has(environment.id));
-		if (environments.some((environment) => environment.repos.length > 0)) {
-			if (!lenient) requireScope(principal, "exec", role);
-			else if (!mayScope(principal, "exec", role)) {
-				environments = environments.filter((environment) => environment.repos.length === 0);
-			}
+		let pending = sandbox.pendingProvision ?? [];
+		const environments = await environmentsOf(sandbox);
+		const older = sandbox.envLayers === undefined && neverPlaced(sandbox) && sandbox.source === undefined;
+		if (pending.length === 0 && older) {
+			const work = environments.flatMap(workFor);
+			if (work.length === 0) return undefined;
+			await patchSandbox(sandbox.id, (latest) =>
+				(latest.pendingProvision?.length ?? 0) > 0 ? undefined : { ...latest, pendingProvision: work },
+			);
+			pending = work;
 		}
-		return environments.length === 0 ? undefined : { environments };
+		if (pending.length === 0) return undefined;
+		const cloning = new Set(pending.filter((work) => work.kind === "repos").map((work) => work.environmentId));
+		let authorised = environments.filter((environment) => cloning.has(environment.id));
+		if (authorised.length > 0) {
+			if (!lenient) requireScope(principal, "exec", role);
+			else if (!mayScope(principal, "exec", role)) authorised = [];
+		}
+		return { environments: authorised };
 	}
 
 	/** Whether a caller may act with `scope`, as `requireScope` would let them. */
@@ -4131,7 +4113,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<StoredSandbox | undefined> {
 		const booted = await boot(sandboxId, run, undefined, sent);
 		if (booted?.state === "running" && provisioning !== undefined)
-			await provision(booted, provisioning.environments).catch(() => undefined);
+			await provision(booted.id, provisioning.environments).catch(() => undefined);
 		return booted;
 	}
 
@@ -7324,6 +7306,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ownerUserId: principal.userId,
 					env,
 					envLayers,
+					// Its environments' set-up, done once it runs (and, if its boot fails, by its next start).
+					...(environments.some((environment) => workFor(environment).length > 0)
+						? { pendingProvision: environments.flatMap(workFor) }
+						: {}),
 					...environmentFields(environments.map((environment) => environment.id)),
 					...(start === undefined
 						? {}
@@ -7393,7 +7379,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// Queued with the boot, so a call after the create (an exec, a stop) finds the files and repositories there.
 					if (booted?.state === "running" && environments.length > 0) {
 						// As read when the call was authorised, not as they may be now.
-						await provision(booted, environments).catch(() => undefined);
+						await provision(booted.id, environments).catch(() => undefined);
 					}
 					return booted;
 				});
@@ -7676,7 +7662,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						// never had.
 						if (booted?.state === "running" && (booted.pendingProvision?.length ?? 0) > 0) {
 							const provisioning = await provisionedAgain(principal, role, booted, true).catch(() => undefined);
-							if (provisioning !== undefined) await provision(booted, provisioning.environments).catch(() => undefined);
+							if (provisioning !== undefined)
+								await provision(booted.id, provisioning.environments).catch(() => undefined);
 						}
 						// Best effort, as each port is: a failure here (its records' store down, say) leaves this fork running without
 						// them, and never stops the batch's other forks booting.

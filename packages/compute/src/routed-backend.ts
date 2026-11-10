@@ -227,7 +227,7 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return backend.commandResult(id, commandId);
 		},
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
-		writeFile: async (id, path, content, mode) => (await on(id)).writeFile(id, path, content, mode),
+		writeFile: async (id, path, content, mode, options) => (await on(id)).writeFile(id, path, content, mode, options),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),
 		listFiles: async (id, path) => (await on(id)).listFiles(id, path),
 		async processes(id, limit) {

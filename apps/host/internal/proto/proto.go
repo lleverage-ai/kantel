@@ -1035,6 +1035,10 @@ type FileParams struct {
 	Recursive bool   `json:"recursive,omitempty"`
 	Offset    int64  `json:"offset,omitempty"`
 	Length    int64  `json:"length,omitempty"`
+	// Fence orders a write (sandbox.files.write) among those Kantel's environment set-ups make: one with a fence below
+	// the highest the host has taken for the sandbox is from an older set-up, delivered late, and is dropped (answered
+	// {ok, fenced}), so it never lands over a newer one. 0 is unfenced.
+	Fence int64 `json:"fence,omitempty"`
 }
 
 // ProcessesParams is sandbox.processes' (FeatureProcesses): a running sandbox's busiest processes, at most Limit
