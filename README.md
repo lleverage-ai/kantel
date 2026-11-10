@@ -30,7 +30,7 @@ Each package, app and target has a README, and each component package has a `CON
 | `packages/identity`, `packages/audit`, `packages/sql` | Organisations, projects, people, roles and API keys; the audit log; the SQL seam under both |
 | `packages/contracts`, `packages/testing` | The TypeScript interfaces the components implement, and their conformance suites |
 | `packages/ui` | The component library and the compute console |
-| `packages/sandbox`, `packages/workspace`, `packages/browser`, `packages/environments`, `packages/usage` | Libraries from the agent plane, kept dormant: the sandbox facade and its tiers, the versioned workspace, the browser broker, long-lived environments and the usage ledger |
+| `packages/sandbox`, `packages/workspace`, `packages/browser`, `packages/usage` | Libraries from the agent plane, kept dormant: the sandbox facade and its tiers, the versioned workspace, the browser broker and the usage ledger |
 | `targets/selfhosted/sandbox` | The self-hosted container tier: a gVisor container per lease |
 | `deploy/compose` | Running the self-hosted stack with Docker Compose |
 | `images/*` | Container images: the sandbox, the browser and the isolate host |

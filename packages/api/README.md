@@ -6,14 +6,14 @@ schemas). Everything else is made from those definitions:
 
 | What | Where | Made by |
 | --- | --- | --- |
-| The server's routing and request checks | `createRouter(routes, handlers)` (`src/router.ts`) | `@kantel/compute/http` serves `computeRoutes`; the dormant `@kantel/browser/http` and `@kantel/environments/http` serve `browserRoutes` and `environmentRoutes` |
+| The server's routing and request checks | `createRouter(routes, handlers)` (`src/router.ts`) | `@kantel/compute/http` serves `computeRoutes`; the dormant `@kantel/browser/http` serves `browserRoutes` |
 | The OpenAPI 3.1 document | `generated/openapi.json` (`@kantel/api/openapi.json`) | `pnpm --filter @kantel/api generate` |
 | The TypeScript SDK | `generated/sdk.ts` (`@kantel/api/sdk`) | the same |
 
 The console uses the public API like any other client, so anything it can do a host app can do too.
 
-`routes` holds the compute plane's routes, the projects list, and the browser and environment routes of the dormant
-libraries. The agent plane's routes (sessions, skills, memory, schedules, sharing, connections, tool servers and model
+`routes` holds the compute plane's routes, the projects list, and the browser routes of the dormant browser
+library. The agent plane's routes (sessions, skills, memory, schedules, sharing, connections, tool servers and model
 providers) were removed in TASK-4721; they are on the `agent-plane-archive` branch.
 
 ## The compute plane

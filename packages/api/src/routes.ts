@@ -56,8 +56,6 @@ export const projectRoutes = { createProject } as const;
 
 /**
  * Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group.
- * The dormant agent plane's environment routes (`environmentRoutes`, served by nothing) aren't among them: the compute
- * plane's environments took their names, and the document and the SDK keep only the first shape of each name.
  */
 export const routes = {
 	...browserRoutes,
