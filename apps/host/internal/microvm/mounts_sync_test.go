@@ -1,9 +1,15 @@
 package microvm
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
+	"github.com/lleverage-ai/kantel/apps/host/internal/mounts"
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // A sync waits out the kernel's cache timeout only when the guest didn't say, for a mount it synced, that the kernel
@@ -22,5 +28,41 @@ func TestAllCurrent(t *testing.T) {
 		if got := allCurrent(synced, c.results); got != c.want {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
 		}
+	}
+}
+
+// A refresh shows the guest its whole set of mounts: only the listed ones normally, but every one while the host
+// still reconciles an adopted sandbox's, so a mount the guest holds whose listing the restarted host hasn't
+// recovered isn't unmounted by a refresh of another.
+func TestRefreshKeepsAnAdoptedSandboxsUnlistedMounts(t *testing.T) {
+	store := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+	}))
+	defer store.Close()
+	mm := mounts.New(mounts.Config{HTTP: store.Client(), Resolve: func(_ context.Context, _, sourceID string) (proto.BucketSource, error) {
+		if sourceID != "bks_ok" {
+			return proto.BucketSource{}, &proto.Error{Code: proto.ErrUnavailable, Message: "the store is away"}
+		}
+		return proto.BucketSource{Provider: "s3", Bucket: "b", Endpoint: store.URL, Credentials: &proto.BucketCredentials{AccessKeyID: "k", SecretAccessKey: "s"}}, nil
+	}})
+	mt := mm.Sandbox("sbx", []proto.Mount{
+		{Path: "/mnt/ok", Kind: proto.MountBucket, BucketSourceID: "bks_ok"},
+		{Path: "/mnt/away", Kind: proto.MountBucket, BucketSourceID: "bks_away"},
+	})
+	mt.Load(context.Background())
+	s := &sandbox{}
+	paths := func() []string {
+		var out []string
+		for _, spec := range refreshSpecs(s, mt) {
+			out = append(out, spec.Path)
+		}
+		return out
+	}
+	if got := paths(); len(got) != 1 || got[0] != "/mnt/ok" {
+		t.Errorf("a sandbox the host booted: %v (want only the listed mount)", got)
+	}
+	s.adoptedMounts.Store(true)
+	if got := paths(); len(got) != 2 {
+		t.Errorf("an adopted sandbox still reconciling: %v (want both, the unlisted one kept)", got)
 	}
 }

@@ -675,6 +675,19 @@ describe("refreshing a sandbox's mounts", () => {
 		expect(asked).toEqual([]);
 	});
 
+	it("is unavailable, naming the mount, when the backend's answer doesn't show it refreshed", async () => {
+		for (const [answer, why] of [
+			[[], "/mnt/org: its host didn't refresh it"],
+			[[{ path: "/mnt/org", status: "ready" }], "/mnt/org: it is ready, with no new listing"],
+			[[{ path: "/mnt/org", status: "failed", error: "the store is away" }], "/mnt/org: the store is away"],
+		] as const) {
+			const { tom, sandbox } = await withMounts(async () => [...answer]);
+			const refused = await failure(tom.refreshSandboxMounts(sandbox.id));
+			expect(refused.code).toBe("unavailable");
+			expect(refused.message).toContain(why);
+		}
+	});
+
 	it("passes on the backend's failure, and is not_supported where the backend can't", async () => {
 		const failing = await withMounts(async () => {
 			throw new KantelError("unavailable", "couldn't list the bucket again: /mnt/org: the store answered 503");

@@ -634,20 +634,30 @@ export function createMounts(deps: MountsDeps) {
 			}
 			const running = await deps.requireRunning(principal, sandbox.id);
 			const answered = new Map((await backend.refreshMounts(running.id, path)).map((status) => [status.path, status]));
-			return {
-				items: buckets.map((mount) => {
-					const status = answered.get(mount.path);
-					const error = status === undefined ? mount.error : status.error;
-					return {
+			// Every mount asked about must come back refreshed: never a stored status standing in for one the backend
+			// didn't answer (a mount its host never had, say, from before it could mount buckets).
+			const items: computeSchema.RefreshedMount[] = [];
+			const stale: string[] = [];
+			for (const mount of buckets) {
+				const status = answered.get(mount.path);
+				if (status === undefined) {
+					stale.push(`${mount.path}: its host didn't refresh it`);
+				} else if (status.status !== "ready" || status.listedAt === undefined) {
+					stale.push(`${mount.path}: ${status.error ?? `it is ${status.status}, with no new listing`}`);
+				} else {
+					items.push({
 						path: mount.path,
 						source: { ...mount.source },
-						status: status?.status ?? mount.status,
-						...(error === undefined ? {} : { error }),
-						...(status?.objects === undefined ? {} : { objects: status.objects }),
-						...(status?.listedAt === undefined ? {} : { listedAt: status.listedAt }),
-					};
-				}),
-			};
+						status: status.status,
+						...(status.objects === undefined ? {} : { objects: status.objects }),
+						listedAt: status.listedAt,
+					});
+				}
+			}
+			if (stale.length > 0) {
+				throw new KantelError("unavailable", `Couldn't bring the sandbox's mounts up to date: ${stale.join("; ")}`);
+			}
+			return { items };
 		},
 
 		createUploadUrl: (principal, { params, body }, request) =>

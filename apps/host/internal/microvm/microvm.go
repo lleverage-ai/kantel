@@ -863,9 +863,20 @@ func (m *Manager) RefreshMounts(ctx context.Context, p proto.MountsRefreshParams
 		}
 		// A listing that failed is in the mount's status; the rest still go to the guest.
 	}
-	mt.Applied(s.guest.Mount(ctx, mt.GuestSpecs()))
+	mt.Applied(s.guest.Mount(ctx, refreshSpecs(s, mt)))
 	m.emit(s)
 	return mt.Status(), nil
+}
+
+// refreshSpecs are the mounts a refresh shows the guest, which takes them as its whole set: those with a manifest,
+// or every one while the host still reconciles an adopted sandbox's (ReconcileMounts), so a mount the guest still
+// holds whose listing the restarted host hasn't recovered isn't unmounted by a refresh of another. Called with s.mu
+// held.
+func refreshSpecs(s *sandbox, mt *mounts.Sandbox) []guest.MountSpec {
+	if s.adoptedMounts.Load() {
+		return mt.AllGuestSpecs()
+	}
+	return mt.GuestSpecs()
 }
 
 // syncMounts is RefreshMounts with Sync: each bucket mount at path (all of them when empty) listed from since on and
@@ -901,7 +912,7 @@ func (m *Manager) syncMounts(ctx context.Context, s *sandbox, path string, since
 		return nil, &proto.Error{Code: proto.ErrUnavailable, Message: "couldn't list the bucket again: " + err.Error()}
 	}
 	synced := mt.Versions(path)
-	results, err := s.guest.Mount(ctx, mt.GuestSpecs())
+	results, err := s.guest.Mount(ctx, refreshSpecs(s, mt))
 	mt.Applied(results, err)
 	m.emit(s)
 	if err := mt.Shown(synced, results, err); err != nil {
