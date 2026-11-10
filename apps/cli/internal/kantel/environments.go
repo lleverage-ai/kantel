@@ -312,9 +312,25 @@ func destination(e api.EgressEntry) string {
 
 // describeEgress is kantel egress: what the sandbox has, then its log as a table, newest first as Kantel answers it.
 func describeEgress(c *cli.Context, egress api.SandboxEgress, entries []api.EgressEntry, deniedOnly bool) string {
+	// Its environments in order; from an older Kantel, the one it was made from.
+	var ids []string
+	names := map[string]string{}
+	for _, e := range egress.Environments {
+		ids = append(ids, e.ID)
+		names[e.ID] = e.Name
+	}
+	if len(ids) == 0 && egress.Environment != nil {
+		ids = []string{egress.Environment.ID}
+		names[egress.Environment.ID] = egress.Environment.Name
+	}
 	var protected, grants []string
 	for _, v := range egress.ProtectedVariables {
-		protected = append(protected, fmt.Sprintf("%s (%s…) to %s", v.Name, v.PlaceholderPrefix, bindingsText(v.Bindings)))
+		from := ""
+		// With more than one environment, which of them the value comes from.
+		if v.EnvironmentID != nil && len(ids) > 1 {
+			from = " from " + environmentsText([]string{*v.EnvironmentID}, names)
+		}
+		protected = append(protected, fmt.Sprintf("%s (%s…) to %s%s", v.Name, v.PlaceholderPrefix, bindingsText(v.Bindings), from))
 	}
 	for _, g := range egress.EnvironmentGrants {
 		grants = append(grants, fmt.Sprintf("%s (environment, %s)", grantRule(g), g.ID))
@@ -322,13 +338,9 @@ func describeEgress(c *cli.Context, egress api.SandboxEgress, entries []api.Egre
 	for _, g := range egress.Grants {
 		grants = append(grants, fmt.Sprintf("%s (sandbox, %s)", grantRule(g), g.ID))
 	}
-	environment := ""
-	if egress.Environment != nil {
-		environment = egress.Environment.Name + " (" + egress.Environment.ID + ")"
-	}
 	head := cli.Fields(c.Style, []cli.Field{
 		{"sandbox", egress.SandboxID + " (" + egress.SandboxName + ")"},
-		{"environment", environment},
+		{"environments", environmentsText(ids, names)},
 		{"protected", strings.Join(protected, "; ")},
 		{"grants", strings.Join(grants, "; ")},
 	})
@@ -620,11 +632,27 @@ func environments() cli.Section {
 	envArg := cli.Arg{Name: "env"}
 	return cli.Section{Title: "Environments and egress", Commands: []*cli.Command{
 		{
-			Name: "env list", Summary: "The account's environments",
+			Name: "env list", Summary: "The account's environments, or a sandbox's in order",
+			Flags: []cli.Flag{{Name: "sandbox", Type: cli.String, Value: "<sandbox>",
+				Description: "A sandbox's environments instead, in order: what each loses to a later one, and what is pending"}},
+			Details: sandboxEnvironmentsDetails,
+			Examples: []cli.Example{
+				{What: "The account's environments", Line: "kantel env list"},
+				{What: "A sandbox's, in order", Line: "kantel env ls --sandbox sbx_4kq9x2mt"},
+			},
 			Run: func(c *cli.Context) error {
 				client, err := Client(c)
 				if err != nil {
 					return err
+				}
+				if id, ok := c.Str("sandbox"); ok {
+					var raw json.RawMessage
+					list, err := client.ListSandboxEnvironments(c.Ctx, id, api.Raw(&raw))
+					if err != nil {
+						return err
+					}
+					c.Emit(raw, list, func() string { return sandboxEnvironmentTable(c, *list) })
+					return nil
 				}
 				account, err := AccountPtr(c)
 				if err != nil {
@@ -672,6 +700,7 @@ func environments() cli.Section {
 						fmt.Sprintf("Created %s (%s).", environment.ID, environment.Name),
 						"  Add a variable:  kantel env set " + environment.Name + " NAME=value",
 						"  Use it:          kantel new --env " + environment.Name,
+						"  Attach it:       kantel env attach <sandbox> " + environment.Name,
 					}
 					if offered != nil && !*offered {
 						lines = append(lines, "Note: "+NoProtectedValues+".")
@@ -717,6 +746,8 @@ func environments() cli.Section {
 				return nil
 			},
 		},
+		envAttachCommand(),
+		envDetachCommand(),
 		envSetCommand(),
 		{
 			Name: "env unset", Summary: "Remove a variable from an environment",

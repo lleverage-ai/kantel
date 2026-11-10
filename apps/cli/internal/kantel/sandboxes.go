@@ -134,7 +134,7 @@ func sandboxes() cli.Section {
 				if err != nil {
 					return err
 				}
-				c.Emit(raw, sandbox, func() string { return DescribeSandbox(c, *sandbox) })
+				c.Emit(raw, sandbox, func() string { return DescribeSandbox(c, *sandbox, sandboxEnvironmentNames(c, client, *sandbox)) })
 				return nil
 			},
 		},
@@ -342,7 +342,7 @@ func newCommand() *cli.Command {
 			{Name: "idle-stop", Type: cli.String, Value: idleStop.Value, Description: idleStop.Description + " (default never)"},
 			{Name: "label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "A label; repeat for more"},
 			{Name: "env", Type: cli.String, Short: "e", Multiple: true, Value: "<K=V|env>",
-				Description: "K=V: a variable every command sees (not a secret), repeatable; or an environment to start from"},
+				Description: "K=V: a variable every command sees (not a secret); or an environment to start from. Repeat it for more"},
 			{Name: "host", Type: cli.String, Multiple: true, Value: "<port[:public]>", Description: "Give this port an HTTPS URL once it runs; repeat it"},
 			{Name: "on", Type: cli.String, Value: "<host>", Description: "Run it on this host, its name or ID (kantel hosts list shows them)"},
 			{Name: "host-label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "Run it only on a host with this label; repeat for more"},
@@ -351,6 +351,9 @@ func newCommand() *cli.Command {
 		Details: "--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 			"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
 			"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
+			"Give --env <env> more than once for several environments, in order (up to 10): where two set the same\n" +
+			"variable, secret file or repo path, the later one wins, and the K=V variables win over them all. Their\n" +
+			"grants add up. kantel env attach and kantel env detach change a sandbox's environments later.\n\n" +
 			"--disk sizes a microVM's disk apart from its vCPUs and memory (kantel new --type microvm --size large\n" +
 			"--disk 60). A sandbox made from a snapshot keeps the snapshot's disk.\n\n" +
 			"--size takes one of the named sizes the hosts offer; kantel sizes lists them, and the most --vcpus and\n" +
@@ -371,6 +374,7 @@ func newCommand() *cli.Command {
 			{What: "A microVM: a full Linux with root, Docker and SSH", Line: "kantel new --type microvm"},
 			{What: "A bigger one, with a name, that stops after 30 minutes unused", Line: "kantel new --type microvm --vcpus 8 --memory 16 --name ci --idle-stop 30"},
 			{What: "One from a saved snapshot, keeping only its ID for a script", Line: "id=$(kantel new --from monorepo-ci --json | jq -r .id)"},
+			{What: "One with two environments, where npm wins over backend", Line: "kantel new --env backend --env npm"},
 		},
 		Run: runNew,
 	}
@@ -448,11 +452,12 @@ func runNew(c *cli.Context) error {
 			environments = append(environments, e)
 		}
 	}
-	if len(environments) > 1 {
-		return cli.Usage("a sandbox starts from one environment: give --env <env> once")
-	}
-	if len(environments) == 1 {
+	// One goes as environment, which every Kantel takes; several as environments, in order.
+	switch {
+	case len(environments) == 1:
 		body.Environment = &environments[0]
+	case len(environments) > 1:
+		body.Environments = environments
 	}
 	if body.AutoStopMinutes, err = MinutesOrNever(c, "auto-stop"); err != nil {
 		return err

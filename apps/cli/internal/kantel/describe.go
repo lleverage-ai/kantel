@@ -138,8 +138,34 @@ func startupText(s api.Sandbox) string {
 	return fmt.Sprintf("%s on its host (%s in all): %s", sec(st.HostMs), sec(st.TotalMs), strings.Join(phases, ", "))
 }
 
-// DescribeSandbox is one sandbox, field by field, for kantel info.
-func DescribeSandbox(c *cli.Context, s api.Sandbox) string {
+// environmentIDsOf is a sandbox's environments, in order; from an older Kantel, the one it was made from.
+func environmentIDsOf(s api.Sandbox) []string {
+	if len(s.EnvironmentIds) > 0 {
+		return s.EnvironmentIds
+	}
+	if s.EnvironmentID != nil {
+		return []string{*s.EnvironmentID}
+	}
+	return nil
+}
+
+// environmentsText is environments in order, each by name with its ID: `backend (env_1), npm (env_2)`, or by its ID
+// alone where its name isn't known.
+func environmentsText(ids []string, names map[string]string) string {
+	var out []string
+	for _, id := range ids {
+		if name := names[id]; name != "" {
+			out = append(out, name+" ("+id+")")
+		} else {
+			out = append(out, id)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// DescribeSandbox is one sandbox, field by field, for kantel info; names are its environments' names by ID, as far as
+// they are known.
+func DescribeSandbox(c *cli.Context, s api.Sandbox, names map[string]string) string {
 	machine := []string{string(s.Type)}
 	if s.Size != nil {
 		machine = append(machine, string(*s.Size))
@@ -176,6 +202,7 @@ func DescribeSandbox(c *cli.Context, s api.Sandbox) string {
 		{"host", host},
 		{"visibility", string(s.Visibility)},
 		{"labels", strings.Join(labels, ", ")},
+		{"environments", environmentsText(environmentIDsOf(s), names)},
 		{"auto-stop", autoStop},
 		{"idle stop", idleStopText(c, s)},
 		{"snapshot", Deref(s.LatestSnapshotID)},
