@@ -107,6 +107,8 @@ type result struct {
 	Stdout, Stderr string
 	Calls          []call
 	Opened         []string
+	// Slept is each wait the run asked for, in order.
+	Slept []time.Duration
 }
 
 type opts struct {
@@ -116,6 +118,8 @@ type opts struct {
 	tty    bool
 	// configDir is the config directory; default a temporary one.
 	configDir string
+	// home and cwd are the home and working directories; default the config directory.
+	home, cwd string
 }
 
 // run runs kantel with argv against a fake Kantel.
@@ -135,16 +139,30 @@ func run(t *testing.T, argv []string, o opts) result {
 	if dir == "" {
 		dir = t.TempDir()
 	}
+	home, cwd := dir, dir
+	if o.home != "" {
+		home = o.home
+	}
+	if o.cwd != "" {
+		cwd = o.cwd
+	}
 	var stdout, stderr bytes.Buffer
 	var opened []string
+	var slept []time.Duration
+	var sleptMu sync.Mutex
 	code := cli.Run(Program(), argv, &cli.IO{
 		Stdout: &stdout, Stderr: &stderr, Stdin: strings.NewReader(o.stdin),
-		StdoutTTY: o.tty, StderrTTY: o.tty, Env: env, Home: dir, ConfigDir: dir, Cwd: dir,
+		StdoutTTY: o.tty, StderrTTY: o.tty, Env: env, Home: home, ConfigDir: dir, Cwd: cwd,
 		HTTP: f.server.Client(), Now: time.Now,
-		Sleep:   func(context.Context, time.Duration) error { return nil },
+		Sleep: func(_ context.Context, d time.Duration) error {
+			sleptMu.Lock()
+			defer sleptMu.Unlock()
+			slept = append(slept, d)
+			return nil
+		},
 		OpenURL: func(u string) { opened = append(opened, u) },
 	})
-	return result{Code: code, Stdout: stdout.String(), Stderr: stderr.String(), Calls: f.Calls(), Opened: opened}
+	return result{Code: code, Stdout: stdout.String(), Stderr: stderr.String(), Calls: f.Calls(), Opened: opened, Slept: slept}
 }
 
 func sandbox(fields map[string]any) map[string]any {
