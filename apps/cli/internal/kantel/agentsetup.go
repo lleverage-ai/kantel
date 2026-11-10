@@ -148,21 +148,42 @@ func (p *setupPlan) outside(path string) bool {
 	return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
 }
 
-// resolved is path with its links followed: the deepest part of it that exists, resolved, and the rest after it.
-func resolved(path string) string {
-	path = filepath.Clean(path)
-	rest := ""
-	for {
-		if real, err := filepath.EvalSymlinks(path); err == nil {
-			return filepath.Join(real, rest)
-		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return filepath.Join(path, rest)
-		}
-		rest = filepath.Join(filepath.Base(path), rest)
-		path = parent
+// resolved is path with every link in it followed, part by part, including a link whose destination doesn't exist
+// yet (writing through it creates the file there) and links within links; what doesn't exist is kept as written.
+func resolved(path string) string { return resolveLinks(filepath.Clean(path), 0) }
+
+func resolveLinks(path string, depth int) string {
+	if depth > 40 {
+		return path // a loop: Lstat and the write will fail on it anyway
 	}
+	parts := strings.Split(path, string(filepath.Separator))
+	at := string(filepath.Separator)
+	if !filepath.IsAbs(path) {
+		at = "."
+	}
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		next := filepath.Join(at, part)
+		info, err := os.Lstat(next)
+		if err != nil {
+			// Nothing here: the rest is as written.
+			return filepath.Join(append([]string{next}, parts[i+1:]...)...)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(next)
+			if err != nil {
+				return filepath.Join(append([]string{next}, parts[i+1:]...)...)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(at, target)
+			}
+			next = resolveLinks(filepath.Clean(target), depth+1)
+		}
+		at = next
+	}
+	return at
 }
 
 // file plans a file whose content is desired(what it holds now, or nil): unchanged when that is what it holds.
@@ -192,7 +213,17 @@ func (p *setupPlan) file(agent, what, path string, desired func(existing *string
 	default:
 		s.State = stepUpdate
 	}
-	s.apply = func() error { return writeText(path, content) }
+	s.apply = func() error {
+		// The file as it was planned from, or setup would write over what changed while it waited for a yes.
+		now, err := readTextIfAny(path)
+		if err != nil {
+			return err
+		}
+		if (now == nil) != (existing == nil) || (now != nil && *now != *existing) {
+			return cli.Fail(path + " changed while setup was waiting, so it was left alone: run kantel agent setup again")
+		}
+		return writeText(path, content)
+	}
 }
 
 // command plans a command, run with the agent's CLI found at bin.

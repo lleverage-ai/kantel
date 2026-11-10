@@ -336,14 +336,21 @@ func (c *Client) send(ctx context.Context, call Call, body []byte, key string, o
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if key != "" {
-		req.Header.Set("Idempotency-Key", key)
+		if again {
+			req.Header.Set("Idempotency-Key", key)
+		} else {
+			// Go's transport resends a request by itself when a reused connection drops, if it carries an
+			// Idempotency-Key under that (canonical) name, with a body or without one. A call this client sends once
+			// (an older control plane may ignore the key on it) must never be: under a name the transport doesn't look
+			// up, the key still goes out (header names are case-insensitive on the wire) and nothing replays it.
+			req.Header["idempotency-key"] = []string{key}
+		}
 	}
 	if o.requestID != "" {
 		req.Header.Set("Kantel-Request-Id", o.requestID)
 	}
 	if !again && req.Body != nil {
-		// Go's transport resends a request with an Idempotency-Key by itself when a reused connection drops; a call
-		// this client sends once (an older control plane may ignore the key on it) must not be, so it can't be replayed.
+		// And a body that can't be read again can't be resent either.
 		req.GetBody = nil
 	}
 	base := c.HTTP

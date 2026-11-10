@@ -443,7 +443,7 @@ func indexOf(words []string, w string) int {
 }
 
 func TestEnvValuesSurviveCompose(t *testing.T) {
-	for _, value := range []string{"plain", "p$a", "a #b", `it's "x" $y \z`, "", "https://k.example/v1?a=b&c=d"} {
+	for _, value := range []string{"plain", "p$a", "a #b", `it's "x" $y \z`, "", "https://k.example/v1?a=b&c=d", `ends\`, `a\b'c`} {
 		text := UpdateEnvFile("", Changes{{Key: "K", Value: &value}})
 		got, _ := ParseEnvFile(text).Get("K")
 		if got != value {

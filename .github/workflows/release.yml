@@ -127,6 +127,7 @@ jobs:
       contents: write # the tag and the release
       id-token: write # the attestations' signing certificate
       attestations: write
+      actions: write # redeploys kantel.dev
     steps:
       - uses: actions/checkout@v7
 
@@ -146,6 +147,16 @@ jobs:
         run: |
           tools/release/github-release.sh "$VERSION" "$RUNNER_TEMP/release"
           echo "Released https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION" >>"$GITHUB_STEP_SUMMARY"
+
+      # kantel.dev serves the latest release's matching installer as cli.sh (apps/site/scripts/sync-installers.mjs):
+      # redeploy it, so a release that changes what cli.sh must install is what it installs from now. Not for a
+      # prerelease, which is never the latest.
+      - name: Redeploy kantel.dev
+        if: ${{ !contains(env.VERSION, '-') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run site-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
 
       # Tells the hosted control plane the release is out, so its console offers hosts the update now rather than
       # within the hour. It reads GitHub's latest release itself; the call names no version. Never fails the release:

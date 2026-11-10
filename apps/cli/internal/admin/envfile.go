@@ -172,7 +172,7 @@ func quoteEnv(value string) string {
 	switch {
 	case plainEnvValue.MatchString(value):
 		return value
-	case !strings.Contains(value, "'"):
+	case !strings.ContainsAny(value, `'\`):
 		return "'" + value + "'"
 	}
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$").Replace(value) + `"`

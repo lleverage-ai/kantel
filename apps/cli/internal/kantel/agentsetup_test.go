@@ -482,3 +482,59 @@ func TestAgentSetupCarriesAnExplicitHostedURLOverASavedOne(t *testing.T) {
 	eq(t, "exit", r.Code, 0)
 	contains(t, "cursor", readFile(t, filepath.Join(d.project, ".cursor", "mcp.json")), `"KANTEL_URL": "`+cli.DefaultURL+`"`)
 }
+
+// A link whose destination doesn't exist yet is followed too: writing through it creates a file outside the project.
+func TestAgentSetupFollowsDanglingLinksOutOfTheProject(t *testing.T) {
+	d := newSetupDirs(t)
+	d.mkdir(t, ".cursor")
+	if err := os.MkdirAll(filepath.Join(d.project, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(d.home, ".cursor", "mcp.json"), filepath.Join(d.project, ".cursor", "mcp.json")); err != nil {
+		t.Skip(err)
+	}
+	r := d.setup(t, "--for", "cursor", "--no-skill")
+	eq(t, "exit", r.Code, 2)
+	if _, err := os.Stat(filepath.Join(d.home, ".cursor", "mcp.json")); err == nil {
+		t.Error("created the global mcp.json without --yes")
+	}
+	// A link that stays in the project is the project's.
+	inside := newSetupDirs(t)
+	if err := os.MkdirAll(filepath.Join(inside.project, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(inside.project, "docs", "AGENTS.md"), filepath.Join(inside.project, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "inside", inside.setup(t, "--for", "pi").Code, 0)
+}
+
+// A file that changes between the plan and its write is left alone.
+func TestAgentSetupLeavesAFileThatChangedWhileItWaited(t *testing.T) {
+	d := newSetupDirs(t)
+	c := &cli.Context{IO: &cli.IO{Cwd: d.project}}
+	p := &setupPlan{c: c, byPath: map[string]*setupStep{}, cwd: d.project}
+	path := filepath.Join(d.project, ".cursor", "mcp.json")
+	p.file("cursor", "mcp", path, func(*string) (string, error) { return "{\"mcpServers\":{}}\n", nil })
+	// Someone else creates it meanwhile.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"mcpServers":{"other":{}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.steps[0].apply(); err == nil {
+		t.Error("wrote over a file created meanwhile")
+	}
+	eq(t, "kept", readFile(t, path), `{"mcpServers":{"other":{}}}`)
+	// And one edited meanwhile.
+	p = &setupPlan{c: c, byPath: map[string]*setupStep{}, cwd: d.project}
+	p.file("cursor", "mcp", path, func(*string) (string, error) { return "planned\n", nil })
+	if err := os.WriteFile(path, []byte("edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.steps[0].apply(); err == nil {
+		t.Error("wrote over an edit")
+	}
+	eq(t, "kept edit", readFile(t, path), "edited")
+}
