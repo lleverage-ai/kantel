@@ -148,40 +148,54 @@ func (p *setupPlan) outside(path string) bool {
 	return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
 }
 
-// resolved is path with every link in it followed, part by part, including a link whose destination doesn't exist
-// yet (writing through it creates the file there) and links within links; what doesn't exist is kept as written.
-func resolved(path string) string { return resolveLinks(filepath.Clean(path), 0) }
-
-func resolveLinks(path string, depth int) string {
-	if depth > 40 {
-		return path // a loop: Lstat and the write will fail on it anyway
-	}
-	parts := strings.Split(path, string(filepath.Separator))
-	at := string(filepath.Separator)
+// resolved is path with every link in it followed, as the file system follows them: part by part, a link's
+// destination taken in its own parts (so `hop/..` goes up from where hop leads, never just cancels out), including a
+// link whose destination doesn't exist yet (writing through it creates the file there). What doesn't exist is kept
+// as written, after the last part that does.
+func resolved(path string) string {
 	if !filepath.IsAbs(path) {
-		at = "."
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
 	}
-	for i, part := range parts {
-		if part == "" {
+	return resolveLinks(path)
+}
+
+func resolveLinks(path string) string {
+	sep := string(filepath.Separator)
+	// What is left to walk, in order; at is where the walk is, with no link in it.
+	queue := strings.Split(path, sep)
+	at := sep
+	for hops := 0; len(queue) > 0; {
+		part := queue[0]
+		queue = queue[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			at = filepath.Dir(at)
 			continue
 		}
 		next := filepath.Join(at, part)
 		info, err := os.Lstat(next)
 		if err != nil {
-			// Nothing here: the rest is as written.
-			return filepath.Join(append([]string{next}, parts[i+1:]...)...)
+			// Nothing here: the rest is as written, from here.
+			return filepath.Join(append([]string{next}, queue...)...)
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(next)
-			if err != nil {
-				return filepath.Join(append([]string{next}, parts[i+1:]...)...)
-			}
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(at, target)
-			}
-			next = resolveLinks(filepath.Clean(target), depth+1)
+		if info.Mode()&os.ModeSymlink == 0 {
+			at = next
+			continue
 		}
-		at = next
+		target, err := os.Readlink(next)
+		hops++
+		if err != nil || hops > 40 {
+			// Can't be followed (or a loop): the write through it will fail too.
+			return filepath.Join(append([]string{next}, queue...)...)
+		}
+		if filepath.IsAbs(target) {
+			at = sep
+		}
+		queue = append(strings.Split(target, sep), queue...)
 	}
 	return at
 }

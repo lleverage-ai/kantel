@@ -538,3 +538,21 @@ func TestAgentSetupLeavesAFileThatChangedWhileItWaited(t *testing.T) {
 	}
 	eq(t, "kept edit", readFile(t, path), "edited")
 }
+
+// A link's destination is followed in its own parts: `hop/..`, where hop leads out of the project, goes up from there.
+func TestAgentSetupFollowsALinkThroughDotDot(t *testing.T) {
+	d := newSetupDirs(t)
+	d.mkdir(t, "subdir")
+	if err := os.Symlink(filepath.Join(d.home, "subdir"), filepath.Join(d.project, "hop")); err != nil {
+		t.Skip(err)
+	}
+	if err := os.Symlink("hop/../AGENTS.md", filepath.Join(d.project, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	r := d.setup(t, "--for", "pi", "--no-mcp")
+	eq(t, "exit", r.Code, 2)
+	if _, err := os.Stat(filepath.Join(d.home, "AGENTS.md")); err == nil {
+		t.Error("created ~/AGENTS.md without --yes")
+	}
+	eq(t, "resolved", resolved(filepath.Join(d.project, "AGENTS.md")), filepath.Join(resolved(d.home), "AGENTS.md"))
+}
