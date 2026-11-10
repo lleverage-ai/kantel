@@ -66,3 +66,28 @@ func TestRefreshKeepsAnAdoptedSandboxsUnlistedMounts(t *testing.T) {
 		t.Errorf("an adopted sandbox still reconciling: %v (want both, the unlisted one kept)", got)
 	}
 }
+
+// A refresh's statuses reach the control plane as a mounts event (the only one it takes mount statuses from), with
+// the ordering stamp, besides the sandbox's own event.
+func TestARefreshSendsAMountsEvent(t *testing.T) {
+	mm := mounts.New(mounts.Config{Resolve: func(context.Context, string, string) (proto.BucketSource, error) {
+		return proto.BucketSource{}, &proto.Error{Code: proto.ErrUnavailable, Message: "the store is away"}
+	}})
+	var sandboxEvents int
+	var mountEvents []proto.SandboxInfo
+	m := &Manager{cfg: Config{
+		Root: t.TempDir(), Mounts: mm,
+		Events:      func(proto.SandboxInfo) { sandboxEvents++ },
+		MountEvents: func(info proto.SandboxInfo) { mountEvents = append(mountEvents, info) },
+	}}
+	s := &sandbox{meta: meta{ID: "sbx", State: proto.StateRunning, Mounts: []proto.Mount{{Path: "/mnt/x", Kind: proto.MountBucket, BucketSourceID: "bks_1"}}}}
+	m.mountsOf(s).Load(context.Background())
+	m.emitMounts(s)
+	if sandboxEvents != 1 || len(mountEvents) != 1 {
+		t.Fatalf("%d sandbox events and %d mounts events (want one of each)", sandboxEvents, len(mountEvents))
+	}
+	got := mountEvents[0]
+	if len(got.Mounts) != 1 || got.Mounts[0].State != proto.MountFailed || got.MountsAt == 0 {
+		t.Errorf("the mounts event: %+v (want /mnt/x failed, stamped)", got)
+	}
+}

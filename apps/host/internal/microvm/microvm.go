@@ -864,7 +864,7 @@ func (m *Manager) RefreshMounts(ctx context.Context, p proto.MountsRefreshParams
 		// A listing that failed is in the mount's status; the rest still go to the guest.
 	}
 	mt.Applied(s.guest.Mount(ctx, refreshSpecs(s, mt)))
-	m.emit(s)
+	m.emitMounts(s)
 	return mt.Status(), nil
 }
 
@@ -908,13 +908,13 @@ func (m *Manager) syncMounts(ctx context.Context, s *sandbox, path string, since
 		if pe, ok := err.(*proto.Error); ok {
 			return nil, pe
 		}
-		m.emit(s)
+		m.emitMounts(s)
 		return nil, &proto.Error{Code: proto.ErrUnavailable, Message: "couldn't list the bucket again: " + err.Error()}
 	}
 	synced := mt.Versions(path)
 	results, err := s.guest.Mount(ctx, refreshSpecs(s, mt))
 	mt.Applied(results, err)
-	m.emit(s)
+	m.emitMounts(s)
 	if err := mt.Shown(synced, results, err); err != nil {
 		return nil, &proto.Error{Code: proto.ErrUnavailable, Message: err.Error()}
 	}
@@ -1019,6 +1019,16 @@ func (m *Manager) validateMounts(ms []proto.Mount) error {
 func (m *Manager) emit(s *sandbox) {
 	if m.cfg.Events != nil {
 		m.cfg.Events(m.info(s))
+	}
+}
+
+// emitMounts is emit for a call that changed a sandbox's mount statuses after its boot answered (a refresh): the
+// control plane takes those only from a mounts event (sandbox.mounts, MountEvents), which carries the ordering stamp
+// m.info sets (MountsAt), so it gets one besides the sandbox's own.
+func (m *Manager) emitMounts(s *sandbox) {
+	m.emit(s)
+	if m.cfg.MountEvents != nil {
+		m.cfg.MountEvents(m.info(s))
 	}
 }
 
