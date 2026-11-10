@@ -51,11 +51,11 @@ if (`https://github.com/${repo}` !== GITHUB_URL) {
 
 // The CLI's installer is served as the repository's own copy (scripts/sync-installers.mjs), at /cli.sh and
 // /install-cli.sh, and downloads from the repository the site links to.
-const cliInstaller = readFileSync(join(dist, "../../../packages/cli/install-cli.sh"), "utf8");
+const cliInstaller = readFileSync(join(dist, "../../../apps/cli/install-cli.sh"), "utf8");
 for (const name of ["cli.sh", "install-cli.sh"]) {
 	const path = join(dist, name);
 	if (!existsSync(path) || readFileSync(path, "utf8") !== cliInstaller) {
-		console.error(`check-links: dist/${name} isn't packages/cli/install-cli.sh; run scripts/sync-installers.mjs`);
+		console.error(`check-links: dist/${name} isn't apps/cli/install-cli.sh; run scripts/sync-installers.mjs`);
 		process.exit(1);
 	}
 }

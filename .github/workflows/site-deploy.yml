@@ -27,7 +27,7 @@ on:
     paths:
       - "apps/site/**"
       - "docs/site/**"
-      - "packages/cli/install-cli.sh"
+      - "apps/cli/install-cli.sh"
       - "packages/ui/src/tokens/**"
       - ".github/workflows/site-deploy.yml"
   workflow_dispatch: {}
@@ -96,7 +96,7 @@ jobs:
       - name: Build
         run: |
           sh -n apps/site/public/install.sh
-          sh -n packages/cli/install-cli.sh
+          sh -n apps/cli/install-cli.sh
           pnpm --dir apps/site build
 
       # Always, before a real deploy too: checks the config and the assets without contacting Cloudflare.

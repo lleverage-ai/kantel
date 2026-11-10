@@ -7,15 +7,15 @@ description: kantel-admin installs and upgrades a self-hosted Kantel, changes it
 
 ## Install it
 
-It needs Node.js 22 or later. It isn't on npm: each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as one file, `kantel-admin.js`. These lines work in bash, zsh and fish:
+It is one binary, with nothing else to install. It isn't on npm: each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as `kantel-admin-<os>-<arch>`, for Linux and macOS on x86_64 (`amd64`) and arm64. These lines install it for a Linux x86_64 server, and work in bash, zsh and fish:
 
 ```sh
-sudo curl -fsSLo /usr/local/bin/kantel-admin https://github.com/lleverage-ai/kantel/releases/latest/download/kantel-admin.js
+sudo curl -fsSLo /usr/local/bin/kantel-admin https://github.com/lleverage-ai/kantel/releases/latest/download/kantel-admin-linux-amd64
 sudo chmod 755 /usr/local/bin/kantel-admin
 kantel-admin version
 ```
 
-Run the same lines again to update it. The [`kantel` command's installer](/tools/cli/#install-it) installs `kantel-admin` too with `--admin` (`curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin`), for you alone in `~/.local/bin`; `sudo` doesn't look there, so for `sudo kantel-admin host join` use the lines above. The release's `SHA256SUMS` has the file's SHA-256, and `gh attestation verify /usr/local/bin/kantel-admin --repo lleverage-ai/kantel` checks that Kantel's release workflow built it. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/admin...'` and `pnpm --filter @kantel/admin build` in a clone of the repository, which writes `packages/admin/dist/kantel-admin.js`.
+Run the same lines again to update it. The [`kantel` command's installer](/tools/cli/#install-it) installs `kantel-admin` too with `--admin` (`curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin`), for you alone in `~/.local/bin`; `sudo` doesn't look there, so for `sudo kantel-admin host join` use the lines above. The release's `SHA256SUMS` has the file's SHA-256, and `gh attestation verify /usr/local/bin/kantel-admin --repo lleverage-ai/kantel` checks that Kantel's release workflow built it. `kantel update` updates `kantel-admin` too where it is beside `kantel`. To build it yourself instead, run `go build -o kantel-admin ./cmd/kantel-admin` in `apps/cli` in a clone of the repository.
 
 ## Set up a control plane
 

@@ -88,6 +88,13 @@ type Program struct {
 	Hint func(*api.Error) string
 	// Complete answers the candidates for an argument, such as sandbox IDs, from Kantel; nil offers none.
 	Complete func(c *Context, arg Arg) []Candidate
+	// Before, when set, runs just before a command's Run, once its flags are parsed (c.Command, c.Parsed and c.JSON
+	// are set), and After once the command has finished and any failure has been reported, with its exit code. After
+	// runs only for a command that ran: not for help, --version, __complete or a usage mistake. They are for work around
+	// every command, such as kantel's update check (started by Before, its notice printed by After). Neither may
+	// write to stdout, and After must not keep the command waiting.
+	Before func(c *Context)
+	After  func(c *Context, code int)
 }
 
 // IO is what a run reads, writes and calls: the process's by default, a test's fakes otherwise.
@@ -121,6 +128,8 @@ type Context struct {
 	Style, ErrStyle Styler
 	// Values holds what a program keeps for one run, such as its settings and client.
 	Values map[string]any
+	// began is whether the command's Run started, so Program.After runs.
+	began bool
 }
 
 // Arg is argument i, which the command's table says is there.
@@ -338,7 +347,10 @@ func Run(p *Program, argv []string, io *IO) int {
 	}
 	code, err := p.dispatch(c, argv)
 	if err != nil {
-		return p.report(c, err, "")
+		code = p.report(c, err, "")
+	}
+	if c.began && p.After != nil {
+		p.After(c, code)
 	}
 	return code
 }
@@ -466,6 +478,10 @@ func (p *Program) execute(c *Context, cmd *Command, argv []string) (int, error) 
 		return 0, Usage(fmt.Sprintf(`%s takes no "%s"`, cmd.Name, args[len(cmd.Args)]))
 	}
 	c.Args = args
+	if p.Before != nil {
+		p.Before(c)
+	}
+	c.began = true
 	if err := cmd.Run(c); err != nil {
 		var exit ExitCode
 		if errors.As(err, &exit) {
