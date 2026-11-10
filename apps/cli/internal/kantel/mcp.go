@@ -1418,9 +1418,24 @@ func serveMCP(ctx context.Context, s *mcpServer, in io.Reader, out, errOut io.Wr
 			write(failure(nil, rpcParseError, "Parse error"))
 			return
 		}
+		// In the order they came: a notification (a cancellation) is handled before the next message is read, and a
+		// tool call is registered before then too, so a cancellation sent straight after its call always finds it.
+		m, _ := message.(map[string]any)
+		method, _ := m["method"].(string)
+		if _, hasID := m["id"]; m != nil && (!hasID || strings.HasPrefix(method, "notifications/")) {
+			s.handle(ctx, message, write)
+			return
+		}
+		callCtx, cancel := context.WithCancel(ctx)
+		if key, keyed := callKey(idOf(m["id"])); keyed && method == "tools/call" {
+			s.mu.Lock()
+			s.calls[key] = cancel
+			s.mu.Unlock()
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer cancel()
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(errOut, "kantel mcp: %v\n", r)
@@ -1431,7 +1446,7 @@ func serveMCP(ctx context.Context, s *mcpServer, in io.Reader, out, errOut io.Wr
 					write(failure(id, rpcInternalError, "Internal error"))
 				}
 			}()
-			if answer := s.handle(ctx, message, write); answer != nil {
+			if answer := s.handle(callCtx, message, write); answer != nil {
 				write(answer)
 			}
 		}()

@@ -175,9 +175,15 @@ main() {
 	for command in $commands; do
 		linked=
 		if [ -L "$bin/$command" ]; then linked=1; fi
-		cp "$work/$command-$plat" "$bin/.$command.new"
-		chmod 0755 "$bin/.$command.new"
-		mv -f "$bin/.$command.new" "$bin/$command"
+		# A staging file of this install's own (mktemp makes it, never a link), so two installs at once can't write
+		# into the same one, and an install cut short leaves only its own behind.
+		staged=$(mktemp "$bin/.$command.XXXXXX") || die "can't write to $bin"
+		cp "$work/$command-$plat" "$staged" || {
+			rm -f "$staged"
+			die "couldn't copy $command into $bin"
+		}
+		chmod 0755 "$staged"
+		mv -f "$staged" "$bin/$command"
 		say "Installed $bin/$command $("$bin/$command" --version)"
 		# The link this replaced was the Node.js release's: its file goes too.
 		if [ -n "$linked" ]; then

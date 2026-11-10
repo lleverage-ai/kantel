@@ -41,10 +41,7 @@ func ParseEnvFile(text string) EnvSettings {
 		if m == nil {
 			continue
 		}
-		value := m[2]
-		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-			value = value[1 : len(value)-1]
-		}
+		value := unquoteEnv(m[2])
 		if i, ok := at[m[1]]; ok {
 			out[i].Value = value
 			continue
@@ -123,13 +120,13 @@ func UpdateEnvFile(text string, changes Changes) string {
 			continue
 		}
 		if !done[m[1]] && change.Value != nil {
-			kept = append(kept, m[1]+"="+*change.Value)
+			kept = append(kept, m[1]+"="+quoteEnv(*change.Value))
 		}
 		done[m[1]] = true
 	}
 	for _, c := range changes {
 		if !done[c.Key] && c.Value != nil {
-			kept = append(kept, c.Key+"="+*c.Value)
+			kept = append(kept, c.Key+"="+quoteEnv(*c.Value))
 		}
 	}
 	if len(kept) == 0 {
@@ -164,4 +161,33 @@ func (o orderedObject) MarshalJSON() ([]byte, error) {
 	}
 	b.WriteByte('}')
 	return b.Bytes(), nil
+}
+
+var plainEnvValue = regexp.MustCompile(`^[A-Za-z0-9_./:@,+=%-]*$`)
+
+// quoteEnv is a value as .env holds it so Docker Compose reads it back as it is: plain when it can be, else in single
+// quotes, which Compose takes literally (no $ interpolation, no # comment), or in double quotes with \, " and $
+// escaped when it holds a single quote itself.
+func quoteEnv(value string) string {
+	switch {
+	case plainEnvValue.MatchString(value):
+		return value
+	case !strings.Contains(value, "'"):
+		return "'" + value + "'"
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$").Replace(value) + `"`
+}
+
+// unquoteEnv is a value as .env holds it read back: quotes taken off, and a double-quoted one's escapes undone.
+func unquoteEnv(value string) string {
+	if len(value) < 2 || value[0] != value[len(value)-1] {
+		return value
+	}
+	switch value[0] {
+	case '\'':
+		return value[1 : len(value)-1]
+	case '"':
+		return strings.NewReplacer(`\\`, `\`, `\"`, `"`, "$$", "$").Replace(value[1 : len(value)-1])
+	}
+	return value
 }

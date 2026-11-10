@@ -121,6 +121,11 @@ func TestConfig(t *testing.T) {
 	eq(t, "set file", tt.read(path),
 		"KANTEL_GATEWAY_PORT=58200\nKANTEL_SMTP_PASSWORD=hunter2\nKANTEL_PUBLIC_URL=https://kantel.example.com\n")
 
+	secret := tt.run([]string{"config", "set", "KANTEL_SMTP_PASSWORD=s3cret$x", "--json"}, opts{})
+	lacks(t, "secret json", secret.Out, "s3cret")
+	contains(t, "secret json", secret.Out, `"KANTEL_SMTP_PASSWORD": "(set)"`)
+	contains(t, "secret file", tt.read(path), "KANTEL_SMTP_PASSWORD='s3cret$x'")
+
 	unset := tt.run([]string{"config", "unset", "KANTEL_SMTP_PASSWORD", "--json"}, opts{})
 	lacks(t, "unset file", tt.read(path), "SMTP")
 	eq(t, "unset json", unset.Out, "{\n  \"path\": \""+path+"\",\n  \"changed\": {\n    \"KANTEL_SMTP_PASSWORD\": null\n  }\n}\n")
@@ -435,4 +440,17 @@ func indexOf(words []string, w string) int {
 		}
 	}
 	return -1
+}
+
+func TestEnvValuesSurviveCompose(t *testing.T) {
+	for _, value := range []string{"plain", "p$a", "a #b", `it's "x" $y \z`, "", "https://k.example/v1?a=b&c=d"} {
+		text := UpdateEnvFile("", Changes{{Key: "K", Value: &value}})
+		got, _ := ParseEnvFile(text).Get("K")
+		if got != value {
+			t.Errorf("%q: written %q, read back %q", value, text, got)
+		}
+		if strings.Contains(value, "$") && !strings.Contains(text, "'") && !strings.Contains(text, "$$") {
+			t.Errorf("%q: $ left for Compose to interpolate: %q", value, text)
+		}
+	}
 }

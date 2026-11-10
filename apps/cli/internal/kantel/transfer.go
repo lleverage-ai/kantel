@@ -17,11 +17,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -172,8 +174,11 @@ func putBytes(ctx context.Context, client *api.Client, sandboxID, p string, cont
 		return err
 	}
 	var parts []string
+	// Each upload's parts have names of their own, so they never take the place of a file beside the target, nor of
+	// another upload's parts.
+	upload := randomSuffix()
 	for offset := 0; offset < len(content); offset += partSize {
-		name := fmt.Sprintf("%s.kantel-part-%d", p, len(parts))
+		name := fmt.Sprintf("%s.kantel-part-%s-%d", p, upload, len(parts))
 		chunk := content[offset:min(offset+partSize, len(content))]
 		if _, err := client.WriteFile(ctx, sandboxID, api.WriteFileBody{
 			Path: name, Content: base64.StdEncoding.EncodeToString(chunk), Encoding: api.Ptr(api.FileEncodingBase64),
@@ -545,8 +550,12 @@ func excludedUnder(contexts []string, rel string, t trackedness) *skipped {
 	return nil
 }
 
-// within says whether p is dir or inside it; both absolute.
+// within says whether p is dir or inside it; both absolute. On macOS, whose file systems ignore case by default,
+// case is ignored too, so ~/.config/KANTEL is Kantel's config directory as ~/.config/kantel is.
 func within(p, dir string) bool {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		p, dir = strings.ToLower(p), strings.ToLower(dir)
+	}
 	rel, err := filepath.Rel(dir, p)
 	if err != nil {
 		return false
@@ -1035,6 +1044,10 @@ func downloadTree(ctx context.Context, client *api.Client, sandboxID, p, target 
 		if err := os.MkdirAll(filepath.Dir(local), 0o777); err != nil {
 			return err
 		}
+		// Never through a link already here (cache → ~/.ssh): what a sandbox sends stays under the target.
+		if err := noLinkBelow(target, local); err != nil {
+			return err
+		}
 		if err := os.WriteFile(local, content, 0o666); err != nil {
 			return err
 		}
@@ -1123,4 +1136,34 @@ func nul(out []byte) []string {
 		}
 	}
 	return names
+}
+
+// randomSuffix is eight hex digits, for names of one operation's own.
+func randomSuffix() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// noLinkBelow fails when any part of path below root (root itself aside) is a symbolic link.
+func noLinkBelow(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return cli.Fail(path + " isn't under " + root)
+	}
+	at := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		at = filepath.Join(at, part)
+		info, err := os.Lstat(at)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return cli.Fail(at + " is a link, which kantel doesn't write through: move it, or copy to another directory")
+		}
+	}
+	return nil
 }

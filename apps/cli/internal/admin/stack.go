@@ -127,10 +127,19 @@ func changeSettings(c *cli.Context, sys System, changes Changes) error {
 	if err := os.WriteFile(path, []byte(UpdateEnvFile(text, changes)), 0o600); err != nil {
 		return err
 	}
+	// A secret shows as (set) in JSON too, as it does to a person: a script's log is no place for a password.
+	shown := make(Changes, 0, len(changes))
+	for _, ch := range changes {
+		if ch.Value != nil {
+			v := shownValue(ch.Key, *ch.Value)
+			ch.Value = &v
+		}
+		shown = append(shown, ch)
+	}
 	value := struct {
 		Path    string  `json:"path"`
 		Changed Changes `json:"changed"`
-	}{path, changes}
+	}{path, shown}
 	c.Emit(nil, value, func() string {
 		lines := []string{"Updated " + path + ":"}
 		for _, ch := range changes {

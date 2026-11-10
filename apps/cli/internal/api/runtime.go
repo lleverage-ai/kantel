@@ -105,6 +105,14 @@ func (e *UnreachableError) Error() string {
 
 func (e *UnreachableError) Unwrap() error { return e.Err }
 
+// RedirectError is Kantel redirecting a call to another origin, which the client refuses rather than send its
+// credential there.
+type RedirectError struct{ From, To string }
+
+func (e *RedirectError) Error() string {
+	return fmt.Sprintf("Kantel at %s redirected to %s, another origin, which kantel doesn't follow: if that is Kantel, give it as --url", e.From, e.To)
+}
+
 // Nullable is a value that may be null, as a field that may also be absent: the zero value is absent (omitzero), Null
 // sends null, and Of sends the value.
 type Nullable[T any] struct {
@@ -253,7 +261,7 @@ func (c *Client) Do(ctx context.Context, call Call, opts ...CallOption) error {
 		delays = RetryDelays
 	}
 	for attempt := 0; ; attempt++ {
-		answer, status, err := c.send(ctx, call, body, key, o)
+		answer, status, err := c.send(ctx, call, body, key, o, again)
 		retry := again && attempt < len(delays) && ctx.Err() == nil
 		if err != nil {
 			var unreachable *UnreachableError
@@ -298,7 +306,7 @@ func (c *Client) sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (c *Client) send(ctx context.Context, call Call, body []byte, key string, o callOptions) ([]byte, int, error) {
+func (c *Client) send(ctx context.Context, call Call, body []byte, key string, o callOptions, again bool) ([]byte, int, error) {
 	target := strings.TrimRight(c.BaseURL, "/") + call.Path
 	if len(call.Query) > 0 {
 		target += "?" + call.Query.Encode()
@@ -333,14 +341,39 @@ func (c *Client) send(ctx context.Context, call Call, body []byte, key string, o
 	if o.requestID != "" {
 		req.Header.Set("Kantel-Request-Id", o.requestID)
 	}
-	client := c.HTTP
-	if client == nil {
-		client = http.DefaultClient
+	if !again && req.Body != nil {
+		// Go's transport resends a request with an Idempotency-Key by itself when a reused connection drops; a call
+		// this client sends once (an older control plane may ignore the key on it) must not be, so it can't be replayed.
+		req.GetBody = nil
+	}
+	base := c.HTTP
+	if base == nil {
+		base = http.DefaultClient
+	}
+	// The bearer goes only to the origin it was given for: a redirect to another scheme, host or port is refused,
+	// not followed with the credential (or without it, to an answer that isn't Kantel's).
+	client := *base
+	from := origin(c.BaseURL)
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if origin(next.URL.String()) != from {
+			return &RedirectError{From: from, To: origin(next.URL.String())}
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if base.CheckRedirect != nil {
+			return base.CheckRedirect(next, via)
+		}
+		return nil
 	}
 	res, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, 0, ctx.Err()
+		}
+		var redirect *RedirectError
+		if errors.As(err, &redirect) {
+			return nil, 0, redirect
 		}
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {

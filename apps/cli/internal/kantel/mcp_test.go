@@ -4,6 +4,7 @@ package kantel
 // (packages/cli/test/mcp.test.ts).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -729,4 +730,21 @@ func TestKantelMCPRunsOnStdio(t *testing.T) {
 	eq(t, "exit", r.Code, 0)
 	contains(t, "note", r.Stderr, "no API key is set")
 	eq(t, "ping", strings.TrimSpace(r.Stdout), `{"jsonrpc":"2.0","id":1,"result":{}}`)
+}
+
+// A cancellation sent straight after its call, in the same read, always finds it: the call gets no answer.
+func TestMCPCancellationRightAfterItsCall(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		f := newMCPFixture(t, 5*time.Millisecond)
+		in := jsonText(request(40, "tools/call", map[string]any{"name": "browser_open",
+			"arguments": map[string]any{"sandboxId": "sbx_slow"}})) + "\n" +
+			jsonText(map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": map[string]any{"requestId": 40}}) + "\n"
+		var out bytes.Buffer
+		if err := serveMCP(context.Background(), f.server, strings.NewReader(in), &out, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.String(), `"id":40`) {
+			t.Fatalf("try %d: the cancelled call was answered: %s", i, out.String())
+		}
+	}
 }

@@ -140,9 +140,29 @@ type setupPlan struct {
 	failure error
 }
 
+// outside says whether path is outside the project, where it really is: a link in the project (.cursor linked to
+// ~/.cursor) is followed, so writing through it needs --yes as writing outside does.
 func (p *setupPlan) outside(path string) bool {
-	rel, err := filepath.Rel(p.cwd, path)
+	root := resolved(p.cwd)
+	rel, err := filepath.Rel(root, resolved(path))
 	return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
+}
+
+// resolved is path with its links followed: the deepest part of it that exists, resolved, and the rest after it.
+func resolved(path string) string {
+	path = filepath.Clean(path)
+	rest := ""
+	for {
+		if real, err := filepath.EvalSymlinks(path); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(path, rest)
+		}
+		rest = filepath.Join(filepath.Base(path), rest)
+		path = parent
+	}
 }
 
 // file plans a file whose content is desired(what it holds now, or nil): unchanged when that is what it holds.
@@ -646,7 +666,15 @@ func runAgentSetup(c *cli.Context) error {
 	stored, _ := cli.ReadStored(c.IO.ConfigDir)
 	global := c.Bool("global")
 	p := &setupPlan{c: c, byPath: map[string]*setupStep{}, cwd: c.IO.Cwd, launch: launchOf(c), env: map[string]string{}, global: global}
-	if url := cli.Origin(s.URL); url != cli.DefaultURL {
+	// The URL goes in the agent's setup unless `kantel mcp` would find the same one by itself, from the saved sign-in
+	// or the default: an explicit --url of the hosted Kantel still wins over a self-hosted one saved.
+	plain := cli.DefaultURL
+	if stored.URL != "" {
+		if u, err := cli.NormaliseURL(stored.URL); err == nil {
+			plain = cli.Origin(u)
+		}
+	}
+	if url := cli.Origin(s.URL); url != plain {
 		p.env["KANTEL_URL"] = url
 	}
 	base := c.IO.Cwd

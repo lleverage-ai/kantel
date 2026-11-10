@@ -174,7 +174,15 @@ func snapshots() cli.Section {
 							Deref(s.SandboxID), size, cli.Ago(s.CreatedAt, now(c))})
 					}
 					header := []string{"ID", "NAME", "KIND", "STATE", "SANDBOX", "SIZE", "CREATED"}
-					return cli.Table(c.Style, header, rows) + More(page.NextCursor, "kantel snapshot list")
+					// The next page's command keeps this one's filters: the cursor is an offset into the same list.
+					next := "kantel snapshot list"
+					if query.SandboxID != nil {
+						next += " " + ShellQuote(*query.SandboxID)
+					}
+					if c.Bool("saved") {
+						next += " --saved"
+					}
+					return cli.Table(c.Style, header, rows) + More(page.NextCursor, next)
 				})
 				return nil
 			},

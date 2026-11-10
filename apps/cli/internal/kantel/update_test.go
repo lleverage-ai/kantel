@@ -416,7 +416,7 @@ func TestNoticeChecksOnceADay(t *testing.T) {
 		filepath.Join(xdg, "kantel", "update-check.json"))
 }
 
-func TestNoticeNeverWaitsForTheCheck(t *testing.T) {
+func TestNoticeWaitsBrieflyAtMostForTheCheck(t *testing.T) {
 	withVersion(t, "0.4.2")
 	release := newRelease(t, "0.5.0")
 	release.hold = make(chan struct{})
@@ -425,9 +425,12 @@ func TestNoticeNeverWaitsForTheCheck(t *testing.T) {
 	u := startUpdateCheck(noticeContext(t, cli.Env{}, home))
 	start := time.Now()
 	eq(t, "nothing yet", u.notice(), "")
-	if took := time.Since(start); took > 50*time.Millisecond {
+	if took := time.Since(start); took > updateGrace+100*time.Millisecond {
 		t.Errorf("the notice waited %s", took)
 	}
+	// The attempt is saved before the check asks, so the commands after a quick one don't each start another.
+	again := startUpdateCheck(noticeContext(t, cli.Env{}, home))
+	eq(t, "no second check within the hour", again.done == nil, true)
 	// The check finishes after the command; what it found is saved for next time.
 	close(release.hold)
 	<-u.done

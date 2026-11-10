@@ -452,3 +452,33 @@ func TestAgentSetupHelpSaysNoKey(t *testing.T) {
 		t.Error("no --dry-run in help")
 	}
 }
+
+// A link in the project to somewhere outside it (.cursor → ~/.cursor) is outside: writing through it needs --yes.
+func TestAgentSetupFollowsLinksOutOfTheProject(t *testing.T) {
+	d := newSetupDirs(t)
+	global := filepath.Join(d.home, ".cursor")
+	d.mkdir(t, ".cursor")
+	if err := os.Symlink(global, filepath.Join(d.project, ".cursor")); err != nil {
+		t.Skip(err)
+	}
+	r := d.setup(t, "--for", "cursor", "--no-skill")
+	eq(t, "exit", r.Code, 2)
+	contains(t, "says how", r.Stderr, "--yes")
+	if _, err := os.Stat(filepath.Join(global, "mcp.json")); err == nil {
+		t.Error("wrote the global mcp.json without --yes")
+	}
+}
+
+// An explicit --url wins over a self-hosted one saved: the agent's setup carries it.
+func TestAgentSetupCarriesAnExplicitHostedURLOverASavedOne(t *testing.T) {
+	d := newSetupDirs(t)
+	config := t.TempDir()
+	if _, err := cli.WriteStored(config, cli.Stored{URL: "https://self.example/v1", APIKey: "ksk_saved"}); err != nil {
+		t.Fatal(err)
+	}
+	delete(d.env, "KANTEL_API_KEY")
+	r := runLocal(t, []string{"agent", "setup", "--for", "cursor", "--no-skill", "--url", cli.DefaultURL},
+		local{env: d.env, home: d.home, cwd: d.project, self: selfPath, configDir: config})
+	eq(t, "exit", r.Code, 0)
+	contains(t, "cursor", readFile(t, filepath.Join(d.project, ".cursor", "mcp.json")), `"KANTEL_URL": "`+cli.DefaultURL+`"`)
+}

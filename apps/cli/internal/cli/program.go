@@ -13,6 +13,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -533,7 +535,7 @@ func DefaultIO() *IO {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
 	env := EnvOf(os.Environ())
-	self, _ := os.Executable()
+	self := invokedAs()
 	return &IO{
 		Stdout: os.Stdout, Stderr: os.Stderr, Stdin: os.Stdin,
 		StdoutTTY: isTerminal(os.Stdout), StderrTTY: isTerminal(os.Stderr), StdinTTY: isTerminal(os.Stdin),
@@ -555,4 +557,20 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// invokedAs is the path this program was started by: the link on the PATH where it was started through one (as
+// ~/.local/bin/kantel may be), so what sits beside it there (kantel-admin) can be found; else the executable itself.
+func invokedAs() string {
+	if arg := os.Args[0]; strings.ContainsRune(arg, filepath.Separator) {
+		if abs, err := filepath.Abs(arg); err == nil {
+			return abs
+		}
+	} else if found, err := exec.LookPath(arg); err == nil {
+		if abs, err := filepath.Abs(found); err == nil {
+			return abs
+		}
+	}
+	self, _ := os.Executable()
+	return self
 }

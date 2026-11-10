@@ -492,7 +492,13 @@ func TestScpSendsAFileOverOneMiBInParts(t *testing.T) {
 		commands: func(call) any { return command(nil) },
 	}})
 	eq(t, "exit", r.Code, 0)
-	eq(t, "parts", fmt.Sprint(parts[0].Path, " ", parts[1].Path), "/srv/big.bin.kantel-part-0 /srv/big.bin.kantel-part-1")
+	// The parts' names are this upload's own: a random suffix, then the part's number.
+	partName := regexp.MustCompile(`^/srv/big\.bin\.kantel-part-([0-9a-f]{8})-([01])$`)
+	m0, m1 := partName.FindStringSubmatch(parts[0].Path), partName.FindStringSubmatch(parts[1].Path)
+	if m0 == nil || m1 == nil || m0[1] != m1[1] || m0[2] != "0" || m1[2] != "1" {
+		t.Fatalf("parts: %s %s", parts[0].Path, parts[1].Path)
+	}
+	p0, p1 := parts[0].Path, parts[1].Path
 	eq(t, "joined", bytes.Equal(append(decoded(parts[0]), decoded(parts[1])...), big), true)
 	var joining string
 	for _, c := range r.Calls {
@@ -500,8 +506,7 @@ func TestScpSendsAFileOverOneMiBInParts(t *testing.T) {
 			joining, _ = c.Body["command"].(string)
 		}
 	}
-	eq(t, "join", joining, "cat /srv/big.bin.kantel-part-0 /srv/big.bin.kantel-part-1 > /srv/big.bin && "+
-		"rm -f /srv/big.bin.kantel-part-0 /srv/big.bin.kantel-part-1")
+	eq(t, "join", joining, "cat "+p0+" "+p1+" > /srv/big.bin && rm -f "+p0+" "+p1)
 	contains(t, "stdout", r.Stdout, "Copied big.bin (1.0 MiB) to /srv/big.bin.")
 }
 
@@ -655,4 +660,19 @@ func TestScpNeedsTheSandboxOnOneSideOnly(t *testing.T) {
 	// A Windows drive is a local path.
 	_, ok := parseRemote(`C:\x`)
 	eq(t, "drive", ok, false)
+}
+
+// A download never writes through a link already in the target, wherever the link goes.
+func TestDownloadRefusesALinkInTheTarget(t *testing.T) {
+	target := t.TempDir()
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(target, "cache")); err != nil {
+		t.Skip(err)
+	}
+	if err := noLinkBelow(target, filepath.Join(target, "cache", "authorized_keys")); err == nil {
+		t.Error("wrote through a link")
+	}
+	if err := noLinkBelow(target, filepath.Join(target, "fresh", "file")); err != nil {
+		t.Errorf("a new path: %v", err)
+	}
 }

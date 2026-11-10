@@ -32,8 +32,17 @@ var quietCommands = map[string]bool{"update": true, "mcp": true, "completion": t
 // updateCache is update-check.json: when the latest release was last asked for, and what it was.
 type updateCache struct {
 	CheckedAt time.Time `json:"checkedAt"`
-	Latest    string    `json:"latest,omitempty"`
+	// AttemptedAt is when a check last started, saved before it asks: a command that ends before the check does
+	// (most do) still counts, so the next ones don't each start another.
+	AttemptedAt time.Time `json:"attemptedAt,omitzero"`
+	Latest      string    `json:"latest,omitempty"`
 }
+
+// updateAttemptEvery is how often a check that never finished is tried again.
+const updateAttemptEvery = time.Hour
+
+// updateGrace is how long a command's end waits for a check under way, so a quick command's check is saved.
+const updateGrace = 300 * time.Millisecond
 
 // updateCachePath is ${XDG_CACHE_HOME:-~/.cache}/kantel/update-check.json, or "" with neither.
 func updateCachePath(io *cli.IO) string {
@@ -104,6 +113,14 @@ func startUpdateCheck(c *cli.Context) *updateCheck {
 	if age := at.Sub(cache.CheckedAt); age >= 0 && age < updateCheckEvery {
 		return u
 	}
+	if age := at.Sub(cache.AttemptedAt); age >= 0 && age < updateAttemptEvery {
+		return u
+	}
+	attempted := cache
+	attempted.AttemptedAt = at
+	if raw, err := json.Marshal(attempted); err == nil && os.MkdirAll(filepath.Dir(path), 0o755) == nil {
+		_ = cli.WriteFileAtomic(path, append(raw, '\n'), 0o644)
+	}
 	client := releaseClient(c)
 	env := c.IO.Env
 	clock := c.IO.Now
@@ -118,7 +135,7 @@ func startUpdateCheck(c *cli.Context) *updateCheck {
 		timed := *client
 		timed.Timeout = updateCheckTimeout
 		latest, err := latestRelease(ctx, &timed, env)
-		next := updateCache{CheckedAt: clock(), Latest: cache.Latest}
+		next := updateCache{CheckedAt: clock(), AttemptedAt: attempted.AttemptedAt, Latest: cache.Latest}
 		if err == nil {
 			next.Latest, u.latest = latest, latest
 		}
@@ -135,12 +152,15 @@ func startUpdateCheck(c *cli.Context) *updateCheck {
 func (u *updateCheck) notice() string {
 	latest := u.known
 	if u.done != nil {
+		// A moment's grace for a check under way, so it is saved; never longer, so no command waits on the network.
+		t := time.NewTimer(updateGrace)
+		defer t.Stop()
 		select {
 		case <-u.done:
 			if u.latest != "" {
 				latest = u.latest
 			}
-		default:
+		case <-t.C:
 		}
 	}
 	if !versionPattern.MatchString(latest) || compareVersions(Version, latest) >= 0 {
