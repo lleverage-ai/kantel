@@ -1,6 +1,7 @@
 // Checks every internal link in the built site (dist/) resolves to a page or file, so a docs page that moves or a link
 // that misses the /docs prefix fails the build instead of 404ing on kantel.dev. Run after `astro build`.
 
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,15 +50,26 @@ if (`https://github.com/${repo}` !== GITHUB_URL) {
 	process.exit(1);
 }
 
-// The CLI's installer is served as the repository's own copy (scripts/sync-installers.mjs), at /cli.sh and
-// /install-cli.sh, and downloads from the repository the site links to.
-const cliInstaller = readFileSync(join(dist, "../../../apps/cli/install-cli.sh"), "utf8");
+// The CLI's installer is served at /cli.sh and /install-cli.sh as scripts/sync-installers.mjs chose it: the
+// repository's own copy, or, while the latest release has no native binaries, that release's own installer, stamped
+// with its version. Either way it downloads from the repository the site links to.
+const repositoryInstaller = readFileSync(join(dist, "../../../apps/cli/install-cli.sh"), "utf8");
+const chosen = JSON.parse(readFileSync(join(dist, "../.cli-installer.json"), "utf8"));
+let cliInstaller = repositoryInstaller;
 for (const name of ["cli.sh", "install-cli.sh"]) {
 	const path = join(dist, name);
-	if (!existsSync(path) || readFileSync(path, "utf8") !== cliInstaller) {
-		console.error(`check-links: dist/${name} isn't apps/cli/install-cli.sh; run scripts/sync-installers.mjs`);
+	const served = existsSync(path) ? readFileSync(path, "utf8") : "";
+	const sha256 = createHash("sha256").update(served).digest("hex");
+	const fits =
+		sha256 === chosen.sha256 &&
+		(chosen.from === "repository"
+			? served === repositoryInstaller
+			: /^KANTEL_RELEASE_VERSION="\d+\.\d+\.\d+"$/m.test(served));
+	if (!fits) {
+		console.error(`check-links: dist/${name} isn't the installer scripts/sync-installers.mjs chose; run it again`);
 		process.exit(1);
 	}
+	cliInstaller = served;
 }
 const cliRepo = cliInstaller.match(/^REPO="([^"]+)"$/m)?.[1];
 if (`https://github.com/${cliRepo}` !== GITHUB_URL) {

@@ -4,3 +4,4 @@ src/content/docs/docs/
 public/cli.sh
 public/install-cli.sh
 .astro/
+/.cli-installer.json

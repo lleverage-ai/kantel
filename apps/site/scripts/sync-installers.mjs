@@ -6,6 +6,7 @@
 // The copy is unstamped (tools/release/pack.sh stamps a release's version into its own copy), so it installs the latest
 // GitHub Release, checking every file against that release's SHA256SUMS. _headers serves both as text.
 
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,4 +49,12 @@ if (process.env.KANTEL_INSTALLER_RELEASE_CHECK !== "0") {
 	}
 }
 for (const name of INSTALLER_COPIES) writeFileSync(join(here, "../public", name), script, { mode: 0o644 });
+// What was chosen, for check-links.mjs to hold the built copies to: the repository's, or a release's own (stamped).
+writeFileSync(
+	join(here, "../.cli-installer.json"),
+	`${JSON.stringify({
+		from: from === "apps/cli/install-cli.sh" ? "repository" : "release",
+		sha256: createHash("sha256").update(script).digest("hex"),
+	})}\n`,
+);
 console.log(`sync-installers: ${from} into public/ as ${INSTALLER_COPIES.join(" and ")}`);
