@@ -1060,9 +1060,18 @@ export const Sandbox = Type.Object(
 				{ title: "SandboxSource", description: "What it was made from." },
 			),
 		),
-		environmentId: Type.Optional(Type.String({ description: "The environment it was made from." })),
+		environmentId: Type.Optional(
+			Type.String({ description: "Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`." }),
+		),
+		environmentIds: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"Its environments, in order: where two set the same variable, file or repository path, the later one wins. " +
+					"Absent: none.",
+			}),
+		),
 		template: Type.Optional(SandboxTemplate),
-		grants: Type.Array(EgressGrant, { description: "Its own egress grants, on top of its environment's." }),
+		grants: Type.Array(EgressGrant, { description: "Its own egress grants, on top of its environments'." }),
 		mounts: Type.Optional(
 			Type.Array(SandboxMount, {
 				description: `Its read-only mounts, as its create named them, each with its status. Absent: none. ${MOUNTS_EXPERIMENTAL}`,
@@ -1161,7 +1170,7 @@ export const CreateSandboxBody = Type.Object(
 		env: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description:
-					"Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who " +
+					"Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who " +
 					"may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.",
 			}),
 		),
@@ -1170,7 +1179,16 @@ export const CreateSandboxBody = Type.Object(
 				description:
 					"Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder " +
 					"for each protected one, its secret files and repositories, and its grants. `env` may not name one of its " +
-					"protected variables.",
+					"protected variables. Give `environments` for more than one.",
+			}),
+		),
+		environments: Type.Optional(
+			Type.Array(Type.String(), {
+				minItems: 1,
+				maxItems: 10,
+				description:
+					"Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and " +
+					"where two set the same variable, file or repository path, the later one wins. Not with `environment`.",
 			}),
 		),
 		template: Type.Optional(
@@ -2559,6 +2577,7 @@ export const SandboxProtectedVariable = Type.Object(
 		name: Type.String(),
 		placeholderPrefix: Type.String({ description: "The first 8 characters of its placeholder, such as `kph_7Qx2`." }),
 		bindings: Type.Array(DestinationBinding),
+		environmentId: Type.Optional(Type.String({ description: "The environment whose value it takes." })),
 	},
 	{ title: "SandboxProtectedVariable", description: "A protected variable as one sandbox has it: never its value." },
 );
@@ -2569,11 +2588,18 @@ export const SandboxEgress = Type.Object(
 		sandboxName: Type.String(),
 		accountId: Type.String(),
 		environment: Type.Optional(
-			Type.Object({ id: Type.String(), name: Type.String() }, { title: "SandboxEgressEnvironment" }),
+			Type.Object(
+				{ id: Type.String(), name: Type.String() },
+				{ title: "SandboxEgressEnvironment", description: "Its first environment. Deprecated: read `environments`." },
+			),
+		),
+		environments: Type.Array(
+			Type.Object({ id: Type.String(), name: Type.String() }, { title: "SandboxEgressEnvironmentRef" }),
+			{ description: "Its environments, in order." },
 		),
 		protectedVariables: Type.Array(SandboxProtectedVariable),
-		environmentGrants: Type.Array(EgressGrant, { description: "Its environment's grants, which it has too." }),
-		grants: Type.Array(EgressGrant, { description: "Its own grants, on top of its environment's." }),
+		environmentGrants: Type.Array(EgressGrant, { description: "Its environments' grants, which it has too." }),
+		grants: Type.Array(EgressGrant, { description: "Its own grants, on top of its environments'." }),
 		entries: Type.Array(EgressEntry, { description: "Newest first; Kantel keeps the newest 1000." }),
 	},
 	{ title: "SandboxEgress", description: "A sandbox's egress: what it was made with, its own grants and its log." },
@@ -2586,6 +2612,61 @@ export const SandboxEgressQuery = Type.Object(
 		),
 	},
 	{ title: "SandboxEgressQuery" },
+);
+
+export const SandboxEnvironmentPath = Type.Object(
+	{ sandboxId: id("The sandbox's ID."), environmentId: id("The environment's ID.") },
+	{ title: "SandboxEnvironmentPath" },
+);
+
+export const AttachSandboxEnvironmentBody = Type.Object(
+	{
+		environment: Type.String({ description: "The environment, its ID or name in the sandbox's account." }),
+		position: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, " +
+					"so it wins over the others.",
+			}),
+		),
+	},
+	{ title: "AttachSandboxEnvironmentBody" },
+);
+
+export const SandboxEnvironmentShadowed = Type.Object(
+	{
+		variables: Type.Array(Type.String(), {
+			description: "Its variables a later environment, or the sandbox's own env, sets instead.",
+		}),
+		files: Type.Array(Type.String(), { description: "Its secret files' paths a later environment writes instead." }),
+		repos: Type.Array(Type.String(), {
+			description: "Its repositories' paths a later environment clones into instead.",
+		}),
+	},
+	{ title: "SandboxEnvironmentShadowed", description: "What of an environment a sandbox doesn't take from it." },
+);
+
+export const SandboxEnvironment = Type.Object(
+	{
+		id: Type.String(),
+		name: Type.String(),
+		shadowed: SandboxEnvironmentShadowed,
+		pending: Type.Boolean({
+			description: "Its secret files and repositories are set up when the sandbox next runs.",
+		}),
+	},
+	{ title: "SandboxEnvironment", description: "One of a sandbox's environments." },
+);
+
+export const SandboxEnvironments = Type.Object(
+	{
+		sandboxId: Type.String(),
+		environments: Type.Array(SandboxEnvironment, {
+			description: "In order: where two set the same variable, file or repository path, the later one wins.",
+		}),
+	},
+	{ title: "SandboxEnvironments", description: "A sandbox's environments, and what each gives it." },
 );
 
 // Templates (experimental): how a platform defines a microVM, versioned, and the snapshots built from each version.
@@ -2983,6 +3064,7 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.error"),
 		Type.Literal("sandbox.degraded"),
 		Type.Literal("sandbox.recovered"),
+		Type.Literal("sandbox.environments_changed"),
 		Type.Literal("sandbox.oom_kill"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
@@ -2997,6 +3079,8 @@ export const EventType = Type.Union(
 			"`sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason " +
 			"says which), which leaves it running, and when its guest agent stops answering (its `health` " +
 			"`unresponsive`), with `sandbox.recovered` once it answers again. " +
+			"`sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or " +
+			"`data.detached`, and `data.environmentIds`, in order). " +
 			"`sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since " +
 			"its last reading); it keeps running. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
@@ -3027,6 +3111,17 @@ export const Event = Type.Object(
 				),
 				// On `sandbox.running`, where its host said: the sandbox's `startup`.
 				startup: Type.Optional(SandboxStartup),
+				attached: Type.Optional(
+					Type.String({ description: "`sandbox.environments_changed`: the environment attached." }),
+				),
+				detached: Type.Optional(
+					Type.String({ description: "`sandbox.environments_changed`: the environment detached." }),
+				),
+				environmentIds: Type.Optional(
+					Type.Array(Type.String(), {
+						description: "`sandbox.environments_changed`: the sandbox's environments now, in order.",
+					}),
+				),
 			},
 			{ title: "EventData" },
 		),
@@ -3841,6 +3936,9 @@ export type Environment = Static<typeof Environment>;
 export type EgressEntry = Static<typeof EgressEntry>;
 export type SandboxProtectedVariable = Static<typeof SandboxProtectedVariable>;
 export type SandboxEgress = Static<typeof SandboxEgress>;
+export type AttachSandboxEnvironmentBody = Static<typeof AttachSandboxEnvironmentBody>;
+export type SandboxEnvironment = Static<typeof SandboxEnvironment>;
+export type SandboxEnvironments = Static<typeof SandboxEnvironments>;
 export type SandboxTemplate = Static<typeof SandboxTemplate>;
 export type TemplateImage = Static<typeof TemplateImage>;
 export type TemplateBase = Static<typeof TemplateBase>;
@@ -3945,6 +4043,7 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.error",
 	"sandbox.degraded",
 	"sandbox.recovered",
+	"sandbox.environments_changed",
 	"sandbox.oom_kill",
 	"sandbox.deleted",
 	"snapshot.saved",

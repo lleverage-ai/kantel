@@ -19,6 +19,7 @@ import {
 	ApiKeyList,
 	ApiKeyPath,
 	ApproveDeviceLoginBody,
+	AttachSandboxEnvironmentBody,
 	BaseImageList,
 	BrowserAccess,
 	BucketSource,
@@ -110,6 +111,8 @@ import {
 	Sandbox,
 	SandboxEgress,
 	SandboxEgressQuery,
+	SandboxEnvironmentPath,
+	SandboxEnvironments,
 	SandboxPage,
 	SandboxPath,
 	SandboxProcessesQuery,
@@ -1527,6 +1530,58 @@ export const putSandboxGrants = defineRoute({
 	errors: changeErrors,
 });
 
+export const listSandboxEnvironments = defineRoute({
+	operationId: "listSandboxEnvironments",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/environments",
+	tag: "environments",
+	summary: "List a sandbox's environments",
+	description: describe(
+		"In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and",
+		"repositories are still to be set up.",
+		scope("sandboxes:read"),
+	),
+	params: SandboxPath,
+	answer: { status: 200, description: "Its environments.", schema: SandboxEnvironments },
+	errors: readErrors,
+});
+
+export const attachSandboxEnvironment = defineRoute({
+	operationId: "attachSandboxEnvironment",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/environments",
+	tag: "environments",
+	summary: "Attach an environment to a sandbox",
+	description: describe(
+		"Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out",
+		"again from all its environments as they are now, then its own env: new commands see them at once (and, on a host",
+		"that supports it, services that read `/etc/kantel/env`). Its grants and protected variables apply at once. A running sandbox gets the",
+		"environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the",
+		"environment they started with. Attaching one it has already moves it to `position`. At most 10.",
+		scope("exec"),
+	),
+	params: SandboxPath,
+	body: AttachSandboxEnvironmentBody,
+	answer: { status: 200, description: "Its environments.", schema: SandboxEnvironments },
+	errors: changeErrors,
+});
+
+export const detachSandboxEnvironment = defineRoute({
+	operationId: "detachSandboxEnvironment",
+	method: "DELETE",
+	path: "/sandboxes/{sandboxId}/environments/{environmentId}",
+	tag: "environments",
+	summary: "Detach an environment from a sandbox",
+	description: describe(
+		"Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop",
+		"resolving at once and its grants go. Secret files it wrote and repositories it cloned stay.",
+		scope("exec"),
+	),
+	params: SandboxEnvironmentPath,
+	answer: { status: 200, description: "Its environments.", schema: SandboxEnvironments },
+	errors: readErrors,
+});
+
 export const environmentComputeRoutes = {
 	listEnvironments,
 	createEnvironment,
@@ -1541,6 +1596,9 @@ export const environmentComputeRoutes = {
 	putEnvironmentGrants,
 	getSandboxEgress,
 	putSandboxGrants,
+	listSandboxEnvironments,
+	attachSandboxEnvironment,
+	detachSandboxEnvironment,
 } as const;
 
 // Templates (experimental): microVM profiles, versioned, and the snapshots built from them.

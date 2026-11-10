@@ -519,6 +519,11 @@ export interface BackendFileEntry {
 	readonly kind: "file" | "directory" | "symlink";
 	readonly size: number;
 	readonly modifiedAt?: number;
+	/**
+	 * A fenced write (an environment set-up's) the host dropped, because a newer set-up's write of the same path had
+	 * landed: nothing was written, and the path holds the newer content.
+	 */
+	readonly fenced?: boolean;
 }
 
 /** One of a running sandbox's processes, as its machine measured it over a short sample. */
@@ -681,7 +686,14 @@ export interface SandboxBackend {
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
 	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */
-	writeFile(sandboxId: string, path: string, content: Uint8Array, mode?: number): Promise<BackendFileEntry>;
+	writeFile(
+		sandboxId: string,
+		path: string,
+		content: Uint8Array,
+		mode?: number,
+		/** `fence`: an environment set-up's (`StoredSandbox.provisionFence`); a host drops a write below one it has taken. */
+		options?: { readonly fence?: number },
+	): Promise<BackendFileEntry>;
 	/** Deletes a file, or a directory and everything in it. */
 	deleteFile(sandboxId: string, path: string): Promise<void>;
 	listFiles(sandboxId: string, path: string): Promise<BackendFileEntry[]>;

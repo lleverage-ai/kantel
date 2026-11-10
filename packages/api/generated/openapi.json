@@ -7495,6 +7495,246 @@
 				}
 			}
 		},
+		"/sandboxes/{sandboxId}/environments": {
+			"get": {
+				"operationId": "listSandboxEnvironments",
+				"summary": "List a sandbox's environments",
+				"description": "In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and repositories are still to be set up. A key needs `sandboxes:read`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEnvironments"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "attachSandboxEnvironment",
+				"summary": "Attach an environment to a sandbox",
+				"description": "Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once (and, on a host that supports it, services that read `/etc/kantel/env`). Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/AttachSandboxEnvironmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Its environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEnvironments"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/environments/{environmentId}": {
+			"delete": {
+				"operationId": "detachSandboxEnvironment",
+				"summary": "Detach an environment from a sandbox",
+				"description": "Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop resolving at once and its grants go. Secret files it wrote and repositories it cloned stay. A key needs `exec`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEnvironments"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/templates": {
 			"get": {
 				"operationId": "listTemplates",
@@ -8338,7 +8578,7 @@
 						"name": "type",
 						"in": "query",
 						"required": false,
-						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
+						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 						"schema": {
 							"$ref": "#/components/schemas/EventType"
 						}
@@ -11801,6 +12041,22 @@
 				"title": "ApproveDeviceLoginBody",
 				"description": "What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin."
 			},
+			"AttachSandboxEnvironmentBody": {
+				"type": "object",
+				"required": ["environment"],
+				"properties": {
+					"environment": {
+						"type": "string",
+						"description": "The environment, its ID or name in the sandbox's account."
+					},
+					"position": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, so it wins over the others."
+					}
+				},
+				"title": "AttachSandboxEnvironmentBody"
+			},
 			"BaseImage": {
 				"type": "object",
 				"required": ["name", "repository", "channel", "versions"],
@@ -12887,11 +13143,20 @@
 								"type": "string"
 							}
 						},
-						"description": "Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused."
+						"description": "Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused."
 					},
 					"environment": {
 						"type": "string",
-						"description": "Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables."
+						"description": "Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one."
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"maxItems": 10,
+						"description": "Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`."
 					},
 					"template": {
 						"type": "string",
@@ -13651,6 +13916,21 @@
 					},
 					"startup": {
 						"$ref": "#/components/schemas/SandboxStartup"
+					},
+					"attached": {
+						"type": "string",
+						"description": "`sandbox.environments_changed`: the environment attached."
+					},
+					"detached": {
+						"type": "string",
+						"description": "`sandbox.environments_changed`: the environment detached."
+					},
+					"environmentIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "`sandbox.environments_changed`: the sandbox's environments now, in order."
 					}
 				},
 				"title": "EventData"
@@ -13704,6 +13984,10 @@
 					},
 					{
 						"type": "string",
+						"const": "sandbox.environments_changed"
+					},
+					{
+						"type": "string",
 						"const": "sandbox.oom_kill"
 					},
 					{
@@ -13720,7 +14004,7 @@
 					}
 				],
 				"title": "EventType",
-				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
+				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
 			},
 			"ExposedPort": {
 				"type": "object",
@@ -15668,7 +15952,14 @@
 					},
 					"environmentId": {
 						"type": "string",
-						"description": "The environment it was made from."
+						"description": "Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`."
+					},
+					"environmentIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its environments, in order: where two set the same variable, file or repository path, the later one wins. Absent: none."
 					},
 					"template": {
 						"$ref": "#/components/schemas/SandboxTemplate"
@@ -15678,7 +15969,7 @@
 						"items": {
 							"$ref": "#/components/schemas/EgressGrant"
 						},
-						"description": "Its own egress grants, on top of its environment's."
+						"description": "Its own egress grants, on top of its environments'."
 					},
 					"mounts": {
 						"type": "array",
@@ -15842,6 +16133,7 @@
 					"sandboxId",
 					"sandboxName",
 					"accountId",
+					"environments",
 					"protectedVariables",
 					"environmentGrants",
 					"grants",
@@ -15860,6 +16152,13 @@
 					"environment": {
 						"$ref": "#/components/schemas/SandboxEgressEnvironment"
 					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxEgressEnvironmentRef"
+						},
+						"description": "Its environments, in order."
+					},
 					"protectedVariables": {
 						"type": "array",
 						"items": {
@@ -15871,14 +16170,14 @@
 						"items": {
 							"$ref": "#/components/schemas/EgressGrant"
 						},
-						"description": "Its environment's grants, which it has too."
+						"description": "Its environments' grants, which it has too."
 					},
 					"grants": {
 						"type": "array",
 						"items": {
 							"$ref": "#/components/schemas/EgressGrant"
 						},
-						"description": "Its own grants, on top of its environment's."
+						"description": "Its own grants, on top of its environments'."
 					},
 					"entries": {
 						"type": "array",
@@ -15902,7 +16201,89 @@
 						"type": "string"
 					}
 				},
-				"title": "SandboxEgressEnvironment"
+				"title": "SandboxEgressEnvironment",
+				"description": "Its first environment. Deprecated: read `environments`."
+			},
+			"SandboxEgressEnvironmentRef": {
+				"type": "object",
+				"required": ["id", "name"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					}
+				},
+				"title": "SandboxEgressEnvironmentRef"
+			},
+			"SandboxEnvironment": {
+				"type": "object",
+				"required": ["id", "name", "shadowed", "pending"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"shadowed": {
+						"$ref": "#/components/schemas/SandboxEnvironmentShadowed"
+					},
+					"pending": {
+						"type": "boolean",
+						"description": "Its secret files and repositories are set up when the sandbox next runs."
+					}
+				},
+				"title": "SandboxEnvironment",
+				"description": "One of a sandbox's environments."
+			},
+			"SandboxEnvironments": {
+				"type": "object",
+				"required": ["sandboxId", "environments"],
+				"properties": {
+					"sandboxId": {
+						"type": "string"
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxEnvironment"
+						},
+						"description": "In order: where two set the same variable, file or repository path, the later one wins."
+					}
+				},
+				"title": "SandboxEnvironments",
+				"description": "A sandbox's environments, and what each gives it."
+			},
+			"SandboxEnvironmentShadowed": {
+				"type": "object",
+				"required": ["variables", "files", "repos"],
+				"properties": {
+					"variables": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its variables a later environment, or the sandbox's own env, sets instead."
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its secret files' paths a later environment writes instead."
+					},
+					"repos": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its repositories' paths a later environment clones into instead."
+					}
+				},
+				"title": "SandboxEnvironmentShadowed",
+				"description": "What of an environment a sandbox doesn't take from it."
 			},
 			"SandboxHealth": {
 				"anyOf": [
@@ -16079,6 +16460,10 @@
 						"items": {
 							"$ref": "#/components/schemas/DestinationBinding"
 						}
+					},
+					"environmentId": {
+						"type": "string",
+						"description": "The environment whose value it takes."
 					}
 				},
 				"title": "SandboxProtectedVariable",

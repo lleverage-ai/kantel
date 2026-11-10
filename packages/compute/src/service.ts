@@ -83,6 +83,19 @@ import {
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
+import {
+	composeEnv,
+	type EnvironmentResolution,
+	environmentFields,
+	environmentIdsOf,
+	envLayersOf,
+	MAX_SANDBOX_ENVIRONMENTS,
+	protectedClashes,
+	protectedWinners,
+	resolveEnvironments,
+	secretsVersionOf,
+	shadowedOf,
+} from "./environment-resolution.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import {
 	type AskedMachine,
@@ -121,6 +134,7 @@ import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sea
 import type {
 	ComputeStore,
 	OOMPending,
+	ProvisionWork,
 	RunPeriod,
 	StoredAccount,
 	StoredApiKey,
@@ -178,8 +192,46 @@ type SandboxType = computeSchema.SandboxType;
 type MemberRole = computeSchema.MemberRole;
 type EventType = computeSchema.EventType;
 type EventData = computeSchema.Event["data"];
+
+/** Whether two lists of IDs are the same, in the same order. */
+const sameIds = (a: readonly string[], b: readonly string[]) =>
+	a.length === b.length && a.every((id, index) => id === b[index]);
+
+/** `pendingProvision` without an environment's own set-up (its files and repositories). */
+const pendingWithout = (
+	sandbox: Pick<StoredSandbox, "pendingProvision">,
+	environmentId: string,
+): Pick<StoredSandbox, "pendingProvision"> => {
+	const pending = (sandbox.pendingProvision ?? []).filter((work) => work.environmentId !== environmentId);
+	return { pendingProvision: pending.length === 0 ? undefined : pending };
+};
+
+/** The set-up an environment a sandbox has just been given needs: its files, and its repositories. */
+const workFor = (environment: StoredEnvironment): ProvisionWork[] => [
+	...(environment.files.length > 0
+		? [{ id: randomId("pw", 8), kind: "files" as const, environmentId: environment.id }]
+		: []),
+	...(environment.repos.length > 0
+		? [{ id: randomId("pw", 8), kind: "repos" as const, environmentId: environment.id }]
+		: []),
+];
+
+/** The secret file paths whose winning environment differs between two resolutions, and that one of `after` wins. */
+const changedWinners = (before: EnvironmentResolution, after: EnvironmentResolution): string[] =>
+	[...after.files.entries()]
+		.filter(([path, winner]) => before.files.get(path)?.environment.id !== winner.environment.id)
+		.map(([path]) => path);
+
+/** The environments whose repositories a boot's set-up may clone once it runs, as the call read them. */
+interface Provisioning {
+	readonly environments: readonly StoredEnvironment[];
+}
+
 /** What decides a sandbox's egress besides its account's proxy settings. */
-type EgressSubject = Pick<StoredSandbox, "environmentId" | "placeholders" | "grants" | "egressRevision">;
+type EgressSubject = Pick<
+	StoredSandbox,
+	"environmentId" | "environmentIds" | "placeholders" | "grants" | "egressRevision" | "env" | "secretsFloor"
+>;
 
 /** What an hour of running costs: a microVM by its vCPUs and memory, an isolate by its memory (its CPU is shared). */
 export interface RateTable {
@@ -525,6 +577,11 @@ export interface ComputeService {
 	 * doesn't open.
 	 */
 	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
+	/**
+	 * A sandbox's env as it is now, for the host that asked over its link (`env.fetch`), which applies a `sandbox.env`
+	 * from it: `undefined` unless the sandbox's recorded host is `hostId`.
+	 */
+	sandboxEnv(hostId: string, sandboxId: string): Promise<{ env: { [name: string]: string } } | undefined>;
 	/**
 	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
@@ -904,6 +961,7 @@ export const MAX_ENVIRONMENT_FILES = 20;
 export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
 /** How long a repository's clone may take when a sandbox starts. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
+
 /** How many times a boot sends egress changed while it started (or tries again), before it is stopped instead. */
 const BOOT_RECONCILE_ROUNDS = 5;
 /**
@@ -1945,7 +2003,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return [];
 			}
 		},
-		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants })).egress,
+		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants, env: {} })).egress,
 		normaliseGrants,
 		checkVariableName,
 		checkResources: (resources) => checkShape("microvm", resources),
@@ -2360,7 +2418,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			latestSnapshotId: sandbox.latestSnapshotId,
 			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
-			environmentId: sandbox.environmentId,
+			...environmentFields(environmentIdsOf(sandbox)),
 			template: sandbox.template === undefined ? undefined : { ...sandbox.template },
 			grants: (sandbox.grants ?? []).map(copyGrant),
 			createdBy: sandbox.createdBy,
@@ -2518,6 +2576,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updatedAt: proxy.updatedAt,
 	});
 
+	/** A sandbox's environments as they are now, in order; one deleted meanwhile is left out. */
+	async function environmentsOf(
+		sandbox: Pick<StoredSandbox, "environmentIds" | "environmentId">,
+	): Promise<StoredEnvironment[]> {
+		const found = await Promise.all(environmentIdsOf(sandbox).map((id) => store.environments.get(id)));
+		return found.filter((environment): environment is StoredEnvironment => environment !== undefined);
+	}
+
+	/** What `environments` give a sandbox, in order (`resolveEnvironments`). */
+	const resolved = (environments: readonly StoredEnvironment[]): EnvironmentResolution =>
+		resolveEnvironments(environments, clonePath);
+
 	/**
 	 * A sandbox's egress for the backend, `{ egress }` to spread into a spec: the account's proxy settings when they're
 	 * on, with its protected variables' hosts (never a value) and its environment's and its own grants. With the proxy
@@ -2531,15 +2601,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// The revision goes with no egress too: a boot states its egress, none being the host's default, and an update
 		// read before it (an empty egress included) is then older and refused.
 		const revision = subject?.egressRevision === undefined ? {} : { egressRevision: subject.egressRevision };
-		const [proxy, environment] = await Promise.all([
+		const [proxy, environments] = await Promise.all([
 			store.proxies.get(accountId),
-			subject?.environmentId === undefined ? undefined : store.environments.get(subject.environmentId),
+			subject === undefined ? [] : environmentsOf(subject),
 		]);
-		const names = Object.keys(subject?.placeholders ?? {});
-		const bound = (environment?.variables ?? []).filter(
-			(variable) => variable.protected && variable.sealed !== undefined && names.includes(variable.name),
-		);
-		const grants = [...(environment?.grants ?? []), ...(subject?.grants ?? [])];
+		const resolution = resolved(environments);
+		const bound = subject === undefined ? [] : protectedWinners(subject, resolution).map(({ winner }) => winner.item);
+		const grants = [...resolution.grants, ...(subject?.grants ?? [])];
 		const on = proxy?.enabled;
 		if (!on && bound.length === 0 && grants.length === 0) return revision;
 		const base: BackendEgress = proxy?.enabled
@@ -2556,11 +2624,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return {
 			egress: {
 				...base,
-				...(environment === undefined || bound.length === 0
+				...(bound.length === 0
 					? {}
 					: {
 							protected: {
-								version: environment.secretsVersion,
+								version: secretsVersionOf(environments, subject?.secretsFloor) ?? now(),
 								intercept: unique(bound.flatMap((variable) => variable.bindings.map((binding) => binding.host))),
 							},
 						}),
@@ -2690,26 +2758,63 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	};
 
-	/** The sandboxes made from an environment that run, or are starting (and will reconcile when they run). */
-	const liveFrom = async (environmentId: string) =>
-		(await store.sandboxes.list({ environmentId })).filter(
-			(sandbox) => sandbox.state === "running" || sandbox.state === "starting",
+	/** The sandboxes that have an environment, but deleted ones. Environments and their sandboxes share an account. */
+	const sandboxesWith = async (environment: Pick<StoredEnvironment, "id" | "accountId">) =>
+		(await store.sandboxes.list({ accountId: environment.accountId })).filter(
+			(sandbox) => sandbox.state !== "deleted" && environmentIdsOf(sandbox).includes(environment.id),
 		);
+
+	/** The sandboxes with an environment that run, or are starting (and will reconcile when they run). */
+	const liveFrom = async (environment: Pick<StoredEnvironment, "id" | "accountId">) =>
+		(await sandboxesWith(environment)).filter((sandbox) => sandbox.state === "running" || sandbox.state === "starting");
+
+	/**
+	 * Whether a variable of this name in an environment decides which protected value a running sandbox's placeholder
+	 * stands for: one with other environments has a placeholder of the name, so the variable shadows (or shadowed) one.
+	 */
+	const shadowsProtected = async (environment: Pick<StoredEnvironment, "id" | "accountId">, name: string) =>
+		(await liveFrom(environment)).some(
+			(sandbox) => environmentIdsOf(sandbox).length > 1 && Object.hasOwn(sandbox.placeholders ?? {}, name),
+		);
+
+	/**
+	 * A sandbox's next protected-values version: past every version it may have been given, which is at most the newest
+	 * of its environments' and its floor, and past now.
+	 */
+	const nextFloorOf = async (sandbox: StoredSandbox): Promise<number> =>
+		nextSecretsVersion(secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0, now());
 
 	/**
 	 * Tells the hosts of an environment's running sandboxes that its protected values changed, so they drop what they
 	 * hold and fetch them again, and gives them its egress as it is now (the hosts to intercept, the grants). A starting
 	 * one's revision moves on too, so its boot sees the change and reconciles.
 	 */
-	async function pushEnvironment(environmentId: string, version: number | undefined): Promise<void> {
-		const live = await liveFrom(environmentId);
-		const bumped = (await Promise.all(live.map((sandbox) => bumpEgress(sandbox.id)))).filter(
-			(sandbox): sandbox is StoredSandbox => sandbox !== undefined,
-		);
+	async function pushEnvironment(
+		environment: Pick<StoredEnvironment, "id" | "accountId">,
+		version: number | undefined,
+	): Promise<void> {
+		const live = await liveFrom(environment);
+		const bumped = (
+			await Promise.all(
+				live.map(async (sandbox) => {
+					if (version === undefined) return bumpEgress(sandbox.id);
+					// Its protected values changed: its own version moves past any it was given, from all its environments
+					// (this one as it is now), so one of several whose version is behind another's still counts as a change.
+					const floor = await nextFloorOf(sandbox);
+					return patchSandbox(sandbox.id, (current) => ({
+						...current,
+						secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+						egressRevision: later(current.egressRevision),
+					}));
+				}),
+			)
+		).filter((sandbox): sandbox is StoredSandbox => sandbox !== undefined);
 		const running = bumped.filter((sandbox) => sandbox.state === "running");
 		const updateSecrets = backend.updateSecrets?.bind(backend);
 		if (version !== undefined && updateSecrets !== undefined) {
-			for (const sandbox of running) keepGoing(updateSecrets(sandbox.id, version));
+			for (const sandbox of running) {
+				if (sandbox.secretsFloor !== undefined) keepGoing(updateSecrets(sandbox.id, sandbox.secretsFloor));
+			}
 		}
 		pushEgress(running);
 	}
@@ -2753,7 +2858,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	});
 
 	async function environmentView(environment: StoredEnvironment): Promise<computeSchema.Environment> {
-		const made = await store.sandboxes.list({ environmentId: environment.id });
+		const made = await sandboxesWith(environment);
 		return {
 			id: environment.id,
 			accountId: environment.accountId,
@@ -2763,7 +2868,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			files: environment.files.map(fileView),
 			repos: environment.repos.map(copyRepo),
 			grants: environment.grants.map(copyGrant),
-			sandboxCount: made.filter((sandbox) => sandbox.state !== "deleted").length,
+			sandboxCount: made.length,
 			createdAt: environment.createdAt,
 			updatedAt: environment.updatedAt,
 		};
@@ -2798,28 +2903,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	async function sandboxEgressView(sandbox: StoredSandbox, limit: number): Promise<computeSchema.SandboxEgress> {
-		const [environment, log] = await Promise.all([
-			sandbox.environmentId === undefined ? undefined : store.environments.get(sandbox.environmentId),
-			egressLog(sandbox.id),
-		]);
-		const protectedVariables: computeSchema.SandboxProtectedVariable[] = [];
-		for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
-			const variable = environment?.variables.find((each) => each.name === name && each.protected);
-			// One whose variable is gone, or plain now, no longer resolves: it isn't protected any more.
-			if (variable === undefined) continue;
-			protectedVariables.push({
+		const [environments, log] = await Promise.all([environmentsOf(sandbox), egressLog(sandbox.id)]);
+		const resolution = resolved(environments);
+		// One whose variable is gone, plain now or shadowed no longer resolves: it isn't protected any more.
+		const protectedVariables: computeSchema.SandboxProtectedVariable[] = protectedWinners(sandbox, resolution).map(
+			({ name, placeholder, winner }) => ({
 				name,
 				placeholderPrefix: placeholder.slice(0, PLACEHOLDER_PREFIX_CHARS),
-				bindings: variable.bindings.map(copyBinding),
-			});
-		}
+				bindings: winner.item.bindings.map(copyBinding),
+				environmentId: winner.environment.id,
+			}),
+		);
+		const [first] = environments;
 		return {
 			sandboxId: sandbox.id,
 			sandboxName: sandbox.name,
 			accountId: sandbox.accountId,
-			...(environment === undefined ? {} : { environment: { id: environment.id, name: environment.name } }),
+			...(first === undefined ? {} : { environment: { id: first.id, name: first.name } }),
+			environments: environments.map((environment) => ({ id: environment.id, name: environment.name })),
 			protectedVariables,
-			environmentGrants: (environment?.grants ?? []).map(copyGrant),
+			environmentGrants: resolution.grants.map(copyGrant),
 			grants: (sandbox.grants ?? []).map(copyGrant),
 			entries: log.slice(0, limit).map(egressEntryView),
 		};
@@ -2846,6 +2949,191 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const [byName] = await store.environments.list({ accountId, name: ref });
 		if (byName === undefined) throw notFound(`environment ${ref}`);
 		return byName;
+	}
+
+	/** The environments a create names, `environment` or `environments`, in order; each once. */
+	async function environmentsNamed(
+		accountId: string,
+		one: string | undefined,
+		many: readonly string[] | undefined,
+	): Promise<StoredEnvironment[]> {
+		if (one !== undefined && many !== undefined) {
+			throw new KantelError("invalid", "Give environment or environments, not both");
+		}
+		const refs = many ?? (one === undefined ? [] : [one]);
+		if (refs.length > MAX_SANDBOX_ENVIRONMENTS) {
+			throw new KantelError("invalid", `A sandbox has at most ${MAX_SANDBOX_ENVIRONMENTS} environments`);
+		}
+		const environments = await Promise.all(refs.map((ref) => environmentIn(accountId, ref)));
+		const seen = new Set<string>();
+		for (const environment of environments) {
+			if (seen.has(environment.id))
+				throw new KantelError("invalid", `The environment ${environment.name} is named twice`);
+			seen.add(environment.id);
+		}
+		return environments;
+	}
+
+	/** Refuses a sandbox's own variable that would hide a protected variable of its environments. */
+	function refuseProtectedClashes(
+		own: { readonly [name: string]: string },
+		resolution: EnvironmentResolution,
+		count: number,
+	): void {
+		const [name] = protectedClashes(own, resolution);
+		if (name === undefined) return;
+		const of =
+			count > 1 ? `of the environment ${resolution.variables.get(name)?.environment.name}` : "of the environment";
+		throw new KantelError("invalid", `${name} is a protected variable ${of}; leave it out of env`);
+	}
+
+	/** A sandbox's environments, in order, with what each gives it and whether its files and repositories are to come. */
+	async function sandboxEnvironmentsView(sandbox: StoredSandbox): Promise<computeSchema.SandboxEnvironments> {
+		const environments = await environmentsOf(sandbox);
+		const resolution = resolved(environments);
+		const { own } = envLayersOf(sandbox);
+		// Pending: its own files or repositories, or a path a move gave it whose file isn't written yet.
+		const pending = new Set(
+			(sandbox.pendingProvision ?? []).flatMap((work) =>
+				work.kind === "paths"
+					? (work.paths ?? []).map((path) => resolution.files.get(path)?.environment.id)
+					: [work.environmentId],
+			),
+		);
+		return {
+			sandboxId: sandbox.id,
+			environments: environments.map((environment) => ({
+				id: environment.id,
+				name: environment.name,
+				shadowed: shadowedOf(environment, resolution, own, clonePath),
+				pending: pending.has(environment.id),
+			})),
+		};
+	}
+
+	/**
+	 * Gives a sandbox the environments `change` makes of its own, then works its env out again from them as they are now
+	 * (its own variables over them), and moves its egress and its protected values' version on. A running sandbox takes
+	 * the change at once: its egress and protected values, its env (for new shells, where its host can), and an attached
+	 * environment's secret files and repositories, set up in the background. A stopped one gets those when it next runs.
+	 */
+	async function changeSandboxEnvironments(
+		sandbox: StoredSandbox,
+		change: (ids: string[]) => string[],
+		how: { attached: StoredEnvironment } | { detached: string },
+	): Promise<computeSchema.SandboxEnvironments> {
+		const before = environmentIdsOf(sandbox);
+		const ids = change([...before]);
+		if (ids.length > MAX_SANDBOX_ENVIRONMENTS) {
+			throw new KantelError("invalid", `A sandbox has at most ${MAX_SANDBOX_ENVIRONMENTS} environments`);
+		}
+		const settled = ["running", "stopped", "paused", "error"];
+		if (!settled.includes(sandbox.state)) throw new KantelError("conflict", `The sandbox is ${sandbox.state}`);
+		const read = await Promise.all(ids.map((id) => store.environments.get(id)));
+		const environments = read.filter((environment): environment is StoredEnvironment => environment !== undefined);
+		// The version its host was last given: the new floor goes past it, so no fetch answers below what it holds.
+		const had = await environmentsOf(sandbox);
+		const given = secretsVersionOf(had, sandbox.secretsFloor) ?? 0;
+		const resolution = resolved(environments);
+		const attached = "attached" in how ? how.attached : undefined;
+		const moved = attached !== undefined && before.includes(attached.id);
+		// The set-up it needs, recorded with the change: a newly attached environment's files and repositories, and the
+		// paths whose winning file another environment now has (a move). A detach needs none: what it wrote stays.
+		const newly = attached !== undefined && !moved ? workFor(attached) : [];
+		const repaths = changedWinners(resolved(had), resolution).filter(
+			(path) => moved || resolution.files.get(path)?.environment.id !== attached?.id,
+		);
+		const work: ProvisionWork[] = [
+			...newly,
+			...(attached !== undefined && repaths.length > 0
+				? [{ id: randomId("pw", 8), kind: "paths" as const, paths: repaths }]
+				: []),
+		];
+		if (attached !== undefined) {
+			refuseProtectedClashes(envLayersOf(sandbox).own, resolution, environments.length);
+			const enforced = attached.grants.length > 0 || attached.variables.some((variable) => variable.protected);
+			if (enforced) await requireEnforcing([sandbox]);
+		}
+		let changed = await patchSandbox(sandbox.id, (current) => {
+			if (!sameIds(environmentIdsOf(current), before)) {
+				throw new KantelError("conflict", "The sandbox's environments changed meanwhile; try again");
+			}
+			if (!settled.includes(current.state)) throw new KantelError("conflict", `The sandbox is ${current.state}`);
+			const envLayers = envLayersOf(current);
+			const { env, placeholders } = composeEnv(envLayers, resolution, current.placeholders ?? {}, newPlaceholder);
+			// Pending until a set-up has done it, running or not: if a stop gets there first, its next start does it.
+			const kept =
+				"detached" in how ? pendingWithout(current, how.detached).pendingProvision : current.pendingProvision;
+			const pending = [...(kept ?? []), ...work];
+			return {
+				...current,
+				...environmentFields(environments.map((environment) => environment.id)),
+				pendingProvision: pending.length === 0 ? undefined : pending,
+				env,
+				envLayers,
+				placeholders,
+				// Past any version its host was given: it drops what it held, and fetches them again as they are now.
+				secretsFloor: nextSecretsVersion(Math.max(given, current.secretsFloor ?? 0), now()),
+				egressRevision: later(current.egressRevision),
+			};
+		});
+		if (changed === undefined) throw notFound("sandbox");
+		// Deleted while it was being attached, after the delete looked for its sandboxes: taken off again here, as the
+		// delete would have, with the floor moved past what it may have given.
+		let gone = false;
+		if (attached !== undefined && (await store.environments.get(attached.id)) === undefined) {
+			gone = true;
+			const floor = nextSecretsVersion(Math.max(given, attached.secretsVersion, changed.secretsFloor ?? 0), now());
+			changed = await patchSandbox(sandbox.id, (current) => ({
+				...current,
+				...environmentFields(environmentIdsOf(current).filter((id) => id !== attached.id)),
+				...pendingWithout(current, attached.id),
+				secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+				egressRevision: later(current.egressRevision),
+			}));
+			if (changed === undefined) throw notFound("sandbox");
+		}
+		const done = changed;
+		await emit("sandbox.environments_changed", done.accountId, {
+			sandbox: done,
+			data: {
+				...("attached" in how ? { attached: how.attached.id } : { detached: how.detached }),
+				environmentIds: [...environmentIdsOf(done)],
+			},
+		}).catch(() => undefined);
+		if (done.state === "running") {
+			pushEgress([done]);
+			const updateSecrets = backend.updateSecrets?.bind(backend);
+			if (updateSecrets !== undefined && done.secretsFloor !== undefined) {
+				keepGoing(updateSecrets(done.id, done.secretsFloor));
+			}
+			keepGoing(deliverEnv(done));
+			if (!gone && work.length > 0) {
+				// Its repositories as this call read them, which the caller (who may run commands) authorised.
+				keepGoing(track([done.id], () => provision(done.id, attached === undefined ? [] : [attached])));
+			}
+		}
+		return sandboxEnvironmentsView(done);
+	}
+
+	/**
+	 * Tells a running sandbox's host its env changed (`updateEnv`). The host applies the env Kantel has when it takes
+	 * the notification (`sandboxEnv`, over its link), not the one sent, so however late one lands it never puts an older
+	 * env back. A failure is an event; its next boot has the env anyway.
+	 */
+	async function deliverEnv(sandbox: StoredSandbox): Promise<void> {
+		const updateEnv = backend.updateEnv?.bind(backend);
+		if (updateEnv === undefined) return;
+		try {
+			await updateEnv(sandbox.id, sandbox.env);
+		} catch (error) {
+			await emit("sandbox.degraded", sandbox.accountId, {
+				sandbox,
+				data: {
+					reason: `New commands have its environments' variables, but its env file (/etc/kantel/env) won't until it restarts: ${messageOf(error)}`,
+				},
+			}).catch(() => undefined);
+		}
 	}
 
 	const nameTaken = (name: string) => new KantelError("conflict", `The account has an environment named ${name}`);
@@ -2905,33 +3193,80 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Writes an environment's secret files into a sandbox that has just started, then clones its repositories (through
-	 * the sandbox's egress proxy, so a protected token bound to the repository's host is swapped in). A failure is an
-	 * event on the sandbox, which keeps running: what failed is named, never a file's contents.
+	 * Does a running sandbox's pending environment set-up (`pendingProvision`): writes the secret files each item names
+	 * (an environment's, at the paths it wins; or whatever wins the paths a move changed), and clones an environment's
+	 * repositories through the sandbox's egress proxy (so a protected token bound to a repository's host is swapped in).
+	 * A failure is an event on the sandbox, which keeps running: what failed is named, never a file's contents.
 	 *
-	 * `authorised` is the environment as the create read it, when it checked that its caller may run commands (a clone
-	 * runs with the sandbox's env, which that caller chose): its repositories are cloned, not any added since, which no
-	 * one's authority covers. The files are the environment's as it is now (a rotation meanwhile is taken).
+	 * Each item comes off by its ID once done, never before, so a set-up that stops leaves the rest for the next start,
+	 * and never one another change added. Each set-up takes a fence past every earlier one's (in the store), which its
+	 * writes carry: the host drops one below a fence it has taken, so an older set-up's write, however late it lands,
+	 * never overwrites a newer one's. Every change that moves a file's winner records the item that writes it, so the
+	 * newest set-up writes the newest winner.
+	 *
+	 * `authorised` is the environments whose repositories the call that started it may have cloned (its caller may run
+	 * commands, and a clone runs with the sandbox's env), as it read them: not any added since. A repositories item of
+	 * another environment waits for a set-up that may.
 	 */
-	async function provision(sandbox: StoredSandbox, authorised: StoredEnvironment): Promise<void> {
-		const latest = await store.environments.get(authorised.id);
-		if (latest === undefined) return;
-		const environment = { ...latest, repos: authorised.repos };
+	async function provision(sandboxId: string, authorised: readonly StoredEnvironment[]): Promise<void> {
+		const fenced = await patchSandbox(sandboxId, (latest) =>
+			latest.state === "running" && (latest.pendingProvision?.length ?? 0) > 0
+				? { ...latest, provisionFence: (latest.provisionFence ?? 0) + 1 }
+				: undefined,
+		);
+		if (fenced === undefined) return;
+		const fence = fenced.provisionFence ?? 1;
+		const work = fenced.pendingProvision ?? [];
+		const asAuthorised = new Map(authorised.map((environment) => [environment.id, environment]));
+		const environments = await environmentsOf(fenced);
+		const resolution = resolved(
+			environments.map((latest) => {
+				const read = asAuthorised.get(latest.id);
+				return read === undefined ? latest : { ...latest, repos: read.repos };
+			}),
+		);
 		const degraded = (reason: string) =>
-			emit("sandbox.degraded", sandbox.accountId, { sandbox, data: { reason } }).catch(() => undefined);
-		for (const file of environment.files) {
+			emit("sandbox.degraded", fenced.accountId, { sandbox: fenced, data: { reason } }).catch(() => undefined);
+		const label = (environment: StoredEnvironment) =>
+			environments.length > 1 ? `The environment ${environment.name}'s` : "The environment's";
+		const credentials = { variables: protectedWinners(fenced, resolution).map(({ winner }) => winner.item) };
+		/** Writes a file; false when its outcome is unknown (it failed in flight), so its item stays pending. */
+		const write = async ({
+			environment,
+			item: file,
+		}: {
+			environment: StoredEnvironment;
+			item: StoredEnvironmentFile;
+		}) => {
+			let bytes: Uint8Array;
 			try {
-				const bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
-				await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
+				bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
 			} catch (error) {
-				await degraded(`The environment's secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				return true;
 			}
-		}
-		for (const repo of environment.repos) {
+			try {
+				// Fenced (dropped by its host): a newer set-up's write of this path landed, whose winner is newer than this
+				// one's, so this item's part there is done.
+				await backend.writeFile(sandboxId, file.path, bytes, file.mode, { fence });
+				return true;
+			} catch (error) {
+				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				return false;
+			}
+		};
+		/** Clones a repository; false when its outcome is unknown, so its item stays pending. */
+		const clone = async ({
+			environment,
+			item: repo,
+		}: {
+			environment: StoredEnvironment;
+			item: computeSchema.EnvironmentRepo;
+		}) => {
 			const path = clonePath(repo);
 			// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
 			// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
-			const credential = repoCredential(environment, repo, sandbox.placeholders ?? {});
+			const credential = repoCredential(credentials, repo, fenced.placeholders ?? {});
 			const command = [
 				"git",
 				...(credential === undefined ? [] : gitCredentialArgs(credential)),
@@ -2942,22 +3277,71 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				shellWord(path),
 			].join(" ");
 			try {
-				const result = await backend.exec(sandbox.id, {
+				const result = await backend.exec(sandboxId, {
 					command,
 					// No terminal to ask on: a repository that wants a login fails at once, saying so.
-					env: { ...sandbox.env, GIT_TERMINAL_PROMPT: "0" },
+					env: { ...fenced.env, GIT_TERMINAL_PROMPT: "0" },
 					timeoutMs: CLONE_TIMEOUT_MS,
 				});
 				if (result.exitCode !== 0 || result.timedOut) {
 					const why = result.timedOut
 						? "it took too long"
 						: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
-					await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${why}`);
+					await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${why}`);
 				}
+				return true;
 			} catch (error) {
-				await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+				await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+				return false;
 			}
+		};
+		const done: string[] = [];
+		for (const item of work) {
+			let finished = true;
+			if (item.kind === "repos") {
+				// Only for a set-up a caller who may run commands started; otherwise it waits for one.
+				if (item.environmentId === undefined || !asAuthorised.has(item.environmentId)) continue;
+				for (const winner of resolution.repos.values()) {
+					if (winner.environment.id === item.environmentId && !(await clone(winner))) finished = false;
+				}
+			} else {
+				const targets =
+					item.kind === "files"
+						? [...resolution.files.values()].filter((winner) => winner.environment.id === item.environmentId)
+						: (item.paths ?? []).flatMap((path) => {
+								const winner = resolution.files.get(path);
+								return winner === undefined ? [] : [winner];
+							});
+				for (const target of targets) if (!(await write(target))) finished = false;
+			}
+			if (finished) done.push(item.id);
 		}
+		if (done.length === 0) return;
+		await patchSandbox(sandboxId, (latest) => {
+			const pending = (latest.pendingProvision ?? []).filter((item) => !done.includes(item.id));
+			return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
+		});
+	}
+
+	/**
+	 * Takes environments deleted since a create or fork read them off the sandbox it has just stored: the delete looked
+	 * for its sandboxes before this one was there. Nothing was given its host yet, so only the record changes.
+	 */
+	async function dropDeleted(sandbox: StoredSandbox): Promise<void> {
+		const ids = environmentIdsOf(sandbox);
+		if (ids.length === 0) return;
+		const found = await Promise.all(ids.map((id) => store.environments.get(id)));
+		const missing = new Set(ids.filter((_, index) => found[index] === undefined));
+		if (missing.size === 0) return;
+		await patchSandbox(sandbox.id, (current) => {
+			let pending: Pick<StoredSandbox, "pendingProvision"> = current;
+			for (const id of missing) pending = pendingWithout(pending, id);
+			return {
+				...current,
+				...environmentFields(environmentIdsOf(current).filter((id) => !missing.has(id))),
+				pendingProvision: pending.pendingProvision,
+			};
+		});
 	}
 
 	/**
@@ -3678,20 +4062,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	});
 
 	/**
-	 * The environment `bootAgain` provisions a sandbox it makes from its image with (its create failed, so the files and
-	 * repositories its create would have put there never were), checked as its create checks it: only a caller that may
-	 * run commands has repositories cloned. None for a sandbox on a disk of its own or made from a snapshot, which has them.
+	 * What a boot's set-up may do once the sandbox runs, if it has any pending (`pendingProvision`): the environments whose
+	 * repositories it may clone, checked as a create checks it (only a caller that may run commands has repositories
+	 * cloned; `lenient` leaves them pending for one that may, rather than refuse). A sandbox made before set-up was
+	 * recorded, whose create never placed it, has its environments' set-up recorded now.
 	 */
 	async function provisionedAgain(
 		principal: Principal,
 		role: MemberRole,
 		sandbox: StoredSandbox,
-	): Promise<StoredEnvironment | undefined> {
-		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.environmentId === undefined) return undefined;
-		const environment = await store.environments.get(sandbox.environmentId);
-		if (environment === undefined) return undefined;
-		if (environment.repos.length > 0) requireScope(principal, "exec", role);
-		return environment;
+		lenient = false,
+	): Promise<Provisioning | undefined> {
+		let pending = sandbox.pendingProvision ?? [];
+		const environments = await environmentsOf(sandbox);
+		const older = sandbox.envLayers === undefined && neverPlaced(sandbox) && sandbox.source === undefined;
+		if (pending.length === 0 && older) {
+			const work = environments.flatMap(workFor);
+			if (work.length === 0) return undefined;
+			await patchSandbox(sandbox.id, (latest) =>
+				(latest.pendingProvision?.length ?? 0) > 0 ? undefined : { ...latest, pendingProvision: work },
+			);
+			pending = work;
+		}
+		if (pending.length === 0) return undefined;
+		const cloning = new Set(pending.filter((work) => work.kind === "repos").map((work) => work.environmentId));
+		let authorised = environments.filter((environment) => cloning.has(environment.id));
+		if (authorised.length > 0) {
+			if (!lenient) requireScope(principal, "exec", role);
+			else if (!mayScope(principal, "exec", role)) authorised = [];
+		}
+		return { environments: authorised };
+	}
+
+	/** Whether a caller may act with `scope`, as `requireScope` would let them. */
+	function mayScope(principal: Principal, scope: computeSchema.ApiKeyScope, role: MemberRole): boolean {
+		try {
+			requireScope(principal, scope, role);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	/**
@@ -3707,12 +4117,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function bootProvisioned(
 		sandboxId: string,
 		run: () => Promise<Placement>,
-		environment: StoredEnvironment | undefined,
+		provisioning: Provisioning | undefined,
 		sent: { readonly egressRevision: number | undefined },
 	): Promise<StoredSandbox | undefined> {
 		const booted = await boot(sandboxId, run, undefined, sent);
-		if (booted?.state === "running" && environment !== undefined)
-			await provision(booted, environment).catch(() => undefined);
+		if (booted?.state === "running" && provisioning !== undefined)
+			await provision(booted.id, provisioning.environments).catch(() => undefined);
 		return booted;
 	}
 
@@ -6700,38 +7110,27 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("not_supported", MOUNTS_OFF);
 				}
 				const sandboxMounts = await mounts?.checkCreate(account.id, type, body.mounts);
-				const environment =
-					body.environment === undefined ? undefined : await environmentIn(account.id, body.environment);
-				// Its repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
+				const environments = await environmentsNamed(account.id, body.environment, body.environments);
+				// Their repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
 				// from it): only a caller that may run commands may have them cloned.
-				if (environment !== undefined && environment.repos.length > 0) requireScope(principal, "exec", role);
-				const protectedNames = new Set(
-					(environment?.variables ?? []).filter((variable) => variable.protected).map((variable) => variable.name),
-				);
-				for (const name of Object.keys(body.env ?? {})) {
-					refuseReserved(name);
-					if (protectedNames.has(name)) {
-						throw new KantelError("invalid", `${name} is a protected variable of the environment; leave it out of env`);
-					}
-				}
+				if (environments.some((environment) => environment.repos.length > 0)) requireScope(principal, "exec", role);
+				const resolution = resolved(environments);
+				for (const name of Object.keys(body.env ?? {})) refuseReserved(name);
+				refuseProtectedClashes(body.env ?? {}, resolution, environments.length);
 				// The sandbox's own placeholder for each protected variable, minted now and never changed (a rotation changes
-				// the value it stands for). Its env: its template's variables, the environment's plain variables, then the
-				// placeholders, then its own.
-				const placeholders: { [name: string]: string } = {};
-				for (const name of protectedNames) placeholders[name] = newPlaceholder();
-				const env: { [name: string]: string } = { ...template?.spec.env };
-				for (const variable of environment?.variables ?? []) {
-					if (!variable.protected && variable.value !== undefined) env[variable.name] = variable.value;
-				}
-				Object.assign(env, placeholders, body.env);
+				// the value it stands for). Its env: its template's variables, its environments' plain variables and
+				// placeholders in order, then its own.
+				const envLayers = { base: { ...template?.spec.env }, own: { ...body.env } };
+				const { env, placeholders } = composeEnv(envLayers, resolution, {}, newPlaceholder);
 				const egressRevision = now();
 				// Its own grants: its template's, if it has one.
 				const grants = template === undefined ? [] : normaliseGrants(template.spec.network?.grants ?? []);
 				const subject: EgressSubject = {
-					...(environment === undefined ? {} : { environmentId: environment.id }),
+					...environmentFields(environments.map((environment) => environment.id)),
 					placeholders,
 					grants,
 					egressRevision,
+					env,
 				};
 				// The backend's hosts and the host records, read at once: one round trip, not one each. The backend's hosts
 				// are read once, for the checks below and the host records alike.
@@ -6915,7 +7314,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdAt: now(),
 					ownerUserId: principal.userId,
 					env,
-					...(environment === undefined ? {} : { environmentId: environment.id }),
+					envLayers,
+					// Its environments' set-up, done once it runs (and, if its boot fails, by its next start).
+					...(environments.some((environment) => workFor(environment).length > 0)
+						? { pendingProvision: environments.flatMap(workFor) }
+						: {}),
+					...environmentFields(environments.map((environment) => environment.id)),
 					...(start === undefined
 						? {}
 						: {
@@ -6944,6 +7348,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw deletedMeanwhile();
 				}
 				await holdAccount(account.id, [sandbox.id]);
+				await dropDeleted(sandbox);
 				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
 				// refuses the create, which forgets the sandbox before anything else saw it.
 				if (sandboxMounts !== undefined && mounts !== undefined) {
@@ -6981,9 +7386,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						{ egressRevision },
 					);
 					// Queued with the boot, so a call after the create (an exec, a stop) finds the files and repositories there.
-					if (booted?.state === "running" && environment !== undefined) {
-						// As read when the call was authorised, not as it may be now.
-						await provision(booted, environment).catch(() => undefined);
+					if (booted?.state === "running" && environments.length > 0) {
+						// As read when the call was authorised, not as they may be now.
+						await provision(booted.id, environments).catch(() => undefined);
 					}
 					return booted;
 				});
@@ -7183,7 +7588,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						createdAt: now(),
 						ownerUserId: principal.userId,
 						env,
-						...(current.environmentId === undefined ? {} : { environmentId: current.environmentId }),
+						...environmentFields(environmentIdsOf(current)),
+						...(current.envLayers === undefined ? {} : { envLayers: current.envLayers }),
+						...(current.secretsFloor === undefined ? {} : { secretsFloor: current.secretsFloor }),
+						...(current.pendingProvision === undefined ? {} : { pendingProvision: [...current.pendingProvision] }),
 						grants: (current.grants ?? []).map(copyGrant),
 						placeholders,
 						egressRevision,
@@ -7221,6 +7629,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				for (const fork of forks) {
+					await dropDeleted(fork);
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied. The forks' egress is alike:
@@ -7258,6 +7667,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							undefined,
 							{ egressRevision },
 						);
+						// An environment attached to its source while stopped: its files and repositories, which the copied disk
+						// never had.
+						if (booted?.state === "running" && (booted.pendingProvision?.length ?? 0) > 0) {
+							const provisioning = await provisionedAgain(principal, role, booted, true).catch(() => undefined);
+							if (provisioning !== undefined)
+								await provision(booted.id, provisioning.environments).catch(() => undefined);
+						}
 						// Best effort, as each port is: a failure here (its records' store down, say) leaves this fork running without
 						// them, and never stops the batch's other forks booting.
 						if (booted?.state === "running") await copyPorts(booted, sourcePorts, grantee).catch(() => undefined);
@@ -7282,7 +7698,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const hosts = await hostsToBoot(principal, current);
 				const fromSnapshot = await latestRef(current);
 				requireSetupScope(principal, role, current);
-				const environment = await provisionedAgain(principal, role, current);
+				// Refused now, as its create would be; read again once it is starting, for an attach meanwhile.
+				await provisionedAgain(principal, role, current);
 				// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 				// say, still being retried) never equals it, and loses.
 				const began = await transition(current.id, current.state, (latest) =>
@@ -7294,6 +7711,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 				if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
+				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 				const egress = await egressFor(starting.accountId, starting);
 				keepGoing(
@@ -7305,7 +7723,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									starting,
 									{
 										fromSnapshot,
-										env: current.env,
+										env: starting.env,
 										eligibleHosts: hosts,
 										...sizingOf(starting),
 										...egress,
@@ -7313,7 +7731,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									},
 									(options) => backend.recover(current.id, options),
 								),
-							environment,
+							provisioning,
 							{ egressRevision: starting.egressRevision },
 						),
 					),
@@ -7413,18 +7831,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
+				// An environment attached while it was stopped: its files and repositories, once it runs.
+				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 				const egress = await egressFor(starting.accountId, starting);
 				keepGoing(
 					track([stopped.id], () =>
-						boot(
+						bootProvisioned(
 							stopped.id,
 							() =>
 								bootAgain(
 									stopped,
 									{
 										fromSnapshot,
-										env: stopped.env,
+										env: starting.env,
 										eligibleHosts: hosts,
 										// Its size and shape as recorded, as a start keeps them: only its base changes.
 										...sizingOf(stopped),
@@ -7435,7 +7855,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									},
 									(options) => backend.start(stopped.id, options),
 								),
-							undefined,
+							provisioning,
 							{ egressRevision: starting.egressRevision },
 						),
 					),
@@ -8435,9 +8855,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		deleteEnvironment: async (principal, { params }) => {
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			// Its sandboxes keep their env and files, but lose it from their environments: their placeholders for its
+			// variables stop resolving at once, at a floor past any version it gave them, and its grants go. Deleted first,
+			// then its sandboxes looked for: one attached meanwhile is either found here or sees it gone after its own write.
 			await store.environments.delete(environment.id);
-			// Its sandboxes keep their env and files; their placeholders stop resolving at once, and its grants go.
-			await pushEnvironment(environment.id, nextSecretsVersion(environment.secretsVersion, now()));
+			const holding = await sandboxesWith(environment);
+			const detached = await Promise.all(
+				holding.map(async (sandbox) => {
+					// Past the version its host was last given, from all its environments (this one included).
+					const given = secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0;
+					const floor = nextSecretsVersion(Math.max(given, environment.secretsVersion), now());
+					return patchSandbox(sandbox.id, (current) => ({
+						...current,
+						...environmentFields(environmentIdsOf(current).filter((id) => id !== environment.id)),
+						secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+						...pendingWithout(current, environment.id),
+						egressRevision: later(current.egressRevision),
+					}));
+				}),
+			);
+			const running = detached.filter((sandbox): sandbox is StoredSandbox => sandbox?.state === "running");
+			const updateSecrets = backend.updateSecrets?.bind(backend);
+			if (updateSecrets !== undefined) {
+				for (const sandbox of running) {
+					if (sandbox.secretsFloor !== undefined) keepGoing(updateSecrets(sandbox.id, sandbox.secretsFloor));
+				}
+			}
+			pushEgress(running);
 			return undefined;
 		},
 
@@ -8450,7 +8894,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const bindingsGiven = body.bindings?.map(normaliseBinding);
 			if ((body.protected ?? environment.variables.find((variable) => variable.name === name)?.protected) === true) {
-				await requireEnforcing(await liveFrom(environment.id));
+				await requireEnforcing(await liveFrom(environment));
 			}
 			// A value given is sealed up front (sealing is async; the change below isn't) when it will be protected, as far as
 			// the read above can tell; the change checks it again against the variable as it is.
@@ -8462,6 +8906,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? await requireSealer().seal(body.value as string, variableAad(environment.id, name))
 				: undefined;
 			const at = now();
+			// A running sandbox with a placeholder of this name may take its protected value from another of its
+			// environments, which this one, later, now shadows or no longer does: its host must fetch them again.
+			const shadowing = await shadowsProtected(environment, name);
 			let touchesSecrets = false;
 			// Built from the variable as the store has it, each time the change runs: a field left out is kept as it is now,
 			// never as an earlier read had it (a bindings edit doesn't undo a rotation that landed meanwhile).
@@ -8500,7 +8947,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 					next = { name, protected: false, value: body.value ?? existing?.value ?? "", bindings: [], updatedAt: at };
 				}
-				touchesSecrets = wantProtected || existing?.protected === true;
+				touchesSecrets = wantProtected || existing?.protected === true || shadowing;
 				return {
 					...current,
 					// In its place, or last when it is new.
@@ -8512,7 +8959,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					updatedAt: later(current.updatedAt),
 				};
 			});
-			if (touchesSecrets) await pushEnvironment(changed.id, changed.secretsVersion);
+			if (touchesSecrets) await pushEnvironment(changed, changed.secretsVersion);
 			return environmentView(changed);
 		},
 
@@ -8521,13 +8968,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const existing = environment.variables.find((variable) => variable.name === params.name);
 			if (existing === undefined) throw notFound("variable");
 			const at = now();
+			const touchesSecrets = existing.protected || (await shadowsProtected(environment, params.name));
 			const changed = await changeEnvironment(environment.id, (current) => ({
 				...current,
 				variables: current.variables.filter((variable) => variable.name !== params.name),
-				secretsVersion: existing.protected ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
+				secretsVersion: touchesSecrets ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
 				updatedAt: at,
 			}));
-			if (existing.protected) await pushEnvironment(changed.id, changed.secretsVersion);
+			if (touchesSecrets) await pushEnvironment(changed, changed.secretsVersion);
 			return environmentView(changed);
 		},
 
@@ -8612,13 +9060,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		putEnvironmentGrants: async (principal, { params, body }) => {
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
 			const grants = normaliseGrants(body.grants);
-			if (grants.length > 0) await requireEnforcing(await liveFrom(environment.id));
+			if (grants.length > 0) await requireEnforcing(await liveFrom(environment));
 			const expected = body.expected === undefined ? undefined : grantsKey(body.expected);
 			const changed = await changeEnvironment(environment.id, (current) => {
 				requireUnchanged(expected, grantsKey(current.grants), "The environment's grants");
 				return { ...current, grants, updatedAt: later(current.updatedAt) };
 			});
-			await pushEnvironment(changed.id, undefined);
+			await pushEnvironment(changed, undefined);
 			return environmentView(changed);
 		},
 
@@ -8641,6 +9089,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (changed === undefined) throw notFound("sandbox");
 			if (changed.state === "running") pushEgress([changed]);
 			return sandboxEgressView(changed, 100);
+		},
+
+		listSandboxEnvironments: async (principal, { params }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read");
+			return sandboxEnvironmentsView(sandbox);
+		},
+
+		attachSandboxEnvironment: async (principal, { params, body }) => {
+			// An environment's variables reach every command it runs, and its repositories are cloned with its env: as a
+			// command it runs, so only for a caller that may run commands.
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
+			const environment = await environmentIn(sandbox.accountId, body.environment);
+			return changeSandboxEnvironments(
+				sandbox,
+				(ids) => {
+					const others = ids.filter((id) => id !== environment.id);
+					others.splice(Math.min(body.position ?? others.length, others.length), 0, environment.id);
+					return others;
+				},
+				{ attached: environment },
+			);
+		},
+
+		detachSandboxEnvironment: async (principal, { params }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "exec");
+			if (!environmentIdsOf(sandbox).includes(params.environmentId)) throw notFound("environment on the sandbox");
+			// Its deny grants are egress rules only an admin may change (as its grants and the sandbox's own are): taking
+			// them off the sandbox needs that too.
+			const environment = await store.environments.get(params.environmentId);
+			if (environment?.grants.some((grant) => grant.action === "deny")) requireScope(principal, "account:admin", role);
+			return changeSandboxEnvironments(sandbox, (ids) => ids.filter((id) => id !== params.environmentId), {
+				detached: params.environmentId,
+			});
 		},
 
 		// Events, webhooks and telemetry.
@@ -9015,7 +9496,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
 		requireSetupScope(principal, role, current);
-		const environment = await provisionedAgain(principal, role, current);
+		// Refused now, as its create would be; read again once it is starting, for an attach meanwhile.
+		await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
@@ -9034,10 +9516,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
+		const provisioning = await provisionedAgain(principal, role, starting, true);
 		const bootOptions = {
 			fromSnapshot,
 			...sizingOf(starting),
-			env: current.env,
+			env: starting.env,
 			eligibleHosts: hosts,
 			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 			...(await egressFor(starting.accountId, starting)),
@@ -9050,7 +9533,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					bootAgain(starting, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					),
-				environment,
+				provisioning,
 				{ egressRevision: starting.egressRevision },
 			),
 		);
@@ -9216,19 +9699,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return ingestInTurn(hostId, report, how?.shared === true);
 		},
 
+		async sandboxEnv(hostId, sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) return undefined;
+			return { env: { ...sandbox.env } };
+		},
+
 		async protectedTable(hostId, sandboxId) {
 			const sandbox = await store.sandboxes.get(sandboxId);
 			// Only the host the sandbox is on: another host asking learns nothing, not even that it exists.
 			if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) return undefined;
-			const environment =
-				sandbox.environmentId === undefined ? undefined : await store.environments.get(sandbox.environmentId);
-			// Its environment deleted: nothing resolves, at a version past any it was given.
-			if (environment === undefined) return { version: now(), entries: [] };
+			const environments = await environmentsOf(sandbox);
+			// No environment left (deleted, or detached): nothing resolves, at a version past any it was given.
+			if (environments.length === 0) return { version: Math.max(now(), sandbox.secretsFloor ?? 0), entries: [] };
 			const entries: ProtectedEntry[] = [];
-			for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
-				const variable = environment.variables.find((each) => each.name === name);
-				if (variable === undefined || !variable.protected || variable.sealed === undefined) continue;
-				const value = await requireSealer().openText(variable.sealed, variableAad(environment.id, name));
+			for (const { name, placeholder, winner } of protectedWinners(sandbox, resolved(environments))) {
+				const variable = winner.item;
+				if (variable.sealed === undefined) continue;
+				const value = await requireSealer().openText(variable.sealed, variableAad(winner.environment.id, name));
 				entries.push({
 					placeholder,
 					name,
@@ -9240,7 +9728,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					})),
 				});
 			}
-			return { version: environment.secretsVersion, entries };
+			return { version: secretsVersionOf(environments, sandbox.secretsFloor) ?? now(), entries };
 		},
 
 		async recordBases(hostId, reports) {

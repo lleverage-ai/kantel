@@ -1062,7 +1062,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { bytes, size: answer.fileSize };
 		},
-		async writeFile(sandboxId, path, content, mode) {
+		async writeFile(sandboxId, path, content, mode, options) {
 			// Past the host's message limit the host would drop its whole link, every sandbox's calls and streams on it.
 			if (content.length > HOST_WRITE_FILE_MAX_BYTES) {
 				throw new KantelError(
@@ -1070,12 +1070,20 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					`This sandbox's host takes files of at most ${HOST_WRITE_FILE_MAX_BYTES} bytes in one write; it can't stream larger ones`,
 				);
 			}
-			await call(sandboxId, "sandbox.files.write", {
+			const answer = await call<{ readonly fenced?: boolean } | null>(sandboxId, "sandbox.files.write", {
 				path,
 				data: toBase64(content),
 				...(mode === undefined ? {} : { mode }),
+				...(options?.fence === undefined ? {} : { fence: options.fence }),
 			});
-			return { name: path.split("/").pop() ?? path, path, kind: "file", size: content.length, modifiedAt: now() };
+			return {
+				name: path.split("/").pop() ?? path,
+				path,
+				kind: "file",
+				size: content.length,
+				modifiedAt: now(),
+				...(answer?.fenced === true ? { fenced: true } : {}),
+			};
 		},
 		async readFileStream(sandboxId, path): Promise<FileStream> {
 			await streamingHost(sandboxId);

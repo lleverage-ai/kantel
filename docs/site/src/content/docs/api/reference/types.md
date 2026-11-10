@@ -114,6 +114,13 @@ What the device gets. A sign-in that asked for a personal token is approved with
 | `accounts` | string[] | no | For a personal token: only these accounts. Absent: every account of the approver's. |
 | `expiresInDays` | integer | no | Default 90. It stops working after it. A personal token lasts at most 366. (minimum 1, maximum 3650) |
 
+### AttachSandboxEnvironmentBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `environment` | string | yes | The environment, its ID or name in the sandbox's account. |
+| `position` | integer | no | Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, so it wins over the others. (minimum 0) |
+
 ### BaseImage
 
 | Field | Type | Required | Description |
@@ -495,8 +502,9 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `idleStopMinutes` | integer or null | no | Stop it once it has gone this long without use (`idle-stop`), whatever its auto-stop says; with `autoStopMinutes: null`, it runs while it is used. Default `null`: no idle stop. See the sandbox's `idleStopMinutes` for what counts as use. |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no |  |
-| `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
-| `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
+| `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
+| `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one. |
+| `environments` | string[] | no | Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`. (at most 10 items) |
 | `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
 | `host` | string | no | Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. |
@@ -725,6 +733,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `oomKills` | integer | no | `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading. (minimum 1) |
 | `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
+| `attached` | string | no | `sandbox.environments_changed`: the environment attached. |
+| `detached` | string | no | `sandbox.environments_changed`: the environment detached. |
+| `environmentIds` | string[] | no | `sandbox.environments_changed`: the sandbox's environments now, in order. |
 
 ### EventPage
 
@@ -735,9 +746,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
-One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.oom_kill"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.oom_kill"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
 ### ExposedPort
 
@@ -1376,9 +1387,10 @@ A bucket mount as the sandbox shows it after a refresh.
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
-| `environmentId` | string | no | The environment it was made from. |
+| `environmentId` | string | no | Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`. |
+| `environmentIds` | string[] | no | Its environments, in order: where two set the same variable, file or repository path, the later one wins. Absent: none. |
 | `template` | [SandboxTemplate](/api/reference/types/#sandboxtemplate) | no |  |
-| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environment's. |
+| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environments'. |
 | `mounts` | [SandboxMount](/api/reference/types/#sandboxmount)[] | no | Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -1451,17 +1463,57 @@ A sandbox's egress: what it was made with, its own grants and its log.
 | `sandboxName` | string | yes |  |
 | `accountId` | string | yes |  |
 | `environment` | [SandboxEgressEnvironment](/api/reference/types/#sandboxegressenvironment) | no |  |
+| `environments` | [SandboxEgressEnvironmentRef](/api/reference/types/#sandboxegressenvironmentref)[] | yes | Its environments, in order. |
 | `protectedVariables` | [SandboxProtectedVariable](/api/reference/types/#sandboxprotectedvariable)[] | yes |  |
-| `environmentGrants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its environment's grants, which it has too. |
-| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own grants, on top of its environment's. |
+| `environmentGrants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its environments' grants, which it has too. |
+| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own grants, on top of its environments'. |
 | `entries` | [EgressEntry](/api/reference/types/#egressentry)[] | yes | Newest first; Kantel keeps the newest 1000. |
 
 ### SandboxEgressEnvironment
+
+Its first environment. Deprecated: read `environments`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes |  |
 | `name` | string | yes |  |
+
+### SandboxEgressEnvironmentRef
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+
+### SandboxEnvironment
+
+One of a sandbox's environments.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `shadowed` | [SandboxEnvironmentShadowed](/api/reference/types/#sandboxenvironmentshadowed) | yes |  |
+| `pending` | boolean | yes | Its secret files and repositories are set up when the sandbox next runs. |
+
+### SandboxEnvironments
+
+A sandbox's environments, and what each gives it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes |  |
+| `environments` | [SandboxEnvironment](/api/reference/types/#sandboxenvironment)[] | yes | In order: where two set the same variable, file or repository path, the later one wins. |
+
+### SandboxEnvironmentShadowed
+
+What of an environment a sandbox doesn't take from it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `variables` | string[] | yes | Its variables a later environment, or the sandbox's own env, sets instead. |
+| `files` | string[] | yes | Its secret files' paths a later environment writes instead. |
+| `repos` | string[] | yes | Its repositories' paths a later environment clones into instead. |
 
 ### SandboxHealth
 
@@ -1530,6 +1582,7 @@ A protected variable as one sandbox has it: never its value.
 | `name` | string | yes |  |
 | `placeholderPrefix` | string | yes | The first 8 characters of its placeholder, such as `kph_7Qx2`. |
 | `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | yes |  |
+| `environmentId` | string | no | The environment whose value it takes. |
 
 ### SandboxResources
 

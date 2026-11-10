@@ -122,6 +122,13 @@ export interface ApproveDeviceLoginBody {
 	readonly expiresInDays?: number;
 }
 
+export interface AttachSandboxEnvironmentBody {
+	/** The environment, its ID or name in the sandbox's account. */
+	readonly environment: string;
+	/** Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, so it wins over the others. */
+	readonly position?: number;
+}
+
 export interface BaseImage {
 	/** `sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images. */
 	readonly name: string;
@@ -545,12 +552,14 @@ export interface CreateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
-	/** Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. */
+	/** Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. */
 	readonly env?: {
 		readonly [key: string]: string;
 	};
-	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. */
+	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one. */
 	readonly environment?: string;
+	/** Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`. */
+	readonly environments?: readonly string[];
 	/** Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. */
 	readonly template?: string;
 	/** Place it only on a host with each label, such as `{ site: "home" }`. */
@@ -773,7 +782,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -797,6 +806,12 @@ export interface EventData {
 	readonly oomKills?: number;
 	/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
 	readonly startup?: SandboxStartup;
+	/** `sandbox.environments_changed`: the environment attached. */
+	readonly attached?: string;
+	/** `sandbox.environments_changed`: the environment detached. */
+	readonly detached?: string;
+	/** `sandbox.environments_changed`: the sandbox's environments now, in order. */
+	readonly environmentIds?: readonly string[];
 }
 
 export interface EventPage {
@@ -805,7 +820,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -814,6 +829,7 @@ export type EventType =
 	| "sandbox.error"
 	| "sandbox.degraded"
 	| "sandbox.recovered"
+	| "sandbox.environments_changed"
 	| "sandbox.oom_kill"
 	| "sandbox.deleted"
 	| "snapshot.saved"
@@ -1223,7 +1239,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -1610,11 +1626,13 @@ export interface Sandbox {
 	readonly latestSnapshotAt?: number;
 	/** What it was made from. */
 	readonly source?: SandboxSource;
-	/** The environment it was made from. */
+	/** Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`. */
 	readonly environmentId?: string;
+	/** Its environments, in order: where two set the same variable, file or repository path, the later one wins. Absent: none. */
+	readonly environmentIds?: readonly string[];
 	/** The template a sandbox was made from. */
 	readonly template?: SandboxTemplate;
-	/** Its own egress grants, on top of its environment's. */
+	/** Its own egress grants, on top of its environments'. */
 	readonly grants: readonly EgressGrant[];
 	/** Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
 	readonly mounts?: readonly SandboxMount[];
@@ -1695,17 +1713,26 @@ export interface SandboxEgress {
 	readonly sandboxId: string;
 	readonly sandboxName: string;
 	readonly accountId: string;
+	/** Its first environment. Deprecated: read `environments`. */
 	readonly environment?: SandboxEgressEnvironment;
+	/** Its environments, in order. */
+	readonly environments: readonly SandboxEgressEnvironmentRef[];
 	readonly protectedVariables: readonly SandboxProtectedVariable[];
-	/** Its environment's grants, which it has too. */
+	/** Its environments' grants, which it has too. */
 	readonly environmentGrants: readonly EgressGrant[];
-	/** Its own grants, on top of its environment's. */
+	/** Its own grants, on top of its environments'. */
 	readonly grants: readonly EgressGrant[];
 	/** Newest first; Kantel keeps the newest 1000. */
 	readonly entries: readonly EgressEntry[];
 }
 
+/** Its first environment. Deprecated: read `environments`. */
 export interface SandboxEgressEnvironment {
+	readonly id: string;
+	readonly name: string;
+}
+
+export interface SandboxEgressEnvironmentRef {
 	readonly id: string;
 	readonly name: string;
 }
@@ -1713,6 +1740,33 @@ export interface SandboxEgressEnvironment {
 export interface SandboxEgressQuery {
 	/** At most this many entries; default 100. */
 	readonly limit?: number;
+}
+
+/** One of a sandbox's environments. */
+export interface SandboxEnvironment {
+	readonly id: string;
+	readonly name: string;
+	/** What of an environment a sandbox doesn't take from it. */
+	readonly shadowed: SandboxEnvironmentShadowed;
+	/** Its secret files and repositories are set up when the sandbox next runs. */
+	readonly pending: boolean;
+}
+
+/** A sandbox's environments, and what each gives it. */
+export interface SandboxEnvironments {
+	readonly sandboxId: string;
+	/** In order: where two set the same variable, file or repository path, the later one wins. */
+	readonly environments: readonly SandboxEnvironment[];
+}
+
+/** What of an environment a sandbox doesn't take from it. */
+export interface SandboxEnvironmentShadowed {
+	/** Its variables a later environment, or the sandbox's own env, sets instead. */
+	readonly variables: readonly string[];
+	/** Its secret files' paths a later environment writes instead. */
+	readonly files: readonly string[];
+	/** Its repositories' paths a later environment clones into instead. */
+	readonly repos: readonly string[];
 }
 
 /** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
@@ -1785,6 +1839,8 @@ export interface SandboxProtectedVariable {
 	/** The first 8 characters of its placeholder, such as `kph_7Qx2`. */
 	readonly placeholderPrefix: string;
 	readonly bindings: readonly DestinationBinding[];
+	/** The environment whose value it takes. */
+	readonly environmentId?: string;
 }
 
 export interface SandboxResources {
@@ -2520,7 +2576,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -3124,6 +3180,20 @@ export interface KantelClient {
 	getSandboxEgress(sandboxId: string, query?: SandboxEgressQuery, options?: CallOptions): Promise<SandboxEgress>;
 	/** Set a sandbox's egress grants. Replaces its own grants, on top of its environment's. A running sandbox picks them up at once. A key needs `account:admin`. `PUT /sandboxes/{sandboxId}/grants` */
 	putSandboxGrants(sandboxId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<SandboxEgress>;
+	/** List a sandbox's environments. In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and repositories are still to be set up. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/environments` */
+	listSandboxEnvironments(sandboxId: string, options?: CallOptions): Promise<SandboxEnvironments>;
+	/** Attach an environment to a sandbox. Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once (and, on a host that supports it, services that read `/etc/kantel/env`). Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`. `POST /sandboxes/{sandboxId}/environments` */
+	attachSandboxEnvironment(
+		sandboxId: string,
+		body: AttachSandboxEnvironmentBody,
+		options?: CallOptions,
+	): Promise<SandboxEnvironments>;
+	/** Detach an environment from a sandbox. Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop resolving at once and its grants go. Secret files it wrote and repositories it cloned stay. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/environments/{environmentId}` */
+	detachSandboxEnvironment(
+		sandboxId: string,
+		environmentId: string,
+		options?: CallOptions,
+	): Promise<SandboxEnvironments>;
 	/** List templates. The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates` */
 	listTemplates(query?: ListTemplatesQuery, options?: CallOptions): Promise<TemplateList>;
 	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). Idempotent with `options.idempotencyKey`. `POST /templates` */
@@ -3542,6 +3612,23 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/egress`, query }, callOptions),
 		putSandboxGrants: (sandboxId, body, callOptions) =>
 			send(options, { method: "PUT", path: `/sandboxes/${encodeURIComponent(sandboxId)}/grants`, body }, callOptions),
+		listSandboxEnvironments: (sandboxId, callOptions) =>
+			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/environments` }, callOptions),
+		attachSandboxEnvironment: (sandboxId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/environments`, body },
+				callOptions,
+			),
+		detachSandboxEnvironment: (sandboxId, environmentId, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/environments/${encodeURIComponent(environmentId)}`,
+				},
+				callOptions,
+			),
 		listTemplates: (query, callOptions) => send(options, { method: "GET", path: "/templates", query }, callOptions),
 		createTemplate: (body, callOptions) =>
 			send(options, { method: "POST", path: "/templates", body, idempotent: true }, callOptions),

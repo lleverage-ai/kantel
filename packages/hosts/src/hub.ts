@@ -31,6 +31,7 @@ import {
 	type HostBucketSource,
 	type HostCapacity,
 	type HostEgressRecord,
+	type HostEnvAnswer,
 	type HostError,
 	type HostEvent,
 	type HostFileOpen,
@@ -177,6 +178,11 @@ export interface HostHubOptions {
 	 * `not_found`). Absent, every fetch is answered `unavailable`.
 	 */
 	secrets?(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
+	/**
+	 * A host's `env.fetch`: the sandbox's env as Kantel has it now, or `undefined` unless the sandbox is on `hostId`
+	 * (answered `not_found`). Absent, every fetch is answered `unsupported`, and the host applies the env it was sent.
+	 */
+	env?(hostId: string, sandboxId: string): Promise<HostEnvAnswer | undefined>;
 	/** A batch of what a host's egress proxy handled (an `egress` event). */
 	onEgress?(hostId: string, records: readonly HostEgressRecord[]): void | Promise<void>;
 	/**
@@ -436,7 +442,36 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 	};
 
-	/** Answers a host's call (`secrets.fetch` or `bucket.fetch`) for the host its connection was checked against. */
+	/** Answers a host's `env.fetch`, for the host the connection was checked against, as `secrets.fetch` is. */
+	const answerEnv = async (
+		connection: Connection,
+		params: unknown,
+		reply: (body: { readonly result: unknown } | { readonly error: HostError }) => void,
+	) => {
+		const sandboxId = (params as { readonly sandboxId?: unknown } | null | undefined)?.sandboxId;
+		if (typeof sandboxId !== "string" || sandboxId === "") {
+			reply({ error: { code: "not_found", message: "env.fetch names no sandbox" } });
+			return;
+		}
+		if (options.env === undefined) {
+			reply({ error: { code: "unsupported", message: "Kantel answers no env.fetch call" } });
+			return;
+		}
+		if (!connection.welcomed) {
+			reply({ error: { code: "unavailable", message: "Kantel has no env to give now" } });
+			return;
+		}
+		try {
+			const answer = await options.env(connection.hostId, sandboxId);
+			if (answer === undefined)
+				reply({ error: { code: "not_found", message: `No sandbox ${sandboxId} on this host` } });
+			else reply({ result: answer });
+		} catch {
+			reply({ error: { code: "unavailable", message: "The sandbox's env is unavailable now" } });
+		}
+	};
+
+	/** Answers a host's call (`secrets.fetch`, `env.fetch` or `bucket.fetch`) for the host its connection was checked against. */
 	const answer = async (connection: Connection, message: HostMessage) => {
 		const id = message.id;
 		if (typeof id !== "string" || id === "") return;
@@ -444,6 +479,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			send(connection, { type: "result", id, ...body });
 		if (message.method === HostMethods.bucketFetch) {
 			await answerBucket(connection, message.params, reply);
+			return;
+		}
+		if (message.method === HostMethods.envFetch) {
+			await answerEnv(connection, message.params, reply);
 			return;
 		}
 		if (message.method !== HostMethods.secretsFetch) {

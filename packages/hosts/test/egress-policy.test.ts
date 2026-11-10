@@ -216,13 +216,16 @@ describe("an egress update its host misses", () => {
 		});
 		const sent = egressCalls();
 		expect(sent).toHaveLength(1);
+		// The rotation's version: the sandbox's own, past its environment's (the table its host fetches is at it).
+		const table = await api.service.protectedTable(stored?.hostId ?? "", sandbox.id);
 		const environmentNow = await api.store.environments.get(environment.id);
+		expect(table?.version).toBeGreaterThanOrEqual(environmentNow?.secretsVersion ?? Number.POSITIVE_INFINITY);
 		expect(sent[0]?.params).toMatchObject({
 			sandboxId: sandbox.id,
 			egress: {
 				revision: stored?.egressRevision,
 				grants: [expect.objectContaining({ host: "second.example" })],
-				protected: { version: environmentNow?.secretsVersion },
+				protected: { version: table?.version },
 			},
 		});
 		expect((await api.store.sandboxes.get(sandbox.id))?.egressApplied).toBe(stored?.egressRevision);

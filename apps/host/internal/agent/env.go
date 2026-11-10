@@ -3,8 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -17,6 +21,33 @@ type envSetter interface {
 	SetEnv(id string, env map[string]string) error
 }
 
+// currentEnv is the env a sandbox.env applies: the sandbox's as Kantel has it now (env.fetch), asked under the
+// sandbox's lifecycle lock, so of two notifications however they land, the later applied is the newer env. Only a
+// Kantel from before env.fetch (ErrUnsupported) leaves the notification's own env: any other failure, a lost link
+// included, applies nothing, so an older notification can never put its env back.
+func (h *Host) currentEnv(ctx context.Context, p proto.EnvParams) (map[string]string, error) {
+	fetch := h.envFetch
+	if fetch == nil {
+		fetch = func(ctx context.Context, sandboxID string) (map[string]string, error) {
+			raw, err := h.kantelCall(ctx, proto.MethodEnvFetch, proto.SandboxRef{SandboxID: sandboxID})
+			if err != nil {
+				return nil, err
+			}
+			var answer proto.EnvAnswer
+			if err := json.Unmarshal(raw, &answer); err != nil {
+				return nil, errors.New("env.fetch answered something that isn't an env")
+			}
+			return answer.Env, nil
+		}
+	}
+	env, err := fetch(ctx, p.SandboxID)
+	var perr *proto.Error
+	if errors.As(err, &perr) && perr.Code == proto.ErrUnsupported {
+		return p.Env, nil
+	}
+	return env, err
+}
+
 // setEnv is sandbox.env: the sandbox's whole env replaced where its tier keeps it, and for a running microVM its
 // guest's env file rewritten, so new shells, terminals, ssh sessions and commands see it. A stopped sandbox gets it
 // with its identity when it next boots. The caller holds the sandbox's lifecycle lock.
@@ -25,6 +56,11 @@ func (h *Host) setEnv(ctx context.Context, t Tier, tier string, p proto.EnvParam
 	if !ok {
 		return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s sandboxes don't change their env", tier)}
 	}
+	env, err := h.currentEnv(ctx, p)
+	if err != nil {
+		return err
+	}
+	p.Env = env
 	if err := s.SetEnv(p.SandboxID, p.Env); err != nil {
 		return err
 	}
@@ -46,8 +82,10 @@ func (h *Host) setEnv(ctx context.Context, t Tier, tier string, p proto.EnvParam
 // stdin, never in the script, so no value is ever parsed by the shell; it replaces the file in one rename, so a shell
 // starting meanwhile reads the old file or the new one, never half of it.
 const (
-	envWriteScript  = `set -e; mkdir -p "$(dirname ` + guest.EnvFile + `)"; cat > ` + guest.EnvFile + `.new; chmod 644 ` + guest.EnvFile + `.new; mv -f ` + guest.EnvFile + `.new ` + guest.EnvFile
-	envRemoveScript = `rm -f ` + guest.EnvFile
+	// Its own PATH, not the sandbox's (which its env may have changed), so the system's tools are the ones run.
+	envPath         = `PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; `
+	envWriteScript  = envPath + `set -e; mkdir -p "$(dirname ` + guest.EnvFile + `)"; cat > ` + guest.EnvFile + `.new; chmod 644 ` + guest.EnvFile + `.new; mv -f ` + guest.EnvFile + `.new ` + guest.EnvFile
+	envRemoveScript = envPath + `rm -f ` + guest.EnvFile
 )
 
 // writeGuestEnv makes a running microVM's env file hold exactly env (none for an empty one), as root.
@@ -65,4 +103,46 @@ func writeGuestEnv(ctx context.Context, t Tier, sandboxID string, env map[string
 		return fmt.Errorf("exited %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 	return nil
+}
+
+// fencedWrite is a sandbox.files.write with a fence (an environment set-up's): writes to one path of one sandbox are
+// made one at a time, and one whose fence is below the highest taken for that path is dropped (answered fenced), so a
+// set-up's write delivered after a newer set-up's write of the same path never lands over it. A fence is taken only
+// once its write is made, so a dropped write means a newer one of that path landed. The guest's write isn't cancelled
+// with the call (a cancelled call would leave it running unordered): it runs to its own end, up to fencedWriteTimeout,
+// with the path's lock held, so the next write of the path waits for it.
+func (h *Host) fencedWrite(ctx context.Context, t Tier, p proto.FileParams, data []byte) (map[string]bool, error) {
+	key := p.SandboxID + "\x00" + p.Path
+	h.fenceMu.Lock()
+	if h.fences == nil {
+		h.fences = map[string]*fence{}
+	}
+	f := h.fences[key]
+	if f == nil {
+		f = &fence{}
+		h.fences[key] = f
+	}
+	h.fenceMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p.Fence < f.highest {
+		return map[string]bool{"ok": true, "fenced": true}, nil
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fencedWriteTimeout)
+	defer cancel()
+	if err := t.WriteFile(writeCtx, p, data); err != nil {
+		return nil, err
+	}
+	f.highest = p.Fence
+	return map[string]bool{"ok": true}, nil
+}
+
+// fencedWriteTimeout bounds a fenced write's guest write, which the call's own cancellation doesn't end. A secret file
+// is at most 1 MiB, so this is far past any healthy write.
+const fencedWriteTimeout = 2 * time.Minute
+
+// fence is one sandbox path's highest set-up fence taken, and the lock its fenced writes are made under.
+type fence struct {
+	mu      sync.Mutex
+	highest int64
 }

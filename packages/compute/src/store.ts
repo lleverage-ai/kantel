@@ -169,11 +169,23 @@ export interface StoredPeak {
 	readonly cpu: number;
 }
 
+/** One piece of a sandbox's environment set-up (`StoredSandbox.pendingProvision`). */
+export interface ProvisionWork {
+	readonly id: string;
+	/**
+	 * `files`: the environment's secret files at the paths it wins. `repos`: its repositories, cloned (only by a set-up a
+	 * caller who may run commands started). `paths`: whatever file wins each of `paths` now (a move changed the winner).
+	 */
+	readonly kind: "files" | "repos" | "paths";
+	readonly environmentId?: string;
+	readonly paths?: readonly string[];
+}
+
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
 export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base" | "hostReachable"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
-	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
+	/** What every command sees: its environments' plain variables and placeholders, in order, then the create's own. */
 	readonly env: { readonly [name: string]: string };
 	/**
 	 * Moves on (`Math.max(now, previous + 1)`) with every change to what its egress is made of (its grants, its
@@ -250,6 +262,31 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * never changed. Not a secret: the sandbox sees it. Absent: none.
 	 */
 	readonly placeholders?: { readonly [name: string]: string };
+	/**
+	 * What `env` is made of besides its environments, kept so an attach or detach can work it out again: `base` (its
+	 * template's variables) under its environments, `own` (its create's `env`) over them. Absent on a sandbox made before
+	 * environments could be attached: its `env` as it was, but its placeholders, is then its `base`.
+	 */
+	readonly envLayers?: {
+		readonly base: { readonly [name: string]: string };
+		readonly own: { readonly [name: string]: string };
+	};
+	/**
+	 * The least version its protected values are answered at (`protectedTable`), moved on when an environment is detached
+	 * from it or deleted, so its host drops what it held of that environment's. Absent: none.
+	 */
+	readonly secretsFloor?: number;
+	/**
+	 * Environment set-up it still has to do, recorded when the change that needs it is (a create, an attach, a move), and
+	 * taken off by its ID once a set-up has done it: never before, so a stopped set-up leaves it for the next, and never
+	 * an item another change added. Absent: none.
+	 */
+	readonly pendingProvision?: readonly ProvisionWork[];
+	/**
+	 * The fence of its newest set-up, moved on (in the store) by each one as it starts: its file writes carry it, and its
+	 * host drops a write with a lower one than it has taken, so an older set-up's write never lands over a newer one's.
+	 */
+	readonly provisionFence?: number;
 	readonly hostLabels: { readonly [key: string]: string };
 	/**
 	 * The one host its create asked for (`CreateSandboxBody.host`), which a boot that has to place it again keeps to.

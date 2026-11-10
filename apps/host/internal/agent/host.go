@@ -75,6 +75,11 @@ type Host struct {
 	callKantel func(ctx context.Context, method string, params any) (json.RawMessage, error)
 	// secrets holds sandboxes' protected values, in memory only, fetched from Kantel (secrets.fetch) on first use.
 	secrets *protect.Store
+	// fenceMu guards fences: each sandbox path's environment set-up fence (fencedWrite).
+	fenceMu sync.Mutex
+	fences  map[string]*fence
+	// envFetch replaces env.fetch to Kantel (tests); nil asks Kantel.
+	envFetch func(ctx context.Context, sandboxID string) (map[string]string, error)
 	// cas are the sandboxes' interception CAs (keys in Root/egress-ca/<sandbox>, never in a guest).
 	cas *egress.CAStore
 	// egressLog batches the proxy's records to Kantel.
@@ -863,6 +868,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		data, err := base64.StdEncoding.DecodeString(p.Data)
 		if err != nil {
 			return nil, invalid("data isn't base64")
+		}
+		if p.Fence > 0 {
+			return h.fencedWrite(ctx, t, p, data)
 		}
 		return map[string]bool{"ok": true}, t.WriteFile(ctx, p, data)
 	case proto.MethodFileExtract:

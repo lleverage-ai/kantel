@@ -35,6 +35,7 @@ type envTier struct {
 	execs   []proto.ExecParams
 	root    string
 	failRun bool
+	files   map[string]string
 }
 
 func newEnvTier(t *testing.T, name string) *envTier {
@@ -96,6 +97,17 @@ func (f *envTier) Exec(ctx context.Context, p proto.ExecParams, _ func(string, s
 
 func (f *envTier) guestFile() string { return filepath.Join(f.root, guest.EnvFile) }
 
+// WriteFile keeps what was written at each path.
+func (f *envTier) WriteFile(_ context.Context, p proto.FileParams, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files == nil {
+		f.files = map[string]string{}
+	}
+	f.files[p.Path] = string(data)
+	return nil
+}
+
 func (f *envTier) execCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -107,6 +119,10 @@ func newEnvHost(t *testing.T, tier *envTier) *Host {
 	return &Host{
 		cfg: Config{Root: t.TempDir()}, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		tiers: map[string]Tier{tier.name: tier}, order: []string{tier.name}, bySlot: map[int]egress.Rules{},
+		// A Kantel from before env.fetch: each sandbox.env applies its own env.
+		envFetch: func(context.Context, string) (map[string]string, error) {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "Kantel answers no env.fetch call"}
+		},
 	}
 }
 
@@ -199,6 +215,71 @@ func TestSandboxEnvOfAStoppedMicroVMOrAnIsolateChangesOnlyTheRecord(t *testing.T
 		if !maps.Equal(tier.env[id], map[string]string{"A": "1"}) || tier.execCount() != 0 {
 			t.Fatalf("%s: kept %v, %d commands run", id, tier.env[id], tier.execCount())
 		}
+	}
+}
+
+// A sandbox.env applies the env Kantel has now (env.fetch), not its own, so a notification that lands late can't put
+// an older env back; a Kantel from before env.fetch leaves the notification's own.
+func TestSandboxEnvAppliesTheEnvKantelHasNow(t *testing.T) {
+	tier := newEnvTier(t, microvm.Tier)
+	tier.state["sbx_1"] = proto.StateStopped
+	h := newEnvHost(t, tier)
+	h.envFetch = func(context.Context, string) (map[string]string, error) {
+		return map[string]string{"NEWEST": "1"}, nil
+	}
+	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"OLD": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(tier.env["sbx_1"], map[string]string{"NEWEST": "1"}) {
+		t.Fatalf("kept %v, want Kantel's", tier.env["sbx_1"])
+	}
+	h.envFetch = func(context.Context, string) (map[string]string, error) {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "Kantel answers no env.fetch call"}
+	}
+	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"GIVEN": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(tier.env["sbx_1"], map[string]string{"GIVEN": "1"}) {
+		t.Fatalf("kept %v, want the notification's own from a Kantel before env.fetch", tier.env["sbx_1"])
+	}
+	for _, failure := range []error{&proto.Error{Code: proto.ErrUnavailable, Message: "down"}, errDisconnected} {
+		h.envFetch = func(context.Context, string) (map[string]string, error) { return nil, failure }
+		if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"X": "1"}}); err == nil {
+			t.Fatalf("%v: applied an env while Kantel couldn't say which is newest", failure)
+		}
+		if !maps.Equal(tier.env["sbx_1"], map[string]string{"GIVEN": "1"}) {
+			t.Fatalf("%v: the env became %v", failure, tier.env["sbx_1"])
+		}
+	}
+}
+
+// A fenced write from an older set-up, delivered after a newer one's, is dropped; an unfenced write isn't ordered.
+func TestFencedWritesNeverLandOverANewerSetUps(t *testing.T) {
+	tier := newEnvTier(t, microvm.Tier)
+	tier.state["sbx_1"] = proto.StateRunning
+	h := newEnvHost(t, tier)
+	writeAt := func(path string, fence int64, content string) {
+		t.Helper()
+		data := base64.StdEncoding.EncodeToString([]byte(content))
+		if err := call(t, h, proto.MethodFileWrite, proto.FileParams{SandboxID: "sbx_1", Path: path, Data: data, Fence: fence}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(fence int64, content string) { t.Helper(); writeAt("/home/user/.npmrc", fence, content) }
+	write(5, "newer")
+	write(3, "older")
+	if got := tier.files["/home/user/.npmrc"]; got != "newer" {
+		t.Fatalf("the file is %q, want the newer set-up's", got)
+	}
+	// Fences are per path: a newer set-up's write of one path doesn't drop an older one's of another.
+	writeAt("/home/user/.other", 3, "other")
+	if got := tier.files["/home/user/.other"]; got != "other" {
+		t.Fatalf("the other path is %q, want it written", got)
+	}
+	write(5, "newer again")
+	write(0, "the user's own")
+	if got := tier.files["/home/user/.npmrc"]; got != "the user's own" {
+		t.Fatalf("the file is %q, want an unfenced write taken", got)
 	}
 }
 

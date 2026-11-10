@@ -59,6 +59,8 @@ interface Recorded {
 	}[];
 	readonly secrets: { readonly sandboxId: string; readonly version: number }[];
 	readonly execs: ExecRequest[];
+	/** Every env update sent for a running sandbox (an environment attached or detached). */
+	readonly envs: { readonly sandboxId: string; readonly env: { readonly [name: string]: string } }[];
 }
 
 /** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
@@ -69,9 +71,11 @@ function recordingBackend(
 	execHook?: ExecHook,
 	beforeCreate?: (spec: SandboxSpec) => Promise<void>,
 	egressHook?: (egress: BackendEgress | undefined) => Promise<void>,
+	envHook?: (env: { readonly [name: string]: string }) => Promise<void>,
+	writeHook?: (path: string, fence: number | undefined) => Promise<void>,
 ): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
 	const stub = createStubBackend();
-	const recorded: Recorded = { specs: [], egress: [], secrets: [], execs: [] };
+	const recorded: Recorded = { specs: [], egress: [], secrets: [], execs: [], envs: [] };
 	const backend: SandboxBackend = {
 		...stub,
 		exec: async (sandboxId, request) => {
@@ -94,6 +98,15 @@ function recordingBackend(
 		updateSecrets: async (sandboxId, version) => {
 			recorded.secrets.push({ sandboxId, version });
 		},
+		writeFile: async (sandboxId, path, bytes, mode, options) => {
+			await writeHook?.(path, options?.fence);
+			return stub.writeFile(sandboxId, path, bytes, mode, options);
+		},
+		updateEnv: async (sandboxId, env) => {
+			await envHook?.(env);
+			recorded.envs.push({ sandboxId, env: { ...env } });
+			await stub.updateEnv?.(sandboxId, env);
+		},
 	};
 	return { backend, recorded };
 }
@@ -107,10 +120,20 @@ function setup(
 		readonly beforeCreate?: (spec: SandboxSpec) => Promise<void>;
 		/** Awaited inside the backend's egress update, before it is taken: throwing refuses it. */
 		readonly onEgress?: (egress: BackendEgress | undefined) => Promise<void>;
+		/** Awaited inside the backend's env update, before it is taken. */
+		readonly onEnv?: (env: { readonly [name: string]: string }) => Promise<void>;
+		/** Awaited inside the backend's file write, before it is made: throwing fails it. */
+		readonly onWrite?: (path: string, fence: number | undefined) => Promise<void>;
 		readonly now?: () => number;
 	} = {},
 ) {
-	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate, options.onEgress);
+	const { backend, recorded } = recordingBackend(
+		options.exec,
+		options.beforeCreate,
+		options.onEgress,
+		options.onEnv,
+		options.onWrite,
+	);
 	/** The bodies of the webhook requests sent. */
 	const sent: string[] = [];
 	const api = createComputeApi({
@@ -135,7 +158,7 @@ function setup(
 			fetch: (input, init) =>
 				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 		});
-	return { api, recorded, sent, tom: client("tom-token"), ann: client("ann-token") };
+	return { api, recorded, sent, client, tom: client("tom-token"), ann: client("ann-token") };
 }
 
 /** The error a call failed with; fails the test when it succeeded. */
@@ -630,7 +653,12 @@ describe("sandboxes made from an environment", () => {
 		expect(table?.entries.map((entry) => [entry.placeholder, entry.value])).toEqual([[own.GH_TOKEN, SECRET]]);
 		expect(JSON.stringify(table)).not.toContain(parent ?? "kph_");
 		expect((await tom.getSandboxEgress(fork.id)).protectedVariables).toEqual([
-			{ name: "GH_TOKEN", placeholderPrefix: own.GH_TOKEN?.slice(0, 8), bindings: GITHUB },
+			{
+				name: "GH_TOKEN",
+				placeholderPrefix: own.GH_TOKEN?.slice(0, 8),
+				bindings: GITHUB,
+				environmentId: source.environmentId,
+			},
 		]);
 	});
 });
@@ -1883,5 +1911,495 @@ describe("repoCredential", () => {
 		expect(
 			repoCredential(environmentWith([{ host: "github.com" }]), repo("https://github.com/a/b"), {}),
 		).toBeUndefined();
+	});
+});
+
+describe("a sandbox with several environments", () => {
+	const NPM = [{ host: "registry.npmjs.org" }];
+
+	/** `npm`: a plain LOG_LEVEL of its own, a protected NPM_TOKEN, a secret file and a grant. */
+	async function npmEnvironment(client: KantelClient, name = "npm") {
+		const environment = await client.createEnvironment({ name });
+		await client.setEnvironmentVariable(environment.id, "LOG_LEVEL", { value: "info" });
+		await client.setEnvironmentVariable(environment.id, "NPM_TOKEN", {
+			protected: true,
+			value: "npm_SECONDSECRET456",
+			bindings: NPM,
+		});
+		await client.setEnvironmentFile(environment.id, { path: ".npmrc", content: "registry=npm\n" });
+		return client.putEnvironmentGrants(environment.id, {
+			grants: [{ action: "deny", host: "registry.npmjs.org", methods: ["DELETE"] }],
+		});
+	}
+
+	const echo = async (client: KantelClient, sandboxId: string, name: string) =>
+		(await client.runCommand(sandboxId, { command: `echo $${name}` })).stdout.trim();
+
+	it("starts with them in order: the later wins, the protected values of each resolve, and their grants add up", async () => {
+		const { api, tom, recorded } = setup();
+		const github = await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environments: ["backend", npm.id], wait: true });
+		expect(sandbox.environmentIds).toEqual([github.id, npm.id]);
+		expect(sandbox.environmentId).toBe(github.id);
+		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("info");
+
+		const env = specOf(recorded, sandbox.id).env;
+		expect(env.GH_TOKEN).toMatch(PLACEHOLDER);
+		expect(env.NPM_TOKEN).toMatch(PLACEHOLDER);
+		const egress = specOf(recorded, sandbox.id).egress;
+		expect(egress?.protected?.intercept).toEqual(["api.github.com", "registry.npmjs.org"]);
+		expect(egress?.grants?.map((grant) => grant.host)).toEqual(["registry.npmjs.org"]);
+
+		const table = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(table?.entries.map((entry) => [entry.name, entry.value])).toEqual([
+			["GH_TOKEN", SECRET],
+			["NPM_TOKEN", "npm_SECONDSECRET456"],
+		]);
+		expect(table?.version).toBeGreaterThan(0);
+		const view = await tom.getSandboxEgress(sandbox.id);
+		expect(view.environments).toEqual([
+			{ id: github.id, name: "backend" },
+			{ id: npm.id, name: "npm" },
+		]);
+		expect(view.protectedVariables.map((variable) => [variable.name, variable.environmentId])).toEqual([
+			["GH_TOKEN", github.id],
+			["NPM_TOKEN", npm.id],
+		]);
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n");
+		expect((await tom.listSandboxEnvironments(sandbox.id)).environments).toEqual([
+			{
+				id: github.id,
+				name: "backend",
+				shadowed: { variables: ["LOG_LEVEL"], files: [], repos: [] },
+				pending: false,
+			},
+			{ id: npm.id, name: "npm", shadowed: { variables: [], files: [], repos: [] }, pending: false },
+		]);
+		expect((await tom.getEnvironment(github.id)).sandboxCount).toBe(1);
+		expect((await tom.getEnvironment(npm.id)).sandboxCount).toBe(1);
+	});
+
+	it("refuses environment with environments, one named twice, too many, and its own env over a protected variable", async () => {
+		const { tom } = setup();
+		await githubEnvironment(tom);
+		await npmEnvironment(tom);
+		const code = async (body: computeSchema.CreateSandboxBody) => (await failure(tom.createSandbox(body))).code;
+		expect(await code({ environment: "backend", environments: ["npm"] })).toBe("invalid");
+		expect(await code({ environments: ["npm", "npm"] })).toBe("invalid");
+		expect(await code({ environments: Array.from({ length: 11 }, () => "npm") })).toBe("invalid");
+		const clash = await failure(tom.createSandbox({ environments: ["backend", "npm"], env: { NPM_TOKEN: "x" } }));
+		expect(clash.code).toBe("invalid");
+		expect(clash.message).toContain("NPM_TOKEN is a protected variable of the environment npm");
+	});
+
+	it("a protected variable a later environment sets plainly doesn't resolve, and its value goes nowhere", async () => {
+		const { api, tom, recorded } = setup();
+		await githubEnvironment(tom);
+		const plain = await tom.createEnvironment({ name: "plain" });
+		await tom.setEnvironmentVariable(plain.id, "GH_TOKEN", { value: "not-a-secret" });
+		const sandbox = await tom.createSandbox({ environments: ["backend", "plain"], wait: true });
+		expect(await echo(tom, sandbox.id, "GH_TOKEN")).toBe("not-a-secret");
+		expect((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.entries).toEqual([]);
+		expect(specOf(recorded, sandbox.id).egress?.protected).toBeUndefined();
+		expect((await tom.getSandboxEgress(sandbox.id)).protectedVariables).toEqual([]);
+	});
+
+	it("attaches one to a running sandbox: its env, egress, protected values and files at once, and an event", async () => {
+		const { api, tom, recorded } = setup();
+		await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environment: "backend", env: { OWN: "mine" }, wait: true });
+		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+
+		const answer = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect(answer.environments.map((each) => each.name)).toEqual(["backend", "npm"]);
+		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("info");
+		expect(await echo(tom, sandbox.id, "OWN")).toBe("mine");
+		const npmToken = await echo(tom, sandbox.id, "NPM_TOKEN");
+		expect(npmToken).toMatch(PLACEHOLDER);
+
+		const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(after?.entries.map((entry) => [entry.name, entry.placeholder])).toEqual([
+			["GH_TOKEN", before?.entries[0]?.placeholder],
+			["NPM_TOKEN", npmToken],
+		]);
+		expect(after?.version).toBeGreaterThan(before?.version ?? Number.POSITIVE_INFINITY);
+		expect(last(recorded.secrets)).toEqual({ sandboxId: sandbox.id, version: after?.version });
+		await vi.waitFor(() =>
+			expect(last(recorded.egress)?.egress?.protected?.intercept).toEqual(["api.github.com", "registry.npmjs.org"]),
+		);
+		expect(last(recorded.envs)).toEqual({
+			sandboxId: sandbox.id,
+			env: expect.objectContaining({ OWN: "mine", NPM_TOKEN: npmToken }),
+		});
+		await vi.waitFor(async () =>
+			expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n"),
+		);
+		const changed = (await tom.listEvents({ sandboxId: sandbox.id })).items.filter(
+			(event) => event.type === "sandbox.environments_changed",
+		);
+		expect(changed.map((event) => event.data)).toEqual([
+			expect.objectContaining({ attached: npm.id, environmentIds: [sandbox.environmentId, npm.id] }),
+		]);
+		expect(JSON.stringify(changed)).not.toContain("npm_SECONDSECRET456");
+	});
+
+	it("attaches one first, where every other wins over it, and moves one it has", async () => {
+		const { tom } = setup();
+		await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environment: "backend", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: npm.id, position: 0 });
+		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("debug");
+		const moved = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect(moved.environments.map((each) => each.name)).toEqual(["backend", "npm"]);
+		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("info");
+	});
+
+	it("refuses an own variable over a protected one it would bring, and a caller who may not run commands", async () => {
+		const { tom, ann } = setup();
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ env: { NPM_TOKEN: "mine" }, wait: true });
+		expect((await failure(tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" }))).code).toBe("invalid");
+		expect((await failure(ann.attachSandboxEnvironment(sandbox.id, { environment: "npm" }))).code).toBe("not_found");
+		expect((await failure(tom.attachSandboxEnvironment(sandbox.id, { environment: "nope" }))).code).toBe("not_found");
+	});
+
+	it("attaches one to a stopped sandbox, whose files are written when it next runs", async () => {
+		const { tom } = setup();
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const answer = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect(answer.environments).toEqual([
+			{ id: npm.id, name: "npm", shadowed: { variables: [], files: [], repos: [] }, pending: true },
+		]);
+		await tom.startSandbox(sandbox.id, { wait: true });
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n");
+		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("info");
+		await vi.waitFor(async () =>
+			expect((await tom.listSandboxEnvironments(sandbox.id)).environments[0]?.pending).toBe(false),
+		);
+	});
+
+	it("detaches one: its variables go, its protected values stop resolving at once, its grants go, its files stay", async () => {
+		const { api, tom, recorded } = setup();
+		const github = await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		const answer = await tom.detachSandboxEnvironment(sandbox.id, npm.id);
+		expect(answer.environments.map((each) => each.id)).toEqual([github.id]);
+		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("debug");
+		expect(await echo(tom, sandbox.id, "NPM_TOKEN")).toBe("");
+		const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(after?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+		expect(after?.version).toBeGreaterThan(before?.version ?? Number.POSITIVE_INFINITY);
+		await vi.waitFor(() => expect(last(recorded.egress)?.egress?.grants).toBeUndefined());
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n");
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([github.id]);
+		expect((await failure(tom.detachSandboxEnvironment(sandbox.id, npm.id))).code).toBe("not_found");
+		const last1 = await tom.detachSandboxEnvironment(sandbox.id, github.id);
+		expect(last1.environments).toEqual([]);
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toBeUndefined();
+		expect((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.entries).toEqual([]);
+	});
+
+	it("loses one that is deleted, keeping the others", async () => {
+		const { api, tom } = setup();
+		const github = await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		await tom.deleteEnvironment(npm.id);
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([github.id]);
+		const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(after?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+		expect(after?.version).toBeGreaterThan(before?.version ?? Number.POSITIVE_INFINITY);
+	});
+
+	it("a sandbox made before keeps its env under what it is attached", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup({ store });
+		await githubEnvironment(tom);
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environment: "backend", env: { OWN: "mine" }, wait: true });
+		// As one made before environments could be attached was written: its env whole, one environmentId.
+		const stored = await store.sandboxes.get(sandbox.id);
+		if (stored === undefined) throw new Error("No sandbox");
+		const { envLayers: _layers, environmentIds: _ids, ...older } = stored;
+		await store.sandboxes.put(older);
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toHaveLength(2);
+		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("info");
+		expect(await echo(tom, sandbox.id, "OWN")).toBe("mine");
+		expect(await echo(tom, sandbox.id, "GH_TOKEN")).toMatch(PLACEHOLDER);
+	});
+
+	it("a later environment's plain variable over a protected one moves the version on, so its host fetches again", async () => {
+		const { api, tom, recorded } = setup();
+		await githubEnvironment(tom);
+		const later = await tom.createEnvironment({ name: "later" });
+		const sandbox = await tom.createSandbox({ environments: ["backend", "later"], wait: true });
+		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(before?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+		await tom.setEnvironmentVariable(later.id, "GH_TOKEN", { value: "plain" });
+		const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(after?.entries).toEqual([]);
+		expect(after?.version).toBeGreaterThan(before?.version ?? Number.POSITIVE_INFINITY);
+		expect(last(recorded.secrets)).toEqual({ sandboxId: sandbox.id, version: after?.version });
+		await tom.deleteEnvironmentVariable(later.id, "GH_TOKEN");
+		const again = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(again?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+		expect(again?.version).toBeGreaterThan(after?.version ?? Number.POSITIVE_INFINITY);
+	});
+
+	it("never answers below a version its host was given, on a clock that stands still", async () => {
+		const { api, tom } = setup({ now: () => 1_000 });
+		const github = await githubEnvironment(tom);
+		// Each protected edit moves backend's version on past the clock.
+		await tom.setEnvironmentVariable(github.id, "GH_TOKEN", { value: "ghp_AGAIN" });
+		await tom.setEnvironmentVariable(github.id, "GH_TOKEN", { value: "ghp_AGAIN2" });
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const versions = [(await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0];
+		await tom.detachSandboxEnvironment(sandbox.id, github.id);
+		versions.push((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0);
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "backend" });
+		versions.push((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0);
+		await tom.deleteEnvironment(github.id);
+		versions.push((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0);
+		for (let index = 1; index < versions.length; index++) {
+			expect(versions[index]).toBeGreaterThan(versions[index - 1] ?? Number.POSITIVE_INFINITY);
+		}
+	});
+
+	it("keeps a variable named as an object's own (constructor) as a protected variable", async () => {
+		const { api, tom } = setup();
+		const odd = await tom.createEnvironment({ name: "odd" });
+		await tom.setEnvironmentVariable(odd.id, "constructor", { protected: true, value: "v", bindings: NPM });
+		const sandbox = await tom.createSandbox({ environment: "odd", wait: true });
+		const table = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(table?.entries.map((entry) => [entry.name, entry.placeholder])).toEqual([
+			["constructor", expect.stringMatching(PLACEHOLDER)],
+		]);
+	});
+
+	it("a stop before a running attach's set-up leaves it for the next start", async () => {
+		const { tom } = setup();
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const attached = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect(attached.environments[0]?.pending).toBe(true);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n");
+		await vi.waitFor(async () =>
+			expect((await tom.listSandboxEnvironments(sandbox.id)).environments[0]?.pending).toBe(false),
+		);
+	});
+
+	it("a fork of a stopped sandbox with an environment attached gets its files", async () => {
+		const { tom } = setup();
+		await npmEnvironment(tom);
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(source.id, { wait: true });
+		await tom.attachSandboxEnvironment(source.id, { environment: "npm" });
+		const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
+		if (fork === undefined) throw new Error("No fork");
+		await vi.waitFor(async () =>
+			expect((await tom.readFile(fork.id, { path: ".npmrc" })).content).toBe("registry=npm\n"),
+		);
+	});
+
+	it("an environment's deny grants come off a sandbox only for an admin", async () => {
+		const { tom, client } = setup();
+		const github = await githubEnvironment(tom);
+		const policy = await tom.createEnvironment({ name: "policy" });
+		await tom.putEnvironmentGrants(policy.id, {
+			grants: [{ action: "deny", host: "api.github.com", methods: ["DELETE"] }],
+		});
+		const sandbox = await tom.createSandbox({ environments: ["backend", "policy"], wait: true });
+		const agent = client((await tom.createApiKey({ name: "agent", preset: "agent" })).secret);
+		expect((await failure(agent.detachSandboxEnvironment(sandbox.id, policy.id))).code).toBe("forbidden");
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([github.id, policy.id]);
+		// One with no deny grants comes off for anyone who may run commands.
+		await agent.detachSandboxEnvironment(sandbox.id, github.id);
+		await tom.detachSandboxEnvironment(sandbox.id, policy.id);
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toBeUndefined();
+	});
+
+	it("an environment deleted while it is attached is taken off again", async () => {
+		const store = createMemoryStore();
+		const { api, tom } = setup({ store });
+		await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environment: "backend", wait: true });
+		// The delete lands just after the attach's write, after it looked for the environment's sandboxes.
+		const update = store.sandboxes.update.bind(store.sandboxes);
+		let armed = true;
+		store.sandboxes.update = async (id, change) => {
+			const written = await update(id, change);
+			if (armed && written !== undefined && (written.environmentIds ?? []).includes(npm.id)) {
+				armed = false;
+				await store.environments.delete(npm.id);
+			}
+			return written;
+		};
+		const answer = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect(answer.environments.map((each) => each.name)).toEqual(["backend"]);
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([sandbox.environmentId]);
+		const table = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(table?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+	});
+
+	it("a rotation in an environment whose version is behind another's still moves the sandbox's version on", async () => {
+		const { api, tom, recorded } = setup({ now: () => 1_000 });
+		const github = await githubEnvironment(tom);
+		for (const value of ["a1", "a2", "a3"]) await tom.setEnvironmentVariable(github.id, "GH_TOKEN", { value });
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		await tom.setEnvironmentVariable(npm.id, "NPM_TOKEN", { value: "npm_ROTATED" });
+		const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(after?.version).toBeGreaterThan(before?.version ?? Number.POSITIVE_INFINITY);
+		expect(after?.entries.find((entry) => entry.name === "NPM_TOKEN")?.value).toBe("npm_ROTATED");
+		expect(last(recorded.secrets)).toEqual({ sandboxId: sandbox.id, version: after?.version });
+		await vi.waitFor(() => expect(last(recorded.egress)?.egress?.protected?.version).toBe(after?.version));
+	});
+
+	it("answers a sandbox's env as it is now to its own host only (env.fetch)", async () => {
+		const { api, tom } = setup();
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect((await api.service.sandboxEnv(STUB_HOST_ID, sandbox.id))?.env).toMatchObject({ LOG_LEVEL: "info" });
+		expect(await api.service.sandboxEnv("host_other", sandbox.id)).toBeUndefined();
+	});
+
+	it("each set-up's writes carry a fence past every earlier one's, and the later winner is written last", async () => {
+		const fences: number[] = [];
+		const { tom } = setup({
+			onWrite: async (_path, fence) => {
+				if (fence !== undefined) fences.push(fence);
+			},
+		});
+		await npmEnvironment(tom);
+		const other = await tom.createEnvironment({ name: "other" });
+		await tom.setEnvironmentFile(other.id, { path: ".npmrc", content: "registry=other\n" });
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		await vi.waitFor(async () =>
+			expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n"),
+		);
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "other" });
+		await vi.waitFor(async () =>
+			expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=other\n"),
+		);
+		expect(fences).toEqual([1, 2]);
+		expect((await tom.listSandboxEnvironments(sandbox.id)).environments.map((each) => each.pending)).toEqual([
+			false,
+			false,
+		]);
+	});
+
+	it("a set-up that finishes after the environments changed takes off only what it did", async () => {
+		let release = () => {};
+		let held = false;
+		const store = createMemoryStore();
+		const { tom } = setup({
+			store,
+			onWrite: async () => {
+				if (held) return;
+				held = true;
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+			},
+		});
+		await npmEnvironment(tom);
+		const plain = await tom.createEnvironment({ name: "plain" });
+		await tom.setEnvironmentVariable(plain.id, "PLAIN", { value: "1" });
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		await vi.waitFor(() => expect(held).toBe(true));
+		// While npm's file is being written, a file-free environment is put first.
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "plain", position: 0 });
+		release();
+		await vi.waitFor(async () => expect((await store.sandboxes.get(sandbox.id))?.pendingProvision).toBeUndefined());
+	});
+
+	it("a write that fails in flight stays pending for the next set-up", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup({
+			store,
+			onWrite: async () => {
+				throw new Error("the host stopped answering");
+			},
+		});
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		await vi.waitFor(async () =>
+			expect((await store.sandboxes.get(sandbox.id))?.pendingProvision).toEqual([
+				expect.objectContaining({ kind: "files", environmentId: npm.id }),
+			]),
+		);
+	});
+
+	it("an attach that moves an environment rewrites the path it now wins, and leaves other files as they are", async () => {
+		const { tom } = setup();
+		const first = await tom.createEnvironment({ name: "first" });
+		await tom.setEnvironmentFile(first.id, { path: ".npmrc", content: "first\n" });
+		await tom.setEnvironmentFile(first.id, { path: ".first", content: "mine\n" });
+		const second = await tom.createEnvironment({ name: "second" });
+		await tom.setEnvironmentFile(second.id, { path: ".npmrc", content: "second\n" });
+		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["first", "second"], wait: true });
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("second\n");
+		// Edited in the sandbox: a file whose winner the move doesn't change stays as edited.
+		await tom.writeFile(sandbox.id, { path: ".first", content: "edited\n" });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "first" });
+		await vi.waitFor(async () => expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("first\n"));
+		expect((await tom.readFile(sandbox.id, { path: ".first" })).content).toBe("edited\n");
+	});
+
+	it("an unrelated attach leaves files already set up as they are", async () => {
+		const { tom } = setup();
+		await npmEnvironment(tom);
+		const other = await tom.createEnvironment({ name: "other" });
+		await tom.setEnvironmentFile(other.id, { path: ".other", content: "other\n" });
+		const sandbox = await tom.createSandbox({ type: "microvm", environment: "npm", wait: true });
+		await tom.writeFile(sandbox.id, { path: ".npmrc", content: "edited\n" });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "other" });
+		await vi.waitFor(async () => expect((await tom.readFile(sandbox.id, { path: ".other" })).content).toBe("other\n"));
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("edited\n");
+	});
+
+	it("a move made while stopped is written when it next runs", async () => {
+		const { tom } = setup();
+		const first = await tom.createEnvironment({ name: "first" });
+		await tom.setEnvironmentFile(first.id, { path: ".npmrc", content: "first\n" });
+		const second = await tom.createEnvironment({ name: "second" });
+		await tom.setEnvironmentFile(second.id, { path: ".npmrc", content: "second\n" });
+		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["first", "second"], wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const moved = await tom.attachSandboxEnvironment(sandbox.id, { environment: "first" });
+		// The path it now wins is pending, shown on it.
+		expect(moved.environments.map((each) => [each.name, each.pending])).toEqual([
+			["second", false],
+			["first", true],
+		]);
+		await tom.startSandbox(sandbox.id, { wait: true });
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("first\n");
+	});
+
+	it("a fork keeps them, in order", async () => {
+		const { tom } = setup();
+		const github = await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const source = await tom.createSandbox({ environments: ["npm", "backend"], wait: true });
+		const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
+		expect(fork?.environmentIds).toEqual([npm.id, github.id]);
 	});
 });
