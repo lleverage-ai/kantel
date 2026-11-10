@@ -75,7 +75,7 @@ type Host struct {
 	callKantel func(ctx context.Context, method string, params any) (json.RawMessage, error)
 	// secrets holds sandboxes' protected values, in memory only, fetched from Kantel (secrets.fetch) on first use.
 	secrets *protect.Store
-	// fenceMu guards fences: each sandbox's environment set-up fence (fencedWrite).
+	// fenceMu guards fences: each sandbox path's environment set-up fence (fencedWrite).
 	fenceMu sync.Mutex
 	fences  map[string]*fence
 	// envFetch replaces env.fetch to Kantel (tests); nil asks Kantel.

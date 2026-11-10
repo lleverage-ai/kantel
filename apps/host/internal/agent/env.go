@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -104,18 +105,22 @@ func writeGuestEnv(ctx context.Context, t Tier, sandboxID string, env map[string
 	return nil
 }
 
-// fencedWrite is a sandbox.files.write with a fence (an environment set-up's): writes for one sandbox are made one at
-// a time, and one whose fence is below the highest taken for it is dropped, so a set-up's write delivered after a newer
-// set-up's never lands over it. The fence is taken only once the write is made.
+// fencedWrite is a sandbox.files.write with a fence (an environment set-up's): writes to one path of one sandbox are
+// made one at a time, and one whose fence is below the highest taken for that path is dropped (answered fenced), so a
+// set-up's write delivered after a newer set-up's write of the same path never lands over it. A fence is taken only
+// once its write is made, so a dropped write means a newer one of that path landed. The guest's write isn't cancelled
+// with the call (a cancelled call would leave it running unordered): it runs to its own end, up to fencedWriteTimeout,
+// with the path's lock held, so the next write of the path waits for it.
 func (h *Host) fencedWrite(ctx context.Context, t Tier, p proto.FileParams, data []byte) (map[string]bool, error) {
+	key := p.SandboxID + "\x00" + p.Path
 	h.fenceMu.Lock()
 	if h.fences == nil {
 		h.fences = map[string]*fence{}
 	}
-	f := h.fences[p.SandboxID]
+	f := h.fences[key]
 	if f == nil {
 		f = &fence{}
-		h.fences[p.SandboxID] = f
+		h.fences[key] = f
 	}
 	h.fenceMu.Unlock()
 	f.mu.Lock()
@@ -123,14 +128,20 @@ func (h *Host) fencedWrite(ctx context.Context, t Tier, p proto.FileParams, data
 	if p.Fence < f.highest {
 		return map[string]bool{"ok": true, "fenced": true}, nil
 	}
-	if err := t.WriteFile(ctx, p, data); err != nil {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fencedWriteTimeout)
+	defer cancel()
+	if err := t.WriteFile(writeCtx, p, data); err != nil {
 		return nil, err
 	}
 	f.highest = p.Fence
 	return map[string]bool{"ok": true}, nil
 }
 
-// fence is one sandbox's highest set-up fence taken, and the lock its fenced writes are made under.
+// fencedWriteTimeout bounds a fenced write's guest write, which the call's own cancellation doesn't end. A secret file
+// is at most 1 MiB, so this is far past any healthy write.
+const fencedWriteTimeout = 2 * time.Minute
+
+// fence is one sandbox path's highest set-up fence taken, and the lock its fenced writes are made under.
 type fence struct {
 	mu      sync.Mutex
 	highest int64

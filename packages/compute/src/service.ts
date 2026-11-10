@@ -2992,7 +2992,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const environments = await environmentsOf(sandbox);
 		const resolution = resolved(environments);
 		const { own } = envLayersOf(sandbox);
-		const pending = new Set((sandbox.pendingProvision ?? []).map((work) => work.environmentId));
+		// Pending: its own files or repositories, or a path a move gave it whose file isn't written yet.
+		const pending = new Set(
+			(sandbox.pendingProvision ?? []).flatMap((work) =>
+				work.kind === "paths"
+					? (work.paths ?? []).map((path) => resolution.files.get(path)?.environment.id)
+					: [work.environmentId],
+			),
+		);
 		return {
 			sandboxId: sandbox.id,
 			environments: environments.map((environment) => ({
@@ -3239,6 +3246,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return true;
 			}
 			try {
+				// Fenced (dropped by its host): a newer set-up's write of this path landed, whose winner is newer than this
+				// one's, so this item's part there is done.
 				await backend.writeFile(sandboxId, file.path, bytes, file.mode, { fence });
 				return true;
 			} catch (error) {

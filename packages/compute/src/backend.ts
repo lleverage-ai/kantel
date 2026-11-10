@@ -519,6 +519,11 @@ export interface BackendFileEntry {
 	readonly kind: "file" | "directory" | "symlink";
 	readonly size: number;
 	readonly modifiedAt?: number;
+	/**
+	 * A fenced write (an environment set-up's) the host dropped, because a newer set-up's write of the same path had
+	 * landed: nothing was written, and the path holds the newer content.
+	 */
+	readonly fenced?: boolean;
 }
 
 /** One of a running sandbox's processes, as its machine measured it over a short sample. */

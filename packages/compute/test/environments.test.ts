@@ -2384,7 +2384,12 @@ describe("a sandbox with several environments", () => {
 		await tom.setEnvironmentFile(second.id, { path: ".npmrc", content: "second\n" });
 		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["first", "second"], wait: true });
 		await tom.stopSandbox(sandbox.id, { wait: true });
-		await tom.attachSandboxEnvironment(sandbox.id, { environment: "first" });
+		const moved = await tom.attachSandboxEnvironment(sandbox.id, { environment: "first" });
+		// The path it now wins is pending, shown on it.
+		expect(moved.environments.map((each) => [each.name, each.pending])).toEqual([
+			["second", false],
+			["first", true],
+		]);
 		await tom.startSandbox(sandbox.id, { wait: true });
 		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("first\n");
 	});

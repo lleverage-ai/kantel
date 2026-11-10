@@ -258,17 +258,23 @@ func TestFencedWritesNeverLandOverANewerSetUps(t *testing.T) {
 	tier := newEnvTier(t, microvm.Tier)
 	tier.state["sbx_1"] = proto.StateRunning
 	h := newEnvHost(t, tier)
-	write := func(fence int64, content string) {
+	writeAt := func(path string, fence int64, content string) {
 		t.Helper()
 		data := base64.StdEncoding.EncodeToString([]byte(content))
-		if err := call(t, h, proto.MethodFileWrite, proto.FileParams{SandboxID: "sbx_1", Path: "/home/user/.npmrc", Data: data, Fence: fence}); err != nil {
+		if err := call(t, h, proto.MethodFileWrite, proto.FileParams{SandboxID: "sbx_1", Path: path, Data: data, Fence: fence}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	write := func(fence int64, content string) { t.Helper(); writeAt("/home/user/.npmrc", fence, content) }
 	write(5, "newer")
 	write(3, "older")
 	if got := tier.files["/home/user/.npmrc"]; got != "newer" {
 		t.Fatalf("the file is %q, want the newer set-up's", got)
+	}
+	// Fences are per path: a newer set-up's write of one path doesn't drop an older one's of another.
+	writeAt("/home/user/.other", 3, "other")
+	if got := tier.files["/home/user/.other"]; got != "other" {
+		t.Fatalf("the other path is %q, want it written", got)
 	}
 	write(5, "newer again")
 	write(0, "the user's own")
