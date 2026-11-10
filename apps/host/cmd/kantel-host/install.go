@@ -512,15 +512,23 @@ func uninstall(args []string) error {
 	if err := fs.noArgs(); err != nil {
 		return err
 	}
-	cfg, _ := agent.LoadConfig(*configPath)
-	cfg.Defaults() // a config it can't read (not root) still names the default root
+	// The root comes only from settings that were read (or that don't exist, which LoadConfig takes as the defaults):
+	// a file it can't read never turns into a guessed directory to delete.
+	cfg, loadErr := agent.LoadConfig(*configPath)
 	if *purge && !*yes {
 		again := "sudo kantel-host uninstall --purge --yes"
 		if *configPath != defaultConfigPath {
 			again = fmt.Sprintf("sudo kantel-host uninstall --config %s --purge --yes", *configPath)
 		}
+		root := cfg.Root
+		if loadErr != nil {
+			root = "the directory " + *configPath + " names, which can't be read now"
+		}
 		return usageErrorf("uninstall", "--purge deletes every sandbox and snapshot on this host and its images (%s), its settings (%s) and %s, and that can't be undone. To do it, run: %s",
-			cfg.Root, *configPath, binPath, again)
+			root, *configPath, binPath, again)
+	}
+	if *purge && loadErr != nil {
+		return fmt.Errorf("can't read the settings, so --purge doesn't know what to delete, and did nothing: %w. Fix or remove %s first (without it, uninstall --purge deletes %s)", loadErr, *configPath, agent.DefaultRoot)
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("uninstall needs root")

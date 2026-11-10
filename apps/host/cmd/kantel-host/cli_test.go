@@ -342,3 +342,34 @@ func TestInstallMissingOptionsAreUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// Settings that can't be read never become a guessed directory to purge: --purge refuses before doing anything, and
+// its confirmation doesn't name the default root as if the settings had.
+func TestPurgeRefusesSettingsItCantRead(t *testing.T) {
+	dir := t.TempDir()
+	malformed := filepath.Join(dir, "malformed.json")
+	if err := os.WriteFile(malformed, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := filepath.Join(dir, "unreadable.json")
+	if err := (agent.Config{Root: "/srv/kh"}).Save(unreadable); err != nil {
+		t.Fatal(err)
+	}
+	configs := []string{malformed}
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(unreadable, 0); err != nil {
+			t.Fatal(err)
+		}
+		configs = append(configs, unreadable)
+	}
+	for _, config := range configs {
+		_, errOut, code := cli(t, "uninstall", "--config", config, "--purge")
+		if code != 2 || strings.Contains(errOut, agent.DefaultRoot) || !strings.Contains(errOut, "can't be read now") {
+			t.Errorf("%s, --purge: exit %d\n%s", config, code, errOut)
+		}
+		_, errOut, code = cli(t, "uninstall", "--config", config, "--purge", "--yes")
+		if code != 1 || !strings.Contains(errOut, "did nothing") || strings.Contains(errOut, "needs root") {
+			t.Errorf("%s, --purge --yes: exit %d\n%s", config, code, errOut)
+		}
+	}
+}
