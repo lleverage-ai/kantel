@@ -46,8 +46,10 @@ func (h *Host) setEnv(ctx context.Context, t Tier, tier string, p proto.EnvParam
 // stdin, never in the script, so no value is ever parsed by the shell; it replaces the file in one rename, so a shell
 // starting meanwhile reads the old file or the new one, never half of it.
 const (
-	envWriteScript  = `set -e; mkdir -p "$(dirname ` + guest.EnvFile + `)"; cat > ` + guest.EnvFile + `.new; chmod 644 ` + guest.EnvFile + `.new; mv -f ` + guest.EnvFile + `.new ` + guest.EnvFile
-	envRemoveScript = `rm -f ` + guest.EnvFile
+	// Its own PATH, not the sandbox's (which its env may have changed), so the system's tools are the ones run.
+	envPath         = `PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; `
+	envWriteScript  = envPath + `set -e; mkdir -p "$(dirname ` + guest.EnvFile + `)"; cat > ` + guest.EnvFile + `.new; chmod 644 ` + guest.EnvFile + `.new; mv -f ` + guest.EnvFile + `.new ` + guest.EnvFile
+	envRemoveScript = envPath + `rm -f ` + guest.EnvFile
 )
 
 // writeGuestEnv makes a running microVM's env file hold exactly env (none for an empty one), as root.

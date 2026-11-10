@@ -293,7 +293,7 @@ In order, each with what a later one (or the sandbox's own env) sets instead, an
 
 `POST /v1/sandboxes/{sandboxId}/environments` (SDK method `attachSandboxEnvironment`)
 
-Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once, and on a host that supports it, so do new shells. Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`.
+Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once (and, on a host that supports it, services that read `/etc/kantel/env`). Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`.
 
 **Path parameters**
 

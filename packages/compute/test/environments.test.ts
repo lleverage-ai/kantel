@@ -2120,6 +2120,82 @@ describe("a sandbox with several environments", () => {
 		expect(await echo(tom, sandbox.id, "GH_TOKEN")).toMatch(PLACEHOLDER);
 	});
 
+	it("a later environment's plain variable over a protected one moves the version on, so its host fetches again", async () => {
+		const { api, tom, recorded } = setup();
+		await githubEnvironment(tom);
+		const later = await tom.createEnvironment({ name: "later" });
+		const sandbox = await tom.createSandbox({ environments: ["backend", "later"], wait: true });
+		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(before?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+		await tom.setEnvironmentVariable(later.id, "GH_TOKEN", { value: "plain" });
+		const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(after?.entries).toEqual([]);
+		expect(after?.version).toBeGreaterThan(before?.version ?? Number.POSITIVE_INFINITY);
+		expect(last(recorded.secrets)).toEqual({ sandboxId: sandbox.id, version: after?.version });
+		await tom.deleteEnvironmentVariable(later.id, "GH_TOKEN");
+		const again = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(again?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+		expect(again?.version).toBeGreaterThan(after?.version ?? Number.POSITIVE_INFINITY);
+	});
+
+	it("never answers below a version its host was given, on a clock that stands still", async () => {
+		const { api, tom } = setup({ now: () => 1_000 });
+		const github = await githubEnvironment(tom);
+		// Each protected edit moves backend's version on past the clock.
+		await tom.setEnvironmentVariable(github.id, "GH_TOKEN", { value: "ghp_AGAIN" });
+		await tom.setEnvironmentVariable(github.id, "GH_TOKEN", { value: "ghp_AGAIN2" });
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const versions = [(await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0];
+		await tom.detachSandboxEnvironment(sandbox.id, github.id);
+		versions.push((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0);
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "backend" });
+		versions.push((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0);
+		await tom.deleteEnvironment(github.id);
+		versions.push((await api.service.protectedTable(STUB_HOST_ID, sandbox.id))?.version ?? 0);
+		for (let index = 1; index < versions.length; index++) {
+			expect(versions[index]).toBeGreaterThan(versions[index - 1] ?? Number.POSITIVE_INFINITY);
+		}
+	});
+
+	it("keeps a variable named as an object's own (constructor) as a protected variable", async () => {
+		const { api, tom } = setup();
+		const odd = await tom.createEnvironment({ name: "odd" });
+		await tom.setEnvironmentVariable(odd.id, "constructor", { protected: true, value: "v", bindings: NPM });
+		const sandbox = await tom.createSandbox({ environment: "odd", wait: true });
+		const table = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(table?.entries.map((entry) => [entry.name, entry.placeholder])).toEqual([
+			["constructor", expect.stringMatching(PLACEHOLDER)],
+		]);
+	});
+
+	it("a stop before a running attach's set-up leaves it for the next start", async () => {
+		const { tom } = setup();
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const attached = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect(attached.environments[0]?.pending).toBe(true);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n");
+		await vi.waitFor(async () =>
+			expect((await tom.listSandboxEnvironments(sandbox.id)).environments[0]?.pending).toBe(false),
+		);
+	});
+
+	it("a fork of a stopped sandbox with an environment attached gets its files", async () => {
+		const { tom } = setup();
+		await npmEnvironment(tom);
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(source.id, { wait: true });
+		await tom.attachSandboxEnvironment(source.id, { environment: "npm" });
+		const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
+		if (fork === undefined) throw new Error("No fork");
+		await vi.waitFor(async () =>
+			expect((await tom.readFile(fork.id, { path: ".npmrc" })).content).toBe("registry=npm\n"),
+		);
+	});
+
 	it("a fork keeps them, in order", async () => {
 		const { tom } = setup();
 		const github = await githubEnvironment(tom);
