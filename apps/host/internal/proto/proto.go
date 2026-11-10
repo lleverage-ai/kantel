@@ -258,6 +258,12 @@ const FeatureGuestHealth = "guest-health"
 // an exit to the run whose machine ended. Such exits are sent again once a connection can carry events.
 const FeatureExitStamps = "exit-stamps"
 
+// FeatureSandboxEnv (HOST_FEATURES.sandboxEnv): the host takes sandbox.env (EnvParams), a sandbox's whole env replaced
+// where the host keeps it (what a later start, resume or fork on it boots with), and a running microVM's env file
+// (/etc/kantel/env, which its shells and commands read) rewritten at once. Without it a sandbox gets a new env only
+// with its next boot.
+const FeatureSandboxEnv = "sandbox-env"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -747,6 +753,13 @@ type SecretEntry struct {
 type SecretsTable struct {
 	Version int64         `json:"version"`
 	Entries []SecretEntry `json:"entries"`
+}
+
+// EnvParams is sandbox.env (Kantel → host, FeatureSandboxEnv): Env is the sandbox's whole environment from now, as an
+// identity's Env is (an empty one is none). The result is {"ok": true}.
+type EnvParams struct {
+	SandboxID string            `json:"sandboxId"`
+	Env       map[string]string `json:"env"`
 }
 
 // SecretsParams is sandbox.secrets (Kantel → host): the sandbox's table changed, so the host drops its copy.
@@ -1250,6 +1263,8 @@ const (
 	MethodEgress = "sandbox.egress"
 	// MethodSecrets (Kantel → host, SecretsParams) says a sandbox's protected variables changed; the result is {}.
 	MethodSecrets = "sandbox.secrets"
+	// MethodEnv (Kantel → host, EnvParams; FeatureSandboxEnv) replaces a sandbox's env, and a running microVM's env file.
+	MethodEnv = "sandbox.env"
 	// MethodSecretsFetch (host → Kantel, SandboxRef) answers a SecretsTable.
 	MethodSecretsFetch = "secrets.fetch"
 	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).

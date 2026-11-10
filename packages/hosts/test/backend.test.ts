@@ -142,6 +142,7 @@ class FakeHost {
 				this.sandboxes.delete(String(p.sandboxId));
 				return answer({ ok: true });
 			case "sandbox.egress":
+			case "sandbox.env":
 				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer({ ok: true });
 			case "sandbox.exec": {
 				const argv = p.argv as string[] | undefined;
@@ -741,6 +742,39 @@ describe("a restart on the latest base, checked with the host first", () => {
 		host.processes = () => undefined;
 		expect((await failure(root.listSandboxProcesses(sandbox.id))).code).toBe("not_supported");
 		expect(asked()).toHaveLength(2);
+	});
+
+	it("sends a sandbox's new env to its host as sandbox.env, the whole env each time", async () => {
+		const { service, root, backend } = setup();
+		const withEnv = { ...facts, features: ["sandbox-env"] };
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts: withEnv });
+		const host = new FakeHost(service, hostId);
+		host.facts = withEnv;
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const sent = () => host.params.filter((call) => call.method === "sandbox.env").map((call) => call.params);
+
+		await backend.updateEnv?.(sandbox.id, { GH_TOKEN: "kph_attached", "WITH SPACE": 'a "b"\n' });
+		await backend.updateEnv?.(sandbox.id, {});
+		expect(sent()).toEqual([
+			{ sandboxId: sandbox.id, env: { GH_TOKEN: "kph_attached", "WITH SPACE": 'a "b"\n' } },
+			{ sandboxId: sandbox.id, env: {} },
+		]);
+		await expect(backend.updateEnv?.("sbx_nope", { A: "1" })).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("sends no env to a host from before sandbox.env: the sandbox has it from its next boot", async () => {
+		const { service, root, backend } = setup();
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		await backend.updateEnv?.(sandbox.id, { A: "1" });
+		expect(host.calls).not.toContain("sandbox.env");
 	});
 
 	it("asks a host from before processes could be listed for none", async () => {

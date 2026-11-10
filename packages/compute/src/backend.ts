@@ -31,6 +31,12 @@ export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
  * no two of its snapshot records ever share a ref.
  */
 export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
+/**
+ * A host that takes a sandbox's new env while it runs (`updateEnv`, `HOST_FEATURES.sandboxEnv`): it keeps it for the
+ * sandbox's later boots and forks, and a running microVM's guest rewrites its env file. Without it the sandbox gets the
+ * new env when it next boots.
+ */
+export const SANDBOX_ENV_FEATURE = "sandbox-env";
 
 /**
  * What takes the space on a host's disk as the host measures it: `Host.diskUsage` with its snapshots in one
@@ -773,6 +779,11 @@ export interface SandboxBackend {
 	 * what it holds of them, and fetches them again on the sandbox's next request. Absent, nothing holds them.
 	 */
 	updateSecrets?(sandboxId: string, version: number): Promise<void>;
+	/**
+	 * The sandbox's env changed (an environment attached or detached): the host keeps the new one, and a running
+	 * microVM's guest rewrites its env file so new shells see it. Absent, the sandbox gets it when it next boots.
+	 */
+	updateEnv?(sandboxId: string, env: { readonly [name: string]: string }): Promise<void>;
 	/**
 	 * The runtime of each host that can build and boot template snapshots, one entry a host. Absent (with `buildTemplate`
 	 * and `deleteTemplateSnapshot`), the backend has no templates, and their routes answer `not_supported`.
