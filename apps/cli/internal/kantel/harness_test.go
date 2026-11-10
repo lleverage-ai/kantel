@@ -114,6 +114,8 @@ type opts struct {
 	env    cli.Env
 	stdin  string
 	tty    bool
+	// stdinTTY is stdin a terminal, as when a person types the command and pipes nothing in.
+	stdinTTY bool
 	// configDir is the config directory; default a temporary one.
 	configDir string
 }
@@ -139,7 +141,7 @@ func run(t *testing.T, argv []string, o opts) result {
 	var opened []string
 	code := cli.Run(Program(), argv, &cli.IO{
 		Stdout: &stdout, Stderr: &stderr, Stdin: strings.NewReader(o.stdin),
-		StdoutTTY: o.tty, StderrTTY: o.tty, Env: env, Home: dir, ConfigDir: dir, Cwd: dir,
+		StdoutTTY: o.tty, StderrTTY: o.tty, StdinTTY: o.stdinTTY, Env: env, Home: dir, ConfigDir: dir, Cwd: dir,
 		HTTP: f.server.Client(), Now: time.Now,
 		Sleep:   func(context.Context, time.Duration) error { return nil },
 		OpenURL: func(u string) { opened = append(opened, u) },
