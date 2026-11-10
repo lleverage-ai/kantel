@@ -170,6 +170,8 @@ export interface HostHubOptions {
 	onEvent?(hostId: string, event: HostEvent): void;
 	/** The host's current connection ended. */
 	onDisconnected?(hostId: string): void;
+	/** A connection's hello was welcomed: the host is connected (`connected`) from now on. */
+	onWelcomed?(hostId: string): void;
 	/**
 	 * A host's `secrets.fetch`: the sandbox's protected values, or `undefined` unless the sandbox is on `hostId` (answered
 	 * `not_found`). Absent, every fetch is answered `unavailable`.
@@ -548,6 +550,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			// replica, without it, changes nothing.
 			connection.usageAcks = welcome.usageAcks === true;
 			send(connection, { type: "welcome", welcome });
+			options.onWelcomed?.(connection.hostId);
 			const later = connection.later;
 			connection.later = undefined;
 			if (later === true) refresh(connection);

@@ -1363,6 +1363,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `usage` | [UsageSummary](/api/reference/types/#usagesummary) | yes |  |
 | `hostId` | string | no | The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. |
 | `hostName` | string | no | That host's name, with `hostId`. |
+| `hostReachable` | boolean | no | Whether the host it is placed on is connected to Kantel now. `false`: it isn't, so Kantel can't reach the sandbox or confirm what its machine is doing, and `state` is its last known state. Calls that need it running (commands, files, ports, SSH, the desktop and browser) answer `unavailable` until the host reconnects; a stop waits a while for it. Answered whether or not `hostId` is shown. Absent until it is placed. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 | `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
 

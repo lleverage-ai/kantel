@@ -281,6 +281,71 @@ describe("gateway replicas", () => {
 	});
 });
 
+describe("a host's connection as another replica sees it", () => {
+	// Its sandboxes' `hostReachable` on this replica follows its refresh, not the word of the replica that held the
+	// connection, which a console here may have read before: so the change is said again from here.
+	it("is said again when this replica's refresh sees another gain or lose it, or go with it", async () => {
+		const { replica, join } = cluster();
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		const said: string[] = [];
+		b.service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			hostConnection: async (hostId, connected) => {
+				said.push(`${hostId} ${connected}`);
+			},
+		});
+		const hostId = await join(a.service);
+		const host = new FakeHost(a.service, hostId);
+		host.connect();
+		await tick();
+		// Nothing changed on B until its refresh reads A's claim.
+		expect(said).toEqual([]);
+		await b.node.tick();
+		await tick();
+		expect(said).toEqual([`${hostId} true`]);
+		expect(b.service.hub.connected(hostId)).toBe(true);
+		// Unchanged: nothing said again.
+		await b.node.tick();
+		await tick();
+		expect(said).toHaveLength(1);
+
+		host.connection.closed(1006, "gone");
+		await tick();
+		await b.node.tick();
+		await tick();
+		expect(said).toEqual([`${hostId} true`, `${hostId} false`]);
+		expect(b.service.hub.connected(hostId)).toBe(false);
+	});
+
+	it("is said when the replica holding it goes without a word, once it's stale", async () => {
+		let at = 1_000_000;
+		const { replica, join } = cluster({ now: () => at });
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		const said: string[] = [];
+		b.service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			hostConnection: async (hostId, connected) => {
+				said.push(`${hostId} ${connected}`);
+			},
+		});
+		const hostId = await join(a.service);
+		new FakeHost(a.service, hostId).connect();
+		await tick();
+		await b.node.tick();
+		await tick();
+		expect(said).toEqual([`${hostId} true`]);
+		// A stops heartbeating (it died with the host's connection): past `staleMs`, B's refresh drops it.
+		at += 11_000;
+		await b.node.tick();
+		await tick();
+		expect(said).toEqual([`${hostId} true`, `${hostId} false`]);
+	});
+});
+
 describe("usage ticks passed on to other replicas", () => {
 	it("go to each peer one at a time, in the order they came, the oldest dropped past MAX_USAGE_QUEUE", async () => {
 		const store = createMemoryClusterStore();

@@ -158,6 +158,29 @@ describe("sandboxes", () => {
 		expect(sandboxActions("running", false)).toMatchObject({ connect: true, recover: false });
 	});
 
+	it("says a sandbox's host isn't connected, and offers only Stop", async () => {
+		let connected = true;
+		const backend = Object.assign(createStubBackend(), { hostConnected: async () => connected });
+		const { api, fetchApi } = setup({ backend });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		await source.sandboxes.create({ accountId, name: "away", kind: "microvm" });
+		await api.service.idle();
+		const [reached] = await source.sandboxes.list(accountId);
+		expect(reached?.hostUnreachable).toBeUndefined();
+
+		connected = false;
+		const [away] = await source.sandboxes.list(accountId);
+		expect(away).toMatchObject({ state: "running", hostUnreachable: true });
+		expect(sandboxActions("running", false, away?.hostUnreachable === true)).toEqual({
+			connect: false,
+			stop: true,
+			resume: false,
+			fork: false,
+			recover: false,
+		});
+	});
+
 	it("creates, lists, stops, resumes, forks and deletes", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);

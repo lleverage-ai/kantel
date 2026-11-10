@@ -1,6 +1,6 @@
 ---
 title: Concepts
-description: "The words Kantel uses, each defined once: control plane, host, sandbox, type, stop, resume, fork, snapshot, saved snapshot, account, organisation, API key and proxy, and how they fit together."
+description: "The words Kantel uses, each defined once: control plane, host, sandbox, type, stop, resume, fork, snapshot, saved snapshot, template, account, organisation, API key and proxy, and how they fit together."
 sidebar:
   badge:
     text: Experimental
@@ -48,7 +48,13 @@ A sandbox is **created** from a base image or a saved snapshot, and runs until y
 
 A **snapshot** is a copy of a sandbox's disk at one moment. Kantel takes them for you, so each sandbox has a **history** you can browse and restore files from.
 
-A **saved snapshot** is one you keep on purpose, under a name. It outlives the sandbox it came from, and you can create any number of new sandboxes from it, which makes it the way to build a template: install your tools once, save, and start every new sandbox from there.
+A **saved snapshot** is one you keep on purpose, under a name. It outlives the sandbox it came from, and you can create any number of new sandboxes from it: set a sandbox up once, with your repository cloned and your caches warm, save it, and start every new sandbox in that state.
+
+## Templates
+
+A **template** describes an environment rather than recording one: an image, a size, variables, a setup script and its network rules, in versions that never change once made. Kantel builds each version into a snapshot itself and keeps it as a cache, so sandboxes made from the template restore instead of booting, and when the template or its base image changes, Kantel builds it again. Templates are experimental, and on only where a deployment turns them on.
+
+Use a template for an environment you want to reproduce and keep patched, and a saved snapshot for a particular state you can't easily script, such as a checkout at one commit with its build caches warm. They work together: start a sandbox from a template, do the slow work, and save the result.
 
 ## Accounts and organisations
 

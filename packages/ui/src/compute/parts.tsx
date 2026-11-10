@@ -5,6 +5,16 @@
 import { type ComponentProps, type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDownIcon } from "../primitives/icons.tsx";
 import { SideScroll } from "../primitives/side-scroll.tsx";
+import { StatusLabel } from "../primitives/status.tsx";
+import {
+	HOST_UNREACHABLE_LABEL,
+	HOST_UNREACHABLE_STATUS,
+	SANDBOX_STATE_LABELS,
+	SANDBOX_STATE_STATUS,
+	type Sandbox,
+	showsHostUnreachable,
+	UNRESPONSIVE_LABEL,
+} from "./compute-model.ts";
 import "./table.css";
 
 /**
@@ -538,4 +548,22 @@ export function SectionHeading({ title, actions, id }: { title: ReactNode; actio
 			{actions === undefined ? null : <div className="flex flex-wrap items-center gap-2">{actions}</div>}
 		</div>
 	);
+}
+
+/**
+ * A sandbox's state in its colour: a running one whose guest agent doesn't answer as "Unresponsive", and one whose host
+ * isn't connected as "Host unreachable" (`showsHostUnreachable`), since its real state can't be known.
+ */
+export function SandboxStateLabel({
+	sandbox,
+}: {
+	sandbox: Pick<Sandbox, "state" | "unresponsive" | "hostUnreachable">;
+}) {
+	if (showsHostUnreachable(sandbox)) {
+		return <StatusLabel status={HOST_UNREACHABLE_STATUS}>{HOST_UNREACHABLE_LABEL}</StatusLabel>;
+	}
+	if (sandbox.state === "running" && sandbox.unresponsive !== undefined) {
+		return <StatusLabel status="error">{UNRESPONSIVE_LABEL}</StatusLabel>;
+	}
+	return <StatusLabel status={SANDBOX_STATE_STATUS[sandbox.state]}>{SANDBOX_STATE_LABELS[sandbox.state]}</StatusLabel>;
 }

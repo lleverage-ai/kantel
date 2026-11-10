@@ -368,6 +368,12 @@ export interface HostCluster {
 	 * kept in each replica's memory, and a poll may land on any of them.
 	 */
 	shareUsage(hostId: string, usage: unknown): void;
+	/**
+	 * Tells `listener` of each host whose connection another replica gained or lost (it connected there, it went, or the
+	 * replica holding it went), as this replica's refresh sees it: what its hub answers of the host changed then, not when
+	 * the replica holding the connection said so, which another replica may have read before this one's refresh.
+	 */
+	onRemoteChange(listener: (hostId: string) => void | Promise<void>): void;
 }
 
 /** The usage ticks waiting for one peer at most: a minute of 12 hosts' 5-second ticks. */
@@ -388,6 +394,10 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 	const claims = new Map<string, number>();
 	/** Hosts held by other live replicas, as last read. */
 	let remote = new Map<string, ReplicaRecord>();
+	/** Whether `remote` has been read once: changes are said only after. */
+	let read = false;
+	/** Told of each host another replica gained or lost the connection of (`onRemoteChange`). */
+	const remoteChanged = new Set<(hostId: string) => void | Promise<void>>();
 	/** The other live replicas, as last read. */
 	let peers: ReplicaRecord[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
@@ -428,7 +438,20 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 			const replica = live.get(owner.replicaId);
 			if (owner.replicaId !== replicaId && replica !== undefined) next.set(owner.hostId, replica);
 		}
+		const was = remote;
 		remote = next;
+		// What this replica answers of a host's connection changed: said once its first read is in (before, nothing was).
+		if (read) {
+			for (const hostId of new Set([...was.keys(), ...next.keys()])) {
+				if (was.get(hostId)?.id === next.get(hostId)?.id) continue;
+				for (const listener of remoteChanged)
+					safely(
+						"remote change",
+						Promise.resolve().then(() => listener(hostId)),
+					);
+			}
+		}
+		read = true;
 		peers = [...live.values()].filter((replica) => replica.id !== replicaId);
 		const local = localHub;
 		if (local === undefined) return;
@@ -550,6 +573,9 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 			await tick();
 			timer = setInterval(() => safely("heartbeat", tick()), heartbeatMs);
 			(timer as { unref?: () => void }).unref?.();
+		},
+		onRemoteChange(listener) {
+			remoteChanged.add(listener);
 		},
 		shareUsage(hostId, usage) {
 			const send = transport.usage;

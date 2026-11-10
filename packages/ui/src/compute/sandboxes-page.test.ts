@@ -3,16 +3,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import {
+	HOST_CHECK_POLL_MS,
+	HOST_UNREACHABLE_LABEL,
 	type HostChoice,
 	idleStopText,
 	type Sandbox,
 	type SandboxState,
+	sandboxActions,
+	sandboxesPollMs,
 	sandboxMachineText,
 	stoppedByText,
 	type Template,
 } from "./compute-model.ts";
-import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
-import { IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
+import { API_SERVER, createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
+import { SandboxStateLabel } from "./parts.tsx";
+import { canRestartOnLatest, canSaveSnapshot, IDLE_STOP_CHOICES, idleStopChoices } from "./sandbox-actions.tsx";
 import {
 	creatorFilters,
 	creatorText,
@@ -140,6 +145,63 @@ describe("a sandbox's page", () => {
 		expect(filesShown(running, {})).toBe("none");
 		// One whose guest agent doesn't answer shows its snapshot's, as a stopped one does.
 		expect(filesShown({ ...stopped, state: "running", unresponsive: "It is out of memory" }, source)).toBe("snapshot");
+		// So does one whose host isn't connected.
+		expect(filesShown({ ...stopped, state: "running", hostUnreachable: true }, source)).toBe("snapshot");
+	});
+});
+
+describe("a sandbox whose host isn't connected", () => {
+	const label = (sandbox: Pick<Sandbox, "state" | "unresponsive" | "hostUnreachable">) =>
+		renderToStaticMarkup(createElement(SandboxStateLabel, { sandbox })).replace(/<[^>]+>/g, "");
+
+	it("shows Host unreachable in place of a state its host could have changed, and keeps stopped and error", () => {
+		for (const state of ["starting", "running", "stopping", "paused"] as const) {
+			expect(label({ state, hostUnreachable: true })).toBe(HOST_UNREACHABLE_LABEL);
+		}
+		expect(label({ state: "stopped", hostUnreachable: true })).toBe("Stopped");
+		expect(label({ state: "error", hostUnreachable: true })).toBe("Error");
+		// Its host being away says more than its guest agent not answering, which can't be known now.
+		expect(label({ state: "running", hostUnreachable: true, unresponsive: "It is out of memory" })).toBe(
+			HOST_UNREACHABLE_LABEL,
+		);
+		expect(label({ state: "running" })).toBe("Running");
+	});
+
+	it("offers only Stop: connecting, forking, resuming and recovering all need its host", () => {
+		expect(sandboxActions("running", false, true)).toEqual({
+			connect: false,
+			stop: true,
+			resume: false,
+			fork: false,
+			recover: false,
+		});
+		expect(sandboxActions("paused", false, true)).toMatchObject({ stop: true, resume: false });
+		expect(sandboxActions("stopped", false, true)).toMatchObject({ stop: false, resume: false, fork: false });
+		expect(sandboxActions("error", false, true)).toMatchObject({ resume: false, recover: false });
+		expect(sandboxActions("running")).toMatchObject({ connect: true, fork: true });
+	});
+
+	it("offers no Save snapshot or Restart on latest base, which need the host that holds its disk", () => {
+		// On a base six days behind.
+		const { base } = API_SERVER;
+		const snapshot = { id: "snap_1", takenAt: 0 };
+		expect(canSaveSnapshot({ snapshot })).toBe(true);
+		expect(canSaveSnapshot({ snapshot, hostUnreachable: true })).toBe(false);
+		expect(canRestartOnLatest({ state: "running", base })).toBe(true);
+		expect(canRestartOnLatest({ state: "running", base, hostUnreachable: true })).toBe(false);
+		expect(canRestartOnLatest({ state: "stopped", base, hostUnreachable: true })).toBe(false);
+	});
+
+	it("is read again every 15 seconds, as is any running one, so a missed word of its host is put right", () => {
+		expect(sandboxesPollMs([{ state: "running" }], 1_000)).toBe(HOST_CHECK_POLL_MS);
+		expect(sandboxesPollMs([{ state: "stopped", hostUnreachable: true }], 1_000)).toBe(HOST_CHECK_POLL_MS);
+		expect(sandboxesPollMs([{ state: "stopped" }, { state: "error" }], 1_000)).toBeUndefined();
+		// Anything between states is read sooner, frozen or not.
+		expect(sandboxesPollMs([{ state: "running" }, { state: "starting" }], 1_000)).toBe(1_000);
+		expect(sandboxesPollMs([{ state: "starting" }], 1_000, true)).toBe(1_000);
+		// A story's page, frozen at one time, isn't read again for its host.
+		expect(sandboxesPollMs([{ state: "running", hostUnreachable: true }], 1_000, true)).toBeUndefined();
+		expect(HOST_CHECK_POLL_MS).toBe(15_000);
 	});
 });
 

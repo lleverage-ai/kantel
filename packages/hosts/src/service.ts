@@ -352,6 +352,11 @@ export interface HostComputeLink {
 	 */
 	reportExit?(hostId: string, sandboxId: string, error: string, healthAt?: number): Promise<void>;
 	/**
+	 * A host connected here (its hello welcomed) or its connection here ended: whether its sandboxes can be reached
+	 * changed (`ComputeService.reportHostConnection`). Called by the gateway holding the connection alone.
+	 */
+	hostConnection?(hostId: string, connected: boolean): Promise<void>;
+	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
 	 */
@@ -1104,10 +1109,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					await store.updateHost(hostId, (host) => ({ ...host, lastSeenAt: clock.now() }));
 				})(),
 			);
+			if (compute?.hostConnection !== undefined) report(compute.hostConnection(hostId, false));
+		},
+		onWelcomed(hostId) {
+			if (compute?.hostConnection !== undefined) report(compute.hostConnection(hostId, true));
 		},
 		...(options.callTimeoutMs === undefined ? {} : { callTimeoutMs: options.callTimeoutMs }),
 	});
 	const hub = cluster === undefined ? local : cluster.route(local);
+	// A host another replica gained or lost: this one's answer for it changed only now, perhaps after a console here read
+	// its sandboxes on the word of the replica that held it, so it's said again from here.
+	cluster?.onRemoteChange((hostId) => compute?.hostConnection?.(hostId, hub.connected(hostId)));
 
 	// Read the latest release now, so the first list after a start has it rather than starting the read itself.
 	options.releases?.known();

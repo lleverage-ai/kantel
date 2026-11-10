@@ -1745,6 +1745,11 @@ export interface ComputeFixtureOptions {
 	/** Changes to sample hosts by ID, for a story of a state the sample doesn't have (one updating). */
 	readonly hostOverrides?: Readonly<Record<string, Partial<Host>>>;
 	/**
+	 * Sample hosts, by ID, that aren't connected: they show offline, and their sandboxes `hostUnreachable`, for a story
+	 * of a host that went away under its sandboxes.
+	 */
+	readonly hostsAway?: readonly string[];
+	/**
 	 * Where hosts reach the control plane, as the deployment set it. Default a default install's loopback address
 	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
 	 */
@@ -1842,7 +1847,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			const copy = moved(box, ["createdAt", "stopsAt", "idleStopsAt"]);
 			const snapshot =
 				box.snapshot?.takenAt === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
-			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot })))];
+			const away =
+				box.hostId !== undefined && options.hostsAway?.includes(box.hostId) === true ? { hostUnreachable: true } : {};
+			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot, ...away })))];
 		}),
 	);
 	// Bundles by account and digest: a digest names a bundle only within its account.
@@ -1900,6 +1907,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			{
 				...moved(host, ["lastSeenAt", "joinedAt"]),
 				...(host.disk === undefined ? {} : { disk: moved(host.disk, ["measuredAt"]) }),
+				...(options.hostsAway?.includes(host.id) === true ? { state: "offline" as const } : {}),
 				...options.hostOverrides?.[host.id],
 			},
 		]),

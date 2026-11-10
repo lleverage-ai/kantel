@@ -1,6 +1,6 @@
 ---
 title: Saved snapshots
-description: Save a sandbox's state under a name, start new sandboxes from it as a template, replace it with a newer version, and delete it.
+description: Save a sandbox's state under a name, start new sandboxes from it, replace it with a newer version, and delete it.
 sidebar:
   badge:
     text: Experimental
@@ -11,7 +11,9 @@ sidebar:
 These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
-A saved snapshot is a sandbox's state kept under a name until you delete it. It outlives the sandbox it came from, and any number of new sandboxes can start from it. That makes it a template: set a sandbox up once, with your repository cloned, your tools installed and your caches warm, save it, and start each new sandbox from there in the state you left it.
+A saved snapshot is a sandbox's state kept under a name until you delete it. It outlives the sandbox it came from, and any number of new sandboxes can start from it. Set a sandbox up once, with your repository cloned, your tools installed and your caches warm, save it, and start each new sandbox from there in the state you left it.
+
+A saved snapshot records a state; Kantel doesn't know how it was made, so it can't rebuild it, and it doesn't pick up a newer base image. For an environment described by an image, a size and a setup script, which Kantel builds, keeps up to date and rebuilds for you, use a [template](/api/reference/templates/) instead (experimental), and save snapshots of the states you reach from it.
 
 The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). Saving and deleting need a key with `snapshots:write`, listing `snapshots:read`, and creating sandboxes `sandboxes:write`.
 
@@ -27,7 +29,7 @@ curl -s "$KANTEL_URL/v1/snapshots" \
 ```
 
 ```ts
-const template = await kantel.saveSnapshot({
+const saved = await kantel.saveSnapshot({
 	name: "web-app-base",
 	sandboxId: "sbx_4kq9x2mt",
 	description: "Node 22, pnpm, repo cloned, deps installed",
@@ -105,7 +107,7 @@ const sandboxes = await Promise.all(
 );
 ```
 
-Each new sandbox records where it came from in `source.snapshotId`. A snapshot keeps its sandbox's type in `sandboxType`, so start a microVM template as a microVM. A name that doesn't exist in the account answers `404` with `not_found`.
+Each new sandbox records where it came from in `source.snapshotId`. A snapshot keeps its sandbox's type in `sandboxType`, so start a microVM's snapshot as a microVM. A name that doesn't exist in the account answers `404` with `not_found`.
 
 ### Bring your branch into one
 
@@ -119,9 +121,9 @@ kantel exec "$id" --timeout 0 -- 'cd app && pnpm test'
 
 It finds the base in the `git.base` label above, or in a `.kantel-base-sha` file at the top of the clone, which beats the label, since it belongs to the checkout rather than the snapshot. Your working tree goes as it is, uncommitted changes and new files included, and the sandbox's `node_modules` and build caches stay. Sync fails, and says why, when the trees don't match afterwards. A 2.5 MiB patch of 467 files into a 21,000-file monorepo took about 2.5 seconds. See [Syncing a git checkout](/tools/cli/#syncing-a-git-checkout).
 
-Creating from a saved snapshot and [forking](/sandboxes/lifecycle/#fork) both copy a state. Fork when the source is a sandbox you're working in now; save and create when the state is a template you'll come back to, or the source sandbox will be deleted.
+Creating from a saved snapshot and [forking](/sandboxes/lifecycle/#fork) both copy a state. Fork when the source is a sandbox you're working in now; save and create when it's a state you'll come back to, or the source sandbox will be deleted.
 
-## Update a template
+## Replace a saved snapshot
 
 Saving under a name already in use answers `409` with `conflict`. To replace the old version, say so with `replace`:
 

@@ -1044,6 +1044,15 @@ export const Sandbox = Type.Object(
 			}),
 		),
 		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
+		hostReachable: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether the host it is placed on is connected to Kantel now. `false`: it isn't, so Kantel can't reach the " +
+					"sandbox or confirm what its machine is doing, and `state` is its last known state. Calls that need it " +
+					"running (commands, files, ports, SSH, the desktop and browser) answer `unavailable` until the host " +
+					"reconnects; a stop waits a while for it. Answered whether or not `hostId` is shown. Absent until it is placed.",
+			}),
+		),
 		base: Type.Optional(SandboxBase),
 		startup: Type.Optional(SandboxStartup),
 	},
