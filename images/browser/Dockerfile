@@ -5,9 +5,11 @@
 # tunnels, and server-side credential fills. Two engines:
 #   headless-shell  Chrome for Testing's chrome-headless-shell: faster to launch
 #                   and lighter, but no extensions and easier to fingerprint.
-#                   The default (DEFAULT_ENGINE).
+#                   Picked by /start's `engine: "headless-shell"`.
 #   chromium        Debian Chromium in new headless mode: full browser, extensions,
-#                   closest to a real Chrome. Picked by /start's `engine`.
+#                   closest to a real Chrome. agent/server.mjs's default, so
+#                   the one Kantel's browsers run: packages/browser's
+#                   coordinator starts them with no `engine`.
 # Plus a small Node agent that proxies CDP, streams the live view, and saves
 # and restores the profile. Session recording only captures frames here;
 # nothing is encoded in this container.
@@ -27,18 +29,19 @@ FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae
 # Keep this on Debian's chromium build when Debian has it, so a context saved
 # by one engine opens in the other (Chrome won't open a profile from a newer
 # version). For now it's a milestone ahead: Chrome 157.0.8103.38 fixes 7
-# critical bugs and the Aura sandbox escape CVE-2026-121178, and Debian has no
-# chromium 157 yet. A profile the 157 headless shell wrote still opened in
+# critical bugs and the Aura sandbox escape CVE-2026-121178, and 157.0.8103.50
+# fixes CVE-2026-125350, an XML use-after-free exploited in the wild. Debian has
+# no chromium 157 yet. A profile the 157 headless shell wrote still opened in
 # chromium 156.0.8078.79 with its cookies and localStorage (tested 3 Nov 2026).
 # Move both to the same build once bookworm-security publishes chromium 157.
-ARG HEADLESS_SHELL_VERSION=157.0.8103.38
-ARG HEADLESS_SHELL_SHA256=deafffa74660b34853a4119c361fd427ac8c9fcb62db51ddb8a797cd83a4ba2d
+ARG HEADLESS_SHELL_VERSION=157.0.8103.50
+ARG HEADLESS_SHELL_SHA256=7bf0d41e424efd1d6281c4162993ab9dc5de92fac213c211614905a71c057d0f
 # LLE-17270: Chrome before 156.0.8078.73 has 4 critical bugs a page can reach
 # (CVE-2026-118306, -118331, -118344, -118348), and before 156.0.8078.79 a
 # GarbageCollection bug that escapes the sandbox (CVE-2026-119263). Both
 # engines run with --no-sandbox. The build fails if Debian's chromium is older
-# than this. Raise it to 157.0.8103.38 once bookworm-security publishes that
-# build.
+# than this. Raise it to 157.0.8103.50 (CVE-2026-125350, exploited) once
+# bookworm-security publishes that build or later.
 ARG CHROMIUM_MIN_VERSION=156.0.8078.79
 
 # Fonts: Liberation for the metric-compatible Latin faces, Noto core for the
