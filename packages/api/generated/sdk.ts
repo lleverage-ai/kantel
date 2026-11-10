@@ -271,7 +271,7 @@ export interface BucketMountSource {
 	readonly bucketSourceId: string;
 	/** The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket. */
 	readonly prefix: string;
-	/** How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's. */
+	/** How long the host trusts its listing of the prefix before it looks again, so objects added later appear: it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call `refreshSandboxMounts`. */
 	readonly refreshTtlSeconds?: number;
 }
 
@@ -1514,6 +1514,30 @@ export interface ReadFileQuery {
 export interface ReadSnapshotFileQuery {
 	readonly path: string;
 	readonly encoding?: FileEncoding;
+}
+
+/** A bucket mount as the sandbox shows it after a refresh. */
+export interface RefreshedMount {
+	readonly path: string;
+	readonly source: MountSource;
+	/** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
+	readonly status: MountStatus;
+	/** Why it is `failed`, in words. */
+	readonly error?: string;
+	/** How many objects the listing it shows holds. */
+	readonly objects?: number;
+	/** When the listing it shows began (ms since the epoch), after the call arrived: it has every object the bucket held then. */
+	readonly listedAt?: number;
+}
+
+export interface RefreshedMountList {
+	/** Each bucket mount refreshed, in the sandbox's order. */
+	readonly items: readonly RefreshedMount[];
+}
+
+export interface RefreshMountsBody {
+	/** Just the bucket mount at this path. Default: every bucket mount of the sandbox's. */
+	readonly path?: string;
 }
 
 export interface ResumeSandboxBody {
@@ -3186,6 +3210,8 @@ export interface KantelClient {
 	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/mounts/refresh` */
+	refreshSandboxMounts(sandboxId: string, body?: RefreshMountsBody, options?: CallOptions): Promise<RefreshedMountList>;
 	/** Upload a bundle. Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bundles` */
 	uploadBundle(body: RawBody, query?: UploadBundleQuery, options?: CallOptions): Promise<Bundle>;
 	/** List bundles. The account's bundles, newest first. A key needs `sandboxes:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bundles` */
@@ -3599,6 +3625,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: `/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
 		removeAccountHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		refreshSandboxMounts: (sandboxId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/mounts/refresh`, body },
+				callOptions,
+			),
 		uploadBundle: (body, query, callOptions) =>
 			send(options, { method: "POST", path: "/bundles", query, raw: { body, type: "application/x-tar" } }, callOptions),
 		listBundles: (query, callOptions) => send(options, { method: "GET", path: "/bundles", query }, callOptions),

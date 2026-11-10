@@ -670,6 +670,40 @@ describe("the backend's mounts", () => {
 	});
 });
 
+describe("the backend's mount refresh", () => {
+	it("isn't asked of a host that can't promise a current listing, even one with bucket mounts", async () => {
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.mountsBucket]);
+		await connect();
+		await backend.create(spec("sbx_one", hostId, [BUCKET]));
+		const refused = await failure(backend.refreshMounts?.("sbx_one") ?? Promise.resolve());
+		expect(refused.code).toBe("not_supported");
+		expect(host.calls.some((call) => call.method === "sandbox.mounts.refresh")).toBe(false);
+	});
+
+	it("asks for a sync, of one path or all, and answers the host's statuses with their listings", async () => {
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.mountsBucket, HOST_FEATURES.mountsSync]);
+		await connect();
+		await backend.create(spec("sbx_one", hostId, [BUNDLE, BUCKET]));
+		host.answer = (method) =>
+			method === "sandbox.mounts.refresh"
+				? [
+						{ path: "/mnt/skills", status: "ready" },
+						{ path: "/mnt/data", status: "ready", error: "", objects: 12, listedAt: 1_700_000_000_123, bytes: 9 },
+					]
+				: undefined;
+		expect(await backend.refreshMounts?.("sbx_one", "/mnt/data")).toEqual([
+			{ path: "/mnt/skills", status: "ready" },
+			{ path: "/mnt/data", status: "ready", objects: 12, listedAt: 1_700_000_000_123 },
+		]);
+		await backend.refreshMounts?.("sbx_one");
+		const asked = host.calls.filter((call) => call.method === "sandbox.mounts.refresh").map((call) => call.params);
+		expect(asked).toEqual([
+			{ sandboxId: "sbx_one", path: "/mnt/data", sync: true },
+			{ sandboxId: "sbx_one", sync: true },
+		]);
+	});
+});
+
 describe("the backend's file streams", () => {
 	const read = (backend: SandboxBackend, sandboxId: string, path: string) => {
 		if (backend.readFileStream === undefined) throw new Error("The backend streams no files");

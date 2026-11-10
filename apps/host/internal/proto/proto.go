@@ -192,6 +192,11 @@ const FeatureTemplateBuild = "template-build"
 // answers sandbox.mounts.refresh. Experimental: the control plane sends mounts only behind its switch.
 const FeatureBucketMounts = "mounts-bucket"
 
+// FeatureMountsSync (HOST_FEATURES.mountsSync): sandbox.mounts.refresh takes Sync, and then answers only once each
+// mount it names shows a listing that began after the call arrived (MountStatus.ListedAt), or fails saying which
+// couldn't: a listing error, or a guest that didn't take the new listing.
+const FeatureMountsSync = "mounts-sync"
+
 // FeatureTemplateImageBuild: the host builds templates' custom images (a Dockerfile, or an image reference) in a build
 // microVM whose only network is the sandbox egress proxy, and boots them through Kantel's initramfs (the injected
 // guest agent). Reported only when its settings switch the builder on (templateBuilder) and it injects the agent. A
@@ -571,19 +576,28 @@ type MountStatus struct {
 	State string `json:"status"`
 	// Error says why a failed mount failed (never a credential).
 	Error string `json:"error,omitempty"`
-	// Objects and Bytes are what the manifest holds; RefreshedAt (ms) is when the prefix was last listed.
+	// Objects and Bytes are what the manifest holds; RefreshedAt (ms) is when the prefix was last listed, and ListedAt
+	// (ms) when the listing the mount shows began: it has every object the bucket held then.
 	Objects     int   `json:"objects,omitempty"`
 	Bytes       int64 `json:"bytes,omitempty"`
 	RefreshedAt int64 `json:"refreshedAt,omitempty"`
+	ListedAt    int64 `json:"listedAt,omitempty"`
 	// ListCalls is how many list requests (pages) the host has made for this mount since it was mounted.
 	ListCalls int64 `json:"listCalls,omitempty"`
 }
 
 // MountsRefreshParams is sandbox.mounts.refresh: list the sandbox's bucket mounts again now (Path empty: all of
 // them), and retry a failed one. The result is the sandbox's []MountStatus.
+//
+// With Sync (FeatureMountsSync) it answers only once each mount Path names (all its bucket mounts when empty) shows
+// the sandbox a listing that began after the call arrived, with no MinTTL holding it off, so whatever was in the
+// bucket before the call is there for the next open in the sandbox. A listing that fails, or a guest that doesn't
+// take it, fails the call (ErrUnavailable) rather than leaving an older listing looking current; a bundle mount at
+// Path is ErrInvalid, since it never changes.
 type MountsRefreshParams struct {
 	SandboxID string `json:"sandboxId"`
 	Path      string `json:"path,omitempty"`
+	Sync      bool   `json:"sync,omitempty"`
 }
 
 // BucketResolveParams is bucket.fetch (host → Kantel): a bucket source a sandbox on this host mounts.

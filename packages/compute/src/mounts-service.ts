@@ -45,6 +45,7 @@ export const DEFAULT_MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024;
 const READ_PART_BYTES = 1024 * 1024;
 
 type MountRoutes =
+	| "refreshSandboxMounts"
 	| "createUploadUrl"
 	| "createDownloadUrl"
 	| "extractArchive"
@@ -617,6 +618,57 @@ export function createMounts(deps: MountsDeps) {
 	}
 
 	const handlers: MountHandlers = {
+		// What the sandbox shows of its buckets after the call: never an older listing passed off as current, so a
+		// caller that changed a bucket (a skill published) knows the sandbox has the change before it uses it.
+		refreshSandboxMounts: async (principal, { params, body }) => {
+			const { sandbox } = await deps.sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			const path = body.path === undefined ? undefined : resolvePath(body.path);
+			const mounts = sandbox.mounts ?? [];
+			if (path !== undefined) {
+				const mount = mounts.find((candidate) => candidate.path === path);
+				if (mount === undefined) throw new KantelError("not_found", `The sandbox has no mount at ${path}`);
+				if (mount.source.kind === "bundle") {
+					throw new KantelError(
+						"invalid",
+						`The mount at ${path} is a bundle, which never changes: mount another digest for other files`,
+					);
+				}
+			}
+			const buckets = mounts.filter(
+				(mount) => mount.source.kind === "bucket" && (path === undefined || mount.path === path),
+			);
+			if (buckets.length === 0) return { items: [] };
+			if (backend.refreshMounts === undefined) {
+				throw new KantelError("not_supported", "This deployment's sandboxes can't refresh their mounts");
+			}
+			const running = await deps.requireRunning(principal, sandbox.id);
+			const answered = new Map((await backend.refreshMounts(running.id, path)).map((status) => [status.path, status]));
+			// Every mount asked about must come back refreshed: never a stored status standing in for one the backend
+			// didn't answer (a mount its host never had, say, from before it could mount buckets).
+			const items: computeSchema.RefreshedMount[] = [];
+			const stale: string[] = [];
+			for (const mount of buckets) {
+				const status = answered.get(mount.path);
+				if (status === undefined) {
+					stale.push(`${mount.path}: its host didn't refresh it`);
+				} else if (status.status !== "ready" || status.listedAt === undefined) {
+					stale.push(`${mount.path}: ${status.error ?? `it is ${status.status}, with no new listing`}`);
+				} else {
+					items.push({
+						path: mount.path,
+						source: { ...mount.source },
+						status: status.status,
+						...(status.objects === undefined ? {} : { objects: status.objects }),
+						listedAt: status.listedAt,
+					});
+				}
+			}
+			if (stale.length > 0) {
+				throw new KantelError("unavailable", `Couldn't bring the sandbox's mounts up to date: ${stale.join("; ")}`);
+			}
+			return { items };
+		},
+
 		createUploadUrl: (principal, { params, body }, request) =>
 			fileUrl(principal, params.sandboxId, body, "PUT", request),
 

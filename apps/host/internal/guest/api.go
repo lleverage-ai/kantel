@@ -156,6 +156,10 @@ type MountResult struct {
 	Error string `json:"error,omitempty"`
 	// Version is the manifest version the guest now shows.
 	Version int64 `json:"version,omitempty"`
+	// Current says the kernel already forgot the names that changed with Version, so the next lookup in the sandbox
+	// sees it rather than one cached for up to the mount's entry timeout. An older guest agent never says, and a host
+	// that needs that waits the timeout out instead (CacheTimeout).
+	Current bool `json:"current,omitempty"`
 }
 
 // Manifest is a bucket mount's whole tree: every directory and object under the prefix, by path relative to it.

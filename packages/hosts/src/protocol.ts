@@ -151,6 +151,11 @@ export const HOST_FEATURES = {
 	 * prefix read-only, and answers its status as for bundles.
 	 */
 	mountsBucket: "mounts-bucket",
+	/**
+	 * `sandbox.mounts.refresh` takes `sync` (`HostMountsRefresh`): it answers once the sandbox shows a listing that began
+	 * after the call, or fails saying why. A host without it can't promise that, so a refresh isn't asked of it.
+	 */
+	mountsSync: "mounts-sync",
 	/** `sandbox.files.open`: a file's bytes streamed both ways on a port stream (signed file URLs, archives). */
 	fileStreams: "file-streams",
 	/**
@@ -379,6 +384,22 @@ export interface HostMountStatus {
 	readonly path: string;
 	readonly status: "pending" | "ready" | "failed";
 	readonly error?: string;
+	/** A bucket mount's: how many objects its listing holds. */
+	readonly objects?: number;
+	/** A bucket mount's: when the listing it shows began (ms). It has every object the bucket held then. */
+	readonly listedAt?: number;
+}
+
+/**
+ * `sandbox.mounts.refresh`'s params with `sync` (`HOST_FEATURES.mountsSync`): the host answers, with the sandbox's
+ * `HostMountStatus`es, only once each bucket mount `path` names (every one without it) shows the sandbox a listing that
+ * began after the call arrived; a listing that fails, or a guest that doesn't take it, is `unavailable`. A bundle at
+ * `path` is `invalid`, a path with no mount `not_found`, and a sandbox that isn't running `conflict`.
+ */
+export interface HostMountsRefresh {
+	readonly sandboxId: string;
+	readonly path?: string;
+	readonly sync: true;
 }
 
 /** The answer to a host's `bucket.fetch` `{ sandboxId, bucketSourceId }`: what reads the bucket, in host memory only. */
@@ -974,6 +995,8 @@ export const HostMethods = {
 	 * sandbox is on that host and mounts that bucket source.
 	 */
 	bucketFetch: "bucket.fetch",
+	/** Kantel to host: `HostMountsRefresh`, answered with the sandbox's `HostMountStatus[]`. */
+	mountsRefresh: "sandbox.mounts.refresh",
 	/** Builds a template snapshot: `HostTemplateBuild`, answered with `HostTemplateBuilt`. */
 	templateBuild: "template.build",
 	/** Deletes a template snapshot's directory, `{ snapshotId }`, and nothing else. Result `{ ok: true }`. */

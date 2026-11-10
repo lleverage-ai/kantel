@@ -28,6 +28,7 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 | Protected variables | A protected `GH_TOKEN` swapped on the way out to the real `api.github.com`, with the sandbox only ever holding the placeholder, on a real Firecracker host |
 | Account hosts | With `KANTEL_ACCOUNT_HOSTS=experimental` on a local install, a member who isn't an admin added a machine of her own and ran a microVM on it. Other people's sandboxes stayed on the shared host, they couldn't see hers, and drain and removal worked. Under `wrangler dev`, the printed join command installed a released `kantel-host` in a systemd container, which registered and ran an isolate |
 | Organisations and API keys | Making an organisation, an invite code, an email invite accepted through the mail catcher, and a key whose secret shows once, on local installs |
+| Mounts | With `KANTEL_MOUNTS=experimental` on a local install with a real host: bundle mounts, and bucket mounts from MinIO and from a real Google Cloud Storage bucket read with a service account's JSON key. The files matched the store's checksums, every write failed as read-only, a second sandbox read them from the host's cache, and the mount came back after a stop and resume. The key was nowhere in the guest, or in the host's or gateway's logs. Signed file URLs and archive extraction worked on the same kind of install |
 | Usage graphs | Live CPU and memory graphs for a microVM, isolates and their host on a local install with `kantel-host` from main, compared against `top` |
 | Self-hosted install | The Compose installer from nothing, upgrades with `--upgrade` that keep data, and `kantel-admin`, on local machines |
 | Hosted service | At app.kantel.dev: email-code sign-in to a new personal space, and **Add a host** printing the join command. New without a host refuses, as it should |
@@ -42,7 +43,6 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 - **Public ports**: tested against the stand-in and in real-VM tests. A port served at `kantel.run` on the hosted service hasn't been checked live.
 - **Custom sandbox sizes** (the console's vCPU and memory sliders): a real-VM test exists, but wasn't run on VMs for the change. Preset sizes run on real hosts.
 - **The MCP server**: `initialize`, `tools/list` and `tools/call` against the stub backend.
-- **Mounts** (`KANTEL_MOUNTS=experimental`): bundles, bucket sources, signed file URLs and archive extraction work on a local install with a real host, but mounting itself does not yet: every mount on a real host reports `failed`.
 - **GitHub and Google sign-in**: tested against mock providers.
 
 ## Not shown yet

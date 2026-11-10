@@ -62,6 +62,9 @@ func overlaps(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
+// CacheTimeout is how long the kernel keeps a bucket mount's names and attributes before asking again.
+const CacheTimeout = time.Second
+
 // Mounts are the guest's bucket mounts, by path.
 type Mounts struct {
 	// Dial reaches the host's MountPort (vsock); tests give another.
@@ -109,15 +112,19 @@ func (ms *Mounts) Apply(ctx context.Context, specs []MountSpec) []MountResult {
 		r := MountResult{Path: s.Path}
 		if m, ok := ms.byPath[s.Path]; ok {
 			m.spec.Index, m.spec.TTLSeconds = s.Index, s.TTLSeconds
-			if err := m.check(ctx); err != nil {
+			// Not from a FUSE request, so the kernel can be told now which names changed (update's wait).
+			if err := m.update(ctx, http.MethodGet, "manifest", true); err != nil {
 				log.Printf("mount %s: checking the manifest: %v", s.Path, err)
+			} else {
+				r.Current = true
 			}
 			r.Version = m.tree.Load().version
 		} else if m, err := ms.mount(ctx, s); err != nil {
 			r.Error = err.Error()
 		} else {
 			ms.byPath[s.Path] = m
-			r.Version = m.tree.Load().version
+			// Mounted just now: the kernel has nothing of it cached.
+			r.Version, r.Current = m.tree.Load().version, true
 		}
 		results = append(results, r)
 	}
@@ -245,6 +252,10 @@ type bucketMount struct {
 	// updating orders update's fetch and publish, whoever calls it (a TTL check, the refresh xattr, Apply): a
 	// manifest asked for earlier never replaces one asked for later.
 	updating sync.Mutex
+	// invalidating is read-held by each invalidation update left running beside it, so an update that waits (Apply)
+	// can wait for those too: the tree it shows may be one an earlier update published, whose changed names the kernel
+	// hasn't been told to forget yet.
+	invalidating sync.RWMutex
 }
 
 func (ms *Mounts) mount(ctx context.Context, s MountSpec) (*bucketMount, error) {
@@ -272,7 +283,7 @@ func (ms *Mounts) mount(ctx context.Context, s MountSpec) (*bucketMount, error) 
 		return nil, err
 	}
 	m.root = &dirNode{m: m, path: ""}
-	second := time.Second
+	second := CacheTimeout
 	server, err := fs.Mount(s.Path, m.root, &fs.Options{
 		MountOptions: fuse.MountOptions{
 			AllowOther: true, FsName: "kantel-bucket", Name: "kantel",
@@ -331,21 +342,40 @@ func (m *bucketMount) fetch(ctx context.Context, method, what string, have int64
 
 // check asks the host whether the manifest changed, and takes the new one.
 func (m *bucketMount) check(ctx context.Context) error {
-	return m.update(ctx, http.MethodGet, "manifest")
+	return m.update(ctx, http.MethodGet, "manifest", false)
 }
 
-func (m *bucketMount) update(ctx context.Context, method, what string) error {
+// update fetches the manifest (check's, or the refresh xattr's) and shows it. wait has the kernel forget the names
+// that changed before it returns; without it that happens beside it, as it must when update runs within a FUSE
+// request (the xattr), where the kernel would wait on the request that waits on it.
+func (m *bucketMount) update(ctx context.Context, method, what string, wait bool) error {
 	m.updating.Lock()
 	defer m.updating.Unlock()
 	old := m.tree.Load()
 	man, err := m.fetch(ctx, method, what, old.version)
 	m.checked.Store(time.Now().UnixNano())
-	if err != nil || man == nil {
+	if err != nil {
 		return err
 	}
-	next := newTree(*man)
-	m.tree.Store(next)
-	go m.invalidate(old, next)
+	if man != nil {
+		next := newTree(*man)
+		m.tree.Store(next)
+		if !wait {
+			m.invalidating.RLock()
+			go func() {
+				defer m.invalidating.RUnlock()
+				m.invalidate(old, next)
+			}()
+			return nil
+		}
+		m.invalidate(old, next)
+	} else if !wait {
+		return nil
+	}
+	// Unchanged (a 304) or just shown, the tree may still be one an earlier update published and is invalidating
+	// beside it: those finish first, so the kernel has forgotten every name that changed up to this tree.
+	m.invalidating.Lock()
+	m.invalidating.Unlock()
 	return nil
 }
 
@@ -509,7 +539,7 @@ func (d *dirNode) Getxattr(ctx context.Context, attr string, dest []byte) (uint3
 		return 0, syscall.ENODATA
 	}
 	if time.Since(time.Unix(0, d.m.checked.Load())) > 2*time.Second {
-		if err := d.m.update(ctx, http.MethodPost, "refresh"); err != nil {
+		if err := d.m.update(ctx, http.MethodPost, "refresh", false); err != nil {
 			log.Printf("mount %s: refresh: %v", d.m.spec.Path, err)
 			return 0, syscall.EIO
 		}

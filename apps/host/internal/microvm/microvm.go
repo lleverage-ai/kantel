@@ -838,12 +838,17 @@ func (m *Manager) applyMounts(ctx context.Context, s *sandbox, fromSnapshot bool
 // RefreshMounts lists a running sandbox's bucket mounts again now (path: just that one) and shows the guest the new
 // manifests; a failed mount is tried again.
 func (m *Manager) RefreshMounts(ctx context.Context, p proto.MountsRefreshParams) ([]proto.MountStatus, error) {
+	// Before anything waits: a Sync's listings begin no earlier than this.
+	since := time.Now()
 	s, err := m.get(p.SandboxID)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if p.Sync {
+		return m.syncMounts(ctx, s, p.Path, since)
+	}
 	mt := m.mountsOf(s)
 	if mt == nil {
 		return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s has no mounts", s.meta.ID)}
@@ -858,9 +863,81 @@ func (m *Manager) RefreshMounts(ctx context.Context, p proto.MountsRefreshParams
 		}
 		// A listing that failed is in the mount's status; the rest still go to the guest.
 	}
-	mt.Applied(s.guest.Mount(ctx, mt.GuestSpecs()))
-	m.emit(s)
+	mt.Applied(s.guest.Mount(ctx, refreshSpecs(s, mt)))
+	m.emitMounts(s)
 	return mt.Status(), nil
+}
+
+// refreshSpecs are the mounts a refresh shows the guest, which takes them as its whole set: those with a manifest,
+// or every one while the host still reconciles an adopted sandbox's (ReconcileMounts), so a mount the guest still
+// holds whose listing the restarted host hasn't recovered isn't unmounted by a refresh of another. Called with s.mu
+// held.
+func refreshSpecs(s *sandbox, mt *mounts.Sandbox) []guest.MountSpec {
+	if s.adoptedMounts.Load() {
+		return mt.AllGuestSpecs()
+	}
+	return mt.GuestSpecs()
+}
+
+// syncMounts is RefreshMounts with Sync: each bucket mount at path (all of them when empty) listed from since on and
+// shown to the guest, which must take it, or an error saying which mount isn't current and why. Called with s.mu
+// held.
+func (m *Manager) syncMounts(ctx context.Context, s *sandbox, path string, since time.Time) ([]proto.MountStatus, error) {
+	if path != "" {
+		for _, mount := range s.meta.Mounts {
+			if mount.Path == path && mount.Kind == proto.MountBundle {
+				return nil, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the mount at %s is a bundle, which never changes: mount another digest for other files", path)}
+			}
+		}
+	}
+	mt := m.mountsOf(s)
+	if mt == nil {
+		if path != "" {
+			return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s has no bucket mount at %s", s.meta.ID, path)}
+		}
+		// No bucket mounts: nothing can be out of date.
+		status, _ := m.mountStatus(s)
+		return status, nil
+	}
+	if s.meta.State != proto.StateRunning || s.guest == nil {
+		return nil, conflict("sandbox %s is %s, not running", s.meta.ID, s.meta.State)
+	}
+	if err := mt.Sync(ctx, path, since); err != nil {
+		// Sync's own refusal (no bucket mount at path) as it is. A listing's error may hold a proto.Error of its own
+		// (bucket.fetch's not_found for a source Kantel won't give), which is still a mount that couldn't be listed.
+		if pe, ok := err.(*proto.Error); ok {
+			return nil, pe
+		}
+		m.emitMounts(s)
+		return nil, &proto.Error{Code: proto.ErrUnavailable, Message: "couldn't list the bucket again: " + err.Error()}
+	}
+	synced := mt.Versions(path)
+	results, err := s.guest.Mount(ctx, refreshSpecs(s, mt))
+	mt.Applied(results, err)
+	m.emitMounts(s)
+	if err := mt.Shown(synced, results, err); err != nil {
+		return nil, &proto.Error{Code: proto.ErrUnavailable, Message: err.Error()}
+	}
+	// An older guest agent doesn't say it had the kernel forget the names that changed: they go after the timeout,
+	// waited out once for all of them.
+	if !allCurrent(synced, results) {
+		select {
+		case <-time.After(guest.CacheTimeout):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return mt.Status(), nil
+}
+
+// allCurrent says whether the guest said, for every mount synced, that the kernel already forgot its changed names.
+func allCurrent(synced map[string]int64, results []guest.MountResult) bool {
+	for _, r := range results {
+		if _, picked := synced[r.Path]; picked && !r.Current {
+			return false
+		}
+	}
+	return true
 }
 
 // ReconcileMounts confirms the mounts of sandboxes the host adopted running, once it can resolve their bucket
@@ -942,6 +1019,16 @@ func (m *Manager) validateMounts(ms []proto.Mount) error {
 func (m *Manager) emit(s *sandbox) {
 	if m.cfg.Events != nil {
 		m.cfg.Events(m.info(s))
+	}
+}
+
+// emitMounts is emit for a call that changed a sandbox's mount statuses after its boot answered (a refresh): the
+// control plane takes those only from a mounts event (sandbox.mounts, MountEvents), which carries the ordering stamp
+// m.info sets (MountsAt), so it gets one besides the sandbox's own.
+func (m *Manager) emitMounts(s *sandbox) {
+	m.emit(s)
+	if m.cfg.MountEvents != nil {
+		m.cfg.MountEvents(m.info(s))
 	}
 }
 
