@@ -197,8 +197,8 @@ func resultOf(t *testing.T, answer any) callResult {
 	return r
 }
 
-// path is a value inside parsed JSON, by keys and indexes.
-func path(v any, keys ...any) any {
+// jsonAt is a value inside parsed JSON, by keys and indexes.
+func jsonAt(v any, keys ...any) any {
 	for _, k := range keys {
 		switch key := k.(type) {
 		case string:
@@ -220,15 +220,15 @@ func TestMCPInitialize(t *testing.T) {
 	answer := generic(f.handle(t, request(1, "initialize", map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{},
 		"clientInfo": map[string]any{"name": "test", "version": "0"}}), nil))
 	eq(t, "id", answer["id"], any(float64(1)))
-	eq(t, "protocol", path(answer, "result", "protocolVersion"), any("2025-03-26"))
-	if path(answer, "result", "capabilities", "tools") == nil {
+	eq(t, "protocol", jsonAt(answer, "result", "protocolVersion"), any("2025-03-26"))
+	if jsonAt(answer, "result", "capabilities", "tools") == nil {
 		t.Error("no tools capability")
 	}
-	eq(t, "name", path(answer, "result", "serverInfo", "name"), any("kantel"))
-	eq(t, "version", path(answer, "result", "serverInfo", "version"), any("1.2.3"))
-	contains(t, "instructions", path(answer, "result", "instructions").(string), "sandbox_create")
+	eq(t, "name", jsonAt(answer, "result", "serverInfo", "name"), any("kantel"))
+	eq(t, "version", jsonAt(answer, "result", "serverInfo", "version"), any("1.2.3"))
+	contains(t, "instructions", jsonAt(answer, "result", "instructions").(string), "sandbox_create")
 	unknown := generic(f.handle(t, request(2, "initialize", map[string]any{"protocolVersion": "1999-01-01"}), nil))
-	eq(t, "newest", path(unknown, "result", "protocolVersion"), any(protocolVersions[0]))
+	eq(t, "newest", jsonAt(unknown, "result", "protocolVersion"), any(protocolVersions[0]))
 }
 
 func TestMCPNotificationsAndUnknownMethods(t *testing.T) {
@@ -236,24 +236,24 @@ func TestMCPNotificationsAndUnknownMethods(t *testing.T) {
 	if a := f.handle(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, nil); a != nil {
 		t.Errorf("a notification got %s", jsonText(a))
 	}
-	eq(t, "unknown", path(generic(f.handle(t, request(3, "resources/list", nil), nil)), "error", "code"), any(float64(-32601)))
+	eq(t, "unknown", jsonAt(generic(f.handle(t, request(3, "resources/list", nil), nil)), "error", "code"), any(float64(-32601)))
 	eq(t, "ping", jsonText(f.handle(t, request(4, "ping", nil), nil)), `{"jsonrpc":"2.0","id":4,"result":{}}`)
 	// A response from the client gets nothing.
 	if a := f.handle(t, map[string]any{"jsonrpc": "2.0", "id": 9, "result": map[string]any{}}, nil); a != nil {
 		t.Errorf("a response got %s", jsonText(a))
 	}
-	eq(t, "not jsonrpc 2.0", path(generic(f.handle(t, map[string]any{"id": 5, "method": "ping"}, nil)), "error", "code"), any(float64(-32600)))
+	eq(t, "not jsonrpc 2.0", jsonAt(generic(f.handle(t, map[string]any{"id": 5, "method": "ping"}, nil)), "error", "code"), any(float64(-32600)))
 }
 
 func TestMCPListsItsTools(t *testing.T) {
 	f := newMCPFixture(t, 5*time.Millisecond)
-	tools, _ := path(generic(f.handle(t, request(5, "tools/list", nil), nil)), "result", "tools").([]any)
+	tools, _ := jsonAt(generic(f.handle(t, request(5, "tools/list", nil), nil)), "result", "tools").([]any)
 	var names, destructive []string
 	for _, tool := range tools {
-		names = append(names, path(tool, "name").(string))
-		eq(t, "schema", path(tool, "inputSchema", "type"), any("object"))
-		if path(tool, "annotations", "destructiveHint") == true {
-			destructive = append(destructive, path(tool, "name").(string))
+		names = append(names, jsonAt(tool, "name").(string))
+		eq(t, "schema", jsonAt(tool, "inputSchema", "type"), any("object"))
+		if jsonAt(tool, "annotations", "destructiveHint") == true {
+			destructive = append(destructive, jsonAt(tool, "name").(string))
 		}
 	}
 	want := []string{"sandbox_create", "sandbox_list", "sandbox_get", "sandbox_stop", "sandbox_resume", "sandbox_fork",
@@ -318,10 +318,10 @@ func TestMCPKantelErrorsAreToolResults(t *testing.T) {
 	stopped := resultOf(t, f.handle(t, toolCall(9, "sandbox_exec", map[string]any{"sandboxId": "sbx_stopped", "command": "ls"}), nil))
 	eq(t, "isError", stopped.isError, true)
 	contains(t, "text", stopped.text, "sandbox_resume")
-	eq(t, "code", path(stopped.structured, "error", "code"), any("conflict"))
-	eq(t, "details code", path(stopped.structured, "error", "details", "code"), any("sandbox_stopped"))
-	eq(t, "details state", path(stopped.structured, "error", "details", "state"), any("stopped"))
-	eq(t, "stop reason", path(stopped.structured, "error", "details", "stopReason"), any("auto-stop"))
+	eq(t, "code", jsonAt(stopped.structured, "error", "code"), any("conflict"))
+	eq(t, "details code", jsonAt(stopped.structured, "error", "details", "code"), any("sandbox_stopped"))
+	eq(t, "details state", jsonAt(stopped.structured, "error", "details", "state"), any("stopped"))
+	eq(t, "stop reason", jsonAt(stopped.structured, "error", "details", "stopReason"), any("auto-stop"))
 	starting := resultOf(t, f.handle(t, toolCall(12, "sandbox_exec", map[string]any{"sandboxId": "sbx_starting", "command": "ls"}), nil))
 	eq(t, "isError", starting.isError, true)
 	contains(t, "text", starting.text, "call the tool again in a moment")
@@ -336,7 +336,7 @@ func TestMCPNamesWhyASandboxCantBePlaced(t *testing.T) {
 	eq(t, "isError", away.isError, true)
 	contains(t, "text", away.text, "unavailable (host_unavailable): No host can run a microvm sandbox now")
 	contains(t, "hint", away.text, "Try again later")
-	eq(t, "reason", path(away.structured, "error", "reason"), any("host_unavailable"))
+	eq(t, "reason", jsonAt(away.structured, "error", "reason"), any("host_unavailable"))
 	full := resultOf(t, f.handle(t, toolCall(21, "sandbox_resume", map[string]any{"sandboxId": "sbx_full"}), nil))
 	eq(t, "isError", full.isError, false)
 	contains(t, "text", full.text, "Sandbox sbx_full is error (insufficient_capacity): No host can take a microVM of size default (full)")
@@ -364,7 +364,7 @@ func TestMCPRefusesBadArguments(t *testing.T) {
 	notObject := resultOf(t, f.handle(t, request(16, "tools/call", map[string]any{"name": "sandbox_list", "arguments": []any{}}), nil))
 	contains(t, "not an object", notObject.text, "arguments must be an object")
 	eq(t, "calls", len(f.fake.Calls()), 0)
-	eq(t, "unknown tool", path(generic(f.handle(t, request(13, "tools/call", map[string]any{"name": "no_such_tool"}), nil)), "error", "code"),
+	eq(t, "unknown tool", jsonAt(generic(f.handle(t, request(13, "tools/call", map[string]any{"name": "no_such_tool"}), nil)), "error", "code"),
 		any(float64(-32602)))
 }
 
@@ -373,7 +373,7 @@ func TestMCPAnswersABatch(t *testing.T) {
 	answers := f.handle(t, []any{request(14, "ping", nil), map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"},
 		request(15, "ping", nil)}, nil)
 	eq(t, "batch", jsonText(answers), `[{"jsonrpc":"2.0","id":14,"result":{}},{"jsonrpc":"2.0","id":15,"result":{}}]`)
-	eq(t, "empty", path(generic(f.handle(t, []any{}, nil)), "error", "code"), any(float64(-32600)))
+	eq(t, "empty", jsonAt(generic(f.handle(t, []any{}, nil)), "error", "code"), any(float64(-32600)))
 }
 
 type notes struct {
@@ -405,14 +405,14 @@ func TestMCPReportsProgressWithAToken(t *testing.T) {
 	last := 0.0
 	for _, n := range got.list {
 		eq(t, "method", n["method"], any("notifications/progress"))
-		eq(t, "token", path(n, "params", "progressToken"), any("tok-1"))
-		p := path(n, "params", "progress").(float64)
+		eq(t, "token", jsonAt(n, "params", "progressToken"), any("tok-1"))
+		p := jsonAt(n, "params", "progress").(float64)
 		if p <= last {
 			t.Errorf("progress %v after %v", p, last)
 		}
 		last = p
 	}
-	contains(t, "message", path(got.list[0], "params", "message").(string), "sandbox_exec")
+	contains(t, "message", jsonAt(got.list[0], "params", "message").(string), "sandbox_exec")
 	sent := got.count()
 	time.Sleep(60 * time.Millisecond)
 	eq(t, "none after the answer", got.count(), sent)
@@ -552,7 +552,7 @@ func TestMCPCommandStillRunning(t *testing.T) {
 func TestMCPPagesThroughCommands(t *testing.T) {
 	f := newMCPFixture(t, 5*time.Millisecond)
 	first := resultOf(t, f.handle(t, toolCall(42, "command_list", map[string]any{"sandboxId": "sbx_many", "limit": 1}), nil))
-	eq(t, "first", path(first.structured, "items", 0, "commandId"), any("cmd_new"))
+	eq(t, "first", jsonAt(first.structured, "items", 0, "commandId"), any("cmd_new"))
 	eq(t, "cursor", first.structured["nextCursor"], any("c2"))
 	contains(t, "text", first.text, "cursor c2")
 	second := resultOf(t, f.handle(t, toolCall(43, "command_list", map[string]any{"sandboxId": "sbx_many", "limit": 1, "cursor": "c2"}), nil))
@@ -682,7 +682,7 @@ func TestServeStdioProgressAndCancellation(t *testing.T) {
 		if id, ok := m["id"]; ok {
 			answered = append(answered, id)
 		}
-		if m["method"] == "notifications/progress" && path(m, "params", "progressToken") == "p1" {
+		if m["method"] == "notifications/progress" && jsonAt(m, "params", "progressToken") == "p1" {
 			progress = true
 		}
 	}
@@ -695,7 +695,7 @@ func TestServeStdioParseError(t *testing.T) {
 	var out lockedBuffer
 	_ = serveMCP(context.Background(), f.server, strings.NewReader("not json\n"), &out, io.Discard)
 	lines := out.lines()
-	if len(lines) != 1 || lines[0]["id"] != nil || path(lines[0], "error", "code") != float64(-32700) {
+	if len(lines) != 1 || lines[0]["id"] != nil || jsonAt(lines[0], "error", "code") != float64(-32700) {
 		t.Errorf("answer: %v", lines)
 	}
 }
@@ -718,7 +718,7 @@ func TestKantelMCPRunsOnStdio(t *testing.T) {
 	eq(t, "answers", len(answers), 2)
 	for _, a := range answers {
 		if a["id"] == float64(2) {
-			eq(t, "created", path(a, "result", "structuredContent", "id"), any("sbx_mcp1"))
+			eq(t, "created", jsonAt(a, "result", "structuredContent", "id"), any("sbx_mcp1"))
 		}
 	}
 	eq(t, "auth", r.Calls[0].Auth, "Bearer ksk_test")

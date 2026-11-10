@@ -216,7 +216,9 @@ func TestSnapshotInfoByIDOrSavedName(t *testing.T) {
 
 	// Saved straight from a running sandbox, its state is the save's: one time.
 	r = run(t, []string{"snapshot", "info", "snap_1"}, opts{routes: routes{
-		"GET /v1/snapshots/snap_1": func(call) any { return withFields(savedSnapshot, map[string]any{"takenAt": savedSnapshot["createdAt"]}) },
+		"GET /v1/snapshots/snap_1": func(call) any {
+			return withFields(savedSnapshot, map[string]any{"takenAt": savedSnapshot["createdAt"]})
+		},
 	}})
 	if regexp.MustCompile(`(?m)^taken`).MatchString(r.Stdout) {
 		t.Errorf("one time shown twice:\n%s", r.Stdout)

@@ -450,9 +450,9 @@ func rootContexts(root, top string) []string {
 var (
 	// credentialNames are left out wherever they are in the tree, even when git tracks them.
 	credentialNames = map[string]bool{".ssh": true, ".gnupg": true, ".aws": true, ".azure": true, ".kube": true, ".netrc": true, ".pypirc": true}
-	// agentNames are agents' sign-ins and settings: left out unless git tracks the file, as it does a project's shared
+	// agentDirs are agents' sign-ins and settings: left out unless git tracks the file, as it does a project's shared
 	// settings.
-	agentNames = map[string]bool{".claude": true, ".codex": true, ".cursor": true}
+	agentDirs  = map[string]bool{".claude": true, ".codex": true, ".cursor": true}
 	envFile    = regexp.MustCompile(`^\.env(\..+)?$`)
 	envExample = regexp.MustCompile(`^\.env\.(example|sample|template|dist)$`)
 	pathParts  = regexp.MustCompile(`[\\/]`)
@@ -500,7 +500,7 @@ func defaultExclude(file string, t trackedness) *skipped {
 			continue
 		}
 		// In a repository git may track some of the directory, which goes, so this names the file.
-		if agentNames[name] {
+		if agentDirs[name] {
 			named := file
 			if t == trackedUnknown {
 				named = p

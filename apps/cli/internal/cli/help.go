@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -213,11 +212,17 @@ type Schema struct {
 }
 
 func (e Example) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]string{"what": e.What, "line": e.Line})
+	return Marshal(struct {
+		What string `json:"what"`
+		Line string `json:"line"`
+	}{e.What, e.Line}, ""), nil
 }
 
 func (g Group) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]string{"name": g.Name, "summary": g.Summary})
+	return Marshal(struct {
+		Name    string `json:"name"`
+		Summary string `json:"summary"`
+	}{g.Name, g.Summary}, ""), nil
 }
 
 func flagsSchema(flags []Flag) []FlagSchema {

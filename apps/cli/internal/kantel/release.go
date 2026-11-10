@@ -30,9 +30,6 @@ var releasesURL = "https://github.com/lleverage-ai/kantel/releases"
 // platform is this binary's in the release's file names: linux-amd64, darwin-arm64…
 var platform = runtime.GOOS + "-" + runtime.GOARCH
 
-// installCommand installs the latest kantel for whoever runs it, in ~/.local/bin.
-const installCommand = "curl -fsSL https://kantel.dev/cli.sh | sh"
-
 // maxBinary is the most a release's binary may be.
 const maxBinary = 256 << 20
 

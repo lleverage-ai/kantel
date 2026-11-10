@@ -245,7 +245,11 @@ func (g *generator) object(name string, s *schema) {
 				tag += ",omitzero"
 			}
 		case required[key]:
-		case strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "map[") || t == "json.RawMessage" || g.isRaw(t):
+		case strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "map["):
+			// Absent when nil, but an empty list or record is sent: `expected: []` says "I read none", which isn't
+			// the same as leaving it out.
+			tag += ",omitzero"
+		case t == "json.RawMessage" || g.isRaw(t):
 			tag += ",omitempty"
 		default:
 			t = "*" + t

@@ -24,7 +24,7 @@ type APIKey struct {
 	// Epoch milliseconds, UTC.
 	RevokedAt *int64 `json:"revokedAt,omitempty"`
 	// Limited to these sandboxes (and the ones it creates).
-	SandboxIds []string      `json:"sandboxIds,omitempty"`
+	SandboxIds []string      `json:"sandboxIds,omitzero"`
 	Scopes     []APIKeyScope `json:"scopes"`
 }
 
@@ -120,7 +120,7 @@ type ApproveDeviceLoginBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account *string `json:"account,omitempty"`
 	// For a personal token: only these accounts. Absent: every account of the approver's.
-	Accounts []string `json:"accounts,omitempty"`
+	Accounts []string `json:"accounts,omitzero"`
 	// Default 90. It stops working after it. A personal token lasts at most 366.
 	ExpiresInDays *int64 `json:"expiresInDays,omitempty"`
 	// True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused.
@@ -409,12 +409,12 @@ type CallerAPIKey struct {
 
 // The personal access token the call was signed in with, when it was one, and its limits.
 type CallerPersonalToken struct {
-	Accounts []string `json:"accounts,omitempty"`
+	Accounts []string `json:"accounts,omitzero"`
 	// Epoch milliseconds, UTC.
 	ExpiresAt int64         `json:"expiresAt"`
 	ID        string        `json:"id"`
 	Name      string        `json:"name"`
-	Scopes    []APIKeyScope `json:"scopes,omitempty"`
+	Scopes    []APIKeyScope `json:"scopes,omitzero"`
 }
 
 type CallerUser struct {
@@ -475,8 +475,8 @@ type CreateAPIKeyBody struct {
 	ExpiresInDays *int64        `json:"expiresInDays,omitempty"`
 	Name          string        `json:"name"`
 	Preset        *APIKeyPreset `json:"preset,omitempty"`
-	SandboxIds    []string      `json:"sandboxIds,omitempty"`
-	Scopes        []APIKeyScope `json:"scopes,omitempty"`
+	SandboxIds    []string      `json:"sandboxIds,omitzero"`
+	Scopes        []APIKeyScope `json:"scopes,omitzero"`
 }
 
 type CreateAccountJoinTokenBody struct {
@@ -484,7 +484,7 @@ type CreateAccountJoinTokenBody struct {
 	Account *string `json:"account,omitempty"`
 	// Default 60.
 	ExpiresInMinutes *int64            `json:"expiresInMinutes,omitempty"`
-	Labels           map[string]string `json:"labels,omitempty"`
+	Labels           map[string]string `json:"labels,omitzero"`
 	// The host's name. Default: the machine's hostname.
 	Name *string `json:"name,omitempty"`
 }
@@ -515,7 +515,7 @@ type CreateEnvironmentBody struct {
 type CreateHostJoinTokenBody struct {
 	// Default 60.
 	ExpiresInMinutes *int64            `json:"expiresInMinutes,omitempty"`
-	Labels           map[string]string `json:"labels,omitempty"`
+	Labels           map[string]string `json:"labels,omitzero"`
 	Name             *string           `json:"name,omitempty"`
 }
 
@@ -535,12 +535,12 @@ type CreateOrganisationBody struct {
 // `scopes` or a `preset` (or both, which adds them) cap what it may do; with neither, it does whatever your role allows. A token making a token can't make one that does more than it, in more accounts, or for longer.
 type CreatePersonalTokenBody struct {
 	// Absent: every account of yours.
-	Accounts []string `json:"accounts,omitempty"`
+	Accounts []string `json:"accounts,omitzero"`
 	// Default 90, at most 366.
 	ExpiresInDays *int64        `json:"expiresInDays,omitempty"`
 	Name          string        `json:"name"`
 	Preset        *APIKeyPreset `json:"preset,omitempty"`
-	Scopes        []APIKeyScope `json:"scopes,omitempty"`
+	Scopes        []APIKeyScope `json:"scopes,omitzero"`
 }
 
 // Any other field is refused as `invalid`.
@@ -556,7 +556,7 @@ type CreateSandboxBody struct {
 	// Default 60. `null`: never stop by itself.
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
 	// Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.
-	Env map[string]string `json:"env,omitempty"`
+	Env map[string]string `json:"env,omitzero"`
 	// Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables.
 	Environment *string `json:"environment,omitempty"`
 	// Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account.
@@ -564,14 +564,14 @@ type CreateSandboxBody struct {
 	// Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks.
 	Host *string `json:"host,omitempty"`
 	// Place it only on a host with each label, such as `{ site: "home" }`.
-	HostLabels map[string]string `json:"hostLabels,omitempty"`
+	HostLabels map[string]string `json:"hostLabels,omitzero"`
 	// Stop it once it has gone this long without use (`idle-stop`), whatever its auto-stop says; with `autoStopMinutes: null`, it runs while it is used. Default `null`: no idle stop. See the sandbox's `idleStopMinutes` for what counts as use.
 	IdleStopMinutes Nullable[int64] `json:"idleStopMinutes,omitzero"`
 	// A microVM's base image. Default: the deployment's.
 	Image  *string           `json:"image,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitzero"`
 	// Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
-	Mounts []Mount `json:"mounts,omitempty"`
+	Mounts []Mount `json:"mounts,omitzero"`
 	// Default: a generated name, such as `brave-otter`.
 	Name      *string            `json:"name,omitempty"`
 	Resources *SandboxShapeInput `json:"resources,omitempty"`
@@ -639,9 +639,9 @@ type DestinationBinding struct {
 	// The host, on port 443: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself).
 	Host string `json:"host"`
 	// Only these methods. Absent or empty: any method.
-	Methods []string `json:"methods,omitempty"`
+	Methods []string `json:"methods,omitzero"`
 	// Only paths under these, such as `/repos/`. Absent or empty: any path.
-	PathPrefixes []string `json:"pathPrefixes,omitempty"`
+	PathPrefixes []string `json:"pathPrefixes,omitzero"`
 }
 
 // A sign-in in the browser under way, as RFC 8628's device authorisation grant.
@@ -734,9 +734,9 @@ type EgressGrant struct {
 	// The grant's ID, such as `grt_4kq9x2mt`.
 	ID string `json:"id"`
 	// Only these methods. Absent or empty: every method.
-	Methods []string `json:"methods,omitempty"`
+	Methods []string `json:"methods,omitzero"`
 	// Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path.
-	Paths []string `json:"paths,omitempty"`
+	Paths []string `json:"paths,omitzero"`
 }
 
 type EgressGrantAction string
@@ -753,9 +753,9 @@ type EgressGrantInput struct {
 	// Keep a grant's ID; absent, a new one is made.
 	ID *string `json:"id,omitempty"`
 	// Only these methods. Absent or empty: every method.
-	Methods []string `json:"methods,omitempty"`
+	Methods []string `json:"methods,omitzero"`
 	// Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path.
-	Paths []string `json:"paths,omitempty"`
+	Paths []string `json:"paths,omitzero"`
 }
 
 type EgressGrantInputAction string
@@ -1022,7 +1022,7 @@ const (
 type ForkSandboxBody struct {
 	// How many copies; default 1.
 	Count  *int64            `json:"count,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitzero"`
 	Name   *string           `json:"name,omitempty"`
 	Size   *SandboxSizeName  `json:"size,omitempty"`
 	// Fork from this snapshot of the sandbox. Default: its newest, or its live state.
@@ -1450,7 +1450,7 @@ const (
 // A personal access token (`kpt_…`). Its secret is never stored or shown after it is made.
 type PersonalToken struct {
 	// Only these accounts. Absent: every account its person belongs to, ones they join later included.
-	Accounts []string `json:"accounts,omitempty"`
+	Accounts []string `json:"accounts,omitzero"`
 	// Epoch milliseconds, UTC.
 	CreatedAt int64 `json:"createdAt"`
 	// Epoch milliseconds, UTC.
@@ -1465,7 +1465,7 @@ type PersonalToken struct {
 	// Epoch milliseconds, UTC.
 	RevokedAt *int64 `json:"revokedAt,omitempty"`
 	// At most these, on top of the person's role in each account. Absent: whatever their role allows. Never `hosts:admin`: a token doesn't act as a deployment super-admin.
-	Scopes []APIKeyScope `json:"scopes,omitempty"`
+	Scopes []APIKeyScope `json:"scopes,omitzero"`
 }
 
 type PersonalTokenList struct {
@@ -1594,23 +1594,23 @@ type PublishTemplateBaseBody struct {
 
 type PutEgressGrantsBody struct {
 	// The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds.
-	Expected []EgressGrantInput `json:"expected,omitempty"`
+	Expected []EgressGrantInput `json:"expected,omitzero"`
 	Grants   []EgressGrantInput `json:"grants"`
 }
 
 type PutEnvironmentReposBody struct {
 	// The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds.
-	Expected []EnvironmentRepo `json:"expected,omitempty"`
+	Expected []EnvironmentRepo `json:"expected,omitzero"`
 	Repos    []EnvironmentRepo `json:"repos"`
 }
 
 type PutProxySettingsBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account       *string                                `json:"account,omitempty"`
-	Allow         []string                               `json:"allow,omitempty"`
+	Allow         []string                               `json:"allow,omitzero"`
 	Attribution   *bool                                  `json:"attribution,omitempty"`
 	DefaultAction *PutProxySettingsBodyDefaultAction     `json:"defaultAction,omitempty"`
-	Deny          []string                               `json:"deny,omitempty"`
+	Deny          []string                               `json:"deny,omitzero"`
 	Enabled       bool                                   `json:"enabled"`
 	Expected      *ProxySettingsExpected                 `json:"expected,omitempty"`
 	Upstream      Nullable[PutProxySettingsBodyUpstream] `json:"upstream,omitzero"`
@@ -1625,7 +1625,7 @@ const (
 
 type PutProxySettingsBodyUpstream struct {
 	// Kept encrypted, never shown again.
-	Headers map[string]string `json:"headers,omitempty"`
+	Headers map[string]string `json:"headers,omitzero"`
 	URL     string            `json:"url"`
 }
 
@@ -1633,8 +1633,8 @@ type PutTelemetryBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account  *string                       `json:"account,omitempty"`
 	Endpoint string                        `json:"endpoint"`
-	Headers  map[string]string             `json:"headers,omitempty"`
-	Signals  []PutTelemetryBodySignalsItem `json:"signals,omitempty"`
+	Headers  map[string]string             `json:"headers,omitzero"`
+	Signals  []PutTelemetryBodySignalsItem `json:"signals,omitzero"`
 }
 
 type PutTelemetryBodySignalsItem string
@@ -1657,7 +1657,7 @@ type RunCommandBody struct {
 	Cwd *string `json:"cwd,omitempty"`
 	// Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID.
 	Detached *bool             `json:"detached,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	Env      map[string]string `json:"env,omitzero"`
 	Stdin    *string           `json:"stdin,omitempty"`
 	// Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one.
 	TimeoutMs *int64 `json:"timeoutMs,omitempty"`
@@ -1723,7 +1723,7 @@ type Sandbox struct {
 	// The snapshot a resume or fork would use.
 	LatestSnapshotID *string `json:"latestSnapshotId,omitempty"`
 	// Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
-	Mounts          []SandboxMount   `json:"mounts,omitempty"`
+	Mounts          []SandboxMount   `json:"mounts,omitzero"`
 	Name            string           `json:"name"`
 	PlacementReason *PlacementReason `json:"placementReason,omitempty"`
 	// Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none.
@@ -2090,7 +2090,7 @@ const (
 type SaveSnapshotBody struct {
 	Description *string `json:"description,omitempty"`
 	// Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given.
-	Labels map[string]string `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitzero"`
 	// Saving a running microVM: keep its memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size. A stopped sandbox or a snapshot of its history is saved as that snapshot is.
 	Memory *bool `json:"memory,omitempty"`
 	// The least memory, in MB, a sandbox made or forked from this snapshot may have, such as 16384 for a monorepo whose type-check needs 13 GB: a create or fork asking for less, by size or `resources`, is refused (`invalid`) before anything is made. A microVM's only. Default: a replace keeps the least of the snapshot it replaces, else none; 0 is none.
@@ -2127,7 +2127,7 @@ type SetEnvironmentFileBody struct {
 
 type SetEnvironmentVariableBody struct {
 	// A protected variable's destinations, at least one. Left out, a protected one keeps its own.
-	Bindings []DestinationBinding `json:"bindings,omitempty"`
+	Bindings []DestinationBinding `json:"bindings,omitzero"`
 	// Default false.
 	Protected *bool `json:"protected,omitempty"`
 	// Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps its value (to change its bindings); a new value for a protected one is a rotation.
@@ -2175,7 +2175,7 @@ type Snapshot struct {
 	ID   string       `json:"id"`
 	Kind SnapshotKind `json:"kind"`
 	// Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given.
-	Labels map[string]string `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitzero"`
 	// Whether it holds the sandbox's memory as well as its disk (a pause).
 	Memory bool `json:"memory"`
 	// A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any.
@@ -2248,7 +2248,7 @@ type StopSandboxBody struct {
 type TakeSnapshotBody struct {
 	Description *string `json:"description,omitempty"`
 	// Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given.
-	Labels map[string]string `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitzero"`
 	// Keep the running microVM's memory as well as its disk, so a sandbox made from the snapshot carries on where it left off instead of booting, on the same machine size only. Default false: the disk alone, which is several GB smaller and makes sandboxes of any size.
 	Memory *bool `json:"memory,omitempty"`
 }
@@ -2526,7 +2526,7 @@ const (
 type TemplateSpec struct {
 	Base TemplateBase `json:"base,omitempty"`
 	// Plain variables, not secrets: under the environment's and the create's own.
-	Env       map[string]string  `json:"env,omitempty"`
+	Env       map[string]string  `json:"env,omitzero"`
 	Image     TemplateImage      `json:"image,omitempty"`
 	Network   *TemplateNetwork   `json:"network,omitempty"`
 	Resources *TemplateResources `json:"resources,omitempty"`
@@ -2562,7 +2562,7 @@ type UpdateEnvironmentBody struct {
 type UpdateHostBody struct {
 	// Stop placing new sandboxes on it.
 	Draining *bool             `json:"draining,omitempty"`
-	Labels   map[string]string `json:"labels,omitempty"`
+	Labels   map[string]string `json:"labels,omitzero"`
 	Name     *string           `json:"name,omitempty"`
 	// The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit.
 	SavedSnapshotBytesLimit Nullable[int64] `json:"savedSnapshotBytesLimit,omitzero"`
@@ -2579,7 +2579,7 @@ type UpdateSandboxBody struct {
 	// Its idle stop; `null` turns it off. A running sandbox's idle time counts from now.
 	IdleStopMinutes Nullable[int64] `json:"idleStopMinutes,omitzero"`
 	// Replaces its labels.
-	Labels     map[string]string  `json:"labels,omitempty"`
+	Labels     map[string]string  `json:"labels,omitzero"`
 	Name       *string            `json:"name,omitempty"`
 	Visibility *SandboxVisibility `json:"visibility,omitempty"`
 }
@@ -2594,7 +2594,7 @@ type UpdateTemplateBody struct {
 
 type UpdateWebhookBody struct {
 	Enabled *bool       `json:"enabled,omitempty"`
-	Events  []EventType `json:"events,omitempty"`
+	Events  []EventType `json:"events,omitzero"`
 	Name    *string     `json:"name,omitempty"`
 	URL     *string     `json:"url,omitempty"`
 }

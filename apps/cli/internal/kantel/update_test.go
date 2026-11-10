@@ -109,7 +109,7 @@ func runUpdateCLI(t *testing.T, argv []string, o updateRun) result {
 	return result{Code: code, Stdout: stdout.String(), Stderr: stderr.String()}
 }
 
-func read(t *testing.T, path string) string {
+func readFileT(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -118,7 +118,7 @@ func read(t *testing.T, path string) string {
 	return string(raw)
 }
 
-func write(t *testing.T, path, body string, mode os.FileMode) {
+func writeFileT(t *testing.T, path, body string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -161,8 +161,8 @@ func TestUpdateReplacesKantelAndAdmin(t *testing.T) {
 	newRelease(t, "0.5.0")
 	root := t.TempDir()
 	real := filepath.Join(root, "real")
-	write(t, filepath.Join(real, "kantel"), binary("0.4.2"), 0o755)
-	write(t, filepath.Join(real, "kantel-admin"), binary("0.4.2"), 0o755)
+	writeFileT(t, filepath.Join(real, "kantel"), binary("0.4.2"), 0o755)
+	writeFileT(t, filepath.Join(real, "kantel-admin"), binary("0.4.2"), 0o755)
 	// kantel is run through a link, as from ~/.local/bin; the file it points to is what is replaced.
 	bin := filepath.Join(root, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
@@ -207,7 +207,7 @@ func TestUpdateJSONAndCheck(t *testing.T) {
 	withVersion(t, "0.4.2")
 	release := newRelease(t, "0.5.0")
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
+	writeFileT(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
 
 	r := runUpdateCLI(t, []string{"update", "--check"}, updateRun{self: filepath.Join(dir, "kantel")})
 	eq(t, "check", r.Stdout, "kantel 0.5.0 is out (you have 0.4.2): kantel update installs it.\n")
@@ -249,7 +249,7 @@ func TestUpdateRefusesABadChecksum(t *testing.T) {
 	release := newRelease(t, "0.5.0")
 	release.files["0.5.0"]["kantel-"+platform] = binary("0.5.0") + "# tampered\n"
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
+	writeFileT(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
 
 	r := runUpdateCLI(t, []string{"update"}, updateRun{self: filepath.Join(dir, "kantel")})
 	eq(t, "exit", r.Code, 1)
@@ -266,7 +266,7 @@ func TestUpdateRefusesABinaryThatIsntTheRelease(t *testing.T) {
 	files["SHA256SUMS"] = sumsOf(files)
 	release.files["0.5.0"] = files
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
+	writeFileT(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
 
 	r := runUpdateCLI(t, []string{"update"}, updateRun{self: filepath.Join(dir, "kantel")})
 	eq(t, "exit", r.Code, 1)
@@ -282,7 +282,7 @@ func TestUpdateSaysHowWhenTheDirectoryIsntWritable(t *testing.T) {
 	withVersion(t, "0.4.2")
 	newRelease(t, "0.5.0")
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
+	writeFileT(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatal(err)
 	}
@@ -300,13 +300,13 @@ func TestUpdateFromAMirror(t *testing.T) {
 	withVersion(t, "0.4.2")
 	mirrorDir := t.TempDir()
 	for name, body := range releaseFiles("0.5.0") {
-		write(t, filepath.Join(mirrorDir, name), body, 0o644)
+		writeFileT(t, filepath.Join(mirrorDir, name), body, 0o644)
 	}
-	write(t, filepath.Join(mirrorDir, "install-cli.sh"), "#!/bin/sh\nKANTEL_RELEASE_VERSION=\"0.5.0\"\n", 0o755)
+	writeFileT(t, filepath.Join(mirrorDir, "install-cli.sh"), "#!/bin/sh\nKANTEL_RELEASE_VERSION=\"0.5.0\"\n", 0o755)
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
+	writeFileT(t, filepath.Join(dir, "kantel"), binary("0.4.2"), 0o755)
 	// An old Node.js kantel-admin: a link to kantel-admin.mjs. The binary takes the link's place.
-	write(t, filepath.Join(dir, "share", "kantel-admin.mjs"), "// node\n", 0o755)
+	writeFileT(t, filepath.Join(dir, "share", "kantel-admin.mjs"), "// node\n", 0o755)
 	if err := os.Symlink(filepath.Join(dir, "share", "kantel-admin.mjs"), filepath.Join(dir, "kantel-admin")); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestUpdateFromAMirror(t *testing.T) {
 func TestUpdateRefusesADevelopmentBuild(t *testing.T) {
 	newRelease(t, "0.5.0")
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "kantel"), "dev", 0o755)
+	writeFileT(t, filepath.Join(dir, "kantel"), "dev", 0o755)
 	r := runUpdateCLI(t, []string{"update"}, updateRun{self: filepath.Join(dir, "kantel")})
 	eq(t, "exit", r.Code, 1)
 	contains(t, "says why", r.Stderr, "development build")
@@ -385,7 +385,7 @@ func TestNoticeChecksOnceADay(t *testing.T) {
 	eq(t, "asked", release.heads.Load(), int32(1))
 	eq(t, "notice", u.notice(), "A new kantel is out: 0.5.0 (you have 0.4.2). kantel update installs it.")
 	var cache updateCache
-	if err := json.Unmarshal([]byte(read(t, cachePath)), &cache); err != nil {
+	if err := json.Unmarshal([]byte(readFileT(t, cachePath)), &cache); err != nil {
 		t.Fatal(err)
 	}
 	eq(t, "cached", cache.Latest, "0.5.0")
@@ -453,7 +453,7 @@ func TestNoticeAfterACommand(t *testing.T) {
 	withVersion(t, "0.4.2")
 	release := newRelease(t, "0.5.0")
 	home := t.TempDir()
-	write(t, filepath.Join(home, ".cache", "kantel", "update-check.json"),
+	writeFileT(t, filepath.Join(home, ".cache", "kantel", "update-check.json"),
 		fmt.Sprintf(`{"checkedAt":%q,"latest":"0.5.0"}`, time.Now().Format(time.RFC3339)), 0o644)
 	line := "A new kantel is out: 0.5.0 (you have 0.4.2). kantel update installs it.\n"
 

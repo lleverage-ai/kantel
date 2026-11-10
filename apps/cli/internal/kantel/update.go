@@ -112,7 +112,7 @@ func runUpdate(c *cli.Context) error {
 			return &cli.Error{
 				Message: fmt.Sprintf("can't write to %s, where %s is, so it can't be updated (%v)", dir, t.name, unwrapPath(err)),
 				Hint: fmt.Sprintf("Update it as the directory's owner: sudo %s update. Or install kantel for yourself, in ~/.local/bin, with: %s",
-					shellPath(c.IO.Self), installCommand),
+					localShellPath(c.IO.Self), installCommand),
 				Code: "failed", Exit: cli.ExitFailed,
 			}
 		}
@@ -223,8 +223,8 @@ func unwrapPath(err error) error {
 	return err
 }
 
-// shellPath is how to type path in a shell.
-func shellPath(path string) string {
+// localShellPath is how to type a local path in a shell.
+func localShellPath(path string) string {
 	if path == "" {
 		return "kantel"
 	}

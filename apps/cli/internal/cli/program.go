@@ -191,8 +191,20 @@ func IndentJSON(raw json.RawMessage, value any) string {
 			return b.String()
 		}
 	}
-	out, _ := json.MarshalIndent(value, "", "  ")
-	return string(out)
+	return strings.TrimSuffix(string(Marshal(value, "  ")), "\n")
+}
+
+// Marshal is value as JSON as people and agents read it: `<`, `>` and `&` as they are, not escaped for HTML, and
+// indented by indent when it isn't "".
+func Marshal(value any, indent string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if indent != "" {
+		enc.SetIndent("", indent)
+	}
+	_ = enc.Encode(value)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 // Spin runs work behind a spinner on stderr, at a terminal only.

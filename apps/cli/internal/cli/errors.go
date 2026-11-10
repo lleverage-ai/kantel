@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -85,7 +84,7 @@ func FailureOf(err error, hint func(*api.Error) string) Failure {
 // hint and the usage line after it.
 func FailureText(program string, f Failure, asJSON bool, usage string, s Styler) string {
 	if asJSON {
-		line, _ := json.Marshal(map[string]Failure{"error": f})
+		line := Marshal(map[string]Failure{"error": f}, "")
 		return string(line) + "\n"
 	}
 	code := ""
