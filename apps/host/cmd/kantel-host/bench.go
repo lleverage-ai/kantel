@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,20 +20,26 @@ import (
 // control plane. Each measured operation is timed around the host's own call (what a control plane's call costs
 // on the host, without the network to it).
 func bench(args []string) error {
-	fs := flag.NewFlagSet("bench", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "host config")
-	runs := fs.Int("runs", 10, "runs of each warm measurement")
-	tiers := fs.String("tiers", "", "tiers to measure (default: every tier the host runs)")
-	size := fs.String("size", "default", "microVM size")
-	out := fs.String("out", "", "also write the results as JSON here")
-	vcpus := fs.Int("vcpus", 0, "a custom shape's vCPUs instead of -size (with -memory and -disk)")
-	memory := fs.Int("memory", 0, "a custom shape's memory, MiB")
-	disk := fs.Int("disk", 0, "a custom shape's disk, GiB")
-	only := fs.String("only", "", "\"create\": measure creates only (no stop, resume or fork)")
-	settle := fs.Duration("settle", 0, "wait this long after the host starts, before measuring")
-	keep := fs.Bool("keep-templates", false, "don't drop the templates first: no cold create, and creates restore the templates already made")
-	owners := fs.String("owners", "", "\"new\": every create is for an account of its own (the isolate tier: an isolate in a just-restored account VM, not one already running)")
-	_ = fs.Parse(args)
+	fs := newFlags("bench")
+	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
+	runs := fs.Int("runs", 10, "How many runs of each warm measurement: `n`")
+	tiers := fs.String("tiers", "", "The `tiers` to measure: microvm, isolate or both, comma-separated (default: every tier the host runs)")
+	size := fs.String("size", "default", "The microVM `size` (default: the default size)")
+	out := fs.String("out", "", "Also write the results as JSON to this `file`")
+	vcpus := fs.Int("vcpus", 0, "A custom shape's vCPUs instead of --size (with --memory and --disk)")
+	memory := fs.Int("memory", 0, "A custom shape's memory, `MiB`")
+	disk := fs.Int("disk", 0, "A custom shape's disk, `GiB`")
+	only := fs.String("only", "", "`create`: measure creates only (no stop, resume or fork)")
+	settle := fs.Duration("settle", 0, "Wait this `long` after the host starts, before measuring, such as 30s")
+	keep := fs.Bool("keep-templates", false, "Don't drop the templates first: no cold create, and creates restore the templates already made")
+	owners := fs.String("owners", "", "`new`: every create is for an account of its own (the isolate tier: an isolate in a just-restored account VM, not one already running)")
+	_ = fs.Bool("json", false, "Print the results as JSON (as bench always does: the flag is for scripts that ask)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
 	benchOnly, benchKeep, benchOwners = *only, *keep, *owners
 	benchShape = proto.CreateParams{Size: *size}
 	if *vcpus > 0 {

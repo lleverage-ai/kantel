@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"flag"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -82,10 +81,15 @@ func TestStateCounts(t *testing.T) {
 }
 
 func TestParseInterspersed(t *testing.T) {
-	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs := newFlags("sandboxes show")
 	asJSON := fs.Bool("json", false, "")
-	if rest := parseInterspersed(fs, []string{"sb_1", "--json"}); !reflect.DeepEqual(rest, []string{"sb_1"}) || !*asJSON {
-		t.Errorf("rest %v, json %v", rest, *asJSON)
+	if rest, err := fs.parseInterspersed([]string{"sb_1", "--json"}); err != nil || !reflect.DeepEqual(rest, []string{"sb_1"}) || !*asJSON {
+		t.Errorf("rest %v, json %v, %v", rest, *asJSON, err)
+	}
+	// After "--", everything is an operand.
+	fs = newFlags("manifest")
+	if rest, err := fs.parseInterspersed([]string{"--", "--help", "dir"}); err != nil || !reflect.DeepEqual(rest, []string{"--help", "dir"}) {
+		t.Errorf("after --: %v, %v", rest, err)
 	}
 }
 
