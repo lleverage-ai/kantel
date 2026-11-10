@@ -157,7 +157,7 @@ export const PlugIcon = lucide(Plug, "PlugIcon");
 export const UnplugIcon = lucide(Unplug, "UnplugIcon");
 export const CatalogueIcon = lucide(Blocks, "CatalogueIcon");
 export const ServerIcon = lucide(Server, "ServerIcon");
-// An environment: a long-lived machine sessions attach to (sandbox tier 3).
+// An environment: what a sandbox starts with (variables, protected values, secret files, repos and grants).
 export const EnvironmentIcon = lucide(Layers, "EnvironmentIcon");
 export const KeyRoundIcon = lucide(KeyRound, "KeyRoundIcon");
 export const AppWindowIcon = lucide(AppWindow, "AppWindowIcon");

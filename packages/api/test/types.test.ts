@@ -1,7 +1,6 @@
 // Each schema's static type and its type in @kantel/contracts have the same keys and are assignable both ways, so a
 // field added to one and not the other fails `pnpm typecheck`. The `it` is only there so vitest counts the file.
 
-import type * as Contracts from "@kantel/contracts";
 import type {
 	Actor as ContractActor,
 	CreateProjectRequest as ContractCreateProjectRequest,
@@ -12,7 +11,6 @@ import type {
 import { PROJECT_NAME_MAX_LENGTH } from "@kantel/contracts";
 import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
-import type * as Envs from "../src/environments-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
 import type { Actor, CreateProjectBody, ErrorCode, PlacementReason, Project } from "../src/schema.ts";
 
@@ -40,27 +38,5 @@ describe("schemas match the contracts", () => {
 		const schema = await import("../src/schema.ts");
 		const name = schema.CreateProjectBody.properties.name as { readonly maxLength?: number };
 		expect(name.maxLength).toBe(PROJECT_NAME_MAX_LENGTH);
-	});
-
-	it("matches the environments contract", () => {
-		const proofs = [
-			same<Wire<typeof Envs.EnvironmentState>, Contracts.EnvironmentState>(true),
-			same<Wire<typeof Envs.EnvironmentProviderKind>, Contracts.EnvironmentProviderKind>(true),
-			same<Wire<typeof Envs.EnvironmentSize>, Contracts.EnvironmentSize>(true),
-			same<Wire<typeof Envs.EnvironmentDefinition>, Contracts.EnvironmentDefinition>(true),
-			same<Wire<typeof Envs.EnvironmentOwner>, Contracts.EnvironmentOwner>(true),
-			same<Wire<typeof Envs.EnvironmentResumeStats>, Contracts.EnvironmentResumeStats>(true),
-			same<Wire<typeof Envs.Environment>, Contracts.Environment>(true),
-			same<Wire<typeof Envs.EnvironmentList>, { items: readonly Contracts.Environment[] }>(true),
-			same<Wire<typeof Envs.EnvironmentGrant>, Contracts.EnvironmentGrant>(true),
-			same<Wire<typeof Envs.EnvironmentLease>, Contracts.EnvironmentLease>(true),
-			same<Wire<typeof Envs.EnvironmentEvent>, Contracts.EnvironmentEvent>(true),
-			same<Wire<typeof Envs.EnvironmentDetail>, Contracts.EnvironmentDetail>(true),
-			same<Wire<typeof Envs.CreateEnvironmentBody>, Contracts.CreateEnvironmentInput>(true),
-			same<Wire<typeof Envs.UpdateEnvironmentBody>, Contracts.UpdateEnvironmentInput>(true),
-			same<Wire<typeof Envs.GrantEnvironmentBody>, Contracts.GrantEnvironmentInput>(true),
-			same<Wire<typeof Envs.ListEnvironmentsQuery>, Contracts.EnvironmentFilter>(true),
-		];
-		expect(proofs.every(Boolean)).toBe(true);
 	});
 });

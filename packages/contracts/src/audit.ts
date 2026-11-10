@@ -38,8 +38,7 @@ export type AuditSource =
 	| "sharing"
 	| "connections"
 	| "tool_server"
-	| "programs"
-	| "environments";
+	| "programs";
 
 /**
  * Well-known event types. Components may add their own `<source>.<noun>.<verb>` types; these are the ones other
