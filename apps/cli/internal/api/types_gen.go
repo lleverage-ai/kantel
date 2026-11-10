@@ -304,7 +304,7 @@ type BucketMountSource struct {
 	Kind           BucketMountSourceKind `json:"kind"`
 	// The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket.
 	Prefix string `json:"prefix"`
-	// How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's.
+	// How long the host trusts its listing of the prefix before it looks again, so objects added later appear: it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call `refreshSandboxMounts`.
 	RefreshTTLSeconds *int64 `json:"refreshTtlSeconds,omitempty"`
 }
 
@@ -1643,6 +1643,29 @@ const (
 	PutTelemetryBodySignalsItemMetrics PutTelemetryBodySignalsItem = "metrics"
 	PutTelemetryBodySignalsItemLogs    PutTelemetryBodySignalsItem = "logs"
 )
+
+type RefreshMountsBody struct {
+	// Just the bucket mount at this path. Default: every bucket mount of the sandbox's.
+	Path *string `json:"path,omitempty"`
+}
+
+// A bucket mount as the sandbox shows it after a refresh.
+type RefreshedMount struct {
+	// Why it is `failed`, in words.
+	Error *string `json:"error,omitempty"`
+	// When the listing it shows began (ms since the epoch), after the call arrived: it has every object the bucket held then.
+	ListedAt *int64 `json:"listedAt,omitempty"`
+	// How many objects the listing it shows holds.
+	Objects *int64      `json:"objects,omitempty"`
+	Path    string      `json:"path"`
+	Source  MountSource `json:"source"`
+	Status  MountStatus `json:"status"`
+}
+
+type RefreshedMountList struct {
+	// Each bucket mount refreshed, in the sandbox's order.
+	Items []RefreshedMount `json:"items"`
+}
 
 type ResumeSandboxBody struct {
 	Size *SandboxSizeName `json:"size,omitempty"`
