@@ -16,7 +16,7 @@ Every command of `kantel` as `kantel help <command>` shows it. [Command line](/t
 - **Commands and files:** [`exec`](#kantel-exec), [`attach`](#kantel-attach), [`ps`](#kantel-ps), [`kill`](#kantel-kill), [`files ls`](#kantel-files-ls), [`files cat`](#kantel-files-cat), [`files put`](#kantel-files-put), [`files get`](#kantel-files-get), [`files rm`](#kantel-files-rm), [`scp`](#kantel-scp), [`push`](#kantel-push), [`sync`](#kantel-sync)
 - **Ports, SSH, desktop and browser:** [`host`](#kantel-host), [`port list`](#kantel-port-list), [`port hide`](#kantel-port-hide), [`ssh`](#kantel-ssh), [`desktop`](#kantel-desktop), [`browser`](#kantel-browser)
 - **Snapshots:** [`snapshot list`](#kantel-snapshot-list), [`snapshot info`](#kantel-snapshot-info), [`snapshot take`](#kantel-snapshot-take), [`snapshot save`](#kantel-snapshot-save), [`snapshot files`](#kantel-snapshot-files), [`snapshot rm`](#kantel-snapshot-rm)
-- **Environments and egress:** [`env list`](#kantel-env-list), [`env create`](#kantel-env-create), [`env show`](#kantel-env-show), [`env delete`](#kantel-env-delete), [`env set`](#kantel-env-set), [`env unset`](#kantel-env-unset), [`env file`](#kantel-env-file), [`env file rm`](#kantel-env-file-rm), [`env repo add`](#kantel-env-repo-add), [`env repo rm`](#kantel-env-repo-rm), [`env grant`](#kantel-env-grant), [`env grant rm`](#kantel-env-grant-rm), [`egress`](#kantel-egress), [`grant`](#kantel-grant), [`grant rm`](#kantel-grant-rm)
+- **Environments and egress:** [`env list`](#kantel-env-list), [`env create`](#kantel-env-create), [`env show`](#kantel-env-show), [`env delete`](#kantel-env-delete), [`env attach`](#kantel-env-attach), [`env detach`](#kantel-env-detach), [`env set`](#kantel-env-set), [`env unset`](#kantel-env-unset), [`env file`](#kantel-env-file), [`env file rm`](#kantel-env-file-rm), [`env repo add`](#kantel-env-repo-add), [`env repo rm`](#kantel-env-repo-rm), [`env grant`](#kantel-env-grant), [`env grant rm`](#kantel-env-grant-rm), [`egress`](#kantel-egress), [`grant`](#kantel-grant), [`grant rm`](#kantel-grant-rm)
 - **API keys and personal tokens:** [`key list`](#kantel-key-list), [`key create`](#kantel-key-create), [`key rotate`](#kantel-key-rotate), [`key revoke`](#kantel-key-revoke), [`token list`](#kantel-token-list), [`token create`](#kantel-token-create), [`token revoke`](#kantel-token-revoke)
 - **Accounts and organisations:** [`org list`](#kantel-org-list), [`org use`](#kantel-org-use), [`org show`](#kantel-org-show), [`org create`](#kantel-org-create), [`org join`](#kantel-org-join), [`org set`](#kantel-org-set), [`org usage`](#kantel-org-usage), [`org leave`](#kantel-org-leave), [`org delete`](#kantel-org-delete), [`member list`](#kantel-member-list), [`member role`](#kantel-member-role), [`member rm`](#kantel-member-rm), [`invite list`](#kantel-invite-list), [`invite create`](#kantel-invite-create), [`invite revoke`](#kantel-invite-revoke)
 - **Webhooks, events and telemetry:** [`webhook list`](#kantel-webhook-list), [`webhook create`](#kantel-webhook-create), [`webhook rm`](#kantel-webhook-rm), [`webhook test`](#kantel-webhook-test), [`events`](#kantel-events), [`telemetry get`](#kantel-telemetry-get), [`telemetry set`](#kantel-telemetry-set), [`telemetry rm`](#kantel-telemetry-rm)
@@ -114,6 +114,8 @@ Also: `kantel create`, `kantel sandbox create`, `kantel sandbox new`.
 
 --env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.
 
+Give --env &lt;env&gt; more than once for several environments, in order (up to 10): where two set the same variable, secret file or repo path, the later one wins, and the K=V variables win over them all. Their grants add up. kantel env attach and kantel env detach change a sandbox's environments later.
+
 --disk sizes a microVM's disk apart from its vCPUs and memory (kantel new --type microvm --size large --disk 60). A sandbox made from a snapshot keeps the snapshot's disk.
 
 --size takes one of the named sizes the hosts offer; kantel sizes lists them, and the most --vcpus and --memory may ask for. --vcpus and --memory size a microVM beyond the named sizes (kantel new --type microvm --vcpus 8 --memory 16), within what a host offers. A large monorepo's type-check needs about 16 GB, and its tests about 32.
@@ -137,7 +139,7 @@ Also: `kantel create`, `kantel sandbox create`, `kantel sandbox new`.
 | `--auto-stop <minutes\|never>` | Stop by itself this long after it starts (default 60) |
 | `--idle-stop <minutes\|never>` | Also stop once it goes this long unused: no command, SSH, desktop, browser or port traffic (default never) |
 | `--label <k=v>` | A label; repeat for more |
-| `-e, --env <K=V\|env>` | K=V: a variable every command sees (not a secret), repeatable; or an environment to start from |
+| `-e, --env <K=V\|env>` | K=V: a variable every command sees (not a secret); or an environment to start from. Repeat it for more |
 | `--host <port[:public]>` | Give this port an HTTPS URL once it runs; repeat it |
 | `--on <host>` | Run it on this host, its name or ID (kantel hosts list shows them) |
 | `--host-label <k=v>` | Run it only on a host with this label; repeat for more |
@@ -152,6 +154,9 @@ kantel new --type microvm --vcpus 8 --memory 16 --name ci --idle-stop 30
 
 # One from a saved snapshot, keeping only its ID for a script
 id=$(kantel new --from monorepo-ci --json | jq -r .id)
+
+# One with two environments, where npm wins over backend
+kantel new --env backend --env npm
 ```
 
 ### kantel sizes
@@ -726,10 +731,24 @@ kantel snapshot rm <snapshotId> [flags]
 
 ### kantel env list
 
-The account's environments.
+The account's environments, or a sandbox's in order.
 
 ```sh
 kantel env list [flags]
+```
+
+A sandbox's environments are in order: where two set the same variable, secret file or repo path, the later one wins, and the sandbox's own variables (kantel new -e K=V) win over them all. Their grants add up. In the table of them, SHADOWED is what of an environment a later one sets instead, PENDING says its secret files and repos are set up when the sandbox next runs, and POSITION is what kantel env attach --position takes.
+
+| Flag | What it does |
+| --- | --- |
+| `--sandbox <sandbox>` | A sandbox's environments instead, in order: what each loses to a later one, and what is pending |
+
+```sh
+# The account's environments
+kantel env list
+
+# A sandbox's, in order
+kantel env ls --sandbox sbx_4kq9x2mt
 ```
 
 ### kantel env create
@@ -760,6 +779,45 @@ Delete an environment, with its sealed values and files.
 
 ```sh
 kantel env delete <env> [flags]
+```
+
+### kantel env attach
+
+Add an environment to a sandbox that exists, last unless --position says otherwise.
+
+```sh
+kantel env attach <sandbox> <env> [flags]
+```
+
+Its variables, protected variables and grants apply at once: new commands see them, and on a host that supports it so do new shells, while running processes keep what they started with. A running sandbox gets its secret files and repos now, a stopped one when it next runs. Attaching one the sandbox has already moves it to --position. A sandbox has at most 10. An API key needs the exec scope.
+
+A sandbox's environments are in order: where two set the same variable, secret file or repo path, the later one wins, and the sandbox's own variables (kantel new -e K=V) win over them all. Their grants add up. In the table of them, SHADOWED is what of an environment a later one sets instead, PENDING says its secret files and repos are set up when the sandbox next runs, and POSITION is what kantel env attach --position takes.
+
+| Flag | What it does |
+| --- | --- |
+| `--position <n>` | Where it goes: 0 is first, so every other one wins over it (default last, so it wins) |
+
+```sh
+# Add npm last, so it wins over the others
+kantel env attach sbx_4kq9x2mt npm
+
+# Add backend first, so the others win over it
+kantel env attach sbx_4kq9x2mt backend --position 0
+```
+
+### kantel env detach
+
+Take an environment off a sandbox.
+
+```sh
+kantel env detach <sandbox> <env> [flags]
+```
+
+Its variables are worked out again without it, its protected variables stop resolving at once and its grants go. The secret files it wrote and the repos it cloned stay in the sandbox. An API key needs the exec scope.
+
+```sh
+# Take npm off a sandbox
+kantel env detach sbx_4kq9x2mt npm
 ```
 
 ### kantel env set
