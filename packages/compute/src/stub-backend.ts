@@ -23,6 +23,7 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	type Placement,
+	SANDBOX_ENV_FEATURE,
 	type SandboxBackend,
 	type SandboxSpec,
 	SNAPSHOT_KEEP_FEATURE,
@@ -279,7 +280,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		nestedVirtualisation: false,
 		capacity: { vcpus: 64, memoryMb: 262_144, diskGb: 2048 },
 		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
-		features: ["egress-policy", CUSTOM_SHAPES_FEATURE, SNAPSHOT_KEEP_FEATURE],
+		features: ["egress-policy", CUSTOM_SHAPES_FEATURE, SNAPSHOT_KEEP_FEATURE, SANDBOX_ENV_FEATURE],
 		sizes: SIZES,
 		// The disk it gives a shape off its sizes, as kantel-host's defaults: its smallest size's, up to 1024 GB.
 		disk: { minGb: 10, maxGb: 1024 },
@@ -336,9 +337,12 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			capabilities: machine.type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
 		};
 	};
+	/** The machine's shell on its disk, with its env. */
+	const shellOf = (machine: Machine, fs: InMemoryFs) =>
+		new Bash({ fs, cwd: HOME, env: { HOME, USER: "user", ...machine.env } });
 	const boot = (machine: Machine, fs: InMemoryFs) => {
 		machine.fs = fs;
-		machine.bash = new Bash({ fs, cwd: HOME, env: { HOME, USER: "user", ...machine.env } });
+		machine.bash = shellOf(machine, fs);
 		machine.state = "running";
 		machine.runningSince = now();
 	};
@@ -479,6 +483,16 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 
 		async destroy(sandboxId) {
 			machines.delete(sandboxId);
+		},
+
+		// As a host does: the machine keeps it, and a running one's shell has exactly it from its next command (its disk
+		// stays, as a guest's env file is rewritten in place).
+		async updateEnv(sandboxId, env) {
+			const machine = machineOf(sandboxId);
+			machine.env = { ...env };
+			if (machine.state === "running" && machine.fs !== undefined) {
+				machine.bash = shellOf(machine, machine.fs);
+			}
 		},
 
 		async exec(sandboxId, request: ExecRequest): Promise<ExecResult> {

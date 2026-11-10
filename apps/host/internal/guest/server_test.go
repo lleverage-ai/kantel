@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -64,4 +65,30 @@ func TestWriteEnvReplacesTheWholeEnvironment(t *testing.T) {
 	}
 	// Already gone: still none, no error.
 	writeEnv(path, nil)
+}
+
+// The file the host writes into a running guest (sandbox.env) is the guest agent's own format, which commandEnv reads
+// back exactly: quoted values with newlines, quotes and $ in them, in a fixed order.
+func TestEnvFileContentRoundTrips(t *testing.T) {
+	env := map[string]string{"B": "two\nlines", "A": `say "hi" $HOME`, "C": ""}
+	content := EnvFileContent(env)
+	if content != "A=\"say \\\"hi\\\" $HOME\"\nB=\"two\\nlines\"\nC=\"\"\n" {
+		t.Fatalf("content = %q", content)
+	}
+	if EnvFileContent(nil) != "" {
+		t.Fatal("an empty env has no lines")
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(content, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			unq, err := strconv.Unquote(v)
+			if err != nil {
+				t.Fatalf("%s: %v", line, err)
+			}
+			got[k] = unq
+		}
+	}
+	if len(got) != len(env) || got["A"] != env["A"] || got["B"] != env["B"] || got["C"] != "" {
+		t.Fatalf("read back %q", got)
+	}
 }

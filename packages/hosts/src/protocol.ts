@@ -242,7 +242,20 @@ export const HOST_FEATURES = {
 	 * only for the run whose machine ended (`ComputeService.reportExit`). Without it a boot names no machine.
 	 */
 	exitStamps: "exit-stamps",
+	/**
+	 * `sandbox.env` (`HostEnvParams`): a sandbox's whole env replaced where the host keeps it (what its later starts,
+	 * resumes and forks there boot with), and a running microVM's env file (`/etc/kantel/env`, which its shells and
+	 * commands read) rewritten at once. Without it Kantel doesn't send it, and the sandbox has the new env from its next
+	 * boot.
+	 */
+	sandboxEnv: "sandbox-env",
 } as const;
+
+/** `sandbox.env`'s params (`HOST_FEATURES.sandboxEnv`): the sandbox's whole env from now (an empty one is none). */
+export interface HostEnvParams {
+	readonly sandboxId: string;
+	readonly env: { readonly [name: string]: string };
+}
 
 /**
  * `snapshot.keep`'s params (`HOST_FEATURES.snapshotKeep`): `snapshotId` made a saved snapshot of what `from` holds, which
@@ -981,6 +994,8 @@ export const HostMethods = {
 	legacyPools: "host.pools",
 	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
 	secrets: "sandbox.secrets",
+	/** Kantel to host (`HOST_FEATURES.sandboxEnv`): a sandbox's env replaced, `HostEnvParams`. Result `{ ok: true }`. */
+	env: "sandbox.env",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
 	secretsFetch: "secrets.fetch",
 	/** A file's bytes on a port stream, `HostFileOpen`; answered `{ size? }` once it is open. */

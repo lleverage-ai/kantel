@@ -273,6 +273,14 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async updateEgress(id, egress, revision) {
 			await (await on(id)).updateEgress?.(id, egress, revision);
 		},
+		// On the backend holding it; one without it gives the sandbox its new env at its next boot.
+		...(primary.updateEnv === undefined && fallback.updateEnv === undefined
+			? {}
+			: {
+					async updateEnv(id: string, env: { readonly [name: string]: string }) {
+						await (await on(id)).updateEnv?.(id, env);
+					},
+				}),
 		async revokeHost(hostId) {
 			await primary.revokeHost?.(hostId);
 		},

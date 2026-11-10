@@ -279,7 +279,7 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 	total := hostinfo.MemoryMiB()
 	reserve := h.cfg.reserveMemoryMiB(total)
-	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep, proto.FeatureSandboxEnv}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -643,6 +643,21 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]bool{"ok": true}, h.setEgress(ctx, t, name, p)
+	case proto.MethodEnv:
+		p, err := decode[proto.EnvParams](params)
+		if err != nil {
+			return nil, err
+		}
+		if p.SandboxID == "" {
+			return nil, invalid("sandbox.env needs sandboxId")
+		}
+		// With the lifecycle calls, so a boot's identity and this rewrite of the guest's file can't cross.
+		defer h.lifecycle.lock(p.SandboxID)()
+		t, name, err := h.tierOfNamed(p.SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, h.setEnv(ctx, t, name, p)
 	case proto.MethodSecrets:
 		p, err := decode[proto.SecretsParams](params)
 		if err != nil {

@@ -305,6 +305,7 @@ export class FakeHost {
 				return answer({ ok: true });
 			case "port.open":
 			case "sandbox.egress":
+			case "sandbox.env":
 				return answer({ ok: true });
 			case "sandbox.secrets":
 				return answer({});

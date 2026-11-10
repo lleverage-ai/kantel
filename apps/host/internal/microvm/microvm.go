@@ -35,6 +35,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -4315,6 +4316,22 @@ func (m *Manager) EgressOf(id string) (*proto.Egress, error) {
 	}
 	e := *s.meta.Egress
 	return &e, nil
+}
+
+// SetEnv replaces a sandbox's env in meta.json: what its identity carries from its next boot (a start, a resume, a
+// restore) and what a fork with none of its own inherits. A running guest's env file is the caller's to rewrite.
+func (m *Manager) SetEnv(id string, env map[string]string) error {
+	s, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.meta.Env = nil
+	if len(env) > 0 {
+		s.meta.Env = maps.Clone(env)
+	}
+	return m.writeMeta(s)
 }
 
 func (m *Manager) SetEgress(id string, e *proto.Egress) error {

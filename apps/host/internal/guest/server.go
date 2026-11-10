@@ -355,7 +355,7 @@ func (s *Server) applyIdentity(id *Identity, steps map[string]float64) error {
 			_ = os.Chown(filepath.Join(dir, "authorized_keys"), uid, gid)
 		}
 	}
-	writeEnv(envFile, id.Env)
+	writeEnv(EnvFile, id.Env)
 	// dockerd and Chromium use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
 	// would stop a resumed or forked sandbox's containers and close its tabs (and, as a restored sandbox's monotonic
 	// clock carries on from its template's, soon trips systemd's start limit).
@@ -400,9 +400,26 @@ func writeAptProxy(path string, proxied bool) {
 	_ = os.WriteFile(path, []byte(conf), 0o644)
 }
 
-// envFile holds the sandbox's own variables, which every command gets, as does a systemd unit that reads it
+// EnvFile holds the sandbox's own variables, which every command gets, as does a systemd unit that reads it
 // (EnvironmentFile=-/etc/kantel/env): systemd reads its double-quoted values, though it keeps \n and \t as written.
-const envFile = "/etc/kantel/env"
+// The guest agent writes it with each identity, and the host rewrites it in a running guest when the sandbox's env
+// changes (sandbox.env).
+const EnvFile = "/etc/kantel/env"
+
+// EnvFileContent is what EnvFile holds for env: a K="v" line each (strconv.Quote), sorted by name. Empty for an empty
+// env, which has no file.
+func EnvFileContent(env map[string]string) string {
+	names := make([]string, 0, len(env))
+	for k := range env {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, k := range names {
+		fmt.Fprintf(&b, "%s=%s\n", k, strconv.Quote(env[k]))
+	}
+	return b.String()
+}
 
 // writeEnv makes path hold exactly env: an identity's Env is the sandbox's whole environment (the host resolves a
 // fork's inheritance before it sends one), so an empty one leaves none, not what the disk had from its source.
@@ -411,11 +428,7 @@ func writeEnv(path string, env map[string]string) {
 		_ = os.Remove(path)
 		return
 	}
-	var b strings.Builder
-	for k, v := range env {
-		fmt.Fprintf(&b, "%s=%s\n", k, strconv.Quote(v))
-	}
-	_ = os.WriteFile(path, []byte(b.String()), 0o644)
+	_ = os.WriteFile(path, []byte(EnvFileContent(env)), 0o644)
 }
 
 // trustCA adds a PEM certificate to the system bundle, where there's no update-ca-certificates to do it.
@@ -517,7 +530,7 @@ func (s *Server) commandEnv(req *ExecRequest, home string, username string) []st
 			}
 		}
 	}
-	if raw, err := os.ReadFile(envFile); err == nil {
+	if raw, err := os.ReadFile(EnvFile); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			if k, v, ok := strings.Cut(line, "="); ok && k != "" {
 				if unq, err := strconv.Unquote(v); err == nil {

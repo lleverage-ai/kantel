@@ -53,6 +53,7 @@ import {
 	HOST_WRITE_FILE_MAX_BYTES,
 	type HostDiskUsage,
 	type HostEgress,
+	type HostEnvParams,
 	type HostExecParams,
 	type HostExecRef,
 	type HostExecResult,
@@ -904,6 +905,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async updateSecrets(sandboxId, version) {
 			// The host drops its copy; its next request that needs one fetches the new values.
 			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
+		},
+		async updateEnv(sandboxId, env) {
+			// A host from before it could has the sandbox take its new env with its next boot, which sends it.
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.sandboxEnv)) return;
+			const params: HostEnvParams = { sandboxId, env: { ...env } };
+			await call(sandboxId, HostMethods.env, params);
 		},
 		async stop(sandboxId, { keepMemory, waitForHost }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
