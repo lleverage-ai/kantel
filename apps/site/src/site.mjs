@@ -13,7 +13,7 @@ export const SITE_URL = "https://kantel.dev";
 export const CONSOLE_URL = "https://app.kantel.dev";
 
 /**
- * The CLI's installer, packages/cli/install-cli.sh, which the build copies into public/ as cli.sh
+ * The CLI's installer, apps/cli/install-cli.sh, which the build copies into public/ as cli.sh
  * (scripts/sync-installers.mjs). It installs the latest GitHub Release, and pastes the same into bash, zsh and fish.
  */
 export const CLI_INSTALL_COMMAND = `curl -fsSL ${SITE_URL}/cli.sh | sh`;

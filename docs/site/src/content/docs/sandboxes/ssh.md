@@ -22,7 +22,7 @@ kantel ssh sbx_4kq9x2mt -- uname -a     # one command, with its exit code
 
 ## From the console
 
-A microVM's Overview shows SSH as `kantel ssh <sandbox ID>`, with the line that installs the CLI under it (it needs Node.js 22 or later), and the one that signs it in to the Kantel the console belongs to, once:
+A microVM's Overview shows SSH as `kantel ssh <sandbox ID>`, with the line that installs the CLI under it (one binary, for Linux or macOS), and the one that signs it in to the Kantel the console belongs to, once:
 
 ```sh
 curl -fsSL https://kantel.dev/cli.sh | sh

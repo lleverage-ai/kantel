@@ -17,7 +17,7 @@ This page runs the whole of Kantel on a Linux machine of your own, with nothing 
 
 - A Linux machine on x86_64 or aarch64, with `/dev/kvm` and root. Bare metal works, and so does a cloud VM that has nested virtualisation turned on. Plan for at least 20 GiB of free disk and 4 GiB of memory.
 - Docker with the Compose v2 plugin, for the control plane. See [Install Kantel](/self-hosting/install/#what-you-need).
-- Node.js 22 or later, for the `kantel` and `kantel-admin` commands, and `curl`.
+- `curl`, for the `kantel` and `kantel-admin` commands (binaries for Linux and macOS, with nothing else to install).
 
 ## 1. Install the control plane
 
@@ -29,7 +29,7 @@ The console is then at <http://127.0.0.1:58090/>. [Install Kantel](/self-hosting
 
 ## 2. Install the commands
 
-`kantel` drives sandboxes, and `kantel-admin` runs the install and its hosts. Both need Node.js 22 or later, and come from Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) with one installer, which needs no sudo and works in bash, zsh and fish. `--admin` adds `kantel-admin` to `kantel`:
+`kantel` drives sandboxes, and `kantel-admin` runs the install and its hosts. Both are binaries for Linux and macOS, and come from Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) with one installer, which needs no sudo and works in bash, zsh and fish. `--admin` adds `kantel-admin` to `kantel`:
 
 ```sh
 curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin

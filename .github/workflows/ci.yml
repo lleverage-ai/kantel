@@ -78,7 +78,7 @@ jobs:
       - name: kantel.dev builds and its install.sh and cli.sh parse
         run: |
           sh -n apps/site/public/install.sh
-          sh -n packages/cli/install-cli.sh
+          sh -n apps/cli/install-cli.sh
           pnpm --dir apps/site install --frozen-lockfile --ignore-workspace
           pnpm --dir apps/site build
 
@@ -110,6 +110,35 @@ jobs:
         with:
           go-version-file: apps/host/go.mod
           cache-dependency-path: apps/host/go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  cli-go:
+    # kantel and kantel-admin (apps/cli) are Go too. The generated API client must match the OpenAPI document, and the
+    # docs' command reference the command table.
+    name: Go vet and test (apps/cli)
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/cli/go.mod
+
+      - name: Generated API client is current
+        run: go run ./internal/api/gen -check
+
+      # docs/site/src/content/docs/tools/cli-reference.md, from the command table; go run ./cmd/kantel-docs writes it.
+      - name: Command reference is current
+        run: go run ./cmd/kantel-docs -check
 
       - name: Vet
         run: go vet ./...
