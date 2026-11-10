@@ -9,19 +9,20 @@
 #   curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
 #
 # The same line works in bash, zsh and fish: the script runs under sh whatever your shell is. It
-#   1. checks Node.js 22 or later is installed: each command is one JavaScript file, for Linux and macOS alike;
-#   2. downloads kantel.js and SHA256SUMS from the release (kantel-admin.js too, with --admin), and checks each
-#      file's SHA-256;
-#   3. puts them in ~/.local/share/kantel (KANTEL_HOME) as kantel.mjs, links ~/.local/bin/kantel to it, and says how
-#      to put ~/.local/bin on your PATH if it isn't.
-# Run it again to update; a running command keeps its file.
+#   1. picks the binary for this machine: kantel-<os>-<arch>, for Linux or macOS on x86_64 or arm64 (one static
+#      binary, with nothing else to install);
+#   2. downloads it and SHA256SUMS from the release (kantel-admin-<os>-<arch> too, with --admin), and checks its
+#      SHA-256 and that it runs;
+#   3. puts it in ~/.local/bin (KANTEL_BIN_DIR, or --dir), and says how to put that on your PATH if it isn't.
+# Run it again to update (or run `kantel update`); a running command keeps its file. It replaces a kantel installed
+# by an older release of this script, when kantel was a Node.js program (a link to ~/.local/share/kantel/kantel.mjs).
 #
 # `kantel-admin`, the operator CLI that installs and upgrades a self-hosted control plane, comes with --admin. Once
 # it's installed, running this again updates it too, unless you say --no-admin.
 #
 # Options, after `sh -s --` (as in `curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin`):
 #   --version V   install release V (such as 0.1.0) rather than this script's own
-#   --dir DIR     link the commands in DIR rather than ~/.local/bin (KANTEL_BIN_DIR)
+#   --dir DIR     install the commands in DIR rather than ~/.local/bin (KANTEL_BIN_DIR)
 #   --admin       install `kantel-admin` as well
 #   --no-admin    install `kantel` only, even where kantel-admin is installed already
 # KANTEL_RELEASE_URL downloads from elsewhere: a directory URL holding the release's files, for a mirror or a test.
@@ -47,11 +48,28 @@ listed() {
 sha256() {
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "$1" | cut -d ' ' -f 1
-	elif command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 "$1" | cut -d ' ' -f 1
 	else
-		die "needs sha256sum (coreutils) or shasum to check the download"
+		shasum -a 256 "$1" | cut -d ' ' -f 1
 	fi
+}
+
+# platform: this machine's part of the binaries' names, such as linux-amd64 or darwin-arm64.
+platform() {
+	case "$(uname -s)" in
+	Linux) os=linux ;;
+	Darwin) os=darwin ;;
+	*) die "Kantel's CLI is for Linux and macOS, not $(uname -s)" ;;
+	esac
+	case "$(uname -m)" in
+	x86_64 | amd64) arch=amd64 ;;
+	aarch64 | arm64) arch=arm64 ;;
+	*) die "Kantel's CLI is for x86_64 and arm64, not $(uname -m)" ;;
+	esac
+	# A shell under Rosetta says x86_64 on an Apple silicon Mac; the arm64 binary is the one to run there.
+	if [ "$os" = darwin ] && [ "$arch" = amd64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
+		arch=arm64
+	fi
+	printf '%s-%s\n' "$os" "$arch"
 }
 
 main() {
@@ -98,20 +116,13 @@ main() {
 
 	[ -n "${HOME:-}" ] || die "HOME isn't set"
 	bin=${bin:-$HOME/.local/bin}
-	lib=${KANTEL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/kantel}
+	# Where the Node.js releases put kantel.mjs and kantel-admin.mjs, linked from bin: replaced, then removed.
+	old=${KANTEL_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/kantel}
 
-	case "$(uname -s)" in
-	Linux | Darwin) ;;
-	*) say "warning: Kantel's commands are tested on Linux and macOS, not $(uname -s)" ;;
-	esac
+	plat=$(platform)
 	command -v curl >/dev/null 2>&1 || die "needs curl"
 	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
 		die "needs sha256sum (coreutils) or shasum to check the download"
-	command -v node >/dev/null 2>&1 ||
-		die "needs Node.js 22 or later (https://nodejs.org/en/download), then run this again"
-	node_version=$(node -p 'process.versions.node' 2>/dev/null) || die "couldn't run node to check its version"
-	[ "${node_version%%.*}" -ge 22 ] 2>/dev/null ||
-		die "needs Node.js 22 or later, and this node ($(command -v node)) is $node_version"
 
 	if [ -n "${KANTEL_RELEASE_URL:-}" ]; then
 		base=${KANTEL_RELEASE_URL%/}
@@ -120,47 +131,59 @@ main() {
 	else
 		base="https://github.com/$REPO/releases/download/v$version"
 	fi
-	# Neither flag: kantel-admin is updated where this script installed it before (its link in bin points into lib).
+	# Neither flag: kantel-admin is updated where it is installed already, by this script (a binary) or an older one
+	# (a link to kantel-admin.mjs).
 	if [ -z "$admin" ]; then
 		admin=0
-		if [ -L "$bin/kantel-admin" ] && [ -e "$lib/kantel-admin.mjs" ]; then admin=1; fi
+		if [ -f "$bin/kantel-admin" ] || [ -L "$bin/kantel-admin" ]; then admin=1; fi
 	fi
 	commands="kantel"
 	if [ "$admin" = 1 ]; then commands="kantel kantel-admin"; fi
+
+	# Only a file this script put there is replaced: a binary, or the older script's link to its .mjs.
+	for command in $commands; do
+		if [ -L "$bin/$command" ]; then
+			target=$(readlink "$bin/$command")
+			[ "$target" = "$old/$command.mjs" ] ||
+				die "$bin/$command is already there, a link to $target that this script didn't make; remove it, or use --dir for another directory"
+		elif [ -e "$bin/$command" ] && [ ! -f "$bin/$command" ]; then
+			die "$bin/$command is already there and isn't a file; remove it, or use --dir for another directory"
+		fi
+	done
 
 	work=$(mktemp -d)
 	trap 'rm -rf "$work"' EXIT
 	trap 'rm -rf "$work"; exit 130' INT
 	trap 'rm -rf "$work"; exit 143' TERM
 	curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download $base/SHA256SUMS"
-	assets=""
-	for command in $commands; do assets="$assets $command.js"; done
-	for asset in $assets; do
+	for command in $commands; do
+		asset="$command-$plat"
 		say "Downloading $asset from $base"
-		curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" || die "couldn't download $base/$asset"
 		want=$(listed "$asset")
-		[ -n "$want" ] || die "SHA256SUMS has no line for $asset"
+		[ -n "$want" ] || die "SHA256SUMS has no line for $asset: the release has no $command for this machine"
+		curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" || die "couldn't download $base/$asset"
 		got=$(sha256 "$work/$asset")
 		[ "$got" = "$want" ] || die "$asset's SHA-256 is $got, but SHA256SUMS says $want; not installing it"
+		chmod 0755 "$work/$asset"
+		"$work/$asset" --version >/dev/null 2>&1 || die "the downloaded $asset doesn't run on this machine; not installing it"
 	done
 	say "Checked the download against SHA256SUMS"
 
-	# Each file goes in as <command>.mjs, so Node runs it as an ES module whatever its version and whatever
-	# package.json is above it, and the command on the PATH is a link to it (Node follows the link to the .mjs). A
-	# rename into place, so a command that is running keeps its file.
+	# Copied in beside the old one and renamed over it, so a command that is running keeps its file and an install cut
+	# short leaves the old one as it was.
+	mkdir -p "$bin"
 	for command in $commands; do
-		if [ -e "$bin/$command" ] && [ ! -L "$bin/$command" ]; then
-			die "$bin/$command is already there and isn't a link this script made; remove it, or use --dir for another directory"
-		fi
-	done
-	mkdir -p "$lib" "$bin"
-	for command in $commands; do
-		cp "$work/$command.js" "$lib/$command.mjs.new"
-		chmod 0755 "$lib/$command.mjs.new"
-		mv -f "$lib/$command.mjs.new" "$lib/$command.mjs"
-		ln -sf "$lib/$command.mjs" "$bin/$command.new"
-		mv -f "$bin/$command.new" "$bin/$command"
+		linked=
+		if [ -L "$bin/$command" ]; then linked=1; fi
+		cp "$work/$command-$plat" "$bin/.$command.new"
+		chmod 0755 "$bin/.$command.new"
+		mv -f "$bin/.$command.new" "$bin/$command"
 		say "Installed $bin/$command $("$bin/$command" --version)"
+		# The link this replaced was the Node.js release's: its file goes too.
+		if [ -n "$linked" ]; then
+			rm -f "$old/$command.mjs"
+			rmdir "$old" 2>/dev/null || true
+		fi
 	done
 
 	case ":${PATH:-}:" in
@@ -169,10 +192,10 @@ main() {
 		say ""
 		say "$bin isn't on your PATH. To put it there:"
 		say "  fish:      fish_add_path $bin"
-		say "  bash, zsh: add  export PATH=\"$bin:\$PATH\"  to ~/.bashrc or ~/.zshrc"
+		say "  bash, zsh: add  export PATH=\"$bin:\$PATH\"  to ~/.bashrc or ~/.zshrc, then open a new terminal"
 		;;
 	esac
-	# `kantel update` runs this with KANTEL_UPDATE set: someone updating is signed in already.
+	# An update (KANTEL_UPDATE, as the Node.js release's `kantel update` set it): someone updating is signed in already.
 	[ -z "${KANTEL_UPDATE:-}" ] || return 0
 	say "Next: kantel login (or kantel login --url <url> for your own Kantel)"
 	if [ "$admin" = 0 ]; then

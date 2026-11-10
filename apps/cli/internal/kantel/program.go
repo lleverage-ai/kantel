@@ -68,6 +68,9 @@ func Program() *cli.Program {
 		},
 		Hint:     Hint,
 		Complete: complete,
+		// The update notice (notice.go): a check started as a command starts, its line printed when it is done.
+		Before: beforeCommand,
+		After:  afterCommand,
 	}
 	p.Sections = []cli.Section{
 		signingIn(),
@@ -93,6 +96,7 @@ func Program() *cli.Program {
 		"kantel help --json describes every command for a script or an agent; kantel completion sets up your shell.",
 		"Exit codes: 0 it worked, 1 it failed, 2 it was used wrongly, 4 it needs kantel login.",
 		"Operators of a self-hosted Kantel (install, upgrade, hosts): kantel-admin help.",
+		"kantel says when a newer release is out (kantel update installs it); KANTEL_NO_UPDATE_NOTIFIER=1 turns that off.",
 	}
 	return p
 }

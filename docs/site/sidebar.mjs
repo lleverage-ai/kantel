@@ -43,7 +43,7 @@ export const sidebar = [
 	},
 	{
 		label: "Tools",
-		items: ["tools/cli", "tools/mcp-server", "tools/typescript-sdk"],
+		items: ["tools/cli", "tools/cli-reference", "tools/mcp-server", "tools/typescript-sdk"],
 	},
 	{
 		label: "Self-hosting",

@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# pack.sh <version> [out]: builds everything a Kantel release ships, all at <version>, into out (default dist/release):
-#   out/npm/     the user CLI's npm tarball, `kantel` (packages/cli), the only thing Kantel puts on npm (once the
-#                release workflow's publish_npm is on);
-#   out/github/  the GitHub Release's files:
-#                  kantel-host-linux-amd64, kantel-host-linux-arm64  the host agent (apps/host), static Go binaries
-#                  kantel.js                                        the user CLI (packages/cli), for Node 22+
-#                  kantel-admin.js                                  the operator CLI (packages/admin), for Node 22+
-#                  install.sh                                       the host installer (apps/host/install.sh)
-#                  install-cli.sh                                   the CLIs' installer (packages/cli/install-cli.sh)
-#                  SHA256SUMS                                       sha256sum's lines for the six files above
-# It never publishes: publish.sh puts out/npm on npm and github-release.sh makes the release, and
-# .github/workflows/release.yml runs all three. It needs Node 22.14+, pnpm with the workspace installed (at least
-# `pnpm install --filter "@kantel/admin..." --filter "@kantel/cli..."`), Go (apps/host/go.mod's version), GNU tar
-# and sha256sum.
+# pack.sh <version> [out]: builds everything a Kantel release ships, all at <version>, into out/github (out defaults
+# to dist/release), the GitHub Release's files:
+#   kantel-host-linux-amd64, kantel-host-linux-arm64   the host agent (apps/host)
+#   kantel-<os>-<arch>                                 the user CLI and MCP server (apps/cli/cmd/kantel)
+#   kantel-admin-<os>-<arch>                           the operator CLI (apps/cli/cmd/kantel-admin)
+#   install.sh                                         the host installer (apps/host/install.sh)
+#   install-cli.sh                                     the CLIs' installer (apps/cli/install-cli.sh)
+#   SHA256SUMS                                         sha256sum's line for each file above
+# Every binary is a static Go one (CGO off, -trimpath, stripped), with nothing to install first: kantel and
+# kantel-admin for linux and darwin on amd64 and arm64, kantel-host for linux. Each has <version> stamped in.
+#
+# It never publishes: github-release.sh makes the release, and .github/workflows/release.yml runs both. It needs Go
+# (apps/cli/go.mod's version or later) and sha256sum, and leaves the repository as it found it.
+#
+# npm: the user CLI was an npm package (out/npm, for publish.sh) while it was Node.js. Now that it is a Go binary,
+# pack.sh builds no npm package, and npm publishing, on hold already, is off (publish.sh is left as it was).
 set -euo pipefail
 
 version=${1:?usage: pack.sh <version> [out]}
@@ -25,26 +27,12 @@ if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-
 	exit 1
 fi
 
-work=$(mktemp -d)
-# The CLIs bundle their version from their package.json, so the build stamps it there and puts the files back after.
-restore() {
-	for pkg in cli admin; do
-		[[ -f "$work/$pkg.package.json" ]] && cp "$work/$pkg.package.json" "$root/packages/$pkg/package.json"
-	done
-	rm -rf "$work"
-}
-trap restore EXIT
+# The platforms kantel and kantel-admin are built for. Windows isn't one.
+platforms=(linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
 
 rm -rf "$out"
-mkdir -p "$out/npm" "$out/github"
+mkdir -p "$out/github"
 github="$out/github"
-
-# stamp PKG: sets packages/PKG's version to $version (restored on exit) and builds it.
-stamp() {
-	local dir="$root/packages/$1"
-	cp "$dir/package.json" "$work/$1.package.json"
-	(cd "$dir" && npm pkg set "version=$version" && node scripts/build.ts >/dev/null)
-}
 
 # kantel-host, for Linux on x86_64 and arm64: static (CGO off), so one binary runs on any distribution.
 for arch in amd64 arm64; do
@@ -52,12 +40,22 @@ for arch in amd64 arm64; do
 		-ldflags "-s -w -X main.version=$version" -o "$github/kantel-host-linux-$arch" ./cmd/kantel-host)
 done
 
-# kantel-admin and kantel: one bundled file each. kantel's dist/ is also the npm package.
-stamp admin
-cp "$root/packages/admin/dist/kantel-admin.js" "$github/kantel-admin.js"
-stamp cli
-cp "$root/packages/cli/dist/kantel.js" "$github/kantel.js"
-chmod 0755 "$github/kantel-admin.js" "$github/kantel.js"
+# kantel and kantel-admin, for each platform. The version goes in each program's version variable:
+# internal/kantel.Version for kantel, internal/admin.Version for kantel-admin (the linker ignores a -X for a variable
+# a binary doesn't have, so both get the same flags; smoke.sh checks each prints the version).
+module=github.com/lleverage-ai/kantel/apps/cli
+ldflags="-s -w -X $module/internal/kantel.Version=$version -X $module/internal/admin.Version=$version"
+for command in kantel kantel-admin; do
+	if [[ ! -d "$root/apps/cli/cmd/$command" ]]; then
+		echo "pack.sh: note: apps/cli/cmd/$command isn't there yet, so this release has no $command" >&2
+		continue
+	fi
+	for target in "${platforms[@]}"; do
+		os=${target%/*} arch=${target#*/}
+		(cd "$root/apps/cli" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$ldflags" \
+			-o "$github/$command-$os-$arch" "./cmd/$command")
+	done
+done
 
 # The installers, pinned to this release: `curl …/releases/download/v<version>/install.sh` installs this version.
 # The copy at releases/latest/download is whichever release is marked latest, so it installs that one.
@@ -71,12 +69,9 @@ script() {
 	chmod 0755 "$github/$2"
 }
 script "$root/apps/host/install.sh" install.sh
-script "$root/packages/cli/install-cli.sh" install-cli.sh
+script "$root/apps/cli/install-cli.sh" install-cli.sh
 
-(cd "$github" && sha256sum kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js \
-	install.sh install-cli.sh >SHA256SUMS)
+sums=$(cd "$github" && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs sha256sum)
+printf '%s\n' "$sums" >"$github/SHA256SUMS"
 
-# kantel, the npm package.
-(cd "$root/packages/cli/dist" && npm pack --silent --pack-destination "$out/npm" >/dev/null)
-
-(cd "$out" && ls -l npm github && cat github/SHA256SUMS)
+(cd "$github" && ls -l && cat SHA256SUMS)

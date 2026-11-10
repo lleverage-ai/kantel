@@ -70,7 +70,7 @@ Read these before relying on Kantel for real work.
 - **Stock images**: a custom image without systemd has no Docker, and one without the desktop packages has no desktop or browser.
 - **Chromium and the egress proxy**: if the proxy intercepts TLS, Chromium reads its own certificate store, not the system one.
 - **The self-hosted control plane**: Linux or macOS with Docker and Compose v2. Hosts are Linux whichever you use.
-- **The CLI**: Node.js 22 or later, on Linux or macOS.
+- **The CLI**: one binary for Linux or macOS, on x86_64 or arm64.
 
 ## Next
 
