@@ -657,6 +657,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		// Ordered with the egress and boots: an env from a change older than one the host has taken (delivered late,
+		// from another gateway) leaves the newer one, and is answered as done.
+		if ok, err := h.orderEgress(t, p.SandboxID, p.Revision); err != nil {
+			return nil, err
+		} else if !ok {
+			return map[string]bool{"ok": true}, nil
+		}
 		return map[string]bool{"ok": true}, h.setEnv(ctx, t, name, p)
 	case proto.MethodSecrets:
 		p, err := decode[proto.SecretsParams](params)

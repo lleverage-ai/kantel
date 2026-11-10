@@ -141,7 +141,7 @@ function setup(
 			fetch: (input, init) =>
 				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 		});
-	return { api, recorded, sent, tom: client("tom-token"), ann: client("ann-token") };
+	return { api, recorded, sent, client, tom: client("tom-token"), ann: client("ann-token") };
 }
 
 /** The error a call failed with; fails the test when it succeeded. */
@@ -2194,6 +2194,62 @@ describe("a sandbox with several environments", () => {
 		await vi.waitFor(async () =>
 			expect((await tom.readFile(fork.id, { path: ".npmrc" })).content).toBe("registry=npm\n"),
 		);
+	});
+
+	it("an environment's deny grants come off a sandbox only for an admin", async () => {
+		const { tom, client } = setup();
+		const github = await githubEnvironment(tom);
+		const policy = await tom.createEnvironment({ name: "policy" });
+		await tom.putEnvironmentGrants(policy.id, {
+			grants: [{ action: "deny", host: "api.github.com", methods: ["DELETE"] }],
+		});
+		const sandbox = await tom.createSandbox({ environments: ["backend", "policy"], wait: true });
+		const agent = client((await tom.createApiKey({ name: "agent", preset: "agent" })).secret);
+		expect((await failure(agent.detachSandboxEnvironment(sandbox.id, policy.id))).code).toBe("forbidden");
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([github.id, policy.id]);
+		// One with no deny grants comes off for anyone who may run commands.
+		await agent.detachSandboxEnvironment(sandbox.id, github.id);
+		await tom.detachSandboxEnvironment(sandbox.id, policy.id);
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toBeUndefined();
+	});
+
+	it("an environment deleted while it is attached is taken off again", async () => {
+		const store = createMemoryStore();
+		const { api, tom } = setup({ store });
+		await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environment: "backend", wait: true });
+		// The delete lands just after the attach's write, after it looked for the environment's sandboxes.
+		const update = store.sandboxes.update.bind(store.sandboxes);
+		let armed = true;
+		store.sandboxes.update = async (id, change) => {
+			const written = await update(id, change);
+			if (armed && written !== undefined && (written.environmentIds ?? []).includes(npm.id)) {
+				armed = false;
+				await store.environments.delete(npm.id);
+			}
+			return written;
+		};
+		const answer = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		expect(answer.environments.map((each) => each.name)).toEqual(["backend"]);
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([sandbox.environmentId]);
+		const table = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(table?.entries.map((entry) => entry.name)).toEqual(["GH_TOKEN"]);
+	});
+
+	it("a rotation in an environment whose version is behind another's still moves the sandbox's version on", async () => {
+		const { api, tom, recorded } = setup({ now: () => 1_000 });
+		const github = await githubEnvironment(tom);
+		for (const value of ["a1", "a2", "a3"]) await tom.setEnvironmentVariable(github.id, "GH_TOKEN", { value });
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		await tom.setEnvironmentVariable(npm.id, "NPM_TOKEN", { value: "npm_ROTATED" });
+		const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+		expect(after?.version).toBeGreaterThan(before?.version ?? Number.POSITIVE_INFINITY);
+		expect(after?.entries.find((entry) => entry.name === "NPM_TOKEN")?.value).toBe("npm_ROTATED");
+		expect(last(recorded.secrets)).toEqual({ sandboxId: sandbox.id, version: after?.version });
+		await vi.waitFor(() => expect(last(recorded.egress)?.egress?.protected?.version).toBe(after?.version));
 	});
 
 	it("a fork keeps them, in order", async () => {

@@ -906,11 +906,11 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// The host drops its copy; its next request that needs one fetches the new values.
 			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
 		},
-		async updateEnv(sandboxId, env) {
+		async updateEnv(sandboxId, env, revision) {
 			// A host from before it could has the sandbox take its new env with its next boot, which sends it.
 			const { hostId } = await tierOf(sandboxId);
 			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.sandboxEnv)) return;
-			const params: HostEnvParams = { sandboxId, env: { ...env } };
+			const params: HostEnvParams = { sandboxId, env: { ...env }, ...(revision === undefined ? {} : { revision }) };
 			await call(sandboxId, HostMethods.env, params);
 		},
 		async stop(sandboxId, { keepMemory, waitForHost }): Promise<TakenSnapshot> {
