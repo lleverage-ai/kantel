@@ -66,7 +66,7 @@ export function SandboxEnvironments({
 	onNotice,
 	attachOpen = false,
 }: SandboxEnvironmentsProps) {
-	const { state: read, reload } = useLoad(() => source.list(sandboxId), [source, sandboxId]);
+	const { state: read, reload, pending: reading } = useLoad(() => source.list(sandboxId), [source, sandboxId]);
 	useReloadOn(refreshKey, reload);
 	// What an attach or a detach answered, ahead of the next read.
 	const [answered, setAnswered] = useState<readonly SandboxEnvironment[]>();
@@ -82,14 +82,14 @@ export function SandboxEnvironments({
 		onChanged?.();
 	};
 	const full = listed !== undefined && listed.length >= MAX_SANDBOX_ENVIRONMENTS;
-	// A running sandbox sets up what is pending in the background, with nothing else about it changing: read again
-	// every few seconds until nothing is.
+	// A running sandbox sets up what is pending in the background, with nothing else about it changing: read again a
+	// few seconds after each read finishes, until nothing is. Never while one is on its way, which it would overtake.
 	const settingUp = state === "running" && (listed ?? []).some((env) => env.pending);
 	useEffect(() => {
-		if (!settingUp) return;
-		const timer = setInterval(reload, PENDING_POLL_MS);
-		return () => clearInterval(timer);
-	}, [settingUp, reload]);
+		if (!settingUp || reading) return;
+		const timer = setTimeout(reload, PENDING_POLL_MS);
+		return () => clearTimeout(timer);
+	}, [settingUp, reading, reload]);
 
 	return (
 		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-environments">
