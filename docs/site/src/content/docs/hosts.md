@@ -66,7 +66,7 @@ This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, i
 
 On a machine that already has `kantel-host`, `sudo kantel-host doctor` runs the same checks.
 
-`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory`, `nested virtualisation`, `docker` (which only template builds need) and `mkfs.erofs` (without it, the host offers no bundle mounts) are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. `--json` prints the checks as JSON, each with its `state` and whether it's `required`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
+`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory`, `nested virtualisation`, `docker` (which only template builds need) and `mkfs.erofs` (without it, the host offers no bundle mounts) are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. A check that didn't pass and has an obvious fix (running as root, a package to install, a module to load) says it on the next line, after `to fix:`. `--json` prints the checks as JSON, each with its `state`, whether it's `required` and, when there is one, its `fix`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
 
 ## Get kantel-host and the images
 
@@ -258,10 +258,10 @@ On the host:
 sudo kantel-host status
 sudo kantel-host sandboxes
 sudo kantel-host sandboxes show sbx_…
-journalctl -u kantel-host -f
+sudo kantel-host logs -f
 ```
 
-`status` prints the agent's version, the control plane it's registered with, its host ID, whether the service is active and how many sandboxes it holds in each state. `sandboxes` lists them: ID, type, size, state, the account that owns each, its base image version, its address on the host and when it was made. `sandboxes show` prints one in full, and `--json` gives either as JSON. Both read the running service over a socket only root can use (`/run/kantel-host/agent.sock`; `controlSocket` in the config moves it, `"off"` turns it off), and they only read: stop or delete a sandbox through Kantel (`kantel stop`, or the console), which keeps the record of every sandbox. The journal has the connection, each sandbox the host starts, and the [egress proxy's](/sandboxes/egress-proxy/#what-a-refusal-looks-like) decisions.
+`status` prints the agent's version, the control plane it's registered with, its host ID, whether the service is active and how many sandboxes it holds in each state, and `--json` gives the same as JSON. It exits 0 while the service is active and 3 when it isn't, so a script can check it. `sandboxes` lists them: ID, type, size, state, the account that owns each, its base image version, its address on the host and when it was made. `sandboxes show` prints one in full, and `--json` gives either as JSON. Both read the running service over a socket only root can use (`/run/kantel-host/agent.sock`; `controlSocket` in the config moves it, `"off"` turns it off), and they only read: stop or delete a sandbox through Kantel (`kantel stop`, or the console), which keeps the record of every sandbox. `logs` shows the service's journal (it runs `journalctl -u kantel-host`; `-f` follows it and `-n 100` shows the last 100 lines). The journal has the connection, each sandbox the host starts, and the [egress proxy's](/sandboxes/egress-proxy/#what-a-refusal-looks-like) decisions.
 
 From anywhere, with a key that has `hosts:admin`:
 
@@ -426,9 +426,11 @@ Draining stops new sandboxes going on a host, and the ones already there keep ru
 To take `kantel-host` off the machine:
 
 ```sh
-sudo kantel-host uninstall           # stop the service and its microVMs, and keep the files
-sudo kantel-host uninstall --purge   # and delete sandboxes, snapshots, images, settings and the binary
+sudo kantel-host uninstall                 # stop the service and its microVMs, and keep the files
+sudo kantel-host uninstall --purge --yes   # and delete sandboxes, snapshots, images, settings and the binary
 ```
+
+`--purge` can't be undone, so it needs `--yes`: without it, `uninstall` says what it would delete and changes nothing.
 
 Uninstalling doesn't tell the control plane, so revoke the host as well.
 

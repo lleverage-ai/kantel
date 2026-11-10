@@ -4,12 +4,15 @@
 //	kantel-host install --url https://kantel.example.com --token kth_…   install, register and start (as root)
 //	kantel-host install --dry-run --url … --token …                     what install would do, changing nothing
 //	kantel-host doctor                                                  what this machine can run, and what's missing
-//	kantel-host status                                                  the service, the connection and the sandboxes
+//	kantel-host status [--json]                                         the service, the connection and the sandboxes
 //	kantel-host sandboxes [show <id>] [--json]                          the sandboxes the service holds (as root)
+//	kantel-host logs [-f] [-n <lines>]                                  the service's journal
 //	kantel-host update [--version v]                                    move to another version now
 //	kantel-host run                                                     the daemon (systemd runs this)
 //	kantel-host bench                                                   measure create, resume and fork on this host
-//	kantel-host uninstall [--purge]                                     stop and remove the service
+//	kantel-host uninstall [--purge --yes]                               stop and remove the service
+//
+// `kantel-host help` lists every command, and `kantel-host help <command>` its flags.
 package main
 
 import (
@@ -23,7 +26,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,76 +43,101 @@ var version = "dev"
 const defaultConfigPath = "/etc/kantel-host/config.json"
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
-	}
-	var err error
-	args := os.Args[2:]
-	switch os.Args[1] {
-	case "run":
-		err = run(args)
-	case "install", "join":
-		err = install(args, false)
-	case "plan":
-		err = install(args, true)
-	case "doctor":
-		err = doctor(args)
-	case "status":
-		err = status(args)
-	case "sandboxes":
-		err = sandboxesCmd(args)
-	case "update":
-		err = updateCmd(args)
-	case "uninstall":
-		err = uninstall(args)
-	case "bench":
-		err = bench(args)
-	case "manifest":
-		err = manifestCmd(args)
-	case "version", "--version", "-v":
-		fmt.Println(version)
-	case "help", "--help", "-h":
-		usage()
-	default:
-		fmt.Fprintf(os.Stderr, "kantel-host: unknown command %q\n\n", os.Args[1])
-		usage()
-		os.Exit(2)
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "kantel-host:", err)
-		os.Exit(1)
-	}
+	os.Exit(exit(dispatch(os.Args[1:])))
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `kantel-host `+version+`: runs Kantel sandboxes on this machine.
+// dispatch runs the command args names, with the rest of args.
+func dispatch(args []string) error {
+	if len(args) == 0 {
+		io.WriteString(stderr, mainHelp())
+		return exitCode(2)
+	}
+	name, rest := args[0], args[1:]
+	switch name {
+	case "run":
+		return run(rest)
+	case "install", "join":
+		return install(rest, false)
+	case "plan":
+		return install(rest, true)
+	case "doctor":
+		return doctor(rest)
+	case "status":
+		return status(rest)
+	case "sandboxes":
+		return sandboxesCmd(rest)
+	case "logs":
+		return logs(rest)
+	case "update":
+		return updateCmd(rest)
+	case "uninstall":
+		return uninstall(rest)
+	case "bench":
+		return bench(rest)
+	case "manifest":
+		return manifestCmd(rest)
+	case "version", "--version", "-V", "-v":
+		return versionCmd(rest)
+	case "help", "--help", "-h":
+		return help(rest)
+	}
+	return noCommand(name)
+}
 
-  install --url <kantel> --token <kth_…>   install, register with Kantel and start the service (as root)
-                                            (--dry-run: print what it would do, and change nothing)
-  plan --url <kantel> --token <kth_…>      what install would do, with install's options: always a dry run
-  doctor                                    check what this machine can run (exits 1 unless the required checks pass)
-  status                                    the service, its connection and its sandboxes
-  sandboxes [--json]                        the sandboxes the service holds, from its control socket (as root)
-  sandboxes show <id> [--json]              one of them in full
-                                            (read-only: stop or delete a sandbox through Kantel, with
-                                            kantel sandbox stop or the console, which keep its record)
-  update [--version <v>]                    update now (the service also updates itself when Kantel asks)
-  uninstall [--purge]                       stop and remove the service (--purge: sandboxes and images too)
-  bench                                     measure sandbox create, resume and fork on this machine
-  run                                       the daemon itself (the service runs it)
-  manifest <dir>                            write <dir>/manifest.json for the images in <dir> (for releases)
-  version
-`)
+func noCommand(name string) error {
+	fmt.Fprintf(stderr, "kantel-host: there is no command %q. \"kantel-host help\" lists them.\n", name)
+	return exitCode(2)
+}
+
+// help is `kantel-host help [<command>]`: the top-level help, or the command's own --help.
+func help(args []string) error {
+	switch {
+	case len(args) == 0 || args[0] == "help":
+		io.WriteString(stdout, mainHelp())
+		return nil
+	case len(args) >= 2 && args[0] == "sandboxes" && args[1] == "show":
+		return dispatch([]string{"sandboxes", "show", "--help"})
+	}
+	if _, ok := findCommand(args[0]); !ok && args[0] != "join" {
+		return noCommand(args[0])
+	}
+	return dispatch([]string{args[0], "--help"})
+}
+
+// versionCmd is `kantel-host version [--json]`.
+func versionCmd(args []string) error {
+	fs := newFlags("version")
+	asJSON := fs.Bool("json", false, "Print the version, Go's version, the OS and the architecture as JSON")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(stdout, struct {
+			Version string `json:"version"`
+			Go      string `json:"go"`
+			OS      string `json:"os"`
+			Arch    string `json:"arch"`
+		}{version, runtime.Version(), runtime.GOOS, runtime.GOARCH})
+	}
+	fmt.Fprintln(stdout, version)
+	return nil
 }
 
 func run(args []string) error {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "config file")
-	debug := fs.Bool("debug", false, "debug logging")
-	local := fs.String("local", "", "also serve the host's calls over HTTP on this loopback address (tests; no auth)")
-	controlSocket := fs.String("control-socket", "", `the read-only control socket for kantel-host sandboxes and status (default: the config's; "off": none)`)
-	_ = fs.Parse(args)
+	fs := newFlags("run")
+	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
+	debug := fs.Bool("debug", false, "Debug logging")
+	local := fs.String("local", "", "Also serve the host's calls over HTTP on this loopback `address` (tests; no auth)")
+	controlSocket := fs.String("control-socket", "", "The read-only control socket for kantel-host sandboxes and status, a `path` (default: the config's; \"off\": none)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
 	level := slog.LevelInfo
 	if *debug {
 		level = slog.LevelDebug
@@ -172,12 +203,17 @@ func run(args []string) error {
 }
 
 func doctor(args []string) error {
-	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "config file")
-	asJSON := fs.Bool("json", false, "JSON output")
-	root := fs.String("root", "", "where sandboxes will live (default: the config's, or /var/lib/kantel-host)")
-	isolateRuntime := fs.String("isolate-runtime", "", `check for "native" isolates (workerd on the host itself, no KVM) rather than microVMs (default: the config's)`)
-	_ = fs.Parse(args)
+	fs := newFlags("doctor")
+	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
+	asJSON := fs.Bool("json", false, "Print the checks as JSON")
+	root := fs.String("root", "", "Where sandboxes will live (default: the config's, or /var/lib/kantel-host)")
+	isolateRuntime := fs.String("isolate-runtime", "", `Check for "native" isolates (workerd on the host itself, no KVM) rather than microVMs (default: the config's)`)
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
 	cfg, _ := agent.LoadConfig(*configPath)
 	cfg.Defaults() // a config it can't read (not root) still checks the default root
 	if *root != "" {
@@ -188,16 +224,17 @@ func doctor(args []string) error {
 	}
 	checks := hostinfo.Checks(cfg.Root, cfg.IsolateRuntime == "native")
 	if *asJSON {
-		if err := json.NewEncoder(os.Stdout).Encode(checks); err != nil {
+		if err := json.NewEncoder(stdout).Encode(checks); err != nil {
 			return err
 		}
 	} else {
-		printChecks(os.Stdout, checks, cfg.IsolateRuntime == "native")
+		printChecks(stdout, checks, cfg.IsolateRuntime == "native")
 	}
 	return checksPassed(checks)
 }
 
-// printChecks shows doctor's checks: FAIL and unknown are required ones that didn't pass, warn is advice.
+// printChecks shows doctor's checks: FAIL and unknown are required ones that didn't pass, warn is advice. A check
+// that didn't pass and has an obvious fix has it on the next line.
 func printChecks(w io.Writer, checks []hostinfo.Check, native bool) {
 	microvm := true
 	for _, c := range checks {
@@ -215,6 +252,9 @@ func printChecks(w io.Writer, checks []hostinfo.Check, native bool) {
 			microvm = false
 		}
 		fmt.Fprintf(w, "%-7s %-22s %s\n", mark, c.Name, c.Detail)
+		if c.State != hostinfo.StateOK && c.Fix != "" {
+			fmt.Fprintf(w, "%-7s %-22s to fix: %s\n", "", "", c.Fix)
+		}
 	}
 	fmt.Fprintln(w)
 	switch {
@@ -242,35 +282,90 @@ func checksPassed(checks []hostinfo.Check) error {
 	return fmt.Errorf("required checks didn't pass: %s", strings.Join(names, ", "))
 }
 
+// statusReport is `status --json`.
+type statusReport struct {
+	Version      string `json:"version"`
+	ControlPlane string `json:"controlPlane"`
+	HostID       string `json:"hostId"`
+	// Service is systemd's state for the unit: active, inactive, failed, activating…, or "" without systemd.
+	Service string `json:"service"`
+	// Sandboxes counts the service's sandboxes by state; null, with SandboxesError, when it couldn't be asked.
+	Sandboxes      map[string]int `json:"sandboxes"`
+	SandboxesError string         `json:"sandboxesError,omitempty"`
+}
+
+// serviceState is `systemctl is-active kantel-host`, swapped in tests.
+var serviceState = func() string {
+	out, _ := runOutput("systemctl", "is-active", "kantel-host")
+	return strings.TrimSpace(out)
+}
+
+// statusInactive is status's exit when the service isn't active, as `gitlab-runner status` and LSB init scripts
+// have it.
+const statusInactive = exitCode(3)
+
 func status(args []string) error {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "config file")
-	_ = fs.Parse(args)
+	fs := newFlags("status")
+	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
+	asJSON := fs.Bool("json", false, "Print the status as JSON")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
 	cfg, err := agent.LoadConfig(*configPath)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("version       %s\n", version)
-	fmt.Printf("control plane %s\n", orNone(cfg.ControlPlane))
-	fmt.Printf("host          %s\n", orNone(cfg.HostID))
-	out, _ := runOutput("systemctl", "is-active", "kantel-host")
-	fmt.Printf("service       %s\n", orNone(strings.TrimSpace(out)))
-	fmt.Printf("sandboxes     %s\n", sandboxesLine(cfg))
+	r := statusReport{Version: version, ControlPlane: cfg.ControlPlane, HostID: cfg.HostID, Service: serviceState()}
+	counts, err := sandboxCounts(cfg)
+	if err != nil {
+		r.SandboxesError = err.Error()
+	} else {
+		r.Sandboxes = counts
+	}
+	if *asJSON {
+		if err := writeJSON(stdout, r); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(stdout, "version       %s\n", r.Version)
+		fmt.Fprintf(stdout, "control plane %s\n", orNone(r.ControlPlane))
+		fmt.Fprintf(stdout, "host          %s\n", orNone(r.HostID))
+		fmt.Fprintf(stdout, "service       %s\n", orNone(r.Service))
+		fmt.Fprintf(stdout, "sandboxes     %s\n", sandboxesText(counts, err))
+	}
+	if r.Service != "active" {
+		return statusInactive
+	}
 	return nil
 }
 
-// sandboxesLine is status's count of the service's sandboxes by state, or why there isn't one.
-func sandboxesLine(cfg agent.Config) string {
+// sandboxCounts is the service's sandboxes by state, from its control socket.
+func sandboxCounts(cfg agent.Config) (map[string]int, error) {
 	if cfg.ControlSocket == "off" {
-		return "unknown: the control socket is off"
+		return nil, errors.New("the control socket is off")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	list, err := controlClient{path: cfg.ControlSocket}.list(ctx)
 	if err != nil {
+		return nil, err
+	}
+	return countStates(list), nil
+}
+
+// sandboxesLine is status's count of the service's sandboxes by state, or why there isn't one.
+func sandboxesLine(cfg agent.Config) string {
+	return sandboxesText(sandboxCounts(cfg))
+}
+
+func sandboxesText(counts map[string]int, err error) string {
+	if err != nil {
 		return "unknown: " + err.Error()
 	}
-	return stateCounts(list)
+	return countsText(counts)
 }
 
 func orNone(s string) string {
@@ -278,4 +373,51 @@ func orNone(s string) string {
 		return "(none)"
 	}
 	return s
+}
+
+// journalctl is the command logs runs, swapped in tests.
+var journalctl = "journalctl"
+
+// logs is `kantel-host logs`: the service's journal, through journalctl, with its stdin, stdout and stderr.
+func logs(args []string) error {
+	fs := newFlags("logs")
+	follow := fs.Bool("follow", false, "Keep printing new lines as the service logs them")
+	fs.alias("f", "follow")
+	lines := fs.Int("lines", -1, "Show only the last `n` lines; 0 with --follow shows only new ones (default: all of them)")
+	fs.alias("n", "lines")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+	if err := fs.noArgs(); err != nil {
+		return err
+	}
+	// -1, the default, is all of them; a value given must be 0 or more.
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "lines" || f.Name == "n" })
+	if given && *lines < 0 {
+		return usageErrorf("logs", "--lines must be 0 or more, not %d", *lines)
+	}
+	cmd := exec.Command(journalctl, journalArgs(*follow, *lines)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, stdout, stderr
+	err := cmd.Run()
+	var exited *exec.ExitError
+	switch {
+	case errors.As(err, &exited):
+		// journalctl has said what's wrong.
+		return exitCode(max(exited.ExitCode(), 1))
+	case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
+		return errors.New("there is no journalctl on this machine: logs reads the service's systemd journal")
+	}
+	return err
+}
+
+func journalArgs(follow bool, lines int) []string {
+	args := []string{"-u", "kantel-host"}
+	if follow {
+		args = append(args, "-f")
+	}
+	if lines >= 0 {
+		args = append(args, "-n", strconv.Itoa(lines))
+	}
+	return args
 }

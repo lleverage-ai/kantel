@@ -1,1 +1,4 @@
 .vmtest.*/
+# Local builds (go build in a cmd directory); releases are built by tools/release/pack.sh.
+/cmd/kantel-host/kantel-host
+/cmd/kantel-guest/kantel-guest
