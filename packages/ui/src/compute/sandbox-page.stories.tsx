@@ -77,6 +77,7 @@ function Scenario({
 			href={(to) => `#${sandboxId}/${to}`}
 			sandboxesHref="#sandboxes"
 			environmentHref={(id) => `#environments/${id}`}
+			environments={(accountId) => source.environments.list(accountId)}
 			now={FIXTURE_NOW}
 			narrow={narrow}
 			menuOpen={menuOpen}

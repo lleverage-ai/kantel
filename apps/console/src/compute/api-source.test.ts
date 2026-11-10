@@ -1026,16 +1026,16 @@ describe("egress", () => {
 		const sandbox = await source.sandboxes.create({
 			accountId,
 			kind: "isolate",
-			environmentId: environment.id,
+			environmentIds: [environment.id],
 		});
-		expect(sandbox.environment).toEqual({ id: environment.id, name: "backend" });
+		expect(sandbox.environments).toEqual([{ id: environment.id, name: "backend" }]);
 		await api.service.idle();
 		const [listed] = await source.sandboxes.list(accountId);
-		expect(listed?.environment).toEqual({ id: environment.id, name: "backend" });
+		expect(listed?.environments).toEqual([{ id: environment.id, name: "backend" }]);
 		// A console that hasn't read the environment learns its name from the list.
 		const fresh = await open(fetchApi);
 		const [named] = await fresh.sandboxes.list(accountId);
-		expect(named?.environment).toEqual({ id: environment.id, name: "backend" });
+		expect(named?.environments).toEqual([{ id: environment.id, name: "backend" }]);
 
 		await api.service.recordEgress(STUB_HOST_ID, [
 			{
@@ -1072,7 +1072,7 @@ describe("egress", () => {
 			sandboxId: sandbox.id,
 			sandboxName: sandbox.name,
 			accountId,
-			environment: { id: environment.id, name: "backend" },
+			environments: [{ id: environment.id, name: "backend" }],
 			environmentGrants: [{ action: "allow", host: "registry.npmjs.org", methods: [], paths: [] }],
 			grants: [],
 		});
@@ -1081,6 +1081,7 @@ describe("egress", () => {
 				name: "GH_TOKEN",
 				placeholderPrefix: expect.stringMatching(/^kph_[0-9A-Za-z]{4}$/),
 				bindings: [{ host: "api.github.com", pathPrefixes: [], methods: [] }],
+				environmentId: environment.id,
 			},
 		]);
 		expect(egress.entries).toEqual([
@@ -1133,6 +1134,61 @@ describe("egress", () => {
 		// A write from the read before that grant was added is refused, so it can't take the grant away.
 		await expect(source.egress.setGrants(sandbox.id, [], egress.grants)).rejects.toMatchObject({ code: "conflict" });
 		expect((await source.egress.get(sandbox.id)).grants).toEqual(granted.grants);
+	});
+});
+
+describe("a sandbox's environments", () => {
+	it("makes a sandbox with several, in order, lists what each loses to a later one, and attaches and detaches", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const plain = (name: string, value: string) => ({ name, protected: false, value, bindings: [] });
+		const backend = await source.environments.create({ accountId, name: "backend" });
+		await source.environments.setVariable(backend.id, plain("LOG_LEVEL", "debug"));
+		await source.environments.setVariable(backend.id, plain("REGION", "eu"));
+		const tokens = await source.environments.create({ accountId, name: "tokens" });
+		await source.environments.setVariable(tokens.id, plain("LOG_LEVEL", "info"));
+		const evals = await source.environments.create({ accountId, name: "evals" });
+
+		// Several go in the order picked.
+		const sandbox = await source.sandboxes.create({
+			accountId,
+			kind: "isolate",
+			environmentIds: [backend.id, tokens.id],
+		});
+		expect(sandbox.environments).toEqual([
+			{ id: backend.id, name: "backend" },
+			{ id: tokens.id, name: "tokens" },
+		]);
+		await api.service.idle();
+		const environments = source.sandboxes.environments;
+		if (environments === undefined) throw new Error("The console offers no sandbox environments.");
+		const none = { variables: [], files: [], repos: [] };
+		// The later one wins LOG_LEVEL, so backend loses it.
+		expect(await environments.list(sandbox.id)).toEqual([
+			{ id: backend.id, name: "backend", shadowed: { ...none, variables: ["LOG_LEVEL"] }, pending: false },
+			{ id: tokens.id, name: "tokens", shadowed: none, pending: false },
+		]);
+
+		// Attached, it goes last; at a position, there.
+		const attached = await environments.attach(sandbox.id, evals.id);
+		expect(attached.map((env) => env.name)).toEqual(["backend", "tokens", "evals"]);
+		const moved = await environments.attach(sandbox.id, evals.id, 0);
+		expect(moved.map((env) => env.name)).toEqual(["evals", "backend", "tokens"]);
+		expect((await source.sandboxes.get(sandbox.id)).environments?.map((env) => env.name)).toEqual([
+			"evals",
+			"backend",
+			"tokens",
+		]);
+
+		const detached = await environments.detach(sandbox.id, tokens.id);
+		expect(detached.map((env) => env.name)).toEqual(["evals", "backend"]);
+		// Nothing wins over backend's LOG_LEVEL now.
+		expect(detached.find((env) => env.id === backend.id)?.shadowed.variables).toEqual([]);
+		expect((await source.egress.get(sandbox.id)).environments).toEqual([
+			{ id: evals.id, name: "evals" },
+			{ id: backend.id, name: "backend" },
+		]);
 	});
 });
 

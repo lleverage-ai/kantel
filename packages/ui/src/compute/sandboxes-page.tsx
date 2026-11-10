@@ -21,6 +21,7 @@ import { ChevronDownIcon, ChevronRightIcon, GlobeIcon, PencilIcon, PlusIcon, Sto
 import { useLoad } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
+import { OrderedSelectField } from "../primitives/ordered-select.tsx";
 import { SideScroll } from "../primitives/side-scroll.tsx";
 import { SliderField } from "../primitives/slider.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -36,10 +37,12 @@ import {
 	DEFAULT_SANDBOX_SHAPES,
 	diskRangeFor,
 	type Environment,
+	environmentNamesText,
 	fitDisk,
 	fitMemory,
 	type HostChoice,
 	type HostingMode,
+	MAX_SANDBOX_ENVIRONMENTS,
 	memoryRangeFor,
 	memoryText,
 	microvmsAvailable,
@@ -1002,6 +1005,7 @@ function NameCell({
 			</a>
 		);
 	const address = sandbox.hostname === "" ? undefined : sandbox.hostname;
+	const envNames = environmentNamesText(sandbox.environments);
 	return (
 		<span className="flex min-w-0 items-center gap-1">
 			<span className="flex min-w-0 flex-col">
@@ -1014,9 +1018,7 @@ function NameCell({
 						content={
 							<span className="flex flex-col">
 								<span className="font-mono text-code">{address}</span>
-								{sandbox.environment === undefined ? null : (
-									<span className="text-muted">From {sandbox.environment.name}</span>
-								)}
+								{envNames === undefined ? null : <span className="text-muted">Using {envNames}</span>}
 							</span>
 						}
 					>
@@ -1164,6 +1166,7 @@ function SandboxRow({
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
 	const tone = ticked ? "bg-selected" : "hover:bg-hover";
 	const spec = sandboxSpec(sandbox);
+	const envNames = environmentNamesText(sandbox.environments);
 	const row = (
 		// A link under the whole row opens the sandbox; the tick box, the name, the ID, the chart and the buttons sit above
 		// it, and so do the bits with tooltips.
@@ -1208,9 +1211,7 @@ function SandboxRow({
 				)}
 			</td>
 			<td className={td}>
-				<Tooltip
-					content={`${sandboxMachineText(sandbox)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
-				>
+				<Tooltip content={`${sandboxMachineText(sandbox)}${envNames === undefined ? "" : `, using ${envNames}`}`}>
 					<span className="relative z-1 flex flex-col">
 						<span>{SANDBOX_KIND_LABELS[sandbox.kind]}</span>
 						<span className="text-sm text-muted">{sizeText(spec)}</span>
@@ -1310,6 +1311,7 @@ function SandboxPhoneRow({
 }) {
 	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
+	const envNames = environmentNamesText(sandbox.environments);
 	// Who made it, on a failed one's row too, where its error takes the machine's line.
 	const made = creator === undefined || creator === "" ? undefined : creator === "You" ? "Yours" : `By ${creator}`;
 	const body = (
@@ -1326,7 +1328,7 @@ function SandboxPhoneRow({
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>{sandboxMachineText(sandbox)}</span>
-					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
+					{envNames === undefined ? null : <span className="min-w-0 truncate">{envNames}</span>}
 					{made === undefined ? null : <span>{made}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
 					<BaseOutdatedBadge base={sandbox.base} now={now} />
@@ -1686,7 +1688,8 @@ export interface NewSandboxForm {
 	readonly from: string;
 	/** Whether the snapshot it starts from holds memory, so the sandbox is that snapshot's machine. */
 	readonly fromMemory?: boolean;
-	readonly environment: string;
+	/** The environments it starts with, by ID, in the order picked: the later one wins where two set the same thing. */
+	readonly environments: readonly string[];
 	/** The template a microVM is made from, resolved by `requestedTemplate`. */
 	readonly template?: Template;
 	readonly autoStop: string;
@@ -1715,7 +1718,7 @@ export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
 		kind: form.kind,
 		...((template !== undefined && !form.shapeChosen) || keepsMachine ? {} : { shape }),
 		...(from === undefined ? {} : { fromSnapshot: from }),
-		...(form.environment === "" ? {} : { environmentId: form.environment }),
+		...(form.environments.length === 0 ? {} : { environmentIds: form.environments }),
 		...(template === undefined ? {} : { templateId: template.id }),
 		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
 		...(form.idleStop === undefined || form.idleStop === "never" ? {} : { idleStopMinutes: Number(form.idleStop) }),
@@ -1842,7 +1845,7 @@ export function NewSandboxDialog({
 	const [autoStop, setAutoStop] = useState("60");
 	const [idleStop, setIdleStop] = useState("never");
 	const [from, setFrom] = useState("");
-	const [environment, setEnvironment] = useState("");
+	const [environmentIds, setEnvironmentIds] = useState<readonly string[]>([]);
 	const [saved, setSaved] = useState<readonly SavedSnapshot[]>([]);
 	const [envs, setEnvs] = useState<readonly Environment[]>([]);
 	const [hostList, setHostList] = useState<readonly HostChoice[]>([]);
@@ -1944,7 +1947,7 @@ export function NewSandboxDialog({
 				shapeChosen,
 				from,
 				fromMemory: keepsMachine,
-				environment,
+				environments: environmentIds,
 				...(picked === undefined ? {} : { template: picked }),
 				autoStop,
 				idleStop,
@@ -1953,7 +1956,7 @@ export function NewSandboxDialog({
 		);
 		setName("");
 		setFrom("");
-		setEnvironment("");
+		setEnvironmentIds([]);
 		setTemplateId("");
 		setShapeChosen(false);
 	};
@@ -2105,11 +2108,18 @@ export function NewSandboxDialog({
 					/>
 				)}
 				{envs.length === 0 ? null : (
-					<SelectField
-						label="Environment"
-						value={environment}
-						onChange={(event) => setEnvironment(event.currentTarget.value)}
-						options={[{ value: "", label: "None" }, ...envs.map((env) => ({ value: env.id, label: env.name }))]}
+					<OrderedSelectField
+						label="Environments"
+						value={environmentIds}
+						onChange={setEnvironmentIds}
+						options={envs.map((env) => ({ value: env.id, label: env.name }))}
+						placeholder="Pick an environment"
+						max={MAX_SANDBOX_ENVIRONMENTS}
+						hint={
+							environmentIds.length > 1
+								? "In this order: where two set the same variable, file or repository, the later one wins. Grants add up."
+								: undefined
+						}
 					/>
 				)}
 				<SelectField

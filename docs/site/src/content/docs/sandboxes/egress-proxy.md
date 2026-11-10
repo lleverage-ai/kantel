@@ -11,7 +11,7 @@ sidebar:
 The proxy settings are part of Kantel's API, which every control plane serves. They apply to sandboxes on [your own hosts](/hosts/), not the built-in stand-in (`KANTEL_COMPUTE_BACKEND=stub`). Their shapes may still change.
 :::
 
-Every sandbox on a host goes out through one door: the egress proxy that `kantel-host` runs. An account's proxy settings decide which sites the door opens to, and can send what goes through on to a proxy of your own. [Grants](#grants) narrow that by method and path for the sandboxes of one environment, or for one sandbox.
+Every sandbox on a host goes out through one door: the egress proxy that `kantel-host` runs. An account's proxy settings decide which sites the door opens to, and can send what goes through on to a proxy of your own. [Grants](#grants) narrow that by method and path for the sandboxes that use an environment, or for one sandbox.
 
 The same proxy puts [protected variables](/sandboxes/environments/) into requests: the sandbox holds a placeholder, and the proxy swaps in the real value only for the destinations it is bound to.
 
@@ -51,7 +51,7 @@ REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 The lower-case forms are there as well. `/etc/environment` has the same lines, for `sudo`, `su`, cron and SSH sessions. A unit's own `Environment=` and `EnvironmentFile=` win over them.
 
-The sandbox's own variables, from `kantel new -e` and its environment's plain variables, are for commands only: every service on the machine, `sshd` and `dockerd` among them, would otherwise run with them. A unit that wants them reads the file the guest agent keeps them in:
+The sandbox's own variables, from `kantel new -e` and its environments' plain variables, are for commands only: every service on the machine, `sshd` and `dockerd` among them, would otherwise run with them. A unit that wants them reads the file the guest agent keeps them in:
 
 ```ini
 [Service]
@@ -174,7 +174,7 @@ Names are compared without regard to case. A rule doesn't name a port, a path or
 
 ## Grants
 
-A grant allows or refuses requests to a host, optionally only those with certain methods or paths. An [environment](/sandboxes/environments/) has grants for every sandbox made from it, and a sandbox can have grants of its own.
+A grant allows or refuses requests to a host, optionally only those with certain methods or paths. An [environment](/sandboxes/environments/) has grants for every sandbox that uses it, and a sandbox can have grants of its own. A sandbox with several environments has all of their grants.
 
 ```sh
 kantel env grant work deny api.github.com --method DELETE --path '/repos/**'
@@ -189,7 +189,7 @@ kantel grant rm sbx_4kq9x2mt grt_8f2k
 | Methods | Any of these methods, such as `DELETE`. None: every method |
 | Paths | Any of these path patterns. `*` matches one segment and `**` the rest, so `/repos/*` matches `/repos/app` but not `/repos/app/issues`, and `/repos/**` matches both. None: every path. The query isn't part of the path |
 
-Grants apply on top of the account's allow and deny rules: the environment's first, then the sandbox's own. Where a deny and an allow both match a request, the deny wins. Running sandboxes pick up a change within seconds.
+Grants apply on top of the account's allow and deny rules: its environments' first, then the sandbox's own. Where a deny and an allow both match a request, the deny wins. Running sandboxes pick up a change within seconds.
 
 The proxy refuses a request a grant denies with status 403 and two headers, `X-Kantel-Proxy-Error: denied` and `X-Kantel-Proxy-Rule`, which names the grant:
 

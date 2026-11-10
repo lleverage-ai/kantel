@@ -98,6 +98,7 @@ The fields you can set when you create one:
 | `idleStopMinutes` | Also stop it once it has gone this many minutes without use. Default `null`: no idle stop. See [Idle stop](#idle-stop) |
 | `labels` | Your own key-value pairs, to find it again |
 | `env` | Environment variables every command in it sees. Anyone who can run commands in it can read them, so don't put secrets here |
+| `environments` | [Environments](/sandboxes/environments/) to start with, by name or ID, in order: where two set the same variable, file or repository path, the later one wins. At most 10. `environment` takes one |
 | `visibility` | In an organisation, `private` or `organisation`. See [Accounts and organisations](/accounts/organisations/) |
 | `hostLabels` | Place it only on a host with these labels, such as `{"site": "home"}` |
 | `account` | The organisation to create it in, when you're signed in as a person. A key always uses its own account |

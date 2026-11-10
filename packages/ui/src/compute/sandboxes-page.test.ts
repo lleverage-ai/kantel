@@ -64,7 +64,7 @@ describe("a sandbox's logs", () => {
 			...box("api", "running"),
 			createdAt: 100,
 			createdBy: "Ada",
-			environment: { id: "e", name: "dev" },
+			environments: [{ id: "e", name: "dev" }],
 		};
 		const timeline = sandboxTimeline(
 			sandbox,
@@ -82,19 +82,19 @@ describe("a sandbox's logs", () => {
 			"Stopped, snapshot taken",
 			"ls",
 			"Snapshot taken",
-			"Started from dev",
+			"Created",
 		]);
 	});
 
-	it("names the sandbox a fork came from, even with the environment it inherited", () => {
-		const made = (sandbox: Pick<Sandbox, "environment" | "forkedFrom">) => {
+	it("names the sandbox a fork came from, and not its environments, which change after it's made", () => {
+		const made = (sandbox: Pick<Sandbox, "environments" | "forkedFrom">) => {
 			const [entry] = sandboxTimeline({ ...box("api", "running"), ...sandbox }, [], []);
 			return entry?.kind === "event" ? entry.text : undefined;
 		};
-		const dev = { id: "e", name: "dev" };
-		expect(made({ environment: dev, forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
+		const dev = [{ id: "e", name: "dev" }];
+		expect(made({ environments: dev, forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
 		expect(made({ forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
-		expect(made({ environment: dev })).toBe("Started from dev");
+		expect(made({ environments: dev })).toBe("Created");
 		expect(made({})).toBe("Created");
 	});
 });
@@ -384,7 +384,7 @@ describe("New sandbox", () => {
 		shape: { vcpus: 2, memoryMb: 4096 },
 		shapeChosen: false,
 		from: "",
-		environment: "",
+		environments: [],
 		autoStop: "60",
 	};
 
@@ -404,6 +404,11 @@ describe("New sandbox", () => {
 				autoStopMinutes: 60,
 			},
 		);
+	});
+
+	it("sends the environments picked, in the order picked, and none without any", () => {
+		expect(newSandboxInput({ ...form, environments: ["env_b", "env_a"] }).environmentIds).toEqual(["env_b", "env_a"]);
+		expect("environmentIds" in newSandboxInput(form)).toBe(false);
 	});
 
 	it("puts it on the host picked, and leaves Kantel to pick without one", () => {

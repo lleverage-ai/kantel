@@ -279,6 +279,19 @@ and an optional hint, read as its description.
 **Not for** a setting that applies the moment it changes (use a `Switch`), or a choice of one from several (use a
 `SegmentedControl` or a `SelectField`).
 
+### OrderedSelectField
+
+**For** a choice of several from a list where their order matters: a new sandbox's environments, where the later one
+wins. The ones picked are a numbered list, each with a cross that takes it out (focus moves to the select); under them
+the browser's own select and Add put one more at the end. Add, or Enter in the select, adds: not the select's change,
+which a closed select fires on every arrow key. An option picked already isn't offered again; `max` takes the select
+away once that many are picked. A picked value no longer among the options is still listed, by its value.
+
+**Not for** a choice of one (use a `SelectField`), an unordered set of a few (use `CheckboxField`s), or reordering a
+long list.
+
+**Costs** nothing beyond its elements: no listeners or timers.
+
 ### Switch
 
 **For** an on/off setting that applies the moment it changes, with no Save button: a tool server's tool, enabled or
@@ -393,3 +406,19 @@ again every 15 seconds besides the live feed's word.
 `HostUnreachable` stories, on a wide screen and a phone.
 
 **Cost:** none: it shows what the sandbox's answer says (`hostReachable`).
+
+### SandboxEnvironments
+
+A sandbox's environments (`src/compute/sandbox-environments.tsx`), on its Overview after its ports: in order, each a
+link to the environment. Under each, quietly, what it loses to a later one (or to the sandbox's own env): variables,
+secret files and repositories set by a later one instead. "On next start" marks one attached while the sandbox was
+stopped, whose files and repositories come when it next starts. Attach picks one of the account's environments and
+puts it last, so it wins; Detach asks first, since the environment's protected variables stop resolving at once.
+Without the source's `environments` the section isn't shown; without the account's list there's no Attach.
+
+**Don't use it for** editing an environment (its own page) or a sandbox's egress grants (its Egress tab).
+
+**States:** several, shadowed, pending, one, none, loading, error, attaching, an attach refused, nothing left to
+attach, long content and a phone; all in its stories.
+
+**Cost:** one read when the page opens, and again when the sandbox starts or stops or its environments change.

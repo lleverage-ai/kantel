@@ -44,6 +44,7 @@ export type {
 	EgressGrant,
 	EgressSource,
 	Environment,
+	EnvironmentRef,
 	EnvironmentsSource,
 	EnvironmentVariable,
 	FilePart,
@@ -62,6 +63,8 @@ export type {
 	SandboxBase,
 	SandboxCreator,
 	SandboxEgress,
+	SandboxEnvironment,
+	SandboxEnvironmentsSource,
 	SandboxesSource,
 	SandboxImage,
 	SandboxProcess,
@@ -153,6 +156,7 @@ export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
 export * from "./primitives/lucide.tsx";
 export { Menu, type MenuChoice, type MenuEntry, type MenuProps } from "./primitives/menu.tsx";
 export { CommandBlock, OneTimeSecret, type OneTimeSecretProps } from "./primitives/one-time-secret.tsx";
+export { OrderedSelectField, type OrderedSelectFieldProps } from "./primitives/ordered-select.tsx";
 export { type PageTab, PageTabs, type PageTabsProps } from "./primitives/page-tabs.tsx";
 export { SideScroll, type SideScrollSurface } from "./primitives/side-scroll.tsx";
 export {
