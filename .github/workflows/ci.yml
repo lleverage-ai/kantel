@@ -116,3 +116,28 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  cli-go:
+    # kantel and kantel-admin (apps/cli) are Go too. The generated API client must match the OpenAPI document, and the
+    # docs' command reference the command table.
+    name: Go vet and test (apps/cli)
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/cli/go.mod
+
+      - name: Generated API client is current
+        run: go run ./internal/api/gen -check
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
