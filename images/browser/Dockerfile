@@ -5,11 +5,13 @@
 # tunnels, and server-side credential fills. Two engines:
 #   headless-shell  Chrome for Testing's chrome-headless-shell: faster to launch
 #                   and lighter, but no extensions and easier to fingerprint.
-#                   Picked by /start's `engine: "headless-shell"`.
+#                   Picked by /start's `engine: "headless-shell"`, which
+#                   packages/browser's coordinator sends (BROWSER_ENGINE), so
+#                   it's the one Kantel's browsers run while Debian lags
+#                   (LLE-17270).
 #   chromium        Debian Chromium in new headless mode: full browser, extensions,
-#                   closest to a real Chrome. agent/server.mjs's default, so
-#                   the one Kantel's browsers run: packages/browser's
-#                   coordinator starts them with no `engine`.
+#                   closest to a real Chrome. agent/server.mjs's default when
+#                   /start names no engine.
 # Plus a small Node agent that proxies CDP, streams the live view, and saves
 # and restores the profile. Session recording only captures frames here;
 # nothing is encoded in this container.

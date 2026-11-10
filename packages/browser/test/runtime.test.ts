@@ -226,6 +226,11 @@ describe("browser coordinator", () => {
 		expect(await started.json()).toMatchObject({ status: "running", expiresAt: 1_060_000 });
 		const paths = t.agent.calls.map((call) => `${call.method} ${call.path}`);
 		expect(paths).toEqual(["GET /health", "POST /start", "POST /domains", "POST /recording/start"]);
+		// The patched headless shell, not the agent's default Debian chromium (LLE-17270, CVE-2026-125350).
+		expect(JSON.parse(t.agent.calls[1]!.body)).toEqual({
+			viewport: { width: 1280, height: 800 },
+			engine: "headless-shell",
+		});
 		// The broker's `*.host` reaches the agent as its domain: the agent's guard admits a domain's subdomains.
 		expect(JSON.parse(t.agent.calls[2]!.body)).toEqual({ domains: ["example.com", "example.org"] });
 		const token = t.agent.calls[1]!.token;

@@ -166,6 +166,8 @@ export function declineConsentSetting(value: string | undefined): boolean {
 }
 
 export const SEGMENT_SECONDS = 10;
+/** The engine the agent's /start launches (images/browser/agent/server.mjs): `headless-shell` or `chromium`. */
+export const BROWSER_ENGINE = "headless-shell";
 export const DEFAULT_RECORDING_RETENTION_MS = 7 * 24 * 3_600_000;
 export const AGENT_TOKEN_HEADER = "x-kantel-agent-token";
 /** The header's name before the rename: sent too, as a browser image built before it reads only that one. */
@@ -425,7 +427,15 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 					);
 				}
 			}
-			await agentJson("/start", { method: "POST", body: JSON.stringify({ viewport }) }, agentToken);
+			// The headless shell (Chrome for Testing, pinned in images/browser/Dockerfile), not the agent's default Debian
+			// chromium: Debian has no chromium 157 yet, and 156 misses the fix for CVE-2026-125350, exploited in the wild
+			// (LLE-17270). Easier to fingerprint and no extensions, which Kantel loads none of. Drop `engine` to go back to
+			// Debian's chromium once bookworm-security has 157.0.8103.50 or later.
+			await agentJson(
+				"/start",
+				{ method: "POST", body: JSON.stringify({ viewport, engine: BROWSER_ENGINE }) },
+				agentToken,
+			);
 			// Before anyone connects: the grant's sites, enforced by the browser itself. A guard that can't start fails the
 			// launch, so a browser never runs unguarded. The agent's guard lets a domain's subdomains through, so it is a
 			// little wider than the broker's rule (an exact host, or `*.host` for subdomains only); the broker still refuses
