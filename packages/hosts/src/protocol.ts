@@ -255,8 +255,6 @@ export const HOST_FEATURES = {
 export interface HostEnvParams {
 	readonly sandboxId: string;
 	readonly env: { readonly [name: string]: string };
-	/** The sandbox's egress revision as of the change: the host ignores one older than an egress or boot it has taken. */
-	readonly revision?: number;
 }
 
 /**

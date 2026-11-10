@@ -760,10 +760,6 @@ type SecretsTable struct {
 type EnvParams struct {
 	SandboxID string            `json:"sandboxId"`
 	Env       map[string]string `json:"env"`
-	// Revision is the sandbox's egress revision as of the change that made this env, ordered with its egress calls
-	// (orderEgress): one older than the host has taken (a later change's, or a boot's) is stale, and leaves the env as
-	// it is. 0 is unordered.
-	Revision int64 `json:"revision,omitempty"`
 }
 
 // SecretsParams is sandbox.secrets (Kantel → host): the sandbox's table changed, so the host drops its copy.

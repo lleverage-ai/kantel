@@ -192,6 +192,12 @@ type MemberRole = computeSchema.MemberRole;
 type EventType = computeSchema.EventType;
 type EventData = computeSchema.Event["data"];
 
+/** Whether two envs hold the same variables with the same values. */
+const sameEnv = (a: { readonly [name: string]: string }, b: { readonly [name: string]: string }) => {
+	const keys = Object.keys(a);
+	return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key]);
+};
+
 /** Whether two lists of IDs are the same, in the same order. */
 const sameIds = (a: readonly string[], b: readonly string[]) =>
 	a.length === b.length && a.every((id, index) => id === b[index]);
@@ -3066,19 +3072,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (updateSecrets !== undefined && done.secretsFloor !== undefined) {
 				keepGoing(updateSecrets(done.id, done.secretsFloor));
 			}
-			const updateEnv = backend.updateEnv?.bind(backend);
-			if (updateEnv !== undefined) {
-				keepGoing(
-					updateEnv(done.id, done.env, done.egressRevision).catch((error: unknown) =>
-						emit("sandbox.degraded", done.accountId, {
-							sandbox: done,
-							data: {
-								reason: `New commands have its environments' variables, but its env file (/etc/kantel/env) won't until it restarts: ${messageOf(error)}`,
-							},
-						}),
-					),
-				);
-			}
+			keepGoing(deliverEnv(done));
 			if (!gone && attached !== undefined && (attached.files.length > 0 || attached.repos.length > 0)) {
 				keepGoing(
 					track([done.id], async () => {
@@ -3089,6 +3083,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 		}
 		return sandboxEnvironmentsView(done);
+	}
+
+	/**
+	 * Gives a running sandbox's host its env (`updateEnv`). Deliveries for several changes, from any gateway, may land
+	 * out of order, so after each the env sent is compared with the sandbox's as stored now, and a newer one is sent
+	 * again: whichever lands last, the host ends on the latest. A failure is an event; its next boot has the env anyway.
+	 */
+	async function deliverEnv(sandbox: StoredSandbox): Promise<void> {
+		const updateEnv = backend.updateEnv?.bind(backend);
+		if (updateEnv === undefined) return;
+		let env = sandbox.env;
+		for (let attempt = 0; attempt < 5; attempt++) {
+			try {
+				await updateEnv(sandbox.id, env);
+			} catch (error) {
+				await emit("sandbox.degraded", sandbox.accountId, {
+					sandbox,
+					data: {
+						reason: `New commands have its environments' variables, but its env file (/etc/kantel/env) won't until it restarts: ${messageOf(error)}`,
+					},
+				}).catch(() => undefined);
+				return;
+			}
+			const latest = await store.sandboxes.get(sandbox.id);
+			if (latest === undefined || latest.state !== "running" || sameEnv(latest.env, env)) return;
+			env = latest.env;
+		}
 	}
 
 	const nameTaken = (name: string) => new KantelError("conflict", `The account has an environment named ${name}`);
@@ -3178,25 +3199,40 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			current.length > 1 ? `The environment ${environment.name}'s` : "The environment's";
 		const credentials = { variables: protectedWinners(sandbox, resolution).map(({ winner }) => winner.item) };
 		// Its environments as this read them: if they change meanwhile (an attach or detach, on any gateway), this stops,
-		// so what it picked never overwrites what a newer set picks, and leaves its work pending for the next start.
+		// so what it picked never overwrites what a newer set picks, and leaves what it hadn't done pending for the next
+		// start (or the newer set's own set-up).
 		const ids = environmentIdsOf(sandbox);
 		const stillSo = async () => {
 			const latest = await store.sandboxes.get(sandbox.id);
 			return latest !== undefined && sameIds(environmentIdsOf(latest), ids);
 		};
+		const stop = async () => {
+			await patchSandbox(sandbox.id, (latest) => {
+				const kept = environmentIdsOf(latest);
+				const left = [...which].filter((id) => kept.includes(id));
+				const pending = [...new Set([...(latest.pendingProvision ?? []), ...left])];
+				return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
+			});
+		};
 		for (const { environment, item: file } of resolution.files.values()) {
 			if (!which.has(environment.id)) continue;
 			try {
 				const bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
-				if (!(await stillSo())) return;
+				if (!(await stillSo())) return stop();
 				await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
+				// Changed while it was written: a newer set's write of this path may have landed first, and been
+				// overwritten. The path's winner now is written again (its own check repeats this, so the last write is it).
+				if (!(await stillSo())) {
+					await rewriteFile(sandbox.id, file.path);
+					return stop();
+				}
 			} catch (error) {
 				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
 			}
 		}
 		for (const { environment, item: repo } of resolution.repos.values()) {
 			if (!which.has(environment.id)) continue;
-			if (!(await stillSo())) return;
+			if (!(await stillSo())) return stop();
 			const path = clonePath(repo);
 			// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
 			// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
@@ -3233,6 +3269,49 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const pending = (latest.pendingProvision ?? []).filter((id) => !which.has(id));
 				return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
 			});
+		}
+	}
+
+	/**
+	 * Takes environments deleted since a create or fork read them off the sandbox it has just stored: the delete looked
+	 * for its sandboxes before this one was there. Nothing was given its host yet, so only the record changes.
+	 */
+	async function dropDeleted(sandbox: StoredSandbox): Promise<void> {
+		const ids = environmentIdsOf(sandbox);
+		if (ids.length === 0) return;
+		const found = await Promise.all(ids.map((id) => store.environments.get(id)));
+		const missing = new Set(ids.filter((_, index) => found[index] === undefined));
+		if (missing.size === 0) return;
+		await patchSandbox(sandbox.id, (current) => {
+			let pending: Pick<StoredSandbox, "pendingProvision"> = current;
+			for (const id of missing) pending = pendingWithout(pending, id);
+			return {
+				...current,
+				...environmentFields(environmentIdsOf(current).filter((id) => !missing.has(id))),
+				pendingProvision: pending.pendingProvision,
+			};
+		});
+	}
+
+	/**
+	 * Writes the file a sandbox's environments as they are now put at `path` (the winner), after a write from an older
+	 * set of them may have overwritten it; again, a few times, while they keep changing under it.
+	 */
+	async function rewriteFile(sandboxId: string, path: string): Promise<void> {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const latest = await store.sandboxes.get(sandboxId);
+			if (latest === undefined || latest.state !== "running") return;
+			const ids = environmentIdsOf(latest);
+			const winner = resolved(await environmentsOf(latest)).files.get(path);
+			if (winner === undefined) return;
+			try {
+				const bytes = await requireSealer().open(winner.item.sealed, fileAad(winner.environment.id, path));
+				await backend.writeFile(sandboxId, path, bytes, winner.item.mode);
+			} catch {
+				return;
+			}
+			const after = await store.sandboxes.get(sandboxId);
+			if (after === undefined || sameIds(environmentIdsOf(after), ids)) return;
 		}
 	}
 
@@ -7228,6 +7307,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw deletedMeanwhile();
 				}
 				await holdAccount(account.id, [sandbox.id]);
+				await dropDeleted(sandbox);
 				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
 				// refuses the create, which forgets the sandbox before anything else saw it.
 				if (sandboxMounts !== undefined && mounts !== undefined) {
@@ -7508,6 +7588,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				for (const fork of forks) {
+					await dropDeleted(fork);
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied. The forks' egress is alike:

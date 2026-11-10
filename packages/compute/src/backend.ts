@@ -783,7 +783,7 @@ export interface SandboxBackend {
 	 * The sandbox's env changed (an environment attached or detached): the host keeps the new one, and a running
 	 * microVM's guest rewrites its env file so new shells see it. Absent, the sandbox gets it when it next boots.
 	 */
-	updateEnv?(sandboxId: string, env: { readonly [name: string]: string }, revision?: number): Promise<void>;
+	updateEnv?(sandboxId: string, env: { readonly [name: string]: string }): Promise<void>;
 	/**
 	 * The runtime of each host that can build and boot template snapshots, one entry a host. Absent (with `buildTemplate`
 	 * and `deleteTemplateSnapshot`), the backend has no templates, and their routes answer `not_supported`.

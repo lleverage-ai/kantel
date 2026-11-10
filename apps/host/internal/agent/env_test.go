@@ -202,28 +202,6 @@ func TestSandboxEnvOfAStoppedMicroVMOrAnIsolateChangesOnlyTheRecord(t *testing.T
 	}
 }
 
-// An env from a change older than one the host has taken (delivered late, from another gateway) leaves the newer one.
-func TestSandboxEnvOlderThanTheHostHasIsIgnored(t *testing.T) {
-	tier := newEnvTier(t, microvm.Tier)
-	tier.state["sbx_1"] = proto.StateStopped
-	h := newEnvHost(t, tier)
-	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"NEW": "1"}, Revision: 20}); err != nil {
-		t.Fatal(err)
-	}
-	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"OLD": "1"}, Revision: 10}); err != nil {
-		t.Fatal(err)
-	}
-	if !maps.Equal(tier.env["sbx_1"], map[string]string{"NEW": "1"}) {
-		t.Fatalf("kept %v, want the newer env", tier.env["sbx_1"])
-	}
-	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"SAME": "1"}, Revision: 20}); err != nil {
-		t.Fatal(err)
-	}
-	if !maps.Equal(tier.env["sbx_1"], map[string]string{"SAME": "1"}) {
-		t.Fatalf("kept %v, want the same revision taken again", tier.env["sbx_1"])
-	}
-}
-
 // A guest that can't write the file fails the call, saying so, with the host's record changed already (its next boot
 // has the env); an unknown sandbox and a call without one are refused.
 func TestSandboxEnvFailures(t *testing.T) {

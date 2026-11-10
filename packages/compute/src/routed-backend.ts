@@ -277,8 +277,8 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		...(primary.updateEnv === undefined && fallback.updateEnv === undefined
 			? {}
 			: {
-					async updateEnv(id: string, env: { readonly [name: string]: string }, revision?: number) {
-						await (await on(id)).updateEnv?.(id, env, revision);
+					async updateEnv(id: string, env: { readonly [name: string]: string }) {
+						await (await on(id)).updateEnv?.(id, env);
 					},
 				}),
 		// On the backend holding it, which drops what it holds of its protected values; one without it holds none.

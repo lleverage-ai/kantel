@@ -71,6 +71,7 @@ function recordingBackend(
 	execHook?: ExecHook,
 	beforeCreate?: (spec: SandboxSpec) => Promise<void>,
 	egressHook?: (egress: BackendEgress | undefined) => Promise<void>,
+	envHook?: (env: { readonly [name: string]: string }) => Promise<void>,
 ): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
 	const stub = createStubBackend();
 	const recorded: Recorded = { specs: [], egress: [], secrets: [], execs: [], envs: [] };
@@ -97,6 +98,7 @@ function recordingBackend(
 			recorded.secrets.push({ sandboxId, version });
 		},
 		updateEnv: async (sandboxId, env) => {
+			await envHook?.(env);
 			recorded.envs.push({ sandboxId, env: { ...env } });
 			await stub.updateEnv?.(sandboxId, env);
 		},
@@ -113,10 +115,12 @@ function setup(
 		readonly beforeCreate?: (spec: SandboxSpec) => Promise<void>;
 		/** Awaited inside the backend's egress update, before it is taken: throwing refuses it. */
 		readonly onEgress?: (egress: BackendEgress | undefined) => Promise<void>;
+		/** Awaited inside the backend's env update, before it is taken. */
+		readonly onEnv?: (env: { readonly [name: string]: string }) => Promise<void>;
 		readonly now?: () => number;
 	} = {},
 ) {
-	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate, options.onEgress);
+	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate, options.onEgress, options.onEnv);
 	/** The bodies of the webhook requests sent. */
 	const sent: string[] = [];
 	const api = createComputeApi({
@@ -2250,6 +2254,52 @@ describe("a sandbox with several environments", () => {
 		expect(after?.entries.find((entry) => entry.name === "NPM_TOKEN")?.value).toBe("npm_ROTATED");
 		expect(last(recorded.secrets)).toEqual({ sandboxId: sandbox.id, version: after?.version });
 		await vi.waitFor(() => expect(last(recorded.egress)?.egress?.protected?.version).toBe(after?.version));
+	});
+
+	it("an env delivered late, after a newer one, is followed by the newer one again", async () => {
+		let hold: Promise<void> | undefined;
+		let release = () => {};
+		const { tom, recorded } = setup({
+			onEnv: async (env) => {
+				// The attach's delivery (with NPM_TOKEN) is held until the detach's has landed.
+				if (hold === undefined && "NPM_TOKEN" in env) {
+					hold = new Promise((resolve) => {
+						release = resolve;
+					});
+					await hold;
+				}
+			},
+		});
+		await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ environment: "backend", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		await tom.detachSandboxEnvironment(sandbox.id, npm.id);
+		await vi.waitFor(() => expect(recorded.envs.length).toBeGreaterThan(0));
+		release();
+		await vi.waitFor(() => {
+			const sent = recorded.envs.filter((each) => each.sandboxId === sandbox.id);
+			expect(sent.length).toBeGreaterThanOrEqual(3);
+			expect("NPM_TOKEN" in (last(sent)?.env ?? {})).toBe(false);
+		});
+	});
+
+	it("a create that stores an environment deleted after it read it takes it off again", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup({ store });
+		const github = await githubEnvironment(tom);
+		const npm = await npmEnvironment(tom);
+		const put = store.sandboxes.put.bind(store.sandboxes);
+		let armed = true;
+		store.sandboxes.put = async (record) => {
+			await put(record);
+			if (armed && (record.environmentIds ?? []).includes(npm.id)) {
+				armed = false;
+				await store.environments.delete(npm.id);
+			}
+		};
+		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([github.id]);
 	});
 
 	it("a fork keeps them, in order", async () => {
