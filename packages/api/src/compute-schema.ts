@@ -816,8 +816,10 @@ export const BucketMountSource = Type.Object(
 				minimum: 0,
 				maximum: 86400,
 				description:
-					"How long the host trusts its listing of the prefix before it looks again, so objects added later appear. " +
-					"0: never look again. Default: the host's.",
+					"How long the host trusts its listing of the prefix before it looks again, so objects added later appear: " +
+					"it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never " +
+					"look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call " +
+					"`refreshSandboxMounts`.",
 			}),
 		),
 	},
@@ -863,6 +865,42 @@ export const SandboxMount = Type.Object(
 		error: Type.Optional(Type.String({ description: "Why it is `failed`, in words." })),
 	},
 	{ title: "SandboxMount", description: "A mount of a sandbox's, and whether its files are in place." },
+);
+
+export const RefreshMountsBody = Type.Object(
+	{
+		path: Type.Optional(
+			Type.String({
+				minLength: 2,
+				maxLength: 1024,
+				description: "Just the bucket mount at this path. Default: every bucket mount of the sandbox's.",
+			}),
+		),
+	},
+	{ title: "RefreshMountsBody" },
+);
+
+export const RefreshedMount = Type.Object(
+	{
+		path: Type.String(),
+		source: MountSource,
+		status: MountStatus,
+		error: Type.Optional(Type.String({ description: "Why it is `failed`, in words." })),
+		objects: Type.Optional(Type.Integer({ minimum: 0, description: "How many objects the listing it shows holds." })),
+		listedAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When the listing it shows began (ms since the epoch), after the call arrived: it has every object the " +
+					"bucket held then.",
+			}),
+		),
+	},
+	{ title: "RefreshedMount", description: "A bucket mount as the sandbox shows it after a refresh." },
+);
+
+export const RefreshedMountList = Type.Object(
+	{ items: Type.Array(RefreshedMount, { description: "Each bucket mount refreshed, in the sandbox's order." }) },
+	{ title: "RefreshedMountList" },
 );
 
 export const SandboxTemplate = Type.Object(
@@ -3633,6 +3671,9 @@ export type MountSource = Static<typeof MountSource>;
 export type Mount = Static<typeof Mount>;
 export type MountStatus = Static<typeof MountStatus>;
 export type SandboxMount = Static<typeof SandboxMount>;
+export type RefreshMountsBody = Static<typeof RefreshMountsBody>;
+export type RefreshedMount = Static<typeof RefreshedMount>;
+export type RefreshedMountList = Static<typeof RefreshedMountList>;
 export type Bundle = Static<typeof Bundle>;
 export type BucketProvider = Static<typeof BucketProvider>;
 export type BucketCredentials = Static<typeof BucketCredentials>;

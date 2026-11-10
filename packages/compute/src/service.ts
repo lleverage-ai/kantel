@@ -618,6 +618,7 @@ function refuseInMount(sandbox: StoredSandbox, path: string): void {
 }
 
 const MOUNTS_OFF_HANDLERS: MountHandlers = {
+	refreshSandboxMounts: mountsOff,
 	createUploadUrl: mountsOff,
 	createDownloadUrl: mountsOff,
 	extractArchive: mountsOff,

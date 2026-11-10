@@ -395,6 +395,7 @@ describe("mounts off", () => {
 			tom.uploadBundle(SKILLS.slice().buffer),
 			tom.listBucketSources(),
 			tom.createBucketSource({ name: "org", provider: "s3", bucket: "org" }),
+			tom.refreshSandboxMounts("sbx_none"),
 		]) {
 			expect((await failure(call)).code).toBe("not_supported");
 		}
@@ -621,6 +622,68 @@ describe("a sandbox's mounts", () => {
 			["/mnt/org", "failed"],
 		]);
 		expect((await failure(tom.deleteBucketSource(source.id))).code).toBe("conflict");
+	});
+});
+
+describe("refreshing a sandbox's mounts", () => {
+	async function withMounts(refreshMounts?: SandboxBackend["refreshMounts"]) {
+		const asked: { sandboxId: string; path: string | undefined }[] = [];
+		const ctx = setup({
+			backend: () =>
+				refreshMounts === undefined
+					? {}
+					: {
+							refreshMounts: (sandboxId, path) => {
+								asked.push({ sandboxId, path });
+								return refreshMounts(sandboxId, path);
+							},
+						},
+		});
+		const bundle = await ctx.tom.uploadBundle(SKILLS.slice().buffer);
+		const source = await ctx.tom.createBucketSource({ name: "org files", provider: "gcs", bucket: "org" });
+		const mounts = [
+			{ path: "/mnt/skills", source: { kind: "bundle" as const, digest: bundle.digest } },
+			{ path: "/mnt/org", source: { kind: "bucket" as const, bucketSourceId: source.id, prefix: "org/42/" } },
+		];
+		const sandbox = await ctx.tom.createSandbox({ type: "microvm", mounts, wait: true });
+		return { ...ctx, asked, sandbox, mounts };
+	}
+
+	it("answers each bucket mount as its sandbox shows it once the backend has brought it up to date", async () => {
+		const { tom, asked, sandbox, mounts } = await withMounts(async () => [
+			{ path: "/mnt/skills", status: "ready" },
+			{ path: "/mnt/org", status: "ready", objects: 3, listedAt: 1_700_000_000_000 },
+		]);
+		const all = await tom.refreshSandboxMounts(sandbox.id);
+		expect(all.items).toEqual([{ ...mounts[1], status: "ready", objects: 3, listedAt: 1_700_000_000_000 }]);
+		// A path as given, normalised.
+		await tom.refreshSandboxMounts(sandbox.id, { path: "/mnt/org/" });
+		expect(asked).toEqual([
+			{ sandboxId: sandbox.id, path: undefined },
+			{ sandboxId: sandbox.id, path: "/mnt/org" },
+		]);
+	});
+
+	it("refuses a bundle, a path with no mount and a stopped sandbox, and asks nothing of a sandbox with no buckets", async () => {
+		const { tom, asked, sandbox } = await withMounts(async () => []);
+		expect((await failure(tom.refreshSandboxMounts(sandbox.id, { path: "/mnt/skills" }))).code).toBe("invalid");
+		expect((await failure(tom.refreshSandboxMounts(sandbox.id, { path: "/mnt/other" }))).code).toBe("not_found");
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		expect((await failure(tom.refreshSandboxMounts(sandbox.id))).code).toBe("conflict");
+		const plain = await tom.createSandbox({ type: "microvm", wait: true });
+		expect(await tom.refreshSandboxMounts(plain.id)).toEqual({ items: [] });
+		expect(asked).toEqual([]);
+	});
+
+	it("passes on the backend's failure, and is not_supported where the backend can't", async () => {
+		const failing = await withMounts(async () => {
+			throw new KantelError("unavailable", "couldn't list the bucket again: /mnt/org: the store answered 503");
+		});
+		const refused = await failure(failing.tom.refreshSandboxMounts(failing.sandbox.id));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.message).toContain("/mnt/org");
+		const old = await withMounts();
+		expect((await failure(old.tom.refreshSandboxMounts(old.sandbox.id))).code).toBe("not_supported");
 	});
 });
 

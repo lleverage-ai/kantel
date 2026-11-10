@@ -21,6 +21,7 @@ import {
 	type BackendFileEntry,
 	type BackendHost,
 	type BackendMount,
+	type BackendMountRefresh,
 	type BackendProcessList,
 	type BackendSize,
 	type BootOptions,
@@ -58,6 +59,8 @@ import {
 	type HostGuest,
 	HostMethods,
 	type HostMount,
+	type HostMountStatus,
+	type HostMountsRefresh,
 	type HostProcessList,
 	type HostSandbox,
 	type HostSnapshotKeep,
@@ -1230,6 +1233,23 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				})),
 				total: list.total,
 			};
+		},
+		// Asked only of a host that promises a refresh is current when it answers (`mountsSync`): one with bucket mounts
+		// from before it would answer with whatever listing it had from the last few seconds.
+		async refreshMounts(sandboxId, path): Promise<BackendMountRefresh[]> {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.mountsSync)) {
+				throw new KantelError("not_supported", "This sandbox's host can't refresh its mounts: update kantel-host");
+			}
+			const params: HostMountsRefresh = { sandboxId, ...(path === undefined ? {} : { path }), sync: true };
+			const statuses = await call<HostMountStatus[] | null>(sandboxId, HostMethods.mountsRefresh, params);
+			return (statuses ?? []).map(({ path, status, error, objects, listedAt }) => ({
+				path,
+				status,
+				...(error === undefined || error === "" ? {} : { error }),
+				...(typeof objects === "number" ? { objects } : {}),
+				...(typeof listedAt === "number" && listedAt > 0 ? { listedAt } : {}),
+			}));
 		},
 		async takeSnapshot(sandboxId, options): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);

@@ -116,7 +116,7 @@ func TestManifestUpdatesAreOrdered(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		defer close(refreshed)
-		if err := m.update(ctx, http.MethodPost, "refresh"); err != nil {
+		if err := m.update(ctx, http.MethodPost, "refresh", false); err != nil {
 			t.Error(err)
 		}
 	}()
@@ -226,5 +226,41 @@ func TestOverlaps(t *testing.T) {
 		if got := overlaps(c.a, c.b); got != c.want {
 			t.Errorf("overlaps(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// An update that waits (Apply's) answers only once every invalidation an earlier update left running has finished,
+// even when its own fetch changed nothing (a 304): the tree it shows is the earlier update's, and the kernel may
+// still hold that tree's old names until then.
+func TestAWaitingUpdateWaitsForEarlierInvalidations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer srv.Close()
+	m := testMount(srv)
+	m.tree.Store(newTree(Manifest{Version: 3, Entries: []ManifestEntry{{Path: "a"}}}))
+	// An earlier update's invalidation, still under way.
+	m.invalidating.RLock()
+	done := make(chan error, 1)
+	go func() { done <- m.update(context.Background(), http.MethodGet, "manifest", true) }()
+	select {
+	case err := <-done:
+		t.Fatalf("the waiting update answered before the earlier invalidation finished: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	m.invalidating.RUnlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiting update didn't answer once the invalidation finished")
+	}
+	// One that doesn't wait (the xattr's, within a FUSE request) never blocks on them.
+	m.invalidating.RLock()
+	defer m.invalidating.RUnlock()
+	if err := m.update(context.Background(), http.MethodGet, "manifest", false); err != nil {
+		t.Fatal(err)
 	}
 }

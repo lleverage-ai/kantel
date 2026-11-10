@@ -98,6 +98,8 @@ import {
 	PutTelemetryBody,
 	ReadFileQuery,
 	ReadSnapshotFileQuery,
+	RefreshedMountList,
+	RefreshMountsBody,
 	ResumeSandboxBody,
 	RunCommandBody,
 	Sandbox,
@@ -2307,7 +2309,32 @@ export const deleteBucketSource = defineRoute({
 	errors: [...changeErrors, "not_supported"],
 });
 
+export const refreshSandboxMounts = defineRoute({
+	operationId: "refreshSandboxMounts",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/mounts/refresh",
+	tag: "mounts",
+	summary: "Bring a sandbox's bucket mounts up to date",
+	description: describe(
+		"Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that",
+		"listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything",
+		"deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill,",
+		"before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the",
+		"listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the",
+		"mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another",
+		"digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped",
+		"or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items.",
+		scope("sandboxes:write"),
+		MOUNTS,
+	),
+	params: SandboxPath,
+	body: RefreshMountsBody,
+	answer: { status: 200, description: "Each bucket mount, as the sandbox shows it now.", schema: RefreshedMountList },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
 export const mountRoutes = {
+	refreshSandboxMounts,
 	uploadBundle,
 	listBundles,
 	getBundle,

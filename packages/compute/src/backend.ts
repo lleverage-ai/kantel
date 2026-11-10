@@ -150,6 +150,17 @@ export interface BackendMount {
 	readonly source: computeSchema.MountSource;
 }
 
+/** A mount's status after `refreshMounts`, by path. */
+export interface BackendMountRefresh {
+	readonly path: string;
+	readonly status: computeSchema.MountStatus;
+	readonly error?: string;
+	/** A bucket mount's: how many objects the listing it shows holds. */
+	readonly objects?: number;
+	/** A bucket mount's: when the listing it shows began (ms since the epoch). */
+	readonly listedAt?: number;
+}
+
 /** A mount's status as the backend reports it, by path. */
 export interface BackendMountStatus {
 	readonly path: string;
@@ -641,6 +652,14 @@ export interface SandboxBackend {
 	 * isolate, a host or guest agent too old). Absent: no sandbox of the backend's lists them.
 	 */
 	processes?(sandboxId: string, limit: number): Promise<BackendProcessList>;
+	/**
+	 * Brings a running sandbox's bucket mounts up to date with their buckets: it resolves only once each one at `path`
+	 * (every bucket mount without it) shows the sandbox a listing that began after the call, with each mount's status
+	 * then. A listing that fails, or a sandbox that doesn't take it, throws `unavailable` naming the mount; a bundle at
+	 * `path` is `invalid`, and a host that can't promise any of that `not_supported`. Absent: no sandbox of the
+	 * backend's can.
+	 */
+	refreshMounts?(sandboxId: string, path?: string): Promise<BackendMountRefresh[]>;
 	/**
 	 * Takes a snapshot of a running sandbox's disk without stopping it, and its memory too with `memory` where the
 	 * backend can keep it (`TakenSnapshot.memory` says whether it did).

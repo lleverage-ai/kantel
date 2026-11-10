@@ -10489,6 +10489,117 @@
 				}
 			}
 		},
+		"/sandboxes/{sandboxId}/mounts/refresh": {
+			"post": {
+				"operationId": "refreshSandboxMounts",
+				"summary": "Bring a sandbox's bucket mounts up to date",
+				"description": "Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RefreshMountsBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Each bucket mount, as the sandbox shows it now.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RefreshedMountList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/bundles": {
 			"post": {
 				"operationId": "uploadBundle",
@@ -11852,7 +11963,7 @@
 						"type": "integer",
 						"minimum": 0,
 						"maximum": 86400,
-						"description": "How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's."
+						"description": "How long the host trusts its listing of the prefix before it looks again, so objects added later appear: it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call `refreshSandboxMounts`."
 					}
 				},
 				"title": "BucketMountSource",
@@ -14939,6 +15050,62 @@
 					}
 				},
 				"title": "PutTelemetryBody"
+			},
+			"RefreshedMount": {
+				"type": "object",
+				"required": ["path", "source", "status"],
+				"properties": {
+					"path": {
+						"type": "string"
+					},
+					"source": {
+						"$ref": "#/components/schemas/MountSource"
+					},
+					"status": {
+						"$ref": "#/components/schemas/MountStatus"
+					},
+					"error": {
+						"type": "string",
+						"description": "Why it is `failed`, in words."
+					},
+					"objects": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many objects the listing it shows holds."
+					},
+					"listedAt": {
+						"type": "integer",
+						"description": "When the listing it shows began (ms since the epoch), after the call arrived: it has every object the bucket held then."
+					}
+				},
+				"title": "RefreshedMount",
+				"description": "A bucket mount as the sandbox shows it after a refresh."
+			},
+			"RefreshedMountList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/RefreshedMount"
+						},
+						"description": "Each bucket mount refreshed, in the sandbox's order."
+					}
+				},
+				"title": "RefreshedMountList"
+			},
+			"RefreshMountsBody": {
+				"type": "object",
+				"properties": {
+					"path": {
+						"type": "string",
+						"minLength": 2,
+						"maxLength": 1024,
+						"description": "Just the bucket mount at this path. Default: every bucket mount of the sandbox's."
+					}
+				},
+				"title": "RefreshMountsBody"
 			},
 			"ResumeSandboxBody": {
 				"type": "object",

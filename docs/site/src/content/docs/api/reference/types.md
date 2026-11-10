@@ -242,7 +242,7 @@ An object-store prefix, through a bucket source the account holds. The host read
 | `kind` | `"bucket"` | yes |  |
 | `bucketSourceId` | string | yes | A bucket source of the sandbox's account, such as `bks_4kq9x2mt`. |
 | `prefix` | string | yes | The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket. (at most 1024 characters) |
-| `refreshTtlSeconds` | integer | no | How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's. (minimum 0, maximum 86400) |
+| `refreshTtlSeconds` | integer | no | How long the host trusts its listing of the prefix before it looks again, so objects added later appear: it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call `refreshSandboxMounts`. (minimum 0, maximum 86400) |
 
 ### BucketProvider
 
@@ -1239,6 +1239,31 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `endpoint` | string | yes |  |
 | `headers` | Record&lt;string, string&gt; | no |  |
 | `signals` | `"metrics"` or `"logs"`[] | no |  |
+
+### RefreshedMount
+
+A bucket mount as the sandbox shows it after a refresh.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes |  |
+| `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
+| `status` | [MountStatus](/api/reference/types/#mountstatus) | yes |  |
+| `error` | string | no | Why it is `failed`, in words. |
+| `objects` | integer | no | How many objects the listing it shows holds. (minimum 0) |
+| `listedAt` | integer | no | When the listing it shows began (ms since the epoch), after the call arrived: it has every object the bucket held then. |
+
+### RefreshedMountList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [RefreshedMount](/api/reference/types/#refreshedmount)[] | yes | Each bucket mount refreshed, in the sandbox's order. |
+
+### RefreshMountsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | no | Just the bucket mount at this path. Default: every bucket mount of the sandbox's. (at least 2 characters, at most 1024 characters) |
 
 ### ResumeSandboxBody
 
