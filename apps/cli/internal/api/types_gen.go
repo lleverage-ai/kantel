@@ -1706,6 +1706,8 @@ type Sandbox struct {
 	HostID *string `json:"hostId,omitempty"`
 	// That host's name, with `hostId`.
 	HostName *string `json:"hostName,omitempty"`
+	// Whether the host it is placed on is connected to Kantel now. `false`: it isn't, so Kantel can't reach the sandbox or confirm what its machine is doing, and `state` is its last known state. Calls that need it running (commands, files, ports, SSH, the desktop and browser) answer `unavailable` until the host reconnects; a stop waits a while for it. Answered whether or not `hostId` is shown. Absent until it is placed.
+	HostReachable *bool `json:"hostReachable,omitempty"`
 	// The sandbox's ID, such as `sbx_4kq9x2mt`.
 	ID string `json:"id"`
 	// How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, and its hosted ports. Stopping keeps its disk, as any stop does.
