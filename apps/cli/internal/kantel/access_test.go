@@ -105,7 +105,7 @@ var savedSnapshot = map[string]any{
 	"takenAt":   time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC).UnixMilli(),
 }
 
-func with(base map[string]any, fields map[string]any) map[string]any {
+func withFields(base map[string]any, fields map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range base {
 		out[k] = v
@@ -180,7 +180,7 @@ func TestSnapshotListByIDOrFlag(t *testing.T) {
 	eq(t, "both calls", len(r.Calls), 0)
 
 	r = run(t, []string{"snapshot", "ls"}, opts{routes: routes{"GET /v1/snapshots": func(call) any {
-		return map[string]any{"items": []any{with(savedSnapshot, map[string]any{"memory": true, "sizeBytes": 1536 * 1024 * 1024,
+		return map[string]any{"items": []any{withFields(savedSnapshot, map[string]any{"memory": true, "sizeBytes": 1536 * 1024 * 1024,
 			"createdAt": time.Now().Add(-5 * time.Minute).UnixMilli()})}, "nextCursor": "c2"}
 	}}})
 	eq(t, "table", r.Stdout, "ID      NAME         KIND           STATE  SANDBOX    SIZE     CREATED\n"+
@@ -191,7 +191,7 @@ func TestSnapshotInfoByIDOrSavedName(t *testing.T) {
 	pages := routes{
 		"GET /v1/snapshots": func(c call) any {
 			if query(c, "cursor") == "" {
-				return map[string]any{"items": []any{with(savedSnapshot, map[string]any{"id": "snap_0", "name": "other"})}, "nextCursor": "c2"}
+				return map[string]any{"items": []any{withFields(savedSnapshot, map[string]any{"id": "snap_0", "name": "other"})}, "nextCursor": "c2"}
 			}
 			return map[string]any{"items": []any{savedSnapshot}}
 		},
@@ -216,7 +216,7 @@ func TestSnapshotInfoByIDOrSavedName(t *testing.T) {
 
 	// Saved straight from a running sandbox, its state is the save's: one time.
 	r = run(t, []string{"snapshot", "info", "snap_1"}, opts{routes: routes{
-		"GET /v1/snapshots/snap_1": func(call) any { return with(savedSnapshot, map[string]any{"takenAt": savedSnapshot["createdAt"]}) },
+		"GET /v1/snapshots/snap_1": func(call) any { return withFields(savedSnapshot, map[string]any{"takenAt": savedSnapshot["createdAt"]}) },
 	}})
 	if regexp.MustCompile(`(?m)^taken`).MatchString(r.Stdout) {
 		t.Errorf("one time shown twice:\n%s", r.Stdout)
@@ -231,9 +231,9 @@ func TestSnapshotInfoByIDOrSavedName(t *testing.T) {
 	// A saved name may start as an ID does: not found as an ID, it is looked for by name.
 	r = run(t, []string{"snapshot", "info", "snap_checks"}, opts{routes: routes{
 		"GET /v1/snapshots": func(call) any {
-			return map[string]any{"items": []any{with(savedSnapshot, map[string]any{"name": "snap_checks"})}}
+			return map[string]any{"items": []any{withFields(savedSnapshot, map[string]any{"name": "snap_checks"})}}
 		},
-		"GET /v1/snapshots/snap_1": func(call) any { return with(savedSnapshot, map[string]any{"name": "snap_checks"}) },
+		"GET /v1/snapshots/snap_1": func(call) any { return withFields(savedSnapshot, map[string]any{"name": "snap_checks"}) },
 	}})
 	eq(t, "prefixed exit", r.Code, 0)
 	eq(t, "prefixed paths", strings.Join(paths(r.Calls), " "), "/v1/snapshots/snap_checks /v1/snapshots /v1/snapshots/snap_1")
