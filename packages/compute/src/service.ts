@@ -2742,6 +2742,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		(await sandboxesWith(environment)).filter((sandbox) => sandbox.state === "running" || sandbox.state === "starting");
 
 	/**
+	 * Whether a variable of this name in an environment decides which protected value a running sandbox's placeholder
+	 * stands for: one with other environments has a placeholder of the name, so the variable shadows (or shadowed) one.
+	 */
+	const shadowsProtected = async (environment: Pick<StoredEnvironment, "id" | "accountId">, name: string) =>
+		(await liveFrom(environment)).some(
+			(sandbox) => environmentIdsOf(sandbox).length > 1 && Object.hasOwn(sandbox.placeholders ?? {}, name),
+		);
+
+	/**
 	 * Tells the hosts of an environment's running sandboxes that its protected values changed, so they drop what they
 	 * hold and fetch them again, and gives them its egress as it is now (the hosts to intercept, the grants). A starting
 	 * one's revision moves on too, so its boot sees the change and reconciles.
@@ -2967,6 +2976,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (!settled.includes(sandbox.state)) throw new KantelError("conflict", `The sandbox is ${sandbox.state}`);
 		const read = await Promise.all(ids.map((id) => store.environments.get(id)));
 		const environments = read.filter((environment): environment is StoredEnvironment => environment !== undefined);
+		// The version its host was last given: the new floor goes past it, so no fetch answers below what it holds.
+		const given = secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0;
 		const resolution = resolved(environments);
 		const attached = "attached" in how ? how.attached : undefined;
 		if (attached !== undefined) {
@@ -2983,10 +2994,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!settled.includes(current.state)) throw new KantelError("conflict", `The sandbox is ${current.state}`);
 			const envLayers = envLayersOf(current);
 			const { env, placeholders } = composeEnv(envLayers, resolution, current.placeholders ?? {}, newPlaceholder);
-			const provisioned =
-				attached !== undefined &&
-				(attached.files.length > 0 || attached.repos.length > 0) &&
-				current.state !== "running";
+			// Pending until it is set up, running or not: a running one's set-up clears it, and if a stop gets there first,
+			// its next start does it.
+			const provisioned = attached !== undefined && (attached.files.length > 0 || attached.repos.length > 0);
 			const pending = "detached" in how ? pendingWithout(current, how.detached) : {};
 			return {
 				...current,
@@ -2999,7 +3009,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				envLayers,
 				placeholders,
 				// Past any version its host was given: it drops what it held, and fetches them again as they are now.
-				secretsFloor: nextSecretsVersion(current.secretsFloor ?? 0, now()),
+				secretsFloor: nextSecretsVersion(Math.max(given, current.secretsFloor ?? 0), now()),
 				egressRevision: later(current.egressRevision),
 			};
 		});
@@ -3903,14 +3913,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		principal: Principal,
 		role: MemberRole,
 		sandbox: StoredSandbox,
+		/** Leave out (pending) an environment with repositories the caller may not have cloned, rather than refuse. */
+		lenient = false,
 	): Promise<Provisioning | undefined> {
 		const again = neverPlaced(sandbox) && sandbox.source === undefined;
 		const ids = new Set(again ? environmentIdsOf(sandbox) : (sandbox.pendingProvision ?? []));
 		if (ids.size === 0) return undefined;
-		const environments = (await environmentsOf(sandbox)).filter((environment) => ids.has(environment.id));
-		if (environments.length === 0) return undefined;
-		if (environments.some((environment) => environment.repos.length > 0)) requireScope(principal, "exec", role);
-		return { environments };
+		let environments = (await environmentsOf(sandbox)).filter((environment) => ids.has(environment.id));
+		if (environments.some((environment) => environment.repos.length > 0)) {
+			if (!lenient) requireScope(principal, "exec", role);
+			else if (!mayScope(principal, "exec", role)) {
+				environments = environments.filter((environment) => environment.repos.length === 0);
+			}
+		}
+		return environments.length === 0 ? undefined : { environments };
+	}
+
+	/** Whether a caller may act with `scope`, as `requireScope` would let them. */
+	function mayScope(principal: Principal, scope: computeSchema.ApiKeyScope, role: MemberRole): boolean {
+		try {
+			requireScope(principal, scope, role);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	/**
@@ -7470,6 +7496,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							undefined,
 							{ egressRevision },
 						);
+						// An environment attached to its source while stopped: its files and repositories, which the copied disk
+						// never had.
+						if (booted?.state === "running" && (booted.pendingProvision?.length ?? 0) > 0) {
+							const provisioning = await provisionedAgain(principal, role, booted, true).catch(() => undefined);
+							if (provisioning !== undefined) await provision(booted, provisioning.environments).catch(() => undefined);
+						}
 						// Best effort, as each port is: a failure here (its records' store down, say) leaves this fork running without
 						// them, and never stops the batch's other forks booting.
 						if (booted?.state === "running") await copyPorts(booted, sourcePorts, grantee).catch(() => undefined);
@@ -7494,7 +7526,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const hosts = await hostsToBoot(principal, current);
 				const fromSnapshot = await latestRef(current);
 				requireSetupScope(principal, role, current);
-				const environment = await provisionedAgain(principal, role, current);
+				// Refused now, as its create would be; read again once it is starting, for an attach meanwhile.
+				await provisionedAgain(principal, role, current);
 				// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 				// say, still being retried) never equals it, and loses.
 				const began = await transition(current.id, current.state, (latest) =>
@@ -7506,6 +7539,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 				if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
+				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 				const egress = await egressFor(starting.accountId, starting);
 				keepGoing(
@@ -7517,7 +7551,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									starting,
 									{
 										fromSnapshot,
-										env: current.env,
+										env: starting.env,
 										eligibleHosts: hosts,
 										...sizingOf(starting),
 										...egress,
@@ -7525,7 +7559,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									},
 									(options) => backend.recover(current.id, options),
 								),
-							environment,
+							provisioning,
 							{ egressRevision: starting.egressRevision },
 						),
 					),
@@ -7625,18 +7659,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
+				// An environment attached while it was stopped: its files and repositories, once it runs.
+				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 				const egress = await egressFor(starting.accountId, starting);
 				keepGoing(
 					track([stopped.id], () =>
-						boot(
+						bootProvisioned(
 							stopped.id,
 							() =>
 								bootAgain(
 									stopped,
 									{
 										fromSnapshot,
-										env: stopped.env,
+										env: starting.env,
 										eligibleHosts: hosts,
 										// Its size and shape as recorded, as a start keeps them: only its base changes.
 										...sizingOf(stopped),
@@ -7647,7 +7683,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									},
 									(options) => backend.start(stopped.id, options),
 								),
-							undefined,
+							provisioning,
 							{ egressRevision: starting.egressRevision },
 						),
 					),
@@ -8649,23 +8685,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
 			// Its sandboxes keep their env and files, but lose it from their environments: their placeholders for its
 			// variables stop resolving at once, at a floor past any version it gave them, and its grants go.
-			const version = nextSecretsVersion(environment.secretsVersion, now());
 			const holding = await sandboxesWith(environment);
 			const detached = await Promise.all(
-				holding.map((sandbox) =>
-					patchSandbox(sandbox.id, (current) => ({
+				holding.map(async (sandbox) => {
+					// Past the version its host was last given, from all its environments (this one included).
+					const given = secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0;
+					const floor = nextSecretsVersion(Math.max(given, environment.secretsVersion), now());
+					return patchSandbox(sandbox.id, (current) => ({
 						...current,
 						...environmentFields(environmentIdsOf(current).filter((id) => id !== environment.id)),
-						secretsFloor: Math.max(version, current.secretsFloor ?? 0),
+						secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
 						...pendingWithout(current, environment.id),
 						egressRevision: later(current.egressRevision),
-					})),
-				),
+					}));
+				}),
 			);
 			await store.environments.delete(environment.id);
 			const running = detached.filter((sandbox): sandbox is StoredSandbox => sandbox?.state === "running");
 			const updateSecrets = backend.updateSecrets?.bind(backend);
-			if (updateSecrets !== undefined) for (const sandbox of running) keepGoing(updateSecrets(sandbox.id, version));
+			if (updateSecrets !== undefined) {
+				for (const sandbox of running) {
+					if (sandbox.secretsFloor !== undefined) keepGoing(updateSecrets(sandbox.id, sandbox.secretsFloor));
+				}
+			}
 			pushEgress(running);
 			return undefined;
 		},
@@ -8691,6 +8733,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? await requireSealer().seal(body.value as string, variableAad(environment.id, name))
 				: undefined;
 			const at = now();
+			// A running sandbox with a placeholder of this name may take its protected value from another of its
+			// environments, which this one, later, now shadows or no longer does: its host must fetch them again.
+			const shadowing = await shadowsProtected(environment, name);
 			let touchesSecrets = false;
 			// Built from the variable as the store has it, each time the change runs: a field left out is kept as it is now,
 			// never as an earlier read had it (a bindings edit doesn't undo a rotation that landed meanwhile).
@@ -8729,7 +8774,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 					next = { name, protected: false, value: body.value ?? existing?.value ?? "", bindings: [], updatedAt: at };
 				}
-				touchesSecrets = wantProtected || existing?.protected === true;
+				touchesSecrets = wantProtected || existing?.protected === true || shadowing;
 				return {
 					...current,
 					// In its place, or last when it is new.
@@ -8750,13 +8795,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const existing = environment.variables.find((variable) => variable.name === params.name);
 			if (existing === undefined) throw notFound("variable");
 			const at = now();
+			const touchesSecrets = existing.protected || (await shadowsProtected(environment, params.name));
 			const changed = await changeEnvironment(environment.id, (current) => ({
 				...current,
 				variables: current.variables.filter((variable) => variable.name !== params.name),
-				secretsVersion: existing.protected ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
+				secretsVersion: touchesSecrets ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
 				updatedAt: at,
 			}));
-			if (existing.protected) await pushEnvironment(changed, changed.secretsVersion);
+			if (touchesSecrets) await pushEnvironment(changed, changed.secretsVersion);
 			return environmentView(changed);
 		},
 
@@ -9273,7 +9319,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
 		requireSetupScope(principal, role, current);
-		const environment = await provisionedAgain(principal, role, current);
+		// Refused now, as its create would be; read again once it is starting, for an attach meanwhile.
+		await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
@@ -9292,10 +9339,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
+		const provisioning = await provisionedAgain(principal, role, starting, true);
 		const bootOptions = {
 			fromSnapshot,
 			...sizingOf(starting),
-			env: current.env,
+			env: starting.env,
 			eligibleHosts: hosts,
 			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 			...(await egressFor(starting.accountId, starting)),
@@ -9308,7 +9356,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					bootAgain(starting, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					),
-				environment,
+				provisioning,
 				{ egressRevision: starting.egressRevision },
 			),
 		);

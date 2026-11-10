@@ -79,16 +79,18 @@ export function composeEnv(
 	placeholders: { readonly [name: string]: string },
 	mint: () => string,
 ): { env: { [name: string]: string }; placeholders: { [name: string]: string } } {
-	const env: { [name: string]: string } = { ...layers.base };
-	const kept: { [name: string]: string } = { ...placeholders };
+	// Maps, not objects: a variable may be named as anything an object inherits (`constructor`, `__proto__`).
+	const env = new Map(Object.entries(layers.base));
+	const kept = new Map(Object.entries(placeholders));
 	for (const [name, { item }] of resolution.variables) {
 		if (item.protected) {
-			kept[name] ??= mint();
-			env[name] = kept[name];
-		} else if (item.value !== undefined) env[name] = item.value;
+			const placeholder = kept.get(name) ?? mint();
+			kept.set(name, placeholder);
+			env.set(name, placeholder);
+		} else if (item.value !== undefined) env.set(name, item.value);
 	}
-	Object.assign(env, layers.own);
-	return { env, placeholders: kept };
+	for (const [name, value] of Object.entries(layers.own)) env.set(name, value);
+	return { env: Object.fromEntries(env), placeholders: Object.fromEntries(kept) };
 }
 
 /** The names of `own` that would hide a protected variable of the environments: refused, as at create. */
@@ -110,7 +112,7 @@ export function protectedWinners(
 	for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
 		const winner = resolution.variables.get(name);
 		if (winner === undefined || !winner.item.protected || winner.item.sealed === undefined) continue;
-		if (sandbox.env[name] !== placeholder) continue;
+		if (!Object.hasOwn(sandbox.env, name) || sandbox.env[name] !== placeholder) continue;
 		out.push({ name, placeholder, winner });
 	}
 	return out;
@@ -141,7 +143,7 @@ export function shadowedOf(
 	return {
 		variables: environment.variables
 			.map((variable) => variable.name)
-			.filter((name) => resolution.variables.get(name)?.environment.id !== environment.id || name in own),
+			.filter((name) => resolution.variables.get(name)?.environment.id !== environment.id || Object.hasOwn(own, name)),
 		files: environment.files
 			.map((file) => file.path)
 			.filter((path) => resolution.files.get(path)?.environment.id !== environment.id),
