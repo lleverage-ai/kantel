@@ -270,3 +270,60 @@ Replaces its own grants, on top of its environment's. A running sandbox picks th
 - `200`: [SandboxEgress](/api/reference/types/#sandboxegress) (`application/json`). Its egress.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## List a sandbox's environments
+
+`GET /v1/sandboxes/{sandboxId}/environments` (SDK method `listSandboxEnvironments`)
+
+In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and repositories are still to be set up. A key needs `sandboxes:read`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Answers**
+
+- `200`: [SandboxEnvironments](/api/reference/types/#sandboxenvironments) (`application/json`). Its environments.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Attach an environment to a sandbox
+
+`POST /v1/sandboxes/{sandboxId}/environments` (SDK method `attachSandboxEnvironment`)
+
+Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once, and on a host that supports it, so do new shells. Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Body**: [AttachSandboxEnvironmentBody](/api/reference/types/#attachsandboxenvironmentbody)
+
+**Answers**
+
+- `200`: [SandboxEnvironments](/api/reference/types/#sandboxenvironments) (`application/json`). Its environments.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Detach an environment from a sandbox
+
+`DELETE /v1/sandboxes/{sandboxId}/environments/{environmentId}` (SDK method `detachSandboxEnvironment`)
+
+Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop resolving at once and its grants go. Secret files it wrote and repositories it cloned stay. A key needs `exec`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+| `environmentId` | string | yes | The environment's ID. |
+
+**Answers**
+
+- `200`: [SandboxEnvironments](/api/reference/types/#sandboxenvironments) (`application/json`). Its environments.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).

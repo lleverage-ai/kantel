@@ -330,7 +330,7 @@ type ListEventsQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account   *string
 	SandboxID *string
-	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 	Type  *EventType
 	Since *int64
 	// At most this many; default 50.
@@ -1285,6 +1285,33 @@ func (c *Client) OpenDesktop(ctx context.Context, sandboxID string, body ViewAcc
 func (c *Client) GetSandboxEgress(ctx context.Context, sandboxID string, query *GetSandboxEgressQuery, opts ...CallOption) (*SandboxEgress, error) {
 	var out SandboxEgress
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/egress", url.PathEscape(sandboxID)), Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListSandboxEnvironments GET /sandboxes/{sandboxId}/environments: List a sandbox's environments. In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and repositories are still to be set up. A key needs `sandboxes:read`.
+func (c *Client) ListSandboxEnvironments(ctx context.Context, sandboxID string, opts ...CallOption) (*SandboxEnvironments, error) {
+	var out SandboxEnvironments
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/environments", url.PathEscape(sandboxID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AttachSandboxEnvironment POST /sandboxes/{sandboxId}/environments: Attach an environment to a sandbox. Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once, and on a host that supports it, so do new shells. Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`.
+func (c *Client) AttachSandboxEnvironment(ctx context.Context, sandboxID string, body AttachSandboxEnvironmentBody, opts ...CallOption) (*SandboxEnvironments, error) {
+	var out SandboxEnvironments
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/environments", url.PathEscape(sandboxID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DetachSandboxEnvironment DELETE /sandboxes/{sandboxId}/environments/{environmentId}: Detach an environment from a sandbox. Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop resolving at once and its grants go. Secret files it wrote and repositories it cloned stay. A key needs `exec`.
+func (c *Client) DetachSandboxEnvironment(ctx context.Context, sandboxID string, environmentID string, opts ...CallOption) (*SandboxEnvironments, error) {
+	var out SandboxEnvironments
+	if err := c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/sandboxes/%s/environments/%s", url.PathEscape(sandboxID), url.PathEscape(environmentID)), Query: nil, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

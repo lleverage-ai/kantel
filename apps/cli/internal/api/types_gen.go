@@ -128,6 +128,13 @@ type ApproveDeviceLoginBody struct {
 	Preset   *APIKeyPreset `json:"preset,omitempty"`
 }
 
+type AttachSandboxEnvironmentBody struct {
+	// The environment, its ID or name in the sandbox's account.
+	Environment string `json:"environment"`
+	// Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, so it wins over the others.
+	Position *int64 `json:"position,omitempty"`
+}
+
 type BaseImage struct {
 	// The channel `latest` is of.
 	Channel BaseImageChannel  `json:"channel"`
@@ -555,10 +562,12 @@ type CreateSandboxBody struct {
 	Account *string `json:"account,omitempty"`
 	// Default 60. `null`: never stop by itself.
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
-	// Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.
+	// Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.
 	Env map[string]string `json:"env,omitzero"`
-	// Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables.
+	// Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one.
 	Environment *string `json:"environment,omitempty"`
+	// Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`.
+	Environments []string `json:"environments,omitzero"`
 	// Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account.
 	From *string `json:"from,omitempty"`
 	// Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks.
@@ -884,7 +893,13 @@ type Event struct {
 
 type EventData struct {
 	Actor *CreatedBy `json:"actor,omitempty"`
-	Name  *string    `json:"name,omitempty"`
+	// `sandbox.environments_changed`: the environment attached.
+	Attached *string `json:"attached,omitempty"`
+	// `sandbox.environments_changed`: the environment detached.
+	Detached *string `json:"detached,omitempty"`
+	// `sandbox.environments_changed`: the sandbox's environments now, in order.
+	EnvironmentIds []string `json:"environmentIds,omitzero"`
+	Name           *string  `json:"name,omitempty"`
 	// `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading.
 	OOMKills        *int64           `json:"oomKills,omitempty"`
 	PlacementReason *PlacementReason `json:"placementReason,omitempty"`
@@ -900,21 +915,22 @@ type EventPage struct {
 	NextCursor *string `json:"nextCursor,omitempty"`
 }
 
-// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 type EventType string
 
 const (
-	EventTypeSandboxCreated   EventType = "sandbox.created"
-	EventTypeSandboxRunning   EventType = "sandbox.running"
-	EventTypeSandboxStopped   EventType = "sandbox.stopped"
-	EventTypeSandboxPaused    EventType = "sandbox.paused"
-	EventTypeSandboxError     EventType = "sandbox.error"
-	EventTypeSandboxDegraded  EventType = "sandbox.degraded"
-	EventTypeSandboxRecovered EventType = "sandbox.recovered"
-	EventTypeSandboxOOMKill   EventType = "sandbox.oom_kill"
-	EventTypeSandboxDeleted   EventType = "sandbox.deleted"
-	EventTypeSnapshotSaved    EventType = "snapshot.saved"
-	EventTypeSnapshotDeleted  EventType = "snapshot.deleted"
+	EventTypeSandboxCreated             EventType = "sandbox.created"
+	EventTypeSandboxRunning             EventType = "sandbox.running"
+	EventTypeSandboxStopped             EventType = "sandbox.stopped"
+	EventTypeSandboxPaused              EventType = "sandbox.paused"
+	EventTypeSandboxError               EventType = "sandbox.error"
+	EventTypeSandboxDegraded            EventType = "sandbox.degraded"
+	EventTypeSandboxRecovered           EventType = "sandbox.recovered"
+	EventTypeSandboxEnvironmentsChanged EventType = "sandbox.environments_changed"
+	EventTypeSandboxOOMKill             EventType = "sandbox.oom_kill"
+	EventTypeSandboxDeleted             EventType = "sandbox.deleted"
+	EventTypeSnapshotSaved              EventType = "snapshot.saved"
+	EventTypeSnapshotDeleted            EventType = "snapshot.deleted"
 )
 
 type ExposePortBody struct {
@@ -1720,9 +1736,11 @@ type Sandbox struct {
 	// Epoch milliseconds, UTC.
 	CreatedAt int64     `json:"createdAt"`
 	CreatedBy CreatedBy `json:"createdBy"`
-	// The environment it was made from.
+	// Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`.
 	EnvironmentID *string `json:"environmentId,omitempty"`
-	// Its own egress grants, on top of its environment's.
+	// Its environments, in order: where two set the same variable, file or repository path, the later one wins. Absent: none.
+	EnvironmentIds []string `json:"environmentIds,omitzero"`
+	// Its own egress grants, on top of its environments'.
 	Grants []EgressGrant  `json:"grants"`
 	Health *SandboxHealth `json:"health,omitempty"`
 	// The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else.
@@ -1826,18 +1844,52 @@ type SandboxEgress struct {
 	// Newest first; Kantel keeps the newest 1000.
 	Entries     []EgressEntry             `json:"entries"`
 	Environment *SandboxEgressEnvironment `json:"environment,omitempty"`
-	// Its environment's grants, which it has too.
+	// Its environments' grants, which it has too.
 	EnvironmentGrants []EgressGrant `json:"environmentGrants"`
-	// Its own grants, on top of its environment's.
+	// Its environments, in order.
+	Environments []SandboxEgressEnvironmentRef `json:"environments"`
+	// Its own grants, on top of its environments'.
 	Grants             []EgressGrant              `json:"grants"`
 	ProtectedVariables []SandboxProtectedVariable `json:"protectedVariables"`
 	SandboxID          string                     `json:"sandboxId"`
 	SandboxName        string                     `json:"sandboxName"`
 }
 
+// Its first environment. Deprecated: read `environments`.
 type SandboxEgressEnvironment struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+type SandboxEgressEnvironmentRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// One of a sandbox's environments.
+type SandboxEnvironment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Its secret files and repositories are set up when the sandbox next runs.
+	Pending  bool                       `json:"pending"`
+	Shadowed SandboxEnvironmentShadowed `json:"shadowed"`
+}
+
+// What of an environment a sandbox doesn't take from it.
+type SandboxEnvironmentShadowed struct {
+	// Its secret files' paths a later environment writes instead.
+	Files []string `json:"files"`
+	// Its repositories' paths a later environment clones into instead.
+	Repos []string `json:"repos"`
+	// Its variables a later environment, or the sandbox's own env, sets instead.
+	Variables []string `json:"variables"`
+}
+
+// A sandbox's environments, and what each gives it.
+type SandboxEnvironments struct {
+	// In order: where two set the same variable, file or repository path, the later one wins.
+	Environments []SandboxEnvironment `json:"environments"`
+	SandboxID    string               `json:"sandboxId"`
 }
 
 // `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first.
@@ -1908,7 +1960,9 @@ type SandboxProcessList struct {
 // A protected variable as one sandbox has it: never its value.
 type SandboxProtectedVariable struct {
 	Bindings []DestinationBinding `json:"bindings"`
-	Name     string               `json:"name"`
+	// The environment whose value it takes.
+	EnvironmentID *string `json:"environmentId,omitempty"`
+	Name          string  `json:"name"`
 	// The first 8 characters of its placeholder, such as `kph_7Qx2`.
 	PlaceholderPrefix string `json:"placeholderPrefix"`
 }

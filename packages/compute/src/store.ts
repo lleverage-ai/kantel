@@ -173,7 +173,7 @@ export interface StoredPeak {
 export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base" | "hostReachable"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
-	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
+	/** What every command sees: its environments' plain variables and placeholders, in order, then the create's own. */
 	readonly env: { readonly [name: string]: string };
 	/**
 	 * Moves on (`Math.max(now, previous + 1)`) with every change to what its egress is made of (its grants, its
@@ -250,6 +250,22 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * never changed. Not a secret: the sandbox sees it. Absent: none.
 	 */
 	readonly placeholders?: { readonly [name: string]: string };
+	/**
+	 * What `env` is made of besides its environments, kept so an attach or detach can work it out again: `base` (its
+	 * template's variables) under its environments, `own` (its create's `env`) over them. Absent on a sandbox made before
+	 * environments could be attached: its `env` as it was, but its placeholders, is then its `base`.
+	 */
+	readonly envLayers?: {
+		readonly base: { readonly [name: string]: string };
+		readonly own: { readonly [name: string]: string };
+	};
+	/**
+	 * The least version its protected values are answered at (`protectedTable`), moved on when an environment is detached
+	 * from it or deleted, so its host drops what it held of that environment's. Absent: none.
+	 */
+	readonly secretsFloor?: number;
+	/** Its environments whose secret files and repositories are written when it next runs (attached while it didn't). */
+	readonly pendingProvision?: readonly string[];
 	readonly hostLabels: { readonly [key: string]: string };
 	/**
 	 * The one host its create asked for (`CreateSandboxBody.host`), which a boot that has to place it again keeps to.

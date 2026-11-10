@@ -14,7 +14,7 @@ import (
 // EventTypes are the account's events, which a webhook may send.
 var EventTypes = []string{
 	"sandbox.created", "sandbox.running", "sandbox.stopped", "sandbox.paused", "sandbox.error", "sandbox.degraded",
-	"sandbox.recovered", "sandbox.oom_kill", "sandbox.deleted", "snapshot.saved", "snapshot.deleted",
+	"sandbox.recovered", "sandbox.environments_changed", "sandbox.oom_kill", "sandbox.deleted", "snapshot.saved", "snapshot.deleted",
 }
 
 // Signals are what an OpenTelemetry export sends.
