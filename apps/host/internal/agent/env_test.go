@@ -107,6 +107,10 @@ func newEnvHost(t *testing.T, tier *envTier) *Host {
 	return &Host{
 		cfg: Config{Root: t.TempDir()}, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		tiers: map[string]Tier{tier.name: tier}, order: []string{tier.name}, bySlot: map[int]egress.Rules{},
+		// A Kantel from before env.fetch: each sandbox.env applies its own env.
+		envFetch: func(context.Context, string) (map[string]string, error) {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "Kantel answers no env.fetch call"}
+		},
 	}
 }
 
@@ -226,11 +230,14 @@ func TestSandboxEnvAppliesTheEnvKantelHasNow(t *testing.T) {
 	if !maps.Equal(tier.env["sbx_1"], map[string]string{"GIVEN": "1"}) {
 		t.Fatalf("kept %v, want the notification's own from a Kantel before env.fetch", tier.env["sbx_1"])
 	}
-	h.envFetch = func(context.Context, string) (map[string]string, error) {
-		return nil, &proto.Error{Code: proto.ErrUnavailable, Message: "down"}
-	}
-	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"X": "1"}}); err == nil {
-		t.Fatal("applied an env while Kantel couldn't say which is newest")
+	for _, failure := range []error{&proto.Error{Code: proto.ErrUnavailable, Message: "down"}, errDisconnected} {
+		h.envFetch = func(context.Context, string) (map[string]string, error) { return nil, failure }
+		if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"X": "1"}}); err == nil {
+			t.Fatalf("%v: applied an env while Kantel couldn't say which is newest", failure)
+		}
+		if !maps.Equal(tier.env["sbx_1"], map[string]string{"GIVEN": "1"}) {
+			t.Fatalf("%v: the env became %v", failure, tier.env["sbx_1"])
+		}
 	}
 }
 

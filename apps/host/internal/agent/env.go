@@ -20,8 +20,9 @@ type envSetter interface {
 }
 
 // currentEnv is the env a sandbox.env applies: the sandbox's as Kantel has it now (env.fetch), asked under the
-// sandbox's lifecycle lock, so of two notifications however they land, the later applied is the newer env. A Kantel
-// from before env.fetch (or none connected) leaves the notification's own env.
+// sandbox's lifecycle lock, so of two notifications however they land, the later applied is the newer env. Only a
+// Kantel from before env.fetch (ErrUnsupported) leaves the notification's own env: any other failure, a lost link
+// included, applies nothing, so an older notification can never put its env back.
 func (h *Host) currentEnv(ctx context.Context, p proto.EnvParams) (map[string]string, error) {
 	fetch := h.envFetch
 	if fetch == nil {
@@ -39,7 +40,7 @@ func (h *Host) currentEnv(ctx context.Context, p proto.EnvParams) (map[string]st
 	}
 	env, err := fetch(ctx, p.SandboxID)
 	var perr *proto.Error
-	if errors.Is(err, errDisconnected) || (errors.As(err, &perr) && perr.Code == proto.ErrUnsupported) {
+	if errors.As(err, &perr) && perr.Code == proto.ErrUnsupported {
 		return p.Env, nil
 	}
 	return env, err

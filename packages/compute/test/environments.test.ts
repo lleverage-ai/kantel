@@ -72,6 +72,7 @@ function recordingBackend(
 	beforeCreate?: (spec: SandboxSpec) => Promise<void>,
 	egressHook?: (egress: BackendEgress | undefined) => Promise<void>,
 	envHook?: (env: { readonly [name: string]: string }) => Promise<void>,
+	writeHook?: (path: string) => Promise<void>,
 ): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
 	const stub = createStubBackend();
 	const recorded: Recorded = { specs: [], egress: [], secrets: [], execs: [], envs: [] };
@@ -97,6 +98,10 @@ function recordingBackend(
 		updateSecrets: async (sandboxId, version) => {
 			recorded.secrets.push({ sandboxId, version });
 		},
+		writeFile: async (sandboxId, path, bytes, mode) => {
+			await writeHook?.(path);
+			return stub.writeFile(sandboxId, path, bytes, mode);
+		},
 		updateEnv: async (sandboxId, env) => {
 			await envHook?.(env);
 			recorded.envs.push({ sandboxId, env: { ...env } });
@@ -117,10 +122,18 @@ function setup(
 		readonly onEgress?: (egress: BackendEgress | undefined) => Promise<void>;
 		/** Awaited inside the backend's env update, before it is taken. */
 		readonly onEnv?: (env: { readonly [name: string]: string }) => Promise<void>;
+		/** Awaited inside the backend's file write, before it is made: throwing fails it. */
+		readonly onWrite?: (path: string) => Promise<void>;
 		readonly now?: () => number;
 	} = {},
 ) {
-	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate, options.onEgress, options.onEnv);
+	const { backend, recorded } = recordingBackend(
+		options.exec,
+		options.beforeCreate,
+		options.onEgress,
+		options.onEnv,
+		options.onWrite,
+	);
 	/** The bodies of the webhook requests sent. */
 	const sent: string[] = [];
 	const api = createComputeApi({
@@ -2318,6 +2331,64 @@ describe("a sandbox with several environments", () => {
 		};
 		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
 		expect((await tom.getSandbox(sandbox.id)).environmentIds).toEqual([github.id]);
+	});
+
+	it("a set-up that finishes after the environments changed doesn't leave what it finished pending", async () => {
+		let release = () => {};
+		let held = false;
+		const store = createMemoryStore();
+		const { tom } = setup({
+			store,
+			onWrite: async () => {
+				if (held) return;
+				held = true;
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+			},
+		});
+		const npm = await npmEnvironment(tom);
+		const plain = await tom.createEnvironment({ name: "plain" });
+		await tom.setEnvironmentVariable(plain.id, "PLAIN", { value: "1" });
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		await vi.waitFor(() => expect(held).toBe(true));
+		// While npm's file is being written, a file-free environment is attached after it.
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "plain" });
+		release();
+		await vi.waitFor(async () => expect((await store.sandboxes.get(sandbox.id))?.provisionLease).toBeUndefined());
+		expect((await store.sandboxes.get(sandbox.id))?.pendingProvision).toBeUndefined();
+		expect(npm.id).toMatch(/^env_/);
+	});
+
+	it("a write that fails in flight keeps the lease to its end and its environment pending", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup({
+			store,
+			onWrite: async () => {
+				throw new Error("the host stopped answering");
+			},
+		});
+		const npm = await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		await vi.waitFor(async () => {
+			const stored = await store.sandboxes.get(sandbox.id);
+			expect(stored?.pendingProvision).toEqual([npm.id]);
+			expect(stored?.provisionLease?.owner).toMatch(/^prv_/);
+		});
+	});
+
+	it("an attach that moves an environment rewrites the path it now wins", async () => {
+		const { tom } = setup();
+		const first = await tom.createEnvironment({ name: "first" });
+		await tom.setEnvironmentFile(first.id, { path: ".npmrc", content: "first\n" });
+		const second = await tom.createEnvironment({ name: "second" });
+		await tom.setEnvironmentFile(second.id, { path: ".npmrc", content: "second\n" });
+		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["first", "second"], wait: true });
+		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("second\n");
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "first" });
+		await vi.waitFor(async () => expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("first\n"));
 	});
 
 	it("a fork keeps them, in order", async () => {
