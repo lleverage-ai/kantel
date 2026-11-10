@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -17,6 +19,32 @@ type envSetter interface {
 	SetEnv(id string, env map[string]string) error
 }
 
+// currentEnv is the env a sandbox.env applies: the sandbox's as Kantel has it now (env.fetch), asked under the
+// sandbox's lifecycle lock, so of two notifications however they land, the later applied is the newer env. A Kantel
+// from before env.fetch (or none connected) leaves the notification's own env.
+func (h *Host) currentEnv(ctx context.Context, p proto.EnvParams) (map[string]string, error) {
+	fetch := h.envFetch
+	if fetch == nil {
+		fetch = func(ctx context.Context, sandboxID string) (map[string]string, error) {
+			raw, err := h.kantelCall(ctx, proto.MethodEnvFetch, proto.SandboxRef{SandboxID: sandboxID})
+			if err != nil {
+				return nil, err
+			}
+			var answer proto.EnvAnswer
+			if err := json.Unmarshal(raw, &answer); err != nil {
+				return nil, errors.New("env.fetch answered something that isn't an env")
+			}
+			return answer.Env, nil
+		}
+	}
+	env, err := fetch(ctx, p.SandboxID)
+	var perr *proto.Error
+	if errors.Is(err, errDisconnected) || (errors.As(err, &perr) && perr.Code == proto.ErrUnsupported) {
+		return p.Env, nil
+	}
+	return env, err
+}
+
 // setEnv is sandbox.env: the sandbox's whole env replaced where its tier keeps it, and for a running microVM its
 // guest's env file rewritten, so new shells, terminals, ssh sessions and commands see it. A stopped sandbox gets it
 // with its identity when it next boots. The caller holds the sandbox's lifecycle lock.
@@ -25,6 +53,11 @@ func (h *Host) setEnv(ctx context.Context, t Tier, tier string, p proto.EnvParam
 	if !ok {
 		return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s sandboxes don't change their env", tier)}
 	}
+	env, err := h.currentEnv(ctx, p)
+	if err != nil {
+		return err
+	}
+	p.Env = env
 	if err := s.SetEnv(p.SandboxID, p.Env); err != nil {
 		return err
 	}

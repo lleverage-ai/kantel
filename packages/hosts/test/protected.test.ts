@@ -210,6 +210,27 @@ describe("the hub's secrets.fetch", () => {
 	});
 });
 
+describe("the hub's env.fetch", () => {
+	it("answers through `env` for the connection's own host, and unsupported without it", async () => {
+		const env = vi.fn(async (_hostId: string, sandboxId: string) =>
+			sandboxId === "sbx_mine" ? { env: { NEWEST: "1" } } : undefined,
+		);
+		const host = connect(hubWith({ env }), "host_a");
+		await host.welcomed();
+		host.send({ type: "call", id: "h1", method: "env.fetch", params: { sandboxId: "sbx_mine", hostId: "host_b" } });
+		expect(await host.result("h1")).toEqual({ type: "result", id: "h1", result: { env: { NEWEST: "1" } } });
+		expect(env).toHaveBeenCalledWith("host_a", "sbx_mine");
+		host.send({ type: "call", id: "h2", method: "env.fetch", params: { sandboxId: "sbx_elsewhere" } });
+		expect((await host.result("h2")).error?.code).toBe("not_found");
+
+		// A Kantel with no env to give: the host applies the env it was sent.
+		const older = connect(hubWith(), "host_b");
+		await older.welcomed();
+		older.send({ type: "call", id: "h1", method: "env.fetch", params: { sandboxId: "sbx_mine" } });
+		expect((await older.result("h1")).error?.code).toBe("unsupported");
+	});
+});
+
 describe("the hub's egress events", () => {
 	it("reach onEgress with the connection's host, and not onEvent", async () => {
 		const onEgress = vi.fn();

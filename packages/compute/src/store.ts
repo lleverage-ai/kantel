@@ -266,6 +266,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly secretsFloor?: number;
 	/** Its environments whose secret files and repositories are written when it next runs (attached while it didn't). */
 	readonly pendingProvision?: readonly string[];
+	/**
+	 * The set-up writing its environments' files and repositories now, on whichever gateway: one at a time, each
+	 * renewing it before each item, and another taking it once it is let go or `until` has passed.
+	 */
+	readonly provisionLease?: { readonly owner: string; readonly until: number };
 	readonly hostLabels: { readonly [key: string]: string };
 	/**
 	 * The one host its create asked for (`CreateSandboxBody.host`), which a boot that has to place it again keeps to.

@@ -192,12 +192,6 @@ type MemberRole = computeSchema.MemberRole;
 type EventType = computeSchema.EventType;
 type EventData = computeSchema.Event["data"];
 
-/** Whether two envs hold the same variables with the same values. */
-const sameEnv = (a: { readonly [name: string]: string }, b: { readonly [name: string]: string }) => {
-	const keys = Object.keys(a);
-	return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key]);
-};
-
 /** Whether two lists of IDs are the same, in the same order. */
 const sameIds = (a: readonly string[], b: readonly string[]) =>
 	a.length === b.length && a.every((id, index) => id === b[index]);
@@ -566,6 +560,11 @@ export interface ComputeService {
 	 * doesn't open.
 	 */
 	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
+	/**
+	 * A sandbox's env as it is now, for the host that asked over its link (`env.fetch`), which applies a `sandbox.env`
+	 * from it: `undefined` unless the sandbox's recorded host is `hostId`.
+	 */
+	sandboxEnv(hostId: string, sandboxId: string): Promise<{ env: { [name: string]: string } } | undefined>;
 	/**
 	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
@@ -945,6 +944,10 @@ export const MAX_ENVIRONMENT_FILES = 20;
 export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
 /** How long a repository's clone may take when a sandbox starts. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
+/** How long a set-up holds its sandbox's lease without renewing it (it renews before each item): past one clone. */
+const PROVISION_LEASE_MS = CLONE_TIMEOUT_MS + 60_000;
+/** How often a set-up waiting for the lease looks again. */
+const PROVISION_WAIT_MS = 500;
 /** How many times a boot sends egress changed while it started (or tries again), before it is stopped instead. */
 const BOOT_RECONCILE_ROUNDS = 5;
 /**
@@ -3086,29 +3089,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Gives a running sandbox's host its env (`updateEnv`). Deliveries for several changes, from any gateway, may land
-	 * out of order, so after each the env sent is compared with the sandbox's as stored now, and a newer one is sent
-	 * again: whichever lands last, the host ends on the latest. A failure is an event; its next boot has the env anyway.
+	 * Tells a running sandbox's host its env changed (`updateEnv`). The host applies the env Kantel has when it takes
+	 * the notification (`sandboxEnv`, over its link), not the one sent, so however late one lands it never puts an older
+	 * env back. A failure is an event; its next boot has the env anyway.
 	 */
 	async function deliverEnv(sandbox: StoredSandbox): Promise<void> {
 		const updateEnv = backend.updateEnv?.bind(backend);
 		if (updateEnv === undefined) return;
-		let env = sandbox.env;
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				await updateEnv(sandbox.id, env);
-			} catch (error) {
-				await emit("sandbox.degraded", sandbox.accountId, {
-					sandbox,
-					data: {
-						reason: `New commands have its environments' variables, but its env file (/etc/kantel/env) won't until it restarts: ${messageOf(error)}`,
-					},
-				}).catch(() => undefined);
-				return;
-			}
-			const latest = await store.sandboxes.get(sandbox.id);
-			if (latest === undefined || latest.state !== "running" || sameEnv(latest.env, env)) return;
-			env = latest.env;
+		try {
+			await updateEnv(sandbox.id, sandbox.env);
+		} catch (error) {
+			await emit("sandbox.degraded", sandbox.accountId, {
+				sandbox,
+				data: {
+					reason: `New commands have its environments' variables, but its env file (/etc/kantel/env) won't until it restarts: ${messageOf(error)}`,
+				},
+			}).catch(() => undefined);
 		}
 	}
 
@@ -3171,10 +3167,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Writes environments' secret files into a sandbox that has just started (or that one was just attached to), then
 	 * clones their repositories (through the sandbox's egress proxy, so a protected token bound to a repository's host is
-	 * swapped in). Only what each wins of the sandbox's environments as they are now (a later one's file at the same
-	 * path is written instead), and only of those in `which` (all of `authorised` when absent). A failure is an event on
-	 * the sandbox, which keeps running: what failed is named, never a file's contents. Those it set up leave its
-	 * `pendingProvision`.
+	 * swapped in). Only what each wins of the sandbox's environments (a later one's file at the same path is written
+	 * instead), and only of those in `which` (all of `authorised` when absent). A failure is an event on the sandbox,
+	 * which keeps running: what failed is named, never a file's contents. Those it set up leave its `pendingProvision`.
+	 *
+	 * One set-up at a time per sandbox, on any gateway (`provisionLease`, taken in the store): what it writes is worked
+	 * out once it holds the lease, from the sandbox as it is then, and if its environments change while it works it stops
+	 * at the next item, leaving what it hadn't finished pending. So a set-up from an older set of environments never
+	 * writes after one from a newer set, and a newer set's set-up, or the next start, writes what it left.
 	 *
 	 * `authorised` is the environments as the call read them, when it checked that its caller may run commands (a clone
 	 * runs with the sandbox's env, which that caller chose): their repositories are cloned, not any added since, which no
@@ -3185,90 +3185,132 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		authorised: readonly StoredEnvironment[],
 		which: ReadonlySet<string> = new Set(authorised.map((environment) => environment.id)),
 	): Promise<void> {
-		const asAuthorised = new Map(authorised.map((environment) => [environment.id, environment]));
-		const current = await environmentsOf(sandbox);
-		const resolution = resolved(
-			current.map((latest) => {
-				const read = asAuthorised.get(latest.id);
-				return read === undefined ? latest : { ...latest, repos: read.repos };
-			}),
-		);
-		const degraded = (reason: string) =>
-			emit("sandbox.degraded", sandbox.accountId, { sandbox, data: { reason } }).catch(() => undefined);
-		const label = (environment: StoredEnvironment) =>
-			current.length > 1 ? `The environment ${environment.name}'s` : "The environment's";
-		const credentials = { variables: protectedWinners(sandbox, resolution).map(({ winner }) => winner.item) };
-		// Its environments as this read them: if they change meanwhile (an attach or detach, on any gateway), this stops,
-		// so what it picked never overwrites what a newer set picks, and leaves what it hadn't done pending for the next
-		// start (or the newer set's own set-up).
-		const ids = environmentIdsOf(sandbox);
-		const stillSo = async () => {
-			const latest = await store.sandboxes.get(sandbox.id);
-			return latest !== undefined && sameIds(environmentIdsOf(latest), ids);
-		};
-		const stop = async () => {
-			await patchSandbox(sandbox.id, (latest) => {
+		const owner = randomId("prv", 8);
+		const left = new Set(which);
+		/** What it didn't finish, of the environments the sandbox still has, pending for the next start. */
+		const leave = () =>
+			patchSandbox(sandbox.id, (latest) => {
 				const kept = environmentIdsOf(latest);
-				const left = [...which].filter((id) => kept.includes(id));
-				const pending = [...new Set([...(latest.pendingProvision ?? []), ...left])];
+				const unfinished = [...left].filter((id) => kept.includes(id));
+				const pending = [...new Set([...(latest.pendingProvision ?? []), ...unfinished])];
 				return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
-			});
-		};
-		for (const { environment, item: file } of resolution.files.values()) {
-			if (!which.has(environment.id)) continue;
-			try {
-				const bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
-				if (!(await stillSo())) return stop();
-				await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
-				// Changed while it was written: a newer set's write of this path may have landed first, and been
-				// overwritten. The path's winner now is written again (its own check repeats this, so the last write is it).
-				if (!(await stillSo())) {
-					await rewriteFile(sandbox.id, file.path);
-					return stop();
+			}).then(() => undefined);
+		if (!(await takeProvisioning(sandbox.id, owner))) return leave();
+		try {
+			const current = await store.sandboxes.get(sandbox.id);
+			if (current === undefined || current.state !== "running") return await leave();
+			const asAuthorised = new Map(authorised.map((environment) => [environment.id, environment]));
+			const environments = await environmentsOf(current);
+			const resolution = resolved(
+				environments.map((latest) => {
+					const read = asAuthorised.get(latest.id);
+					return read === undefined ? latest : { ...latest, repos: read.repos };
+				}),
+			);
+			const ids = environmentIdsOf(current);
+			// Each environment's items it writes, counted down: one with none left is done, and isn't left pending.
+			const items = new Map<string, number>();
+			const count = (environmentId: string) => items.set(environmentId, (items.get(environmentId) ?? 0) + 1);
+			for (const { environment } of resolution.files.values()) if (which.has(environment.id)) count(environment.id);
+			for (const { environment } of resolution.repos.values()) if (which.has(environment.id)) count(environment.id);
+			for (const id of which) if (!items.has(id)) left.delete(id);
+			const did = (environmentId: string) => {
+				const remaining = (items.get(environmentId) ?? 1) - 1;
+				items.set(environmentId, remaining);
+				if (remaining <= 0) left.delete(environmentId);
+			};
+			/** Whether it may go on: it still holds the lease (renewed), and the sandbox's environments are as it read them. */
+			const mayGoOn = async () => {
+				const renewed = await patchSandbox(sandbox.id, (latest) =>
+					latest.provisionLease?.owner === owner
+						? { ...latest, provisionLease: { owner, until: now() + PROVISION_LEASE_MS } }
+						: undefined,
+				);
+				return renewed !== undefined && renewed.state === "running" && sameIds(environmentIdsOf(renewed), ids);
+			};
+			const degraded = (reason: string) =>
+				emit("sandbox.degraded", current.accountId, { sandbox: current, data: { reason } }).catch(() => undefined);
+			const label = (environment: StoredEnvironment) =>
+				environments.length > 1 ? `The environment ${environment.name}'s` : "The environment's";
+			const credentials = { variables: protectedWinners(current, resolution).map(({ winner }) => winner.item) };
+			for (const { environment, item: file } of resolution.files.values()) {
+				if (!which.has(environment.id)) continue;
+				if (!(await mayGoOn())) return await leave();
+				try {
+					const bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
+					await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
+				} catch (error) {
+					await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
 				}
-			} catch (error) {
-				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				did(environment.id);
 			}
-		}
-		for (const { environment, item: repo } of resolution.repos.values()) {
-			if (!which.has(environment.id)) continue;
-			if (!(await stillSo())) return stop();
-			const path = clonePath(repo);
-			// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
-			// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
-			const credential = repoCredential(credentials, repo, sandbox.placeholders ?? {});
-			const command = [
-				"git",
-				...(credential === undefined ? [] : gitCredentialArgs(credential)),
-				"clone --depth 1",
-				...(repo.ref === undefined ? [] : [`--branch ${shellWord(repo.ref)}`]),
-				"--",
-				shellWord(repo.url),
-				shellWord(path),
-			].join(" ");
-			try {
-				const result = await backend.exec(sandbox.id, {
-					command,
-					// No terminal to ask on: a repository that wants a login fails at once, saying so.
-					env: { ...sandbox.env, GIT_TERMINAL_PROMPT: "0" },
-					timeoutMs: CLONE_TIMEOUT_MS,
-				});
-				if (result.exitCode !== 0 || result.timedOut) {
-					const why = result.timedOut
-						? "it took too long"
-						: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
-					await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${why}`);
+			for (const { environment, item: repo } of resolution.repos.values()) {
+				if (!which.has(environment.id)) continue;
+				if (!(await mayGoOn())) return await leave();
+				const path = clonePath(repo);
+				// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
+				// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
+				const credential = repoCredential(credentials, repo, current.placeholders ?? {});
+				const command = [
+					"git",
+					...(credential === undefined ? [] : gitCredentialArgs(credential)),
+					"clone --depth 1",
+					...(repo.ref === undefined ? [] : [`--branch ${shellWord(repo.ref)}`]),
+					"--",
+					shellWord(repo.url),
+					shellWord(path),
+				].join(" ");
+				try {
+					const result = await backend.exec(sandbox.id, {
+						command,
+						// No terminal to ask on: a repository that wants a login fails at once, saying so.
+						env: { ...current.env, GIT_TERMINAL_PROMPT: "0" },
+						timeoutMs: CLONE_TIMEOUT_MS,
+					});
+					if (result.exitCode !== 0 || result.timedOut) {
+						const why = result.timedOut
+							? "it took too long"
+							: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
+						await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${why}`);
+					}
+				} catch (error) {
+					await degraded(
+						`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`,
+					);
 				}
-			} catch (error) {
-				await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+				did(environment.id);
 			}
-		}
-		if ((sandbox.pendingProvision ?? []).some((id) => which.has(id))) {
+			// Done: what it set up leaves pending, unless the sandbox's environments changed meanwhile (then a newer set-up
+			// or the next start decides).
 			await patchSandbox(sandbox.id, (latest) => {
 				if (!sameIds(environmentIdsOf(latest), ids)) return latest;
 				const pending = (latest.pendingProvision ?? []).filter((id) => !which.has(id));
 				return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
 			});
+		} finally {
+			await patchSandbox(sandbox.id, (latest) =>
+				latest.provisionLease?.owner === owner ? { ...latest, provisionLease: undefined } : undefined,
+			).catch(() => undefined);
+		}
+	}
+
+	/**
+	 * Takes a sandbox's set-up lease for `owner`, waiting while another set-up holds it (on any gateway) until it is let
+	 * go or runs out. False when it couldn't, or the sandbox is gone.
+	 */
+	async function takeProvisioning(sandboxId: string, owner: string): Promise<boolean> {
+		const deadline = Date.now() + PROVISION_LEASE_MS + 10_000;
+		for (;;) {
+			let gone = false;
+			const taken = await patchSandbox(sandboxId, (latest) => {
+				const lease = latest.provisionLease;
+				if (lease !== undefined && lease.owner !== owner && lease.until > now()) return undefined;
+				return { ...latest, provisionLease: { owner, until: now() + PROVISION_LEASE_MS } };
+			});
+			if (taken !== undefined) return true;
+			if ((await store.sandboxes.get(sandboxId)) === undefined) gone = true;
+			if (gone || Date.now() > deadline) return false;
+			await delay(PROVISION_WAIT_MS).done;
 		}
 	}
 
@@ -3291,28 +3333,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				pendingProvision: pending.pendingProvision,
 			};
 		});
-	}
-
-	/**
-	 * Writes the file a sandbox's environments as they are now put at `path` (the winner), after a write from an older
-	 * set of them may have overwritten it; again, a few times, while they keep changing under it.
-	 */
-	async function rewriteFile(sandboxId: string, path: string): Promise<void> {
-		for (let attempt = 0; attempt < 3; attempt++) {
-			const latest = await store.sandboxes.get(sandboxId);
-			if (latest === undefined || latest.state !== "running") return;
-			const ids = environmentIdsOf(latest);
-			const winner = resolved(await environmentsOf(latest)).files.get(path);
-			if (winner === undefined) return;
-			try {
-				const bytes = await requireSealer().open(winner.item.sealed, fileAad(winner.environment.id, path));
-				await backend.writeFile(sandboxId, path, bytes, winner.item.mode);
-			} catch {
-				return;
-			}
-			const after = await store.sandboxes.get(sandboxId);
-			if (after === undefined || sameIds(environmentIdsOf(after), ids)) return;
-		}
 	}
 
 	/**
@@ -9655,6 +9675,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		recordUsage(hostId, report, how) {
 			return ingestInTurn(hostId, report, how?.shared === true);
+		},
+
+		async sandboxEnv(hostId, sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) return undefined;
+			return { env: { ...sandbox.env } };
 		},
 
 		async protectedTable(hostId, sandboxId) {

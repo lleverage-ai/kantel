@@ -2256,32 +2256,50 @@ describe("a sandbox with several environments", () => {
 		await vi.waitFor(() => expect(last(recorded.egress)?.egress?.protected?.version).toBe(after?.version));
 	});
 
-	it("an env delivered late, after a newer one, is followed by the newer one again", async () => {
-		let hold: Promise<void> | undefined;
-		let release = () => {};
-		const { tom, recorded } = setup({
-			onEnv: async (env) => {
-				// The attach's delivery (with NPM_TOKEN) is held until the detach's has landed.
-				if (hold === undefined && "NPM_TOKEN" in env) {
-					hold = new Promise((resolve) => {
-						release = resolve;
-					});
-					await hold;
-				}
-			},
-		});
-		await githubEnvironment(tom);
-		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ environment: "backend", wait: true });
+	it("answers a sandbox's env as it is now to its own host only (env.fetch)", async () => {
+		const { api, tom } = setup();
+		await npmEnvironment(tom);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
 		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
-		await tom.detachSandboxEnvironment(sandbox.id, npm.id);
-		await vi.waitFor(() => expect(recorded.envs.length).toBeGreaterThan(0));
-		release();
-		await vi.waitFor(() => {
-			const sent = recorded.envs.filter((each) => each.sandboxId === sandbox.id);
-			expect(sent.length).toBeGreaterThanOrEqual(3);
-			expect("NPM_TOKEN" in (last(sent)?.env ?? {})).toBe(false);
-		});
+		expect((await api.service.sandboxEnv(STUB_HOST_ID, sandbox.id))?.env).toMatchObject({ LOG_LEVEL: "info" });
+		expect(await api.service.sandboxEnv("host_other", sandbox.id)).toBeUndefined();
+	});
+
+	it("one set-up at a time: a second waits for the first's lease, and set-up stopped by a change leaves only what it hadn't done", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup({ store });
+		const npm = await npmEnvironment(tom);
+		const other = await tom.createEnvironment({ name: "other" });
+		await tom.setEnvironmentFile(other.id, { path: ".npmrc", content: "registry=other\n" });
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		// Another gateway's set-up holds the lease: this attach's waits, then writes once it is let go.
+		const held = await store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			provisionLease: { owner: "prv_elsewhere", until: Date.now() + 60_000 },
+		}));
+		expect(held?.provisionLease?.owner).toBe("prv_elsewhere");
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		// Still waiting: the lease is the other's, and the environment's set-up pending.
+		const waiting = await store.sandboxes.get(sandbox.id);
+		expect(waiting?.provisionLease?.owner).toBe("prv_elsewhere");
+		expect(waiting?.pendingProvision).toEqual([npm.id]);
+		await store.sandboxes.update(sandbox.id, (current) => ({ ...current, provisionLease: undefined }));
+		await vi.waitFor(async () =>
+			expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=npm\n"),
+		);
+		await vi.waitFor(async () => expect((await store.sandboxes.get(sandbox.id))?.pendingProvision).toBeUndefined());
+		// The later environment wins the path, and its own set-up writes it.
+		await tom.attachSandboxEnvironment(sandbox.id, { environment: "other" });
+		await vi.waitFor(async () =>
+			expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe("registry=other\n"),
+		);
+		expect(
+			(await tom.listSandboxEnvironments(sandbox.id)).environments.map((each) => [each.name, each.pending]),
+		).toEqual([
+			["npm", false],
+			["other", false],
+		]);
 	});
 
 	it("a create that stores an environment deleted after it read it takes it off again", async () => {

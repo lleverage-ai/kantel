@@ -34,6 +34,7 @@ import {
 	type HostDiskUsage,
 	type HostEgress,
 	type HostEgressRecord,
+	type HostEnvAnswer,
 	type HostFacts,
 	type HostHello,
 	type HostImageChannel,
@@ -291,6 +292,8 @@ export interface ExternalJoinTokens {
 export interface HostComputeLink {
 	/** A sandbox's protected values, or `undefined` unless the sandbox is on `hostId`. */
 	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
+	/** A sandbox's env as the compute plane has it now, or `undefined` unless the sandbox is on `hostId`. */
+	env?(hostId: string, sandboxId: string): Promise<HostEnvAnswer | undefined>;
 	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
 	/**
 	 * Fills in the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching: its hello and events)
@@ -1046,6 +1049,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		async secrets(hostId, sandboxId) {
 			if (compute === undefined) throw new Error("The compute plane isn't linked yet");
 			return compute.secrets(hostId, sandboxId);
+		},
+		async env(hostId, sandboxId) {
+			if (compute?.env === undefined) throw new Error("The compute plane isn't linked yet");
+			return compute.env(hostId, sandboxId);
 		},
 		onEgress(hostId, records) {
 			if (compute !== undefined) report(compute.recordEgress(hostId, records));

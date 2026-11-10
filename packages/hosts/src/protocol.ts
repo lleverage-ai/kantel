@@ -251,6 +251,11 @@ export const HOST_FEATURES = {
 	sandboxEnv: "sandbox-env",
 } as const;
 
+/** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
+export interface HostEnvAnswer {
+	readonly env: { readonly [name: string]: string };
+}
+
 /** `sandbox.env`'s params (`HOST_FEATURES.sandboxEnv`): the sandbox's whole env from now (an empty one is none). */
 export interface HostEnvParams {
 	readonly sandboxId: string;
@@ -998,6 +1003,12 @@ export const HostMethods = {
 	env: "sandbox.env",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
 	secretsFetch: "secrets.fetch",
+	/**
+	 * Host to Kantel: `{ sandboxId }`, answered with `HostEnvAnswer` (the sandbox's env as Kantel has it now), or
+	 * `not_found` for a sandbox not on that host. A host applies `sandbox.env` from it, so a late notification can't put
+	 * an older env back.
+	 */
+	envFetch: "env.fetch",
 	/** A file's bytes on a port stream, `HostFileOpen`; answered `{ size? }` once it is open. */
 	fileOpen: "sandbox.files.open",
 	/**

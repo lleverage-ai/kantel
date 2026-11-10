@@ -202,6 +202,38 @@ func TestSandboxEnvOfAStoppedMicroVMOrAnIsolateChangesOnlyTheRecord(t *testing.T
 	}
 }
 
+// A sandbox.env applies the env Kantel has now (env.fetch), not its own, so a notification that lands late can't put
+// an older env back; a Kantel from before env.fetch leaves the notification's own.
+func TestSandboxEnvAppliesTheEnvKantelHasNow(t *testing.T) {
+	tier := newEnvTier(t, microvm.Tier)
+	tier.state["sbx_1"] = proto.StateStopped
+	h := newEnvHost(t, tier)
+	h.envFetch = func(context.Context, string) (map[string]string, error) {
+		return map[string]string{"NEWEST": "1"}, nil
+	}
+	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"OLD": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(tier.env["sbx_1"], map[string]string{"NEWEST": "1"}) {
+		t.Fatalf("kept %v, want Kantel's", tier.env["sbx_1"])
+	}
+	h.envFetch = func(context.Context, string) (map[string]string, error) {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "Kantel answers no env.fetch call"}
+	}
+	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"GIVEN": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(tier.env["sbx_1"], map[string]string{"GIVEN": "1"}) {
+		t.Fatalf("kept %v, want the notification's own from a Kantel before env.fetch", tier.env["sbx_1"])
+	}
+	h.envFetch = func(context.Context, string) (map[string]string, error) {
+		return nil, &proto.Error{Code: proto.ErrUnavailable, Message: "down"}
+	}
+	if err := call(t, h, proto.MethodEnv, proto.EnvParams{SandboxID: "sbx_1", Env: map[string]string{"X": "1"}}); err == nil {
+		t.Fatal("applied an env while Kantel couldn't say which is newest")
+	}
+}
+
 // A guest that can't write the file fails the call, saying so, with the host's record changed already (its next boot
 // has the env); an unknown sandbox and a call without one are refused.
 func TestSandboxEnvFailures(t *testing.T) {

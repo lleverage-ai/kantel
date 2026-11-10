@@ -600,6 +600,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	// value, so a host asking is answered that there are none.
 	own?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
+		env: (hostId, sandboxId) => api.service.sandboxEnv(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
 		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
 		activity: (sandboxId) => api.service.noteActivity(sandboxId),

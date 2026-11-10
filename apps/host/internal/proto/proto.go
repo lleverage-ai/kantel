@@ -762,6 +762,11 @@ type EnvParams struct {
 	Env       map[string]string `json:"env"`
 }
 
+// EnvAnswer is env.fetch's answer: a sandbox's whole env.
+type EnvAnswer struct {
+	Env map[string]string `json:"env"`
+}
+
 // SecretsParams is sandbox.secrets (Kantel → host): the sandbox's table changed, so the host drops its copy.
 type SecretsParams struct {
 	SandboxID string `json:"sandboxId"`
@@ -1267,6 +1272,10 @@ const (
 	MethodEnv = "sandbox.env"
 	// MethodSecretsFetch (host → Kantel, SandboxRef) answers a SecretsTable.
 	MethodSecretsFetch = "secrets.fetch"
+	// MethodEnvFetch (host → Kantel, SandboxRef) answers an EnvAnswer: the sandbox's env as Kantel has it now. A
+	// sandbox.env is applied from it, not from its own params, so however late a notification lands, the env applied
+	// is the newest. A Kantel from before answers ErrUnsupported, and the params' env is applied.
+	MethodEnvFetch = "env.fetch"
 	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).
 	MethodFileOpen = "sandbox.files.open"
 	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
