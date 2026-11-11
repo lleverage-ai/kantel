@@ -64,6 +64,22 @@ export type DeployVariable = (typeof DEPLOY_VARIABLES)[number];
  */
 export const WORKER_SECRETS = ["KANTEL_RELEASE_CHECK_TOKEN"] as const;
 
+/**
+ * Experimental features' switches: `experimental` turns one on, unset or `off` leaves it off. Each is passed to the
+ * Worker as a var of the same name, so a switch added here reaches it without more code.
+ * - KANTEL_TEMPLATES: templates, versioned microVM profiles whose snapshots are built in the background
+ *   (`/v1/templates`).
+ * - KANTEL_GITHUB_RUNNERS: GitHub Actions runners (`/v1/github-runners`), GitHub Apps whose `workflow_job` webhooks get
+ *   an ephemeral microVM runner each.
+ */
+export const EXPERIMENTAL_SWITCHES = ["KANTEL_TEMPLATES", "KANTEL_GITHUB_RUNNERS"] as const;
+export type ExperimentalSwitch = (typeof EXPERIMENTAL_SWITCHES)[number];
+const SWITCH_CHECK = { test: (v: string) => v === "experimental" || v === "off", expect: "experimental or off" };
+const SWITCH_CHECKS: Readonly<Record<ExperimentalSwitch, typeof SWITCH_CHECK>> = {
+	KANTEL_TEMPLATES: SWITCH_CHECK,
+	KANTEL_GITHUB_RUNNERS: SWITCH_CHECK,
+};
+
 /** Set only to move the data: each overrides what `wrangler.jsonc` names. */
 export const OPTIONAL_DEPLOY_VARIABLES = [
 	"KANTEL_D1_DATABASE_NAME",
@@ -103,12 +119,7 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// Experimental: `experimental` lets anyone signed in add machines of their own, which dial out to KANTEL_PUBLIC_URL
 	// (so it needs that) and run only their account's sandboxes (src/compute.ts). Unset or `off`, it stays off.
 	"KANTEL_ACCOUNT_HOSTS",
-	// Experimental: `experimental` turns on templates, versioned microVM profiles whose snapshots are built in the
-	// background (`/v1/templates`). Unset or `off`, it stays off.
-	"KANTEL_TEMPLATES",
-	// Experimental: `experimental` turns on GitHub Actions runners (`/v1/github-runners`): GitHub Apps whose
-	// `workflow_job` webhooks get an ephemeral microVM runner each. Unset or `off`, it stays off.
-	"KANTEL_GITHUB_RUNNERS",
+	...EXPERIMENTAL_SWITCHES,
 	// With account hosts: where the latest kantel-host release is read, to flag hosts behind it. An https URL answering
 	// `{"tag_name"}` or `{"version"}`, or `off`. Unset: Kantel's latest GitHub Release.
 	"KANTEL_HOST_RELEASES",
@@ -186,8 +197,7 @@ const OPTIONAL_CHECKS: Readonly<
 	KANTEL_SIGN_IN_FROM: { test: (v) => isEmail(v), expect: "an email address" },
 	KANTEL_SIGN_IN_DAILY_CAP: { test: (v) => /^\d{1,6}$/.test(v), expect: "a whole number" },
 	KANTEL_ACCOUNT_HOSTS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
-	KANTEL_TEMPLATES: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
-	KANTEL_GITHUB_RUNNERS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
+	...SWITCH_CHECKS,
 	KANTEL_HOST_RELEASES: {
 		test: (v) => v.toLowerCase() === "off" || /^https:\/\/[^/\s]+/i.test(v),
 		expect: "an https:// URL, or off",
@@ -351,8 +361,8 @@ export interface DeployValues {
 	 * which dial the public origin; `off` keeps them off but, like `experimental`, lets the origin go without sign-in.
 	 */
 	readonly accountHosts?: "experimental" | "off";
-	/** The templates switch, when set (`KANTEL_TEMPLATES`). */
-	readonly templates?: "experimental" | "off";
+	/** The experimental switches that are set (`KANTEL_TEMPLATES` and the rest), passed to the Worker as they are. */
+	readonly switches: Partial<Record<ExperimentalSwitch, "experimental" | "off">>;
 	/** Where account hosts' latest kantel-host release is read, when set (`KANTEL_HOST_RELEASES`): a URL, or `off`. */
 	readonly hostReleases?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
@@ -423,7 +433,11 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 	}
 	if (invalid.length > 0) throw new Error(invalid.join("; "));
 	const r2Bucket = optional("KANTEL_R2_BUCKET");
-	const templatesSwitch = optional("KANTEL_TEMPLATES");
+	const switches: Partial<Record<ExperimentalSwitch, "experimental" | "off">> = {};
+	for (const name of EXPERIMENTAL_SWITCHES) {
+		const set = optional(name);
+		if (set === "experimental" || set === "off") switches[name] = set;
+	}
 	const hostReleases = optional("KANTEL_HOST_RELEASES");
 	const hint = optional("KANTEL_LOCATION_HINT");
 
@@ -459,7 +473,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(accountHostsSwitch === "experimental" || accountHostsSwitch === "off"
 			? { accountHosts: accountHostsSwitch }
 			: {}),
-		...(templatesSwitch === "experimental" || templatesSwitch === "off" ? { templates: templatesSwitch } : {}),
+		switches,
 		...(hostReleases === undefined
 			? {}
 			: { hostReleases: hostReleases.toLowerCase() === "off" ? "off" : hostReleases }),
@@ -575,7 +589,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 							: { KANTEL_SIGN_IN_DAILY_CAP: values.emailSignIn.dailyCap }),
 					}),
 			...(values.accountHosts === undefined ? {} : { KANTEL_ACCOUNT_HOSTS: values.accountHosts }),
-			...(values.templates === undefined ? {} : { KANTEL_TEMPLATES: values.templates }),
+			...values.switches,
 			...(values.hostReleases === undefined ? {} : { KANTEL_HOST_RELEASES: values.hostReleases }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
