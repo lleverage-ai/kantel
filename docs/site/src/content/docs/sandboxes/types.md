@@ -178,7 +178,7 @@ A project that needs another Node, such as the Node 24 its `.nvmrc` names, insta
 
 ```sh
 kantel exec sbx_4kq9x2mt -- bash -c '
-  curl -fsSL https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz -o /tmp/node.tar.xz
+  curl -fsSL https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz -o /tmp/node.tar.xz
   sudo mkdir -p /opt/node24
   sudo tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1'
 ```
