@@ -887,6 +887,9 @@ type StickyCommitResult struct {
 	Version        string `json:"version"`
 	SizeBytes      int64  `json:"sizeBytes"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
+	// ThawError, when set, is why the guest couldn't be told to thaw the disk after its copy was made (while frozen,
+	// so the version is whole): the guest thaws it by itself once its freeze's lease lapses.
+	ThawError string `json:"thawError,omitempty"`
 }
 
 // StickyDeleteParams is sticky.delete's (Kantel → host, FeatureStickyDisks): it deletes Version of the disk, or with

@@ -483,9 +483,11 @@ func (c *Client) MountSticky(ctx context.Context, mounts []StickyMount) ([]Stick
 }
 
 // FreezeSticky has the guest write back and freeze (FIFREEZE) the sticky disk mounted at path, so its drive's file
-// holds still until ThawSticky.
-func (c *Client) FreezeSticky(ctx context.Context, path string) error {
-	_, err := c.do(ctx, http.MethodPost, "/sticky/freeze", jsonBody(map[string]string{"path": path}), &map[string]any{})
+// holds still until ThawSticky or until lease lapses, when the guest thaws it by itself. Freezing it again within the
+// lease renews it.
+func (c *Client) FreezeSticky(ctx context.Context, path string, lease time.Duration) error {
+	body := map[string]any{"path": path, "leaseMs": lease.Milliseconds()}
+	_, err := c.do(ctx, http.MethodPost, "/sticky/freeze", jsonBody(body), &map[string]any{})
 	return err
 }
 

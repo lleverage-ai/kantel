@@ -409,6 +409,9 @@ type Manager struct {
 	// stickyMu guards the sticky disk versions the host holds (sticky.go): read while one is cloned, written while one
 	// is added or removed.
 	stickyMu sync.RWMutex
+	// stickyCommits are the versions being committed now, by "<disk>/<version>" (reserveStickyVersion). Guarded by
+	// stickyMu.
+	stickyCommits map[string]bool
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -1091,6 +1094,8 @@ func (m *Manager) adopt() error {
 				m.sandboxes[s.meta.ID] = s
 				// A bundle still being built when the host stopped: build it again, and attach it then.
 				m.finishBundles(s)
+				// A commit the previous run had under way may have left a sticky disk frozen.
+				m.thawStickyAfterRestart(s)
 				m.log.Info("adopted running sandbox", "sandbox", s.meta.ID, "pid", s.meta.Pid)
 				if s.meta.GrowDisk {
 					// The previous run answered its create but restarted before growing its disk.
@@ -2308,6 +2313,9 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	if err := validateStickyDisks(p.StickyDisks, p.Mounts); err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	if err := m.validateInheritedSticky(p); err != nil {
+		return proto.SandboxInfo{}, err
+	}
 	t := timings{}
 	ph := &proto.StartPhases{}
 	start := time.Now()
@@ -2489,6 +2497,22 @@ func (m *Manager) restoreSize(from string, size proto.Size) proto.Size {
 		return size
 	}
 	return own
+}
+
+// validateInheritedSticky checks a create's sticky disks with those of the snapshot it is made from (p.From), whose
+// clones it inherits on the same drives, and its mounts (validateEffectiveSticky). A snapshot that can't be read is
+// startOf's to refuse.
+func (m *Manager) validateInheritedSticky(p proto.CreateParams) error {
+	if p.From == "" {
+		return nil
+	}
+	unhold := m.holdBases()
+	snap, err := m.readSnapshot(p.From)
+	unhold()
+	if err != nil {
+		return nil
+	}
+	return validateEffectiveSticky(snap.StickyDisks, p.StickyDisks, p.Mounts)
 }
 
 // DiskLimits are the disk a create may ask for a custom shape on this host.

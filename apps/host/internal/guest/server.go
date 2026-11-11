@@ -66,6 +66,8 @@ type Server struct {
 func (s *Server) Handler() http.Handler {
 	// Read at start, so a service left running with nothing connected (by an agent before this one) is stopped too.
 	s.onDemand()
+	// A sticky disk an earlier run of the agent left frozen: its lease ended with that run.
+	thawLeftoverFreezes()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /capabilities", s.capabilities)

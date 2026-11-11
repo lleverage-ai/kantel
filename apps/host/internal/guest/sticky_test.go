@@ -47,15 +47,18 @@ func TestExt4Label(t *testing.T) {
 	}
 }
 
-// A freeze is only ever of a sticky disk's mount: never the root, the system's own directories, or a path no drive is
-// mounted at.
+// A freeze is only ever of a sticky disk's mount (never the root, the system's own directories, or a path no drive is
+// mounted at), under a lease of at most MaxStickyLease.
 func TestFreezeOnlyAStickyMount(t *testing.T) {
 	s := &Server{}
-	for path, want := range map[string]int{"/": 400, "/proc": 400, "relative": 400, "/no/sticky/disk/here": 404} {
+	for body, want := range map[string]int{
+		`{"path":"/"}`: 400, `{"path":"/proc"}`: 400, `{"path":"relative"}`: 400, `{"path":"/no/sticky/disk/here"}`: 404,
+		`{"path":"/cache","leaseMs":600000}`: 400,
+	} {
 		rec := httptest.NewRecorder()
-		s.freezeSticky(rec, httptest.NewRequest(http.MethodPost, "/sticky/freeze", strings.NewReader(`{"path":"`+path+`"}`)))
+		s.freezeSticky(rec, httptest.NewRequest(http.MethodPost, "/sticky/freeze", strings.NewReader(body)))
 		if rec.Code != want {
-			t.Errorf("%s: %d %s, want %d", path, rec.Code, rec.Body, want)
+			t.Errorf("%s: %d %s, want %d", body, rec.Code, rec.Body, want)
 		}
 	}
 }

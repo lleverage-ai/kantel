@@ -16,11 +16,12 @@ package microvm
 //
 // The host keeps the versions it holds as files, sticky/<disk>/<version>.img under the tier's root, reflinked where
 // the file system can (FICLONE), so a version costs only the blocks it doesn't share. A commit (sticky.commit) has the
-// guest freeze the disk's file system, clones the drive's file to a new version, and thaws it; then only the disk's two
-// newest versions are kept.
+// guest freeze the disk's file system under a lease the guest ends by itself, clones the drive's file to a new version
+// within it, and thaws it; then only the disk's two last published versions are kept.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -34,6 +35,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -46,9 +48,6 @@ const maxStickyGiB = maxCustomDiskGiB
 
 // stickyKeep is how many versions of each disk the host keeps after a commit.
 const stickyKeep = 2
-
-// stickyCallWait bounds each guest call of a commit (its freeze and its thaw).
-const stickyCallWait = 30 * time.Second
 
 // stickyAttached is a disk on its drive whose guest mount isn't known yet (between its attach and mountSticky).
 const stickyAttached = "attached"
@@ -275,6 +274,53 @@ func validateStickyDisks(disks []proto.StickyDisk, mounts []proto.Mount) error {
 	return nil
 }
 
+// validateEffectiveSticky checks a create's sticky disks together with those it inherits from the snapshot it is made
+// from, and its mounts, before anything is made: a requested disk the snapshot has already is kept if it is at the same
+// path and refused at another; no two disks, nor a disk and a mount, meet (the same path, or one inside the other); and
+// there are at most StickyDrives.
+func validateEffectiveSticky(inherited []stickyDisk, requested []proto.StickyDisk, mounts []proto.Mount) error {
+	invalid := func(format string, args ...any) error {
+		return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf(format, args...)}
+	}
+	type at struct{ id, path string }
+	var disks []at
+	for _, d := range inherited {
+		disks = append(disks, at{d.DiskID, d.Path})
+	}
+	for _, r := range requested {
+		kept := false
+		for _, d := range inherited {
+			if d.DiskID != r.DiskID {
+				continue
+			}
+			if d.Path != r.Path {
+				return invalid("sticky disk %s is at %s in the snapshot the sandbox is made from, not %s", r.DiskID, d.Path, r.Path)
+			}
+			kept = true
+		}
+		if !kept {
+			disks = append(disks, at{r.DiskID, r.Path})
+		}
+	}
+	if len(disks) > StickyDrives {
+		return invalid("a sandbox has at most %d sticky disks, and this one would have %d with its snapshot's", StickyDrives, len(disks))
+	}
+	meets := func(a, b string) bool { return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/") }
+	for i, d := range disks {
+		for _, other := range disks[i+1:] {
+			if meets(d.path, other.path) {
+				return invalid("sticky disks %s at %s and %s at %s meet", d.id, d.path, other.id, other.path)
+			}
+		}
+		for _, mt := range mounts {
+			if meets(d.path, mt.Path) {
+				return invalid("sticky disk %s at %s meets the mount at %s", d.id, d.path, mt.Path)
+			}
+		}
+	}
+	return nil
+}
+
 // attachSticky attaches the sticky disks a create asks for to free drives of its running VM (those its snapshot had
 // are on theirs already, and kept). One that can't be attached is recorded failed, with why. Called with s.mu held.
 func (m *Manager) attachSticky(ctx context.Context, s *sandbox, specs []proto.StickyDisk) {
@@ -421,20 +467,54 @@ func (m *Manager) stickyVersionFile(diskID, version string) string {
 	return filepath.Join(m.stickyRoot(), diskID, version+".img")
 }
 
-// stickyVersion is a version the host holds of a disk.
+// stickyOrderFile, in a disk's directory, is the order its versions were published in on this host (stickyOrder).
+const stickyOrderFile = ".order.json"
+
+// stickyOrder is a disk's publication sequence: each version's place (Seq), and the next one's (Next). Written under
+// stickyMu, durably, as each version is published or removed, so "newest" is the last published, whatever the
+// clock or the versions' names say.
+type stickyOrder struct {
+	Next int64            `json:"next"`
+	Seq  map[string]int64 `json:"seq"`
+}
+
+func (m *Manager) readStickyOrder(diskID string) stickyOrder {
+	o := stickyOrder{Next: 1, Seq: map[string]int64{}}
+	raw, err := os.ReadFile(filepath.Join(m.stickyRoot(), diskID, stickyOrderFile))
+	if err == nil {
+		_ = json.Unmarshal(raw, &o)
+	}
+	if o.Seq == nil {
+		o.Seq = map[string]int64{}
+	}
+	for _, seq := range o.Seq {
+		o.Next = max(o.Next, seq+1)
+	}
+	return o
+}
+
+func (m *Manager) writeStickyOrder(diskID string, o stickyOrder) error {
+	raw, _ := json.Marshal(o)
+	return fsutil.WriteFileDurably(filepath.Join(m.stickyRoot(), diskID, stickyOrderFile), raw, 0o600)
+}
+
+// stickyVersion is a version the host holds of a disk: its place in the disk's publication sequence (0: not in it,
+// older than any that is), when its file was made, and the bytes it takes.
 type stickyVersion struct {
 	version   string
+	seq       int64
 	at        int64
 	allocated int64
 }
 
-// stickyVersions are the versions of a disk the host holds, newest first (by when each was made here, then by name).
-// Files being written (named with a leading dot) aren't versions yet.
+// stickyVersions are the versions of a disk the host holds, newest (last published) first. Files being written (named
+// with a leading dot) aren't versions.
 func (m *Manager) stickyVersions(diskID string) []stickyVersion {
 	entries, err := os.ReadDir(filepath.Join(m.stickyRoot(), diskID))
 	if err != nil {
 		return nil
 	}
+	order := m.readStickyOrder(diskID)
 	var out []stickyVersion
 	for _, e := range entries {
 		name := e.Name()
@@ -446,9 +526,12 @@ func (m *Manager) stickyVersions(diskID string) []stickyVersion {
 		if syscall.Stat(filepath.Join(m.stickyRoot(), diskID, name), &st) != nil {
 			continue
 		}
-		out = append(out, stickyVersion{version: version, at: st.Mtim.Sec*1000 + st.Mtim.Nsec/1e6, allocated: st.Blocks * 512})
+		out = append(out, stickyVersion{version: version, seq: order.Seq[version], at: st.Mtim.Sec*1000 + st.Mtim.Nsec/1e6, allocated: st.Blocks * 512})
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].seq != out[j].seq {
+			return out[i].seq > out[j].seq
+		}
 		if out[i].at != out[j].at {
 			return out[i].at > out[j].at
 		}
@@ -478,9 +561,20 @@ func (m *Manager) cloneStickyVersion(diskID, want, dst string) (string, error) {
 	return version, nil
 }
 
+// stickyFreezeLease is how long a commit's freeze holds in the guest before the guest thaws it by itself: the drive's
+// file is cloned within it, or the commit fails. stickyLeaseMargin is what of it the host leaves for the guest's
+// clock, the calls and the thaw.
+var (
+	stickyFreezeLease = 30 * time.Second
+	stickyLeaseMargin = 3 * time.Second
+)
+
 // CommitSticky (sticky.commit) makes a running sandbox's copy of a sticky disk the disk's version p.Version on this
-// host: its guest writes the disk back and freezes it, its drive's file is cloned, and the guest thaws it, whatever
-// happened. Then the host keeps only the disk's stickyKeep newest versions.
+// host: the version is reserved, the guest writes the disk back and freezes it under a lease, the drive's file is
+// cloned to a temporary file of this commit's own within the lease, the guest thaws it, and the clone is published
+// under the version's name only if no other commit has it (link, never a rename over it). Then the host keeps only the
+// disk's stickyKeep last published versions. A thaw that fails is reported in the answer (ThawError): the guest thaws
+// by itself when the lease lapses.
 func (m *Manager) CommitSticky(ctx context.Context, p proto.StickyCommitParams) (proto.StickyCommitResult, error) {
 	if !validID(p.DiskID) || !validID(p.Version) {
 		return proto.StickyCommitResult{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sticky disk ID or version"}
@@ -506,82 +600,192 @@ func (m *Manager) CommitSticky(ctx context.Context, p proto.StickyCommitParams) 
 	if disk.State != proto.StickyMounted {
 		return proto.StickyCommitResult{}, conflict("sticky disk %s isn't mounted in sandbox %s: %s", p.DiskID, s.meta.ID, disk.Reason)
 	}
-	final := m.stickyVersionFile(p.DiskID, p.Version)
-	if fileExists(final) {
-		return proto.StickyCommitResult{}, conflict("this host has version %s of sticky disk %s already", p.Version, p.DiskID)
-	}
-	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
-		return proto.StickyCommitResult{}, err
-	}
-	tmp := filepath.Join(filepath.Dir(final), "."+p.Version+".img.new")
-	_ = os.Remove(tmp)
-	if err := m.cloneFrozen(ctx, s, *disk, tmp); err != nil {
-		_ = os.Remove(tmp)
-		return proto.StickyCommitResult{}, err
-	}
-	m.stickyMu.Lock()
-	if fileExists(final) {
-		m.stickyMu.Unlock()
-		_ = os.Remove(tmp)
-		return proto.StickyCommitResult{}, conflict("this host has version %s of sticky disk %s already", p.Version, p.DiskID)
-	}
-	err = os.Rename(tmp, final)
-	if err == nil {
-		// Made now, whatever the clone kept: the newest version is the one just committed.
-		now := time.Now()
-		_ = os.Chtimes(final, now, now)
-		m.pruneStickyLocked(p.DiskID)
-	}
-	m.stickyMu.Unlock()
+	release, err := m.reserveStickyVersion(p.DiskID, p.Version)
 	if err != nil {
-		_ = os.Remove(tmp)
+		return proto.StickyCommitResult{}, err
+	}
+	defer release()
+	dir := filepath.Dir(m.stickyVersionFile(p.DiskID, p.Version))
+	tmpFile, err := os.CreateTemp(dir, "."+p.Version+".*.new")
+	if err != nil {
+		return proto.StickyCommitResult{}, err
+	}
+	tmp := tmpFile.Name()
+	tmpFile.Close()
+	// This commit's own file, removed whatever happens: once published, the version is a link to it.
+	defer os.Remove(tmp)
+	thawErr, err := m.cloneFrozen(ctx, s, *disk, tmp)
+	if err != nil {
+		return proto.StickyCommitResult{}, err
+	}
+	final := m.stickyVersionFile(p.DiskID, p.Version)
+	if err := m.publishSticky(p.DiskID, p.Version, tmp); err != nil {
 		return proto.StickyCommitResult{}, err
 	}
 	var st syscall.Stat_t
 	if err := syscall.Stat(final, &st); err != nil {
 		return proto.StickyCommitResult{}, err
 	}
-	m.log.Info("sticky disk committed", "sandbox", s.meta.ID, "disk", p.DiskID, "version", p.Version, "allocatedBytes", st.Blocks*512)
-	return proto.StickyCommitResult{Version: p.Version, SizeBytes: st.Size, AllocatedBytes: st.Blocks * 512}, nil
+	res := proto.StickyCommitResult{Version: p.Version, SizeBytes: st.Size, AllocatedBytes: st.Blocks * 512}
+	if thawErr != nil {
+		res.ThawError = thawErr.Error()
+	}
+	m.log.Info("sticky disk committed", "sandbox", s.meta.ID, "disk", p.DiskID, "version", p.Version, "allocatedBytes", res.AllocatedBytes)
+	return res, nil
 }
 
-// cloneFrozen clones the drive file of s's sticky disk d to dst while its guest has the disk's file system frozen,
-// and thaws it after, whether the freeze or the clone failed or not. Called with s.mu held.
-func (m *Manager) cloneFrozen(ctx context.Context, s *sandbox, d stickyDisk, dst string) error {
-	thaw := func() {
-		// On a context of its own: the call's may be what ended the freeze or the clone.
-		tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stickyCallWait)
-		defer cancel()
-		if err := s.guest.ThawSticky(tctx, d.Path); err != nil {
-			m.log.Warn("thawing a sticky disk after its commit", "sandbox", s.meta.ID, "disk", d.DiskID, "error", err)
-		}
+// reserveStickyVersion keeps a version of a disk for one commit until release: a version the host has, or another
+// commit is making, is a conflict.
+func (m *Manager) reserveStickyVersion(diskID, version string) (release func(), err error) {
+	key := diskID + "/" + version
+	m.stickyMu.Lock()
+	defer m.stickyMu.Unlock()
+	if m.stickyCommits[key] || fileExists(m.stickyVersionFile(diskID, version)) {
+		return nil, conflict("this host has version %s of sticky disk %s already, or is committing it", version, diskID)
 	}
-	fctx, cancel := context.WithTimeout(ctx, stickyCallWait)
-	err := s.guest.FreezeSticky(fctx, d.Path)
+	if err := os.MkdirAll(filepath.Join(m.stickyRoot(), diskID), 0o700); err != nil {
+		return nil, err
+	}
+	if m.stickyCommits == nil {
+		m.stickyCommits = map[string]bool{}
+	}
+	m.stickyCommits[key] = true
+	return func() {
+		m.stickyMu.Lock()
+		delete(m.stickyCommits, key)
+		m.stickyMu.Unlock()
+	}, nil
+}
+
+// publishSticky makes tmp the disk's version, last in its publication sequence, without ever replacing a file of that
+// name (link(2): EEXIST is a conflict), then prunes the disk to its stickyKeep newest versions.
+func (m *Manager) publishSticky(diskID, version, tmp string) error {
+	m.stickyMu.Lock()
+	defer m.stickyMu.Unlock()
+	final := m.stickyVersionFile(diskID, version)
+	if err := os.Link(tmp, final); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return conflict("this host has version %s of sticky disk %s already", version, diskID)
+		}
+		return err
+	}
+	// Made now, whatever the clone kept, for the holdings' at.
+	now := time.Now()
+	_ = os.Chtimes(final, now, now)
+	order := m.readStickyOrder(diskID)
+	order.Seq[version] = order.Next
+	order.Next++
+	if err := m.writeStickyOrder(diskID, order); err != nil {
+		// Unordered, it would be no one's newest: not published.
+		_ = os.Remove(final)
+		return err
+	}
+	m.pruneStickyLocked(diskID)
+	return nil
+}
+
+// cloneFrozen clones the drive file of s's sticky disk d to dst while its guest has the disk's file system frozen
+// under a stickyFreezeLease lease, and thaws it after, whether the freeze or the clone failed or not. The clone must
+// end within the lease (less stickyLeaseMargin, counted from before the freeze was asked for): one that can't (a full
+// copy, on a file system without reflinks) fails, and nothing is published. A thaw that fails is answered as thawErr,
+// and logged: the clone was made while frozen all the same. Called with s.mu held.
+func (m *Manager) cloneFrozen(ctx context.Context, s *sandbox, d stickyDisk, dst string) (thawErr, err error) {
+	thaw := func() error {
+		// On a context of its own: the call's may be what ended the freeze or the clone.
+		tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stickyLeaseMargin)
+		defer cancel()
+		err := s.guest.ThawSticky(tctx, d.Path)
+		if err != nil {
+			m.log.Warn("thawing a sticky disk after its commit (the guest thaws it when its lease lapses)", "sandbox", s.meta.ID, "disk", d.DiskID, "error", err)
+		}
+		return err
+	}
+	deadline := time.Now().Add(stickyFreezeLease - stickyLeaseMargin)
+	fctx, cancel := context.WithDeadline(ctx, deadline)
+	err = s.guest.FreezeSticky(fctx, d.Path, stickyFreezeLease)
 	cancel()
 	if err != nil {
-		thaw()
+		_ = thaw()
 		if guest.IsNotFound(err) {
-			return conflict("sticky disk %s can't be frozen in sandbox %s: %v", d.DiskID, s.meta.ID, err)
+			return nil, conflict("sticky disk %s can't be frozen in sandbox %s: %v", d.DiskID, s.meta.ID, err)
 		}
-		return fmt.Errorf("freezing sticky disk %s: %w", d.DiskID, err)
+		return nil, fmt.Errorf("freezing sticky disk %s: %w", d.DiskID, err)
 	}
-	_, err = cloneDisk(filepath.Join(s.vmDir(), stickyDriveFile(d.Slot)), dst)
-	thaw()
+	err = cloneWithin(ctx, filepath.Join(s.vmDir(), stickyDriveFile(d.Slot)), dst, deadline)
+	thawErr = thaw()
 	if err != nil {
-		return fmt.Errorf("cloning sticky disk %s: %w", d.DiskID, err)
+		return nil, fmt.Errorf("sticky disk %s: %w", d.DiskID, err)
+	}
+	return thawErr, nil
+}
+
+// cloneWithin clones src to dst (cloneDisk) and fails unless the clone ended by deadline: a reflink is instant, a full
+// sparse copy is stopped at the deadline.
+func cloneWithin(ctx context.Context, src, dst string, deadline time.Time) error {
+	late := func() error {
+		_ = os.Remove(dst)
+		return fmt.Errorf("its copy couldn't be made within the %s its file system is frozen for: this host's file system has no reflinks, so a commit copies the whole disk, and an unfinished copy isn't published", stickyFreezeLease)
+	}
+	if time.Now().After(deadline) {
+		return late()
+	}
+	if reflink(src, dst) == nil {
+		if time.Now().After(deadline) {
+			return late()
+		}
+		return nil
+	}
+	_ = os.Remove(dst)
+	cctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, "cp", "--sparse=always", src, dst).CombinedOutput()
+	if cctx.Err() != nil || time.Now().After(deadline) {
+		return late()
+	}
+	if err != nil {
+		_ = os.Remove(dst)
+		return fmt.Errorf("copy %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// thawStickyAfterRestart thaws every sticky disk of a sandbox adopted running when the host starts: a commit the
+// previous run had under way may have left one frozen. Thawing one that isn't frozen is fine.
+func (m *Manager) thawStickyAfterRestart(s *sandbox) {
+	paths := []string{}
+	for _, d := range attachedSticky(s.meta.StickyDisks) {
+		paths = append(paths, d.Path)
+	}
+	client := s.guest
+	if len(paths) == 0 || client == nil {
+		return
+	}
+	go func() {
+		for _, path := range paths {
+			ctx, cancel := context.WithTimeout(context.Background(), stickyFreezeLease)
+			if err := client.ThawSticky(ctx, path); err != nil && !guest.IsNotFound(err) {
+				m.log.Warn("thawing an adopted sandbox's sticky disk", "sandbox", s.meta.ID, "path", path, "error", err)
+			}
+			cancel()
+		}
+	}()
 }
 
 // pruneStickyLocked deletes all but the disk's stickyKeep newest versions. Called with stickyMu held.
 func (m *Manager) pruneStickyLocked(diskID string) {
 	held := m.stickyVersions(diskID)
-	for _, v := range held[min(stickyKeep, len(held)):] {
+	if len(held) <= stickyKeep {
+		return
+	}
+	order := m.readStickyOrder(diskID)
+	for _, v := range held[stickyKeep:] {
 		if err := os.Remove(m.stickyVersionFile(diskID, v.version)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			m.log.Warn("deleting an old sticky disk version", "disk", diskID, "version", v.version, "error", err)
+			continue
 		}
+		delete(order.Seq, v.version)
 	}
+	_ = m.writeStickyOrder(diskID, order)
 }
 
 // DeleteSticky (sticky.delete) deletes a version of a sticky disk the host holds, or with no version every version of
@@ -594,14 +798,32 @@ func (m *Manager) DeleteSticky(p proto.StickyDeleteParams) error {
 	defer m.stickyMu.Unlock()
 	dir := filepath.Join(m.stickyRoot(), p.DiskID)
 	if p.Version == "" {
+		// A commit under way keeps its own file and fails to publish into the gone directory.
 		return os.RemoveAll(dir)
 	}
 	if err := os.Remove(m.stickyVersionFile(p.DiskID, p.Version)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	// The disk's directory goes with its last version (a file being committed keeps it).
-	_ = os.Remove(dir)
+	order := m.readStickyOrder(p.DiskID)
+	if _, ok := order.Seq[p.Version]; ok {
+		delete(order.Seq, p.Version)
+		_ = m.writeStickyOrder(p.DiskID, order)
+	}
+	if len(m.stickyVersions(p.DiskID)) == 0 && len(m.stickyCommitsOf(p.DiskID)) == 0 {
+		_ = os.RemoveAll(dir)
+	}
 	return nil
+}
+
+// stickyCommitsOf are the versions of a disk being committed now. Called with stickyMu held.
+func (m *Manager) stickyCommitsOf(diskID string) []string {
+	var out []string
+	for key := range m.stickyCommits {
+		if d, v, _ := strings.Cut(key, "/"); d == diskID {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // StickyHoldings are the sticky disk versions the host holds, by disk ID, each disk's newest first: [] when none.

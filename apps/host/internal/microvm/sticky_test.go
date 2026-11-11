@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
@@ -124,11 +125,13 @@ type stickyFixture struct {
 	drives []string
 	calls  []string
 	freeze error
+	thaw   error
+	thawed chan string
 }
 
 func newStickyFixture(t *testing.T, id string, m *Manager) *stickyFixture {
 	t.Helper()
-	f := &stickyFixture{m: m}
+	f := &stickyFixture{m: m, thawed: make(chan string, 16)}
 	f.s = &sandbox{dir: filepath.Join(m.cfg.Root, "sandboxes", id), meta: meta{ID: id, State: proto.StateRunning, BundleDrives: 1}}
 	vm := f.s.vmDir()
 	if err := os.MkdirAll(vm, 0o700); err != nil {
@@ -168,7 +171,7 @@ func newStickyFixture(t *testing.T, id string, m *Manager) *stickyFixture {
 func (f *stickyFixture) agent(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.calls = append(f.calls, r.URL.Path)
-	freeze := f.freeze
+	freeze, thaw := f.freeze, f.thaw
 	f.mu.Unlock()
 	switch r.URL.Path {
 	case "/sticky":
@@ -187,6 +190,16 @@ func (f *stickyFixture) agent(w http.ResponseWriter, r *http.Request) {
 		if freeze != nil {
 			w.WriteHeader(500)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": freeze.Error()})
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	case "/sticky/thaw":
+		var req struct{ Path string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.thawed <- req.Path
+		if thaw != nil {
+			w.WriteHeader(500)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": thaw.Error()})
 			return
 		}
 		_, _ = io.WriteString(w, `{"ok":true}`)
@@ -296,7 +309,8 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 		disk.Close()
 	}
 
-	for _, v := range []string{"v1", "v2", "v3"} {
+	// Published in this order: newest is the last published, whatever the names (or a clock tie) say.
+	for _, v := range []string{"v3", "v2", "v1"} {
 		res, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: v})
 		if err != nil || res.Version != v || res.SizeBytes != 1<<30 || res.AllocatedBytes <= 0 {
 			t.Fatalf("commit %s: %+v %v", v, res, err)
@@ -305,8 +319,12 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 	if a.took("/sticky/freeze") != 3 || a.took("/sticky/thaw") != 3 {
 		t.Fatalf("calls %v", a.calls)
 	}
+	for _, v := range []string{"v2", "v1"} {
+		same := time.UnixMilli(1_800_000_000_000)
+		_ = os.Chtimes(m.stickyVersionFile("ci", v), same, same)
+	}
 	held := m.StickyHoldings()
-	if len(held) != 1 || held[0].DiskID != "ci" || len(held[0].Versions) != 2 || held[0].Versions[0].Version != "v3" || held[0].Versions[1].Version != "v2" || held[0].Versions[0].At <= 0 {
+	if len(held) != 1 || held[0].DiskID != "ci" || len(held[0].Versions) != 2 || held[0].Versions[0].Version != "v1" || held[0].Versions[1].Version != "v2" || held[0].Versions[0].At <= 0 {
 		t.Fatalf("holdings %+v", held)
 	}
 	code := func(err error) string {
@@ -316,7 +334,7 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 		}
 		return fmt.Sprint(err)
 	}
-	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v3"}); code(err) != proto.ErrConflict {
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v1"}); code(err) != proto.ErrConflict {
 		t.Fatalf("a version the host has: %v", err)
 	}
 	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "other", Version: "v1"}); code(err) != proto.ErrNotFound {
@@ -333,12 +351,29 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 	if fileExists(m.stickyVersionFile("ci", "v4")) {
 		t.Fatal("a failed commit leaves no version")
 	}
+	// A thaw that fails after a whole clone: published, and said so.
+	a.freeze, a.thaw = nil, errors.New("the agent went away")
+	if res, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v0"}); err != nil || !strings.Contains(res.ThawError, "went away") {
+		t.Fatalf("%+v %v", res, err)
+	}
+	a.thaw = nil
+	if left, _ := filepath.Glob(filepath.Join(m.stickyRoot(), "ci", ".*.new")); len(left) != 0 {
+		t.Fatalf("commits leave their own temporary files behind: %v", left)
+	}
+	// A host that restarts thaws every sticky disk of the sandboxes it adopts running.
+	for len(a.thawed) > 0 {
+		<-a.thawed
+	}
+	m.thawStickyAfterRestart(a.s)
+	if path := <-a.thawed; path != "/var/lib/ci" {
+		t.Fatalf("thawed %q", path)
+	}
 
 	// The next sandbox clones the newest version; one asking for a version the host hasn't gets the newest too.
 	b := newStickyFixture(t, "sbx_b", m)
 	m.attachSticky(ctx, b.s, []proto.StickyDisk{{DiskID: "ci", Path: "/var/lib/ci", SizeGiB: 1, Version: "gone"}})
 	m.mountSticky(ctx, b.s)
-	if st := stickyStatus(b.s.meta.StickyDisks); len(st) != 1 || st[0].Version != "v3" || st[0].State != proto.StickyMounted {
+	if st := stickyStatus(b.s.meta.StickyDisks); len(st) != 1 || st[0].Version != "v0" || st[0].State != proto.StickyMounted {
 		t.Fatalf("%+v", st)
 	}
 	b.s.meta.State = proto.StateStopped
@@ -346,7 +381,7 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 		t.Fatalf("a stopped sandbox: %v", err)
 	}
 
-	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci", Version: "v2"}); err != nil {
+	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci", Version: "v1"}); err != nil {
 		t.Fatal(err)
 	}
 	if held := m.StickyHoldings(); len(held) != 1 || len(held[0].Versions) != 1 {
@@ -357,5 +392,60 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 	}
 	if held := m.StickyHoldings(); len(held) != 0 {
 		t.Fatalf("holdings %+v", held)
+	}
+}
+
+// A sandbox made from a snapshot has its sticky disks: a requested one at a path meeting one of them, or the same disk at
+// another path, is refused before anything is made; the same disk at the same path is kept, not attached twice.
+func TestValidateEffectiveSticky(t *testing.T) {
+	inherited := []stickyDisk{{DiskID: "a", Path: "/cache", Slot: 0}}
+	ok := [][]proto.StickyDisk{nil, {{DiskID: "a", Path: "/cache", SizeGiB: 1}}, {{DiskID: "b", Path: "/other", SizeGiB: 1}}}
+	for _, req := range ok {
+		if err := validateEffectiveSticky(inherited, req, nil); err != nil {
+			t.Errorf("%+v: %v", req, err)
+		}
+	}
+	for name, c := range map[string]struct {
+		req    []proto.StickyDisk
+		mounts []proto.Mount
+	}{
+		"another disk at its path": {req: []proto.StickyDisk{{DiskID: "b", Path: "/cache", SizeGiB: 1}}},
+		"another disk inside it":   {req: []proto.StickyDisk{{DiskID: "b", Path: "/cache/b", SizeGiB: 1}}},
+		"it at another path":       {req: []proto.StickyDisk{{DiskID: "a", Path: "/elsewhere", SizeGiB: 1}}},
+		"a mount over it":          {mounts: []proto.Mount{{Path: "/cache/skills"}}},
+		"one too many":             {req: []proto.StickyDisk{{DiskID: "b", Path: "/b", SizeGiB: 1}, {DiskID: "c", Path: "/c", SizeGiB: 1}}},
+	} {
+		var pe *proto.Error
+		if err := validateEffectiveSticky(inherited, c.req, c.mounts); !errors.As(err, &pe) || pe.Code != proto.ErrInvalid {
+			t.Errorf("%s: %v, want invalid", name, err)
+		}
+	}
+}
+
+// Two commits of one version: the second is refused while the first holds it, and a publish never replaces a version
+// the host has. A copy that can't end within the freeze's lease isn't published.
+func TestStickyCommitsNeverShareOrReplaceAVersion(t *testing.T) {
+	m := &Manager{cfg: Config{Root: t.TempDir()}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	release, err := m.reserveStickyVersion("ci", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if _, err := m.reserveStickyVersion("ci", "v1"); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+		t.Fatalf("a second commit of the version: %v", err)
+	}
+	release()
+	tmp := filepath.Join(m.stickyRoot(), "ci", ".v1.mine.new")
+	_ = os.WriteFile(tmp, []byte("mine"), 0o600)
+	_ = os.WriteFile(m.stickyVersionFile("ci", "v1"), []byte("theirs"), 0o600)
+	if err := m.publishSticky("ci", "v1", tmp); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+		t.Fatalf("publishing over a version: %v", err)
+	}
+	if raw, _ := os.ReadFile(m.stickyVersionFile("ci", "v1")); string(raw) != "theirs" {
+		t.Fatalf("the version was replaced: %q", raw)
+	}
+	dst := filepath.Join(t.TempDir(), "late")
+	if err := cloneWithin(context.Background(), tmp, dst, time.Now().Add(-time.Second)); err == nil || !strings.Contains(err.Error(), "no reflinks") || fileExists(dst) {
+		t.Fatalf("a late copy: %v", err)
 	}
 }
