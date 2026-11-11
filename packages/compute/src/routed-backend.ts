@@ -206,6 +206,18 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			const backend = await on(id);
 			return backend.recover(id, await affine(backend, boot));
 		},
+		// An upgrade stays on the backend that holds the isolate, among its own hosts: its files are there.
+		...(primary.upgrade === undefined && fallback.upgrade === undefined
+			? {}
+			: {
+					async upgrade(id: string, spec: SandboxSpec) {
+						const backend = await on(id);
+						if (backend.upgrade === undefined) {
+							throw new KantelError("not_supported", "This sandbox's hosts don't upgrade isolates to microVMs");
+						}
+						return backend.upgrade(id, await affine(backend, spec));
+					},
+				}),
 		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.
 		async destroy(id) {
 			madeOnFallback.delete(id);

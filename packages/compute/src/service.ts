@@ -80,6 +80,7 @@ import {
 	type SharedSnapshotBytes,
 	SNAPSHOT_KEEP_FEATURE,
 	type TakenSnapshot,
+	type UpgradedPlacement,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
@@ -463,6 +464,10 @@ export interface ReportedEgress {
 }
 
 /** What someone kept off the shared hosts is told about a sandbox on one. */
+/** What an upgrade is refused with where no backend upgrades isolates. */
+export const UPGRADE_UNSUPPORTED =
+	"This deployment's hosts don't upgrade isolates to microVMs; make a microVM and copy the files across";
+
 export const SHARED_HOSTS_REFUSED =
 	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
 
@@ -2310,6 +2315,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	};
 
 	/**
+	 * What a sandbox's runs over `[from, to)` cost: each at its own rate where it has one (an upgraded isolate's run before
+	 * its upgrade, priced as the isolate it was), else at the sandbox's rate now.
+	 */
+	const costOf = (sandbox: StoredSandbox, from: number, to: number): number => {
+		const rate = rateOf(sandbox);
+		let cost = 0;
+		for (const run of sandbox.runs) cost += (runningMs([run], from, to) / 3_600_000) * (run.ratePerHour ?? rate);
+		return cost;
+	};
+
+	/**
 	 * A sandbox's mean CPU over `[from, to)` (all it has kept, without): its kept means and the one under way, each
 	 * weighted by the time it covers, so an hourly mean counts for its hour and one outside the span not at all.
 	 */
@@ -2393,7 +2409,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			hostOfView(sandbox, principal, hosts),
 			hostReachableOf(sandbox, reach),
 		]);
-		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
+		const at = now();
+		const seconds = runningMs(sandbox.runs, 0, at) / 1000;
 		const rate = rateOf(sandbox);
 		return {
 			id: sandbox.id,
@@ -2416,6 +2433,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			autoStopMinutes: sandbox.autoStopMinutes,
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			...idleView(sandbox),
+			...(sandbox.autoUpgrade === true ? { autoUpgrade: true } : {}),
+			...(sandbox.upgradedFrom === undefined ? {} : { upgradedFrom: { ...sandbox.upgradedFrom } }),
 			latestSnapshotId: sandbox.latestSnapshotId,
 			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
@@ -2429,7 +2448,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(sandbox.mounts === undefined
 				? {}
 				: { mounts: sandbox.mounts.map((mount) => ({ ...mount, source: { ...mount.source } })) }),
-			cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
+			cost: { currency: rates.currency, total: round(costOf(sandbox, 0, at)), ratePerHour: rate },
 			usage: {
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
@@ -2527,6 +2546,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		startedAt: command.startedAt,
 		endedAt: command.endedAt,
 		durationMs: command.durationMs,
+		...(command.needsMicrovm === undefined ? {} : { needsMicrovm: { ...command.needsMicrovm } }),
+		...(command.terminated === undefined ? {} : { terminated: command.terminated }),
+		...(command.rerunAs === undefined ? {} : { rerunAs: command.rerunAs }),
+		...(command.rerunOf === undefined ? {} : { rerunOf: command.rerunOf }),
 	});
 
 	const apiKeyView = (key: StoredApiKey): computeSchema.ApiKey => ({
@@ -4450,6 +4473,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					(latest.truncated && !(result.stdout.startsWith(latest.stdout) && result.stderr.startsWith(latest.stderr))),
 				endedAt: at,
 				durationMs: at - latest.startedAt,
+				...(result.needsMicrovm === undefined
+					? {}
+					: { needsMicrovm: { command: result.needsMicrovm.command, reason: result.needsMicrovm.reason } }),
+				...(result.terminated === undefined ? {} : { terminated: result.terminated }),
 			};
 		});
 		return ended ?? (await store.commands.get(commandId));
@@ -6438,9 +6465,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		let seconds = 0;
 		let total = 0;
 		for (const sandbox of sandboxes) {
-			const ran = runningMs(sandbox.runs, since, at) / 1000;
-			seconds += ran;
-			total += (ran / 3600) * rateOf(sandbox);
+			seconds += runningMs(sandbox.runs, since, at) / 1000;
+			total += costOf(sandbox, since, at);
 		}
 		const hasLimits =
 			limits.concurrentSandboxes !== undefined ||
@@ -7310,6 +7336,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					labels: { ...body.labels },
 					autoStopMinutes: body.autoStopMinutes === undefined ? DEFAULT_AUTO_STOP_MINUTES : body.autoStopMinutes,
 					idleStopMinutes: body.idleStopMinutes ?? null,
+					...(body.autoUpgrade === true ? { autoUpgrade: true } : {}),
 					source: from === undefined ? undefined : { snapshotId: from.id },
 					createdBy: actorOf(principal),
 					createdAt: now(),
@@ -7440,6 +7467,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(body.idleStopMinutes !== undefined && latest.state === "running" ? { lastActiveAt: now() } : {}),
 						visibility: body.visibility ?? latest.visibility,
 						labels: body.labels === undefined ? latest.labels : { ...body.labels },
+						autoUpgrade: body.autoUpgrade === undefined ? latest.autoUpgrade : body.autoUpgrade || undefined,
 						stopsAt,
 					};
 				});
@@ -7688,6 +7716,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			});
 		},
 
+		upgradeSandbox: async (principal, { params, body, idempotencyKey }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			return once(principal, "upgradeSandbox", { params, body, idempotencyKey }, async () =>
+				sandboxView(await upgradeIsolate(principal, role, sandbox.id, body), principal),
+			);
+		},
+
 		recoverSandbox: async (principal, { params, idempotencyKey }) => {
 			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			// A running sandbox is recovered too, so a retry would restart it again: with the key it answers the first.
@@ -7933,7 +7968,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					cpu: Math.min(1, mean.cpu),
 					memoryMb: round(mean.memoryMb),
 					runningSeconds: round(seconds),
-					cost: round((seconds / 3600) * rate),
+					cost: round(costOf(current, from, to)),
 					measured: mean.measured,
 					...(mean.cpuMax === undefined ? {} : { cpuMax: Math.min(1, mean.cpuMax) }),
 					...(mean.memoryMbMax === undefined ? {} : { memoryMbMax: round(mean.memoryMbMax) }),
@@ -7960,7 +7995,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				totals: {
 					runningSeconds: round(seconds),
 					cpuSeconds: round(seconds * meanCpu(current, since, at)),
-					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
+					cost: { currency: rates.currency, total: round(costOf(current, since, at)), ratePerHour: rate },
 				},
 				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
 				...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
@@ -7986,74 +8021,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Commands and files.
 
 		runCommand: async (principal, { params, body, idempotencyKey }) => {
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "exec");
 			return once(principal, "runCommand", { params, body, idempotencyKey }, async () => {
-				const current = await requireRunning(principal, sandbox.id);
-				if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
-				const detached = body.detached === true;
-				const command: StoredCommand = {
-					id: randomId("cmd"),
-					sandboxId: current.id,
-					accountId: current.accountId,
-					command: body.command,
-					cwd: resolvePath(body.cwd ?? homeFor(current.type), homeFor(current.type)),
-					state: "running",
-					stdout: "",
-					stderr: "",
-					truncated: false,
-					startedAt: now(),
-					...(detached ? { detached: true } : {}),
-				};
-				await store.commands.put(command);
-				// Checked once stored, as a create is: a command landing as its sandbox's account is deleted (its sandbox gone
-				// or the account closed) is forgotten and never run.
-				if ((await store.sandboxes.get(current.id)) === undefined || !(await accountOpen(current.accountId))) {
-					await store.commands.delete(command.id);
-					throw accountClosed();
+				const first = await runCommandOnce(principal, sandbox.id, body);
+				// An isolate with `autoUpgrade` whose command needed a microVM: upgraded, and the command run again there, once,
+				// where it ran (`/workspace` is the same files in the microVM).
+				if (first.needsMicrovm === undefined || body.detached === true) return commandView(first);
+				const latest = await store.sandboxes.get(sandbox.id);
+				if (latest?.type !== "isolate" || latest.autoUpgrade !== true) return commandView(first);
+				try {
+					await upgradeIsolate(principal, role, sandbox.id, {});
+				} catch (error) {
+					// The isolate is as it was: its command's answer stands, saying why it wasn't upgraded.
+					const said = await store.commands.update(first.id, (command) => ({
+						...command,
+						stderr: `${command.stderr}kantel: the isolate couldn't be upgraded to a microVM: ${messageOf(error)}\n`,
+					}));
+					return commandView(said ?? first);
 				}
-				const controller = new AbortController();
-				runningCommands.set(command.id, controller);
-				// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a
-				// long build isn't stopped under them. A detached one counts only while it is followed (`getCommand`).
-				const using: ReturnType<typeof setInterval> | undefined = detached
-					? undefined
-					: setInterval(() => noteActivity(current.id), ACTIVITY_WRITE_MS);
-				(using as { unref?: () => void } | undefined)?.unref?.();
-				const stopUsing = (): void => {
-					if (using !== undefined) clearInterval(using);
-				};
-				const finish = async (result: ExecResult): Promise<StoredCommand> => {
-					stopUsing();
-					runningCommands.delete(command.id);
-					return (await endCommand(command.id, result)) ?? command;
-				};
-				const failed = async (error: unknown): Promise<StoredCommand> => {
-					// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
-					// it runs on, and getCommand fetches its end. A foreground one too, on a backend that keeps it past its call.
-					// This gateway's wait is over either way, so its use ends; following the command counts on its own.
-					if (isDetachedWaitEnded(error)) {
-						stopUsing();
-						runningCommands.delete(command.id);
-						return (await store.commands.get(command.id)) ?? command;
-					}
-					return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
-				};
-				const run = backend.exec(current.id, {
-					command: body.command,
-					cwd: command.cwd,
-					env: { ...current.env, ...body.env },
-					stdin: body.stdin,
-					// A detached command has no limit unless the caller gave one.
-					timeoutMs: detached ? body.timeoutMs : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-					signal: controller.signal,
-					commandId: command.id,
-					...(detached ? { detached: true } : {}),
-				});
-				if (detached) {
-					keepGoing(run.then(finish, failed));
-					return commandView(command);
-				}
-				return commandView(await run.then(finish, failed));
+				const rerun = await runCommandOnce(principal, sandbox.id, { ...body, cwd: first.cwd }, first.id);
+				const noted = await store.commands.update(first.id, (command) => ({ ...command, rerunAs: rerun.id }));
+				if (noted === undefined) await store.commands.put({ ...first, rerunAs: rerun.id });
+				return commandView(rerun);
 			});
 		},
 
@@ -8073,7 +8062,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const items = await Promise.all(page.items.map((command) => fetchedCommand(command)));
 			return { items: items.map(commandView), nextCursor: page.nextCursor };
 		},
-
 		getCommand: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const command = await store.commands.get(params.commandId);
@@ -9480,6 +9468,330 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
+	/**
+	 * Runs a command once in a running sandbox (`runCommand`): recorded, run by its backend, and answered once it ends
+	 * (detached: at once, its end recorded later). `rerunOf`: it is a command run again in the microVM its isolate was
+	 * just upgraded to (`autoUpgrade`).
+	 */
+	async function runCommandOnce(
+		principal: Principal,
+		sandboxId: string,
+		body: computeSchema.RunCommandBody,
+		rerunOf?: string,
+	): Promise<StoredCommand> {
+		const current = await requireRunning(principal, sandboxId);
+		if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
+		const detached = body.detached === true;
+		const command: StoredCommand = {
+			id: randomId("cmd"),
+			sandboxId: current.id,
+			accountId: current.accountId,
+			command: body.command,
+			...(rerunOf === undefined ? {} : { rerunOf }),
+			cwd: resolvePath(body.cwd ?? homeFor(current.type), homeFor(current.type)),
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: now(),
+			...(detached ? { detached: true } : {}),
+		};
+		await store.commands.put(command);
+		// Checked once stored, as a create is: a command landing as its sandbox's account is deleted (its sandbox gone
+		// or the account closed) is forgotten and never run.
+		if ((await store.sandboxes.get(current.id)) === undefined || !(await accountOpen(current.accountId))) {
+			await store.commands.delete(command.id);
+			throw accountClosed();
+		}
+		const controller = new AbortController();
+		runningCommands.set(command.id, controller);
+		// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a
+		// long build isn't stopped under them. A detached one counts only while it is followed (`getCommand`).
+		const using: ReturnType<typeof setInterval> | undefined = detached
+			? undefined
+			: setInterval(() => noteActivity(current.id), ACTIVITY_WRITE_MS);
+		(using as { unref?: () => void } | undefined)?.unref?.();
+		const stopUsing = (): void => {
+			if (using !== undefined) clearInterval(using);
+		};
+		const finish = async (result: ExecResult): Promise<StoredCommand> => {
+			stopUsing();
+			runningCommands.delete(command.id);
+			return (await endCommand(command.id, result)) ?? command;
+		};
+		const failed = async (error: unknown): Promise<StoredCommand> => {
+			// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
+			// it runs on, and getCommand fetches its end. A foreground one too, on a backend that keeps it past its call.
+			// This gateway's wait is over either way, so its use ends; following the command counts on its own.
+			if (isDetachedWaitEnded(error)) {
+				stopUsing();
+				runningCommands.delete(command.id);
+				return (await store.commands.get(command.id)) ?? command;
+			}
+			return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
+		};
+		const run = backend.exec(current.id, {
+			command: body.command,
+			cwd: command.cwd,
+			env: { ...current.env, ...body.env },
+			stdin: body.stdin,
+			// A detached command has no limit unless the caller gave one.
+			timeoutMs: detached ? body.timeoutMs : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+			signal: controller.signal,
+			commandId: command.id,
+			...(detached ? { detached: true } : {}),
+		});
+		if (detached) {
+			keepGoing(run.then(finish, failed));
+			return command;
+		}
+		return run.then(finish, failed);
+	}
+
+	/**
+	 * `POST /sandboxes/{id}/upgrade`: an isolate made a microVM with the same ID, its files, settings and history. The
+	 * record goes `starting` while its backend makes the microVM (`SandboxBackend.upgrade`), so its commands and file
+	 * calls wait for it as they wait for a start (`requireRunning`), and every other lifecycle call queues behind it
+	 * (`track`). Its isolate keeps running until then and is billed to the switch; there its isolate run ends, priced as
+	 * an isolate (`RunPeriod.ratePerHour`), and its microVM run begins. A failure puts the record back exactly as it was
+	 * (its state, its run, its stop time): the isolate is untouched, and the call fails with the backend's error. A
+	 * microVM is answered as it is. Answers the record once the upgrade ends, or with `wait: false` as soon as it is
+	 * `starting`.
+	 */
+	async function upgradeIsolate(
+		principal: Principal,
+		role: MemberRole,
+		sandboxId: string,
+		body: computeSchema.UpgradeSandboxBody,
+	): Promise<StoredSandbox> {
+		const current = await settledFor(principal, sandboxId);
+		if (current.type === "microvm") return current;
+		if (current.state !== "running" && current.state !== "stopped") {
+			throw new KantelError(
+				"conflict",
+				`The sandbox is ${current.state}: an isolate is upgraded while it is running or stopped`,
+			);
+		}
+		if (backend.upgrade === undefined) throw new KantelError("not_supported", UPGRADE_UNSUPPORTED);
+		if (
+			body.size !== undefined &&
+			body.resources !== undefined &&
+			(body.resources.vcpus !== undefined || body.resources.memoryMb !== undefined)
+		) {
+			throw new KantelError("invalid", "Give resources or a size, not both");
+		}
+		const read = backend.capabilities();
+		const known = ensureHosts(read);
+		known.catch(() => undefined);
+		const capabilities = await read;
+		if (!capabilities.types.includes("microvm")) {
+			throw placementError("unavailable", "no_host_for_type", "No host runs microvm sandboxes");
+		}
+		if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
+			throw placementError(
+				"not_supported",
+				"no_host_offers_size",
+				`This deployment doesn't offer the size ${body.size}`,
+			);
+		}
+		// The hosts its microVM may go on, as a create of one would choose: its labels and pin kept.
+		const hosts = requireHosts(
+			await known,
+			current.accountId,
+			"microvm",
+			{ ...current.hostLabels },
+			false,
+			await mayShare(principal),
+			current.hostPin,
+		);
+		const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
+		const diskAlone =
+			body.resources !== undefined && body.resources.vcpus === undefined && body.resources.memoryMb === undefined
+				? checkDisk("microvm", body.resources.diskGb)
+				: undefined;
+		const shape = shapeFor(
+			"microvm",
+			diskAlone === undefined ? body.resources : undefined,
+			eligible,
+			capabilities.sizes,
+		);
+		const presets = eligible.flatMap((host) => host.sizes ?? capabilities.sizes);
+		const machine = sandboxMachine(
+			undefined,
+			{
+				...(body.size === undefined ? {} : { size: body.size }),
+				...(shape === undefined ? {} : { shape }),
+				...(diskAlone === undefined ? {} : { diskGb: diskAlone }),
+			},
+			presets,
+		);
+		if (machine === undefined) {
+			throw placementError(
+				"not_supported",
+				"no_host_offers_size",
+				`No host this sandbox may use offers the size ${body.size ?? "default"}`,
+			);
+		}
+		if (diskAlone !== undefined && machine.shape !== undefined)
+			requireMaker(eligible, capabilities.sizes, machine.shape);
+		// A stopped one comes back running, as a microVM: it counts against the account's sandboxes as a start does.
+		if (current.state === "stopped") await requireCapacity(current.accountId, 1);
+		// A stopped isolate's files, for a backend that keeps them in its stop's snapshot (the stub); a host keeps them.
+		const fromSnapshot = current.state === "stopped" ? await latestRef(current) : undefined;
+		const image = body.image ?? capabilities.defaultImage;
+		const began = await transition(
+			current.id,
+			current.state,
+			(latest) => ({
+				...latest,
+				state: "starting",
+				lifecycle: (latest.lifecycle ?? 0) + 1,
+				// Its egress is read afresh for the microVM: an update read before it is older, and loses.
+				egressRevision: later(latest.egressRevision),
+			}),
+			(latest) => latest.type === "isolate" && latest.lifecycle === current.lifecycle,
+		);
+		if (!("moved" in began)) {
+			if (began.lost.type === "microvm") return began.lost;
+			throw new KantelError("conflict", `The sandbox is ${began.lost.state}; try the upgrade again`);
+		}
+		const starting = began.moved;
+		/** Puts the record back as it was before the upgrade: the isolate never stopped, and nothing was moved. */
+		const restore = () =>
+			transition(sandboxId, "starting", (latest) => ({
+				...latest,
+				state: current.state,
+				runs: current.runs,
+				stopsAt: current.stopsAt,
+				startedAt: current.startedAt,
+				stoppedAt: current.stoppedAt,
+				lastActiveAt: current.lastActiveAt,
+				lifecycle: (latest.lifecycle ?? 0) + 1,
+			})).catch(() => undefined);
+		const work = track([current.id], async (): Promise<StoredSandbox> => {
+			const began = now();
+			let placement: UpgradedPlacement | undefined;
+			const egress = await egressFor(starting.accountId, starting).catch(async (error: unknown) => {
+				await restore();
+				throw error;
+			});
+			try {
+				placement = await backend.upgrade?.(current.id, {
+					sandboxId: current.id,
+					accountId: current.accountId,
+					type: "microvm",
+					subdomain: current.subdomain,
+					...(machine.size === undefined ? {} : { size: machine.size }),
+					...(machine.shape === undefined ? {} : { shape: machine.shape }),
+					image,
+					env: starting.env,
+					eligibleHosts: hosts,
+					...(fromSnapshot === undefined ? {} : { fromSnapshot }),
+					...egress,
+				});
+			} catch (error) {
+				await restore();
+				throw error;
+			}
+			if (placement === undefined) {
+				await restore();
+				throw new KantelError("not_supported", UPGRADE_UNSUPPORTED);
+			}
+			const at = now();
+			const isolateRate = rateOf(current);
+			const environments = await environmentsOf(starting);
+			const result = await transition(sandboxId, "starting", (latest) => {
+				const runs = latest.runs.map((run) =>
+					run.to === undefined ? { ...run, to: at, ratePerHour: isolateRate } : run,
+				);
+				const resources = placement.resources;
+				return {
+					...latest,
+					type: "microvm",
+					state: "running",
+					size: machine.size,
+					shape:
+						resources === undefined
+							? machine.shape
+							: {
+									vcpus: resources.vcpus,
+									memoryMb: resources.memoryMb,
+									...(resources.diskGb > 0 ? { diskGb: resources.diskGb } : {}),
+								},
+					resources,
+					image,
+					capabilities: placement.capabilities,
+					hostId: placement.hostId,
+					machineAt: placement.machineAt,
+					health: "ok",
+					reason: undefined,
+					...placedBase(placement),
+					runs: [...runs, { from: at }],
+					startedAt: at,
+					lastActiveAt: at,
+					stopsAt: latest.autoStopMinutes === null ? undefined : at + latest.autoStopMinutes * 60_000,
+					lifecycle: (latest.lifecycle ?? 0) + 1,
+					upgradedFrom: { type: "isolate", at },
+					// The isolate's snapshots stay theirs, an isolate's: the microVM's own come with its first stop.
+					latestSnapshotId: undefined,
+					latestSnapshotAt: undefined,
+					ports: [],
+					egressApplied: egress.egressRevision ?? latest.egressApplied,
+					// Its environments' files and repositories, where a microVM keeps them, once it runs.
+					...(environments.some((environment) => workFor(environment).length > 0)
+						? { pendingProvision: environments.flatMap(workFor) }
+						: {}),
+					startup: placement.startup === undefined ? undefined : { ...placement.startup, totalMs: at - began },
+				};
+			});
+			if (!("moved" in result)) {
+				// Deleted while it was made: the microVM goes with it.
+				if (result.lost.state === "deleted" || result.lost.state === "deleting") {
+					await backend.destroy(sandboxId).catch(() => undefined);
+				}
+				throw new KantelError("conflict", `The sandbox is ${result.lost.state}`);
+			}
+			const upgraded = result.moved;
+			await emit("sandbox.upgraded", upgraded.accountId, {
+				sandbox: upgraded,
+				data: {
+					actor: actorOf(principal),
+					from: "isolate",
+					to: "microvm",
+					previousState: current.state,
+					path: placement.path,
+					files: placement.files,
+					bytes: placement.bytes,
+					durationMs: at - began,
+				},
+			});
+			if (current.state === "stopped") {
+				await emit("sandbox.running", upgraded.accountId, {
+					sandbox: upgraded,
+					data: { previousState: "stopped" },
+				});
+			}
+			// Changed while it was made: sent now it runs.
+			if (upgraded.egressRevision !== egress.egressRevision) pushEgress([upgraded]);
+			// Its isolate's exposed ports, on the microVM, where a caller who may open them asked.
+			if (current.ports.length > 0 && mayUse(principal, "access", role)) {
+				await copyPorts(upgraded, current.ports, encodeGrantee(principal)).catch(() => undefined);
+			}
+			if (upgraded.pendingProvision !== undefined) {
+				const authorised = environments.filter(
+					(environment) => environment.repos.length === 0 || mayUse(principal, "exec", role),
+				);
+				await provision(upgraded.id, authorised).catch(() => undefined);
+			}
+			return (await store.sandboxes.get(sandboxId)) ?? upgraded;
+		});
+		if (body.wait === false) {
+			keepGoing(work);
+			return starting;
+		}
+		return work;
+	}
+
 	async function restart(
 		principal: Principal,
 		sandboxId: string,

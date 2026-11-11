@@ -2009,7 +2009,12 @@ describe("a sandbox with several environments", () => {
 		const { api, tom, recorded } = setup();
 		await githubEnvironment(tom);
 		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ type: "microvm", environment: "backend", env: { OWN: "mine" }, wait: true });
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			environment: "backend",
+			env: { OWN: "mine" },
+			wait: true,
+		});
 		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
 
 		const answer = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });

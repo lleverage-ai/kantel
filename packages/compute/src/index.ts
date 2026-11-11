@@ -11,6 +11,7 @@ export * from "./http.ts";
 export * from "./live.ts";
 export * from "./mounts.ts";
 export * from "./names.ts";
+export * from "./needs-microvm.ts";
 export * from "./routed-backend.ts";
 export * from "./secrets.ts";
 export * from "./service.ts";

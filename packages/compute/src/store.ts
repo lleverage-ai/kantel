@@ -127,6 +127,11 @@ export interface StoredInvite {
 export interface RunPeriod {
 	readonly from: number;
 	readonly to?: number;
+	/**
+	 * What an hour of it cost, where that isn't the sandbox's rate now: an upgraded sandbox's isolate run, priced as the
+	 * isolate it was. Absent: the sandbox's rate.
+	 */
+	readonly ratePerHour?: number;
 }
 
 /** A CPU and memory reading of a running sandbox. */
