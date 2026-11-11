@@ -1064,10 +1064,13 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				: undefined;
 		// Once, and only forward: a delivery sent again, or one arriving after a later one, changes nothing. Only the
 		// installation that recorded a job moves it on; only a delivery admitted as `new` records one.
+		// A runner it registered through this installation may record the job it took (never a queued one), so a missed
+		// `completed` can still be found by polling.
 		const existing = await store.githubRunnerJobs.get(id);
-		const mayRecord = admission === "new" || existing?.installationId === installationId;
+		const runnersJob = machine !== undefined && (state === "in_progress" || state === "completed");
+		const mayRecord = admission === "new" || runnersJob || existing?.installationId === installationId;
 		const inserted =
-			admission === "new" &&
+			(admission === "new" || runnersJob) &&
 			(await store.githubRunnerJobs.insert({
 				id,
 				integrationId: record.id,

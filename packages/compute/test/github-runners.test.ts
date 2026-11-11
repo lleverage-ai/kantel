@@ -600,6 +600,9 @@ describe("GitHub runners", () => {
 			...current,
 			owner: "new-org",
 		}));
+		// GitHub gives the same runner another of the old owner's jobs: its job is recorded, for polling to find.
+		await job("in_progress", 3, { runner_name: sandboxId });
+		expect(await store.githubRunnerJobs.get("ghr_one:3")).toMatchObject({ state: "in_progress", installationId: 42 });
 		expect((await job("completed", 1, { runner_name: sandboxId, conclusion: "success" })).status).toBe(200);
 		await runners.tick();
 		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
