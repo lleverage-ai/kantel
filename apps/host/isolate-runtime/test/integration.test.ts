@@ -505,6 +505,145 @@ d("PR #837 review fixes", () => {
 	const nodeScript = async (source: string, timeoutMs = 15000) =>
 		c.exec("pr", "node s.js", { "s.js": await c.fileEntry(source) }, timeoutMs);
 
+	// Each wasm attack holds 64 MiB memories (or grows one in 32 MiB steps) past the 256 MiB budget after tampering
+	// with an intrinsic the guard used to look up when it ran; each must be refused near the budget, not allowed to 12.
+	const WASM_ITERATOR = `const bytes = new Uint8Array([0,97,115,109,1,0,0,0,5,4,1,0,128,8,7,5,1,1,109,2,0]);
+const mod = new WebAssembly.Module(bytes);
+const it = Array.prototype[Symbol.iterator];
+Array.prototype[Symbol.iterator] = function* () {};
+const held = [];
+let made = 0;
+let refused = "no";
+try { for (let i = 0; i < 12; i++) { held.push(new WebAssembly.Instance(mod).exports.m); made++; } } catch (e) { refused = e.name; }
+Array.prototype[Symbol.iterator] = it;
+console.log("iterator", made, refused);
+`;
+	const WASM_NUMBER = `const N = Number, T = Math.trunc;
+let made = 0, refused = "no";
+const held = [];
+globalThis.Number = Object.assign(function (v) { let c = 0; return { valueOf() { return c++ < 3 ? 0 : N(v); } }; }, { isFinite: () => true, isInteger: () => true });
+Math.trunc = (x) => x;
+try { for (let i = 0; i < 12; i++) { held.push(new WebAssembly.Memory({ initial: 1024 })); made++; } } catch (e) { refused = e.name; }
+globalThis.Number = N; Math.trunc = T;
+console.log("number", made, refused);
+`;
+	const WASM_BYTELENGTH = `const m = new WebAssembly.Memory({ initial: 1 });
+m.grow(1);
+const d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength");
+Object.defineProperty(ArrayBuffer.prototype, "byteLength", { configurable: true, get() { return 0; } });
+let grown = 0, refused = "no";
+try { for (let i = 0; i < 15; i++) { m.grow(512); grown++; } } catch (e) { refused = e.name; }
+Object.defineProperty(ArrayBuffer.prototype, "byteLength", d);
+console.log("byteLength", grown, refused);
+`;
+	const WASM_THEN = `const big = new Uint8Array([0,97,115,109,1,0,0,0,5,4,1,0,128,8,7,5,1,1,109,2,0]);
+const small = new Uint8Array([0,97,115,109,1,0,0,0]);
+(async () => {
+	const held = [];
+	let made = 0, refused = "no";
+	try {
+		for (let i = 0; i < 12; i++) {
+			const X = await WebAssembly.compile(big);
+			Object.defineProperty(Object.prototype, "then", {
+				configurable: true,
+				get() {
+					if (this instanceof WebAssembly.Module) {
+						delete Object.prototype.then;
+						return (resolve) => resolve(X);
+					}
+				},
+			});
+			await WebAssembly.compile(small);
+			delete Object.prototype.then;
+			held.push(new WebAssembly.Instance(X).exports.m);
+			made++;
+		}
+	} catch (e) { refused = e.name; }
+	console.log("then", made, refused);
+})();
+`;
+	const WASM_BYTES = `const evil = [0,97,115,109,1,0,0,0, 1,6,1,96,1,127,1,127, 3,2,1,0, 5,3,1,0,1, 7,9,2,1,109,2,0,1,103,0,0, 10,8,1,6,0,32,0,64,0,11];
+const at = evil.length - 3;
+const good = evil.slice(); good[at] = 0x45; good[at + 1] = 0x01;
+const TA = Object.getPrototypeOf(Uint8Array.prototype);
+const out = [];
+for (const view of [false, true]) {
+	const buf = new Uint8Array(good);
+	const saved = view ? TA.slice : ArrayBuffer.prototype.slice;
+	if (view) TA.slice = function () { return this; }; else ArrayBuffer.prototype.slice = function () { return this; };
+	Object.defineProperty(Object.prototype, "error", { configurable: true, get() { buf.set(evil); return undefined; } });
+	let result;
+	try {
+		const mod = new WebAssembly.Module(view ? buf : buf.buffer);
+		delete Object.prototype.error;
+		const inst = new WebAssembly.Instance(mod);
+		inst.exports.g(6000);
+		result = \`grew \${inst.exports.m.buffer.byteLength >> 20}\`;
+	} catch (e) { result = \`refused \${e.name}\`; }
+	delete Object.prototype.error;
+	if (view) TA.slice = saved; else ArrayBuffer.prototype.slice = saved;
+	out.push(result);
+}
+console.log("bytes", out.join(", "));
+`;
+	const WASM_SHARED = `Object.defineProperty(Object.prototype, "shared", { configurable: true, get() { return true; } });
+Object.defineProperty(Object.prototype, "maximum", { configurable: true, get() { return 10; } });
+let kind;
+try { kind = Object.prototype.toString.call(new WebAssembly.Memory({ initial: 1, shared: false, maximum: undefined }).buffer); } catch (e) { kind = \`refused \${e.name}\`; }
+delete Object.prototype.shared; delete Object.prototype.maximum;
+console.log("shared", kind);
+`;
+
+	it("wasm guard: replacing the Array iterator doesn't hide a module's memories", async () => {
+		const r = await nodeScript(WASM_ITERATOR);
+		const [, made, refused] = r.stdout.trim().split(" ");
+		expect(Number(made)).toBeLessThan(4);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: replacing Number, Number.isFinite and Math.trunc doesn't undercount a Memory", async () => {
+		const r = await nodeScript(WASM_NUMBER);
+		const [, made, refused] = r.stdout.trim().split(" ");
+		expect(Number(made)).toBeLessThan(4);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: replacing ArrayBuffer.prototype.byteLength doesn't undercount grow()", async () => {
+		const r = await nodeScript(WASM_BYTELENGTH);
+		const [, grown, refused] = r.stdout.trim().split(" ");
+		expect(Number(grown)).toBeLessThan(8);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: an Object.prototype.then getter can't swap the module a compile records", async () => {
+		const r = await nodeScript(WASM_THEN);
+		const [, made, refused] = r.stdout.trim().split(" ");
+		expect(Number(made)).toBeLessThan(4);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: replaced slice methods and an Object.prototype getter can't change the bytes after inspection", async () => {
+		// A module whose code grows its own memory, shown to the inspection as a harmless one and swapped back
+		// before compiling, would grow past the budget behind grow()'s back; the guard compiles its own copy.
+		const r = await nodeScript(WASM_BYTES);
+		expect(r.stdout).toBe("bytes grew 0, grew 0\n");
+		await neighbourOk();
+	});
+	it("wasm guard: Object.prototype getters can't make a Memory shared", async () => {
+		expect((await nodeScript(WASM_SHARED)).stdout).toBe("shared [object ArrayBuffer]\n");
+	});
+	it("buffer guard: replacing RangeError, TypeError and Reflect still refuses a resizable ArrayBuffer", async () => {
+		const r = await nodeScript(
+			`globalThis.RangeError = function () { return {}; };
+globalThis.TypeError = function () { return {}; };
+Reflect.construct = () => ({});
+let made;
+try { made = new ArrayBuffer(8, { maxByteLength: 1 << 30 }); } catch {}
+console.log(made === undefined, new ArrayBuffer(4).byteLength);`,
+		);
+		expect(r.stdout).toBe("true 4\n");
+	});
+
 	it("redirects keep PUT, PATCH and DELETE (and their bodies) on 301 and 302, as Fetch does", async () => {
 		const r = await nodeScript(
 			`const cases = [["PUT", 301], ["PATCH", 302], ["DELETE", 302], ["POST", 301], ["POST", 302], ["PUT", 303], ["PUT", 307], ["POST", 308]];
