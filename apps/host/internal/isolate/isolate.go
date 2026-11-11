@@ -156,6 +156,28 @@ type sandbox struct {
 	// began (zero when none is), for the host's usage samples (usage.go). Under mu.
 	busy      time.Duration
 	busySince time.Time
+	// held is the manifest as the upgrade holding the sandbox still (heldBy, meta.Frozen) first read it, for that
+	// upgrade's reads: nothing changes it until a thaw, and a move to another host reads every file in its own call, so
+	// parsing a manifest of thousands of entries for each one made the move quadratic. Under mu; read only.
+	held   Manifest
+	heldBy string
+}
+
+// manifest is the sandbox's manifest, for a read (write false) or to change and write back. A read while it is frozen
+// is answered from held. Under mu.
+func (s *sandbox) manifest(write bool) (Manifest, error) {
+	if write || s.meta.Frozen == "" {
+		s.held, s.heldBy = nil, ""
+		return readManifest(filepath.Join(s.dir, "manifest.json"))
+	}
+	if s.held == nil || s.heldBy != s.meta.Frozen {
+		man, err := readManifest(filepath.Join(s.dir, "manifest.json"))
+		if err != nil {
+			return nil, err
+		}
+		s.held, s.heldBy = man, s.meta.Frozen
+	}
+	return s.held, nil
 }
 
 // saveMeta writes the sandbox's meta.json, noting whether it is behind meta. Held under mu.
@@ -1428,7 +1450,7 @@ func (m *Manager) withManifest(id string, write bool, fn func(s *sandbox, man Ma
 	if write && s.meta.Frozen != "" {
 		return beingUpgraded(id)
 	}
-	man, err := readManifest(filepath.Join(s.dir, "manifest.json"))
+	man, err := s.manifest(write)
 	if err != nil {
 		return err
 	}

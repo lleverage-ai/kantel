@@ -69,6 +69,7 @@ func (m *Manager) Thaw(id, opID string) error {
 		return nil
 	}
 	s.meta.Frozen = ""
+	s.held, s.heldBy = nil, ""
 	return s.saveMeta()
 }
 

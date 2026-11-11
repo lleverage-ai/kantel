@@ -264,6 +264,21 @@ const UPGRADE_READ_BYTES = 8 * 1024 * 1024;
 /** The most of the tar one write carries to the microVM's host: a bigger one goes in parts, joined there. */
 const UPGRADE_WRITE_BYTES = 24 * 1024 * 1024;
 
+/** How many of an isolate's files are read at once as Kantel moves them to another host. */
+const UPGRADE_READS = 16;
+
+/** An entry of an isolate's `/workspace` as an upgrade to another host lists it, before its files are read. */
+type WorkspaceEntry =
+	| { readonly kind: "directory"; readonly name: string }
+	| { readonly kind: "symlink"; readonly name: string; readonly target: string }
+	| {
+			readonly kind: "file";
+			readonly name: string;
+			readonly path: string;
+			readonly size: number;
+			readonly mode: number;
+	  };
+
 /** A file of a sandbox, as `sandbox.files.list` answers it. */
 interface ListedFile {
 	readonly path: string;
@@ -1452,25 +1467,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		throw new KantelError("conflict", "A sandbox with that ID exists");
 	};
 
+	const tooMuchToMove = (what: string) =>
+		new KantelError(
+			"not_supported",
+			`The isolate has ${what} to move to a microVM on another host (at most ${moveLimits.files} files and ${Math.round(moveLimits.bytes / (1024 * 1024))} MiB); upgrade it on a host that runs both isolates and microVMs`,
+		);
+
 	/**
-	 * Moves an isolate's `/workspace` from its host to a new microVM of the same ID on another (an upgrade its own host
-	 * can't make), while the isolate is held still (`sandbox.upgrade.freeze`), so what is read is one version: each
-	 * directory listed, each file read a part at a time, all of it as one tar held here (at most `UPGRADE_MOVE_LIMITS`,
-	 * counted as read), written into the microVM, in parts where it is big, and extracted at `UPGRADE_WORKSPACE` by the
-	 * microVM's host with its own code, as an archive upload is.
+	 * An isolate's `/workspace` as an upgrade to another host moves it, listed while it is held still (each directory in
+	 * one call): refused here, before a microVM is made or a file read, when its listing is past `UPGRADE_MOVE_LIMITS`.
 	 */
-	const moveFiles = async (
-		sandboxId: string,
-		fromHost: string,
-		toHost: string,
-	): Promise<{ readonly files: number; readonly bytes: number }> => {
-		const entries: TarEntry[] = [];
-		let bytes = 0;
-		const tooMuch = (what: string) =>
-			new KantelError(
-				"not_supported",
-				`The isolate has ${what} to move to a microVM on another host (at most ${moveLimits.files} files and ${Math.round(moveLimits.bytes / (1024 * 1024))} MiB); upgrade it on a host that runs both isolates and microVMs`,
-			);
+	const listWorkspace = async (sandboxId: string, fromHost: string): Promise<WorkspaceEntry[]> => {
+		const entries: WorkspaceEntry[] = [];
+		let listedBytes = 0;
 		const queue = ["/workspace"];
 		for (let dir = queue.shift(); dir !== undefined; dir = queue.shift()) {
 			const { entries: listed } = await onHost<{ entries: ListedFile[] | null }>(fromHost, HostMethods.fileList, {
@@ -1481,42 +1490,85 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (!entry.path.startsWith("/workspace/")) continue;
 				const name = entry.path.slice("/workspace/".length);
 				if (name === "" || name.split("/").includes("..")) continue;
-				if (entries.length >= moveLimits.files) throw tooMuch("too many files");
+				if (entries.length >= moveLimits.files) throw tooMuchToMove("too many files");
 				if (entry.type === "dir" || entry.type === "directory") {
 					entries.push({ kind: "directory", name });
 					queue.push(entry.path);
 				} else if (entry.type === "symlink") {
 					entries.push({ kind: "symlink", name, target: entry.target ?? "" });
 				} else {
-					// Counted as read, not as listed: what is copied is what the limit holds to.
-					if (bytes + entry.size > moveLimits.bytes) throw tooMuch("too many bytes");
-					const parts: Uint8Array[] = [];
-					let size = entry.size;
-					for (let offset = 0; offset === 0 || offset < size; ) {
-						const read = await onHost<{ data: string; fileSize?: number }>(fromHost, HostMethods.fileRead, {
-							sandboxId,
-							path: entry.path,
-							offset,
-							length: UPGRADE_READ_BYTES,
-						});
-						const part = bytesOf(read.data);
-						bytes += part.length;
-						if (bytes > moveLimits.bytes) throw tooMuch("too many bytes");
-						parts.push(part);
-						size = read.fileSize ?? part.length;
-						offset += part.length;
-						if (part.length === 0) break;
-					}
-					const whole = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-					let at = 0;
-					for (const part of parts) {
-						whole.set(part, at);
-						at += part.length;
-					}
-					entries.push({ kind: "file", name, mode: (entry.mode ?? 0) & 0o777 || 0o644, bytes: whole });
+					listedBytes += entry.size;
+					if (listedBytes > moveLimits.bytes) throw tooMuchToMove("too many bytes");
+					entries.push({ kind: "file", name, path: entry.path, size: entry.size, mode: entry.mode ?? 0 });
 				}
 			}
 		}
+		return entries;
+	};
+
+	/**
+	 * Moves an isolate's `/workspace` (`listWorkspace`) from its host to a new microVM of the same ID on another (an
+	 * upgrade its own host can't make), while the isolate is held still (`sandbox.upgrade.freeze`), so what is read is
+	 * one version: each file read a part at a time, `UPGRADE_READS` at once, all of it as one tar held here (at most
+	 * `UPGRADE_MOVE_LIMITS`, counted again as read), written into the microVM, in parts where it is big, and extracted at
+	 * `UPGRADE_WORKSPACE` by the microVM's host with its own code, as an archive upload is.
+	 */
+	const moveFiles = async (
+		sandboxId: string,
+		listing: readonly WorkspaceEntry[],
+		fromHost: string,
+		toHost: string,
+	): Promise<{ readonly files: number; readonly bytes: number }> => {
+		const entries: TarEntry[] = new Array(listing.length);
+		let bytes = 0;
+		const readFile = async (entry: Extract<WorkspaceEntry, { kind: "file" }>): Promise<Uint8Array> => {
+			const parts: Uint8Array[] = [];
+			let size = entry.size;
+			for (let offset = 0; offset === 0 || offset < size; ) {
+				const read = await onHost<{ data: string; fileSize?: number }>(fromHost, HostMethods.fileRead, {
+					sandboxId,
+					path: entry.path,
+					offset,
+					length: UPGRADE_READ_BYTES,
+				});
+				const part = bytesOf(read.data);
+				// Counted as read, not as listed: what is copied is what the limit holds to.
+				bytes += part.length;
+				if (bytes > moveLimits.bytes) throw tooMuchToMove("too many bytes");
+				parts.push(part);
+				size = read.fileSize ?? part.length;
+				offset += part.length;
+				if (part.length === 0) break;
+			}
+			const whole = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+			let at = 0;
+			for (const part of parts) {
+				whole.set(part, at);
+				at += part.length;
+			}
+			return whole;
+		};
+		// Each read is a round trip to the isolate's host: a few at once, in the listing's order, the first failure
+		// ending them all.
+		let next = 0;
+		let failed = false;
+		const reader = async () => {
+			while (!failed && next < listing.length) {
+				const index = next++;
+				const entry = listing[index];
+				if (entry === undefined) continue;
+				try {
+					entries[index] =
+						entry.kind === "file"
+							? { kind: "file", name: entry.name, mode: entry.mode & 0o777 || 0o644, bytes: await readFile(entry) }
+							: entry;
+				} catch (error) {
+					failed = true;
+					throw error;
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(UPGRADE_READS, Math.max(listing.length, 1)) }, reader));
 		const tar = writeTar(entries);
 		if (tar.length <= UPGRADE_WRITE_BYTES) {
 			await onHost(toHost, HostMethods.fileWrite, {
@@ -2265,6 +2317,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						{ sandboxId, operationId },
 						{ timeoutMs: FREEZE_TIMEOUT_MS },
 					);
+					// Listed before the microVM is made: too much to move is refused without one.
+					const listing = await listWorkspace(sandboxId, source.hostId);
 					const sandbox = await onHost<HostSandbox>(
 						target.id,
 						HostMethods.create,
@@ -2272,7 +2326,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						undefined,
 						target,
 					);
-					const moved = await moveFiles(sandboxId, source.hostId, target.id);
+					const moved = await moveFiles(sandboxId, listing, source.hostId, target.id);
 					const linked = await onHost<HostExecResult>(target.id, HostMethods.exec, {
 						sandboxId,
 						argv: ["sh", "-c", UPGRADE_LINK],

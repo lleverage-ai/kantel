@@ -216,3 +216,48 @@ func TestFreezeHoldsTheIsolateStillForItsUpgrade(t *testing.T) {
 		t.Fatalf("a write after the thaw: %v", err)
 	}
 }
+
+// While an upgrade holds the isolate still, its reads are answered from the manifest as the first of them read it (an
+// upgrade to another host reads each file in its own call, and parsing a manifest of 20,000 entries for each made the
+// move quadratic); a thaw lets them read the file again.
+func TestAFrozenIsolatesReadsKeepItsManifest(t *testing.T) {
+	m, _ := upgradeManager(t, proto.StateRunning, map[string]string{"a.txt": "a"}, nil, nil)
+	s := m.sandboxes["iso_1"]
+	read := func() (string, error) {
+		data, _, _, err := m.ReadFile(context.Background(), proto.FileParams{SandboxID: "iso_1", Path: "/workspace/a.txt"})
+		return string(data), err
+	}
+	manifest := filepath.Join(s.dir, "manifest.json")
+	good, _ := os.ReadFile(manifest)
+	if err := m.Freeze("iso_1", "upg_1", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := read(); err != nil || got != "a" {
+		t.Fatalf("read %q %v", got, err)
+	}
+	// Not read again while it is frozen: a manifest.json nothing can parse doesn't matter.
+	if err := os.WriteFile(manifest, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if got, err := read(); err != nil || got != "a" {
+			t.Fatalf("a frozen isolate's read: %q %v", got, err)
+		}
+	}
+	if list, err := m.ListFiles(context.Background(), proto.FileParams{SandboxID: "iso_1", Path: "/workspace"}); err != nil || len(list) == 0 {
+		t.Fatalf("a frozen isolate's list: %v %v", list, err)
+	}
+	// Thawed, it reads the file again.
+	if err := m.Thaw("iso_1", "upg_1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := read(); err == nil {
+		t.Fatal("a thawed isolate's read kept the manifest it was frozen with")
+	}
+	if err := os.WriteFile(manifest, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := read(); err != nil || got != "a" {
+		t.Fatalf("read %q %v", got, err)
+	}
+}
