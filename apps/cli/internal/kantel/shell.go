@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"regexp"
@@ -65,6 +66,11 @@ type shellState struct {
 	vars map[string]string
 	// unset are the sandbox's own variables unset in the session.
 	unset map[string]bool
+}
+
+// clone is a copy of the state, its maps its own.
+func (state *shellState) clone() *shellState {
+	return &shellState{cwd: state.cwd, baseline: maps.Clone(state.baseline), vars: maps.Clone(state.vars), unset: maps.Clone(state.unset)}
 }
 
 func singleQuote(value string) string {
@@ -571,6 +577,8 @@ func (s *shellSession) run() int {
 			}
 			continue
 		}
+		// Where the line starts: a retry in the microVM starts there too, not where the refused attempt left it.
+		before := s.state.clone()
 		ran := s.runLine(line)
 		s.status = ran.code
 		if ran.rerun {
@@ -595,6 +603,7 @@ func (s *shellSession) run() int {
 		if !s.upgrade() {
 			continue
 		}
+		s.state = before
 		s.status = s.runLine(line).code
 		return s.switchToSSH()
 	}

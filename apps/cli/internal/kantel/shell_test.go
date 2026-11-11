@@ -72,6 +72,9 @@ type isolateAnswer struct {
 	needsMicrovm   map[string]any
 	// rerun: the sandbox upgraded itself and ran it again, answering this.
 	rerun *isolateAnswer
+	// cwd and exports: what the line left, as its trailer says, where it changed them itself (cd app && git status).
+	cwd     string
+	exports map[string]string
 }
 
 // fakeIsolate is an isolate behind the commands API: it reads the pseudo-shell's script (the directory and variables
@@ -183,6 +186,12 @@ func (f *fakeIsolate) routes(sandboxFields map[string]any) routes {
 			}
 			if got == nil {
 				got = &isolateAnswer{}
+			}
+			if got.cwd != "" {
+				cwd = got.cwd
+			}
+			for name, value := range got.exports {
+				vars[name] = value
 			}
 			return f.record(m[1], cwd, vars, line, *got)
 		},
@@ -353,6 +362,63 @@ func TestSSHIsolateAsksToUpgrade(t *testing.T) {
 	contains(t, "stderr", r.Stderr, "Switching to SSH on the microVM, in /home/user/workspace/app.")
 	eq(t, "ssh", fmt.Sprint(*runs), fmt.Sprint([][]string{{"-t", "-p", "2222", "sbx_test1@ssh.kantel.test", "--",
 		`cd '/home/user/workspace/app' 2>/dev/null; exec "${SHELL:-/bin/bash}" -l`}}))
+}
+
+// A line refused for want of a microVM may have changed the directory or variables before it was: its retry once the
+// sandbox is upgraded starts where the line first did, not where the refusal left it (else cd app && git status runs
+// cd app again, in /workspace/app). What the retry leaves is what the session goes on with.
+func TestSSHIsolateRetriesTheLineFromWhereItStarted(t *testing.T) {
+	runs := stubSSH(t)
+	const line = "cd app && export STAGE=one && git status"
+	var mu sync.Mutex
+	upgraded := false
+	f := newFakeIsolate(func(got string) *isolateAnswer {
+		if got != line {
+			return nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if upgraded {
+			return &isolateAnswer{stdout: "On branch main\n", cwd: "/workspace/app", exports: map[string]string{"STAGE": "one"}}
+		}
+		return &isolateAnswer{exitCode: 127, stderr: "bash: git: command not found\n", needsMicrovm: needsGit,
+			cwd: "/workspace/app", exports: map[string]string{"STAGE": "one"}}
+	})
+	rs := sshAfterUpgrade(f.routes(nil))
+	upgrade := rs["POST /v1/sandboxes/sbx_test1/upgrade"]
+	rs["POST /v1/sandboxes/sbx_test1/upgrade"] = func(c call) any {
+		mu.Lock()
+		upgraded = true
+		mu.Unlock()
+		return upgrade(c)
+	}
+	r := run(t, []string{"ssh", "sbx_test1"}, opts{routes: rs, stdin: "export KEEP=1\n" + line + "\ny\n", stdinTTY: true})
+	eq(t, "exit", r.Code, 0)
+	eq(t, "stdout", r.Stdout, "On branch main\n")
+	eq(t, "lines", strings.Join(f.Lines(), "|"), ":|export KEEP=1|"+line+"|"+line)
+	setUp := func(script string) string {
+		parts := strings.Split(script, "\n")
+		return strings.Join(parts[:len(parts)-2], "|")
+	}
+	eq(t, "first", setUp(f.scripts[2]), "cd '/workspace'|export KEEP='1'")
+	eq(t, "retry", setUp(f.scripts[3]), "cd '/workspace'|export KEEP='1'")
+	// The retry's trailer: SSH opens where it left the session.
+	contains(t, "stderr", r.Stderr, "Switching to SSH on the microVM, in /home/user/workspace/app.")
+	eq(t, "ssh runs", len(*runs), 1)
+}
+
+// Declined, the refused line's directory and variables stay the session's, as any line's do.
+func TestSSHIsolateKeepsWhatTheRefusedLineLeftWhenNotUpgraded(t *testing.T) {
+	stubSSH(t)
+	const line = "cd app && export STAGE=one && git status"
+	f := newFakeIsolate(func(got string) *isolateAnswer {
+		if got == line {
+			return &isolateAnswer{exitCode: 127, needsMicrovm: needsGit, cwd: "/workspace/app", exports: map[string]string{"STAGE": "one"}}
+		}
+		return nil
+	})
+	r := run(t, []string{"ssh", "sbx_test1"}, opts{routes: f.routes(nil), stdin: line + "\nn\npwd\necho $STAGE\n", stdinTTY: true})
+	eq(t, "stdout", r.Stdout, "/workspace/app\none\n")
 }
 
 func TestSSHIsolateNotUpgradedWhenTheAnswerIsNo(t *testing.T) {

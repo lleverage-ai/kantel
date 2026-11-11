@@ -2987,6 +2987,9 @@ describe("ssh to an isolate", () => {
 		readonly needsMicrovm?: Command["needsMicrovm"];
 		/** The sandbox upgraded itself and ran it again, answering this. */
 		readonly rerun?: Answer;
+		/** What the line left, as its trailer says, where it changed them itself (`cd app && git status`). */
+		readonly cwd?: string;
+		readonly exports?: Readonly<Record<string, string>>;
 	}
 
 	/**
@@ -3061,6 +3064,8 @@ describe("ssh to an isolate", () => {
 					got = { stdout: `${line.slice(5).replace(/\$(\w+)/g, (_, name: string) => vars[name] ?? "")}\n` };
 				} else if (line === "false") got = { exitCode: 1 };
 				else got = {};
+				if (got.cwd !== undefined) cwd = got.cwd;
+				Object.assign(vars, got.exports);
 				return record(marker, cwd, vars, line, got);
 			},
 		};
@@ -3210,6 +3215,49 @@ describe("ssh to an isolate", () => {
 				],
 			},
 		]);
+	});
+
+	it("runs a refused line again from where it started, not where the refusal left it", async () => {
+		// cd app && git status run again from /workspace/app would cd app a second time.
+		const line = "cd app && export STAGE=one && git status";
+		let upgraded = false;
+		const isolate = fakeIsolate((got) => {
+			if (got !== line) return undefined;
+			const left = { cwd: "/workspace/app", exports: { STAGE: "one" } };
+			return upgraded
+				? { stdout: "On branch main\n", ...left }
+				: { exitCode: 127, stderr: "bash: git: command not found\n", needsMicrovm: NEEDS_GIT, ...left };
+		});
+		const routes = sshAfterUpgrade(isolate.routes);
+		const upgrade = routes["POST /v1/sandboxes/sbx_test1/upgrade"] as Route;
+		routes["POST /v1/sandboxes/sbx_test1/upgrade"] = (call) => {
+			upgraded = true;
+			return upgrade(call);
+		};
+		const run = await kantel(["ssh", "sbx_test1"], { routes, stdin: input(`export KEEP=1\n${line}\ny\n`, true) });
+		expect(run.code).toBe(0);
+		expect(run.stdout).toBe("On branch main\n");
+		expect(isolate.lines).toEqual([":", "export KEEP=1", line, line]);
+		const setUp = (script: string | undefined) => script?.split("\n").slice(0, -2);
+		expect(setUp(isolate.scripts[2])).toEqual(["cd '/workspace'", "export KEEP='1'"]);
+		expect(setUp(isolate.scripts[3])).toEqual(["cd '/workspace'", "export KEEP='1'"]);
+		// The retry's trailer: SSH opens where it left the session.
+		expect(run.stderr).toContain("Switching to SSH on the microVM, in /home/user/workspace/app.");
+		expect(run.ssh).toHaveLength(1);
+	});
+
+	it("keeps what a refused line left when the answer is no, as any line's", async () => {
+		const line = "cd app && export STAGE=one && git status";
+		const isolate = fakeIsolate((got) =>
+			got === line
+				? { exitCode: 127, needsMicrovm: NEEDS_GIT, cwd: "/workspace/app", exports: { STAGE: "one" } }
+				: undefined,
+		);
+		const run = await kantel(["ssh", "sbx_test1"], {
+			routes: isolate.routes,
+			stdin: input(`${line}\nn\npwd\necho $STAGE\n`, true),
+		});
+		expect(run.stdout).toBe("/workspace/app\none\n");
 	});
 
 	it("leaves the isolate as it is when the answer is no", async () => {

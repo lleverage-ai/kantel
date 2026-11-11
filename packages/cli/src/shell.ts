@@ -30,6 +30,16 @@ export interface ShellState {
 	unset: Set<string>;
 }
 
+/** A copy of the state, its collections its own. */
+export function cloneShellState(state: ShellState): ShellState {
+	return {
+		...(state.cwd === undefined ? {} : { cwd: state.cwd }),
+		...(state.baseline === undefined ? {} : { baseline: new Map(state.baseline) }),
+		vars: new Map(state.vars),
+		unset: new Set(state.unset),
+	};
+}
+
 function singleQuote(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
