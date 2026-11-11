@@ -62,10 +62,13 @@ interface Options {
 	readonly kill?: (sandboxId: string, commandId: string) => void;
 	readonly now?: () => number;
 	readonly store?: ComputeStore;
+	/** The stub to stand on: another gateway's, for one sharing its store. */
+	readonly stub?: ReturnType<typeof createStubBackend>;
+	readonly startHoldMs?: number;
 }
 
 function setup(options: Options = {}) {
-	const stub = createStubBackend();
+	const stub = options.stub ?? createStubBackend();
 	const upgrades: { readonly sandboxId: string; readonly spec: SandboxSpec; readonly operationId: string }[] = [];
 	const backend: SandboxBackend = {
 		...stub,
@@ -105,6 +108,7 @@ function setup(options: Options = {}) {
 		secretsKey: KEY,
 		...(options.store === undefined ? {} : { store: options.store }),
 		...(options.now === undefined ? {} : { now: options.now }),
+		...(options.startHoldMs === undefined ? {} : { startHoldMs: options.startHoldMs, startPollMs: 10 }),
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -508,6 +512,55 @@ describe("commands that need a microVM, at once", () => {
 		expect(first).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" }, rerunAs: answered.id });
 		expect(upgrades).toHaveLength(1);
 		expect(ran.filter((command) => command === "tar slow")).toHaveLength(2);
+	});
+
+	it("runs one again once another gateway's upgrade ends, however long that takes", async () => {
+		const store = createMemoryStore();
+		let upgraded = false;
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		// One gateway upgrades it for its own command, and is slow about it.
+		const a = setup({
+			store,
+			exec: (_id, request) =>
+				request.command === "tar fast" && !upgraded ? { ...NEEDS_TAR, timedOut: false } : undefined,
+			upgrade: async (sandboxId, spec, operationId) => {
+				await gate;
+				const placed = await (a.stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+		});
+		// Another, holding a start for 30 ms at a time, gets its command's answer while that upgrade is under way.
+		let answer: () => void = () => undefined;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const b = setup({
+			store,
+			stub: a.stub,
+			startHoldMs: 30,
+			exec: async (_id, request) => {
+				if (request.command !== "tar slow") return undefined;
+				if (upgraded) return { exitCode: 0, stdout: "in the microVM\n", stderr: "", timedOut: false };
+				await answered;
+				return { ...NEEDS_TAR, timedOut: false };
+			},
+		});
+		const sandbox = await a.tom.createSandbox({ autoUpgrade: true, wait: true });
+		const slow = b.tom.runCommand(sandbox.id, { command: "tar slow" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const fast = a.tom.runCommand(sandbox.id, { command: "tar fast" });
+		for (let tries = 0; tries < 100 && (await store.sandboxes.get(sandbox.id))?.upgrading === undefined; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		answer();
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		release();
+		expect(await slow).toMatchObject({ exitCode: 0, stdout: "in the microVM\n", rerunOf: expect.any(String) });
+		expect((await fast).rerunOf).toBeDefined();
 	});
 
 	it("isn't run again once autoUpgrade is turned off, though the sandbox upgraded meanwhile", async () => {

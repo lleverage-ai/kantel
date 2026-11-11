@@ -8184,9 +8184,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (command.autoUpgrade !== true) return undefined;
 					let latest = await store.sandboxes.get(sandbox.id);
 					// Another command's upgrade under way (on another gateway, whose queue this one doesn't see): its outcome is
-					// waited for as a command's is, then read again.
-					if (latest?.upgrading !== undefined) {
-						await requireRunning(principal, sandbox.id).catch(() => undefined);
+					// waited for as a command's is, start hold after start hold, for up to half the time a reader holds this
+					// command's end for it (`RERUN_CLAIM_MS`), then read again.
+					for (let round = 0; latest?.upgrading !== undefined && round * startHoldMs < RERUN_CLAIM_MS / 2; round++) {
+						await requireRunning(principal, sandbox.id).catch(() => delay(startPollMs).done);
 						latest = await store.sandboxes.get(sandbox.id);
 					}
 					if (latest?.autoUpgrade !== true) return undefined;
