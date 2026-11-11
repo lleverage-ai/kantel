@@ -520,10 +520,20 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one. |
 | `environments` | string[] | no | Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`. (at most 10 items) |
 | `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
+| `stickyDisks` | [SandboxStickyDiskInput](/api/reference/types/#sandboxstickydiskinput)[] | no | Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them. (at most 2 items) |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
 | `host` | string | no | Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
+
+### CreateStickyDiskBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes | Lower-case letters, digits and hyphens, unique in the account. |
+| `description` | string | no |  (at most 500 characters) |
+| `sizeGb` | integer | yes |  (minimum 1, maximum 2048) |
 
 ### CreateTemplateBody
 
@@ -903,6 +913,7 @@ Runners of one shape, picked by a `runs-on` label.
 | `environments` | string[] | no | Environments each runner starts with, IDs or names in the account, such as one holding a cache token. (at most 10 items) |
 | `maxRunners` | integer | no | The most runners the pool has at once, starting or running. Default 20. (minimum 1, maximum 500) |
 | `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
+| `stickyDisks` | [GithubRunnerStickyDisk](/api/reference/types/#githubrunnerstickydisk)[] | no | Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). (at most 2 items) |
 | `runnerCommand` | string | no | The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
 
 ### GithubRunnerPoolStatus
@@ -963,6 +974,23 @@ The last failure talking to GitHub or making a runner.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `items` | [GithubRunners](/api/reference/types/#githubrunners)[] | yes |  |
+
+### GithubRunnerStickyCommit
+
+When a runner's copy becomes the disk's next version: after a job that succeeded, on a run GitHub says is a push, schedule or manual run of one of `branches` in the job's own repository. Pull requests never commit.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `branches` | string[] | yes | Branches whose successful jobs commit the runner's copy, such as `main`. (at most 20 items) |
+| `beforeCommit` | string | no | A shell command run as root in the runner before its copy is committed, such as one that prunes the cache and stops Docker. A commit is skipped when it fails. (at most 4096 characters) |
+
+### GithubRunnerStickyDisk
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | string | yes | A sticky disk of the account, by ID or name. |
+| `path` | string | yes | Where each runner mounts it. (at most 255 characters) |
+| `commit` | [GithubRunnerStickyCommit](/api/reference/types/#githubrunnerstickycommit) | no |  |
 
 ### GithubRunnersWithSecret
 
@@ -1511,6 +1539,7 @@ A bucket mount as the sandbox shows it after a refresh.
 | `template` | [SandboxTemplate](/api/reference/types/#sandboxtemplate) | no |  |
 | `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environments'. |
 | `mounts` | [SandboxMount](/api/reference/types/#sandboxmount)[] | no | Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). |
+| `stickyDisks` | [SandboxStickyDisk](/api/reference/types/#sandboxstickydisk)[] | no | Its sticky disks, each with the version its copy came from and its state. Absent: none. |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `startedAt` | integer | no | Epoch milliseconds, UTC. |
@@ -1788,6 +1817,24 @@ How its machine's latest start (a create, fork, start or resume) took its time, 
 
 One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"error"` or `"deleting"` or `"deleted"`.
 
+### SandboxStickyDisk
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `diskId` | string | yes |  |
+| `name` | string | yes |  |
+| `path` | string | yes |  |
+| `version` | string | no | The version its copy was cloned from; absent for an empty disk. |
+| `state` | `"pending"` or `"mounted"` or `"failed"` | yes |  |
+| `reason` | string | no |  |
+
+### SandboxStickyDiskInput
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | string | yes | The sticky disk, by ID or name. |
+| `path` | string | yes | Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory. (at most 255 characters) |
+
 ### SandboxTemplate
 
 The template a sandbox was made from.
@@ -1994,6 +2041,40 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | --- | --- | --- | --- |
 | `clientName` | string | no | What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`. (at most 100 characters) |
 | `personal` | boolean | no | Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens. |
+
+### StickyDisk
+
+A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The sticky disk's ID, such as `sdk_3m4n5b`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes | Lower-case letters, digits and hyphens, unique in the account. |
+| `description` | string | no |  |
+| `sizeGb` | integer | yes | Each copy's size: what a sandbox can fill. |
+| `head` | string | no | The newest committed version; absent until one is. |
+| `versions` | [StickyDiskVersion](/api/reference/types/#stickydiskversion)[] | no | The newest 20, newest first, on a get. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### StickyDiskList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [StickyDisk](/api/reference/types/#stickydisk)[] | yes |  |
+
+### StickyDiskVersion
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The version's ID, such as `sdv_3m4n5b`. |
+| `parent` | string | no | The version it was cloned from; absent for one made empty. |
+| `hostId` | string | yes | The host it was committed on. |
+| `sandboxId` | string | yes | The sandbox it was committed from. |
+| `sizeBytes` | integer | yes |  |
+| `allocatedBytes` | integer | yes | What it takes on its host's disk, blocks it shares included. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### StopSandboxBody
 

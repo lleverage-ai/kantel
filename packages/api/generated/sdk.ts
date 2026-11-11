@@ -577,6 +577,8 @@ export interface CreateSandboxBody {
 	readonly environments?: readonly string[];
 	/** Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. */
 	readonly template?: string;
+	/** Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them. */
+	readonly stickyDisks?: readonly SandboxStickyDiskInput[];
 	/** Place it only on a host with each label, such as `{ site: "home" }`. */
 	readonly hostLabels?: {
 		readonly [key: string]: string;
@@ -587,6 +589,15 @@ export interface CreateSandboxBody {
 	readonly mounts?: readonly Mount[];
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
+}
+
+export interface CreateStickyDiskBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** Lower-case letters, digits and hyphens, unique in the account. */
+	readonly name: string;
+	readonly description?: string;
+	readonly sizeGb: number;
 }
 
 export interface CreateTemplateBody {
@@ -1007,6 +1018,8 @@ export interface GithubRunnerPool {
 	readonly maxRunners?: number;
 	/** How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. */
 	readonly timeoutMinutes?: number;
+	/** Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). */
+	readonly stickyDisks?: readonly GithubRunnerStickyDisk[];
 	/** The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. */
 	readonly runnerCommand?: string;
 }
@@ -1076,6 +1089,23 @@ export interface GithubRunnersError {
 
 export interface GithubRunnersList {
 	readonly items: readonly GithubRunners[];
+}
+
+/** When a runner's copy becomes the disk's next version: after a job that succeeded, on a run GitHub says is a push, schedule or manual run of one of `branches` in the job's own repository. Pull requests never commit. */
+export interface GithubRunnerStickyCommit {
+	/** Branches whose successful jobs commit the runner's copy, such as `main`. */
+	readonly branches: readonly string[];
+	/** A shell command run as root in the runner before its copy is committed, such as one that prunes the cache and stops Docker. A commit is skipped when it fails. */
+	readonly beforeCommit?: string;
+}
+
+export interface GithubRunnerStickyDisk {
+	/** A sticky disk of the account, by ID or name. */
+	readonly disk: string;
+	/** Where each runner mounts it. */
+	readonly path: string;
+	/** When a runner's copy becomes the disk's next version: after a job that succeeded, on a run GitHub says is a push, schedule or manual run of one of `branches` in the job's own repository. Pull requests never commit. */
+	readonly commit?: GithubRunnerStickyCommit;
 }
 
 export interface GithubRunnersWithSecret {
@@ -1775,6 +1805,8 @@ export interface Sandbox {
 	readonly grants: readonly EgressGrant[];
 	/** Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
 	readonly mounts?: readonly SandboxMount[];
+	/** Its sticky disks, each with the version its copy came from and its state. Absent: none. */
+	readonly stickyDisks?: readonly SandboxStickyDisk[];
 	readonly createdBy: CreatedBy;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -2079,6 +2111,23 @@ export type SandboxState =
 	| "deleting"
 	| "deleted";
 
+export interface SandboxStickyDisk {
+	readonly diskId: string;
+	readonly name: string;
+	readonly path: string;
+	/** The version its copy was cloned from; absent for an empty disk. */
+	readonly version?: string;
+	readonly state: "pending" | "mounted" | "failed";
+	readonly reason?: string;
+}
+
+export interface SandboxStickyDiskInput {
+	/** The sticky disk, by ID or name. */
+	readonly disk: string;
+	/** Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory. */
+	readonly path: string;
+}
+
 /** The template a sandbox was made from. */
 export interface SandboxTemplate {
 	/** The template's ID, `tpl_…`. */
@@ -2314,6 +2363,46 @@ export interface StartDeviceLoginBody {
 	readonly clientName?: string;
 	/** Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens. */
 	readonly personal?: boolean;
+}
+
+/** A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental. */
+export interface StickyDisk {
+	/** The sticky disk's ID, such as `sdk_3m4n5b`. */
+	readonly id: string;
+	readonly accountId: string;
+	/** Lower-case letters, digits and hyphens, unique in the account. */
+	readonly name: string;
+	readonly description?: string;
+	/** Each copy's size: what a sandbox can fill. */
+	readonly sizeGb: number;
+	/** The newest committed version; absent until one is. */
+	readonly head?: string;
+	/** The newest 20, newest first, on a get. */
+	readonly versions?: readonly StickyDiskVersion[];
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+export interface StickyDiskList {
+	readonly items: readonly StickyDisk[];
+}
+
+export interface StickyDiskVersion {
+	/** The version's ID, such as `sdv_3m4n5b`. */
+	readonly id: string;
+	/** The version it was cloned from; absent for one made empty. */
+	readonly parent?: string;
+	/** The host it was committed on. */
+	readonly hostId: string;
+	/** The sandbox it was committed from. */
+	readonly sandboxId: string;
+	readonly sizeBytes: number;
+	/** What it takes on its host's disk, blocks it shares included. */
+	readonly allocatedBytes: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
 }
 
 export interface StopSandboxBody {
@@ -3406,6 +3495,16 @@ export interface KantelClient {
 	deleteGithubRunners(githubRunnersId: string, options?: CallOptions): Promise<void>;
 	/** List a GitHub runner integration's jobs. The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`. `GET /github-runners/{githubRunnersId}/jobs` */
 	listGithubRunnerJobs(githubRunnersId: string, options?: CallOptions): Promise<GithubRunnerJobList>;
+	/** List sticky disks. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:read`. `GET /sticky-disks` */
+	listStickyDisks(query?: AccountScopedQuery, options?: CallOptions): Promise<StickyDiskList>;
+	/** Create a sticky disk. An empty disk until its first commit. Attach it to a microVM with `stickyDisks` in a create. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /sticky-disks` */
+	createStickyDisk(body: CreateStickyDiskBody, options?: CallOptions): Promise<StickyDisk>;
+	/** Get a sticky disk. With its newest versions. A key needs `account:read`. `GET /sticky-disks/{stickyDiskId}` */
+	getStickyDisk(stickyDiskId: string, options?: CallOptions): Promise<StickyDisk>;
+	/** Delete a sticky disk. Its versions go from every host. Sandboxes with a copy keep it until they are deleted. A key needs `account:admin`. `DELETE /sticky-disks/{stickyDiskId}` */
+	deleteStickyDisk(stickyDiskId: string, options?: CallOptions): Promise<void>;
+	/** Commit a sandbox's copy of a sticky disk. Makes the sandbox's copy, as it is now, the disk's next version: later sandboxes on its host start from it. The sandbox must be running; its filesystem is frozen for the moment the copy takes. Commit only from sandboxes you trust: every later sandbox reads what this one wrote. A key needs `snapshots:write`. `POST /sandboxes/{sandboxId}/sticky-disks/{stickyDiskId}/commit` */
+	commitStickyDisk(sandboxId: string, stickyDiskId: string, options?: CallOptions): Promise<StickyDiskVersion>;
 	/** Get the OpenTelemetry export. Absent: `not_found`. A key needs `account:admin`. `GET /telemetry` */
 	getTelemetry(query?: AccountScopedQuery, options?: CallOptions): Promise<TelemetryExport>;
 	/** Set the OpenTelemetry export. Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`. `PUT /telemetry` */
@@ -3863,6 +3962,23 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "GET", path: `/github-runners/${encodeURIComponent(githubRunnersId)}/jobs` },
+				callOptions,
+			),
+		listStickyDisks: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sticky-disks", query }, callOptions),
+		createStickyDisk: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sticky-disks", body, idempotent: true }, callOptions),
+		getStickyDisk: (stickyDiskId, callOptions) =>
+			send(options, { method: "GET", path: `/sticky-disks/${encodeURIComponent(stickyDiskId)}` }, callOptions),
+		deleteStickyDisk: (stickyDiskId, callOptions) =>
+			send(options, { method: "DELETE", path: `/sticky-disks/${encodeURIComponent(stickyDiskId)}` }, callOptions),
+		commitStickyDisk: (sandboxId, stickyDiskId, callOptions) =>
+			send(
+				options,
+				{
+					method: "POST",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/sticky-disks/${encodeURIComponent(stickyDiskId)}/commit`,
+				},
 				callOptions,
 			),
 		getTelemetry: (query, callOptions) => send(options, { method: "GET", path: "/telemetry", query }, callOptions),

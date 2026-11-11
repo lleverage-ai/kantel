@@ -608,12 +608,23 @@ type CreateSandboxBody struct {
 	Name      *string            `json:"name,omitempty"`
 	Resources *SandboxShapeInput `json:"resources,omitempty"`
 	Size      *SandboxSizeName   `json:"size,omitempty"`
+	// Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them.
+	StickyDisks []SandboxStickyDiskInput `json:"stickyDisks,omitzero"`
 	// Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables.
 	Template   *string            `json:"template,omitempty"`
 	Type       *SandboxType       `json:"type,omitempty"`
 	Visibility *SandboxVisibility `json:"visibility,omitempty"`
 	// Answer once it is `running` (or `error`) rather than as soon as it is placed.
 	Wait *bool `json:"wait,omitempty"`
+}
+
+type CreateStickyDiskBody struct {
+	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
+	Account     *string `json:"account,omitempty"`
+	Description *string `json:"description,omitempty"`
+	// Lower-case letters, digits and hyphens, unique in the account.
+	Name   string `json:"name"`
+	SizeGb int64  `json:"sizeGb"`
 }
 
 type CreateTemplateBody struct {
@@ -1126,6 +1137,8 @@ type GithubRunnerPool struct {
 	Resources  GithubRunnerResources `json:"resources"`
 	// The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.
 	RunnerCommand *string `json:"runnerCommand,omitempty"`
+	// Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`).
+	StickyDisks []GithubRunnerStickyDisk `json:"stickyDisks,omitzero"`
 	// The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path.
 	Template string `json:"template"`
 	// How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.
@@ -1152,6 +1165,22 @@ type GithubRunnerResources struct {
 	DiskGb   *int64 `json:"diskGb,omitempty"`
 	MemoryMb int64  `json:"memoryMb"`
 	VCPUs    int64  `json:"vcpus"`
+}
+
+// When a runner's copy becomes the disk's next version: after a job that succeeded, on a run GitHub says is a push, schedule or manual run of one of `branches` in the job's own repository. Pull requests never commit.
+type GithubRunnerStickyCommit struct {
+	// A shell command run as root in the runner before its copy is committed, such as one that prunes the cache and stops Docker. A commit is skipped when it fails.
+	BeforeCommit *string `json:"beforeCommit,omitempty"`
+	// Branches whose successful jobs commit the runner's copy, such as `main`.
+	Branches []string `json:"branches"`
+}
+
+type GithubRunnerStickyDisk struct {
+	Commit *GithubRunnerStickyCommit `json:"commit,omitempty"`
+	// A sticky disk of the account, by ID or name.
+	Disk string `json:"disk"`
+	// Where each runner mounts it.
+	Path string `json:"path"`
 }
 
 // A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is.
@@ -1940,6 +1969,8 @@ type Sandbox struct {
 	StartedAt *int64          `json:"startedAt,omitempty"`
 	Startup   *SandboxStartup `json:"startup,omitempty"`
 	State     SandboxState    `json:"state"`
+	// Its sticky disks, each with the version its copy came from and its state. Absent: none.
+	StickyDisks []SandboxStickyDisk `json:"stickyDisks,omitzero"`
 	// Epoch milliseconds, UTC.
 	StoppedAt *int64 `json:"stoppedAt,omitempty"`
 	// When it will stop by itself, while running; the console's stops-in.
@@ -2236,6 +2267,31 @@ const (
 	SandboxStateDeleted  SandboxState = "deleted"
 )
 
+type SandboxStickyDisk struct {
+	DiskID string                 `json:"diskId"`
+	Name   string                 `json:"name"`
+	Path   string                 `json:"path"`
+	Reason *string                `json:"reason,omitempty"`
+	State  SandboxStickyDiskState `json:"state"`
+	// The version its copy was cloned from; absent for an empty disk.
+	Version *string `json:"version,omitempty"`
+}
+
+type SandboxStickyDiskInput struct {
+	// The sticky disk, by ID or name.
+	Disk string `json:"disk"`
+	// Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory.
+	Path string `json:"path"`
+}
+
+type SandboxStickyDiskState string
+
+const (
+	SandboxStickyDiskStatePending SandboxStickyDiskState = "pending"
+	SandboxStickyDiskStateMounted SandboxStickyDiskState = "mounted"
+	SandboxStickyDiskStateFailed  SandboxStickyDiskState = "failed"
+)
+
 // The template a sandbox was made from.
 type SandboxTemplate struct {
 	// The template's ID, `tpl_…`.
@@ -2476,6 +2532,46 @@ type StartDeviceLoginBody struct {
 	ClientName *string `json:"clientName,omitempty"`
 	// Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens.
 	Personal *bool `json:"personal,omitempty"`
+}
+
+// A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental.
+type StickyDisk struct {
+	AccountID string `json:"accountId"`
+	// Epoch milliseconds, UTC.
+	CreatedAt   int64   `json:"createdAt"`
+	Description *string `json:"description,omitempty"`
+	// The newest committed version; absent until one is.
+	Head *string `json:"head,omitempty"`
+	// The sticky disk's ID, such as `sdk_3m4n5b`.
+	ID string `json:"id"`
+	// Lower-case letters, digits and hyphens, unique in the account.
+	Name string `json:"name"`
+	// Each copy's size: what a sandbox can fill.
+	SizeGb int64 `json:"sizeGb"`
+	// Epoch milliseconds, UTC.
+	UpdatedAt int64 `json:"updatedAt"`
+	// The newest 20, newest first, on a get.
+	Versions []StickyDiskVersion `json:"versions,omitzero"`
+}
+
+type StickyDiskList struct {
+	Items []StickyDisk `json:"items"`
+}
+
+type StickyDiskVersion struct {
+	// What it takes on its host's disk, blocks it shares included.
+	AllocatedBytes int64 `json:"allocatedBytes"`
+	// Epoch milliseconds, UTC.
+	CreatedAt int64 `json:"createdAt"`
+	// The host it was committed on.
+	HostID string `json:"hostId"`
+	// The version's ID, such as `sdv_3m4n5b`.
+	ID string `json:"id"`
+	// The version it was cloned from; absent for one made empty.
+	Parent *string `json:"parent,omitempty"`
+	// The sandbox it was committed from.
+	SandboxID string `json:"sandboxId"`
+	SizeBytes int64  `json:"sizeBytes"`
 }
 
 type StopSandboxBody struct {

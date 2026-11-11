@@ -340,6 +340,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				}),
 		...(options.config.templates === true ? { templates: true } : {}),
 		...(options.config.githubRunners === true ? { githubRunners: true } : {}),
+		...(options.config.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(options.config.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 		...(options.config.secretsKey === undefined ? {} : { secretsKey: options.config.secretsKey }),
 		now: () => clock.now(),

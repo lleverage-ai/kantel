@@ -819,6 +819,9 @@ export interface ComputeStore {
 	readonly githubRunners: Collection<StoredGithubRunners>;
 	readonly githubRunnerJobs: Collection<StoredGithubRunnerJob>;
 	readonly githubRunnerMachines: Collection<StoredGithubRunnerMachine>;
+	/** Sticky disks and their versions (docs/design/disk-store.md). */
+	readonly stickyDisks: Collection<StoredStickyDisk>;
+	readonly stickyDiskVersions: Collection<StoredStickyDiskVersion>;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -831,6 +834,32 @@ export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
 	if (where === undefined) return true;
 	const fields = record as { readonly [key: string]: unknown };
 	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);
+}
+
+/** A sticky disk: an account's named, versioned disk (docs/design/disk-store.md). */
+export interface StoredStickyDisk {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly sizeGb: number;
+	/** The newest committed version. */
+	readonly head?: string;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+}
+
+/** One committed version of a sticky disk: where it was made, from what. Never changed. */
+export interface StoredStickyDiskVersion {
+	readonly id: string;
+	readonly diskId: string;
+	readonly accountId: string;
+	readonly parent?: string;
+	readonly hostId: string;
+	readonly sandboxId: string;
+	readonly sizeBytes: number;
+	readonly allocatedBytes: number;
+	readonly createdAt: number;
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -987,6 +1016,8 @@ export function createMemoryStore(): ComputeStore {
 		githubRunners: memoryCollection(),
 		githubRunnerJobs: memoryCollection(),
 		githubRunnerMachines: memoryCollection(),
+		stickyDisks: memoryCollection(),
+		stickyDiskVersions: memoryCollection(),
 	};
 }
 
@@ -1102,5 +1133,7 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		githubRunners: fenced(store.githubRunners, byAccount),
 		githubRunnerJobs: fenced(store.githubRunnerJobs, byAccount, true),
 		githubRunnerMachines: fenced(store.githubRunnerMachines, byAccount),
+		stickyDisks: fenced(store.stickyDisks, byAccount),
+		stickyDiskVersions: fenced(store.stickyDiskVersions, byAccount),
 	};
 }

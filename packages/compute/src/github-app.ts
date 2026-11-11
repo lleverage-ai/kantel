@@ -44,6 +44,12 @@ export interface GithubApp {
 	findRunner(installationId: number, scope: RunnerScope, name: string): Promise<number | undefined>;
 	/** Removes a runner GitHub still holds (one that never took a job); one already gone is no error. */
 	removeRunner(installationId: number, scope: RunnerScope, runnerId: number): Promise<void>;
+	/** A workflow run's event, branch and head repository, or undefined when GitHub doesn't know it. */
+	getRun(
+		installationId: number,
+		repository: string,
+		runId: number,
+	): Promise<{ readonly event: string; readonly headBranch?: string; readonly headRepository?: string } | undefined>;
 	/** A job's status and conclusion, or undefined when GitHub doesn't know it. */
 	getJob(
 		installationId: number,
@@ -227,6 +233,27 @@ export function createGithubApp(options: GithubAppOptions): GithubApp {
 				headers: headers(token),
 			});
 			if (!response.ok && response.status !== 404) throw await githubError(response, "a runner's removal");
+		},
+		async getRun(installationId, repository, runId) {
+			const token = await installationToken(installationId);
+			const response = await doFetch(
+				`${api}/repos/${repository.split("/").map(encodeURIComponent).join("/")}/actions/runs/${runId}`,
+				{ headers: headers(token) },
+			);
+			if (response.status === 404) return undefined;
+			if (!response.ok) throw await githubError(response, "a run");
+			const body = (await response.json()) as {
+				event?: unknown;
+				head_branch?: unknown;
+				head_repository?: { full_name?: unknown };
+			};
+			return {
+				event: typeof body.event === "string" ? body.event : "",
+				...(typeof body.head_branch === "string" ? { headBranch: body.head_branch } : {}),
+				...(typeof body.head_repository?.full_name === "string"
+					? { headRepository: body.head_repository.full_name }
+					: {}),
+			};
 		},
 		async getJob(installationId, repository, jobId) {
 			const token = await installationToken(installationId);

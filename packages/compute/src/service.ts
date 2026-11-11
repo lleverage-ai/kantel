@@ -33,6 +33,7 @@ import {
 	placementError,
 	placementReasonOf,
 } from "@kantel/contracts";
+import { MOUNT_SYSTEM_PATHS } from "@kantel/contracts/mounts";
 import {
 	type Acting,
 	accountById,
@@ -67,6 +68,8 @@ import {
 	type BackendMountStatus,
 	type BackendShape,
 	type BackendSize,
+	type BackendStickyDisk,
+	type BackendStickyDiskStatus,
 	type BootOptions,
 	type CommandProgress,
 	type ExecResult,
@@ -161,6 +164,8 @@ import type {
 	StoredSample,
 	StoredSandbox,
 	StoredSnapshot,
+	StoredStickyDisk,
+	StoredStickyDiskVersion,
 	StoredTelemetry,
 	StoredUsageClaim,
 	StoredUser,
@@ -398,6 +403,13 @@ export interface ComputeServiceOptions {
 	 * with `KANTEL_GITHUB_RUNNERS=experimental`, and only where sandboxes run on hosts.
 	 */
 	readonly githubRunners?: GithubRunnersSettings;
+	/**
+	 * Sticky disks (experimental, docs/design/disk-store.md): an account's named, versioned disks, cloned into microVMs
+	 * (`/v1/sticky-disks`, `stickyDisks` in a create). Absent, off: their routes and a create naming them answer
+	 * `not_supported`, as they do with a backend that has none. The gateways turn it on with
+	 * `KANTEL_STICKY_DISKS=experimental`.
+	 */
+	readonly stickyDisks?: boolean;
 }
 
 /** How the GitHub runner broker reaches GitHub (`ComputeServiceOptions.githubRunners`). */
@@ -1019,6 +1031,11 @@ export const IDEMPOTENCY_RENEW_MS = 20_000;
  * nothing they can do about it, so no operator advice. The gateways log that (`secretsKeyMissing`), and the caller says
  * it up front (`Caller.protectedValues`).
  */
+/** What sticky disks' routes answer while they are off. */
+const STICKY_DISKS_OFF =
+	"Sticky disks are off here; the deployment turns them on with KANTEL_STICKY_DISKS=experimental";
+/** How many of a disk's versions a get answers. */
+const STICKY_VERSIONS_LISTED = 20;
 /** How long the sweep leaves between the broker's passes when it has no word of when the next is due. */
 const IDLE_RUNNER_PASS_MS = 60_000;
 /** What GitHub runners' routes answer while they are off. */
@@ -1030,6 +1047,8 @@ const GITHUB_RUNNER_SCOPES: readonly computeSchema.ApiKeyScope[] = [
 	"sandboxes:write",
 	"sandboxes:delete",
 	"exec",
+	// Committing runners' copies of their pools' sticky disks.
+	"snapshots:write",
 ];
 
 export const PROTECTED_VALUES_UNSUPPORTED =
@@ -2090,6 +2109,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					),
 				);
 			},
+			async exec(principal, sandboxId, command, timeoutMs) {
+				const ran = answered(
+					await handlers.runCommand(
+						principal,
+						{ params: { sandboxId }, query: {}, body: { command, timeoutMs } },
+						internalRequest(),
+					),
+				);
+				return ran.exitCode ?? 1;
+			},
+			async commit(principal, sandboxId, disk) {
+				answered(
+					await handlers.commitStickyDisk(
+						principal,
+						{ params: { sandboxId, stickyDiskId: disk }, query: {}, body: undefined },
+						internalRequest(),
+					),
+				);
+			},
 			async run(principal, sandboxId, command, env) {
 				answered(
 					await handlers.runCommand(
@@ -2137,10 +2175,148 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (labels.has(pool.label)) throw new KantelError("invalid", `Two pools have the label ${pool.label}`);
 			labels.add(pool.label);
 			await templates.templateIn(accountId, pool.template);
+			if ((pool.stickyDisks?.length ?? 0) > 0) {
+				requireSticky();
+				await stickyDisksFor(accountId, pool.stickyDisks ?? []);
+			}
 		}
 	}
 	/** Forgets an account's GitHub runner records: its sandboxes and keys go with it. */
 	const forgetGithubRunners = (accountId: string): Promise<void> => githubRunners.forgetAccount(accountId);
+
+	// Sticky disks.
+	const requireSticky = (): void => {
+		if (options.stickyDisks !== true || backend.commitStickyDisk === undefined) {
+			throw new KantelError("not_supported", STICKY_DISKS_OFF);
+		}
+	};
+	/** The account's sticky disk by ID or name; `not_found` for any other. */
+	async function stickyDiskIn(accountId: string, ref: string): Promise<StoredStickyDisk> {
+		const byId = ref.startsWith("sdk_") ? await store.stickyDisks.get(ref) : undefined;
+		const disk = byId?.accountId === accountId ? byId : (await store.stickyDisks.list({ accountId, name: ref }))[0];
+		if (disk === undefined) throw new KantelError("not_found", "No such sticky disk");
+		return disk;
+	}
+	/**
+	 * A create's sticky disks, checked: each the account's, once, at a path the guest takes for a mount (absolute, clean,
+	 * not its system's own: `MOUNT_SYSTEM_PATHS`), apart from the others and from the sandbox's read-only mounts.
+	 */
+	async function stickyDisksFor(
+		accountId: string,
+		inputs: readonly computeSchema.SandboxStickyDiskInput[],
+		mountPaths: readonly string[] = [],
+	): Promise<computeSchema.SandboxStickyDisk[]> {
+		const disks: computeSchema.SandboxStickyDisk[] = [];
+		const meets = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+		for (const input of inputs) {
+			const path = input.path.replace(/\/+$/, "") || "/";
+			const unclean = path.split("/").some((part, at) => at > 0 && (part === "" || part === "." || part === ".."));
+			if (
+				path === "/" ||
+				unclean ||
+				MOUNT_SYSTEM_PATHS.some((reserved) => path === reserved || path.startsWith(`${reserved}/`))
+			) {
+				throw new KantelError("invalid", `A sticky disk can't be mounted at ${input.path}`);
+			}
+			if (mountPaths.some((mount) => meets(mount, path))) {
+				throw new KantelError("invalid", `A sticky disk at ${path} would meet one of the sandbox's mounts`);
+			}
+			const disk = await stickyDiskIn(accountId, input.disk);
+			if (disks.some((other) => other.diskId === disk.id)) {
+				throw new KantelError("invalid", `${disk.name} is attached twice`);
+			}
+			if (disks.some((other) => meets(other.path, path))) {
+				throw new KantelError("invalid", `Two sticky disks can't be mounted at ${path} and inside each other`);
+			}
+			disks.push({ diskId: disk.id, name: disk.name, path, state: "pending" });
+		}
+		return disks;
+	}
+	/** What a create sends its backend for the sandbox's sticky disks: each one's size, read now. */
+	async function stickySpecOf(sandbox: StoredSandbox): Promise<{ stickyDisks?: BackendStickyDisk[] }> {
+		if (sandbox.stickyDisks === undefined || sandbox.stickyDisks.length === 0) return {};
+		const specs: BackendStickyDisk[] = [];
+		for (const attached of sandbox.stickyDisks) {
+			const disk = await store.stickyDisks.get(attached.diskId);
+			if (disk === undefined) throw new KantelError("not_found", `The sticky disk ${attached.name} was deleted`);
+			specs.push({ diskId: disk.id, path: attached.path, sizeGiB: disk.sizeGb });
+		}
+		return { stickyDisks: specs };
+	}
+	/** A sandbox's sticky disks once its backend answered: what it reported for each, `failed` for one it didn't. */
+	const stickyAfter = (
+		stored: readonly computeSchema.SandboxStickyDisk[],
+		reported: readonly BackendStickyDiskStatus[] | undefined,
+	): computeSchema.SandboxStickyDisk[] =>
+		stored.map((disk) => {
+			const status = reported?.find((candidate) => candidate.diskId === disk.diskId);
+			if (status === undefined) {
+				return disk.state === "pending" ? { ...disk, state: "failed", reason: "Its host didn't attach it" } : disk;
+			}
+			const { version: _version, reason: _reason, ...rest } = disk;
+			return {
+				...rest,
+				...(status.version === undefined ? {} : { version: status.version }),
+				state: status.state,
+				...(status.reason === undefined ? {} : { reason: status.reason }),
+			};
+		});
+	const stickyVersionView = (version: StoredStickyDiskVersion): computeSchema.StickyDiskVersion => ({
+		id: version.id,
+		...(version.parent === undefined ? {} : { parent: version.parent }),
+		hostId: version.hostId,
+		sandboxId: version.sandboxId,
+		sizeBytes: version.sizeBytes,
+		allocatedBytes: version.allocatedBytes,
+		createdAt: version.createdAt,
+	});
+	async function stickyDiskView(disk: StoredStickyDisk, withVersions: boolean): Promise<computeSchema.StickyDisk> {
+		const versions = withVersions
+			? (await store.stickyDiskVersions.list({ diskId: disk.id }))
+					.sort((a, b) => b.createdAt - a.createdAt)
+					.slice(0, STICKY_VERSIONS_LISTED)
+					.map(stickyVersionView)
+			: undefined;
+		return {
+			id: disk.id,
+			accountId: disk.accountId,
+			name: disk.name,
+			...(disk.description === undefined ? {} : { description: disk.description }),
+			sizeGb: disk.sizeGb,
+			...(disk.head === undefined ? {} : { head: disk.head }),
+			...(versions === undefined ? {} : { versions }),
+			createdAt: disk.createdAt,
+			updatedAt: disk.updatedAt,
+		};
+	}
+	/** The sticky disk by ID or name in an account the caller may act in, with `scope`; `not_found` for any other. */
+	async function stickyDiskFor(
+		principal: Principal,
+		ref: string,
+		scope: computeSchema.ApiKeyScope,
+	): Promise<StoredStickyDisk> {
+		const byId = ref.startsWith("sdk_") ? await store.stickyDisks.get(ref) : undefined;
+		if (byId !== undefined) {
+			const { role } = await actingAccount(store, principal, byId.accountId).catch(() => {
+				throw new KantelError("not_found", "No such sticky disk");
+			});
+			requireScope(principal, scope, role);
+			return byId;
+		}
+		const { account, role } = await actingAccount(store, principal, undefined);
+		requireScope(principal, scope, role);
+		return stickyDiskIn(account.id, ref);
+	}
+	/** Forgets an account's sticky disks: its sandboxes go with it, and hosts keep a disk's versions only while it exists. */
+	async function forgetStickyDisks(accountId: string): Promise<void> {
+		for (const disk of await store.stickyDisks.list({ accountId })) {
+			await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
+			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
+				await store.stickyDiskVersions.delete(version.id);
+			}
+			await store.stickyDisks.delete(disk.id);
+		}
+	}
 
 	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
 	const templates = createTemplateService({
@@ -2582,6 +2758,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(sandbox.mounts === undefined
 				? {}
 				: { mounts: sandbox.mounts.map((mount) => ({ ...mount, source: { ...mount.source } })) }),
+			...(sandbox.stickyDisks === undefined ? {} : { stickyDisks: sandbox.stickyDisks.map((disk) => ({ ...disk })) }),
 			cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
 			usage: {
 				runningSeconds: round(seconds),
@@ -4198,6 +4375,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(boot.shape === undefined ? {} : { shape: boot.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
 			...(template === undefined ? {} : { template: { ...template } }),
+			...(await stickySpecOf(sandbox)),
 		});
 		// Made again from its template's base, its setup run: no longer the snapshot its create was to start from.
 		return template === undefined || sandbox.template?.start !== "snapshot"
@@ -4817,6 +4995,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				startup,
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
 				...placedBase(placement),
+				...(sandbox.stickyDisks === undefined || placement.stickyDisks === undefined
+					? {}
+					: { stickyDisks: stickyAfter(sandbox.stickyDisks, placement.stickyDisks) }),
 				...(sandbox.mounts === undefined
 					? {}
 					: {
@@ -5661,8 +5842,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const invite of await store.invites.list({ accountId })) await store.invites.delete(invite.id);
 		for (const webhook of await store.webhooks.list({ accountId })) await store.webhooks.delete(webhook.id);
 		for (const delivery of await store.deliveries.list({ accountId })) await store.deliveries.delete(delivery.id);
-		// Its GitHub runners' records: their sandboxes went with the account's.
+		// Its GitHub runners' and sticky disks' records: their sandboxes went with the account's.
 		await forgetGithubRunners(accountId);
+		await forgetStickyDisks(accountId);
 		for (const environment of await store.environments.list({ accountId })) {
 			await store.environments.delete(environment.id);
 		}
@@ -7039,6 +7221,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await store.webhooks.delete(webhook.id);
 			}
 			await forgetGithubRunners(account.id);
+			await forgetStickyDisks(account.id);
 			await store.telemetry.delete(account.id);
 			await store.proxies.delete(account.id);
 			await store.accounts.delete(account.id);
@@ -7267,6 +7450,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("not_supported", MOUNTS_OFF);
 				}
 				const sandboxMounts = await mounts?.checkCreate(account.id, type, body.mounts);
+				let sandboxSticky: computeSchema.SandboxStickyDisk[] | undefined;
+				if (body.stickyDisks !== undefined && body.stickyDisks.length > 0) {
+					requireSticky();
+					if (type !== "microvm") throw new KantelError("invalid", "Sticky disks are a microVM's");
+					sandboxSticky = await stickyDisksFor(
+						account.id,
+						body.stickyDisks,
+						(body.mounts ?? []).map((mount) => mount.path),
+					);
+				}
 				const environments = await environmentsNamed(account.id, body.environment, body.environments);
 				// Their repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
 				// from it): only a caller that may run commands may have them cloned.
@@ -7496,6 +7689,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					samples: [],
 					ports: [],
 					...(sandboxMounts === undefined ? {} : { mounts: sandboxMounts }),
+					...(sandboxSticky === undefined ? {} : { stickyDisks: sandboxSticky }),
 				};
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
@@ -7521,6 +7715,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } }),
 				]);
 				const work = track([sandbox.id], async () => {
+					const sticky = await stickySpecOf(sandbox);
 					const booted = await boot(
 						sandbox.id,
 						() =>
@@ -7538,6 +7733,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
+								...sticky,
 							}),
 						sandbox,
 						{ egressRevision },
@@ -9398,6 +9594,88 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			await store.webhooks.delete(webhook.id);
 			return undefined;
+		},
+
+		// Sticky disks.
+
+		listStickyDisks: async (principal, { query }) => {
+			requireSticky();
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:read", role);
+			const disks = await store.stickyDisks.list({ accountId: account.id });
+			return { items: await Promise.all(disks.map((disk) => stickyDiskView(disk, false))) };
+		},
+
+		createStickyDisk: async (principal, { body, idempotencyKey }) => {
+			requireSticky();
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			return once(principal, "createStickyDisk", { body, idempotencyKey }, async () => {
+				if ((await store.stickyDisks.list({ accountId: account.id, name: body.name })).length > 0) {
+					throw new KantelError("conflict", `The account has a sticky disk named ${body.name}`);
+				}
+				const t = now();
+				const disk: StoredStickyDisk = {
+					id: randomId("sdk"),
+					accountId: account.id,
+					name: body.name,
+					...(body.description === undefined ? {} : { description: body.description }),
+					sizeGb: body.sizeGb,
+					createdAt: t,
+					updatedAt: t,
+				};
+				await store.stickyDisks.put(disk);
+				return stickyDiskView(disk, true);
+			});
+		},
+
+		getStickyDisk: async (principal, { params }) => {
+			requireSticky();
+			const disk = await stickyDiskFor(principal, params.stickyDiskId, "account:read");
+			return stickyDiskView(disk, true);
+		},
+
+		deleteStickyDisk: async (principal, { params }) => {
+			requireSticky();
+			const disk = await stickyDiskFor(principal, params.stickyDiskId, "account:admin");
+			await store.stickyDisks.delete(disk.id);
+			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
+				await store.stickyDiskVersions.delete(version.id);
+			}
+			// Its versions on hosts: those away keep theirs until they drop old versions themselves.
+			await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
+			return undefined;
+		},
+
+		commitStickyDisk: async (principal, { params }) => {
+			requireSticky();
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "snapshots:write");
+			const attached = sandbox.stickyDisks?.find(
+				(disk) => disk.diskId === params.stickyDiskId || disk.name === params.stickyDiskId,
+			);
+			if (attached === undefined) throw new KantelError("not_found", "The sandbox has no such sticky disk");
+			if (attached.state !== "mounted") throw new KantelError("conflict", "Its sticky disk isn't mounted");
+			const disk = await store.stickyDisks.get(attached.diskId);
+			if (disk === undefined) throw new KantelError("not_found", "The sticky disk was deleted");
+			await requireRunning(principal, sandbox.id);
+			const id = randomId("sdv");
+			const committed = await backend.commitStickyDisk?.(sandbox.id, disk.id, id);
+			if (committed === undefined) throw new KantelError("not_supported", STICKY_DISKS_OFF);
+			const version: StoredStickyDiskVersion = {
+				id,
+				diskId: disk.id,
+				accountId: disk.accountId,
+				...(attached.version === undefined ? {} : { parent: attached.version }),
+				hostId: committed.hostId,
+				sandboxId: sandbox.id,
+				sizeBytes: committed.sizeBytes,
+				allocatedBytes: committed.allocatedBytes,
+				createdAt: now(),
+			};
+			await store.stickyDiskVersions.put(version);
+			// The newest commit is the head: two from one version are both kept, and the later one wins.
+			await store.stickyDisks.update(disk.id, (current) => ({ ...current, head: id, updatedAt: now() }));
+			return stickyVersionView(version);
 		},
 
 		// GitHub Actions runners.

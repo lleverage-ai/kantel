@@ -70,6 +70,8 @@ export interface GatewayVars {
 	 * `workflow_job` webhooks get an ephemeral microVM runner each. Unset, empty or `off`: off.
 	 */
 	readonly KANTEL_GITHUB_RUNNERS?: string;
+	/** Sticky disks (experimental): `experimental` turns on `/v1/sticky-disks`. Unset, empty or `off`: off. */
+	readonly KANTEL_STICKY_DISKS?: string;
 	/**
 	 * Expiry of automatic snapshots: `on` deletes them past their `expiresAt`, on hosts that keep their own copies.
 	 * Unset, empty or `off`: off. The deployment runs one stack object, so it is on (the first pass waits 15 minutes
@@ -147,6 +149,8 @@ export interface GatewayConfig {
 	readonly templates?: boolean;
 	/** GitHub Actions runners, from KANTEL_GITHUB_RUNNERS=experimental. Absent, off. */
 	readonly githubRunners?: boolean;
+	/** Sticky disks, from KANTEL_STICKY_DISKS=experimental. Absent, off. */
+	readonly stickyDisks?: boolean;
 	/** Expiry of automatic snapshots, from KANTEL_SNAPSHOT_EXPIRY=on. Absent, off. */
 	readonly snapshotExpiry?: boolean;
 	/** KANTEL_SECRETS_KEY, checked: 32 bytes in base64. Absent, protected values and secret files are refused. */
@@ -204,6 +208,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	const imagePatching = imagePatchingConfig(vars);
 	const templates = templatesSwitch(vars);
 	const githubRunners = experimentalSwitch(vars.KANTEL_GITHUB_RUNNERS, "KANTEL_GITHUB_RUNNERS");
+	const stickyDisks = experimentalSwitch(vars.KANTEL_STICKY_DISKS, "KANTEL_STICKY_DISKS");
 	const snapshotExpiry = onOffSwitch(vars.KANTEL_SNAPSHOT_EXPIRY, "KANTEL_SNAPSHOT_EXPIRY");
 	const secretsKey = trimmed(vars.KANTEL_SECRETS_KEY);
 	// A key that isn't one is refused here, as the self-hosted gateway refuses to start with it, rather than on the first
@@ -237,6 +242,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		...(imagePatching === undefined ? {} : { imagePatching }),
 		...(templates ? { templates } : {}),
 		...(githubRunners ? { githubRunners } : {}),
+		...(stickyDisks ? { stickyDisks } : {}),
 		...(snapshotExpiry ? { snapshotExpiry } : {}),
 		...(secretsKey === "" ? {} : { secretsKey }),
 	};

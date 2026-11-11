@@ -21,6 +21,7 @@ import type {
 	HostMountStatus,
 	HostSandboxUsage,
 	HostSize,
+	HostStickyHolding,
 	HostUsageReport,
 	HostUsageTotals,
 	SandboxTier,
@@ -168,7 +169,31 @@ function capacity(value: unknown): HostCapacity {
 		...(builds.length === 0 ? {} : { builds }),
 		...diskUsage(value.disk),
 		...memoryReport(value.memory),
+		...stickyHoldings(value.stickyDisks),
 	};
+}
+
+/** A capacity's sticky disk holdings: left out, not refused, when they aren't shaped as holdings. */
+function stickyHoldings(value: unknown): { stickyDisks?: HostStickyHolding[] } {
+	if (!Array.isArray(value)) return {};
+	const holdings: HostStickyHolding[] = [];
+	for (const entry of value) {
+		if (!isObject(entry) || typeof entry.diskId !== "string" || !Array.isArray(entry.versions)) return {};
+		const versions: HostStickyHolding["versions"][number][] = [];
+		for (const version of entry.versions) {
+			if (
+				!isObject(version) ||
+				typeof version.version !== "string" ||
+				typeof version.allocatedBytes !== "number" ||
+				typeof version.at !== "number"
+			) {
+				return {};
+			}
+			versions.push({ version: version.version, allocatedBytes: version.allocatedBytes, at: version.at });
+		}
+		holdings.push({ diskId: entry.diskId, versions });
+	}
+	return { stickyDisks: holdings };
 }
 
 const MEMORY_MODES: ReadonlySet<string> = new Set<HostMemoryMode>(["reserved", "used"]);

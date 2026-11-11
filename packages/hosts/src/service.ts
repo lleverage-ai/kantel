@@ -46,6 +46,7 @@ import {
 	type HostSandboxUsage,
 	type HostSecrets,
 	type HostSize,
+	type HostStickyDisk,
 	type HostTemplateBoot,
 	type HostTemplateBuild,
 	type HostTemplateBuilt,
@@ -225,6 +226,8 @@ export interface CreateSandboxInput {
 	readonly from?: string;
 	/** Read-only mounts: those the chosen host can do are sent, the others answered `failed` (`mountHandoff`). */
 	readonly mounts?: readonly HostMount[];
+	/** Sticky disks (microVMs only): it goes only on a host that runs them (`HOST_FEATURES.stickyDisks`). */
+	readonly stickyDisks?: readonly HostStickyDisk[];
 	/**
 	 * Made from a template (microVMs only); one with a `snapshot` goes on the one host `hostIds` names, which holds it,
 	 * and restores it only when it was built as the create's size or shape.
@@ -431,6 +434,8 @@ export interface SandboxPlacement {
 
 export interface HostsService {
 	readonly hub: HostHub;
+	/** Deletes a sticky disk's version (or all its versions) from a host that runs sticky disks; `unavailable` if away. */
+	stickyDelete(hostId: string, diskId: string, version?: string): Promise<void>;
 	/** Registration spends join tokens from here from now on, not the registry's own. */
 	useJoinTokens(tokens: ExternalJoinTokens): void;
 	/**
@@ -1428,6 +1433,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 
 	return {
 		hub,
+		async stickyDelete(hostId, diskId, version) {
+			if (!hub.connected(hostId)) throw new KantelError("unavailable", "The host isn't connected");
+			await onHost(hostId, HostMethods.stickyDelete, { diskId, ...(version === undefined ? {} : { version }) });
+		},
 		async createJoinToken(input) {
 			const minutes = input.expiresInMinutes ?? 60;
 			if (!Number.isInteger(minutes) || minutes < 5 || minutes > 10_080) {
@@ -1636,12 +1645,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					);
 				}
 				// Grants and protected variables go only where they are enforced.
-				const hosts = needsEgressPolicy(input.egress) ? templating.filter(enforcesPolicy) : templating;
-				if (hosts.length === 0 && templating.length > 0) {
+				const enforcing = needsEgressPolicy(input.egress) ? templating.filter(enforcesPolicy) : templating;
+				if (enforcing.length === 0 && templating.length > 0) {
 					throw placementError(
 						"not_supported",
 						"no_host_enforces_egress",
 						"No host that could take it enforces egress grants or protected variables; upgrade kantel-host",
+					);
+				}
+				// Sticky disks go only where they can be attached.
+				const sticky = (input.stickyDisks?.length ?? 0) > 0;
+				if (sticky && tier !== "microvm") throw new KantelError("invalid", "Sticky disks are a microVM's");
+				const hosts = sticky
+					? enforcing.filter((host) => host.facts?.features?.includes(HOST_FEATURES.stickyDisks) === true)
+					: enforcing;
+				if (hosts.length === 0 && enforcing.length > 0) {
+					throw placementError(
+						"not_supported",
+						"no_host_for_type",
+						"No host that could take it runs sticky disks; upgrade kantel-host",
 					);
 				}
 				// Every candidate's placements in one read: the owners' isolates there, and the vCPUs booked.
@@ -1723,6 +1745,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
 							...(input.egress === undefined ? {} : { egress: input.egress }),
 							...mountsParam(mounts),
+							...(sticky ? { stickyDisks: input.stickyDisks } : {}),
 						},
 						// From a template, as long as a build: a fresh boot pulls its base image and runs its setup. From a sandbox's
 						// snapshot, as long as its disk takes to copy.

@@ -39,6 +39,8 @@ function fakeSandboxes(room: { value: number }) {
 	const runs: { sandboxId: string; command: string; env: { readonly [name: string]: string } }[] = [];
 	const fail = new Set<"get" | "delete" | "run">();
 	const deletedBy: string[] = [];
+	const execs: { sandboxId: string; command: string }[] = [];
+	const commits: { sandboxId: string; disk: string }[] = [];
 	let next = 0;
 	const failing = (call: "get" | "delete" | "run") => {
 		if (fail.has(call)) throw new KantelError("unavailable", `${call} failed`);
@@ -62,6 +64,13 @@ function fakeSandboxes(room: { value: number }) {
 			deletedBy.push(principal.keyId);
 			if (sandboxes.delete(sandboxId)) room.value++;
 		},
+		async exec(_principal, sandboxId, command) {
+			execs.push({ sandboxId, command });
+			return 0;
+		},
+		async commit(_principal, sandboxId, disk) {
+			commits.push({ sandboxId, disk });
+		},
 		async run(_principal, sandboxId, command, env) {
 			failing("run");
 			runs.push({ sandboxId, command, env });
@@ -80,6 +89,8 @@ function fakeSandboxes(room: { value: number }) {
 		sandboxes,
 		fail,
 		deletedBy,
+		execs,
+		commits,
 		/** Every starting sandbox is running now. */
 		boot() {
 			for (const sandbox of sandboxes.values()) if (sandbox.state === "starting") sandbox.state = "running";
@@ -93,11 +104,13 @@ function fakeGithub() {
 	const removed: number[] = [];
 	const removedFrom: unknown[] = [];
 	const state: { failRemove: boolean; onRegister?: (name: string) => Promise<void> } = { failRemove: false };
+	const runs = new Map<number, { event: string; headBranch?: string; headRepository?: string }>();
 	return {
 		registered,
 		removed,
 		removedFrom,
 		state,
+		runs,
 		app: () => ({
 			async generateJitConfig(
 				_installation: number,
@@ -116,6 +129,9 @@ function fakeGithub() {
 				if (state.failRemove) throw new KantelError("unavailable", "GitHub answered 503");
 				removed.push(runnerId);
 				removedFrom.push(scope);
+			},
+			async getRun(_installation: number, _repository: string, runId: number) {
+				return runs.get(runId);
 			},
 			async getJob() {
 				return { status: "in_progress" };
@@ -527,6 +543,41 @@ describe("GitHub runners", () => {
 		expect(await runners.retire("ghr_one")).toBe(true);
 		expect(sandboxes.sandboxes.has(orphan.id)).toBe(false);
 		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
+	});
+
+	it("commits a runner's sticky disk after a successful job on a branch it commits from, never a pull request's", async () => {
+		const pool = {
+			stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci", commit: { branches: ["main"], beforeCommit: "prune" } }],
+		};
+		const cases = [
+			{ run: { event: "push", headBranch: "main", headRepository: "octo-org/app" }, conclusion: "success", commits: 1 },
+			// A fork's pull request from its own `main`: the run's event and head repository say so.
+			{
+				run: { event: "pull_request", headBranch: "main", headRepository: "fork/app" },
+				conclusion: "success",
+				commits: 0,
+			},
+			{
+				run: { event: "push", headBranch: "feature", headRepository: "octo-org/app" },
+				conclusion: "success",
+				commits: 0,
+			},
+			{ run: { event: "push", headBranch: "main", headRepository: "octo-org/app" }, conclusion: "failure", commits: 0 },
+		];
+		for (const { run, conclusion, commits } of cases) {
+			const { job, sandboxes, runners, github } = await setUp({ pool });
+			github.runs.set(900, run);
+			await job("queued", 1);
+			sandboxes.boot();
+			await runners.tick();
+			const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+			await job("in_progress", 1, { runner_name: sandboxId });
+			await job("completed", 1, { runner_name: sandboxId, conclusion });
+			await runners.tick();
+			expect(sandboxes.commits).toEqual(commits === 0 ? [] : [{ sandboxId, disk: "ci-cache" }]);
+			expect(sandboxes.execs).toEqual(commits === 0 ? [] : [{ sandboxId, command: "prune" }]);
+			expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+		}
 	});
 
 	it("ignores jobs no pool takes, and records those of repositories it doesn't serve", async () => {

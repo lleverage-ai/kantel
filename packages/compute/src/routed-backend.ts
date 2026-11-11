@@ -292,6 +292,25 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async revokeHost(hostId) {
 			await primary.revokeHost?.(hostId);
 		},
+		// On the backend holding the sandbox; a disk's versions may be on either backend's hosts.
+		...(primary.commitStickyDisk === undefined && fallback.commitStickyDisk === undefined
+			? {}
+			: {
+					async commitStickyDisk(id: string, diskId: string, version: string) {
+						const backend = await on(id);
+						if (backend.commitStickyDisk === undefined) {
+							throw new KantelError("not_supported", "This sandbox's host has no sticky disks");
+						}
+						return backend.commitStickyDisk(id, diskId, version);
+					},
+				}),
+		...(primary.deleteStickyDisk === undefined && fallback.deleteStickyDisk === undefined
+			? {}
+			: {
+					async deleteStickyDisk(diskId: string) {
+						await Promise.all([primary.deleteStickyDisk?.(diskId), fallback.deleteStickyDisk?.(diskId)]);
+					},
+				}),
 		async updateHost(hostId, change) {
 			await primary.updateHost?.(hostId, change);
 		},

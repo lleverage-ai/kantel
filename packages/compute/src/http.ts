@@ -77,6 +77,8 @@ export interface ComputeApiOptions {
 	readonly templates?: boolean;
 	/** GitHub Actions runners (`/v1/github-runners`, experimental; `ComputeServiceOptions.githubRunners`). Default off. */
 	readonly githubRunners?: GithubRunnersSettings;
+	/** Sticky disks (`/v1/sticky-disks`, experimental; `ComputeServiceOptions.stickyDisks`). Default off. */
+	readonly stickyDisks?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
@@ -186,6 +188,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.accountHosts === undefined ? {} : { accountHosts: options.accountHosts }),
 		...(options.templates === undefined ? {} : { templates: options.templates }),
 		...(options.githubRunners === undefined ? {} : { githubRunners: options.githubRunners }),
+		...(options.stickyDisks === undefined ? {} : { stickyDisks: options.stickyDisks }),
 		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),

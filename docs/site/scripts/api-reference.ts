@@ -165,6 +165,13 @@ const TAGS: {
 		order: 10,
 		about: "Signed event deliveries to your endpoints, with retries.",
 	},
+	"sticky-disks": {
+		title: "Sticky disks",
+		order: 8.8,
+		about:
+			"An account's named, versioned disks for caches: each sandbox gets a copy-on-write copy of the newest version its host holds, and a commit makes a sandbox's copy the next version.",
+		note: "Experimental: a deployment serves these only with `KANTEL_STICKY_DISKS=experimental`.",
+	},
 	"github-runners": {
 		title: "GitHub runners",
 		order: 10.5,

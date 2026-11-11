@@ -24,6 +24,7 @@ import {
 	type BackendMountRefresh,
 	type BackendProcessList,
 	type BackendSize,
+	type BackendStickyDiskStatus,
 	type BootOptions,
 	type BuiltTemplate,
 	type CommandProgress,
@@ -66,6 +67,8 @@ import {
 	type HostProcessList,
 	type HostSandbox,
 	type HostSnapshotKeep,
+	type HostStickyCommitResult,
+	type HostStickyDiskStatus,
 	type HostTemplateBoot,
 	type SandboxTier,
 } from "./protocol.ts";
@@ -520,6 +523,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
 					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
+			...(sandbox.stickyDisks === undefined ? {} : { stickyDisks: stickyStatuses(sandbox.stickyDisks) }),
 			// A running machine's health stamp names it, from a host that stamps every exit too (`HOST_FEATURES.exitStamps`);
 			// one that stamps only its health (`guestHealth`) doesn't stamp its exits, so its boots name no machine.
 			...(sandbox.state === "running" && stamped && host?.features.includes(HOST_FEATURES.exitStamps) === true
@@ -531,6 +535,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(startup === undefined ? {} : { startup }),
 		};
 	}
+
+	/** A host's sticky disk statuses, those shaped as statuses. */
+	const stickyStatuses = (statuses: readonly HostStickyDiskStatus[]): BackendStickyDiskStatus[] =>
+		statuses
+			.filter((status) => typeof status.diskId === "string" && typeof status.path === "string")
+			.map((status) => ({
+				diskId: status.diskId,
+				path: status.path,
+				...(typeof status.version === "string" && status.version !== "" ? { version: status.version } : {}),
+				state: status.state === "mounted" ? "mounted" : "failed",
+				...(typeof status.reason === "string" ? { reason: status.reason } : {}),
+			}));
 
 	/** What the host reports doing beyond protocol 1 (`HOST_FEATURES`). */
 	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
@@ -774,6 +790,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
 				...egressOf(spec.egress),
 				...(mounts === undefined ? {} : { mounts }),
+				...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
+					? {}
+					: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
 			});
 		if (templateFrom !== undefined) {
 			const elsewhere = spec.eligibleHosts.filter((hostId) => hostId !== templateFrom.hostId);
@@ -1477,6 +1496,36 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				return { url, cdpUrl, surface: "browser" };
 			}
 			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee), cdpUrl, surface: "desktop" };
+		},
+		async commitStickyDisk(sandboxId, diskId, version) {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.stickyDisks)) {
+				throw new KantelError("not_supported", "This sandbox's host has no sticky disks; upgrade kantel-host");
+			}
+			const result = await hosts.sandboxes.call<HostStickyCommitResult>(sandboxId, HostMethods.stickyCommit, {
+				diskId,
+				version,
+			});
+			return {
+				hostId,
+				sizeBytes: Number.isSafeInteger(result.sizeBytes) ? result.sizeBytes : 0,
+				allocatedBytes: Number.isSafeInteger(result.allocatedBytes) ? result.allocatedBytes : 0,
+			};
+		},
+		async deleteStickyDisk(diskId) {
+			// Every connected host that runs sticky disks: one away keeps its copy until it deletes it itself (it keeps two).
+			const all = await hosts.list({ allocations: false });
+			await Promise.all(
+				all
+					.filter((host) => host.state === "online" && host.features.includes(HOST_FEATURES.stickyDisks))
+					.map((host) =>
+						hosts
+							.stickyDelete(host.id, diskId)
+							.catch((error: unknown) =>
+								warn(`[hosts] sticky disk ${diskId} not deleted from ${host.id}: ${String(error)}`),
+							),
+					),
+			);
 		},
 		async revokeHost(hostId) {
 			await hosts.revoke(hostId).catch((error: unknown) => {

@@ -399,6 +399,8 @@ export interface StackComputeOptions {
 	readonly templates?: boolean;
 	/** GitHub Actions runners (KANTEL_GITHUB_RUNNERS=experimental). Default off. */
 	readonly githubRunners?: boolean;
+	/** Sticky disks (KANTEL_STICKY_DISKS=experimental). Default off. */
+	readonly stickyDisks?: boolean;
 	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
 	readonly snapshotExpiry?: boolean;
 	/**
@@ -592,6 +594,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(options.githubRunners === true
 			? { githubRunners: { log: (message: string) => console.log(`kantel: ${message}`) } }
 			: {}),
+		...(options.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});

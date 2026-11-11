@@ -109,6 +109,8 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// Experimental: `experimental` turns on GitHub Actions runners (`/v1/github-runners`): GitHub Apps whose
 	// `workflow_job` webhooks get an ephemeral microVM runner each. Unset or `off`, it stays off.
 	"KANTEL_GITHUB_RUNNERS",
+	// Experimental: `experimental` turns on sticky disks (`/v1/sticky-disks`). Unset or `off`, it stays off.
+	"KANTEL_STICKY_DISKS",
 	// With account hosts: where the latest kantel-host release is read, to flag hosts behind it. An https URL answering
 	// `{"tag_name"}` or `{"version"}`, or `off`. Unset: Kantel's latest GitHub Release.
 	"KANTEL_HOST_RELEASES",
@@ -188,6 +190,7 @@ const OPTIONAL_CHECKS: Readonly<
 	KANTEL_ACCOUNT_HOSTS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 	KANTEL_TEMPLATES: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 	KANTEL_GITHUB_RUNNERS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
+	KANTEL_STICKY_DISKS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 	KANTEL_HOST_RELEASES: {
 		test: (v) => v.toLowerCase() === "off" || /^https:\/\/[^/\s]+/i.test(v),
 		expect: "an https:// URL, or off",

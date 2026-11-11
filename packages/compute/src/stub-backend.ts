@@ -266,6 +266,9 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const killers = new Map<string, () => void>();
 	const commandKey = (sandboxId: string, commandId: string) => `${sandboxId}\u0000${commandId}`;
 	const snapshots = new Map<string, Tree>();
+	/** Sticky disks, as a host would hold them: each disk's newest version here, and each sandbox's disks. */
+	const stickyHeads = new Map<string, string>();
+	const stickyAttached = new Map<string, readonly string[]>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
 
@@ -414,7 +417,23 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			await runSetup((machine as LiveMachine).bash, template.setup, machine.env);
 		}
 		machines.set(spec.sandboxId, machine);
-		const placed = placement(machine);
+		// Its sticky disks: a copy of each one's newest version here, or a new disk. The stub keeps no disk bytes.
+		const sticky = spec.stickyDisks ?? [];
+		if (sticky.length > 0)
+			stickyAttached.set(
+				spec.sandboxId,
+				sticky.map((disk) => disk.diskId),
+			);
+		const statuses = sticky.map((disk) => {
+			const version = stickyHeads.get(disk.diskId);
+			return {
+				diskId: disk.diskId,
+				path: disk.path,
+				...(version === undefined ? {} : { version }),
+				state: "mounted" as const,
+			};
+		});
+		const placed = { ...placement(machine), ...(statuses.length === 0 ? {} : { stickyDisks: statuses }) };
 		return template?.snapshot !== undefined && prepared === undefined ? { ...placed, bootedFresh: true } : placed;
 	};
 
@@ -437,6 +456,20 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		},
 
 		create,
+
+		async commitStickyDisk(sandboxId, diskId, version) {
+			const machine = machineOf(sandboxId);
+			if (machine.state !== "running") throw new KantelError("conflict", "The sandbox isn't running");
+			if (!(stickyAttached.get(sandboxId) ?? []).includes(diskId)) {
+				throw new KantelError("not_found", "The sandbox has no such sticky disk");
+			}
+			stickyHeads.set(diskId, version);
+			return { hostId: STUB_HOST_ID, sizeBytes: 0, allocatedBytes: 0 };
+		},
+
+		async deleteStickyDisk(diskId) {
+			stickyHeads.delete(diskId);
+		},
 
 		start: (sandboxId, options) => reboot(sandboxId, options, false),
 
@@ -482,6 +515,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		},
 
 		async destroy(sandboxId) {
+			stickyAttached.delete(sandboxId);
 			machines.delete(sandboxId);
 		},
 

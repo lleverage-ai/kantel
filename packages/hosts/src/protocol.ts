@@ -147,6 +147,11 @@ export const HOST_FEATURES = {
 	 */
 	mountsBundle: "mounts-bundle",
 	/**
+	 * Sticky disks (docs/design/disk-store.md, phase 1): a create's `stickyDisks` are cloned into the microVM's writable
+	 * drive slots and mounted; `sticky.commit` and `sticky.delete`; the host's versions in `HostCapacity.stickyDisks`.
+	 */
+	stickyDisks: "sticky-disks",
+	/**
 	 * Bucket mounts (`HostMount` of kind `bucket`): the host fetches the bucket source with `bucket.fetch`, mounts the
 	 * prefix read-only, and answers its status as for bundles.
 	 */
@@ -478,6 +483,45 @@ export interface HostCapacity {
 	readonly disk?: HostDiskUsage;
 	/** Its memory: what sandboxes were given, use and may soon use, and what the machine has left. Absent from an older host. */
 	readonly memory?: HostMemoryReport;
+	/** The sticky disk versions it holds (`HOST_FEATURES.stickyDisks`). Absent from a host without them. */
+	readonly stickyDisks?: readonly HostStickyHolding[];
+}
+
+/** A sticky disk to attach at a create: a copy of `version`, else of the host's newest, else a new disk of `sizeGiB`. */
+export interface HostStickyDisk {
+	readonly diskId: string;
+	readonly path: string;
+	readonly sizeGiB: number;
+	readonly version?: string;
+}
+
+/** A sandbox's sticky disk, as its host answers it. */
+export interface HostStickyDiskStatus {
+	readonly diskId: string;
+	readonly path: string;
+	/** The version its copy came from; absent for a new disk. */
+	readonly version?: string;
+	readonly state: "mounted" | "failed";
+	readonly reason?: string;
+}
+
+/** `sticky.commit`: makes the sandbox's copy of the disk `version`, on its host. */
+export interface HostStickyCommitParams {
+	readonly sandboxId: string;
+	readonly diskId: string;
+	readonly version: string;
+}
+
+export interface HostStickyCommitResult {
+	readonly version: string;
+	readonly sizeBytes: number;
+	readonly allocatedBytes: number;
+}
+
+/** The versions of one sticky disk a host holds. */
+export interface HostStickyHolding {
+	readonly diskId: string;
+	readonly versions: readonly { readonly version: string; readonly allocatedBytes: number; readonly at: number }[];
 }
 
 /**
@@ -617,6 +661,8 @@ export interface HostSandbox {
 	readonly baseAt?: number;
 	/** Its mounts' statuses, from a host with a mounts feature. */
 	readonly mounts?: readonly HostMountStatus[];
+	/** Its sticky disks (`HOST_FEATURES.stickyDisks`): each with the version its copy came from, and its state. */
+	readonly stickyDisks?: readonly HostStickyDiskStatus[];
 	/**
 	 * With `mounts`: when the host last set them (unix milliseconds, the host's clock, later each time). Reports of a
 	 * sandbox's mounts (a call's answer, a `sandbox.mounts` event, the replay after a reconnect) are ordered by it.
@@ -997,6 +1043,10 @@ export const HostMethods = {
 	 * keep (none). A current host has no such method.
 	 */
 	legacyPools: "host.pools",
+	/** `HostStickyCommitParams` (`HOST_FEATURES.stickyDisks`), answered `HostStickyCommitResult`. */
+	stickyCommit: "sticky.commit",
+	/** `{ diskId, version? }`: deletes that version of a sticky disk from the host, or all of them. Result `{}`. */
+	stickyDelete: "sticky.delete",
 	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
 	secrets: "sandbox.secrets",
 	/** Kantel to host (`HOST_FEATURES.sandboxEnv`): a sandbox's env replaced, `HostEnvParams`. Result `{ ok: true }`. */

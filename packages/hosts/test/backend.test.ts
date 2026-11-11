@@ -48,6 +48,8 @@ class FakeHost {
 	ownBrowserDisplay = false;
 	/** What its hello says it is: the features it reports, say. */
 	facts: HostFacts = facts;
+	/** Each sticky disk's newest version it holds. */
+	readonly stickyHeads = new Map<string, string>();
 	/** The phases a create, fork or resume answers with; absent, a host from before it said. */
 	phases?: unknown;
 	/**
@@ -118,7 +120,24 @@ class FakeHost {
 					files: new Map(from ?? []),
 				};
 				this.sandboxes.set(made.id, made);
-				return answer(info(made));
+				// Its sticky disks, each a copy of the newest version the host holds, or a new disk.
+				const sticky = Array.isArray(p.stickyDisks) ? (p.stickyDisks as { diskId: string; path: string }[]) : [];
+				return answer({
+					...info(made),
+					...(sticky.length === 0
+						? {}
+						: {
+								stickyDisks: sticky.map((disk) => {
+									const version = this.stickyHeads.get(disk.diskId);
+									return {
+										diskId: disk.diskId,
+										path: disk.path,
+										...(version === undefined ? {} : { version }),
+										state: "mounted",
+									};
+								}),
+							}),
+				});
 			}
 			case "sandbox.fork": {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
@@ -126,6 +145,14 @@ class FakeHost {
 				this.sandboxes.set(made.id, made);
 				return answer(info(made));
 			}
+			case "sticky.commit": {
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				this.stickyHeads.set(String(p.diskId), String(p.version));
+				return answer({ version: p.version, sizeBytes: 100, allocatedBytes: 7 });
+			}
+			case "sticky.delete":
+				this.stickyHeads.delete(String(p.diskId));
+				return answer({});
 			case "sandbox.stop":
 			case "snapshot.save": {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
@@ -260,6 +287,7 @@ function setup(options: { ports?: boolean } = {}) {
 	});
 	const api: ComputeApi = createComputeApi({
 		backend,
+		stickyDisks: true,
 		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
@@ -701,6 +729,44 @@ describe("the compute API on kantel-host hosts", () => {
 		const started = await root.startSandbox(sandbox.id, { wait: true });
 		expect(started).toMatchObject({ state: "error", placementReason: "host_unavailable" });
 		expect(started.reason).toContain(`The host its disk is on (${first}) can't take it now`);
+	});
+
+	it("attaches sticky disks only on a host that runs them, and commits and deletes them there", async () => {
+		const { service, root } = setup();
+		const disk = await root.createStickyDisk({ name: "ci-cache", sizeGb: 50 });
+		const plain = await service.register({ token: (await root.createHostJoinToken({ name: "old" })).token, facts });
+		new FakeHost(service, plain.hostId).connect();
+		while (!service.hub.connected(plain.hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const refused = await root.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci" }],
+			wait: true,
+		});
+		expect(refused).toMatchObject({ state: "error", reason: expect.stringContaining("sticky disks") });
+
+		const sticky = { ...facts, features: ["sticky-disks"] };
+		const { hostId } = await service.register({
+			token: (await root.createHostJoinToken({ name: "new" })).token,
+			facts: sticky,
+		});
+		const host = new FakeHost(service, hostId);
+		host.facts = sticky;
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci" }],
+			wait: true,
+		});
+		expect(sandbox.hostId).toBe(hostId);
+		const sent = (method: string) => host.params.filter((call) => call.method === method).map((call) => call.params);
+		expect(sent("sandbox.create")[0]?.stickyDisks).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50 }]);
+		expect(sandbox.stickyDisks).toEqual([{ diskId: disk.id, name: "ci-cache", path: "/var/lib/ci", state: "mounted" }]);
+		const version = await root.commitStickyDisk(sandbox.id, "ci-cache");
+		expect(version).toMatchObject({ hostId, sandboxId: sandbox.id, sizeBytes: 100, allocatedBytes: 7 });
+		expect(sent("sticky.commit")).toEqual([{ sandboxId: sandbox.id, diskId: disk.id, version: version.id }]);
+		await root.deleteStickyDisk(disk.id);
+		expect(sent("sticky.delete")).toEqual([{ diskId: disk.id }]);
 	});
 
 	it("revokes and drains a host through the API, and the registry follows", async () => {

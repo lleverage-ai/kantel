@@ -107,7 +107,20 @@ export interface RunnerPool {
 	readonly maxRunners?: number;
 	readonly timeoutMinutes?: number;
 	readonly runnerCommand?: string;
+	readonly stickyDisks?: readonly RunnerStickyDisk[];
 }
+
+/** A pool's sticky disk, and when a runner's copy of it is committed. */
+export interface RunnerStickyDisk {
+	readonly disk: string;
+	readonly path: string;
+	readonly commit?: { readonly branches: readonly string[]; readonly beforeCommit?: string };
+}
+
+/** The run events whose jobs may commit: never a pull request's. */
+const COMMITTING_EVENTS: ReadonlySet<string> = new Set(["push", "schedule", "workflow_dispatch"]);
+/** How long a pool's `beforeCommit` may run. */
+const BEFORE_COMMIT_TIMEOUT_MS = 10 * 60_000;
 
 /** A pool as the API answers it. */
 export const poolView = (pool: RunnerPool): computeSchema.GithubRunnerPool => ({
@@ -119,6 +132,22 @@ export const poolView = (pool: RunnerPool): computeSchema.GithubRunnerPool => ({
 	...(pool.maxRunners === undefined ? {} : { maxRunners: pool.maxRunners }),
 	...(pool.timeoutMinutes === undefined ? {} : { timeoutMinutes: pool.timeoutMinutes }),
 	...(pool.runnerCommand === undefined ? {} : { runnerCommand: pool.runnerCommand }),
+	...(pool.stickyDisks === undefined
+		? {}
+		: {
+				stickyDisks: pool.stickyDisks.map((sticky) => ({
+					disk: sticky.disk,
+					path: sticky.path,
+					...(sticky.commit === undefined
+						? {}
+						: {
+								commit: {
+									branches: [...sticky.commit.branches],
+									...(sticky.commit.beforeCommit === undefined ? {} : { beforeCommit: sticky.commit.beforeCommit }),
+								},
+							}),
+				})),
+			}),
 });
 
 export interface StoredGithubRunners {
@@ -199,6 +228,8 @@ export interface StoredGithubRunnerMachine {
 	readonly checkedAt?: number;
 	/** It took a job: GitHub removes an ephemeral runner itself once its job ends. */
 	readonly tookJob?: boolean;
+	/** Its job succeeded and its pool commits sticky disks: the run to check before its copies are committed, once. */
+	readonly commit?: { readonly runId: number; readonly repository: string; readonly done?: boolean };
 	/** Ending: since when, why, whether its runner is gone from GitHub, and whether the pool keeps its backoff. */
 	readonly endingAt?: number;
 	readonly endReason?: string;
@@ -227,6 +258,10 @@ export interface RunnerSandboxes {
 	): Promise<{ readonly state: string; readonly placementReason?: string; readonly reason?: string } | undefined>;
 	/** Deletes it; one already gone is no error. */
 	delete(principal: KeyPrincipal, sandboxId: string): Promise<void>;
+	/** Runs `command` and waits for it, at most `timeoutMs`: its exit code. */
+	exec(principal: KeyPrincipal, sandboxId: string, command: string, timeoutMs: number): Promise<number>;
+	/** Commits the sandbox's copy of a sticky disk (`commitStickyDisk`). */
+	commit(principal: KeyPrincipal, sandboxId: string, disk: string): Promise<void>;
 	/** Starts `command` detached, with `env`. */
 	run(
 		principal: KeyPrincipal,
@@ -454,7 +489,11 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	async function markEnding(
 		machineId: string,
 		why: string,
-		extra: { readonly keepBackoff?: boolean; readonly tookJob?: boolean } = {},
+		extra: {
+			readonly keepBackoff?: boolean;
+			readonly tookJob?: boolean;
+			readonly commit?: StoredGithubRunnerMachine["commit"];
+		} = {},
 	): Promise<StoredGithubRunnerMachine | undefined> {
 		const t = now();
 		return store.githubRunnerMachines.update(machineId, (current) =>
@@ -469,6 +508,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 						endReason: why,
 						...(extra.keepBackoff === true ? { keepBackoff: true } : {}),
 						...(extra.tookJob === true ? { tookJob: true } : {}),
+						...(extra.commit === undefined ? {} : { commit: extra.commit }),
 						updatedAt: t,
 					},
 		);
@@ -490,6 +530,13 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		const machine = await markEnding(machineId, why, endOptions);
 		if (machine === undefined) return true;
 		if (machine.endingAt === t) log(`[github-runners] ending runner ${machine.id}: ${why}`);
+		// Its sticky disks first, while its sandbox runs: once, whatever the outcome.
+		if (machine.commit !== undefined && machine.commit.done !== true) {
+			await commitCopies(record, machine);
+			await store.githubRunnerMachines.update(machine.id, (current) =>
+				current.commit === undefined ? undefined : { ...current, commit: { ...current.commit, done: true } },
+			);
+		}
 		// Its runner on GitHub: one that took a job, GitHub removes once the job ends.
 		if (machine.unregistered !== true && machine.tookJob !== true) {
 			const removed = await unregister(record, machine).catch((error: unknown) => {
@@ -520,6 +567,53 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			await setBackoff(record.id, demandKey(record, machine.pool, machine.repository), undefined);
 		}
 		return true;
+	}
+
+	/**
+	 * Commits a runner's copies of its pool's sticky disks, for a job that succeeded, when GitHub says its run is a push,
+	 * schedule or manual run of a branch the disk commits from, in the job's own repository. A failure is logged, never
+	 * thrown: the runner ends either way, and the disk keeps the version it had.
+	 */
+	async function commitCopies(record: StoredGithubRunners, machine: StoredGithubRunnerMachine): Promise<void> {
+		const commit = machine.commit;
+		const pool = record.pools.find((candidate) => candidate.label === machine.pool);
+		const rules = (pool?.stickyDisks ?? []).filter((sticky) => sticky.commit !== undefined);
+		if (commit === undefined || rules.length === 0 || record.installationId === undefined) return;
+		const principal = await options.principalOf(record.keyId);
+		if (principal === undefined) return;
+		try {
+			const run = await (await appOf(record)).getRun(record.installationId, commit.repository, commit.runId);
+			if (
+				run === undefined ||
+				!COMMITTING_EVENTS.has(run.event) ||
+				run.headRepository !== commit.repository ||
+				run.headBranch === undefined
+			) {
+				return;
+			}
+			const branch = run.headBranch;
+			for (const sticky of rules) {
+				if (sticky.commit?.branches.includes(branch) !== true) continue;
+				await hold(record.id);
+				if (sticky.commit.beforeCommit !== undefined) {
+					const code = await options.sandboxes.exec(
+						principal,
+						machine.id,
+						sticky.commit.beforeCommit,
+						BEFORE_COMMIT_TIMEOUT_MS,
+					);
+					if (code !== 0) {
+						log(`[github-runners] ${machine.id}: beforeCommit for ${sticky.disk} exited ${code}; not committed`);
+						continue;
+					}
+				}
+				await options.sandboxes.commit(principal, machine.id, sticky.disk);
+				log(`[github-runners] ${machine.id}: committed ${sticky.disk} from ${commit.repository}@${branch}`);
+			}
+		} catch (error) {
+			if (error instanceof LeaseLost) throw error;
+			await noteError(record, `committing runner ${machine.id}'s sticky disks: ${messageOf(error)}`);
+		}
 	}
 
 	/**
@@ -862,6 +956,9 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					? {}
 					: { environments: [...pool.environments] }),
 				labels: { [RUNNER_LABEL]: record.id, [RUNNER_POOL_LABEL]: pool.label },
+				...(pool.stickyDisks === undefined || pool.stickyDisks.length === 0
+					? {}
+					: { stickyDisks: pool.stickyDisks.map((sticky) => ({ disk: sticky.disk, path: sticky.path })) }),
 				autoStopMinutes: (pool.timeoutMinutes ?? DEFAULT_TIMEOUT_MINUTES) + 5,
 			});
 		} catch (error) {
@@ -895,6 +992,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		jobId: number,
 		conclusion: string | undefined,
 		runnerName: string | undefined,
+		run?: { readonly runId: number; readonly repository: string },
 	): Promise<void> {
 		const t = now();
 		await store.githubRunnerJobs.update(jobRecordId(record.id, jobId), (current) =>
@@ -911,7 +1009,13 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		);
 		if (runnerName === undefined) return;
 		const machine = await store.githubRunnerMachines.get(runnerName);
-		if (machine?.integrationId === record.id) await markEnding(machine.id, "its job ended", { tookJob: true });
+		if (machine?.integrationId !== record.id) return;
+		const pool = record.pools.find((candidate) => candidate.label === machine.pool);
+		const commits =
+			conclusion === "success" &&
+			run !== undefined &&
+			pool?.stickyDisks?.some((sticky) => sticky.commit !== undefined) === true;
+		await markEnding(machine.id, "its job ended", { tookJob: true, ...(commits ? { commit: { ...run } } : {}) });
 	}
 
 	async function onWorkflowJob(record: StoredGithubRunners, event: WorkflowJobEvent): Promise<void> {
@@ -974,7 +1078,12 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					: { ...current, state: "busy", tookJob: true, jobId: event.job.id, busyAt: t, updatedAt: t },
 			);
 		}
-		if (state === "completed") await completeJob(record, event.job.id, event.job.conclusion, runner);
+		if (state === "completed") {
+			await completeJob(record, event.job.id, event.job.conclusion, runner, {
+				runId: event.job.runId,
+				repository: event.repository,
+			});
+		}
 	}
 
 	async function webhookSecretOf(record: StoredGithubRunners): Promise<string> {

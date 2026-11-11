@@ -123,7 +123,17 @@ Give the pool a `runnerCommand` to start it another way. A template like this on
 }
 ```
 
-Anything a job would download every time, such as its toolchain, Docker images or a dependency store, can go in the template's setup instead. Every runner starts from the template's snapshot, so it starts with all of it. Rebuild the template to bring it up to date.
+Anything a job would download every time, such as its toolchain, Docker images or a dependency store, can go in the template's setup instead. For caches that change with every merge, a [sticky disk](/sandboxes/sticky-disks/) suits better:
+
+```json
+"stickyDisks": [{
+  "disk": "ci-cache",
+  "path": "/var/lib/ci",
+  "commit": { "branches": ["main"], "beforeCommit": "pnpm store prune; systemctl stop docker" }
+}]
+```
+
+Each runner gets a copy of the disk's newest version. After a job that succeeds, Kantel asks GitHub about its run, and commits the runner's copy only when the run is a push, schedule or manual run of one of `branches` in the job's own repository. A pull request's jobs never commit, whatever their branch is called. `beforeCommit` runs first, as root; if it fails, nothing is committed. Every runner starts from the template's snapshot, so it starts with all of it. Rebuild the template to bring it up to date.
 
 ## Turn it on (operators)
 
