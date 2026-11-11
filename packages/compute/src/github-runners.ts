@@ -382,6 +382,12 @@ function parseWorkflowJob(body: unknown): WorkflowJobEvent | undefined {
 	};
 }
 
+/** A pass's hold on an integration: its token is its own, and is what every effect renews. */
+interface Lease {
+	readonly integrationId: string;
+	readonly token: string;
+}
+
 /** Thrown when this gateway no longer holds an integration's lease: its pass stops before its next effect. */
 class LeaseLost extends Error {
 	constructor(integrationId: string) {
@@ -445,8 +451,6 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	const apps = new Map<string, { readonly appId: number; readonly sealed: string; readonly app: GithubApp }>();
 	/** Each integration's pass under way on this gateway: a webhook's pass and the sweep's run one after the other. */
 	const passing = new Map<string, Promise<boolean>>();
-	/** The lease token of the pass this gateway is running for each integration (`lease`, `hold`). */
-	const holding = new Map<string, string>();
 
 	/** The integration's GitHub App, made again when its App or key changes. */
 	async function appOf(record: StoredGithubRunners): Promise<GithubApp> {
@@ -498,50 +502,56 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		machineId: string,
 		why: string,
 		extra: { readonly keepBackoff?: boolean; readonly tookJob?: boolean; readonly unused?: boolean } = {},
+		/** The state the decision to end it was made on: one that has moved on since is left as it is. */
+		from?: StoredGithubRunnerMachine["state"],
 	): Promise<StoredGithubRunnerMachine | undefined> {
 		const t = now();
 		return store.githubRunnerMachines.update(machineId, (current) =>
-			current.state === "ending"
-				? extra.tookJob === true && current.tookJob !== true
-					? { ...current, tookJob: true }
-					: current
-				: // For want of a job, only a runner still idle: one that took a job meanwhile is left be.
-					extra.unused === true && current.state !== "idle"
-					? current
-					: {
-							...current,
-							state: "ending",
-							endingAt: t,
-							endReason: why,
-							...(extra.keepBackoff === true ? { keepBackoff: true } : {}),
-							...(extra.tookJob === true ? { tookJob: true } : {}),
-							...(extra.unused === true ? { unused: true } : {}),
-							updatedAt: t,
-						},
+			from !== undefined && current.state !== from
+				? undefined
+				: current.state === "ending"
+					? extra.tookJob === true && current.tookJob !== true
+						? { ...current, tookJob: true }
+						: current
+					: // For want of a job, only a runner still idle: one that took a job meanwhile is left be.
+						extra.unused === true && current.state !== "idle"
+						? undefined
+						: {
+								...current,
+								state: "ending",
+								endingAt: t,
+								endReason: why,
+								...(extra.keepBackoff === true ? { keepBackoff: true } : {}),
+								...(extra.tookJob === true ? { tookJob: true } : {}),
+								...(extra.unused === true ? { unused: true } : {}),
+								updatedAt: t,
+							},
 		);
 	}
 
 	/**
-	 * Ends a runner, as the lease holder: marks it `ending`, takes its runner off GitHub unless GitHub does that itself,
-	 * deletes its sandbox, and only then forgets it. A step that fails leaves it `ending` for the next pass; answers
-	 * whether it has gone.
+	 * Ends a runner, as the lease holder: marks it `ending`, only from the state it was `observed` in (the state the
+	 * decision was made on), takes its runner off GitHub unless GitHub does that itself, deletes its sandbox, and only then
+	 * forgets it. A step that fails leaves it `ending` for the next pass. Answers whether it has gone; a runner that moved
+	 * on since it was observed (it took a job, say) is left, and answered as not gone, for a later pass to judge afresh.
 	 */
 	async function end(
+		lease: Lease,
 		record: StoredGithubRunners,
-		machineId: string,
+		observed: StoredGithubRunnerMachine,
 		why: string,
 		endOptions: { readonly keepBackoff?: boolean; readonly unused?: boolean } = {},
 	): Promise<boolean> {
-		await hold(record.id);
+		await hold(lease);
 		const t = now();
-		const machine = await markEnding(machineId, why, endOptions);
-		if (machine === undefined) return true;
+		const machine = await markEnding(observed.id, why, endOptions, observed.state);
+		if (machine === undefined) return (await store.githubRunnerMachines.get(observed.id)) === undefined;
 		// Not ending after all: it took a job before it could be ended for want of one.
-		if (machine.state !== "ending") return true;
+		if (machine.state !== "ending") return false;
 		if (machine.endingAt === t) log(`[github-runners] ending runner ${machine.id}: ${why}`);
 		// Its runner on GitHub: one that took a job, GitHub removes once the job ends.
 		if (machine.unregistered !== true && machine.tookJob !== true) {
-			const removed = await unregister(record, machine).catch((error: unknown) => {
+			const removed = await unregister(lease, record, machine).catch((error: unknown) => {
 				if (error instanceof LeaseLost) throw error;
 				log(`[github-runners] runner ${machine.id} not taken off GitHub yet: ${messageOf(error)}`);
 				return false;
@@ -553,11 +563,11 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				unregistered: true,
 			}));
 			// Given a job while it was taken off GitHub (its `in_progress` came first): the job's, not ended.
-			if (machine.unused === true && unregistered?.state !== "ending") return true;
+			if (machine.unused === true && unregistered?.state !== "ending") return false;
 		}
 		const principal = await options.cleanupPrincipalOf(record.keyId);
 		if (principal !== undefined) {
-			await hold(record.id);
+			await hold(lease);
 			try {
 				await options.sandboxes.delete(principal, machine.id);
 			} catch (error) {
@@ -567,7 +577,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				}
 			}
 		}
-		await hold(record.id);
+		await hold(lease);
 		await store.githubRunnerMachines.delete(machine.id);
 		// A runner gone is room: its pool may try again at once, unless it went for want of room.
 		if (machine.keepBackoff !== true) {
@@ -580,10 +590,14 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	 * Takes a runner off GitHub where it was registered: by its ID, or, for one whose registration never answered, by its
 	 * name. True once it isn't there.
 	 */
-	async function unregister(record: StoredGithubRunners, machine: StoredGithubRunnerMachine): Promise<boolean> {
+	async function unregister(
+		lease: Lease,
+		record: StoredGithubRunners,
+		machine: StoredGithubRunnerMachine,
+	): Promise<boolean> {
 		const registration = machine.registration;
 		if (registration === undefined) return true;
-		await hold(record.id);
+		await hold(lease);
 		const app = await appOf(record);
 		const runnerId =
 			machine.runnerId ?? (await app.findRunner(registration.installationId, registration.scope, machine.id));
@@ -598,6 +612,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	 * waiting for a job, and a stalled registration is ended.
 	 */
 	async function register(
+		lease: Lease,
 		record: StoredGithubRunners,
 		machine: StoredGithubRunnerMachine,
 		principal: KeyPrincipal,
@@ -606,10 +621,10 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		const scope = scopeOf(record, machine.repository);
 		const installationId = record.installationId;
 		if (scope === undefined || installationId === undefined) {
-			await end(record, machine.id, "no installation, runner group or repository to register it in");
+			await end(lease, record, machine, "no installation, runner group or repository to register it in");
 			return;
 		}
-		await hold(record.id);
+		await hold(lease);
 		const t = now();
 		const claimed = await store.githubRunnerMachines.update(machine.id, (current) =>
 			current.state === "booting"
@@ -627,8 +642,14 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				...current,
 				runnerId: jit.runnerId,
 			}));
-			if (registered?.state !== "registering") return;
-			await hold(record.id);
+			// Its record went while GitHub registered it (its account or integration was cleaned up): nothing would ever
+			// take this registration off GitHub, so it goes now.
+			if (registered === undefined) {
+				await (await appOf(record)).removeRunner(installationId, scope, jit.runnerId).catch(() => undefined);
+				return;
+			}
+			if (registered.state !== "registering") return;
+			await hold(lease);
 			const commandId = await options.sandboxes.run(
 				principal,
 				machine.id,
@@ -645,46 +666,49 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		} catch (error) {
 			if (error instanceof LeaseLost) throw error;
 			await noteError(record, `registering runner ${machine.id}: ${messageOf(error)}`);
-			await end(record, machine.id, "its registration failed");
+			const now = await store.githubRunnerMachines.get(machine.id);
+			if (now !== undefined) await end(lease, record, now, "its registration failed");
 		}
 	}
 
-	/** Renews this gateway's lease on the integration before an effect; `LeaseLost` once another gateway holds it. */
-	async function hold(integrationId: string): Promise<void> {
-		const token = holding.get(integrationId);
+	/**
+	 * Renews the lease this pass holds before an effect: only its own token's, still valid. One that lapsed, was taken
+	 * over (by another gateway, or by account cleanup on this one) or went with its integration ends the pass with
+	 * `LeaseLost`, and a new pass reads the queue again before it does anything. The token is the pass's own, handed to
+	 * every step, never looked up, so no other pass's lease can stand in for it.
+	 */
+	async function hold(lease: Lease): Promise<void> {
 		const t = now();
-		// Only this pass's own lease, still valid: one that lapsed, was taken over, or went with its integration ends the
-		// pass, and a new pass reads the queue again before it does anything.
-		const held =
-			token === undefined
-				? undefined
-				: await store.githubRunners.update(integrationId, (current) =>
-						current.lease?.owner === token && current.lease.until > t
-							? { ...current, lease: { owner: token, until: t + LEASE_MS } }
-							: undefined,
-					);
-		if (held === undefined) throw new LeaseLost(integrationId);
-	}
-
-	/** Takes or renews the integration's lease for this gateway; undefined when another gateway holds it. */
-	async function lease(integrationId: string, force = false): Promise<StoredGithubRunners | undefined> {
-		const t = now();
-		const token = `${gatewayId}:${randomId("pass")}`;
-		const leased = await store.githubRunners.update(integrationId, (current) =>
-			force || current.lease === undefined || current.lease.until <= t
-				? { ...current, lease: { owner: token, until: t + LEASE_MS } }
+		const held = await store.githubRunners.update(lease.integrationId, (current) =>
+			current.lease?.owner === lease.token && current.lease.until > t
+				? { ...current, lease: { owner: lease.token, until: t + LEASE_MS } }
 				: undefined,
 		);
-		if (leased !== undefined) holding.set(integrationId, token);
-		return leased;
+		if (held === undefined) throw new LeaseLost(lease.integrationId);
 	}
 
-	async function release(integrationId: string): Promise<void> {
-		const token = holding.get(integrationId);
-		holding.delete(integrationId);
+	/**
+	 * Takes the integration's lease for a new pass (`force`: whoever holds it, for account cleanup); undefined when another
+	 * pass holds it.
+	 */
+	async function takeLease(
+		integrationId: string,
+		force = false,
+	): Promise<{ readonly lease: Lease; readonly record: StoredGithubRunners } | undefined> {
+		const t = now();
+		const lease: Lease = { integrationId, token: `${gatewayId}:${randomId("pass")}` };
+		const record = await store.githubRunners.update(integrationId, (current) =>
+			force || current.lease === undefined || current.lease.until <= t
+				? { ...current, lease: { owner: lease.token, until: t + LEASE_MS } }
+				: undefined,
+		);
+		return record === undefined ? undefined : { lease, record };
+	}
+
+	async function release(lease: Lease): Promise<void> {
 		await store.githubRunners
-			.update(integrationId, (current) => {
-				if (token === undefined || current.lease?.owner !== token) return undefined;
+			.update(lease.integrationId, (current) => {
+				if (current.lease?.owner !== lease.token) return undefined;
 				const { lease: _lease, ...rest } = current;
 				return rest;
 			})
@@ -693,31 +717,31 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 
 	/** One pass over one integration, holding its lease; answers whether it wants the next pass soon. */
 	async function pass(integrationId: string): Promise<boolean> {
-		const record = await lease(integrationId);
-		// Another gateway's pass is under way: it does this one's work, and this one looks again soon.
-		if (record === undefined) return (await store.githubRunners.get(integrationId)) !== undefined;
+		const taken = await takeLease(integrationId);
+		// Another pass is under way: it does this one's work, and this one looks again soon.
+		if (taken === undefined) return (await store.githubRunners.get(integrationId)) !== undefined;
 		try {
-			return await passHolding(record);
+			return await passHolding(taken.lease, taken.record);
 		} catch (error) {
 			if (!(error instanceof LeaseLost)) throw error;
 			log(`[github-runners] ${error.message}; its pass stopped`);
 			return true;
 		} finally {
-			await release(integrationId);
+			await release(taken.lease);
 		}
 	}
 
-	async function passHolding(record: StoredGithubRunners): Promise<boolean> {
+	async function passHolding(lease: Lease, record: StoredGithubRunners): Promise<boolean> {
 		const machines = await store.githubRunnerMachines.list({ integrationId: record.id });
 		const t = now();
 
 		// Retiring: end every runner, and every sandbox labelled as one (its record never written), then forget it.
 		if (record.retiringAt !== undefined) {
 			let left = 0;
-			for (const machine of machines) if (!(await end(record, machine.id, "its integration was deleted"))) left++;
-			if ((await sweepOrphans(record, 0)) > 0) left++;
+			for (const machine of machines) if (!(await end(lease, record, machine, "its integration was deleted"))) left++;
+			if ((await sweepOrphans(lease, record, 0)) > 0) left++;
 			if (left > 0) return true;
-			await hold(record.id);
+			await hold(lease);
 			for (const job of await store.githubRunnerJobs.list({ integrationId: record.id })) {
 				await store.githubRunnerJobs.delete(job.id);
 			}
@@ -759,27 +783,27 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			// Its own pool as it was made (one from before runners kept it: the pool of that label now).
 			const pool = machine.poolConfig ?? record.pools.find((candidate) => candidate.label === machine.pool);
 			if (machine.state === "ending") {
-				if (!(await end(record, machine.id, machine.endReason ?? "ending"))) active = true;
+				if (!(await end(lease, record, machine, machine.endReason ?? "ending"))) active = true;
 				continue;
 			}
 			if (t >= machine.expiresAt) {
-				await end(record, machine.id, "timed out");
+				await end(lease, record, machine, "timed out");
 				continue;
 			}
 			if (principal === undefined) {
-				await end(record, machine.id, "its key is revoked");
+				await end(lease, record, machine, "its key is revoked");
 				continue;
 			}
 			if (pool === undefined) {
 				// Made before runners kept their pool, and that pool is gone: it can't register, but a running one finishes.
 				if (machine.state === "booting" || machine.state === "registering")
-					await end(record, machine.id, "its pool is gone");
+					await end(lease, record, machine, "its pool is gone");
 				continue;
 			}
 			if (machine.state === "registering") {
 				// A registration whose gateway died part-way: the runner may be on GitHub, which the end looks for by name.
 				if (t - (machine.claimedAt ?? t) > REGISTER_TIMEOUT_MS)
-					await end(record, machine.id, "its registration stalled");
+					await end(lease, record, machine, "its registration stalled");
 				else active = true;
 				continue;
 			}
@@ -794,20 +818,21 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					continue;
 				}
 				if (sandbox === undefined || sandbox.state === "deleted" || sandbox.state === "deleting") {
-					await end(record, machine.id, "its sandbox is gone");
+					await end(lease, record, machine, "its sandbox is gone");
 				} else if (sandbox.state === "running") {
-					await register(record, machine, principal, pool);
+					await register(lease, record, machine, principal, pool);
 				} else if (sandbox.state === "error") {
 					const reason = sandbox.placementReason;
 					const waiting = reason !== undefined && WAITING_REASONS.has(reason);
 					const key = demandKey(record, machine.pool, machine.repository);
 					if (waiting) await setBackoff(record.id, key, sandbox.reason ?? reason ?? "no room");
 					else await noteError(record, `runner ${machine.id} failed: ${sandbox.reason ?? "its sandbox is in error"}`);
-					await end(record, machine.id, waiting ? "no room" : "its sandbox failed", { keepBackoff: waiting });
+					await end(lease, record, machine, waiting ? "no room" : "its sandbox failed", { keepBackoff: waiting });
 				} else if (sandbox.state !== "starting" || t - machine.createdAt > BOOT_TIMEOUT_MS) {
 					await end(
+						lease,
 						record,
-						machine.id,
+						machine,
 						sandbox.state === "starting" ? "boot timed out" : `its sandbox is ${sandbox.state}`,
 					);
 				}
@@ -817,12 +842,12 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				// A runner that can't take a job (its sandbox stopped or gone, its runner's command ended) isn't supply.
 				const dead = await deadRunner(principal, machine);
 				if (dead !== undefined) {
-					await end(record, machine.id, dead);
+					await end(lease, record, machine, dead);
 					continue;
 				}
 				const waiting = queued(demandKey(record, machine.pool, machine.repository)).length > 0;
 				if (!waiting && t - (machine.readyAt ?? machine.createdAt) > IDLE_GRACE_MS) {
-					await end(record, machine.id, "no job came for it", { unused: true });
+					await end(lease, record, machine, "no job came for it", { unused: true });
 				}
 				continue;
 			}
@@ -874,7 +899,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					// After waiting for room, one runner at a time probes for it.
 					const wanted = Math.min(waiting - supply, room, backoff === undefined ? CREATES_PER_PASS : 1);
 					for (let made = 0; made < wanted; made++) {
-						const runner = await makeRunner(fresh, pool, repository, principal);
+						const runner = await makeRunner(lease, fresh, pool, repository, principal);
 						if (runner === undefined) break;
 						// Counted at once, so the next key's room is the pool's room less this one.
 						live.push(runner);
@@ -885,7 +910,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			}
 		}
 
-		await sweepOrphans(record, 60_000);
+		await sweepOrphans(lease, record, 60_000);
 		return active;
 	}
 
@@ -893,7 +918,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	 * Deletes sandboxes labelled as the integration's runners that have no record (a create whose record was never
 	 * written), once older than `minAgeMs`; answers how many are left, a listing that failed counting as one.
 	 */
-	async function sweepOrphans(record: StoredGithubRunners, minAgeMs: number): Promise<number> {
+	async function sweepOrphans(lease: Lease, record: StoredGithubRunners, minAgeMs: number): Promise<number> {
 		const cleanup = await options.cleanupPrincipalOf(record.keyId);
 		if (cleanup === undefined) return 0;
 		const t = now();
@@ -911,7 +936,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		for (const sandbox of labelled) {
 			if (known.has(sandbox.id) || t - sandbox.createdAt < minAgeMs) continue;
 			log(`[github-runners] deleting orphaned runner sandbox ${sandbox.id}`);
-			await hold(record.id);
+			await hold(lease);
 			try {
 				await options.sandboxes.delete(cleanup, sandbox.id);
 			} catch (error) {
@@ -941,12 +966,13 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 
 	/** Makes one runner; undefined when there was no room (the key now backs off) or the create failed. */
 	async function makeRunner(
+		lease: Lease,
 		record: StoredGithubRunners,
 		pool: RunnerPool,
 		repository: string | undefined,
 		principal: KeyPrincipal,
 	): Promise<StoredGithubRunnerMachine | undefined> {
-		await hold(record.id);
+		await hold(lease);
 		const t = now();
 		const key = demandKey(record, pool.label, repository);
 		let sandbox: { readonly id: string; readonly state: string };
@@ -1308,11 +1334,12 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 
 		async forgetAccount(accountId) {
 			for (const record of await store.githubRunners.list({ accountId })) {
-				// Its own lease, whoever held one: the account is going, and a pass of it stops at its next effect.
-				await lease(record.id, true).catch(() => undefined);
+				// Its own lease, whoever held one: the account is going, and a pass of it stops at its next effect (a
+				// registration it had in flight takes itself off GitHub when it finds its record gone).
+				const taken = await takeLease(record.id, true).catch(() => undefined);
 				for (const machine of await store.githubRunnerMachines.list({ integrationId: record.id })) {
-					if (machine.tookJob !== true && machine.unregistered !== true) {
-						await unregister(record, machine).catch((error: unknown) =>
+					if (taken !== undefined && machine.tookJob !== true && machine.unregistered !== true) {
+						await unregister(taken.lease, record, machine).catch((error: unknown) =>
 							log(`[github-runners] runner ${machine.id} left on GitHub as its account went: ${messageOf(error)}`),
 						);
 					}
@@ -1322,7 +1349,6 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					await store.githubRunnerJobs.delete(job.id);
 				}
 				await store.githubRunners.delete(record.id);
-				holding.delete(record.id);
 				apps.delete(record.id);
 			}
 			// Records of the account's whose integration is already gone (deleted meanwhile, or a write that raced it):

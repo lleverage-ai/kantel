@@ -146,9 +146,23 @@ async function setUp(
 	const sandboxes = fakeSandboxes(room);
 	const github = fakeGithub();
 	const key = { revoked: false };
+	/** Runs after each listing of runners, before the pass acts on it: a webhook landing at that moment. */
+	const afterListing: { hook?: () => Promise<void> } = {};
+	const machines = store.githubRunnerMachines;
+	const watched = {
+		...store,
+		githubRunnerMachines: {
+			...machines,
+			async list(where?: Parameters<typeof machines.list>[0]) {
+				const listed = await machines.list(where);
+				await afterListing.hook?.();
+				return listed;
+			},
+		},
+	};
 	const broker = (gatewayId: string) =>
 		createGithubRunners({
-			store,
+			store: watched,
 			now: () => clock.now,
 			sealer: () => sealer,
 			sandboxes: sandboxes.api,
@@ -209,7 +223,7 @@ async function setUp(
 		if (record === undefined) throw new Error("gone");
 		return (await runners.view(record, "https://kantel.example/hook", true)).status?.[0];
 	};
-	return { store, clock, room, sandboxes, github, runners, broker, key, deliver, job, status };
+	return { store, clock, room, sandboxes, github, runners, broker, key, deliver, job, status, afterListing };
 }
 
 describe("GitHub runners", () => {
@@ -655,6 +669,76 @@ describe("GitHub runners", () => {
 		await runners.forgetAccount("acc_org");
 		expect(await store.githubRunnerMachines.list({ accountId: "acc_org" })).toEqual([]);
 		expect(await store.githubRunners.list({ accountId: "acc_org" })).toEqual([]);
+	});
+
+	it("leaves a runner that took a job after a pass saw it ending for want of one", async () => {
+		const { job, sandboxes, runners, github, store, clock, afterListing } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("completed", 1, { conclusion: "cancelled" });
+		clock.now += IDLE_GRACE_MS + 1;
+		github.state.failRemove = true;
+		await runners.tick();
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("ending");
+		github.state.failRemove = false;
+		// The next pass lists it ending; GitHub's in_progress lands before that pass acts on it, and does what a webhook
+		// does (here straight to the store: a delivery would wait for this pass).
+		let once = true;
+		afterListing.hook = async () => {
+			if (!once) return;
+			once = false;
+			await store.githubRunnerMachines.update(
+				sandboxId,
+				({ unused: _unused, endingAt: _at, endReason: _why, ...rest }) => ({
+					...rest,
+					state: "busy",
+					tookJob: true,
+					jobId: 2,
+				}),
+			);
+		};
+		await runners.tick();
+		afterListing.hook = undefined;
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("busy");
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(true);
+	});
+
+	it("stops a pass at its next effect once account cleanup on the same gateway has taken its lease", async () => {
+		const { job, sandboxes, runners, store } = await setUp();
+		const create = sandboxes.api.create;
+		let first = true;
+		sandboxes.api.create = async (principal, body) => {
+			const made = await create(principal, body);
+			if (first) {
+				first = false;
+				await runners.forgetAccount("acc_org");
+			}
+			return made;
+		};
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, installationId: 42 }));
+		for (const id of [1, 2, 3]) {
+			await store.githubRunnerJobs.insert({
+				id: `ghr_one:${id}`,
+				integrationId: "ghr_one",
+				accountId: "acc_org",
+				jobId: id,
+				runId: 1,
+				repository: "octo-org/app",
+				name: "checks",
+				labels: ["kantel-8vcpu"],
+				pool: "kantel-8vcpu",
+				installationId: 42,
+				state: "queued",
+				queuedAt: 0,
+				updatedAt: 0,
+			});
+		}
+		await runners.tick();
+		// One create was under way when cleanup took over; nothing more was made.
+		expect(sandboxes.sandboxes.size).toBe(1);
+		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
 	});
 
 	it("binds the installation only from its own owner's deliveries", async () => {
