@@ -25,6 +25,7 @@ import type {
 	EgressEntry,
 	EgressGrant,
 	Environment,
+	EnvironmentRef,
 	FilePart,
 	FileRange,
 	Host,
@@ -46,6 +47,7 @@ import type {
 	SandboxCommand,
 	SandboxCreator,
 	SandboxEgress,
+	SandboxEnvironment,
 	SandboxImage,
 	SandboxKind,
 	SandboxPort,
@@ -64,6 +66,7 @@ import {
 	cliSshCommand,
 	DEFAULT_SANDBOX_SHAPES,
 	FilesRefusedError,
+	MAX_SANDBOX_ENVIRONMENTS,
 	presetOf,
 	type SandboxSize,
 	sameProxySettings,
@@ -326,7 +329,11 @@ export const API_SERVER = sandbox({
 	hostName: "hetzner-fsn1-01",
 	shared: true,
 	createdBy: "Alex Kemp",
-	environment: { id: "env_backend", name: "backend-dev" },
+	// lleverage-github is later, so its GH_TOKEN and its clone of kantel win over backend-dev's.
+	environments: [
+		{ id: "env_backend", name: "backend-dev" },
+		{ id: "env_github", name: "lleverage-github" },
+	],
 	// Six days behind, with the openssl fix the latest was rebuilt for.
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.29.809", { days: 6, versions: 3 }, true),
 	mounts: [
@@ -368,7 +375,7 @@ export const DEV_STACK = sandbox({
 	hostId: "hst_hetzner_1",
 	hostName: "hetzner-fsn1-01",
 	shared: true,
-	environment: { id: "env_backend", name: "backend-dev" },
+	environments: [{ id: "env_backend", name: "backend-dev" }],
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
 	mounts: [
 		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
@@ -469,6 +476,8 @@ export const RENDER = sandbox({
 	shared: true,
 	createdBy: "Bethan Price",
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.11.02.811", { days: 2, versions: 1 }),
+	// lleverage-github was attached while it was stopped: its file and repository come when it next starts.
+	environments: [{ id: "env_github", name: "lleverage-github" }],
 });
 
 export const BROWSER_AGENT = sandbox({
@@ -502,7 +511,7 @@ export const EVAL_RUNNER = sandbox({
 	hostName: "home-server",
 	error: "The machine stopped answering. Its disk is safe: recover it, or resume it on another host.",
 	forkedFrom: DEV_STACK.id,
-	environment: { id: "env_evals", name: "evals" },
+	environments: [{ id: "env_evals", name: "evals" }],
 });
 
 export const NEW_ONE = sandbox({
@@ -1007,7 +1016,7 @@ export const PROXY: ProxySettings = {
 
 const GITHUB: DestinationBinding = { host: "api.github.com", pathPrefixes: [], methods: [] };
 
-/** The organisation's environments: one for backend work, one for evals. */
+/** The organisation's environments: one for backend work, one for evals, and one for GitHub that goes with others. */
 export const ENVIRONMENTS: readonly Environment[] = [
 	{
 		id: "env_backend",
@@ -1080,6 +1089,27 @@ export const ENVIRONMENTS: readonly Environment[] = [
 		sandboxCount: 1,
 		createdAt: FIXTURE_NOW - 2 * DAY,
 		updatedAt: FIXTURE_NOW - 2 * DAY,
+	},
+	{
+		id: "env_github",
+		accountId: LLEVERAGE.id,
+		name: "lleverage-github",
+		description: "A GitHub token for the lleverage-ai organisation, to put after any environment that needs one.",
+		variables: [
+			{
+				name: "GH_TOKEN",
+				protected: true,
+				bindings: [GITHUB, { host: "github.com", pathPrefixes: ["/lleverage-ai/"], methods: [] }],
+				updatedAt: FIXTURE_NOW - DAY,
+			},
+			{ name: "GIT_AUTHOR_NAME", protected: false, value: "Kantel", bindings: [], updatedAt: FIXTURE_NOW - DAY },
+		],
+		files: [{ path: "/home/user/.config/gh/hosts.yml", mode: 0o600, sizeBytes: 164, updatedAt: FIXTURE_NOW - DAY }],
+		repos: [{ url: "https://github.com/lleverage-ai/kantel" }],
+		grants: [{ id: "grt_gh_org", action: "allow", host: "github.com", methods: [], paths: ["/lleverage-ai/*"] }],
+		sandboxCount: 2,
+		createdAt: FIXTURE_NOW - 3 * DAY,
+		updatedAt: FIXTURE_NOW - DAY,
 	},
 ];
 
@@ -2025,22 +2055,75 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		environments.set(env.id, next);
 		return next;
 	};
+	/** A sandbox's environments as they are now, in order: one deleted since is gone. */
+	const environmentsOf = (box: Sandbox): Environment[] =>
+		(box.environments ?? []).flatMap((ref) => {
+			const env = environments.get(ref.id);
+			return env === undefined ? [] : [env];
+		});
+	/** Refs to environments by ID, in order, with their names now. */
+	const refsOf = (ids: readonly string[]): EnvironmentRef[] =>
+		ids.map((id) => ({ id, name: find(environments, id, "environment").name }));
+	/** Each name's (or path's) environment: the last that has it, as the API's resolver decides. */
+	const winners = (envs: readonly Environment[], keys: (env: Environment) => readonly string[]) => {
+		const won = new Map<string, Environment>();
+		for (const env of envs) for (const key of keys(env)) won.set(key, env);
+		return won;
+	};
+	const repoPath = (repo: Environment["repos"][number]): string =>
+		repo.path ??
+		`~/${
+			repo.url
+				.replace(/\.git$/, "")
+				.split("/")
+				.at(-1) ?? ""
+		}`;
+	const variableNames = (env: Environment) => env.variables.map((variable) => variable.name);
+	const filePaths = (env: Environment) => env.files.map((file) => file.path);
+	const repoPaths = (env: Environment) => env.repos.map(repoPath);
+	// The environments whose files and repositories a stopped sandbox gets when it next starts.
+	const pendingEnvironments = new Map<string, Set<string>>(empty ? [] : [[RENDER.id, new Set(["env_github"])]]);
+	const sandboxEnvironmentsOf = (sandboxId: string): readonly SandboxEnvironment[] => {
+		const envs = environmentsOf(find(sandboxes, sandboxId, "sandbox"));
+		const lost = (env: Environment, keys: (env: Environment) => readonly string[]) => {
+			const won = winners(envs, keys);
+			return keys(env).filter((key) => won.get(key)?.id !== env.id);
+		};
+		return envs.map((env) => ({
+			id: env.id,
+			name: env.name,
+			shadowed: {
+				variables: lost(env, variableNames),
+				files: lost(env, filePaths),
+				repos: lost(env, repoPaths),
+			},
+			pending: pendingEnvironments.get(sandboxId)?.has(env.id) === true,
+		}));
+	};
 	const egressOf = (sandboxId: string): SandboxEgress => {
 		const box = find(sandboxes, sandboxId, "sandbox");
-		const env = box.environment === undefined ? undefined : environments.get(box.environment.id);
+		const envs = environmentsOf(box);
+		const won = winners(envs, variableNames);
 		return {
 			sandboxId: box.id,
 			sandboxName: box.name,
 			accountId: box.accountId,
-			...(box.environment === undefined ? {} : { environment: box.environment }),
-			protectedVariables: (env?.variables ?? [])
-				.filter((variable) => variable.protected)
-				.map((variable) => ({
-					name: variable.name,
-					placeholderPrefix: placeholderOf(box.id, variable.name),
-					bindings: variable.bindings,
-				})),
-			environmentGrants: env?.grants ?? [],
+			environments: envs.map((env) => ({ id: env.id, name: env.name })),
+			// The protected one of each name, from the environment that wins it.
+			protectedVariables: [...won].flatMap(([name, env]) => {
+				const variable = env.variables.find((each) => each.name === name);
+				return variable?.protected === true
+					? [
+							{
+								name,
+								placeholderPrefix: placeholderOf(box.id, name),
+								bindings: variable.bindings,
+								environmentId: env.id,
+							},
+						]
+					: [];
+			}),
+			environmentGrants: envs.flatMap((env) => env.grants),
 			grants: sandboxGrants.get(box.id) ?? [],
 			entries: (EGRESS_LOGS[box.id] ?? []).map((entry) => moved(entry, ["at"])),
 		};
@@ -2261,14 +2344,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 										hostName: HOSTS.find((host) => host.id === input.hostId)?.name ?? input.hostId,
 									}),
 						shared: input.accountId !== PERSONAL.id,
-						...(input.environmentId === undefined
+						...(input.environmentIds === undefined || input.environmentIds.length === 0
 							? {}
-							: {
-									environment: {
-										id: input.environmentId,
-										name: find(environments, input.environmentId, "environment").name,
-									},
-								}),
+							: { environments: refsOf(input.environmentIds) }),
 						...(made === undefined
 							? {}
 							: {
@@ -2307,7 +2385,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				gate(() => {
 					const { error: _, ...current } = find(sandboxes, id, "sandbox");
 					const box = put({ ...current, state: "starting", stopsAt: now() + HOUR });
-					settle(id, (latest) => ({ ...latest, state: "running", usage: usageSeries(id.length + 3, 0.3) }));
+					settle(id, (latest) => {
+						// Running, it has its pending environments' files and repositories.
+						pendingEnvironments.delete(id);
+						return { ...latest, state: "running", usage: usageSeries(id.length + 3, 0.3) };
+					});
 					return box;
 				}),
 			fork: (id) =>
@@ -2419,6 +2501,39 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						: COMMANDS.map((command) => moved(command, ["startedAt"]));
 				}),
 			get: (id) => gate(() => find(sandboxes, id, "sandbox")),
+			environments: {
+				list: (sandboxId) => gate(() => sandboxEnvironmentsOf(sandboxId)),
+				attach: (sandboxId, environmentId, position) =>
+					gate(() => {
+						const box = find(sandboxes, sandboxId, "sandbox");
+						const env = find(environments, environmentId, "environment");
+						if (env.accountId !== box.accountId) throw new Error(`No environment ${environmentId}.`);
+						// Attaching one it has moves it.
+						const ids = (box.environments ?? []).map((ref) => ref.id).filter((id) => id !== env.id);
+						if (ids.length >= MAX_SANDBOX_ENVIRONMENTS) {
+							throw new Error(`A sandbox has at most ${MAX_SANDBOX_ENVIRONMENTS} environments.`);
+						}
+						ids.splice(position ?? ids.length, 0, env.id);
+						put({ ...box, environments: refsOf(ids) });
+						// A running sandbox gets its files and repositories now; a stopped one when it next starts.
+						const pending = pendingEnvironments.get(box.id) ?? new Set<string>();
+						if (box.state === "running") pending.delete(env.id);
+						else pending.add(env.id);
+						pendingEnvironments.set(box.id, pending);
+						return sandboxEnvironmentsOf(box.id);
+					}),
+				detach: (sandboxId, environmentId) =>
+					gate(() => {
+						const box = find(sandboxes, sandboxId, "sandbox");
+						const ids = (box.environments ?? []).map((ref) => ref.id);
+						if (!ids.includes(environmentId)) throw new Error("That environment isn't one of this sandbox's.");
+						const left = ids.filter((id) => id !== environmentId);
+						const { environments: _, ...rest } = box;
+						put(left.length === 0 ? rest : { ...rest, environments: refsOf(left) });
+						pendingEnvironments.get(box.id)?.delete(environmentId);
+						return sandboxEnvironmentsOf(box.id);
+					}),
+			},
 			setAutoStop: (id, minutes) =>
 				gate(() => {
 					const { stopsAt: _, ...box } = find(sandboxes, id, "sandbox");
@@ -2698,10 +2813,18 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						...(description === undefined || description === "" ? {} : { description }),
 					});
 				}),
+			// It comes off every sandbox that has it.
 			remove: (id) =>
 				gate(() => {
 					find(environments, id, "environment");
 					environments.delete(id);
+					for (const box of sandboxes.values()) {
+						if (box.environments?.some((ref) => ref.id === id) !== true) continue;
+						const left = box.environments.filter((ref) => ref.id !== id);
+						const { environments: _, ...rest } = box;
+						put(left.length === 0 ? rest : { ...rest, environments: left });
+						pendingEnvironments.get(box.id)?.delete(id);
+					}
 				}),
 			setVariable: (id, input) =>
 				gate(() => {

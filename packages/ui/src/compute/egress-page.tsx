@@ -1,6 +1,6 @@
 // A sandbox's egress page (compute console): what left it through its host's egress proxy, newest first, with what
 // was allowed, denied and swapped; the protected variables it has, as the placeholders it sees; and its own egress
-// grants on top of its environment's. A placeholder sent to a host it isn't bound to shows as a denied request with
+// grants on top of its environments'. A placeholder sent to a host it isn't bound to shows as a denied request with
 // the reason. Values never appear here: the log names a protected variable, never what it holds.
 
 import { useState } from "react";
@@ -52,7 +52,7 @@ export interface EgressPageProps {
 	readonly accountId?: string;
 	/** The Sandboxes page, for the way back. */
 	readonly sandboxesHref: string;
-	/** An environment's page, from the sandbox's environment. */
+	/** An environment's page, from each of the sandbox's environments. */
 	readonly environmentHref?: (environmentId: string) => string;
 	readonly navigate?: (path: string) => void;
 	/** Show this filter first, for a story. */
@@ -126,7 +126,10 @@ export function EgressPage({
 		denied: egress.entries.filter((entry) => shown(entry, "denied")).length,
 		swapped: egress.entries.filter((entry) => shown(entry, "swapped")).length,
 	};
-	const env = egress.environment;
+	const envs = egress.environments;
+	const envName = (id: string | undefined) => envs.find((env) => env.id === id)?.name;
+	// Where the grants it has from its environments come from, for their rows.
+	const inheritedFrom = envs.length > 1 ? "its environments" : envs[0]?.name;
 	return (
 		<div className={computePage}>
 			{back}
@@ -135,15 +138,23 @@ export function EgressPage({
 					title={`Egress from ${egress.sandboxName}`}
 					lede="Every request and connection the sandbox made through its host's egress proxy, what was decided and which protected variables were swapped in. Values never appear here."
 					actions={
-						env === undefined ? null : environmentHref === undefined ? (
-							<Badge>Environment {env.name}</Badge>
-						) : (
-							<a
-								className="text-sm text-muted underline decoration-border-strong underline-offset-2 hover:text-fg"
-								href={environmentHref(env.id)}
-							>
-								Environment {env.name}
-							</a>
+						envs.length === 0 ? null : (
+							<span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted">
+								{envs.length === 1 ? "Environment" : "Environments"}
+								{envs.map((env) =>
+									environmentHref === undefined ? (
+										<Badge key={env.id}>{env.name}</Badge>
+									) : (
+										<a
+											key={env.id}
+											className="text-fg underline decoration-border-strong underline-offset-2"
+											href={environmentHref(env.id)}
+										>
+											{env.name}
+										</a>
+									),
+								)}
+							</span>
 						)
 					}
 				/>
@@ -270,9 +281,11 @@ export function EgressPage({
 				<SectionHeading id="egress-protected-title" title="Protected variables" />
 				{egress.protectedVariables.length === 0 ? (
 					<p className="m-0 text-sm text-muted">
-						{env === undefined
-							? "This sandbox wasn't made from an environment."
-							: `${env.name} has no protected variables.`}
+						{envs.length === 0
+							? "This sandbox has no environments."
+							: envs.length === 1
+								? `${envs[0]?.name} has no protected variables.`
+								: "Its environments have no protected variables."}
 					</p>
 				) : (
 					<>
@@ -300,6 +313,10 @@ export function EgressPage({
 										<tr key={variable.name}>
 											<td className={td}>
 												<span className="font-mono text-code text-fg">{variable.name}</span>
+												{/* Of several, the one whose value it takes: the last that has it. */}
+												{envs.length > 1 && envName(variable.environmentId) !== undefined ? (
+													<span className={cellSub}>From {envName(variable.environmentId)}</span>
+												) : null}
 											</td>
 											<td className={td}>
 												<span className={cellMono}>{variable.placeholderPrefix}…</span>
@@ -325,10 +342,10 @@ export function EgressPage({
 			<GrantsSection
 				id="egress-grants-title"
 				title="Grants"
-				description="This sandbox's own allow and deny rules, on top of its environment's and the account's proxy settings. They apply to its next request. Deny wins."
+				description="This sandbox's own allow and deny rules, on top of its environments' and the account's proxy settings. They apply to its next request. Deny wins."
 				grants={egress.grants}
 				inherited={egress.environmentGrants}
-				{...(env === undefined ? {} : { inheritedFrom: env.name })}
+				{...(inheritedFrom === undefined ? {} : { inheritedFrom })}
 				onSave={async (grants) => setSaved(await source.setGrants(egress.sandboxId, grants))}
 			/>
 		</div>

@@ -9,6 +9,7 @@ import type {
 	EgressEntry,
 	EgressGrant,
 	Environment,
+	EnvironmentRef,
 	ProxySettings,
 	SandboxEgress,
 } from "./compute-model.ts";
@@ -45,7 +46,10 @@ export interface ProtectedVariableRow {
 export interface LoggedEntry extends EgressEntry {
 	readonly sandboxId: string;
 	readonly sandboxName: string;
-	readonly environment?: { readonly id: string; readonly name: string };
+	/** The sandbox's environments, in order. Absent or empty: none. */
+	readonly environments?: readonly EnvironmentRef[];
+	/** Each of its protected variables' names, and the environment whose value it takes. */
+	readonly protectedFrom?: Readonly<Record<string, string>>;
 }
 
 export interface EgressOverview {
@@ -139,7 +143,16 @@ export function logOf(overview: EgressOverview): LoggedEntry[] {
 				...entry,
 				sandboxId: box.sandboxId,
 				sandboxName: box.sandboxName,
-				...(box.environment === undefined ? {} : { environment: box.environment }),
+				...(box.environments.length === 0 ? {} : { environments: box.environments }),
+				...(box.protectedVariables.some((variable) => variable.environmentId !== undefined)
+					? {
+							protectedFrom: Object.fromEntries(
+								box.protectedVariables.flatMap((variable) =>
+									variable.environmentId === undefined ? [] : [[variable.name, variable.environmentId]],
+								),
+							),
+						}
+					: {}),
 			})),
 		)
 		.sort((a, b) => b.at - a.at);
@@ -158,19 +171,30 @@ export type DenialFix =
 	| { readonly kind: "allow" };
 
 /**
- * The fixes a denial offers, in the order shown. A placeholder sent to an unbound host is fixed in its environment, by
- * binding the variable there (its name, when the reason gives it); a host the rules don't allow is fixed by a rule.
- * A request a deny rule refused, or one to the cloud metadata address, offers none: the rule is on the Rules tab.
+ * The fixes a denial offers, in the order shown. A placeholder sent to an unbound host is fixed in the environment its
+ * value comes from, by binding the variable there (its name, when the reason gives it): of a sandbox's several, the one
+ * that wins the name, so the last of them that has it. With several and no name, there's no saying which. A host the
+ * rules don't allow is fixed by a rule. A request a deny rule refused, or one to the cloud metadata address, offers
+ * none: the rule is on the Rules tab.
  */
 export function denialFixes(entry: LoggedEntry, variables: readonly ProtectedVariableRow[]): DenialFix[] {
 	if (entry.decision !== "denied") return [];
 	if (entry.code === UNBOUND_CODE) {
-		if (entry.environment === undefined) return [];
-		const env = entry.environment;
+		const envs = entry.environments ?? [];
 		const named = variables.find(
-			(variable) => variable.environment.id === env.id && entry.reason?.includes(variable.name) === true,
+			(variable) =>
+				envs.some((env) => env.id === variable.environment.id) && entry.reason?.includes(variable.name) === true,
 		);
-		return [{ kind: "bind", environment: env, ...(named === undefined ? {} : { variable: named.name }) }];
+		if (named === undefined)
+			return envs.length === 1 && envs[0] !== undefined ? [{ kind: "bind", environment: envs[0] }] : [];
+		// The environment whose value it takes, as the sandbox says; else the last of its environments that has it.
+		const fromId = entry.protectedFrom?.[named.name];
+		const from =
+			envs.find((env) => env.id === fromId) ??
+			[...envs]
+				.reverse()
+				.find((env) => variables.some((each) => each.name === named.name && each.environment.id === env.id));
+		return from === undefined ? [] : [{ kind: "bind", variable: named.name, environment: from }];
 	}
 	// The host records every policy refusal as `denied`, its reason saying which. Only a host no rule allows can be let
 	// through by allowing it: a deny rule wins over an allow, and a sandbox with no network has none to allow.

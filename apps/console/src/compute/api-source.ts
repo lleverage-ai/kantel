@@ -27,6 +27,7 @@ import {
 	type PersonalToken as ApiPersonalToken,
 	type EnvironmentRepo as ApiRepo,
 	type SandboxEgress as ApiSandboxEgress,
+	type SandboxEnvironments as ApiSandboxEnvironments,
 	type SandboxMount as ApiSandboxMount,
 	type SandboxProcess as ApiSandboxProcess,
 	type SandboxShapes as ApiSandboxShapes,
@@ -72,6 +73,7 @@ import type {
 	DeviceLogin,
 	DeviceLoginsSource,
 	EgressSource,
+	EnvironmentRef,
 	EnvironmentsSource,
 	FilePart,
 	FileRange,
@@ -90,6 +92,7 @@ import type {
 	EgressGrant as UiGrant,
 	PersonalToken as UiPersonalToken,
 	SandboxEgress as UiSandboxEgress,
+	SandboxEnvironment as UiSandboxEnvironment,
 	SandboxImage as UiSandboxImage,
 	SandboxProcess as UiSandboxProcess,
 	SandboxShapes as UiSandboxShapes,
@@ -395,14 +398,18 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	deleted: "stopped",
 };
 
-/** The environment a sandbox was made from, when its name is known: none for one deleted since. */
-function environmentRefOf(
-	sandbox: Sandbox,
-	context: Context,
-): { readonly environment?: { readonly id: string; readonly name: string } } {
-	if (sandbox.environmentId === undefined) return {};
-	const name = context.environmentNames.get(sandbox.environmentId);
-	return name === undefined ? {} : { environment: { id: sandbox.environmentId, name } };
+/** A sandbox's environments' IDs, in order: `environmentIds`, or the one `environmentId` of a gateway from before. */
+const environmentIdsOf = (sandbox: Sandbox): readonly string[] =>
+	sandbox.environmentIds ?? (sandbox.environmentId === undefined ? [] : [sandbox.environmentId]);
+
+/**
+ * A sandbox's environments, in order, each by its name where the console knows it and by its ID where it doesn't (a
+ * caller that can't list the account's environments).
+ */
+function environmentRefsOf(sandbox: Sandbox, context: Context): { readonly environments?: readonly EnvironmentRef[] } {
+	const ids = environmentIdsOf(sandbox);
+	if (ids.length === 0) return {};
+	return { environments: ids.map((id) => ({ id, name: context.environmentNames.get(id) ?? id })) };
 }
 
 /**
@@ -414,8 +421,8 @@ async function learnEnvironmentNames(
 	accountId: string,
 	sandboxes: readonly Sandbox[],
 ): Promise<void> {
-	const unknown = sandboxes.some(
-		(sandbox) => sandbox.environmentId !== undefined && !context.environmentNames.has(sandbox.environmentId),
+	const unknown = sandboxes.some((sandbox) =>
+		environmentIdsOf(sandbox).some((id) => !context.environmentNames.has(id)),
 	);
 	if (!unknown) return;
 	try {
@@ -623,7 +630,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.hostReachable === false ? { hostUnreachable: true } : {}),
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
-		...environmentRefOf(sandbox, context),
+		...environmentRefsOf(sandbox, context),
 		...baseFieldOf(sandbox),
 		...mountsOf(sandbox, context),
 		...imageOf(sandbox),
@@ -711,10 +718,13 @@ function sandboxesSource(context: Context): SandboxesSource {
 						}),
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),
-				// The API takes an environment's ID or its name; the UI picks by ID.
-				...(input.environmentId === undefined || input.environmentId === ""
+				// The API takes an environment's ID or its name; the UI picks by ID. One goes as `environment`, which every
+				// gateway takes; several as `environments`, in order.
+				...(input.environmentIds === undefined || input.environmentIds.length === 0
 					? {}
-					: { environment: input.environmentId }),
+					: input.environmentIds.length === 1
+						? { environment: input.environmentIds[0] }
+						: { environments: [...input.environmentIds] }),
 				// The API takes a template's ID or its name; the UI picks by ID.
 				...(input.templateId === undefined || input.templateId === "" ? {} : { template: input.templateId }),
 				// The UI's absent auto-stop is always on, the API's `null`.
@@ -818,6 +828,19 @@ function sandboxesSource(context: Context): SandboxesSource {
 			};
 		},
 		history: async (id) => (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf),
+		environments: {
+			list: async (sandboxId) => sandboxEnvironmentsOf(await api.listSandboxEnvironments(sandboxId), context),
+			attach: async (sandboxId, environmentId, position) =>
+				sandboxEnvironmentsOf(
+					await api.attachSandboxEnvironment(sandboxId, {
+						environment: environmentId,
+						...(position === undefined ? {} : { position }),
+					}),
+					context,
+				),
+			detach: async (sandboxId, environmentId) =>
+				sandboxEnvironmentsOf(await api.detachSandboxEnvironment(sandboxId, environmentId), context),
+		},
 		get: async (id) => {
 			const sandbox = await api.getSandbox(id);
 			await Promise.all([
@@ -1407,17 +1430,40 @@ const egressEntryOf = (entry: ApiEgressEntry): UiEgressEntry => {
 	};
 };
 
+/** A sandbox's environments, as its own route answers them; their names go in the console's, for its other views. */
+function sandboxEnvironmentsOf(answer: ApiSandboxEnvironments, context: Context): readonly UiSandboxEnvironment[] {
+	return answer.environments.map((environment) => {
+		context.environmentNames.set(environment.id, environment.name);
+		return {
+			id: environment.id,
+			name: environment.name,
+			shadowed: {
+				variables: environment.shadowed.variables,
+				files: environment.shadowed.files,
+				repos: environment.shadowed.repos,
+			},
+			pending: environment.pending,
+		};
+	});
+}
+
+/** A sandbox's environments, in order; a gateway from before `environments` named its one as `environment`. */
+const egressEnvironmentsOf = (egress: ApiSandboxEgress): readonly EnvironmentRef[] =>
+	(egress.environments ?? (egress.environment === undefined ? [] : [egress.environment])).map((environment) => ({
+		id: environment.id,
+		name: environment.name,
+	}));
+
 const sandboxEgressOf = (egress: ApiSandboxEgress): UiSandboxEgress => ({
 	sandboxId: egress.sandboxId,
 	sandboxName: egress.sandboxName,
 	accountId: egress.accountId,
-	...(egress.environment === undefined
-		? {}
-		: { environment: { id: egress.environment.id, name: egress.environment.name } }),
+	environments: egressEnvironmentsOf(egress),
 	protectedVariables: egress.protectedVariables.map((variable) => ({
 		name: variable.name,
 		placeholderPrefix: variable.placeholderPrefix,
 		bindings: variable.bindings.map(bindingOf),
+		...(variable.environmentId === undefined ? {} : { environmentId: variable.environmentId }),
 	})),
 	environmentGrants: egress.environmentGrants.map(grantOf),
 	grants: egress.grants.map(grantOf),
@@ -1486,7 +1532,8 @@ function environmentsSource(context: Context): EnvironmentsSource {
 function egressSource(context: Context): EgressSource {
 	const { api } = context;
 	const view = (egress: ApiSandboxEgress): UiSandboxEgress => {
-		if (egress.environment !== undefined) context.environmentNames.set(egress.environment.id, egress.environment.name);
+		for (const environment of egressEnvironmentsOf(egress))
+			context.environmentNames.set(environment.id, environment.name);
 		return sandboxEgressOf(egress);
 	};
 	return {

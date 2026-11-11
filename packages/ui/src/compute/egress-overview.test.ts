@@ -30,6 +30,7 @@ describe("the account's egress", () => {
 				["allow", "registry.npmjs.org", "backend-dev"],
 				["deny", "*.example-tracker.io", "backend-dev"],
 				["allow", "api.anthropic.com", "evals"],
+				["allow", "github.com", "lleverage-github"],
 				["allow", "pypi.org", "dev-stack"],
 			],
 		);
@@ -47,8 +48,10 @@ describe("the account's egress", () => {
 		expect(log.length).toBeGreaterThan(9);
 		expect(log.map((entry) => entry.at)).toEqual([...log.map((entry) => entry.at)].sort((a, b) => b - a));
 		expect(new Set(log.map((entry) => entry.sandboxName))).toEqual(new Set(["dev-stack", "scratch", "eval-runner-12"]));
-		expect(log.find((entry) => entry.sandboxId === DEV_STACK.id)?.environment?.name).toBe("backend-dev");
-		expect(log.find((entry) => entry.sandboxId === SCRATCH.id)?.environment).toBeUndefined();
+		expect(log.find((entry) => entry.sandboxId === DEV_STACK.id)?.environments?.map((env) => env.name)).toEqual([
+			"backend-dev",
+		]);
+		expect(log.find((entry) => entry.sandboxId === SCRATCH.id)?.environments).toBeUndefined();
 	});
 
 	it("leaves out a sandbox it can't read, and says which", async () => {
@@ -73,6 +76,7 @@ describe("the account's egress", () => {
 			"backend-dev/NPM_TOKEN",
 			"backend-dev/OPENAI_API_KEY",
 			"evals/ANTHROPIC_API_KEY",
+			"lleverage-github/GH_TOKEN",
 		]);
 	});
 });
@@ -91,7 +95,7 @@ describe("a denial's fixes", () => {
 		bytesDown: 0,
 		sandboxId: DEV_STACK.id,
 		sandboxName: DEV_STACK.name,
-		environment: { id: "env_backend", name: "backend-dev" },
+		environments: [{ id: "env_backend", name: "backend-dev" }],
 	};
 	const variables = [
 		{ name: "GH_TOKEN", bindings: [], environment: { id: "env_backend", name: "backend-dev" } },
@@ -107,6 +111,25 @@ describe("a denial's fixes", () => {
 		expect(denialFixes({ ...entry, reason: "placeholder-unbound" }, variables)).toEqual([
 			{ kind: "bind", environment: { id: "env_backend", name: "backend-dev" } },
 		]);
+	});
+
+	it("binds it in the environment that wins its name, of a sandbox's several", () => {
+		const backend = { id: "env_backend", name: "backend-dev" };
+		const other = { id: "env_other", name: "other" };
+		const entry = {
+			...base,
+			environments: [backend, other],
+			code: "placeholder-unbound",
+			reason: "GH_TOKEN may not be sent to webhook.site",
+		};
+		// The later one has it, so its value is the one sent.
+		expect(denialFixes(entry, variables)).toEqual([{ kind: "bind", variable: "GH_TOKEN", environment: other }]);
+		// As the sandbox says, where it does.
+		expect(denialFixes({ ...entry, protectedFrom: { GH_TOKEN: backend.id } }, variables)).toEqual([
+			{ kind: "bind", variable: "GH_TOKEN", environment: backend },
+		]);
+		// No name, and several: no saying which.
+		expect(denialFixes({ ...entry, reason: "placeholder-unbound" }, variables)).toEqual([]);
 	});
 
 	it("allows a host no rule allows, as the host records it", () => {

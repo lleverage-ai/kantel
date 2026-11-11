@@ -258,13 +258,24 @@ export class EgressEditor {
 	}
 }
 
-/** `overview` with an environment as a write answered it, and its sandboxes with its grants. */
+/**
+ * `overview` with an environment as a write answered it, and the sandboxes that have it with their environments' grants
+ * worked out again: every one of their environments' grants, in order, which add up.
+ */
 export function withEnvironment(overview: EgressOverview, env: Environment): EgressOverview {
+	const environments = overview.environments.map((each) => (each.id === env.id ? env : each));
 	return {
 		...overview,
-		environments: overview.environments.map((each) => (each.id === env.id ? env : each)),
+		environments,
 		sandboxes: overview.sandboxes.map((box) =>
-			box.environment?.id === env.id ? { ...box, environmentGrants: env.grants } : box,
+			box.environments.some((ref) => ref.id === env.id)
+				? {
+						...box,
+						environmentGrants: box.environments.flatMap(
+							(ref) => environments.find((each) => each.id === ref.id)?.grants ?? [],
+						),
+					}
+				: box,
 		),
 	};
 }

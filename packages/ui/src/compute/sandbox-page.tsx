@@ -1,7 +1,8 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
 // state, its one screen (Desktop, or Browser where there's no desktop) and Stop, and ⋯ for Fork, Save snapshot,
-// Auto-stop and Delete; under it its address, its environment and when it stops. Five tabs follow. Overview: SSH
-// (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only mounts, where it has any; no screen
+// Auto-stop and Delete; under it its address, its environments and when it stops. Five tabs follow. Overview: SSH
+// (sandbox-ssh.tsx), its ports, its environments (sandbox-environments.tsx), its CPU and memory, its details and its
+// read-only mounts, where it has any; no screen
 // streams until Desktop or Browser opens it. Logs: commands and what happened to it, in one timeline. Egress: its
 // egress log. Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a
 // phone Stop goes (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds; stories
@@ -30,6 +31,7 @@ import { BaseOutdatedBadge, behindText } from "./base-outdated.tsx";
 import {
 	costText,
 	type EgressSource,
+	type Environment,
 	HOST_UNREACHABLE_NOTICE,
 	type HostingMode,
 	idleStopText,
@@ -56,6 +58,7 @@ import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, SandboxStateLabel, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
+import { SandboxEnvironments } from "./sandbox-environments.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
@@ -123,8 +126,10 @@ export interface SandboxPageProps {
 	/** The address of each view of this sandbox. */
 	readonly href: (view: SandboxView) => string;
 	readonly sandboxesHref: string;
-	/** An environment's page, from the sandbox's environment. */
+	/** An environment's page, from each of the sandbox's environments. */
 	readonly environmentHref?: (environmentId: string) => string;
+	/** The account's environments, which Overview's Attach offers. Absent: no Attach. */
+	readonly environments?: (accountId: string) => Promise<readonly Environment[]>;
 	/** A template's page, from the template the sandbox was made from. */
 	readonly templateHref?: (templateId: string) => string;
 	/** Goes to a path in the app; without it the page changes view in place. */
@@ -211,6 +216,7 @@ export function SandboxPage({
 	href,
 	sandboxesHref,
 	environmentHref,
+	environments,
 	templateHref,
 	navigate,
 	now: fixedNow,
@@ -536,19 +542,27 @@ export function SandboxPage({
 					{sandbox.hostname === "" ? null : (
 						<span className="min-w-0 truncate font-mono text-code">{sandbox.hostname}</span>
 					)}
-					{sandbox.environment === undefined ? null : (
-						<span className="inline-flex items-center gap-1.5">
+					{sandbox.environments === undefined || sandbox.environments.length === 0 ? null : (
+						<span
+							className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
+							title="Its environments, in order: the later one wins"
+						>
 							<EnvironmentIcon size="sm" />
-							{environmentHref === undefined ? (
-								sandbox.environment.name
-							) : (
-								<a
-									className="text-fg underline decoration-border-strong underline-offset-2"
-									href={environmentHref(sandbox.environment.id)}
-								>
-									{sandbox.environment.name}
-								</a>
-							)}
+							{sandbox.environments.map((env, at) => (
+								<span key={env.id} className="min-w-0">
+									{environmentHref === undefined ? (
+										env.name
+									) : (
+										<a
+											className="text-fg underline decoration-border-strong underline-offset-2"
+											href={environmentHref(env.id)}
+										>
+											{env.name}
+										</a>
+									)}
+									{at < (sandbox.environments?.length ?? 0) - 1 ? "," : null}
+								</span>
+							))}
 						</span>
 					)}
 					{sandbox.template === undefined ? null : (
@@ -655,6 +669,9 @@ export function SandboxPage({
 					onAccessRetry={readAccess}
 					onNotice={setNotice}
 					usageKey={state}
+					onChanged={reload}
+					{...(environmentHref === undefined ? {} : { environmentHref })}
+					{...(environments === undefined ? {} : { environments: () => environments(sandbox.accountId) })}
 				/>
 			) : view === "logs" ? (
 				<SandboxLogs source={source} snapshots={snapshots} sandbox={sandbox} now={now} narrow={narrow} />
@@ -697,6 +714,9 @@ function Overview({
 	onAccessRetry,
 	onNotice,
 	usageKey,
+	onChanged,
+	environmentHref,
+	environments,
 }: {
 	source: SandboxesSource;
 	sandbox: Sandbox;
@@ -709,6 +729,11 @@ function Overview({
 	onNotice: (notice: SandboxNotice | undefined) => void;
 	/** Changes with each read of the sandbox, so memory and disk are read again with its CPU. */
 	usageKey: unknown;
+	/** After a change to its environments: the sandbox is read again. */
+	onChanged: () => void;
+	environmentHref?: (environmentId: string) => string;
+	/** Its account's environments, for Attach. */
+	environments?: () => Promise<readonly Environment[]>;
 }) {
 	const spec = sandboxSpec(sandbox);
 	const { ports, exposePort, hidePort } = source;
@@ -791,6 +816,21 @@ function Overview({
 		</section>
 	);
 
+	const envSection =
+		source.environments === undefined ? null : (
+			<SandboxEnvironments
+				source={source.environments}
+				sandboxId={sandbox.id}
+				state={sandbox.state}
+				// Read again when it starts or stops (a start sets up what was pending) and when they change elsewhere.
+				refreshKey={`${sandbox.state} ${(sandbox.environments ?? []).map((env) => env.id).join(" ")}`}
+				onChanged={onChanged}
+				onNotice={onNotice}
+				{...(environments === undefined ? {} : { available: environments })}
+				{...(environmentHref === undefined ? {} : { environmentHref })}
+			/>
+		);
+
 	// Its read-only mounts (experimental), only where it has any.
 	const mounts =
 		sandbox.mounts === undefined || sandbox.mounts.length === 0 ? null : <SandboxMounts mounts={sandbox.mounts} />;
@@ -827,6 +867,7 @@ function Overview({
 				{usage}
 				{ssh}
 				{portsSection}
+				{envSection}
 				{image}
 				{details}
 				{mounts}
@@ -839,6 +880,7 @@ function Overview({
 				{ssh}
 				{portsSection}
 				{hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
+				{envSection}
 			</div>
 			<aside className="flex min-w-0 flex-col gap-8">
 				{usage}

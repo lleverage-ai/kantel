@@ -864,6 +864,7 @@ function PageFor({
 					href={(view) => sandboxViewPath(base, route.sandboxId ?? "", view, screenQuery)}
 					sandboxesHref={computePath("sandboxes", base)}
 					environmentHref={(id) => computePath("environments", base, id)}
+					environments={(accountId) => source.environments.list(accountId)}
 					{...(source.templates === undefined
 						? {}
 						: { templateHref: (id: string) => computePath("templates", base, id) })}

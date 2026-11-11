@@ -1,6 +1,6 @@
-// The Environments pages (compute console): what each new sandbox starts with. The list shows an account's
-// environments; opening one shows its variables, secret files, repositories and egress grants, each with its own add
-// and remove. A variable can be protected: it's bound to the hosts it may be sent to, every sandbox gets its own
+// The Environments pages (compute console): what a sandbox gets from each environment it uses, several in order. The
+// list shows an account's environments; opening one shows its variables, secret files, repositories and egress grants,
+// each with its own add and remove. A variable can be protected: it's bound to the hosts it may be sent to, every sandbox gets its own
 // `kph_` placeholder for it, and the host's egress proxy swaps the placeholder for the value only on a request to one
 // of those hosts, so the value never enters a sandbox. Every call goes through the `EnvironmentsSource` the host binds.
 
@@ -107,8 +107,8 @@ export function EnvironmentsPage({
 				title="Environments"
 				lede={
 					canProtect
-						? "What each new sandbox starts with: variables, secret files and repositories, and where it may connect. Mark a variable protected and sandboxes only ever see a placeholder for it."
-						: "What each new sandbox starts with: variables and repositories, and where it may connect."
+						? "What a sandbox using one gets: variables, secret files and repositories, and where it may connect. A sandbox can use several. Mark a variable protected and sandboxes only ever see a placeholder for it."
+						: "What a sandbox using one gets: variables and repositories, and where it may connect. A sandbox can use several."
 				}
 				actions={addButton}
 			/>
@@ -128,7 +128,7 @@ export function EnvironmentsPage({
 				<ListSkeleton />
 			) : state.value.length === 0 ? (
 				<EmptyState title="No environments yet" action={addButton}>
-					An environment holds the variables, files and repositories a sandbox starts with, such as a GitHub token the
+					An environment holds the variables, files and repositories a sandbox using it gets, such as a GitHub token the
 					sandbox can use but never read.
 				</EmptyState>
 			) : (
@@ -446,8 +446,8 @@ export function EnvironmentPage({
 			/>
 			<Notice announce={false}>
 				{canProtect
-					? "New sandboxes start with what's here. A protected variable's new value reaches running sandboxes on their next request, with the same placeholder."
-					: `New sandboxes start with what's here. ${NO_PROTECTED_VALUES_TEXT}`}
+					? "A sandbox gets what's here when it's made using this environment, or when this is attached to it. A protected variable's new value reaches running sandboxes on their next request, with the same placeholder."
+					: `A sandbox gets what's here when it's made using this environment, or when this is attached to it. ${NO_PROTECTED_VALUES_TEXT}`}
 			</Notice>
 			{notice === undefined ? null : (
 				<Notice
@@ -1132,7 +1132,7 @@ export function FilesSection({
 			/>
 			<p className="m-0 text-sm text-muted">
 				{canAdd
-					? "Written to each new sandbox's disk, so anything in the sandbox can read them. Kantel keeps them encrypted and never shows them again."
+					? "Written to the disk of each sandbox using it, so anything in the sandbox can read them. Kantel keeps them encrypted and never shows them again."
 					: "This deployment doesn't support secret files."}
 			</p>
 			{env.files.length === 0 ? null : (
@@ -1320,8 +1320,8 @@ function ReposSection({
 				}
 			/>
 			<p className="m-0 text-sm text-muted">
-				Cloned into each new sandbox when it starts, through the egress proxy: a private one needs a protected token
-				bound to its host.
+				Cloned into each sandbox using it, through the egress proxy: a private one needs a protected token bound to its
+				host.
 			</p>
 			{env.repos.length === 0 ? null : (
 				<TableFrame>
@@ -1508,7 +1508,7 @@ function DeleteEnvironmentDialog({
 				<strong>{env.name}</strong> and its values go for good.{" "}
 				{env.sandboxCount === 0
 					? "No sandbox uses it."
-					: `The ${plural(env.sandboxCount, "sandbox", "sandboxes")} made from it keep their plain variables and files, but their protected variables stop working.`}
+					: `It comes off the ${plural(env.sandboxCount, "sandbox", "sandboxes")} using it: its variables and grants go and its protected variables stop working. Files and repositories it gave them stay.`}
 			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>

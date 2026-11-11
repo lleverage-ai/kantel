@@ -408,8 +408,11 @@ export interface Sandbox {
 	readonly shared?: boolean;
 	/** The sandbox it was forked from. */
 	readonly forkedFrom?: string;
-	/** The environment it was made from. */
-	readonly environment?: { readonly id: string; readonly name: string };
+	/**
+	 * Its environments, in order: where two set the same variable, secret file or repository path, the later one wins.
+	 * Absent or empty: none.
+	 */
+	readonly environments?: readonly EnvironmentRef[];
 	/**
 	 * The base image it runs on, and how far that is behind the latest on its channel. Kantel never patches a running
 	 * sandbox: it moves to the latest base when it restarts on it. Absent where Kantel doesn't say (an isolate).
@@ -673,8 +676,8 @@ export interface CreateSandboxInput {
 	readonly autoStopMinutes?: number;
 	/** Minutes unused before its idle stop; undefined is none. */
 	readonly idleStopMinutes?: number;
-	/** The environment it starts with. */
-	readonly environmentId?: string;
+	/** The environments it starts with, by ID, in order: the later one wins where two set the same thing. */
+	readonly environmentIds?: readonly string[];
 	/** The template it is made from (experimental): its newest built snapshot, or a fresh boot of its image. */
 	readonly templateId?: string;
 	/** The host it goes on, which it then stays on. Absent: Kantel picks. */
@@ -930,6 +933,8 @@ export interface SandboxesSource {
 	history(id: string): Promise<readonly SandboxCommand[]>;
 	/** One sandbox, for its page. */
 	get(id: string): Promise<Sandbox>;
+	/** Its environments, with what each loses to a later one, and attaching and detaching them. Absent: none offered. */
+	readonly environments?: SandboxEnvironmentsSource;
 	/** Minutes until auto-stop stops it, from now; undefined keeps it always on. */
 	setAutoStop?(id: string, minutes: number | undefined): Promise<Sandbox>;
 	/**
@@ -968,6 +973,45 @@ export interface SandboxesSource {
 		list(id: string, path: string): Promise<SandboxFolder>;
 		read(id: string, path: string, range: FileRange): Promise<FilePart>;
 	};
+}
+
+/** At most this many environments on one sandbox, as the API allows. */
+export const MAX_SANDBOX_ENVIRONMENTS = 10;
+
+/** An environment as a sandbox or its egress names it. */
+export interface EnvironmentRef {
+	readonly id: string;
+	readonly name: string;
+}
+
+/** What of one of a sandbox's environments it doesn't take, because a later one (or its own env) sets it instead. */
+export interface SandboxEnvironmentShadowed {
+	/** Its variables a later environment, or the sandbox's own env, sets instead. */
+	readonly variables: readonly string[];
+	/** Its secret files' paths a later environment writes instead. */
+	readonly files: readonly string[];
+	/** Its repositories' paths a later environment clones into instead. */
+	readonly repos: readonly string[];
+}
+
+/** One of a sandbox's environments, in its place in their order. */
+export interface SandboxEnvironment extends EnvironmentRef {
+	readonly shadowed: SandboxEnvironmentShadowed;
+	/** Its secret files and repositories are set up when the sandbox next starts (it was attached while stopped). */
+	readonly pending: boolean;
+}
+
+/**
+ * A sandbox's environments. An attach puts one last (so it wins) unless `position` says otherwise; attaching one it
+ * has moves it. Its variables reach new commands at once, its grants and protected values apply at once, and a running
+ * sandbox gets its files and repositories now, a stopped one when it next starts. A detach takes its variables and
+ * grants away and stops its protected values resolving at once; files written and repositories cloned stay. Running
+ * processes keep the env they started with either way.
+ */
+export interface SandboxEnvironmentsSource {
+	list(sandboxId: string): Promise<readonly SandboxEnvironment[]>;
+	attach(sandboxId: string, environmentId: string, position?: number): Promise<readonly SandboxEnvironment[]>;
+	detach(sandboxId: string, environmentId: string): Promise<readonly SandboxEnvironment[]>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1319,7 +1363,7 @@ export interface DestinationBinding {
 }
 
 /**
- * A variable every new sandbox made from the environment starts with. A plain one is its value in the sandbox. A
+ * A variable every sandbox using the environment has. A plain one is its value in the sandbox. A
  * protected one is a `kph_` placeholder in the sandbox, its own per sandbox, that the host's egress proxy swaps for the
  * value on requests to its bindings: the value never enters the sandbox.
  */
@@ -1377,7 +1421,7 @@ export interface Environment {
 	readonly files: readonly EnvironmentFile[];
 	readonly repos: readonly EnvironmentRepo[];
 	readonly grants: readonly EgressGrant[];
-	/** How many sandboxes were made from it and still exist. */
+	/** How many sandboxes use it now. */
 	readonly sandboxCount: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
@@ -1410,7 +1454,10 @@ export interface EnvironmentsSource {
 	get(id: string): Promise<Environment>;
 	create(input: { accountId: string; name: string; description?: string }): Promise<Environment>;
 	update(id: string, change: { name?: string; description?: string }): Promise<Environment>;
-	/** Deletes it. Sandboxes made from it keep what they started with; their protected variables stop resolving. */
+	/**
+	 * Deletes it, and takes it off every sandbox that uses it: they keep the files and repositories it gave them, and its
+	 * protected variables stop resolving.
+	 */
 	remove(id: string): Promise<void>;
 	/** Adds or changes a variable by name. A new value for a protected one reaches its running sandboxes at once. */
 	setVariable(id: string, input: VariableInput): Promise<Environment>;
@@ -1638,6 +1685,8 @@ export interface SandboxProtectedVariable {
 	/** The first characters of its placeholder, `kph_7Qx2`, to tell it apart in a log or a command's output. */
 	readonly placeholderPrefix: string;
 	readonly bindings: readonly DestinationBinding[];
+	/** The environment whose value it takes: the last of the sandbox's that has it. */
+	readonly environmentId?: string;
 }
 
 /** A sandbox's egress: what it was made with, its own grants and its log. */
@@ -1646,11 +1695,12 @@ export interface SandboxEgress {
 	readonly sandboxName: string;
 	/** The account the sandbox is in. */
 	readonly accountId: string;
-	readonly environment?: { readonly id: string; readonly name: string };
+	/** Its environments, in order. */
+	readonly environments: readonly EnvironmentRef[];
 	readonly protectedVariables: readonly SandboxProtectedVariable[];
-	/** The environment's grants, which this sandbox has too. */
+	/** Its environments' grants, which this sandbox has too: they add up. */
 	readonly environmentGrants: readonly EgressGrant[];
-	/** This sandbox's own grants, on top of its environment's. */
+	/** This sandbox's own grants, on top of its environments'. */
 	readonly grants: readonly EgressGrant[];
 	/** Newest first. */
 	readonly entries: readonly EgressEntry[];
@@ -2032,6 +2082,17 @@ export const SANDBOX_STATE_LABELS: Readonly<Record<SandboxState, string>> = {
 	stopped: "Stopped",
 	error: "Error",
 };
+
+/**
+ * A sandbox's environments' names in their order, for a line of text: "backend-dev", "backend-dev and evals",
+ * "a, b and c". Undefined for none.
+ */
+export function environmentNamesText(environments: readonly EnvironmentRef[] | undefined): string | undefined {
+	const names = (environments ?? []).map((env) => env.name);
+	if (names.length === 0) return undefined;
+	if (names.length === 1) return names[0];
+	return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
 
 /** What a running sandbox whose guest agent doesn't answer shows for its state, in the error colour. */
 export const UNRESPONSIVE_LABEL = "Unresponsive";
