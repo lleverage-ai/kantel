@@ -357,8 +357,11 @@ export interface HostExecResult {
 	readonly truncated?: boolean;
 	readonly timedOut?: boolean;
 	readonly durationMs?: number;
-	/** From an isolate: it failed because it ran something an isolate doesn't have. */
-	readonly needsMicrovm?: { readonly command: string; readonly reason: string };
+	/**
+	 * From an isolate: it failed because it ran something an isolate doesn't have. `inferred`: the host read it from the
+	 * shell's answer (exit 127 and its message), the runtime didn't say it; a hint only, never acted on (`autoUpgrade`).
+	 */
+	readonly needsMicrovm?: { readonly command: string; readonly reason: string; readonly inferred?: boolean };
 	/** From an isolate: its runtime stopped it, for `cpu`, `memory` or `wall` time. */
 	readonly terminated?: string;
 }

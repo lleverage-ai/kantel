@@ -366,6 +366,12 @@ export type StoredCommand = computeSchema.Command & {
 	 * that end with its run again (`rerunAs`), or `RERUN_CLAIM_MS` passes, no other reader records it ended.
 	 */
 	readonly rerunPending?: number;
+	/**
+	 * The ID its run again takes, written while it still runs once its sandbox is upgraded and before its run again is
+	 * recorded: only a command still running gets one, so one killed first is never run again, and a kill landing after
+	 * it reaches its run again (`killCommand`), which itself starts only while this one still runs.
+	 */
+	readonly rerunStarting?: string;
 };
 
 /**

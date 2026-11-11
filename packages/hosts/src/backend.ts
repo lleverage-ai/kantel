@@ -151,9 +151,16 @@ function execResult(result: HostExecResult): ExecResult {
 		stdout: result.stdout,
 		stderr: result.stderr,
 		timedOut: result.timedOut === true,
-		// From an isolate, as its host said: what it needed a microVM for, and why its runtime stopped it.
+		// From an isolate, as its host said: what it needed a microVM for, and why its runtime stopped it. One the host only
+		// inferred from the shell's answer stays inferred: a hint, which autoUpgrade never acts on.
 		...(needs !== undefined && typeof needs.command === "string" && typeof needs.reason === "string"
-			? { needsMicrovm: { command: needs.command, reason: needs.reason } }
+			? {
+					needsMicrovm: {
+						command: needs.command,
+						reason: needs.reason,
+						...(needs.inferred === true ? { inferred: true as const } : {}),
+					},
+				}
 			: {}),
 		...(terminated === "cpu" || terminated === "memory" || terminated === "wall" ? { terminated } : {}),
 	};

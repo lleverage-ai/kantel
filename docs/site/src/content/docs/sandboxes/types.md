@@ -92,6 +92,7 @@ The body takes `size` or `resources`, and `image`, as a [create](/sandboxes/life
 - **A running or a stopped isolate** can be upgraded. A stopped one comes back as a running microVM: the files go into a machine that runs. Stop it afterwards if you want it stopped. One that is starting, stopping or in `error` is `conflict`.
 - **Commands and file calls sent during the upgrade wait for it**, as calls during a start do, and then run in the microVM.
 - **If the microVM can't be made**, the call fails with why (`exhausted` when no host has room), and the isolate is left as it was: still running, or still stopped, with its files.
+- **If the microVM's egress can't be enforced**, such as a grant revoked during the upgrade that its host can't take, it is stopped before it runs, as any sandbox is. It is still a microVM: the isolate is gone, and starting it again starts the microVM.
 - **If its host doesn't answer**, Kantel doesn't guess. Each upgrade has an ID its host does at most once, and Kantel asks the host what became of it. Until the host can answer, the call fails `unavailable`, and the sandbox stays `starting`. Kantel's sweep then settles it as the microVM, or as the isolate it was, never both. The same goes for an upgrade whose gateway stopped part way.
 - **While its files move to another host, the isolate is held still.** A command already running in it ends first and its writes go with the files. A command or write after that is refused until the upgrade ends.
 - **Its cost** changes at the upgrade: its time as an isolate ends then, at the isolate's rate, and its time as a microVM begins, at its size's rate. A `sandbox.upgraded` [event and webhook](/monitoring/webhooks/) record it, with what moved (`data.files`, `data.bytes`) and how (`data.path`).
@@ -131,6 +132,7 @@ Switching to SSH on the microVM, in /home/user/workspace.
 Without `autoUpgrade`, the pseudo-shell asks whether to upgrade instead.
 
 - **The whole command runs again**, not just the step that failed: in `curl -o data.json $URL && tar -xf a.tar`, the download happens twice. Write commands that can run again, or upgrade first.
+- **A kill stops the run again too.** Kill the command while the isolate upgrades and it isn't run again (the upgrade still finishes). Kill it once its run again has started, while it runs or after it ends naming it in `rerunAs`, and its run again is killed with it.
 - **Only what the isolate's runtime says counts.** Where the runtime doesn't say (an older host), Kantel reads `needsMicrovm` from the shell's answer and marks it `"inferred": true`. That is a hint for you: a command can print the same text itself, so `autoUpgrade` never acts on it.
 - **Who may cause it:** turning `autoUpgrade` on needs `sandboxes:write` (a create or a `PATCH`). Once it is on, any key that may run commands in the sandbox (`exec`) may cause the upgrade, and with it the microVM's cost: the opt-in hands that decision over. A command that an isolate's runtime stopped for using too much CPU time, memory or wall time says which in `terminated` (`cpu`, `memory` or `wall`).
 

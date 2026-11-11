@@ -977,7 +977,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
-			if (latest !== placement) await store.putPlacement(latest);
+			if (latest !== placement) {
+				await applyReport(
+					placement.sandboxId,
+					hostId,
+					sandbox?.tier ?? placement.tier,
+					sandbox ?? { state: "lost" },
+					reported,
+				);
+			}
 			// One whose machine ended while the host was away, or that the host's restart ended (`the host restarted while
 			// it ran`), is caught up: the compute plane may still have it running.
 			const exit = sandbox === undefined ? undefined : exitOf(sandbox);
@@ -1022,8 +1030,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		snapshotSizesReadAt.delete(hostId);
 		if (facts.value.features?.includes(HOST_FEATURES.snapshotSizes) === true) measuresSnapshots.add(hostId);
 		else measuresSnapshots.delete(hostId);
-		// Isolates upgrades left here, their microVMs placed elsewhere: deleted once it is welcomed.
-		const owed = new Set<string>();
+		// Isolates upgrades left here, their microVMs placed elsewhere: deleted once it is welcomed. Those already owed it
+		// stay owed (one deleted whose removal wasn't recorded, which it no longer names): each is checked when it is done.
+		const owed = new Set<string>(cleanupsDue.get(hostId) ?? []);
 		for (const sandboxId of held.keys()) {
 			if ((await store.getPlacement(sandboxId))?.cleanup?.hostId === hostId) owed.add(sandboxId);
 		}
@@ -1114,13 +1123,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
 					});
 				}
-				// The call that caused the event usually recorded it already (a create's `running`).
+				// The call that caused the event usually recorded it already (a create's `running`). Applied to the placement
+				// as it is now, still this host's and of the sandbox's tier: an upgrade's handover since stands.
+				const tier = (sandbox as { tier?: unknown }).tier ?? placement.tier;
 				if (sandbox.state === "deleted") {
-					await store.removePlacement(sandbox.id);
+					await store.removePlacementIf(sandbox.id, (latest) => latest.hostId === hostId && latest.tier === tier);
 					return;
 				}
-				const latest = asReported(placement, sandbox, await store.getHost(hostId), clock.now());
-				if (latest !== placement) await store.putPlacement(latest);
+				await applyReport(sandbox.id, hostId, tier, sandbox, await store.getHost(hostId));
 				// A running sandbox's guest health, which a host with `guestHealth` sends an event for each time it changes.
 				if (sandbox.state === "running") {
 					await compute?.reportHealth?.(
@@ -1415,6 +1425,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			updatedAt: now,
 		};
 	};
+
+	/**
+	 * A host's report of a sandbox (an event, its hello, a call's answer), applied to its placement as it is now, never to
+	 * the one read before: only while that placement is still on `hostId`, and of the tier reported (`tier`, or the one
+	 * read for a report that doesn't say), so a report read before an upgrade's handover can't write back the isolate,
+	 * its host or its upgrade. Only its state and size change. Answers what was written, or undefined.
+	 */
+	const applyReport = (
+		sandboxId: string,
+		hostId: string,
+		tier: unknown,
+		reported: { readonly state: string; readonly size?: unknown },
+		host: HostRecord | undefined,
+	): Promise<PlacementRecord | undefined> =>
+		store.updatePlacement(sandboxId, (latest) => {
+			if (latest.hostId !== hostId || latest.tier !== tier) return undefined;
+			const next = asReported(latest, reported, host, clock.now());
+			return next === latest ? undefined : next;
+		});
 
 	const settle = async (
 		placement: PlacementRecord,
@@ -1755,12 +1784,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return undefined;
 			}
 		}
-		const latest = await store.getPlacement(sandboxId);
-		if (latest?.cleanup?.hostId !== hostId) return latest;
-		const { cleanup: _done, ...placed } = latest;
-		const cleaned = { ...placed, updatedAt: clock.now() };
-		await store.putPlacement(cleaned);
-		return cleaned;
+		const cleaned = await store.updatePlacement(sandboxId, (latest) => {
+			if (latest.cleanup?.hostId !== hostId) return undefined;
+			const { cleanup: _done, ...placed } = latest;
+			return { ...placed, updatedAt: clock.now() };
+		});
+		return cleaned ?? (await store.getPlacement(sandboxId));
 	};
 
 	/** The isolates upgrades left on each host, deleted on its next heartbeat (once it is welcomed). */
@@ -2252,15 +2281,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (own !== undefined && here !== undefined && !isRefusal(here)) {
 					await intend(own, here.size, "host");
 					reserve(own.id, here.size.memoryMiB, here.size.diskGiB);
+					let made: HostSandbox | undefined;
 					try {
-						const sandbox = await onHost<HostSandbox>(
+						made = await onHost<HostSandbox>(
 							own.id,
 							HostMethods.upgrade,
 							{ ...paramsFor(here), operationId },
 							{ timeoutMs: upgradeTimeoutMs },
 							own,
 						);
-						return await commitOnHost(sandboxId, own, here.size, sandbox);
 					} catch (error) {
 						if (unanswered(error)) {
 							// Its host may have done it, whatever became of the answer: asked, never guessed.
@@ -2281,6 +2310,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						// No room there after all: another host, as when it had none to begin with. Any other failure stands.
 						if (!isKantelError(error) || (error.code !== "exhausted" && error.code !== "not_supported")) throw error;
 						log(`[hosts] host ${own.id} couldn't upgrade ${sandboxId} itself (${error.message}); moving it`);
+					}
+					if (made !== undefined) {
+						// Its host has replaced the isolate: only recording that is left. A failure here is no refusal, and the
+						// placement keeps the upgrade (or has the microVM, if the write landed), so it is settled by its ID.
+						try {
+							return await commitOnHost(sandboxId, own, here.size, made);
+						} catch (error) {
+							throw upgradeOutcomeUnknown(
+								`Host ${own.name} made the microVM, but it couldn't be recorded yet (${error instanceof Error ? error.message : String(error)})`,
+							);
+						}
 					}
 				}
 				// Another host makes the microVM, under the same ID while the isolate, held still on its own host
@@ -2310,6 +2350,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// Before the create is sent: a microVM may be there from then on, whatever becomes of its answer.
 				await intend(target, chosen.size, "copy");
 				reserve(target.id, chosen.size.memoryMiB, chosen.size.diskGiB);
+				/** Rolls the copy back: only before the placement is the microVM's, while the isolate is still there. */
+				const rollBack = async (error: unknown): Promise<never> => {
+					if (!(await rollBackCopy(sandboxId, source, target.id, operationId))) {
+						throw upgradeOutcomeUnknown(
+							`The upgrade failed (${error instanceof Error ? error.message : String(error)}) and couldn't be rolled back yet: a host didn't answer`,
+						);
+					}
+					throw error;
+				};
+				let sandbox: HostSandbox;
+				let moved: { readonly files: number; readonly bytes: number };
 				try {
 					await onHost(
 						source.hostId,
@@ -2319,14 +2370,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					);
 					// Listed before the microVM is made: too much to move is refused without one.
 					const listing = await listWorkspace(sandboxId, source.hostId);
-					const sandbox = await onHost<HostSandbox>(
-						target.id,
-						HostMethods.create,
-						paramsFor(chosen),
-						undefined,
-						target,
-					);
-					const moved = await moveFiles(sandboxId, listing, source.hostId, target.id);
+					sandbox = await onHost<HostSandbox>(target.id, HostMethods.create, paramsFor(chosen), undefined, target);
+					moved = await moveFiles(sandboxId, listing, source.hostId, target.id);
 					const linked = await onHost<HostExecResult>(target.id, HostMethods.exec, {
 						sandboxId,
 						argv: ["sh", "-c", UPGRADE_LINK],
@@ -2339,8 +2384,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							`/workspace couldn't be linked in the microVM: ${linked.stderr.trim()}`,
 						);
 					}
-					// The microVM is the sandbox now, owing its isolate's host the isolate's removal.
-					const placement = await settle(
+				} catch (error) {
+					return rollBack(error);
+				}
+				// The microVM is the sandbox now, owing its isolate's host the isolate's removal. A write that fails may still
+				// have landed: read back, the placement says which, and only one that never moved is rolled back.
+				let placement: PlacementRecord;
+				try {
+					placement = await settle(
 						{
 							...placementOn(sandboxId, target, chosen.size, source, input.owner),
 							cleanup: { hostId: source.hostId, operationId },
@@ -2348,23 +2399,34 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						sandbox,
 						target,
 					);
-					const cleaned = await cleanUpSource(source.hostId, sandboxId);
-					return {
-						sandbox,
-						hostId: target.id,
-						placement: cleaned ?? placement,
-						nestedVirtualisation: target.facts?.nested ?? false,
-						path: "control-plane" as const,
-						...moved,
-					};
 				} catch (error) {
-					if (!(await rollBackCopy(sandboxId, source, target.id, operationId))) {
+					const read = await store.getPlacement(sandboxId).catch(() => undefined);
+					if (read?.tier === "microvm" && read.hostId === target.id) placement = read;
+					else if (read?.tier === "isolate" && read.upgrade?.operationId === operationId) return rollBack(error);
+					else {
 						throw upgradeOutcomeUnknown(
-							`The upgrade failed (${error instanceof Error ? error.message : String(error)}) and couldn't be rolled back yet: a host didn't answer`,
+							`The microVM's placement couldn't be recorded (${error instanceof Error ? error.message : String(error)}), nor read back yet`,
 						);
 					}
-					throw error;
 				}
+				// From here the isolate may be deleted: nothing rolls back. A removal not done, or not recorded, stays owed
+				// (`cleanup`), done once its host is back.
+				const cleaned = await cleanUpSource(source.hostId, sandboxId).catch((error: unknown) => {
+					const why = error instanceof Error ? error.message : String(error);
+					log(
+						`[hosts] the isolate ${sandboxId}'s removal from ${source.hostId} wasn't recorded (${why}); again once it's back`,
+					);
+					cleanupsDue.set(source.hostId, new Set([...(cleanupsDue.get(source.hostId) ?? []), sandboxId]));
+					return undefined;
+				});
+				return {
+					sandbox,
+					hostId: target.id,
+					placement: cleaned ?? placement,
+					nestedVirtualisation: target.facts?.nested ?? false,
+					path: "control-plane" as const,
+					...moved,
+				};
 			},
 			async settleUpgrade(sandboxId, operationId) {
 				return settleWith(sandboxId, operationId);
@@ -2388,10 +2450,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					(method === HostMethods.stop || (result as { id?: unknown }).id === sandboxId)
 				) {
 					const size = (result as { size?: unknown } | undefined)?.size;
-					await store.putPlacement({
-						...asReported(placement, { state, size }, await store.getHost(placement.hostId), clock.now()),
-						updatedAt: clock.now(),
-					});
+					const tier = (result as { tier?: unknown } | undefined)?.tier ?? placement.tier;
+					await applyReport(sandboxId, placement.hostId, tier, { state, size }, await store.getHost(placement.hostId));
 				}
 				return result;
 			},

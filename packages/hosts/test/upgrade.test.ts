@@ -10,7 +10,7 @@ import { createHostBackend } from "../src/backend.ts";
 import { HOST_FEATURES, type HostFacts, type HostMessage } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
-import { createMemoryHostStore } from "../src/store.ts";
+import { createMemoryHostStore, type HostStore, type PlacementRecord } from "../src/store.ts";
 import { createTunnelTickets } from "../src/tunnel.ts";
 
 const BOTH = ["microvm", "isolate"] as const;
@@ -107,6 +107,8 @@ class Host {
 	>();
 	/** Isolates held still for an upgrade, by sandbox: the operation. */
 	readonly frozen = new Map<string, string>();
+	/** Detached isolate commands' ends, by command ID (`sandbox.exec.get`). */
+	readonly ended = new Map<string, unknown>();
 	/** Commands under way in isolates. */
 	readonly running = new Set<Promise<void>>();
 	receive!: (text: string) => void;
@@ -279,9 +281,20 @@ class Host {
 					return;
 				}
 				if (sandbox?.tier === "isolate" && this.isolateExec !== undefined) {
-					return answer(this.isolateExec(String(p.command)));
+					const result = this.isolateExec(String(p.command));
+					// Detached (`execControl`): started at once, its end `sandbox.exec.get`'s.
+					if (p.detached === true && typeof p.commandId === "string") {
+						this.ended.set(p.commandId, result);
+						return answer({ commandId: p.commandId, state: "running" });
+					}
+					return answer(result);
 				}
 				return answer({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 });
+			}
+			case "sandbox.exec.get": {
+				const result = this.ended.get(String(p.commandId));
+				if (result === undefined) return fail({ code: "not_found", message: "no such command" });
+				return answer({ commandId: p.commandId, state: "exited", result });
 			}
 			case "sandbox.files.write":
 				if (sandbox?.tier === "isolate" && this.frozen.has(id)) return frozen();
@@ -610,6 +623,60 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(spin).toMatchObject({ exitCode: 152, terminated: "cpu" });
 		expect(spin.needsMicrovm).toBeUndefined();
 	});
+
+	it("keeps a needsMicrovm its host only inferred a hint, which autoUpgrade never acts on", async () => {
+		const { root, hosts } = await setup([
+			{
+				name: "both",
+				facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade, HOST_FEATURES.execControl]),
+			},
+		]);
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		host.isolateExec = (command) =>
+			command.startsWith("echo")
+				? {
+						// Text the command printed itself, which the host read as a refusal.
+						exitCode: 127,
+						stdout: "",
+						stderr: "bash: git: command not found\n",
+						needsMicrovm: { command: "git", reason: "An isolate has no git; a microVM does.", inferred: true },
+					}
+				: {
+						exitCode: 127,
+						stdout: "",
+						stderr: "tar: not available in an isolate. Use a microVM.\n",
+						needsMicrovm: { command: "tar", reason: "Archives need a microVM." },
+					};
+		const sandbox = await root.createSandbox({ type: "isolate", autoUpgrade: true, wait: true });
+		const printed = await root.runCommand(sandbox.id, { command: "echo 'bash: git: command not found' >&2; exit 127" });
+		expect(printed.needsMicrovm).toEqual({
+			command: "git",
+			reason: "An isolate has no git; a microVM does.",
+			inferred: true,
+		});
+		expect(printed.rerunAs).toBeUndefined();
+		expect(host.methods()).not.toContain("sandbox.upgrade");
+		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+		// Its detached run, its end fetched by its ID, keeps it too.
+		const detached = await root.runCommand(sandbox.id, { command: "echo again >&2; exit 127", detached: true });
+		let ended = await root.getCommand(sandbox.id, detached.id);
+		for (let tries = 0; ended.state === "running" && tries < 200; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			ended = await root.getCommand(sandbox.id, detached.id);
+		}
+		expect(ended.needsMicrovm).toMatchObject({ command: "git", inferred: true });
+		expect(ended.rerunAs).toBeUndefined();
+		expect(host.methods()).toContain("sandbox.exec.get");
+		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+
+		// What the runtime says is acted on: the isolate is upgraded and the command run again in the microVM.
+		const tar = await root.runCommand(sandbox.id, { command: "tar -tf x.tar" });
+		expect(tar).toMatchObject({ exitCode: 0 });
+		expect(tar.rerunOf).toBeDefined();
+		expect(host.methods()).toContain("sandbox.upgrade");
+		expect((await root.getSandbox(sandbox.id)).type).toBe("microvm");
+	});
 });
 
 describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
@@ -758,5 +825,249 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 		expect(refused.message).toContain("too many bytes");
 		expect(vms.sandboxes.has(sandbox.id)).toBe(false);
 		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+	});
+});
+
+/** A memory store whose placement writes fail where `refuse` says: before the write lands, or after (`landed`). */
+function failingStore(refuse: (placement: PlacementRecord) => "before" | "landed" | undefined): HostStore {
+	const store = createMemoryHostStore();
+	const put = store.putPlacement.bind(store);
+	const update = store.updatePlacement.bind(store);
+	return {
+		...store,
+		putPlacement: async (placement) => {
+			const how = refuse(placement);
+			if (how === "before") throw new Error("the database went away");
+			await put(placement);
+			if (how === "landed") throw new Error("the database went away after the write");
+		},
+		updatePlacement: async (sandboxId, change) => {
+			let how: "before" | "landed" | undefined;
+			const written = await update(sandboxId, (latest) => {
+				const next = change(latest);
+				how = next === undefined ? undefined : refuse(next);
+				return how === "before" ? undefined : next;
+			});
+			if (how !== undefined) throw new Error("the database went away");
+			return written;
+		},
+	};
+}
+
+describe("an upgrade that fails after its irreversible step", () => {
+	const crossHost = () => [
+		{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+		{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+	];
+
+	it("keeps the microVM, and owes the isolate's removal, when recording that removal fails", async () => {
+		// The write clearing `cleanup`, once the isolate is deleted from its host, fails.
+		let failing = true;
+		const store = failingStore((placement) =>
+			failing && placement.tier === "microvm" && placement.cleanup === undefined ? "before" : undefined,
+		);
+		const { root, service, hosts } = await setup(crossHost(), { store });
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		isolates.sandboxes.get(sandbox.id)?.files.set("a.txt", { kind: "file", data: enc("a\n") });
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: vms.hostId });
+		// The isolate is gone from its host; the microVM, the only copy, is kept, and the placement is its.
+		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		expect(text(vms.sandboxes.get(sandbox.id)?.files.get("/home/user/workspace/a.txt")?.data)).toBe("a\n");
+		expect(vms.methods()).not.toContain("sandbox.delete");
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "microvm", hostId: vms.hostId, cleanup: { hostId: isolates.hostId } });
+		// Its removal, still owed, is done once the host is back.
+		failing = false;
+		await isolates.connect();
+		isolates.heartbeat();
+		for (
+			let tries = 0;
+			tries < 100 && (await service.sandboxes.placement(sandbox.id))?.cleanup !== undefined;
+			tries++
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: vms.hostId });
+		expect((await service.sandboxes.placement(sandbox.id))?.cleanup).toBeUndefined();
+	});
+
+	it("takes the microVM when the write placing it lands but answers a failure", async () => {
+		let failing = true;
+		const store = failingStore((placement) => {
+			if (!failing || placement.tier !== "microvm" || placement.cleanup === undefined) return undefined;
+			failing = false;
+			return "landed";
+		});
+		const { root, service, hosts } = await setup(crossHost(), { store });
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: vms.hostId });
+		expect(vms.sandboxes.get(sandbox.id)?.tier).toBe("microvm");
+		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: vms.hostId });
+	});
+
+	it("rolls back as before when the write placing the microVM never lands", async () => {
+		let failing = true;
+		const store = failingStore((placement) => {
+			if (!failing || placement.tier !== "microvm" || placement.cleanup === undefined) return undefined;
+			failing = false;
+			return "before";
+		});
+		const { root, service, hosts } = await setup(crossHost(), { store });
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		await failure(root.upgradeSandbox(sandbox.id, {}));
+		expect(vms.sandboxes.has(sandbox.id)).toBe(false);
+		expect(isolates.sandboxes.get(sandbox.id)?.tier).toBe("isolate");
+		expect(isolates.frozen.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
+		expect(placement?.upgrade).toBeUndefined();
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ type: "isolate", state: "running" });
+	});
+
+	it("settles a same-host upgrade by its ID when recording the microVM fails, never taking it for refused", async () => {
+		let failing = true;
+		const store = failingStore((placement) => {
+			if (!failing || placement.tier !== "microvm") return undefined;
+			failing = false;
+			return "before";
+		});
+		const { root, service, hosts } = await setup(
+			[{ name: "both", facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade]) }],
+			{ store },
+		);
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: host.hostId });
+		expect(host.methods()).toContain("sandbox.upgrade.settle");
+		expect(host.sandboxes.get(sandbox.id)?.tier).toBe("microvm");
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "microvm", hostId: host.hostId });
+		expect(placement?.upgrade).toBeUndefined();
+	});
+});
+
+describe("a host's report racing an upgrade's handover", () => {
+	/** A store whose reads `hold` suspends once, right after they read, until `release`. */
+	function heldStore() {
+		const store = createMemoryHostStore();
+		let armed: "getHost" | "placementsOn" | undefined;
+		let release: () => void = () => undefined;
+		let reached: () => void = () => undefined;
+		const suspended = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const wrapped: HostStore = {
+			...store,
+			getHost: async (id) => {
+				const read = await store.getHost(id);
+				if (armed === "getHost") {
+					armed = undefined;
+					reached();
+					await gate;
+				}
+				return read;
+			},
+			placementsOn: async (hostId) => {
+				const read = await store.placementsOn(hostId);
+				if (armed === "placementsOn") {
+					armed = undefined;
+					reached();
+					await gate;
+				}
+				return read;
+			},
+		};
+		return {
+			store: wrapped,
+			hold: (at: "getHost" | "placementsOn") => (armed = at),
+			suspended,
+			release: () => release(),
+		};
+	}
+
+	it("keeps a same-host upgrade's microVM when an isolate event read before it lands after", async () => {
+		const held = heldStore();
+		const { root, service, hosts } = await setup(
+			[{ name: "both", facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade]) }],
+			{ store: held.store },
+		);
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		// The isolate's event: read with the isolate's placement, then held at its host's read.
+		held.hold("getHost");
+		host.receive(
+			JSON.stringify({
+				type: "event",
+				event: {
+					kind: "sandbox",
+					sandbox: { id: sandbox.id, tier: "isolate", size: "isolate", state: "stopped", createdAt: 1 },
+				},
+			}),
+		);
+		await held.suspended;
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: host.hostId });
+		held.release();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "microvm", hostId: host.hostId, state: "running", size: "default" });
+		expect(placement?.upgrade).toBeUndefined();
+	});
+
+	it("keeps a cross-host handover's placement when the isolate's host's hello, read before it, lands after", async () => {
+		const held = heldStore();
+		const { root, service, hosts } = await setup(
+			[
+				{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+				{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+			],
+			{ store: held.store },
+		);
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		// The isolate's host says hello again (to this gateway, as it reconnects), holding it as stopped: its placements
+		// read, then held.
+		const isolate = isolates.sandboxes.get(sandbox.id);
+		if (isolate === undefined) throw new Error("no isolate");
+		isolate.state = "stopped";
+		held.hold("placementsOn");
+		const hello = isolates.connect();
+		await held.suspended;
+		// Meanwhile the upgrade's handover is committed (by another gateway, whose connection to the host it has): the
+		// microVM on the other host, owing the isolate's removal.
+		const before = await service.sandboxes.placement(sandbox.id);
+		if (before === undefined) throw new Error("no placement");
+		const handedOver: PlacementRecord = {
+			...before,
+			hostId: vms.hostId,
+			tier: "microvm",
+			size: "default",
+			vcpus: 2,
+			memoryMiB: 2048,
+			diskGiB: 20,
+			state: "running",
+			cleanup: { hostId: isolates.hostId, operationId: "op_1" },
+		};
+		await held.store.putPlacement(handedOver);
+		held.release();
+		await hello;
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toEqual(handedOver);
 	});
 });
