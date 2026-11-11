@@ -304,11 +304,32 @@ export function createFs(ops, state, path) {
 			throw fsError("ERR_FS_EISDIR", "rm", ap, "Path is a directory");
 		remove(ap);
 	}
+	/** The entry names a non-empty directory. */
+	const hasEntries = (dir) => {
+		for (const k of state.files.keys()) if (k.startsWith(`${dir}/`)) return true;
+		return false;
+	};
+	/**
+	 * rename(2): checked before either tree changes, so a refused rename leaves both as they were. A directory may
+	 * replace only an empty directory and never move below itself; a file or link may replace anything but a
+	 * directory. A final symlink is the entry moved or replaced, never followed.
+	 */
 	function renameSync(from, to) {
 		const a = locate(abs(from), "rename");
 		const b = locate(abs(to), "rename");
-		entry(a, "rename");
+		const src = entry(a, "rename");
 		if (a === b) return;
+		const dst = state.files.get(b);
+		const refuse = (code, text) =>
+			Object.assign(fsError(code, "rename", abs(from), text), {
+				message: `${code}: ${text}, rename '${abs(from)}' -> '${abs(to)}'`,
+				dest: abs(to),
+			});
+		if (src.kind === "dir") {
+			if (b.startsWith(`${a}/`)) throw refuse("EINVAL", "invalid argument");
+			if (dst && dst.kind !== "dir") throw refuse("ENOTDIR", "not a directory");
+			if (dst && hasEntries(b)) throw refuse("ENOTEMPTY", "directory not empty");
+		} else if (dst?.kind === "dir") throw refuse("EISDIR", "illegal operation on a directory");
 		const moved = [];
 		for (const k of state.files.keys()) if (k === a || k.startsWith(`${a}/`)) moved.push(k);
 		const entries = moved.map((k) => {

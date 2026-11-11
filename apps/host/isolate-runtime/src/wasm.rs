@@ -6,7 +6,9 @@
 //! exports name them) so the guard can reserve their initial size and track their growth.
 
 use serde::Serialize;
-use wasmparser::{ExternalKind, Parser, Payload, TypeRef, ValidPayload, Validator, WasmFeatures};
+use wasmparser::{
+    ElementKind, ExternalKind, Parser, Payload, TypeRef, ValidPayload, Validator, WasmFeatures,
+};
 
 /// 512 MiB in 64 KiB pages: no wasm memory may declare a larger maximum (kantel-host's largest isolate).
 const MAX_PAGES: u64 = 512 * 1024 * 1024 / 65536;
@@ -27,6 +29,11 @@ pub struct Info {
     pub memories: Vec<MemoryInfo>,
     /// export name → index into `memories`.
     pub memory_exports: std::collections::HashMap<String, usize>,
+    /// A failed instantiation can leave this module's instance reachable, and with it the memories it defined: it has
+    /// a start function (its code runs, and can hand a reference to its functions out, before it traps), or an active
+    /// element segment writes into an imported table (applied, and not undone, before a later segment or the start
+    /// fails). The guard then keeps the memories' reservation when instantiation throws.
+    pub retains_on_failure: bool,
     /// Present when the module is refused; the guest throws a CompileError with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -60,6 +67,7 @@ pub fn inspect(bytes: &[u8], allow_shared: bool) -> Info {
 
 fn try_inspect(bytes: &[u8], allow_shared: bool) -> Result<Info, String> {
     let mut info = Info::default();
+    let mut imported_tables = 0u32;
     let mut validator = Validator::new_with_features(features(allow_shared));
     for payload in Parser::new(0).parse_all(bytes) {
         let payload = payload.map_err(|e| format!("invalid wasm: {e}"))?;
@@ -77,6 +85,9 @@ fn try_inspect(bytes: &[u8], allow_shared: bool) -> Result<Info, String> {
             Payload::ImportSection(reader) => {
                 for import in reader.into_imports() {
                     let import = import.map_err(|e| format!("invalid wasm imports: {e}"))?;
+                    if let TypeRef::Table(_) = import.ty {
+                        imported_tables += 1;
+                    }
                     if let TypeRef::Memory(m) = import.ty {
                         check_memory(&m)?;
                         info.memories.push(MemoryInfo {
@@ -104,6 +115,17 @@ fn try_inspect(bytes: &[u8], allow_shared: bool) -> Result<Info, String> {
                     if export.kind == ExternalKind::Memory {
                         info.memory_exports
                             .insert(export.name.to_string(), export.index as usize);
+                    }
+                }
+            }
+            Payload::StartSection { .. } => info.retains_on_failure = true,
+            Payload::ElementSection(reader) => {
+                for element in reader {
+                    let element = element.map_err(|e| format!("invalid wasm elements: {e}"))?;
+                    if let ElementKind::Active { table_index, .. } = element.kind
+                        && table_index.unwrap_or(0) < imported_tables
+                    {
+                        info.retains_on_failure = true;
                     }
                 }
             }
@@ -185,6 +207,65 @@ mod tests {
         assert_eq!(info.memories[0].maximum, Some(2));
         assert!(!info.memories[0].imported);
         assert_eq!(info.memory_exports.get("m"), Some(&0));
+    }
+
+    // The guest's integration test has the same modules (test/integration.test.ts, "a failed instantiation").
+    const HEADER: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    fn module(sections: &[&[u8]]) -> Vec<u8> {
+        let mut out = HEADER.to_vec();
+        for s in sections {
+            out.extend_from_slice(s);
+        }
+        out
+    }
+    const TYPE: &[u8] = &[1, 4, 1, 0x60, 0, 0]; // () -> ()
+    const IMPORT_TABLE: &[u8] = &[2, 9, 1, 1, b'm', 1, b't', 1, 0x70, 0, 1]; // (import "m" "t" (table 1 funcref))
+    const MEMORY: &[u8] = &[5, 4, 1, 0, 0x80, 8]; // (memory 1024)
+    const ONE_FUNC: &[u8] = &[3, 2, 1, 0];
+    const ONE_BODY: &[u8] = &[10, 4, 1, 2, 0, 0x0b];
+
+    #[test]
+    fn says_when_a_failed_instantiation_can_leave_the_instance_reachable() {
+        // (elem (i32.const 0) $f) into the imported table.
+        let into_imported = module(&[
+            TYPE,
+            IMPORT_TABLE,
+            ONE_FUNC,
+            MEMORY,
+            &[9, 7, 1, 0, 0x41, 0, 0x0b, 1, 0],
+            ONE_BODY,
+        ]);
+        // (start $f).
+        let start = module(&[TYPE, ONE_FUNC, MEMORY, &[8, 1, 0], ONE_BODY]);
+        // (table 1 funcref) of its own, (elem (i32.const 0) $f) into it: unreachable once instantiation fails.
+        let into_own = module(&[
+            TYPE,
+            ONE_FUNC,
+            &[4, 4, 1, 0x70, 0, 1],
+            MEMORY,
+            &[9, 7, 1, 0, 0x41, 0, 0x0b, 1, 0],
+            ONE_BODY,
+        ]);
+        // An imported table, and a passive segment (applied only by code, and there is no start).
+        let passive = module(&[
+            TYPE,
+            IMPORT_TABLE,
+            ONE_FUNC,
+            MEMORY,
+            &[9, 5, 1, 1, 0, 1, 0],
+            ONE_BODY,
+        ]);
+        for (bytes, retains) in [
+            (into_imported, true),
+            (start, true),
+            (into_own, false),
+            (passive, false),
+            (simple_memory(), false),
+        ] {
+            let info = inspect(&bytes, false);
+            assert!(info.error.is_none(), "{:?}", info.error);
+            assert_eq!(info.retains_on_failure, retains);
+        }
     }
 
     #[test]

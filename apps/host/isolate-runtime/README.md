@@ -94,7 +94,7 @@ Per isolate, together where noted:
 | Limit | Enforced by |
 | --- | --- |
 | Memory (`memoryMiB`, 128–512, default 256) | One limit on the sum of the V8 heap, ArrayBuffers and WebAssembly memory. A GC epilogue records the heap in use after every GC; buffers (the ArrayBuffer allocator's byte budget) and wasm memory (the guest's wasm guard) are refused past memoryMiB minus that heap, and the epilogue terminates the command (exit 137, `terminated: memory`) when heap + buffers + wasm is over memoryMiB, so heap growth on top of buffers is stopped too. The V8 heap limit stays memoryMiB, with a near-heap-limit callback that terminates, as the backstop between GCs. |
-| CPU per command | A watchdog thread samples each isolate thread's CPU clock and terminates past `--cpu-ms` (exit 152, `terminated: cpu`); a `node`/`python` run's CPU counts against the shell command that started it. |
+| CPU per command | A watchdog thread samples each isolate thread's CPU clock and terminates past `--cpu-ms` (exit 152, `terminated: cpu`); a `node`/`python` run's CPU counts against the shell command that started it. CPU and wall-clock stops end the whole command; a run's own stop (cancelled by the shell's `timeout`, or over its memory) ends only that run, and the shell goes on with its exit code. |
 | Wall clock per command | The same watchdog terminates past the request's `timeoutMs` (max 10 min), default 30 s (exit 152, `terminated: wall`). |
 | Concurrent node/python runs | `--max-runs` (default 2× CPUs, 2–16); over it a run answers a clear "runtime is busy" error. |
 | Concurrent egress requests per isolate | 8; over it `fetch` throws. A response body is charged against the isolate's memory as it arrives (and a process-wide in-flight cap), and the I/O is aborted when the run ends. |
@@ -151,12 +151,16 @@ hardening (seccomp, landlock, a dedicated uid and cgroup), which this crate deli
   bodies, zlib output, the UTF-8 encoder's bytes, Pyodide's assets) are charged to the isolate's budget in the op
   that returns them, before guest code can see them (`src/hostbuf.rs`: in stock builds the guest's buffer owns the
   charged bytes and gives them back when V8 frees it; in `v8-sandbox` builds they are copied into the in-sandbox
-  budget allocator), so they can't be retained outside it. A just-bash command holds a file it reads
+  budget allocator), so they can't be retained outside it. The module files a node run writes (`.js`, `.mjs`, `.ts`, `.json`, …), which
+  the host keeps a copy of for the run's imports, are charged to the same budget for as long as they are kept, in
+  both builds; a write the budget can't take stops the run (`terminated: memory`). A just-bash command holds a file it reads
   about twice over (the read and its own copy), so a shell reading a file of more than about 45% of memoryMiB is now
   stopped where it used to fit.
 - **The memory guards are JS-level.** The wasm guard (every `WebAssembly.Memory`/`grow`/`Module`/`Instance`, plus a
   host module inspection) and the resizable-buffer guard are installed before any guest code and made
-  non-configurable. While guest code can run they use only intrinsics captured at snapshot time
+  non-configurable. A failed instantiation gives its memories' reservation back only when nothing of the instance can
+  be left reachable (the module has no start function and no element segment for an imported table); otherwise the
+  memories stay charged for the rest of the run. While guest code can run they use only intrinsics captured at snapshot time
   (`guest/common/primordials.js`): no live global, prototype method, getter, array iterator or promise resolution a
   guest can replace takes part in counting (so swapping `Reflect.construct`, `WeakMap.prototype.get`, `Number`,
   `Array.prototype[Symbol.iterator]`, `ArrayBuffer.prototype.byteLength` or `Object.prototype.then` changes

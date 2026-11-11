@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::bridges::Store;
 use crate::config::{Config, DEFAULT_MEMORY_MIB};
 use crate::limits::{
-    Budget, Command, GcWatch, MIB, Term, allocator, gc_watch, near_heap_limit, watch,
+    Budget, Command, GcWatch, MIB, Scope, Term, allocator, gc_watch, near_heap_limit, watch,
 };
 use crate::ops::{SnapshotSink, kt};
 
@@ -123,12 +123,16 @@ pub enum FileRef {
     Blob(String),
 }
 
+/// node's module overlay: files the run wrote, by absolute path (Some = bytes, charged to the isolate while kept;
+/// None = removed).
+pub type Overlay = Arc<Mutex<HashMap<String, Option<crate::hostbuf::HeldBytes>>>>;
+
 pub struct RunState {
     pub index: HashMap<String, FileRef>,
     pub payload: Arc<Vec<u8>>,
     pub stdin: Vec<u8>,
     /// node module loader: files the run wrote, by absolute path (Some = bytes, None = removed).
-    pub overlay: Arc<Mutex<HashMap<String, Option<Vec<u8>>>>>,
+    pub overlay: Overlay,
     /// node module loader: each built-in's export names, so a `node:fs` import gets named exports.
     pub builtins: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
@@ -435,7 +439,7 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                 // Run one empty command so just-bash's code is compiled before the sandbox's first real command.
                 let command = Command::new(Duration::from_secs(10), Duration::from_secs(10));
                 bind(&mut live.rt, Ctx::new(Kind::Shell, id.clone(), command.clone(), live.budget.clone(), Default::default()));
-                let guard = watch(live.handle.clone(), command, live.budget.clone());
+                let guard = watch(live.handle.clone(), command, live.budget.clone(), Scope::Command);
                 let _ = rt.block_on(call(&mut live.rt, "exec", &[r#"{"command":"true","manifest":{}}"#]));
                 drop(guard);
             }
@@ -460,7 +464,7 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                 &mut live.rt,
                                 Ctx::new(Kind::Shell, sandbox_id, command.clone(), live.budget.clone(), shas),
                             );
-                            let guard = watch(live.handle.clone(), command.clone(), live.budget.clone());
+                            let guard = watch(live.handle.clone(), command.clone(), live.budget.clone(), Scope::Command);
                             let mem = live.budget.limit() / MIB;
                             // The shell isolate is long-lived and reused, so let the terminated call run to its error
                             // (terminate_execution makes execute_script / the event loop return Err) rather than
@@ -834,7 +838,12 @@ fn python_boot(live: &mut Live, rt: &tokio::runtime::Runtime) -> Result<()> {
             Default::default(),
         ),
     );
-    let guard = watch(live.handle.clone(), command, live.budget.clone());
+    let guard = watch(
+        live.handle.clone(),
+        command,
+        live.budget.clone(),
+        Scope::Command,
+    );
     let r = rt.block_on(async {
         load_pyodide_modules(&mut live.rt).await?;
         call(&mut live.rt, "boot", &[&args]).await.map(|_| ())
@@ -899,7 +908,12 @@ fn run_one(live: &mut Live, kind: Kind, job: Job, rt: &tokio::runtime::Runtime) 
         st.put(run);
         st.put(RunResult(None));
     }
-    let guard = watch(live.handle.clone(), command.clone(), live.budget.clone());
+    let guard = watch(
+        live.handle.clone(),
+        command.clone(),
+        live.budget.clone(),
+        Scope::Child,
+    );
     control.register(guard.watched().clone());
     let result = rt.block_on(async {
         let fut = async {
@@ -1047,7 +1061,7 @@ thread_local! {
     static NODE_ENV: RefCell<Option<NodeEnv>> = const { RefCell::new(None) };
 }
 struct NodeEnv {
-    overlay: Arc<Mutex<HashMap<String, Option<Vec<u8>>>>>,
+    overlay: Overlay,
     builtins: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// The run's manifest files, by manifest-relative path, read lazily (ESM imports only the files it names).
     index: HashMap<String, FileRef>,
@@ -1062,7 +1076,7 @@ impl NodeModuleLoader {
 
 /// Make the run's files reachable to the loader on this thread (called before the module graph loads).
 fn set_node_env(
-    overlay: Arc<Mutex<HashMap<String, Option<Vec<u8>>>>>,
+    overlay: Overlay,
     builtins: Arc<Mutex<HashMap<String, Vec<String>>>>,
     index: HashMap<String, FileRef>,
     payload: Arc<Vec<u8>>,
@@ -1147,7 +1161,7 @@ fn node_load(specifier: &ModuleSpecifier) -> std::result::Result<ModuleSource, J
         let env = e.borrow();
         let env = env.as_ref()?;
         if let Some(entry) = env.overlay.lock().unwrap().get(&path_str) {
-            return entry.clone();
+            return entry.as_ref().map(|held| held.bytes().to_vec());
         }
         // Manifest files live under /workspace; the loader's absolute path maps to a manifest-relative key.
         let rel = path_str.strip_prefix("/workspace/")?;

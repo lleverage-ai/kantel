@@ -10,7 +10,9 @@
 //   refuses one that has a memory.grow instruction (growth that wouldn't come through grow() above), a 64-bit or
 //   shared memory, or anything it can't parse; it records the memories the module defines;
 // - instantiating (new Instance, instantiate): the initial size of each memory the module defines is reserved first,
-//   and the exported ones are tracked so their grow() is counted;
+//   and the exported ones are tracked so their grow() is counted; a failed instantiation gives the reservation back
+//   only when nothing of the instance can have been left reachable (no start function, no element segment applied
+//   to an imported table);
 // - Memory.prototype.toResizableBuffer(), which would grow a memory through ArrayBuffer.prototype.resize, is removed.
 // The descriptors and byte arrays a guest passes are read once and copied, so it can't show the check one value and
 // V8 another. While a guest's code may run (from Pyodide's boot on, in python), the guard uses only intrinsics captured
@@ -263,7 +265,10 @@ export function installWasmGuard(ops, mode) {
 		try {
 			instance = new OrigInstance(module, imports);
 		} catch (error) {
-			release(total);
+			// Given back only if nothing of the failed instance can be reachable: a start function's code (it ran
+			// before it trapped) or an element segment applied to an imported table (not undone when a later step
+			// fails) can leave one of its functions, and so its memories, with the guest. Those stay charged.
+			if (!info.retainsOnFailure) release(total);
 			throw error;
 		}
 		// The memories the module defined are counted from here by their grow(); a defined memory it doesn't export

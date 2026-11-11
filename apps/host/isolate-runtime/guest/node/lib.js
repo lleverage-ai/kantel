@@ -395,6 +395,11 @@ export function createStreams() {
 export function createCrypto(ops, webcrypto) {
 	const toBytes = (d, enc) =>
 		typeof d === "string" ? Buffer.from(d, enc ?? "utf8") : new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+	/**
+	 * The bytes an update() is given, as they are now: a copy, so a caller reusing its buffer (reading a file in
+	 * chunks into one buffer, say) can't change what was already added. (A string's bytes are already a new buffer.)
+	 */
+	const taken = (d, enc) => (typeof d === "string" ? toBytes(d, enc) : new Uint8Array(toBytes(d)));
 	const ALGS = {
 		md5: "md5",
 		sha1: "sha1",
@@ -421,15 +426,16 @@ export function createCrypto(ops, webcrypto) {
 			this.#alg = algOf(alg);
 		}
 		update(d, enc) {
-			this.#parts.push(toBytes(d, enc));
+			this.#parts.push(taken(d, enc));
 			return this;
 		}
 		digest(enc) {
 			return encode(digest(this.#alg, Buffer.concat(this.#parts)), enc);
 		}
 		copy() {
+			// The parts are this hash's own copies, never written to: the copy can share them.
 			const h = new Hash(this.#alg);
-			for (const p of this.#parts) h.update(p);
+			h.#parts = [...this.#parts];
 			return h;
 		}
 	}
@@ -446,7 +452,7 @@ export function createCrypto(ops, webcrypto) {
 			this.#key.set(k);
 		}
 		update(d, enc) {
-			this.#parts.push(toBytes(d, enc));
+			this.#parts.push(taken(d, enc));
 			return this;
 		}
 		digest(enc) {

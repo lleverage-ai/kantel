@@ -259,10 +259,12 @@ impl Budget {
             }
         }
     }
-    /// The allocator refused: stop the isolate (its command answers `terminated: memory`). Only the Rust allocator
-    /// calls this; under the V8 heap sandbox the C++ budget allocator handles refusal.
-    #[cfg(not(feature = "v8-sandbox"))]
-    fn refuse(&self) {
+    /// A request was refused for good: stop the isolate (its command answers `terminated: memory`). The stock
+    /// build's Rust allocator calls this (under the V8 heap sandbox the C++ budget allocator handles its own
+    /// refusals), and so does a module overlay the host can't keep ([`HeldBytes`]) in either build.
+    ///
+    /// [`HeldBytes`]: crate::hostbuf::HeldBytes
+    pub fn refuse(&self) {
         self.exceeded.store(true, Ordering::SeqCst);
         if let Some(h) = self.handle.get() {
             h.terminate_execution();
@@ -530,6 +532,8 @@ pub struct Watched {
     last_cpu: Mutex<Duration>,
     command: Arc<Command>,
     budget: Arc<Budget>,
+    /// The command's own isolate (the shell's, or Python's boot), not a node/python child it started (see [`Scope`]).
+    scope: Scope,
     /// This isolate's own reason (a child stopped for its own memory doesn't stop the parent).
     term: AtomicU8,
     done: AtomicBool,
@@ -597,6 +601,29 @@ impl Watched {
     }
 }
 
+/// Whose isolate is watched: what its own stop means for the rest of the command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The command's own isolate (the shell): its stop ends the command, so the children it is waiting on stop too.
+    Command,
+    /// A node/python run the command started: a stop of its own (the shell cancelling it, its memory) is its alone,
+    /// and the shell carries on with its exit code.
+    Child,
+}
+
+/// What the watchdog does on a tick: the reason to record on the shared command, if any, and the reason to stop this
+/// isolate for, if any. `own` is this isolate's own reason (a cancellation, its memory); `shared` the command's (CPU or
+/// wall-clock, every isolate working on it alike, or the reason its own isolate was stopped for). Only CPU and
+/// wall-clock limits, and the command's own isolate's reasons, reach the shared command: a child's own reason never
+/// does, so its parent and siblings go on.
+fn verdict(scope: Scope, own: Option<Term>, shared: Option<Term>) -> (Option<Term>, Option<Term>) {
+    let command = shared.or(match scope {
+        Scope::Command => own,
+        Scope::Child => None,
+    });
+    (command, own.or(shared))
+}
+
 pub struct Guard {
     w: Arc<Watched>,
 }
@@ -619,8 +646,13 @@ impl Drop for Guard {
 static WATCHED: Mutex<Vec<Weak<Watched>>> = Mutex::new(Vec::new());
 static STARTED: OnceLock<()> = OnceLock::new();
 
-/// Watch the isolate on the current thread for `command` until the returned guard is dropped.
-pub fn watch(handle: v8::IsolateHandle, command: Arc<Command>, budget: Arc<Budget>) -> Guard {
+/// Watch the isolate on the current thread, working on `command` in `scope`, until the returned guard is dropped.
+pub fn watch(
+    handle: v8::IsolateHandle,
+    command: Arc<Command>,
+    budget: Arc<Budget>,
+    scope: Scope,
+) -> Guard {
     STARTED.get_or_init(|| {
         std::thread::Builder::new()
             .name("kt-watchdog".into())
@@ -634,6 +666,7 @@ pub fn watch(handle: v8::IsolateHandle, command: Arc<Command>, budget: Arc<Budge
         last_cpu: Mutex::new(cpu_time(clock)),
         command,
         budget,
+        scope,
         term: AtomicU8::new(0),
         done: AtomicBool::new(false),
         gate: Mutex::new(()),
@@ -664,13 +697,18 @@ fn watchdog() {
             w.check_memory();
             // Act on any reason, including budget.exceeded (a heap breach the near-heap callback couldn't terminate
             // on because it already fired once): keep calling terminate_execution (idempotent) rather than skipping,
-            // so a reused isolate whose heap guard is spent is still stopped, and CPU/wall stay enforced.
-            if let Some(t) = w
+            // so a reused isolate whose heap guard is spent is still stopped, and CPU/wall stay enforced. A child's
+            // own reason stops only the child (verdict).
+            let shared = w
+                .command
                 .term()
-                .or_else(|| w.command.term().filter(|t| *t != Term::Exit))
-                .or_else(|| w.command.over())
-            {
+                .filter(|t| *t != Term::Exit)
+                .or_else(|| w.command.over());
+            let (command, isolate) = verdict(w.scope, w.term(), shared);
+            if let Some(t) = command {
                 w.command.stop(t);
+            }
+            if let Some(t) = isolate {
                 w.stop(t);
             }
         }
@@ -784,6 +822,41 @@ mod tests {
         let c = Command::new(Duration::from_secs(10), Duration::from_secs(10));
         c.cpu_ns.store(11_000_000_000, Ordering::Relaxed);
         assert_eq!(c.over(), Some(Term::Cpu));
+    }
+
+    #[test]
+    fn a_childs_own_stop_never_reaches_the_shared_command() {
+        use Scope::{Child, Command as Own};
+        // A child cancelled by the shell, or over its own memory: stopped, the command untouched (so the shell and any
+        // sibling, on their next tick, find no reason to stop).
+        for own in [Term::Cancel, Term::Memory] {
+            assert_eq!(verdict(Child, Some(own), None), (None, Some(own)));
+        }
+        // CPU and wall-clock are the command's: recorded, and every isolate on it stopped, the child included.
+        for shared in [Term::Cpu, Term::Wall] {
+            assert_eq!(
+                verdict(Child, None, Some(shared)),
+                (Some(shared), Some(shared))
+            );
+            assert_eq!(
+                verdict(Own, None, Some(shared)),
+                (Some(shared), Some(shared))
+            );
+            assert_eq!(
+                verdict(Child, Some(Term::Cancel), Some(shared)),
+                (Some(shared), Some(Term::Cancel))
+            );
+        }
+        // The command's own isolate stopped for its memory ends the command, so the children it waits on stop.
+        assert_eq!(
+            verdict(Own, Some(Term::Memory), None),
+            (Some(Term::Memory), Some(Term::Memory))
+        );
+        assert_eq!(
+            verdict(Child, None, Some(Term::Memory)),
+            (Some(Term::Memory), Some(Term::Memory))
+        );
+        assert_eq!(verdict(Child, None, None), (None, None));
     }
 
     #[test]

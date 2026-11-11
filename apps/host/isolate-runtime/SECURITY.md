@@ -473,3 +473,31 @@ for each finding fails on the code before the fix) or a Rust unit test:
 - **JSON imports** were handed `export default …` as a JSON module; they now get the JSON text.
 - **A session was marked busy after the sessions lock was released**, so it could be evicted in between. `assign` now
   marks it in flight under the lock.
+
+## PR #837's second review (Cerbie, at 9270ac06)
+
+Each fixed with a regression test in `test/integration.test.ts` ("PR #837 second review fixes", run on both builds;
+each fails on the code before the fix) and, where the rule is the runtime's own, a Rust unit test:
+
+- **Module overlays were outside the memory limit.** node's fs hands each module file a run writes to the host
+  (`op_kt_overlay`), which kept a copy for the run's imports that neither the allocator nor the GC epilogue saw. With
+  `Uint8Array.prototype.slice` replaced, every write handed over the same 16 MiB buffer, so 64 writes kept a GiB of
+  host memory under a 256 MiB limit. The copy is now a `HeldBytes` (`src/hostbuf.rs`) charged to the isolate's budget
+  while it is kept, in both builds, and given back when the entry is replaced (before the new one is charged) or
+  removed and when the run ends; refused after a GC, the run is stopped (`terminated: memory`).
+- **A child's own stop reached the shared command.** The watchdog copied every isolate's reason into the command the
+  shell and its children share, so a `node` run cancelled by the shell's `timeout`, or stopped for its own memory,
+  stopped the shell on the next tick (`timeout 0.05 node -e 'while(true){}'; echo next` lost the `echo`). Each watched
+  isolate now has a scope: only CPU and wall-clock reasons, and the reasons of the command's own isolate (the shell,
+  whose children must stop with it), reach the command (`limits::verdict`).
+- **A failed wasm instantiation gave back memory it could leave reachable.** The guard released a module's defined
+  memories whenever `new Instance` threw, but an element segment applied to an imported table (or a start function's
+  code, which ran before it trapped) can leave one of the instance's functions, and so its memory, with the guest:
+  twelve 64 MiB memories, filled before the trap, were held under 256 MiB. The host's inspection now says when a
+  failed instantiation can retain the instance (a start function, or an active element segment for an imported
+  table), and then the reservation is kept; other failures (a missing import, say) still give it back.
+- **node's rename removed the destination tree.** `renameSync` deleted whatever was at the destination, so a directory
+  renamed over a non-empty one (or a file over a directory) silently lost it, and a directory could be moved into
+  itself. It now refuses as rename(2) does, before changing either tree: `ENOTEMPTY`, `ENOTDIR`, `EISDIR`, `EINVAL`.
+- **Hash and HMAC updates kept a view of the caller's buffer**, read only at `digest()`, so reading a file in chunks
+  into one buffer hashed the last chunk over and over. Each update now keeps its own copy.
