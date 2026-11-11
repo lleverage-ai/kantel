@@ -697,6 +697,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			] satisfies HeldMemory[],
 		};
 	};
+	/** The vCPUs of the live microVMs among `placements` (`LIVE`): what a host's CPUs are booked for. */
+	const bookedVcpus = (placements: readonly PlacementRecord[]): number =>
+		placements
+			.filter((placement) => placement.tier === "microvm" && LIVE.has(placement.state))
+			.reduce((sum, placement) => sum + placement.vcpus, 0);
 	/** When each host's last invalid usage tick was logged. */
 	const badUsageLogged = new Map<string, number>();
 	const report = (work: Promise<unknown>) => {
@@ -1639,9 +1644,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						"No host that could take it enforces egress grants or protected variables; upgrade kantel-host",
 					);
 				}
+				// Every candidate's placements in one read: the owners' isolates there, and the vCPUs booked.
+				const placed = await store.placementsOnHosts(hosts.map((host) => host.id));
 				const candidates: Candidate[] = await Promise.all(
 					hosts.map(async (host) => {
-						const placements = tier === "isolate" ? await store.placementsOn(host.id) : [];
+						const placements = placed.get(host.id) ?? [];
 						const held = reservedOn(host);
 						return {
 							host,
@@ -1654,6 +1661,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 									.filter((placement) => placement.tier === "isolate" && placement.owner !== undefined)
 									.map((placement) => placement.owner as string),
 							),
+							bookedVcpus: bookedVcpus(placements),
 						};
 					}),
 				);

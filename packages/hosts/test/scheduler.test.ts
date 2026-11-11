@@ -79,6 +79,22 @@ describe("place", () => {
 		expect(isRefusal(busy) ? busy.reason : busy.host.id).toBe("idle");
 	});
 
+	it("spreads by how full each host would be, its booked vCPUs as well as its memory", () => {
+		// A host twice the size with a little more memory free, but fuller for its size, loses to the smaller, emptier one.
+		const big = candidate("big", { facts: { ...facts, memoryMiB: 65_536, cpus: 32 }, ...capacity(22_000) });
+		const small = candidate("small", capacity(20_000));
+		const bySize = place({ tier: "microvm", size: "large" }, [big, small]);
+		expect(isRefusal(bySize) ? bySize.reason : bySize.host.id).toBe("small");
+		// Memory to spare but its CPUs booked: the other host, though it has less memory free.
+		const booked = candidate("booked", capacity(24_000), { bookedVcpus: 14 });
+		const idle = candidate("idle", capacity(16_000), { bookedVcpus: 0 });
+		const byCpu = place({ tier: "microvm", size: "large" }, [booked, idle]);
+		expect(isRefusal(byCpu) ? byCpu.reason : byCpu.host.id).toBe("idle");
+		// vCPUs rank but never refuse: a host booked past its CPUs still takes a sandbox that fits its memory.
+		const only = place({ tier: "microvm", size: "large" }, [candidate("only", capacity(16_000), { bookedVcpus: 40 })]);
+		expect(isRefusal(only) ? only.reason : only.host.id).toBe("only");
+	});
+
 	it("counts what was placed since a host's last report", () => {
 		const a = candidate("a", capacity(10_000), { reservedMemoryMiB: 9_000 });
 		const b = candidate("b", capacity(5_000));
