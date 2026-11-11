@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,6 +114,23 @@ func fakeRuntime(args []string) int {
 		want.Store(body.Size)
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
+	// Each session's memory limit, as the deno_core runtime keeps it: set by whichever of /load and /exec makes the
+	// session (memoryMiB from the request, 256 when it has none), and dropped by /evict (the runtime's idle expiry,
+	// eviction at its cap or a /reseed).
+	var memMu sync.Mutex
+	memory := map[string]int{}
+	assign := func(id string, memoryMiB int) int {
+		memMu.Lock()
+		defer memMu.Unlock()
+		if m, ok := memory[id]; ok {
+			return m
+		}
+		if memoryMiB == 0 {
+			memoryMiB = 256
+		}
+		memory[id] = memoryMiB
+		return memoryMiB
+	}
 	mux.HandleFunc("POST /load", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			SandboxID string `json:"sandboxId"`
@@ -120,14 +138,27 @@ func fakeRuntime(args []string) int {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		sessions.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "hit": "miss", "ms": 1, "memoryMiB": body.MemoryMiB})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "hit": "miss", "ms": 1, "memoryMiB": assign(body.SandboxID, body.MemoryMiB)})
+	})
+	mux.HandleFunc("POST /evict", func(w http.ResponseWriter, _ *http.Request) {
+		memMu.Lock()
+		clear(memory)
+		memMu.Unlock()
+		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
 	mux.HandleFunc("POST /exec", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Command  string          `json:"command"`
-			Manifest json.RawMessage `json:"manifest"`
+			SandboxID string          `json:"sandboxId"`
+			Command   string          `json:"command"`
+			Manifest  json.RawMessage `json:"manifest"`
+			MemoryMiB int             `json:"memoryMiB"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		memoryMiB := assign(body.SandboxID, body.MemoryMiB)
+		if body.Command == "memory" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"exitCode": 0, "stdout": fmt.Sprintf("%d\n", memoryMiB), "manifest": body.Manifest, "changed": []string{}})
+			return
+		}
 		// Through the store bridge, as a command reading a file does: a blob it hasn't is a 404 from the host.
 		store := "unreachable"
 		if res, err := storeClient.Get("http://store/blobs/" + strings.Repeat("0", 64)); err == nil {

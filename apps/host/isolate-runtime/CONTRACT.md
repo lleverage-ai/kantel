@@ -27,8 +27,10 @@ between the workstreams so they can run in parallel. Change it only by telling t
   is now ENFORCED per isolate: one limit on the sum of the V8 heap, ArrayBuffers and wasm memory (`terminated:
   "memory"`, exit 137, when a command takes it over; a buffer or wasm allocation past it may instead fail with a
   RangeError / MemoryError that the program can handle).
-- `POST /exec {"sandboxId", "command", "cwd"?, "env"?, "manifest", "timeoutMs"?}` → `{"exitCode", "stdout", "stderr",
-  "manifest", "changed", "timings", "hit", "ms"}` plus two new optional fields:
+- `POST /exec {"sandboxId", "command", "cwd"?, "env"?, "manifest", "timeoutMs"?, "memoryMiB"?}` → `{"exitCode",
+  "stdout", "stderr", "manifest", "changed", "timings", "hit", "ms"}`. memoryMiB is as on /load and sets the limit
+  when this /exec makes the session (after idle expiry, eviction at the cap or /reseed dropped it); kantel-host sends
+  the sandbox's on every /exec. Two new optional fields in the answer:
   - `"terminated": "cpu" | "memory" | "wall"` when the runtime stopped the command (exit code 152 for cpu/wall, 137 for
     memory, as in the spike);
   - `"needsMicrovm": {"command": "<name>", "reason": "<one sentence>"}` when the command failed because the isolate

@@ -125,6 +125,15 @@ const (
 	stepMemoryMiB    = 64
 )
 
+// memoryLimit is the memory the runtime gives the isolate: meta.MemoryMiB, or DefaultMemoryMiB for a sandbox made
+// before memory was recorded.
+func (mt *meta) memoryLimit() int {
+	if mt.MemoryMiB == 0 {
+		return DefaultMemoryMiB
+	}
+	return mt.MemoryMiB
+}
+
 // validMemory says memoryMiB is a memory an isolate may ask for (0 is none asked).
 func validMemory(memoryMiB int) bool {
 	return memoryMiB == 0 || (memoryMiB >= minMemoryMiB && memoryMiB <= maxMemoryMiB && memoryMiB%stepMemoryMiB == 0)
@@ -1070,12 +1079,8 @@ func (m *Manager) load(ctx context.Context, s *sandbox, t timings) (string, erro
 	var res struct {
 		Hit any `json:"hit"`
 	}
-	memoryMiB := s.meta.MemoryMiB
-	if memoryMiB == 0 {
-		memoryMiB = DefaultMemoryMiB
-	}
-	// memoryMiB is the isolate's limit where the runtime enforces it (meta.MemoryMiB).
-	if err := r.call(ctx, "/load", map[string]any{"sandboxId": s.meta.ID, "memoryMiB": memoryMiB}, &res); err != nil {
+	// The isolate's limit where the runtime enforces it. /exec sends it too (see Exec).
+	if err := r.call(ctx, "/load", map[string]any{"sandboxId": s.meta.ID, "memoryMiB": s.meta.memoryLimit()}, &res); err != nil {
 		return "", err
 	}
 	t.step("isolate", &start)
@@ -1331,7 +1336,7 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	s.exec.Lock()
 	defer s.exec.Unlock()
 	s.mu.Lock()
-	state, owner, frozen := s.meta.State, s.meta.Owner, s.meta.Frozen
+	state, owner, frozen, memoryMiB := s.meta.State, s.meta.Owner, s.meta.Frozen, s.meta.memoryLimit()
 	env := map[string]string{}
 	for k, v := range s.meta.Env {
 		env[k] = v
@@ -1387,7 +1392,9 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 		cwd = strings.TrimPrefix(strings.TrimPrefix(cwd, "/workspace"), "/")
 	}
 	done := s.markBusy()
-	err = r.call(callCtx, "/exec", map[string]any{"sandboxId": p.SandboxID, "command": command, "cwd": cwd, "env": env, "manifest": manifest, "timeoutMs": timeout.Milliseconds()}, &res)
+	// memoryMiB as on /load: the runtime drops an idle session (idle expiry, eviction at its cap, /reseed) and this
+	// /exec makes it again, with the runtime's default unless it's told the sandbox's.
+	err = r.call(callCtx, "/exec", map[string]any{"sandboxId": p.SandboxID, "command": command, "cwd": cwd, "env": env, "manifest": manifest, "timeoutMs": timeout.Milliseconds(), "memoryMiB": memoryMiB}, &res)
 	done()
 	if errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		return proto.ExecResult{ExitCode: 124, TimedOut: true, DurationMs: time.Since(started).Milliseconds()}, nil

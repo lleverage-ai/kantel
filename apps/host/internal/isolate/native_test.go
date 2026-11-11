@@ -175,3 +175,50 @@ func TestNativeRuntimesApart(t *testing.T) {
 		t.Fatalf("a's cgroup after close: %v", err)
 	}
 }
+
+// The runtime drops an idle session (after 15 minutes, at its live-isolate cap, or on /reseed) and the next /exec
+// makes it again: that /exec must carry the sandbox's memory, or the isolate comes back at the runtime's default.
+func TestExecCarriesTheSandboxMemory(t *testing.T) {
+	m := nativeManager(t, Config{Binary: os.Args[0], Assets: t.TempDir()})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := m.Create(ctx, proto.CreateParams{SandboxID: "iso_mem", Owner: "acct", MemoryMiB: 512}); err != nil {
+		t.Fatal(err)
+	}
+	memory := func() string {
+		t.Helper()
+		res, err := m.Exec(ctx, proto.ExecParams{SandboxID: "iso_mem", Command: "memory"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(res.Stdout)
+	}
+	evict := func() {
+		t.Helper()
+		m.mu.Lock()
+		r := m.runtimes["acct"]
+		m.mu.Unlock()
+		if err := r.call(ctx, "/evict", map[string]any{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := memory(); got != "512" {
+		t.Fatalf("loaded isolate has %s MiB, want 512", got)
+	}
+	evict()
+	if got := memory(); got != "512" {
+		t.Fatalf("isolate made again by /exec has %s MiB, want 512", got)
+	}
+	// A sandbox made before memory was recorded (0 in its metadata) runs at the default, as /load gives it.
+	s, err := m.get("iso_mem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.meta.MemoryMiB = 0
+	s.mu.Unlock()
+	evict()
+	if got := memory(); got != strconv.Itoa(DefaultMemoryMiB) {
+		t.Fatalf("older isolate made again by /exec has %s MiB, want %d", got, DefaultMemoryMiB)
+	}
+}
