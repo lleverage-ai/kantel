@@ -99,6 +99,7 @@ import {
 import { createMcpServer, serveStdio } from "./mcp.ts";
 import {
 	applyTrailer,
+	cloneShellState,
 	loginShellIn,
 	microvmPath,
 	readTrailer,
@@ -1192,7 +1193,7 @@ async function isolateShell(
 		? terminalLines(stdin, process.stderr)
 		: streamLines(stdin, interactive ? ctx.io.stderr : undefined);
 	const marker = shellMarker(randomBytes(8));
-	const state: ShellState = { vars: new Map(), unset: new Set() };
+	let state: ShellState = { vars: new Map(), unset: new Set() };
 	let status = 0;
 	let microvm = false;
 	/** The command a Ctrl-C stops. */
@@ -1326,6 +1327,8 @@ async function isolateShell(
 				status = 0;
 				continue;
 			}
+			// Where the line starts: a retry in the microVM starts there too, not where the refused attempt left it.
+			const before = cloneShellState(state);
 			const ran = await runLine(line);
 			status = ran.code;
 			if (ran.rerun) {
@@ -1344,6 +1347,7 @@ async function isolateShell(
 				continue;
 			}
 			if (!(await upgrade())) continue;
+			state = before;
 			status = (await runLine(line)).code;
 			return await switchToSsh();
 		}

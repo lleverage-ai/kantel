@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -85,7 +86,8 @@ func (m *Manager) FrozenBy(id string) string {
 }
 
 // ExportTar writes the sandbox's /workspace to w as a tar: its directories, its files (from the account's blobs, with
-// their modes) and its links, each named relative to /workspace. It is one state: held against the sandbox's
+// their modes) and its links (one to an absolute path in /workspace made relative, workspaceLink), each named relative
+// to /workspace. It is one state: held against the sandbox's
 // commands and file writes (exec), which take and leave the manifest, as a snapshot is. A stopped sandbox's files are
 // what it stopped with. It answers the entries written and the files' bytes; a blob that is gone fails it.
 func (m *Manager) ExportTar(id string, w io.Writer) (entries int, bytes int64, err error) {
@@ -121,7 +123,7 @@ func (m *Manager) ExportTar(id string, w io.Writer) (entries int, bytes int64, e
 		case "dir":
 			h.Typeflag, h.Name, h.Mode = tar.TypeDir, k+"/", 0o755
 		case "symlink":
-			h.Typeflag, h.Linkname, h.Mode = tar.TypeSymlink, e.Target, 0o777
+			h.Typeflag, h.Linkname, h.Mode = tar.TypeSymlink, workspaceLink(k, e.Target), 0o777
 		case "file":
 			if data, err = m.readBlob(owner, e.SHA); err != nil {
 				return entries, bytes, err
@@ -148,8 +150,30 @@ func (m *Manager) ExportTar(id string, w io.Writer) (entries int, bytes int64, e
 	return entries, bytes, tw.Close()
 }
 
-// Dispose lets an upgraded sandbox's isolate go: its files' list, its meta and its automatic snapshots, as a delete
-// does, but with no event, since the sandbox lives on as a microVM with its ID. Its saved snapshots stay the account's.
+// workspaceLink is the target a link at name (relative to /workspace) gets in an upgrade's tar: one to /workspace or
+// a path under it, which the isolate resolves in its workspace, is made relative to the link's directory (the rest of
+// the path as it was, ".." and all), so it points at the same file in the microVM, and the guest's extractor, which
+// refuses an absolute link, takes it. Any other is left as it was: one out of the workspace is refused there.
+func workspaceLink(name, target string) string {
+	const top = "/workspace"
+	if target != top && !strings.HasPrefix(target, top+"/") {
+		return target
+	}
+	rest := strings.TrimLeft(target[len(top):], "/")
+	up := strings.Repeat("../", strings.Count(name, "/"))
+	if rest == "" {
+		if up == "" {
+			return "."
+		}
+		return strings.TrimSuffix(up, "/")
+	}
+	return up + rest
+}
+
+// Dispose lets an upgraded sandbox's isolate go, its files' list and its meta, with no event, since the sandbox lives
+// on as a microVM with its ID. Its snapshots stay, automatic ones too, unlike a delete's: Kantel keeps them as the
+// sandbox's, an isolate's, to read or make an isolate from, and deletes them (snapshot.delete) when they expire or
+// the sandbox is deleted.
 func (m *Manager) Dispose(id string) error {
 	s, err := m.get(id)
 	if err != nil {
@@ -159,13 +183,6 @@ func (m *Manager) Dispose(id string) error {
 	defer s.exec.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m.autoMu.Lock()
-	for _, snap := range m.snapshotsOf(id) {
-		if snap.Kind == "auto" {
-			_ = os.RemoveAll(m.snapshotDir(snap.ID))
-		}
-	}
-	m.autoMu.Unlock()
 	if err := os.RemoveAll(s.dir); err != nil {
 		return err
 	}

@@ -823,7 +823,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		return info, nil
 	case proto.MethodDelete:
-		p, err := decode[proto.SandboxRef](params)
+		p, err := decode[proto.DeleteParams](params)
 		if err != nil {
 			return nil, err
 		}
@@ -832,7 +832,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		if err := t.Delete(ctx, p.SandboxID); err != nil {
+		// The isolate an upgrade to another host left goes as one upgraded here does, its snapshots kept.
+		if source, ok := t.(upgradeSource); ok && p.KeepSnapshots {
+			err = source.Dispose(p.SandboxID)
+		} else {
+			err = t.Delete(ctx, p.SandboxID)
+		}
+		if err != nil {
 			return nil, err
 		}
 		h.forgetSecrets(p.SandboxID)

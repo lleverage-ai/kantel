@@ -1004,6 +1004,10 @@ export const HostMethods = {
 	fork: "sandbox.fork",
 	/** Replaces a sandbox's egress: `{ sandboxId, egress }` (null for the host's default). */
 	egress: "sandbox.egress",
+	/**
+	 * `{ sandboxId, keepSnapshots? }`: the sandbox and its automatic snapshots go. With `keepSnapshots` (the isolate an
+	 * upgrade left once its microVM runs on another host) its snapshots stay, the sandbox's still.
+	 */
 	delete: "sandbox.delete",
 	get: "sandbox.get",
 	list: "sandbox.list",
