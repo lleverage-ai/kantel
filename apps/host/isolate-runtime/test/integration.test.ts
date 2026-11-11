@@ -591,6 +591,39 @@ console.log(JSON.stringify([
 		expect(next.stdout).toBe("newnewmade+c");
 	});
 
+	it("python: replacing a symlink or a directory with a file, and a file with a directory, persists as made", async () => {
+		const manifest = {
+			"target.txt": await c.fileEntry("T"),
+			link: { kind: "symlink", target: "target.txt" },
+			emptydir: { kind: "dir" },
+			f: await c.fileEntry("F"),
+			keep: { kind: "symlink", target: "target.txt" },
+		};
+		const code = [
+			"import os",
+			'os.unlink("/workspace/link")',
+			'open("/workspace/link", "w").write("L")',
+			'os.rmdir("/workspace/emptydir")',
+			'open("/workspace/emptydir", "w").write("D")',
+			'os.unlink("/workspace/f")',
+			'os.mkdir("/workspace/f")',
+			'open("/workspace/f/inner", "w").write("I")',
+		].join("\n");
+		const r = await c.exec("pr", `python3 -c '${code}'`, manifest, 30000);
+		expect(r.stderr).toBe("");
+		expect(r.exitCode).toBe(0);
+		const m = r.manifest as Record<string, { kind: string; target?: string }>;
+		expect(m.link.kind).toBe("file");
+		expect(m.emptydir.kind).toBe("file");
+		expect(m.f.kind).toBe("dir");
+		expect(m["f/inner"].kind).toBe("file");
+		expect(m.keep).toEqual({ kind: "symlink", target: "target.txt" });
+		const next = await c.exec("pr", "cat target.txt link emptydir f/inner keep", m);
+		expect(next.stdout).toBe("TLDIT");
+		// The shell's own file-to-directory replacement is recorded too.
+		const shell = await c.exec("pr", "rm target.txt && mkdir target.txt", m);
+		expect((shell.manifest as Record<string, { kind: string }>)["target.txt"]).toEqual({ kind: "dir" });
+	});
 });
 
 // memoryMiB bounds the V8 heap, ArrayBuffers and wasm memory together: holding ~60% of it in one and then taking

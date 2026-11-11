@@ -350,8 +350,13 @@ export function createPython(ops, lockdown = () => {}) {
 			}
 		};
 		walk(ROOT);
+		// Gone, or now of another kind (a file, directory or symlink replaced by one of the others): the shell removes
+		// it before it makes the directories, writes the files and links the symlinks, so the replacement doesn't
+		// write through an old symlink or into an old directory.
+		const kindOf = (mode) =>
+			FS.isDir(mode) ? "dir" : FS.isLink(mode) ? "symlink" : FS.isFile(mode) ? "file" : "other";
 		for (const [p, was] of before)
-			if (!seen.has(p) || (was.kind === "file" && !FS.isFile(FS.lstat(`${ROOT}/${p}`).mode))) removes.push(p);
+			if (!seen.has(p) || kindOf(FS.lstat(`${ROOT}/${p}`).mode) !== was.kind) removes.push(p);
 		const join = (parts) => {
 			const all = new Uint8Array(parts.reduce((n, b) => n + b.byteLength, 0));
 			let at = 0;

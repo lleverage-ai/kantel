@@ -37,7 +37,9 @@ function track(fs, dirty) {
 	};
 	const first = (args) => [String(args[0])];
 	const second = (args) => [String(args[1])];
-	for (const name of ["writeFile", "appendFile", "chmod", "utimes"]) wrap(name, first);
+	// rm too: a file removed and made again as a directory (by the shell, or replayed from a node/python run) is
+	// then looked at afresh instead of keeping its old file entry.
+	for (const name of ["writeFile", "appendFile", "chmod", "utimes", "rm"]) wrap(name, first);
 	for (const name of ["cp", "mv", "symlink", "link"]) wrap(name, second);
 	return fs;
 }
