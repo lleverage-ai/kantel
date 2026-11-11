@@ -101,6 +101,24 @@ export interface HostFacts {
 	readonly guestKernel?: string;
 	/** What the host boots new sandboxes on, and its image settings; present with `image-patching`. */
 	readonly images?: HostImages;
+	/**
+	 * What its isolate runtime (kantel-isolate) says it can do, as the host last read it. Absent on a host without the
+	 * isolate tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
+	 */
+	readonly isolate?: HostIsolateRuntime;
+}
+
+/**
+ * The isolate runtime's report of itself (`IsolateRuntime` in proto.go): whether its shell runs `node` and `python`, and
+ * whether an isolate's `memoryMiB` is a hard limit rather than recorded only.
+ */
+export interface HostIsolateRuntime {
+	/** Such as `deno_core`. */
+	readonly runtime?: string;
+	readonly version?: string;
+	readonly javascript: boolean;
+	readonly python: boolean;
+	readonly memoryEnforced: boolean;
 }
 
 /** A host's images: the version new sandboxes start on, and how it takes new ones. */
@@ -165,7 +183,7 @@ export const HOST_FEATURES = {
 	filesExtract: "files-extract",
 	/**
 	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
-	 * scratch), and an isolate's `memoryMiB` (recorded, not enforced).
+	 * scratch), and an isolate's `memoryMiB` (enforced where the host's runtime says `memoryEnforced`).
 	 */
 	customShapes: "custom-shapes",
 	/**
@@ -624,6 +642,8 @@ export interface HostSandbox {
 	readonly mountsAt?: number;
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
+	/** For an isolate, what its runtime can do (`HostFacts.isolate`); absent from a host too old to say. */
+	readonly isolate?: HostIsolateRuntime;
 	/**
 	 * `unresponsive` while a running microVM's guest agent doesn't answer (`HOST_FEATURES.guestHealth`), with
 	 * `healthReason` saying why in words; absent while it answers, and from a host without the feature.

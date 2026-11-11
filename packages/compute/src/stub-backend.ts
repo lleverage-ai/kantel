@@ -109,9 +109,12 @@ const SIZES: readonly BackendSize[] = [
 	{ name: "xlarge", vcpus: 8, memoryMb: 16384, diskGb: 80 },
 ];
 
+// The stub's isolates are just-bash alone, with no node or python (kantel-isolate's have both).
 const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: false,
+	python: false,
 	ssh: false,
 	desktop: false,
 	browser: false,
@@ -125,6 +128,8 @@ const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: true,
+	python: true,
 	ssh: true,
 	desktop: true,
 	browser: true,
@@ -285,6 +290,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		// The disk it gives a shape off its sizes, as kantel-host's defaults: its smallest size's, up to 1024 GB.
 		disk: { minGb: 10, maxGb: 1024 },
 		labels: { site: "local" },
+		// Its isolates run in-process: neither node nor python, and no memory limit of their own.
+		isolate: { javascript: false, python: false, memoryEnforced: false },
 	};
 
 	const machineOf = (sandboxId: string): Machine => {

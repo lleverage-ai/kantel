@@ -1324,9 +1324,15 @@ const STRANDABLE: readonly computeSchema.SandboxState[] = ["starting", "running"
 const ACCESS_TTL_MINUTES = 10;
 const DAY_MS = 24 * 3_600_000;
 
+/**
+ * An isolate's until its host says what its runtime has (the placement's capabilities): no `node` or `python` yet,
+ * which a host from before kantel-isolate never has.
+ */
 const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: false,
+	python: false,
 	ssh: false,
 	desktop: false,
 	browser: false,
@@ -1338,6 +1344,8 @@ const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: true,
+	python: true,
 	ssh: true,
 	desktop: true,
 	browser: true,
@@ -1346,6 +1354,19 @@ const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	kvm: true,
 	pause: true,
 };
+
+/**
+ * A sandbox's capabilities with `javascript` and `python`, which a sandbox recorded before them lacks: a microVM has
+ * both, and an isolate placed before its host said has neither (its next placement says).
+ */
+function withLanguages(
+	type: SandboxType,
+	capabilities: computeSchema.SandboxCapabilities,
+): computeSchema.SandboxCapabilities {
+	if (typeof capabilities.javascript === "boolean" && typeof capabilities.python === "boolean") return capabilities;
+	const vm = type === "microvm";
+	return { ...capabilities, javascript: capabilities.javascript ?? vm, python: capabilities.python ?? vm };
+}
 
 const ADJECTIVES = ["brave", "calm", "eager", "fond", "gentle", "keen", "lucky", "merry", "quick", "quiet", "swift"];
 const ANIMALS = ["otter", "heron", "badger", "lynx", "marten", "puffin", "wren", "hare", "stoat", "newt", "plover"];
@@ -2411,7 +2432,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			reason: sandbox.reason,
 			placementReason: sandbox.placementReason,
 			visibility: sandbox.visibility,
-			capabilities: sandbox.capabilities,
+			capabilities: withLanguages(sandbox.type, sandbox.capabilities),
 			labels: sandbox.labels,
 			autoStopMinutes: sandbox.autoStopMinutes,
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
@@ -7049,31 +7070,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const read = backend.capabilities();
 			const [records, capabilities, shared] = await Promise.all([ensureHosts(read), read, mayShare(principal)]);
 			const byId = new Map(capabilities.hosts.map((host) => [host.id, host]));
-			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones; or the one host
+			// requireHosts's rule, unlabelled: the account's own hosts that run the type, else the shared ones; or the one host
 			// a sandbox is to be pinned to.
 			const pinned = query.host === undefined ? undefined : pinnableHost(principal, account.id, records, query.host).id;
-			const running = records.filter(
-				(record) =>
-					record.state === "online" &&
-					record.tiers.includes("microvm") &&
-					(pinned === undefined || record.id === pinned),
-			);
-			const own = running.filter((record) => record.accountId === account.id);
-			const usable =
-				pinned !== undefined
-					? running
-					: own.length > 0
-						? own
-						: shared
-							? running.filter((record) => record.accountId === undefined)
-							: [];
-			const hosts = usable.flatMap((record) => {
-				const host = byId.get(record.id);
-				return host === undefined ? [] : [host];
-			});
-			const microvm = microvmShapes(hosts, capabilities.sizes);
+			const usableFor = (type: SandboxType) => {
+				const running = records.filter(
+					(record) =>
+						record.state === "online" && record.tiers.includes(type) && (pinned === undefined || record.id === pinned),
+				);
+				const own = running.filter((record) => record.accountId === account.id);
+				const usable =
+					pinned !== undefined
+						? running
+						: own.length > 0
+							? own
+							: shared
+								? running.filter((record) => record.accountId === undefined)
+								: [];
+				return usable.flatMap((record) => {
+					const host = byId.get(record.id);
+					return host === undefined ? [] : [host];
+				});
+			};
+			const microvm = microvmShapes(usableFor("microvm"), capabilities.sizes);
+			// An isolate's memory is a hard limit only if it is wherever the isolate may go: every such host's runtime says so.
+			const isolateHosts = usableFor("isolate");
+			const enforced = isolateHosts.length > 0 && isolateHosts.every((host) => host.isolate?.memoryEnforced === true);
 			return {
-				isolate: { memoryMb: { ...computeSchema.ISOLATE_MEMORY_MB }, enforced: false },
+				isolate: { memoryMb: { ...computeSchema.ISOLATE_MEMORY_MB }, enforced },
 				...(microvm === undefined ? {} : { microvm }),
 				// Self-hosted, a sandbox costs its operator nothing per hour, so New sandbox shows no price.
 				...(mode === "hosted"

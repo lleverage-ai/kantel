@@ -1021,7 +1021,7 @@ type FileURL struct {
 }
 
 type FileURLBody struct {
-	// An absolute path, or one relative to the user's home.
+	// An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.
 	Path string `json:"path"`
 	// How long the URL may be used: default 900 (15 minutes), at most 3600.
 	TTLSeconds *int64 `json:"ttlSeconds,omitempty"`
@@ -1349,7 +1349,7 @@ type InviteList struct {
 }
 
 type IsolateShapes struct {
-	// Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit.
+	// Whether an isolate's memory is a hard limit (its heap, ArrayBuffers and WebAssembly memory together): true when every host the account's isolates may run on says its isolate runtime enforces it. Otherwise the runtime records it, and the account VM's memory, shared by its isolates, is the limit.
 	Enforced bool       `json:"enforced"`
 	MemoryMb ShapeRange `json:"memoryMb"`
 }
@@ -1692,7 +1692,7 @@ type ResumeSandboxBody struct {
 type RunCommandBody struct {
 	// A shell command line, run with `bash -lc` (or the isolate's shell).
 	Command string `json:"command"`
-	// Default: the sandbox user's home.
+	// Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there.
 	Cwd *string `json:"cwd,omitempty"`
 	// Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID.
 	Detached *bool             `json:"detached,omitempty"`
@@ -1830,12 +1830,16 @@ type SandboxCapabilities struct {
 	Exec           bool               `json:"exec"`
 	Files          bool               `json:"files"`
 	Guest          *GuestCapabilities `json:"guest,omitempty"`
+	// Whether its commands can run JavaScript with `node`: always in a microVM; in an isolate, where its host's isolate runtime has it (each run a fresh V8 isolate, with no npm packages).
+	Javascript bool `json:"javascript"`
 	// `/dev/kvm` inside, for nested virtualisation.
 	KVM bool `json:"kvm"`
 	// Whether it can be paused with its memory kept.
 	Pause bool `json:"pause"`
 	Ports bool `json:"ports"`
-	SSH   bool `json:"ssh"`
+	// Whether its commands can run Python with `python` (`python3`): always in a microVM; in an isolate, where its host's isolate runtime has it (Pyodide, with the packages it ships, none installed from the internet).
+	Python bool `json:"python"`
+	SSH    bool `json:"ssh"`
 }
 
 // A sandbox's egress: what it was made with, its own grants and its log.
@@ -2096,7 +2100,7 @@ const (
 	SandboxTemplateStartBoot     SandboxTemplateStart = "boot"
 )
 
-// `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
+// `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` and `python` where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
 type SandboxType string
 
 const (

@@ -171,7 +171,7 @@ across gateways.
   memory. A create of a named size restores that size's template snapshot on the host (about 210 ms); a shape off the
   sizes cold-boots. There is nothing to claim, so nothing two gateways could double-claim. The welcome still sends
   `pools: {}` so a host from before pools were removed ends any it kept; `KANTEL_COMPUTE_POOLS` is ignored. Inside an
-  isolate tier VM, workerd still keeps isolates pre-loaded for its account (`ISOLATE_POOL_SIZE`).
+  isolate tier VM, kantel-isolate still keeps isolates pre-loaded for its account (`ISOLATE_POOL_SIZE`).
 - **Placement.** The scheduler (`packages/hosts/src/scheduler.ts`) picks among the hosts *this gateway* sees as
   connected. It subtracts what it has placed since each host's last heartbeat (`reserved`, kept in memory per process).
   Two gateways placing at once don't see each other's reservations, so they can place more on one host than its
