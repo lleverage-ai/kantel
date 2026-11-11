@@ -11,7 +11,7 @@ sidebar:
 `kantel-host`, its settings and the hosts API may still change.
 :::
 
-A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boots microVMs with Firecracker, and isolates with workerd inside a microVM. The host dials out to the control plane over a WebSocket and keeps that connection open, so it needs no inbound port and can sit behind NAT. A sandbox stays on the host it started on, since its disk and memory are there.
+A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boots microVMs with Firecracker, and isolates with `kantel-isolate`, Kantel's V8 runtime, inside a microVM. The host dials out to the control plane over a WebSocket and keeps that connection open, so it needs no inbound port and can sit behind NAT. A sandbox stays on the host it started on, since its disk and memory are there.
 
 You bring the hosts, whether you use the hosted control plane at app.kantel.dev or run your own. [Quick start](/quickstart/) adds one host to app.kantel.dev, and [Self-host quick start](/self-hosting/quickstart/) joins one on the control plane's own machine. This page covers each step in full, for any number of machines.
 
@@ -61,7 +61,7 @@ ok      mkfs.erofs             mkfs.erofs (bundle mounts)
 ok      disk                   412 GiB free at /var/lib, which will hold /var/lib/kantel-host (20 GiB or more recommended)
 ok      memory                 128776 MiB (4 GiB or more recommended)
 
-This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, inside a microVM).
+This machine can run both tiers: microVMs (Firecracker) and isolates (kantel-isolate, inside a microVM).
 ```
 
 On a machine that already has `kantel-host`, `sudo kantel-host doctor` runs the same checks.
@@ -230,7 +230,7 @@ It ends with what install leaves to the service, as above. The real output has t
 | `--label KEY=VALUE` | A label. Repeat it, or separate several with commas |
 | `--images DIR\|URL` | Where to get the kernel and images. Default: the control plane's `/v1/hosts/images` |
 | `--tiers LIST` | `microvm`, `isolate` or both, comma-separated. Default: what the machine can run |
-| `--isolate-runtime native` | Run isolates with workerd on the host itself, with no KVM. For trusted code only |
+| `--isolate-runtime native` | Run isolates with `kantel-isolate` on the host itself, with no KVM. For trusted code only |
 | `--proxy-data-path` | Send sandboxes' traffic on to the account's [upstream proxy](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy). Experimental |
 | `--inject-guest-agent` | Boot microVMs through Kantel's initramfs, which puts the guest agent into [any Linux image](/sandboxes/custom-images/). Experimental |
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
@@ -242,13 +242,13 @@ Put any of these after the token in the join command. `sudo kantel-admin host jo
 
 ### Without KVM
 
-A machine with no usable `/dev/kvm` can still run isolates, with workerd straight on the host rather than inside a microVM:
+A machine with no usable `/dev/kvm` can still run isolates, with `kantel-isolate` straight on the host rather than inside a microVM:
 
 ```sh
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_… --tiers isolate --isolate-runtime native --images …
 ```
 
-workerd isn't a hardened sandbox, so give such a host only code you trust. Its images need `workerd-amd64` (or `workerd-arm64`) in the manifest, and the repository has no script yet that puts it there.
+Every isolate of an account then runs in one process on the host, with no VM around it, so give such a host only code you trust. The install fetches `kantel-isolate-amd64` (or `-arm64`) and `isolate-assets-amd64.tar.gz` from the images, which image releases carry from the first one built with `kantel-isolate`; older releases have neither. The binary needs glibc 2.36 or later.
 
 ## Check on a host
 
@@ -377,7 +377,7 @@ A microVM's disk can be chosen apart from its vCPUs and memory: `resources.diskG
 
 Hosts keep no warm microVMs waiting for a create, hosted or self-hosted: an idle VM holds its memory, and the machine may be doing other things. A create restores a template snapshot from the host's disk instead, in a few hundred milliseconds. A host keeps one template per vCPU count, whatever the memory and disk: a sandbox restored from it is given the rest of its memory (virtio-mem) and has its disk grown. The host makes the sizes' counts in the background when it starts, about a gigabyte of disk each; the first create of another count boots from scratch, in a few seconds, while that count's template is made for the next. Once one is made, the host removes any template it kept per size (an update from a version before these), as no create uses them. With `microvm.sharedTemplate` set to `false` in the settings file, a host keeps a template per size instead, made the first time the size is asked for, and a shape off the sizes always boots from scratch. `KANTEL_COMPUTE_POOLS`, which once set warm pools, is ignored with a warning. A `kantel-host` from before then is told to keep none, so it makes no more. It can't end a warm VM it already has: its next create of that size takes it, and updating the host (the new version clears them when it starts) ends the rest.
 
-An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 by default); it shares its account's VM's CPU. Kantel records what it asked for, but workerd can't hold one isolate to a memory limit yet: the account's VM's memory is the limit its isolates share.
+An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 by default); it shares its account's VM's CPU. A host whose `kantel-isolate` says so holds each isolate to it, its heap, ArrayBuffers and WebAssembly memory together, and `GET /v1/sandbox-shapes` says `isolate.enforced: true` when every host your isolates may go to does. A host from before only records it. Either way the account's VM's memory is the limit its isolates share.
 
 ## Update a host
 

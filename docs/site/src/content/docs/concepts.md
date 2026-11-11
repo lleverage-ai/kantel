@@ -29,7 +29,7 @@ A sandbox is one of two **types**, or tiers:
 
 | Type | What it is | Good for |
 | --- | --- | --- |
-| Isolate | A V8 isolate run by workerd, Cloudflare's open-source Workers runtime, with a bash written in TypeScript | HTTP calls and text or JSON work with `curl`, `jq`, `grep` and `awk`, when nothing needs installing or building. Starts fastest and costs least |
+| Isolate | A V8 isolate run by `kantel-isolate`, Kantel's runtime on deno_core, with a bash written in TypeScript | HTTP calls and text or JSON work with `curl`, `jq`, `grep` and `awk`, when nothing needs installing or building. Starts fastest and costs least |
 | microVM | A Firecracker virtual machine with its own Linux kernel | Anything a normal Linux machine does: root, packages, Docker, and `/dev/kvm` for virtualisation inside the sandbox |
 
 Both are driven through the same API, so moving work from one to the other doesn't change your code.
