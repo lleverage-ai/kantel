@@ -957,6 +957,36 @@ describe("an upgrade that fails after its irreversible step", () => {
 		expect(await root.getSandbox(sandbox.id)).toMatchObject({ type: "isolate", state: "running" });
 	});
 
+	it("leaves the outcome unknown when the rollback's claim fails in the store, and settling it rolls back", async () => {
+		let failPublish = true;
+		let failClaim = true;
+		const store = failingStore((placement) => {
+			if (failPublish && placement.tier === "microvm" && placement.cleanup !== undefined) {
+				failPublish = false;
+				return "before";
+			}
+			if (failClaim && placement.upgrade?.settling !== undefined) {
+				failClaim = false;
+				return "before";
+			}
+			return undefined;
+		});
+		const { root, service, hosts } = await setup(crossHost(), { store });
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		const refused = await failure(root.upgradeSandbox(sandbox.id, {}));
+		// Not a plain failure, which compute would take as the isolate put back: unknown, so compute settles it, and that
+		// settle carries out the rollback before the isolate runs again.
+		expect(refused.status).toBe(503);
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ type: "isolate", state: "running" });
+		expect(isolates.frozen.has(sandbox.id)).toBe(false);
+		expect(vms.sandboxes.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
+		expect(placement?.upgrade).toBeUndefined();
+	});
+
 	it("settles a same-host upgrade by its ID when recording the microVM fails, never taking it for refused", async () => {
 		let failing = true;
 		const store = failingStore((placement) => {

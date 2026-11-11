@@ -2435,7 +2435,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				reserve(target.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				/** Rolls the copy back: only before the placement is the microVM's, while the isolate is still there. */
 				const rollBack = async (error: unknown): Promise<never> => {
-					const rolled = await rollBackCopy(sandboxId, source.hostId, target.id, operationId);
+					// Anything that stops the rollback short of done (its claim or a check of it failing in the store, as much as
+					// a host not answering) leaves the outcome unknown, for the settle to finish: never a failure, which compute
+					// would take as the isolate put back.
+					const rolled = await rollBackCopy(sandboxId, source.hostId, target.id, operationId).catch(
+						() => "unreachable" as const,
+					);
 					if (rolled === "done") throw error;
 					throw upgradeOutcomeUnknown(
 						rolled === "unreachable"

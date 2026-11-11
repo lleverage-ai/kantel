@@ -1362,6 +1362,20 @@ describe("an upgraded sandbox's snapshots from before", () => {
 		expect(live?.type).toBe("microvm");
 	});
 
+	it("keep the isolate's memory: a fork from one asks for what that isolate had", async () => {
+		const { tom, api } = setup();
+		const sandbox = await isolateWithFiles(tom, { resources: { memoryMb: 384 } });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const [automatic] = (await tom.listSnapshots({ sandboxId: sandbox.id })).items;
+		await tom.startSandbox(sandbox.id, { wait: true });
+		await tom.upgradeSandbox(sandbox.id, {});
+		const [fork] = (await tom.forkSandbox(sandbox.id, { snapshotId: automatic?.id as string, wait: true })).items;
+		expect(fork?.type).toBe("isolate");
+		const stored = await api.store.sandboxes.get(fork?.id as string);
+		expect(stored?.shape).toEqual({ vcpus: 0, memoryMb: 384 });
+		expect(stored?.resources?.memoryMb).toBe(384);
+	});
+
 	it("are never what the microVM resumes from once its own newest is deleted", async () => {
 		const { tom, api } = setup();
 		const sandbox = await isolateWithFiles(tom);

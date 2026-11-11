@@ -7753,10 +7753,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						size: machine?.size,
 						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
 						...(resources === undefined ? {} : { resources: { ...resources } }),
-						// An isolate asks for its source's memory, where its source is one.
+						// An isolate asks for its source's memory, where its source is one; from an isolate's snapshot of a sandbox
+						// since upgraded, the memory that isolate had, as its snapshot recorded it.
 						...(type === "isolate" && sameType && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
 						...(type === "isolate" && sameType && current.resources !== undefined
 							? { resources: current.resources }
+							: {}),
+						...(type === "isolate" && !sameType && snapshot?.resources !== undefined
+							? {
+									shape: { vcpus: 0, memoryMb: snapshot.resources.memoryMb },
+									resources: { ...snapshot.resources },
+								}
 							: {}),
 						// An isolate has no image: not the microVM's its source became.
 						image: sameType ? current.image : undefined,
