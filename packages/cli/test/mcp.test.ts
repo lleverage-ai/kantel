@@ -309,6 +309,11 @@ describe("the MCP server", () => {
 		);
 		expect(untyped.isError).toBe(true);
 		expect(untyped.content[0]?.text).toContain("type is required");
+		// A null from is no snapshot either, so it needs a type too.
+		const nullFrom = resultOf(
+			await mcp.handle(request(9, "tools/call", { name: "sandbox_create", arguments: { from: null } })),
+		);
+		expect(nullFrom.isError).toBe(true);
 		expect(calls).toHaveLength(0);
 		const created = resultOf(
 			await mcp.handle(

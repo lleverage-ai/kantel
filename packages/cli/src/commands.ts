@@ -2166,10 +2166,7 @@ const SECTIONS: readonly Section[] = [
 								log,
 								(line) => ctx.note(line),
 							);
-							ctx.emit(
-								{ ...copied, to: remote },
-								() => `Copied ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${remote}.`,
-							);
+							ctx.emit(copied, () => `Copied ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${copied.to}.`);
 							return;
 						}
 						const size = await uploadFile(client, target.sandboxId, local, remote);
@@ -2260,10 +2257,9 @@ const SECTIONS: readonly Section[] = [
 						},
 						(line) => ctx.note(line),
 					);
-					const where = target.startsWith("/") ? target : `/home/user/${target}`;
 					ctx.emit(
-						{ ...copied, to: where, skipped: plan.skipped },
-						() => `Pushed ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${where}.`,
+						{ ...copied, skipped: plan.skipped },
+						() => `Pushed ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${copied.to}.`,
 					);
 				},
 			},

@@ -2070,7 +2070,8 @@ describe("copying files", () => {
 		});
 		expect(result.code).toBe(0);
 		expect(result.stdout).toContain("Pushed 3 files");
-		expect(result.stdout).toContain("/home/user/app");
+		// An isolate keeps its files in /workspace, so that's where a relative destination lands.
+		expect(result.stdout).toContain("to /workspace/app.");
 		const byPath = Object.fromEntries(written.map((file) => [file.path, file]));
 		expect(Object.keys(byPath).sort()).toEqual(["app/logo.bin", "app/run.sh", "app/src/a.ts"]);
 		expect(byPath["app/src/a.ts"]).toEqual({ path: "app/src/a.ts", content: "export {};\n", encoding: "utf8" });
@@ -2108,6 +2109,7 @@ describe("copying files", () => {
 		});
 		expect(result.code).toBe(0);
 		expect(result.stdout).toContain("Pushed 4 files");
+		expect(result.stdout).toContain("to /home/user/app.");
 		expect(parts.length).toBeGreaterThan(1);
 		const names = parts.map((part) => part.path);
 		expect(names.every((name) => /^\/tmp\/\.kantel-push-[0-9a-f]{12}-\d{6}$/.test(name))).toBe(true);

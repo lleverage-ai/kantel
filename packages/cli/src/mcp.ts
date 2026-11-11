@@ -401,7 +401,8 @@ const TOOLS: readonly Tool[] = [
 		async call(args, { client, account, signal }) {
 			// The API makes an isolate when no type is given, which an agent that left it out rarely wants: it has to choose.
 			const type = optionalChoice(args, "type", SANDBOX_TYPES);
-			if (type === undefined && args.from === undefined) {
+			const from = optionalText(args, "from");
+			if (type === undefined && from === undefined) {
 				throw new ArgumentError(
 					"type is required: microvm for anything touching code, a runtime or a server; isolate only for HTTP calls " +
 						"and text or JSON work.",
@@ -413,7 +414,7 @@ const TOOLS: readonly Tool[] = [
 					type,
 					size: optionalChoice(args, "size", SIZES),
 					name: optionalText(args, "name"),
-					from: optionalText(args, "from"),
+					from,
 					image: optionalText(args, "image"),
 					autoStopMinutes: optionalNumber(args, "autoStopMinutes"),
 					idleStopMinutes: optionalNumber(args, "idleStopMinutes"),
