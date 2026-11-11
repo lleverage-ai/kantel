@@ -15,7 +15,7 @@ use serde_json::Value;
 use sha2::Digest;
 
 use crate::bridges::{FetchReq, egress_fetch, valid_sha};
-use crate::hostbuf::{HostBytes, budget_of};
+use crate::hostbuf::{HeldBytes, HostBytes, budget_of};
 use crate::isolate::{Ctx, Engine, Kind, RunResult, RunState, engine, run_child};
 use crate::limits::Refusal;
 
@@ -353,14 +353,32 @@ fn op_kt_exit(state: &mut OpState) {
 
 // --- node's module loader: files written during the run, the builtins, and TypeScript -----------------------------
 
-#[op2(fast)]
-fn op_kt_overlay(state: &mut OpState, #[string] path: &str, #[buffer] data: &[u8], present: bool) {
-    if let Some(run) = state.try_borrow::<RunState>() {
-        run.overlay.lock().unwrap().insert(
-            path.to_string(),
-            if present { Some(data.to_vec()) } else { None },
-        );
-    }
+/// A module file the run wrote (`present`) or removed, for its imports. The kept copy is charged to the isolate
+/// (HeldBytes) for as long as it is kept; the entry it replaces gives its charge back first. Not a fast call: a refused
+/// charge collects garbage, which V8 forbids inside one.
+#[op2(nofast)]
+fn op_kt_overlay(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] path: String,
+    #[buffer] data: &[u8],
+    present: bool,
+) -> Result<(), JsErrorBox> {
+    let Some(overlay) = state
+        .borrow()
+        .try_borrow::<RunState>()
+        .map(|r| r.overlay.clone())
+    else {
+        return Ok(());
+    };
+    overlay.lock().unwrap().remove(&path);
+    let entry = if present {
+        Some(HeldBytes::hold(isolate, &state, data.to_vec())?)
+    } else {
+        None
+    };
+    overlay.lock().unwrap().insert(path, entry);
+    Ok(())
 }
 
 #[op2(fast)]

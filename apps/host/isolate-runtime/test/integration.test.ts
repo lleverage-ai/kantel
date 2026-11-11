@@ -952,6 +952,226 @@ console.log(JSON.stringify(out));`,
 	});
 });
 
+// PR #837's second review (at 9270ac06): node's rename refuses what POSIX rename refuses; hash and HMAC inputs are
+// taken when update() is called; module overlays are charged to the isolate; a child's own stop stays the child's;
+// wasm memory a failed instantiation can leave reachable stays charged.
+d("PR #837 second review fixes", () => {
+	beforeAll(async () => {
+		if (RUN) {
+			await c.load("pr2");
+			await c.load("pr2-neighbour");
+		}
+	});
+	const neighbourOk = async () => {
+		expect((await c.exec("pr2-neighbour", "echo hi")).stdout).toBe("hi\n");
+		expect((await c.health()).ok).toBe(true);
+	};
+	const nodeScript = async (source: string, timeoutMs = 15000) =>
+		c.exec("pr2", "node s.js", { "s.js": await c.fileEntry(source) }, timeoutMs);
+
+	it("node fs: rename refuses to replace a non-empty directory, a directory with a file and the reverse, or move into itself", async () => {
+		const manifest = {
+			"src/a": await c.fileEntry("A"),
+			"src/inner/b": await c.fileEntry("B"),
+			"dst/keep": await c.fileEntry("K"),
+			"file.txt": await c.fileEntry("F"),
+			"other.txt": await c.fileEntry("O"),
+			empty: { kind: "dir" },
+			"real/r": await c.fileEntry("R"),
+			alias: { kind: "symlink", target: "real" },
+			link: { kind: "symlink", target: "file.txt" },
+			dlink: { kind: "symlink", target: "real" },
+		};
+		const r = await c.exec("pr2", "node s.mjs", {
+			...manifest,
+			"s.mjs": await c.fileEntry(
+				`import fs from "node:fs";
+const code = (f) => { try { f(); return "ok"; } catch (e) { return e.code; } };
+const tree = (p) => fs.readdirSync(p, { recursive: true }).sort().join(",");
+const refused = [
+	code(() => fs.renameSync("src", "dst")),
+	code(() => fs.renameSync("src", "file.txt")),
+	code(() => fs.renameSync("src", "link")),
+	code(() => fs.renameSync("file.txt", "dst")),
+	code(() => fs.renameSync("src", "src/inner/moved")),
+	code(() => fs.renameSync("src/inner", "src")),
+];
+const kept = [tree("src"), tree("dst"), fs.readFileSync("file.txt", "utf8"), fs.readlinkSync("link")];
+fs.renameSync("other.txt", "file.txt");
+fs.renameSync("src", "empty");
+fs.renameSync("empty", "alias/moved");
+fs.renameSync("link", "renamed-link");
+fs.renameSync("dlink", "real/dlink2");
+const cb = await new Promise((resolve) => fs.rename("dst", "file.txt", (e) => resolve(e?.code)));
+const pr = await fs.promises.rename("dst", "real/moved").then(() => "ok", (e) => e.code);
+await fs.promises.rename("dst", "dst2");
+console.log(JSON.stringify({ refused, kept, cb, pr, after: [tree("real"), tree("dst2"), fs.readFileSync("file.txt", "utf8"), fs.readlinkSync("renamed-link")] }));`,
+			),
+		});
+		expect(r.stderr).toBe("");
+		expect(JSON.parse(r.stdout)).toEqual({
+			refused: ["ENOTEMPTY", "ENOTDIR", "ENOTDIR", "EISDIR", "EINVAL", "ENOTEMPTY"],
+			kept: ["a,inner,inner/b", "keep", "F", "file.txt"],
+			cb: "ENOTDIR",
+			pr: "ENOTEMPTY",
+			after: ["dlink2,moved,moved/a,moved/inner,moved/inner/b,r", "keep", "O", "file.txt"],
+		});
+		const m = r.manifest as Record<string, { kind: string; size?: number; target?: string }>;
+		expect(m["real/moved/a"].kind).toBe("file");
+		expect(m["real/moved/inner/b"].kind).toBe("file");
+		expect(m["real/dlink2"]).toEqual({ kind: "symlink", target: "real" });
+		expect(m["dst2/keep"].kind).toBe("file");
+		expect(m["file.txt"].size).toBe(1);
+		expect(m["renamed-link"]).toEqual({ kind: "symlink", target: "file.txt" });
+		for (const k of ["src/a", "src/inner/b", "dst/keep", "other.txt", "empty", "link", "dlink"])
+			expect(m[k]).toBeUndefined();
+		const next = await c.exec("pr2", "cat real/moved/a real/moved/inner/b dst2/keep file.txt renamed-link", m);
+		expect(next.stdout).toBe("ABKOO");
+	});
+
+	it("crypto: hash and HMAC updates take the bytes given, not a view a later write to the buffer changes", async () => {
+		const r = await nodeScript(
+			`const crypto = require("crypto");
+const b = Buffer.from("a");
+const h = crypto.createHash("sha256");
+h.update(b); b[0] = 0x62; h.update(b);
+const k = Buffer.from("a");
+const m = crypto.createHmac("sha256", "key");
+m.update(k); k[0] = 0x62; m.update(k);
+const big = Buffer.from("hello world, read in chunks"), chunk = Buffer.alloc(4), hc = crypto.createHash("md5");
+for (let i = 0; i < big.length; i += 4) hc.update(chunk.subarray(0, big.copy(chunk, 0, i, i + 4)));
+const sub = new Uint8Array([9, 0x61, 0x62, 9]).subarray(1, 3);
+const hs = crypto.createHash("sha1").update(sub).update("6364", "hex");
+const cp = hs.copy();
+sub[0] = 0x7a;
+hs.update("e");
+console.log(JSON.stringify([h.digest("hex"), m.digest("hex"), hc.digest("hex"), hs.digest("hex"), cp.digest("hex"), crypto.hash("sha256", sub)]));`,
+		);
+		const { createHash, createHmac } = await import("node:crypto");
+		const hex = (alg: string, s: string) => createHash(alg).update(s).digest("hex");
+		expect(r.stderr).toBe("");
+		expect(JSON.parse(r.stdout)).toEqual([
+			hex("sha256", "ab"),
+			createHmac("sha256", "key").update("ab").digest("hex"),
+			hex("md5", "hello world, read in chunks"),
+			hex("sha1", "abcde"),
+			hex("sha1", "abcd"),
+			hex("sha256", "zb"),
+		]);
+	});
+
+	it("module overlays: files written during a run are charged to its memory, however the guest shares their bytes", async () => {
+		// With slice() answering its own view, every write hands the host the same 16 MiB: the host's copies (one per
+		// module file, kept for the run's imports) used to be outside the budget, 64 of them a GiB.
+		const r = await nodeScript(
+			`const fs = require("fs");
+Uint8Array.prototype.slice = function () { return this; };
+const b = new Uint8Array(16 * 1024 * 1024);
+let i = 0;
+for (; i < 64; i++) fs.writeFileSync("/tmp/f" + i + ".js", b);
+console.log("wrote", i);`,
+			30000,
+		);
+		expect(r.stdout).toBe("");
+		expect(r.exitCode).toBe(137);
+		expect(r.terminated).toBe("memory");
+		await neighbourOk();
+	});
+	it("module overlays: replacing or removing a file gives its charge back, and imports still read what was written", async () => {
+		const r = await c.exec(
+			"pr2",
+			"node s.mjs",
+			{
+				"s.mjs": await c.fileEntry(
+					`import fs from "node:fs";
+Uint8Array.prototype.slice = function () { return this; };
+const b = new Uint8Array(16 * 1024 * 1024);
+for (let i = 0; i < 40; i++) fs.writeFileSync("/tmp/same.js", b);
+for (let round = 0; round < 5; round++) {
+	for (let i = 0; i < 8; i++) fs.writeFileSync("/tmp/r" + i + ".js", b);
+	for (let i = 0; i < 8; i++) (i % 2 ? fs.unlinkSync : fs.rmSync)("/tmp/r" + i + ".js");
+}
+fs.mkdirSync("/tmp/d");
+for (let round = 0; round < 5; round++) {
+	for (let i = 0; i < 8; i++) fs.writeFileSync("/tmp/d/r" + i + ".js", b);
+	fs.renameSync("/tmp/d", "/tmp/e");
+	fs.rmSync("/tmp/e", { recursive: true });
+	fs.mkdirSync("/tmp/d");
+}
+delete Uint8Array.prototype.slice;
+fs.writeFileSync("m.mjs", "export default 'imported';");
+console.log((await import("./m.mjs")).default);`,
+				),
+			},
+			30000,
+		);
+		expect(r.stderr).toBe("");
+		expect(r.stdout).toBe("imported\n");
+	});
+
+	it("a child's cancellation (timeout) stops only the child: the shell goes on", async () => {
+		const loop = Array.from({ length: 20 }, () => `timeout 0.05 node -e "while(true){}"; echo -n $?,;`).join(" ");
+		const r = await c.exec("pr2", `${loop} echo recovered`, {}, 30000);
+		expect(r.stdout).toBe(`${"124,".repeat(20)}recovered\n`);
+		expect(r.exitCode).toBe(0);
+	});
+	it("a child stopped for its memory stops only the child: the shell goes on", async () => {
+		const bomb = `node -e "const a=[];for(;;)a.push(new Uint8Array(16*1024*1024))" || echo -n $?,;`;
+		const r = await c.exec("pr2", `${Array.from({ length: 8 }, () => bomb).join(" ")} echo recovered`, {}, 60000);
+		expect(r.stdout).toBe(`${"137,".repeat(8)}recovered\n`);
+		expect(r.exitCode).toBe(0);
+	});
+
+	// Modules with a 64 MiB memory (1024 pages) that fail to instantiate. An active element segment writes one of the
+	// module's functions into the guest's imported table first, and the function keeps the instance and its memory
+	// alive after the failure: (a) the start function fills the memory and traps; (b) a second segment is out of range.
+	const WASM_FAILED = `const bytes = (a) => new Uint8Array(a);
+const startTraps = bytes([0,97,115,109,1,0,0,0, 1,4,1,96,0,0, 2,9,1,1,109,1,116,1,112,0,1, 3,3,2,0,0, 5,4,1,0,128,8,
+	8,1,1, 9,7,1,0,65,0,11,1,0, 10,20,2,2,0,11,15,0,65,0,65,1,65,128,128,128,32,252,11,0,0,11]);
+const segmentFails = bytes([0,97,115,109,1,0,0,0, 1,4,1,96,0,0, 2,9,1,1,109,1,116,1,112,0,1, 3,2,1,0, 5,4,1,0,128,8,
+	9,13,2,0,65,0,11,1,0,0,65,5,11,1,0, 10,4,1,2,0,11]);
+const linkFails = bytes([0,97,115,109,1,0,0,0, 1,4,1,96,0,0, 2,7,1,1,109,1,102,0,0, 5,4,1,0,128,8]);
+const exported = bytes([0,97,115,109,1,0,0,0,5,4,1,0,128,8,7,5,1,1,109,2,0]);
+const attempt = (mod, n) => {
+	const held = [];
+	let failed = 0, refused = "no";
+	for (let i = 0; i < n; i++) {
+		const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+		held.push(table);
+		try { new WebAssembly.Instance(mod, { m: { t: table } }); } catch (e) {
+			if (e instanceof RangeError) { refused = e.name; break; }
+			failed++;
+		}
+	}
+	return [failed, refused, held.filter((t) => t.get(0) !== null).length];
+};
+const shape = process.argv[2];
+if (shape === "link") {
+	// Twelve in a row of a failure that leaves nothing reachable (a missing import), then one that succeeds.
+	const link = new WebAssembly.Module(linkFails);
+	let linkErrors = 0;
+	for (let i = 0; i < 12; i++) try { new WebAssembly.Instance(link, { m: {} }); } catch (e) { if (e instanceof WebAssembly.LinkError) linkErrors++; }
+	console.log(JSON.stringify([linkErrors, new WebAssembly.Instance(new WebAssembly.Module(exported)).exports.m.buffer.byteLength]));
+} else console.log(JSON.stringify(attempt(new WebAssembly.Module(shape === "start" ? startTraps : segmentFails), 12)));`;
+	it("wasm guard: memory a failed instantiation leaves reachable through an imported table stays charged", async () => {
+		const script = { "s.js": await c.fileEntry(WASM_FAILED) };
+		// 256 MiB holds at most three 64 MiB memories: the fourth attempt is refused, in both shapes.
+		for (const shape of ["start", "segment"]) {
+			const r = await c.exec("pr2", `node s.js ${shape}`, script, 30000);
+			expect(r.stderr).toBe("");
+			const [failed, refused, retained] = JSON.parse(r.stdout);
+			expect(failed).toBeLessThan(4);
+			expect(refused).toBe("RangeError");
+			expect(retained).toBe(failed);
+		}
+		// A failure that leaves nothing reachable gives its reservation back, and a successful one still works.
+		const r = await c.exec("pr2", "node s.js link", script, 30000);
+		expect(r.stderr).toBe("");
+		expect(JSON.parse(r.stdout)).toEqual([12, 64 * 1024 * 1024]);
+		await neighbourOk();
+	});
+});
+
 // memoryMiB bounds the V8 heap, ArrayBuffers and wasm memory together: holding ~60% of it in one and then taking
 // ~60% in the other is stopped (each alone fits, and before the limit was one figure each fitted on its own budget).
 d("one memory limit: heap, buffers and wasm together", () => {

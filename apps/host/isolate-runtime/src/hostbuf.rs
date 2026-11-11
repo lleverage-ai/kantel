@@ -124,6 +124,53 @@ impl HostBytes {
     }
 }
 
+/// Bytes the host keeps for a guest after an op returns (node's module overlay: the module files a run wrote, kept for
+/// its imports). They are Rust memory, which neither the ArrayBuffer allocator nor the GC epilogue sees, and the guest
+/// can hand the same buffer over any number of times, so they are charged to the isolate's [`Budget`] for as long as
+/// they are kept, in both builds, and given back when dropped (replaced, removed, or with the run).
+pub struct HeldBytes {
+    bytes: Vec<u8>,
+    budget: Option<Arc<Budget>>,
+}
+
+impl HeldBytes {
+    /// Keep `bytes`, charged now. Refused, it collects garbage and asks again; refused again, the isolate is stopped
+    /// for memory (`terminated: memory`, as when the allocator refuses), so the run ends rather than going on with a
+    /// write its imports can't see. The OpState is borrowed only to find the budget, never across the GC.
+    pub fn hold(
+        isolate: &mut v8::Isolate,
+        state: &Rc<RefCell<OpState>>,
+        bytes: Vec<u8>,
+    ) -> Result<HeldBytes, JsErrorBox> {
+        let budget = budget_of(&state.borrow());
+        if let Some(budget) = &budget
+            && !bytes.is_empty()
+            && budget.take(bytes.len()).is_err()
+        {
+            isolate.low_memory_notification();
+            if !budget.try_take(bytes.len()) {
+                budget.refuse();
+                return Err(JsErrorBox::range_error(REFUSED));
+            }
+        }
+        Ok(HeldBytes { bytes, budget })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for HeldBytes {
+    fn drop(&mut self) {
+        if let Some(budget) = &self.budget
+            && !self.bytes.is_empty()
+        {
+            budget.give(self.bytes.len());
+        }
+    }
+}
+
 impl<'a> ToV8<'a> for HostBytes {
     type Error = JsErrorBox;
     fn to_v8<'i>(
