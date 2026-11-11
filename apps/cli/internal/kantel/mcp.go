@@ -458,8 +458,12 @@ func commandResult(c api.Command) toolResult {
 		lines = append(lines, fmt.Sprintf("It needed a microVM: Kantel upgraded %s and runs it again there as %s. Read that one "+
 			"with command_get (sandboxId %s, commandId %s).", c.SandboxID, *c.RerunAs, c.SandboxID, *c.RerunAs))
 	} else if c.NeedsMicrovm != nil {
-		lines = append(lines, fmt.Sprintf("It needs a microVM: %s Call sandbox_upgrade with sandboxId %s (it keeps the id, files, "+
-			"env and grants), then run it again.", c.NeedsMicrovm.Reason, c.SandboxID))
+		lead := "It needs a microVM"
+		if c.NeedsMicrovm.Inferred != nil && *c.NeedsMicrovm.Inferred {
+			lead = "It looks like it needs a microVM (read from its output)"
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s Call sandbox_upgrade with sandboxId %s (it keeps the id, files, "+
+			"env and grants), then run it again.", lead, c.NeedsMicrovm.Reason, c.SandboxID))
 	}
 	if c.Terminated != nil {
 		lines = append(lines, "The isolate stopped it for using too much "+string(*c.Terminated)+" time.")

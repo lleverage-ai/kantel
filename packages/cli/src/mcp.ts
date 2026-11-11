@@ -320,7 +320,7 @@ export function commandResult(command: Command): ToolResult {
 		);
 	} else if (command.needsMicrovm !== undefined) {
 		lines.push(
-			`It needs a microVM: ${command.needsMicrovm.reason} Call sandbox_upgrade with sandboxId ${command.sandboxId} ` +
+			`${command.needsMicrovm.inferred === true ? "It looks like it needs a microVM (read from its output)" : "It needs a microVM"}: ${command.needsMicrovm.reason} Call sandbox_upgrade with sandboxId ${command.sandboxId} ` +
 				"(it keeps the id, files, env and grants), then run it again.",
 		);
 	}
