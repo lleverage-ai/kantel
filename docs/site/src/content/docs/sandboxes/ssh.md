@@ -11,7 +11,7 @@ sidebar:
 These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
-A microVM has no address of its own that you can connect to. You reach its SSH through Kantel: either through your deployment's SSH gateway, or, on [your own hosts](/hosts/), through a relay on the control plane that carries SSH over a WebSocket. Kantel lets a key in and tells you the command that connects. Isolates have no SSH: the call answers `501` with `not_supported` for them.
+A microVM has no address of its own that you can connect to. You reach its SSH through Kantel: either through your deployment's SSH gateway, or, on [your own hosts](/hosts/), through a relay on the control plane that carries SSH over a WebSocket. Kantel lets a key in and tells you the command that connects. Isolates have no SSH: the call answers `501` with `not_supported` for them, and `kantel ssh` gives you [a pseudo-shell](#ssh-to-an-isolate) instead.
 
 With the [`kantel` command](/tools/cli/), one line does all of it, whichever way your deployment connects:
 
@@ -164,8 +164,38 @@ Host kantel-fix-login-bug
 
 The relay URL in `ProxyCommand` works for an hour at most, so run `kantel ssh sbx_4kq9x2mt --ttl 60` and copy in the new one before you reconnect. A connection that is already open stays open.
 
+## SSH to an isolate
+
+An isolate has no SSH server, so `kantel ssh` to one opens a pseudo-shell over the [commands API](/sandboxes/commands-and-files/) instead. It looks like a shell, with a prompt such as `user@brave-otter:/workspace$ `, but it isn't a terminal: each line you type runs as one command, and full-screen programs such as `vim`, `top` or `less` don't work. `node` and `python` do, as do the [isolate's own commands](/sandboxes/types/#what-an-isolates-shell-has).
+
+```text
+$ kantel ssh sbx_4kq9x2mt
+brave-otter (sbx_4kq9x2mt) is an isolate, which has no SSH: this is a pseudo-shell over Kantel's commands API.
+…
+user@brave-otter:/workspace$ cd app && export NODE_ENV=test
+user@brave-otter:/workspace/app$ node -e 'console.log(process.env.NODE_ENV)'
+test
+```
+
+- **What carries over:** the directory a line leaves you in and the variables it exports, so `cd` and `export` work as they would in a shell. Each line runs on its own otherwise: a function or an unexported variable is gone by the next line, and a line that runs `exit` keeps the last directory.
+- **Output** comes as the command writes it, and a failed line's exit status shows before the next prompt, such as `[1] user@brave-otter:/workspace$ `. A line runs for up to 10 minutes. Ctrl-C stops the command that is running; Ctrl-D or `exit` leaves.
+- **Built-in commands:** `help`, `upgrade` (below) and `exit`.
+- **A stopped sandbox** is said, with the `kantel resume` that starts it. Other errors, such as the sandbox stopping during a session, are said and the session goes on.
+
+When a command needs a microVM, such as `git clone`, the pseudo-shell [upgrades](/sandboxes/types/#upgrade-an-isolate-to-a-microvm) to one, and then to real SSH:
+
+- **With `autoUpgrade`** (`kantel new --auto-upgrade`), the sandbox upgrades itself and runs the command again in the microVM. The pseudo-shell says so (`This needed a microVM (git): the sandbox has been upgraded, and the command ran again there.`) and shows the second run's output.
+- **Without it**, it asks, such as `An isolate has no git; a microVM does. Upgrade this sandbox to a microVM now? [y/N]`. Yes upgrades it, says how long that took, and runs the command again in the microVM. No leaves the isolate as it is.
+- **Typing `upgrade`** at the prompt upgrades it there and then.
+
+After an upgrade, the session becomes an SSH session on the microVM, through the same path `kantel ssh` uses for any microVM, starting in the same directory: `/workspace/app` becomes `/home/user/workspace/app`, where the isolate's files are (`/workspace` links there). Leaving that shell ends `kantel ssh`.
+
+After `--`, `kantel ssh` to an isolate runs one command as [`kantel exec`](/sandboxes/commands-and-files/) does: with `autoUpgrade` it follows the command run again in the microVM, and without, a command that needs a microVM exits with 127 and says how to upgrade. Lines piped in (`printf 'cd app\nnode test.js\n' | kantel ssh sbx_4kq9x2mt`) run in order with no prompts, and `kantel ssh` exits with the last one's status. Piped lines don't ask about upgrading, and an upgrade by the `upgrade` line or by `autoUpgrade` carries on with the next line in the microVM, through the commands API.
+
+Each line runs with a short preamble and trailer around it (the directory, the exported variables, and `pwd` and `export -p` after it), which `kantel ps` shows as part of the command.
+
 ## SSH out of a sandbox
 
 This page is about SSH into a sandbox. For SSH from a sandbox to somewhere else, such as `git clone git@github.com:…`, see [Git over SSH](/sandboxes/egress-proxy/#git-over-ssh): a microVM has no DNS and reaches the internet only through the egress proxy, and its image sets `ssh` up to use the proxy for GitHub.
 
-<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:665-679, packages/api/src/compute-schema.ts:644-669; the relay: packages/hosts/src/backend.ts (openSsh), packages/hosts/src/tunnel.ts, packages/cli/src/ssh-proxy.ts. The CLI and the relay's scp and port forward (5be456c): packages/cli/src/commands.ts:1114-1125,1269-1345, packages/hosts/src/tunnel.ts:1-70; run through a local host for TASK-4706 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:665-679, packages/api/src/compute-schema.ts:644-669; the relay: packages/hosts/src/backend.ts (openSsh), packages/hosts/src/tunnel.ts, packages/cli/src/ssh-proxy.ts. The isolate pseudo-shell: packages/cli/src/shell.ts and isolateShell in packages/cli/src/commands.ts, apps/cli/internal/kantel/shell.go. The CLI and the relay's scp and port forward (5be456c): packages/cli/src/commands.ts:1114-1125,1269-1345, packages/hosts/src/tunnel.ts:1-70; run through a local host for TASK-4706 -->

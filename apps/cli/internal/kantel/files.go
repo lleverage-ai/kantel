@@ -66,16 +66,16 @@ func printOutput(c *cli.Context, command *api.Command) {
 	if command.State == api.CommandStateKilled {
 		c.Note("kantel: the command was killed")
 	}
-	noteIsolate(c, command)
+	noteIsolate(c, command, true)
 }
 
 // noteIsolate says what an isolate did to a command: stopped it for its time or memory, or found it needs a microVM,
-// and what to do about that.
-func noteIsolate(c *cli.Context, command *api.Command) {
+// and (when upgradeHint) what to do about that.
+func noteIsolate(c *cli.Context, command *api.Command, upgradeHint bool) {
 	if command.Terminated != nil {
 		c.Note("kantel: the isolate stopped it: too much " + string(*command.Terminated) + " time")
 	}
-	if command.NeedsMicrovm != nil && command.RerunAs == nil {
+	if upgradeHint && command.NeedsMicrovm != nil && command.RerunAs == nil {
 		c.Note("kantel: " + command.NeedsMicrovm.Command + " needs a microVM. kantel upgrade " + command.SandboxID +
 			" turns this isolate into one, its files and settings kept; then run it again")
 	}
@@ -127,6 +127,14 @@ type followOptions struct {
 	announce bool
 	// limitSeconds is its limit, said when it timed out.
 	limitSeconds *int64
+	// marker: its stdout is shown up to this, and what follows held back (the pseudo-shell's trailer, shell.go).
+	marker string
+	// onRerun, when set, is told its sandbox upgraded itself and ran it again, and says so instead of follow.
+	onRerun func(*api.Command)
+	// quietNeedsMicrovm says nothing of a command that needed a microVM: the caller asks about it.
+	quietNeedsMicrovm bool
+	// onEnd is given the command it came to, once it ends.
+	onEnd func(*api.Command)
 }
 
 // follow follows a command by its ID: prints what it has written since the last look, every second or so, until it
@@ -211,13 +219,17 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 	wait := 100 * time.Millisecond
 	for {
 		if !c.JSON {
-			if len(command.Stdout) > shownOut {
-				fmt.Fprint(c.IO.Stdout, command.Stdout[shownOut:])
+			end := len(command.Stdout)
+			if o.marker != "" {
+				end = shownLength(command.Stdout, o.marker)
+			}
+			if end > shownOut {
+				fmt.Fprint(c.IO.Stdout, command.Stdout[shownOut:end])
 			}
 			if len(command.Stderr) > shownErr {
 				fmt.Fprint(c.IO.Stderr, command.Stderr[shownErr:])
 			}
-			shownOut, shownErr = len(command.Stdout), len(command.Stderr)
+			shownOut, shownErr = max(shownOut, end), len(command.Stderr)
 		}
 		if command.State != api.CommandStateRunning {
 			break
@@ -233,14 +245,20 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 	}
 	// Its isolate upgraded itself to a microVM (autoUpgrade) and ran it again there: that one is what it came to.
 	if command.RerunAs != nil {
-		if !c.JSON {
+		if o.onRerun != nil {
+			o.onRerun(command)
+		} else if !c.JSON {
 			what := ""
 			if command.NeedsMicrovm != nil {
 				what = " (" + command.NeedsMicrovm.Command + ")"
 			}
 			c.Note("kantel: it needed a microVM" + what + "; " + sandboxID + " is one now, and it runs again there as " + *command.RerunAs)
 		}
-		return follow(c, client, sandboxID, *command.RerunAs, followOptions{limitSeconds: o.limitSeconds})
+		return follow(c, client, sandboxID, *command.RerunAs, followOptions{limitSeconds: o.limitSeconds,
+			marker: o.marker, onRerun: o.onRerun, quietNeedsMicrovm: o.quietNeedsMicrovm, onEnd: o.onEnd})
+	}
+	if o.onEnd != nil {
+		o.onEnd(command)
 	}
 	if c.JSON {
 		c.Out(cli.IndentJSON(raw, command))
@@ -258,7 +276,7 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 		case api.CommandStateKilled:
 			c.Note("kantel: the command was killed")
 		}
-		noteIsolate(c, command)
+		noteIsolate(c, command, !o.quietNeedsMicrovm)
 	}
 	return exitWith(exitCodeOf(command))
 }

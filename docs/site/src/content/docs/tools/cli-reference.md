@@ -614,13 +614,13 @@ kantel port hide <id> <port> [flags]
 
 ### kantel ssh
 
-SSH into a microVM, or run one command there over SSH.
+A shell in a sandbox: SSH into a microVM, a pseudo-shell in an isolate; or run one command.
 
 ```sh
 kantel ssh <id> [-- <command…>] [flags]
 ```
 
-Connects in this terminal, through the control plane's relay when the sandbox is on its own hosts. After --, a command runs there instead of a shell, and kantel exits with its exit code: kantel ssh &lt;id&gt; -- uname -a. --print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry.
+Connects in this terminal, through the control plane's relay when the sandbox is on its own hosts. After --, a command runs there instead of a shell, and kantel exits with its exit code: kantel ssh &lt;id&gt; -- uname -a. --print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry. An isolate has no SSH: there it is a pseudo-shell over the commands API, each line one command, keeping the directory and exported variables. When a command needs a microVM it is run again there (autoUpgrade), or you're asked whether to upgrade, and then it switches to SSH on the microVM. Lines piped in run in order.
 
 | Flag | What it does |
 | --- | --- |
@@ -637,6 +637,9 @@ kantel ssh sbx_4kq9x2mt -- docker ps
 
 # The ssh command, for an editor's remote setup
 kantel ssh sbx_4kq9x2mt --print
+
+# Lines piped to an isolate's pseudo-shell
+printf 'cd app\nnode test.js\n' | kantel ssh sbx_4kq9x2mt
 ```
 
 ### kantel desktop

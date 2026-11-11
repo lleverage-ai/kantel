@@ -193,7 +193,7 @@ func access() cli.Section {
 func sshCommand() *cli.Command {
 	return &cli.Command{
 		Name:         "ssh",
-		Summary:      "SSH into a microVM, or run one command there over SSH",
+		Summary:      "A shell in a sandbox: SSH into a microVM, a pseudo-shell in an isolate; or run one command",
 		Args:         IDArg,
 		Rest:         "command…",
 		RestOptional: true,
@@ -206,11 +206,15 @@ func sshCommand() *cli.Command {
 		},
 		Details: "Connects in this terminal, through the control plane's relay when the sandbox is on its own hosts. After --,\n" +
 			"a command runs there instead of a shell, and kantel exits with its exit code: kantel ssh <id> -- uname -a.\n" +
-			"--print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry.",
+			"--print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry.\n" +
+			"An isolate has no SSH: there it is a pseudo-shell over the commands API, each line one command, keeping\n" +
+			"the directory and exported variables. When a command needs a microVM it is run again there (autoUpgrade),\n" +
+			"or you're asked whether to upgrade, and then it switches to SSH on the microVM. Lines piped in run in order.",
 		Examples: []cli.Example{
 			{What: "A shell", Line: "kantel ssh sbx_4kq9x2mt"},
 			{What: "One command", Line: "kantel ssh sbx_4kq9x2mt -- docker ps"},
 			{What: "The ssh command, for an editor's remote setup", Line: "kantel ssh sbx_4kq9x2mt --print"},
+			{What: "Lines piped to an isolate's pseudo-shell", Line: "printf 'cd app\\nnode test.js\\n' | kantel ssh sbx_4kq9x2mt"},
 		},
 		Run: runSSHCommand,
 	}
@@ -245,11 +249,30 @@ func runSSHCommand(c *cli.Context) error {
 	if print && len(remote) > 0 {
 		return cli.Usage("--print prints the ssh command; give it no command")
 	}
-	// ssh joins its command's words with spaces for the remote shell, so each is quoted to arrive as it is.
-	var remoteArgs []string
-	if len(remote) > 0 {
-		remoteArgs = []string{"--", CommandLine(remote)}
+	client, err := Client(c)
+	if err != nil {
+		return err
 	}
+	access, err := openSSHAccess(c, client, sandboxID)
+	if err != nil {
+		// An isolate has no SSH: a pseudo-shell over the commands API stands in for it (shell.go).
+		var apiErr *api.Error
+		if !print && errors.As(err, &apiErr) && apiErr.Code == "not_supported" {
+			sandbox, getErr := client.GetSandbox(c.Ctx, sandboxID)
+			if getErr != nil {
+				return getErr
+			}
+			if sandbox.Type == api.SandboxTypeIsolate {
+				return isolateShell(c, client, sandbox, remote)
+			}
+		}
+		return err
+	}
+	return connectSSH(c, sandboxID, access, remote, sshOptions{print: print})
+}
+
+// openSSHAccess asks Kantel to let a key in to a microVM's SSH: --public-key's, else a key pair Kantel makes.
+func openSSHAccess(c *cli.Context, client *api.Client, sandboxID string) (*api.SSHAccess, error) {
 	body := api.SSHAccessBody{}
 	if keyPath, ok := c.Str("public-key"); ok {
 		if !filepath.IsAbs(keyPath) {
@@ -257,23 +280,38 @@ func runSSHCommand(c *cli.Context) error {
 		}
 		key, err := os.ReadFile(keyPath)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		trimmed := strings.TrimSpace(string(key))
 		body.PublicKey = &trimmed
 	}
 	ttl, err := Whole(c, "ttl", 1)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	body.TTLMinutes = ttl
-	client, err := Client(c)
-	if err != nil {
-		return err
+	return client.OpenSSH(c.Ctx, sandboxID, body)
+}
+
+// sshOptions say how connectSSH connects.
+type sshOptions struct {
+	// print prints the ssh command that connects rather than running it.
+	print bool
+	// tty asks for a terminal for the remote command.
+	tty bool
+}
+
+// connectSSH connects to a microVM's SSH with the access Kantel gave, running remote there when given, or prints the
+// ssh command that connects.
+func connectSSH(c *cli.Context, sandboxID string, access *api.SSHAccess, remote []string, o sshOptions) error {
+	// ssh joins its command's words with spaces for the remote shell, so each is quoted to arrive as it is.
+	var remoteArgs []string
+	if len(remote) > 0 {
+		remoteArgs = []string{"--", CommandLine(remote)}
 	}
-	access, err := client.OpenSSH(c.Ctx, sandboxID, body)
-	if err != nil {
-		return err
+	var tty []string
+	if o.tty {
+		tty = []string{"-t"}
 	}
 	dir := filepath.Join(c.IO.ConfigDir, "ssh")
 	// A key pair Kantel made is shown once: keep its private half where ssh can use it.
@@ -308,8 +346,9 @@ func runSSHCommand(c *cli.Context) error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
-		if !print {
-			return runSSH(c, append(tunnelSSHArgs(tunnel, options), remoteArgs...), map[string]string{SSHURLEnv: *access.ProxyURL})
+		if !o.print {
+			args := append(append(tty, tunnelSSHArgs(tunnel, options)...), remoteArgs...)
+			return sshRunner(c, args, map[string]string{SSHURLEnv: *access.ProxyURL})
 		}
 		options.Self = []string{"kantel"}
 		command := tunnelSSHCommand(tunnel, options)
@@ -333,14 +372,17 @@ func runSSHCommand(c *cli.Context) error {
 		}
 		command = strings.Join(quoted, " ")
 	}
-	if !print {
-		return runSSH(c, append(args, remoteArgs...), nil)
+	if !o.print {
+		return sshRunner(c, append(append(tty, args...), remoteArgs...), nil)
 	}
 	shown := sshShownDirect{Host: access.Host, Port: access.Port, User: access.User, Command: command,
 		IdentityFile: identityFile, HostKeyFingerprint: access.HostKeyFingerprint, ExpiresAt: access.ExpiresAt}
 	c.Emit(nil, shown, func() string { return command + "\n(it works until " + cli.Timestamp(access.ExpiresAt) + ")" })
 	return nil
 }
+
+// sshRunner runs ssh: runSSH, which the tests replace.
+var sshRunner = runSSH
 
 // runSSH runs the system's ssh with args in this terminal, and exits with its exit code: 127 when there is no ssh, 1
 // when a signal ended it. env is added to this process's environment for it.

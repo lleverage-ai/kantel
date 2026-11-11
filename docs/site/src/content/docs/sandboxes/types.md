@@ -114,6 +114,22 @@ kantel new --auto-upgrade
 
 A command that needs a microVM says so in its `needsMicrovm` (`{"command": "tar", "reason": "..."}`), with exit code 127. Without `autoUpgrade`, that is its answer and the isolate stays one. With it, the answer is the command run again in the microVM: its `rerunOf` names the first, whose `rerunAs` names it. `PATCH /v1/sandboxes/{id}` with `{"autoUpgrade": true}` turns it on later. `kantel exec` follows the command run again by itself, and says so.
 
+To see it happen, make an isolate that upgrades itself and open [`kantel ssh`](/sandboxes/ssh/#ssh-to-an-isolate) to it, a pseudo-shell at first. Type a command an isolate can't run: the sandbox becomes a microVM, the command runs again there, and the session becomes SSH on the microVM, in the same directory:
+
+```sh
+kantel new --auto-upgrade
+kantel ssh sbx_4kq9x2mt
+```
+
+```text
+user@brave-otter:/workspace$ git clone https://github.com/octocat/Hello-World.git
+This needed a microVM (git): the sandbox has been upgraded, and the command ran again there.
+Cloning into 'Hello-World'...
+Switching to SSH on the microVM, in /home/user/workspace.
+```
+
+Without `autoUpgrade`, the pseudo-shell asks whether to upgrade instead.
+
 - **The whole command runs again**, not just the step that failed: in `curl -o data.json $URL && tar -xf a.tar`, the download happens twice. Write commands that can run again, or upgrade first.
 - **Only what the isolate's runtime says counts.** Where the runtime doesn't say (an older host), Kantel reads `needsMicrovm` from the shell's answer and marks it `"inferred": true`. That is a hint for you: a command can print the same text itself, so `autoUpgrade` never acts on it.
 - **Who may cause it:** turning `autoUpgrade` on needs `sandboxes:write` (a create or a `PATCH`). Once it is on, any key that may run commands in the sandbox (`exec`) may cause the upgrade, and with it the microVM's cost: the opt-in hands that decision over. A command that an isolate's runtime stopped for using too much CPU time, memory or wall time says which in `terminated` (`cpu`, `memory` or `wall`).
