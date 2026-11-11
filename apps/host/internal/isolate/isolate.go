@@ -485,14 +485,18 @@ func (r *runtime) waitRuntime(ctx context.Context) (health, error) {
 }
 
 // ready waits for a runtime the host is to use, and records what it said it can do.
-func (m *Manager) ready(ctx context.Context, r *runtime) error {
+func (m *Manager) ready(ctx context.Context, r *runtime) (health, error) {
 	h, err := r.waitRuntime(ctx)
 	if err != nil {
-		return err
+		return health{}, err
 	}
 	m.setRuntimeInfo(h.info())
-	return nil
+	return h, nil
 }
+
+// legacy says the runtime is workerd's isolate worker, from before kantel-isolate: its /healthz names no runtime. It
+// has no /reseed, and answers any POST without a sandboxId 400 before it looks at the path, so the host doesn't ask.
+func (h health) legacy() bool { return h.Runtime == "" }
 
 // RuntimeInfo is what the runtime last said it can do (proto.Facts.Isolate); nil until one has answered.
 func (m *Manager) RuntimeInfo() *proto.IsolateRuntime {
@@ -701,7 +705,7 @@ func (m *Manager) startNative(ctx context.Context, r *runtime) error {
 	}}}
 	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := m.ready(readyCtx, r); err != nil {
+	if _, err := m.ready(readyCtx, r); err != nil {
 		if tail := logTail(filepath.Join(r.dir, "kantel-isolate.log")); tail != "" {
 			return fmt.Errorf("%w: %s", err, tail)
 		}
@@ -786,7 +790,7 @@ func (m *Manager) templateDir(ctx context.Context) (string, error) {
 	// The runtime warm before the snapshot: every VM restored from it starts where the snapshot left it, so work the
 	// runtime still had in hand (its node and python isolates still loading, its idle collections due) would be
 	// done again, at once, in each one's first command.
-	if h, err = r.settled(bootCtx, m.cfg.Preload); err != nil {
+	if h, err = r.settled(bootCtx, m.cfg.Preload, settleLimit); err != nil {
 		return "", err
 	}
 	_ = client.Sync(ctx)
@@ -820,11 +824,15 @@ func (m *Manager) templateDir(ctx context.Context) (string, error) {
 // half a second after a command).
 const settleTime = 2 * time.Second
 
-// settled waits (up to 60 seconds) for the runtime to have want isolates loaded and be warm, and answers its last
+// settleLimit is how long a template's runtime has to settle before its template fails.
+const settleLimit = 60 * time.Second
+
+// settled waits (up to limit) for the runtime to have want isolates loaded and be warm, and answers its last
 // /healthz. A runtime that says (warm) is taken at its word; one that doesn't is given settleTime once its pool is
-// full (its idle count reaching what it wants, where it reports both).
-func (r *runtime) settled(ctx context.Context, want int) (health, error) {
-	deadline := time.Now().Add(60 * time.Second)
+// full (its idle count reaching what it wants, where it reports both). One that is neither by limit is an error: a
+// template snapshotted unready would hand every VM restored from it the work it hadn't done.
+func (r *runtime) settled(ctx context.Context, want int, limit time.Duration) (health, error) {
+	deadline := time.Now().Add(limit)
 	for {
 		h, err := r.health(ctx)
 		if err != nil {
@@ -843,7 +851,11 @@ func (r *runtime) settled(ctx context.Context, want int) (health, error) {
 			return r.health(ctx)
 		}
 		if time.Now().After(deadline) {
-			return h, nil
+			warm := "says nothing of warm"
+			if h.Warm != nil {
+				warm = fmt.Sprintf("warm %v", *h.Warm)
+			}
+			return h, fmt.Errorf("the isolate runtime didn't settle in %v (%d of %d isolates loaded, %s)", limit, h.Idle, min(want, h.Want), warm)
 		}
 		select {
 		case <-ctx.Done():
@@ -920,10 +932,24 @@ func (m *Manager) startVM(ctx context.Context, r *runtime) error {
 	// runtime's own random state (its loaded isolates' Math.random, Pyodide's random) by /reseed.
 	_ = r.guest.SetIdentity(ctx, guest.Identity{Hostname: "kantel-isolate", UnixTimeMs: time.Now().UnixMilli(), Entropy: entropy()})
 	r.client = runtimeClient(r.guest)
-	if err := m.ready(readyCtx, r); err != nil {
+	return m.restored(readyCtx, r)
+}
+
+// restored readies a runtime restored from the template: waits for it, and reseeds it unless it is workerd's.
+func (m *Manager) restored(ctx context.Context, r *runtime) error {
+	h, err := m.ready(ctx, r)
+	if err != nil {
 		return err
 	}
-	return m.reseed(readyCtx, r)
+	if h.legacy() {
+		// A template of an image from before kantel-isolate (workerd): its isolates keep the template's random state, as
+		// they always did.
+		m.noReseed.Do(func() {
+			m.log.Warn("the isolate image runs workerd, from before kantel-isolate: its restored VMs aren't reseeded; update the host's images")
+		})
+		return nil
+	}
+	return m.reseed(ctx, r)
 }
 
 // reseed tells a runtime restored from the template that it is a VM of its own (POST /reseed with fresh entropy), so
